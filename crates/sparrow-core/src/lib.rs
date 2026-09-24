@@ -8,6 +8,7 @@ pub mod fixtures;
 pub mod ingest;
 pub mod parsers;
 pub mod readers;
+pub mod verify;
 
 pub use db::Case;
 pub use error::{Error, Result};
