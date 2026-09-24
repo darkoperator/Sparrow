@@ -1,0 +1,8 @@
+//! Sparrow core: ingest M365 collector output (Hawk, Microsoft-Extractor-Suite) into a DuckDB case database.
+
+pub mod error;
+
+pub use error::{Error, Result};
+
+/// Version of this sparrow build (recorded on every collection).
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
