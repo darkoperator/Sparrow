@@ -7,10 +7,14 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
-#[serde(rename_all = "lowercase")]
 pub enum Tool {
+    #[serde(rename = "hawk")]
     Hawk,
+    #[serde(rename = "invictus")]
     Invictus,
+    /// Files an analyst exported from the Purview, Entra or Exchange admin portals.
+    #[serde(rename = "portal_export")]
+    PortalExport,
 }
 
 impl Tool {
@@ -18,6 +22,7 @@ impl Tool {
         match self {
             Tool::Hawk => "hawk",
             Tool::Invictus => "invictus",
+            Tool::PortalExport => "portal_export",
         }
     }
 }

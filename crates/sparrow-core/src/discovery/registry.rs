@@ -3,8 +3,13 @@
 //! to the collection root. Named group `subject` captures the user/IP/message/operation.
 
 use crate::discovery::collections::Tool;
+use crate::readers::csv_scan::read_csv;
+use crate::readers::text::decode;
 use regex::Regex;
 use serde::Serialize;
+use std::collections::HashSet;
+use std::io::Read;
+use std::path::Path;
 use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Copy)]
@@ -83,7 +88,14 @@ static DEFS: &[ArtifactDef] = &[
         Hawk,
         "collector_flags",
         false,
-        r"(?:[^/]+/)?_Investigate_[^/]+\.(?:csv|json)"
+        r"(?:[^/]+/)?_Investigate_[^/]+\.(?:csv|json|txt)"
+    ),
+    def!(
+        "hawk.psframework_log",
+        Hawk,
+        "collection_log",
+        false,
+        r"\d{4}-\d{2}-\d{2}_logs\.csv"
     ),
     def!(
         "hawk.tenant.admin_audit_log_config",
@@ -128,6 +140,48 @@ static DEFS: &[ArtifactDef] = &[
         r"Tenant/(?:Custom)?EDiscoveryRoles\.(?:csv|json)"
     ),
     def!(
+        "hawk.tenant.ediscovery_role_assignments",
+        Hawk,
+        "role_assignments",
+        false,
+        r"Tenant/EDiscoveryRoleAssignments\.(?:csv|json)"
+    ),
+    def!(
+        "hawk.tenant.impersonation",
+        Hawk,
+        "role_assignments",
+        false,
+        r"Tenant/Impersonation_(?:Rights|Roles)\.(?:csv|json)"
+    ),
+    def!(
+        "hawk.tenant.admin_audit",
+        Hawk,
+        "admin_audit_events",
+        false,
+        r"Tenant/(?:New|Set|Remove)_InboxRules\.(?:csv|json)"
+    ),
+    def!(
+        "hawk.tenant.all_inbox_rules",
+        Hawk,
+        "inbox_rules",
+        true,
+        r"Tenant/All_InboxRules\.(?:csv|json)"
+    ),
+    def!(
+        "hawk.tenant.azuread_users",
+        Hawk,
+        "users",
+        false,
+        r"Tenant/AzureADUsers\.(?:csv|json)"
+    ),
+    def!(
+        "hawk.tenant.azuread_admins",
+        Hawk,
+        "role_assignments",
+        false,
+        r"Tenant/AzureADAdministrators\.(?:csv|json)"
+    ),
+    def!(
         "hawk.tenant.simple_ual",
         Hawk,
         "ual_events",
@@ -153,7 +207,7 @@ static DEFS: &[ArtifactDef] = &[
         Hawk,
         "ual_events",
         false,
-        r"Tenant/Entra_ID_Application_Audit\.(?:csv|json)"
+        r"Tenant/(?:Entra_ID|Azure)_Application_Audit\.(?:csv|json)"
     ),
     def!(
         "hawk.tenant.entra_audit",
@@ -307,7 +361,7 @@ static DEFS: &[ArtifactDef] = &[
         Hawk,
         "ual_events",
         false,
-        r"(?P<subject>[^/]+@[^/]+)/(?:ExchangeItem(?:Group)?_Logs|User_Changes|MailItemsAccessed|ExchangeSearchQueries|SendActivity|SharePointSearches)_[^/]+\.(?:csv|json)"
+        r"(?P<subject>[^/]+@[^/]+)/(?:ExchangeItem(?:Group)?_Logs|User_Changes|MailItemsAccessed|ExchangeSearchQueries|SendActivity|SharePointSearches|Exchange_UAL_Audit)_[^/]+\.(?:csv|json)"
     ),
     def!(
         "hawk.user.message_trace",
@@ -315,6 +369,13 @@ static DEFS: &[ArtifactDef] = &[
         "message_trace",
         false,
         r"(?P<subject>[^/]+@[^/]+)/Message_Trace_[^/]+\.(?:csv|json)"
+    ),
+    def!(
+        "hawk.user.mailbox_audit_legacy",
+        Hawk,
+        "mailbox_audit_legacy",
+        false,
+        r"(?P<subject>[^/]+@[^/]+)/Exchange_Mailbox_Audit_[^/]+\.(?:csv|json)"
     ),
     def!(
         "hawk.user.mobile_devices",
@@ -684,6 +745,93 @@ static DEFS: &[ArtifactDef] = &[
     ),
 ];
 
+/// Bytes read from the start of a CSV file to recognize portal exports by their header.
+pub const SNIFF_BYTES: usize = 64 * 1024;
+
+/// A portal export recognized by its header row (normalized, lower-case column names).
+struct PortalDef {
+    id: &'static str,
+    target: &'static str,
+    columns: &'static [&'static str],
+    /// The header must have exactly these columns.
+    exact: bool,
+}
+
+static PORTAL_DEFS: &[PortalDef] = &[
+    PortalDef {
+        id: "portal.ual",
+        target: "ual_events",
+        columns: &[
+            "recordid",
+            "creationdate",
+            "recordtype",
+            "operation",
+            "userid",
+            "auditdata",
+        ],
+        exact: false,
+    },
+    // Older Microsoft 365 audit log search export: exactly these four columns. Hawk's raw
+    // Search-UnifiedAuditLog CSVs have more (RecordType, ResultIndex, ...), so they never match.
+    PortalDef {
+        id: "portal.ual",
+        target: "ual_events",
+        columns: &["creationdate", "userids", "operations", "auditdata"],
+        exact: true,
+    },
+    PortalDef {
+        id: "portal.entra_signins",
+        target: "signins",
+        columns: &["date (utc)", "request id", "user agent", "correlation id"],
+        exact: false,
+    },
+    PortalDef {
+        id: "portal.message_trace",
+        target: "message_trace",
+        columns: &[
+            "origin_timestamp_utc",
+            "sender_address",
+            "recipient_status",
+            "message_id",
+        ],
+        exact: false,
+    },
+];
+
+/// Recognize an analyst portal export (Purview audit search, Entra sign-ins, EAC message
+/// trace) from the first bytes of a CSV file, whatever its name or location.
+pub fn sniff_portal(head: &[u8]) -> Option<Classification> {
+    let decoded = decode(head);
+    let first_line = decoded.text.split('\n').next()?.trim_end_matches('\r');
+    if first_line.trim().is_empty() {
+        return None;
+    }
+    let headers: HashSet<String> = read_csv(&format!("{first_line}\n"))
+        .headers
+        .iter()
+        .map(|h| h.to_ascii_lowercase())
+        .collect();
+    PORTAL_DEFS
+        .iter()
+        .find(|d| {
+            d.columns.iter().all(|c| headers.contains(*c))
+                && (!d.exact || headers.len() == d.columns.len())
+        })
+        .map(|d| Classification {
+            artifact_id: d.id,
+            target: d.target,
+            derived: false,
+            subject: None,
+        })
+}
+
+fn read_head(abs: &Path) -> Option<Vec<u8>> {
+    let file = std::fs::File::open(abs).ok()?;
+    let mut buf = Vec::new();
+    file.take(SNIFF_BYTES as u64).read_to_end(&mut buf).ok()?;
+    Some(buf)
+}
+
 pub struct Registry {
     entries: Vec<(&'static ArtifactDef, Regex)>,
 }
@@ -723,6 +871,32 @@ impl Registry {
                     subject: c.name("subject").map(|m| m.as_str().to_string()),
                 })
             })
+    }
+
+    /// Classify a file given the first `SNIFF_BYTES` of its content: CSV portal exports are
+    /// recognized by header first (anywhere, under any tool), then `tool`'s path patterns apply.
+    pub fn classify_with_head(
+        &self,
+        tool: Tool,
+        rel_path: &str,
+        head: Option<&[u8]>,
+    ) -> Option<Classification> {
+        if format_from_path(rel_path) == FileFormat::Csv {
+            if let Some(c) = head.and_then(sniff_portal) {
+                return Some(c);
+            }
+        }
+        self.classify(tool, rel_path)
+    }
+
+    /// `classify_with_head`, reading the head of CSV files from `abs`.
+    pub fn classify_file(&self, tool: Tool, rel_path: &str, abs: &Path) -> Option<Classification> {
+        let head = if format_from_path(rel_path) == FileFormat::Csv {
+            read_head(abs)
+        } else {
+            None
+        };
+        self.classify_with_head(tool, rel_path, head.as_deref())
     }
 }
 

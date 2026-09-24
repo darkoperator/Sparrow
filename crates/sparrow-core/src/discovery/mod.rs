@@ -9,4 +9,7 @@ pub use files::{
     CollectionFile, CollectionListing, EntryError, canonical_root_string, is_os_junk,
     list_collection_files,
 };
-pub use registry::{Classification, FileFormat, Registry, format_from_path, normalize_rel_path};
+pub use registry::{
+    Classification, FileFormat, Registry, SNIFF_BYTES, format_from_path, normalize_rel_path,
+    sniff_portal,
+};
