@@ -156,3 +156,35 @@ fn record_under_literal_backslash_tenant_dir_verifies() {
     assert!(rep.sightings[0].file_found, "{rep:?}");
     assert!(rep.ok, "{rep:?}");
 }
+
+#[test]
+fn utf16_log_with_truncated_trailing_byte_verifies() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fixtures::invictus_tree(dir.path());
+    let mut raw = fixtures::utf16le_bom(fixtures::INVICTUS_LOG);
+    raw.push(b'x');
+    fixtures::write(&root, "LogFile.txt", &raw);
+    let mut case = Case::in_memory().unwrap();
+    ingest_path(
+        &mut case,
+        dir.path(),
+        &ParserRegistry::builtin(),
+        &IngestOptions::default(),
+    )
+    .unwrap();
+    let (key, offset, length): (String, i64, i64) = case
+        .conn()
+        .query_row(
+            "SELECT cl.log_key, rs.byte_offset, rs.byte_length FROM collection_log cl
+             JOIN record_sources rs ON rs.table_name = 'collection_log' AND rs.record_key = cl.log_key
+             ORDER BY cl.record_ordinal DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!((offset + length) as usize, raw.len());
+    let rep = verify_record(&case, "collection_log", &key, None).unwrap();
+    assert!(rep.sightings[0].file_hash_ok, "{rep:?}");
+    assert!(rep.sightings[0].record_hash_ok, "{rep:?}");
+    assert!(rep.ok);
+}

@@ -361,6 +361,7 @@ fn ingest_file(
 
     let decoded = decode(&raw);
     nf.encoding = Some(decoded.encoding.as_str());
+    let decode_warning = decoded.lossy_warning();
     let index = LineIndex::new(&decoded.text);
     let tx = case.conn_mut().transaction()?;
     let file_id = insert_file_row(&tx, &nf, FileStatus::Parsed, &[])?;
@@ -377,7 +378,8 @@ fn ingest_file(
     );
     match parser.parse(&mut ctx) {
         Ok(()) => {
-            let (stats, warnings) = ctx.finish();
+            let (stats, parser_warnings) = ctx.finish();
+            let warnings: Vec<String> = decode_warning.into_iter().chain(parser_warnings).collect();
             let warnings_json = if warnings.is_empty() {
                 None
             } else {
@@ -401,7 +403,8 @@ fn ingest_file(
             drop(ctx);
             tx.rollback()?;
             let msg = format!("parser {} failed: {e}", class.artifact_id);
-            record_simple(case.conn(), &nf, FileStatus::Error, vec![msg])
+            let warnings = std::iter::once(msg).chain(decode_warning).collect();
+            record_simple(case.conn(), &nf, FileStatus::Error, warnings)
         }
     }
 }

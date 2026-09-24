@@ -541,3 +541,34 @@ fn literal_backslash_tenant_dir_keeps_its_true_rel_path() {
         ]
     );
 }
+
+#[test]
+fn lossy_decoding_is_reported_as_a_file_warning() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fixtures::hawk_tree(dir.path());
+    fixtures::write(&root, "Hawk.log", b"caf\xE9 line one\r\nline two\r\n");
+    let mut case = Case::in_memory().unwrap();
+    let report = ingest_path(&mut case, dir.path(), &parsers(), &IngestOptions::default()).unwrap();
+    let f = report.collections[0]
+        .files
+        .iter()
+        .find(|f| f.rel_path == "Hawk.log")
+        .unwrap();
+    assert_eq!(f.status, FileStatus::Parsed);
+    assert!(
+        f.warnings
+            .iter()
+            .any(|w| w == "text decoding was lossy (windows-1252 fallback)"),
+        "{:?}",
+        f.warnings
+    );
+    let stored: String = case
+        .conn()
+        .query_row(
+            "SELECT CAST(warnings AS VARCHAR) FROM source_files WHERE rel_path = 'Hawk.log'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(stored.contains("lossy"), "{stored}");
+}

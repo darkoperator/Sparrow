@@ -54,7 +54,7 @@ impl<'a> ParseContext<'a> {
             options,
             stats: FileStats::default(),
             warnings: Vec::new(),
-            mapper: OffsetMapper::new(text),
+            mapper: OffsetMapper::new(text, raw.len() as u64),
         }
     }
 
@@ -65,6 +65,7 @@ impl<'a> ParseContext<'a> {
     fn raw_sha256(&self, pos: &SourcePos) -> String {
         let start = pos.byte_offset as usize;
         let end = (pos.byte_offset + pos.byte_length) as usize;
+        debug_assert!(end <= self.raw.len(), "record range beyond end of file");
         hex::encode(Sha256::digest(
             &self.raw[start.min(self.raw.len())..end.min(self.raw.len())],
         ))

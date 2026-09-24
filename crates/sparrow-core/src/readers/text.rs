@@ -44,6 +44,24 @@ pub struct DecodedText {
     pub encoding: TextEncoding,
     /// Bytes of byte-order mark preceding the text in the raw file.
     pub bom_len: u64,
+    /// True when decoding replaced invalid input (e.g. a truncated UTF-16 code unit) or
+    /// invalid UTF-8 forced the Windows-1252 fallback.
+    pub lossy: bool,
+}
+
+impl DecodedText {
+    /// Warning to record on the file when decoding was lossy.
+    pub fn lossy_warning(&self) -> Option<String> {
+        if !self.lossy {
+            return None;
+        }
+        let why = match self.encoding {
+            TextEncoding::Windows1252 => "windows-1252 fallback",
+            TextEncoding::Utf16Le | TextEncoding::Utf16Be => "invalid utf-16",
+            TextEncoding::Utf8 | TextEncoding::Utf8Bom => "invalid utf-8",
+        };
+        Some(format!("text decoding was lossy ({why})"))
+    }
 }
 
 pub fn decode(bytes: &[u8]) -> DecodedText {
@@ -53,6 +71,7 @@ pub fn decode(bytes: &[u8]) -> DecodedText {
                 text: s.to_string(),
                 encoding: TextEncoding::Utf8Bom,
                 bom_len: 3,
+                lossy: false,
             },
             Err(_) => windows_1252(rest, 3),
         };
@@ -71,6 +90,7 @@ pub fn decode(bytes: &[u8]) -> DecodedText {
             text: s.to_string(),
             encoding: TextEncoding::Utf8,
             bom_len: 0,
+            lossy: false,
         },
         Err(_) => windows_1252(bytes, 0),
     }
@@ -82,20 +102,24 @@ fn utf16(bytes: &[u8], encoding: TextEncoding, bom_len: u64) -> DecodedText {
     } else {
         encoding_rs::UTF_16BE
     };
-    let (text, _had_errors) = codec.decode_without_bom_handling(bytes);
+    let (text, had_errors) = codec.decode_without_bom_handling(bytes);
     DecodedText {
         text: text.into_owned(),
         encoding,
         bom_len,
+        lossy: had_errors,
     }
 }
 
+/// Fallback used only when the bytes are not valid UTF-8, so the result is always lossy:
+/// the bytes are guessed to be Windows-1252.
 fn windows_1252(bytes: &[u8], bom_len: u64) -> DecodedText {
     let (text, _had_errors) = encoding_rs::WINDOWS_1252.decode_without_bom_handling(bytes);
     DecodedText {
         text: text.into_owned(),
         encoding: TextEncoding::Windows1252,
         bom_len,
+        lossy: true,
     }
 }
 
@@ -169,20 +193,25 @@ impl LineIndex {
 }
 
 /// Maps decoded offsets to raw file offsets. Queries should move forward; moving
-/// backwards restarts the scan from the beginning.
+/// backwards restarts the scan from the beginning. Offsets never exceed the raw length:
+/// a replacement character for a truncated trailing code unit stands for fewer raw bytes
+/// than a full code unit.
 #[derive(Debug, Clone)]
 pub struct OffsetMapper {
     encoding: TextEncoding,
     bom_len: u64,
+    raw_len: u64,
     cur_dec: usize,
     cur_raw: u64,
 }
 
 impl OffsetMapper {
-    pub fn new(decoded: &DecodedText) -> Self {
+    /// `raw_len` is the length of the raw file `decoded` was decoded from.
+    pub fn new(decoded: &DecodedText, raw_len: u64) -> Self {
         OffsetMapper {
             encoding: decoded.encoding,
             bom_len: decoded.bom_len,
+            raw_len,
             cur_dec: 0,
             cur_raw: decoded.bom_len,
         }
@@ -190,6 +219,10 @@ impl OffsetMapper {
 
     /// Raw byte offset of decoded byte offset `decoded` (must be a char boundary of `text`).
     pub fn raw_offset(&mut self, text: &str, decoded: usize) -> u64 {
+        self.unclamped_raw_offset(text, decoded).min(self.raw_len)
+    }
+
+    fn unclamped_raw_offset(&mut self, text: &str, decoded: usize) -> u64 {
         if matches!(self.encoding, TextEncoding::Utf8 | TextEncoding::Utf8Bom) {
             return self.bom_len + decoded as u64;
         }

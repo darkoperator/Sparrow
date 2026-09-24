@@ -45,6 +45,43 @@ fn falls_back_to_windows_1252_for_invalid_utf8() {
     let d = decode(&[b'c', b'a', b'f', 0xE9]);
     assert_eq!(d.encoding, TextEncoding::Windows1252);
     assert_eq!(d.text, "café");
+    assert!(d.lossy, "windows-1252 fallback must be reported as lossy");
+}
+
+#[test]
+fn clean_utf8_is_not_lossy() {
+    let d = decode("café\n".as_bytes());
+    assert_eq!(d.encoding, TextEncoding::Utf8);
+    assert!(!d.lossy);
+}
+
+#[test]
+fn decodes_utf16be_with_bom() {
+    let mut raw = vec![0xFE, 0xFF];
+    for u in "café\r\nzoë".encode_utf16() {
+        raw.extend_from_slice(&u.to_be_bytes());
+    }
+    let d = decode(&raw);
+    assert_eq!(d.encoding, TextEncoding::Utf16Be);
+    assert_eq!(d.bom_len, 2);
+    assert_eq!(d.text, "café\r\nzoë");
+    assert!(!d.lossy);
+}
+
+#[test]
+fn utf16_with_odd_trailing_byte_maps_end_to_raw_length() {
+    let mut raw = utf16le("ab\r\ncd", true);
+    raw.push(b'x');
+    let d = decode(&raw);
+    assert!(d.text.ends_with('\u{FFFD}'));
+    assert!(
+        d.lossy,
+        "a truncated UTF-16 code unit must be reported as lossy"
+    );
+    let mut m = OffsetMapper::new(&d, raw.len() as u64);
+    assert_eq!(m.raw_offset(&d.text, d.text.len()), raw.len() as u64);
+    let cd = d.text.find("cd").unwrap();
+    assert_eq!(m.raw_offset(&d.text, cd), 2 + 8);
 }
 
 #[test]
@@ -64,7 +101,7 @@ fn locate_utf16_record_gives_raw_byte_offsets() {
     let raw = utf16le("ab\ncd", true);
     let d = decode(&raw);
     let idx = LineIndex::new(&d.text);
-    let mut m = OffsetMapper::new(&d);
+    let mut m = OffsetMapper::new(&d, raw.len() as u64);
     let pos = locate(&d.text, &idx, &mut m, Span { start: 3, end: 5 });
     assert_eq!(
         pos,
@@ -84,7 +121,7 @@ fn locate_utf8_bom_multiline_record() {
     raw.extend_from_slice("x\n{\n \"a\": 1\n}\n".as_bytes());
     let d = decode(&raw);
     let idx = LineIndex::new(&d.text);
-    let mut m = OffsetMapper::new(&d);
+    let mut m = OffsetMapper::new(&d, raw.len() as u64);
     let pos = locate(&d.text, &idx, &mut m, Span { start: 2, end: 13 });
     assert_eq!(pos.line_start, 2);
     assert_eq!(pos.line_end, 4);
@@ -94,8 +131,9 @@ fn locate_utf8_bom_multiline_record() {
 
 #[test]
 fn offset_mapper_handles_non_ascii_in_utf16_and_rewinds() {
-    let d = decode(&utf16le("é€x", true));
-    let mut m = OffsetMapper::new(&d);
+    let raw = utf16le("é€x", true);
+    let d = decode(&raw);
+    let mut m = OffsetMapper::new(&d, raw.len() as u64);
     let x = d.text.find('x').unwrap();
     assert_eq!(m.raw_offset(&d.text, x), 2 + 4);
     assert_eq!(m.raw_offset(&d.text, 0), 2);
