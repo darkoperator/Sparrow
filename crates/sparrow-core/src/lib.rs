@@ -1,7 +1,10 @@
 //! Sparrow core: ingest M365 collector output (Hawk, Microsoft-Extractor-Suite) into a DuckDB case database.
 
 pub mod db;
+pub mod discovery;
 pub mod error;
+#[doc(hidden)]
+pub mod fixtures;
 pub mod readers;
 
 pub use db::Case;
