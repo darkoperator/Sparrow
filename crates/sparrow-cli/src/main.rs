@@ -65,7 +65,21 @@ enum Command {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let json_requested = std::env::args_os().any(|a| a == "--json");
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            use clap::error::ErrorKind;
+            let _ = e.print();
+            if matches!(e.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion) {
+                return ExitCode::SUCCESS;
+            }
+            if json_requested {
+                println!("{}", serde_json::json!({ "error": e.render().to_string() }));
+            }
+            return ExitCode::from(1);
+        }
+    };
     let json = cli.json;
     match run(cli) {
         Ok(code) => code,
@@ -204,6 +218,24 @@ fn cmd_ingest(
         date_order,
         max_file_bytes: max_file_size,
     };
+    let collections = discover_collections(path)?;
+    if collections.is_empty() {
+        anyhow::bail!(
+            "no Hawk, Microsoft-Extractor-Suite or portal export output found under {}",
+            path.display()
+        );
+    }
+    let case_abs = absolute_file_path(case_path);
+    for c in &collections {
+        let root = std::fs::canonicalize(&c.root).unwrap_or_else(|_| c.root.clone());
+        if case_abs.starts_with(&root) {
+            anyhow::bail!(
+                "--case {} is inside the evidence folder {}; put the case database outside the evidence",
+                case_path.display(),
+                c.root.display()
+            );
+        }
+    }
     let mut case = Case::create_or_open(case_path)
         .with_context(|| format!("opening {}", case_path.display()))?;
     let report = ingest_path(&mut case, path, &ParserRegistry::builtin(), &opts)?;
@@ -237,6 +269,19 @@ fn cmd_ingest(
     } else {
         ExitCode::SUCCESS
     })
+}
+
+/// Absolute form of a file path that may not exist yet (its parent is canonicalized).
+fn absolute_file_path(p: &Path) -> PathBuf {
+    let parent = p
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let parent = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+    match p.file_name() {
+        Some(name) => parent.join(name),
+        None => parent,
+    }
 }
 
 fn cmd_verify(
@@ -307,6 +352,11 @@ fn cmd_schema(case_path: &Path, table: Option<&str>, json: bool) -> Result<ExitC
     let out = SchemaOutput {
         tables: sparrow_core::db::describe(&case, table)?,
     };
+    if let Some(t) = table {
+        if out.tables.is_empty() {
+            anyhow::bail!("no table named '{t}' in the case database");
+        }
+    }
     if json {
         print_json(&out)?;
     } else {

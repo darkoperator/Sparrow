@@ -339,3 +339,65 @@ fn fatal_errors_are_json_on_stdout_with_json_flag() {
         "{v}"
     );
 }
+
+#[test]
+fn ingest_of_a_folder_without_collections_does_not_create_the_case() {
+    let dir = tempfile::tempdir().unwrap();
+    let empty = dir.path().join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let case = dir.path().join("case.duckdb");
+    let v = json_out(
+        sparrow()
+            .args(["--json", "ingest"])
+            .arg(&empty)
+            .arg("--case")
+            .arg(&case),
+        1,
+    );
+    assert!(v["error"].as_str().unwrap().contains("no Hawk"));
+    assert!(!case.exists());
+}
+
+#[test]
+fn case_inside_the_evidence_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fixtures::hawk_tree(dir.path());
+    let case = root.join("case.duckdb");
+    let v = json_out(
+        sparrow()
+            .args(["--json", "ingest"])
+            .arg(dir.path())
+            .arg("--case")
+            .arg(&case),
+        1,
+    );
+    assert!(v["error"].as_str().unwrap().contains("inside the evidence"));
+    assert!(!case.exists());
+}
+
+#[test]
+fn schema_of_an_unknown_table_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = dir.path().join("case.duckdb");
+    sparrow_core::Case::create_or_open(&case).unwrap();
+    let v = json_out(
+        sparrow()
+            .args(["--json", "schema", "nope", "--case"])
+            .arg(&case),
+        1,
+    );
+    assert!(
+        v["error"]
+            .as_str()
+            .unwrap()
+            .contains("no table named 'nope'")
+    );
+}
+
+#[test]
+fn usage_errors_exit_1_and_are_json_with_the_flag() {
+    let v = json_out(sparrow().args(["--json", "ingest"]), 1);
+    assert!(v["error"].as_str().unwrap().contains("required"));
+    sparrow().args(["ingest"]).assert().code(1);
+    sparrow().args(["--help"]).assert().success();
+}
