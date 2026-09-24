@@ -166,6 +166,22 @@ fn app_audit_uses_env_time_as_creation_time() {
 }
 
 #[test]
+fn app_audit_keeps_its_creation_time_and_ignores_blank_env_time() {
+    let rec = obj(json!({
+        "Id": "x", "Operation": "Consent to application.",
+        "CreationTime": "2026-09-01T08:00:00Z", "env_time": "2026-09-02T09:00:00Z"
+    }));
+    let a = to_audit(UalShape::AppAudit, &rec, false).unwrap();
+    assert_eq!(a.audit["CreationTime"], "2026-09-01T08:00:00Z");
+
+    for env in [json!(null), json!(""), json!("   ")] {
+        let rec = obj(json!({"Id": "x", "Operation": "Consent to application.", "env_time": env}));
+        let a = to_audit(UalShape::AppAudit, &rec, false).unwrap();
+        assert!(!a.audit.contains_key("CreationTime"), "{env}");
+    }
+}
+
+#[test]
 fn admin_audit_and_unknown_shapes_are_rejected() {
     let rec = obj(json!({"CmdletName": "Set-Mailbox"}));
     assert!(to_audit(UalShape::AdminAudit, &rec, false).is_err());

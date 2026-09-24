@@ -2,7 +2,8 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 
-/// Normalized IP text: brackets and ports removed, IPv6 lower-cased and compressed.
+/// Normalized IP text: brackets and ports removed, IPv4-mapped IPv6 (`::ffff:a.b.c.d`) given
+/// as IPv4, other IPv6 lower-cased and compressed.
 /// Values that are not IP addresses are kept, trimmed and lower-cased; empty gives `None`.
 pub fn normalize_ip(raw: &str) -> Option<String> {
     let s = raw.trim();
@@ -15,7 +16,7 @@ pub fn normalize_ip(raw: &str) -> Option<String> {
         }
     }
     if let Ok(ip) = s.parse::<IpAddr>() {
-        return Some(ip.to_string());
+        return Some(ip_text(ip));
     }
     if let Some((host, port)) = s.rsplit_once(':') {
         if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) {
@@ -27,9 +28,18 @@ pub fn normalize_ip(raw: &str) -> Option<String> {
     Some(s.to_ascii_lowercase())
 }
 
+fn ip_text(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V6(v6) => v6
+            .to_ipv4_mapped()
+            .map_or_else(|| v6.to_string(), |v4| v4.to_string()),
+        IpAddr::V4(v4) => v4.to_string(),
+    }
+}
+
 fn canonical(s: &str) -> String {
     s.parse::<IpAddr>()
-        .map(|ip| ip.to_string())
+        .map(ip_text)
         .unwrap_or_else(|_| s.to_ascii_lowercase())
 }
 

@@ -134,13 +134,43 @@ fn detector_resolves_from_evidence() {
     d.observe("9/24/2026 10:00:00 AM");
     assert_eq!(d.resolve(None).unwrap(), Some(DateOrder::MonthFirst));
     assert_eq!(
-        d.resolve(Some(DateOrder::DayFirst)).unwrap(),
-        Some(DateOrder::DayFirst)
+        d.resolve(Some(DateOrder::MonthFirst)).unwrap(),
+        Some(DateOrder::MonthFirst)
+    );
+    assert!(
+        d.resolve(Some(DateOrder::DayFirst))
+            .unwrap_err()
+            .contains("--culture")
     );
     d.observe("24/09/2026 10:00:00");
+    assert!(d.resolve(Some(DateOrder::MonthFirst)).is_err());
+    assert!(d.resolve(Some(DateOrder::DayFirst)).is_err());
     assert!(d.resolve(None).is_err());
     let empty = DateOrderDetector::default();
     assert_eq!(empty.resolve(None).unwrap(), None);
+}
+
+#[test]
+fn culture_override_resolves_matching_or_ambiguous_evidence() {
+    let mut day = DateOrderDetector::default();
+    day.observe("24/9/2026 8:00:00 AM");
+    assert_eq!(
+        day.resolve(Some(DateOrder::DayFirst)).unwrap(),
+        Some(DateOrder::DayFirst)
+    );
+    let err = day.resolve(Some(DateOrder::MonthFirst)).unwrap_err();
+    assert!(err.contains("--culture"), "{err}");
+
+    let mut ambiguous = DateOrderDetector::default();
+    ambiguous.observe("6/9/2026 8:00:00 AM");
+    assert_eq!(
+        ambiguous.resolve(Some(DateOrder::DayFirst)).unwrap(),
+        Some(DateOrder::DayFirst)
+    );
+    assert_eq!(
+        ambiguous.resolve(Some(DateOrder::MonthFirst)).unwrap(),
+        Some(DateOrder::MonthFirst)
+    );
 }
 
 #[test]

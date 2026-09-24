@@ -234,7 +234,15 @@ fn hawk3_capture_is_found_by_content_and_loads_ual_shapes() {
     let ed = row(&report, "Tenant/eDiscoveryLogs.csv");
     assert_eq!((ed.status, ed.records_loaded), (FileStatus::Parsed, 2));
     let app = row(&report, "Tenant/Azure_Application_Audit.json");
-    assert_eq!((app.status, app.records_loaded), (FileStatus::Parsed, 2));
+    assert_eq!(
+        (app.status, app.records_loaded),
+        (FileStatus::NotSupported, 0)
+    );
+    assert!(
+        app.warnings.iter().any(|w| w.contains("no timestamps")),
+        "{:?}",
+        app.warnings
+    );
     let b = |f: &str| format!("{BOB}/{f}");
     assert_eq!(
         row(&report, &b("Exchange_UAL_Audit_bob@contoso.example.json")).records_loaded,
@@ -267,13 +275,13 @@ fn hawk3_capture_is_found_by_content_and_loads_ual_shapes() {
         FileStatus::NotSupported
     );
 
-    assert_eq!(count(&case, "SELECT count(*) FROM ual_events"), 5);
+    assert_eq!(count(&case, "SELECT count(*) FROM ual_events"), 3);
     assert_eq!(
         count(
             &case,
             "SELECT count(*) FROM ual_events WHERE data_completeness = 'partial'"
         ),
-        4
+        2
     );
     assert_eq!(
         text(
@@ -322,4 +330,96 @@ fn standalone_portal_folder_joins_cross_collection_dedup() {
     let v = verify_record(&case, "ual_events", ual::ID_RULE, None).unwrap();
     assert!(v.ok, "{v:?}");
     assert_eq!(v.sightings.len(), 3);
+}
+
+#[test]
+fn full_purview_copy_upgrades_a_partial_row_from_an_earlier_ingest() {
+    let dir = tempfile::tempdir().unwrap();
+    let hawk = dir.path().join("hawk");
+    sparrow_core::fixtures::write(
+        &hawk,
+        "Hawk.log",
+        sparrow_core::fixtures::HAWK_LOG.as_bytes(),
+    );
+    let simple = format!(
+        "{ALICE}/Simple_MailItemsAccessed_alice@contoso.example_alice@contoso.example.json"
+    );
+    let flat = serde_json::json!([{
+        "CreationTime": "2026-09-01T10:05:00", "Id": ual::ID_MIA, "Operation": "MailItemsAccessed",
+        "RecordType": 50, "Workload": "Exchange", "UserId": "alice@contoso.example",
+        "ClientIPAddress": "203.0.113.10", "MailboxOwnerUPN": "alice@contoso.example"
+    }]);
+    sparrow_core::fixtures::write(&hawk, &simple, flat.to_string().as_bytes());
+    let mut case = Case::in_memory().unwrap();
+    let first = ingest_into(&mut case, &hawk);
+    assert!(!first.has_errors(), "{first:#?}");
+    assert_eq!(row(&first, &simple).records_loaded, 1);
+    let mia_where = format!("WHERE record_id = '{}'", ual::ID_MIA);
+    assert_eq!(
+        text(
+            &case,
+            &format!("SELECT CAST(data_completeness AS VARCHAR) FROM ual_events {mia_where}")
+        ),
+        "partial"
+    );
+    assert_eq!(
+        count(
+            &case,
+            &format!(
+                "SELECT count(*) FROM mail_items_accessed {mia_where} AND internet_message_id IS NULL"
+            )
+        ),
+        1
+    );
+
+    let exports = dir.path().join("exports");
+    let purview = ual::PURVIEW_HEADER.to_string()
+        + &ual::purview_row("2026-09-01T10:05:00.0000000Z", &ual::mail_items_accessed());
+    sparrow_core::fixtures::write(&exports, PORTAL_PURVIEW, purview.as_bytes());
+    let second = ingest_into(&mut case, &exports);
+    assert!(!second.has_errors(), "{second:#?}");
+    let f = row(&second, PORTAL_PURVIEW);
+    assert_eq!((f.status, f.records_loaded), (FileStatus::Parsed, 1));
+    assert!(
+        f.warnings
+            .iter()
+            .any(|w| w.contains("replaced partial rows")),
+        "{:?}",
+        f.warnings
+    );
+
+    assert_eq!(count(&case, "SELECT count(*) FROM ual_events"), 1);
+    assert_eq!(
+        text(
+            &case,
+            &format!("SELECT CAST(data_completeness AS VARCHAR) FROM ual_events {mia_where}")
+        ),
+        "full"
+    );
+    assert_eq!(
+        count(
+            &case,
+            &format!(
+                "SELECT count(*) FROM mail_items_accessed {mia_where} AND internet_message_id IS NOT NULL"
+            )
+        ),
+        2
+    );
+    assert_eq!(
+        count(
+            &case,
+            &format!("SELECT count(*) FROM mail_items_accessed {mia_where}")
+        ),
+        2
+    );
+    assert_eq!(
+        count(
+            &case,
+            &format!(
+                "SELECT count(*) FROM record_sources WHERE table_name = 'ual_events' AND record_key = '{}'",
+                ual::ID_MIA
+            )
+        ),
+        2
+    );
 }

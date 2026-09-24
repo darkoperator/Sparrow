@@ -44,7 +44,11 @@ fn ip_normalization() {
     );
     assert_eq!(
         normalize_ip("::ffff:203.0.113.10").as_deref(),
-        Some("::ffff:203.0.113.10")
+        Some("203.0.113.10")
+    );
+    assert_eq!(
+        normalize_ip("[::FFFF:203.0.113.10]:443").as_deref(),
+        Some("203.0.113.10")
     );
     assert_eq!(normalize_ip("  "), None);
     assert_eq!(normalize_ip("Not-An-IP").as_deref(), Some("not-an-ip"));

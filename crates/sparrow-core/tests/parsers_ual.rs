@@ -260,6 +260,82 @@ fn ambiguous_culture_dates_fail_file_unless_culture_given() {
 }
 
 #[test]
+fn culture_override_contradicted_by_file_dates_fails_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("cap");
+    let rel = "alice@contoso.example/ExchangeItem_Simple_alice@contoso.example.csv";
+    let line = |t: &str, id: &str| csv_line(&[t, id, "Send", "Exchange", "alice@contoso.example"]);
+    let text = csv_line(&["CreationTime", "Id", "Operation", "Workload", "UserId"])
+        + &line("24/9/2026 8:00:00 AM", ID_A)
+        + &line("6/9/2026 8:00:00 AM", ID_B);
+    fixtures::write(&root, rel, text.as_bytes());
+
+    let (case, report) = ingest(dir.path(), Some(DateOrder::MonthFirst));
+    let f = row(&report, rel);
+    assert_eq!(f.status, FileStatus::Error);
+    assert!(
+        f.warnings.iter().any(|w| w.contains("--culture")),
+        "{:?}",
+        f.warnings
+    );
+    assert_eq!(count(&case, "SELECT count(*) FROM ual_events"), 0);
+}
+
+fn app_audit_object(id: &str, env_time: Value) -> String {
+    serde_json::to_string_pretty(&json!({
+        "Id": id, "Operation": "Consent to application.", "ResultStatus": "Success",
+        "Workload": "AzureActiveDirectory", "ClientIP": null, "UserId": "alice@contoso.example",
+        "ActorUPN": "alice@contoso.example", "targetName": "Invoice Viewer",
+        "env_time": env_time, "correlationId": "c"
+    }))
+    .unwrap()
+}
+
+#[test]
+fn application_audit_without_any_timestamp_is_not_supported() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    let rel = "Tenant/Entra_ID_Application_Audit.json";
+    let text = format!(
+        "{}\r\n{}\r\n",
+        app_audit_object(ID_A, Value::Null),
+        app_audit_object(ID_B, json!(""))
+    );
+    fixtures::write(&root, rel, text.as_bytes());
+    let (case, report) = ingest(dir.path(), None);
+    let f = row(&report, rel);
+    assert_eq!(f.status, FileStatus::NotSupported);
+    assert!(
+        f.warnings.iter().any(|w| w.contains("no timestamps")),
+        "{:?}",
+        f.warnings
+    );
+    assert_eq!(count(&case, "SELECT count(*) FROM ual_events"), 0);
+    assert_eq!(count(&case, "SELECT count(*) FROM parse_errors"), 0);
+}
+
+#[test]
+fn application_audit_records_without_a_timestamp_are_parse_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    let rel = "Tenant/Entra_ID_Application_Audit.json";
+    let text = format!(
+        "{}\r\n{}\r\n",
+        app_audit_object(ID_A, json!("2026-09-02T09:00:00Z")),
+        app_audit_object(ID_B, Value::Null)
+    );
+    fixtures::write(&root, rel, text.as_bytes());
+    let (case, report) = ingest(dir.path(), None);
+    let f = row(&report, rel);
+    assert_eq!(
+        (f.status, f.records_loaded, f.records_error),
+        (FileStatus::Parsed, 1, 1)
+    );
+    assert_eq!(count(&case, "SELECT count(*) FROM ual_events"), 1);
+    assert_eq!(count(&case, "SELECT count(*) FROM parse_errors"), 1);
+}
+
+#[test]
 fn concatenated_application_audit_objects_load_as_partial() {
     let dir = tempfile::tempdir().unwrap();
     let root = capture(dir.path());

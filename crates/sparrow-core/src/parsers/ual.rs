@@ -121,6 +121,14 @@ impl ArtifactParser for UalParser {
                 (r, input)
             })
             .collect();
+        let timed = |i: &std::result::Result<AuditInput, String>| {
+            i.as_ref().is_ok_and(|i| event_time_text(i).is_some())
+        };
+        if shape == UalShape::AppAudit && !inputs.iter().any(|(_, i)| timed(i)) {
+            return Err(Error::UnsupportedShape(
+                "Hawk application audit export has no timestamps (env_time is null); the same events are in the raw UAL and directory audit logs".into(),
+            ));
+        }
         let mut detector = DateOrderDetector::default();
         for input in inputs.iter().filter_map(|(_, i)| i.as_ref().ok()) {
             if let Some(t) = event_time_text(input) {

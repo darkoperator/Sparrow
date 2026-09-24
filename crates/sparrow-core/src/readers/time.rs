@@ -241,7 +241,22 @@ impl DateOrderDetector {
 
     pub fn resolve(&self, override_order: Option<DateOrder>) -> Result<Option<DateOrder>, String> {
         if let Some(o) = override_order {
-            return Ok(Some(o));
+            return match (o, self.month_first, self.day_first) {
+                (_, true, true) => {
+                    Err("conflicting day/month orders in the same file; pass --culture".into())
+                }
+                (DateOrder::MonthFirst, false, true) => Err(
+                    "file shows day-first dates (e.g. 24/9) but --culture says month-first; \
+                     remove --culture or ingest this collection separately"
+                        .into(),
+                ),
+                (DateOrder::DayFirst, true, false) => Err(
+                    "file shows month-first dates (e.g. 9/24) but --culture says day-first; \
+                     remove --culture or ingest this collection separately"
+                        .into(),
+                ),
+                _ => Ok(Some(o)),
+            };
         }
         match (self.month_first, self.day_first) {
             (true, true) => {

@@ -76,11 +76,12 @@ pub fn hawk3_tree(base: &Path) -> PathBuf {
         "New-ComplianceSearchAction",
     ]);
     write(&root, "Tenant/eDiscoveryLogs.csv", &utf8_bom(&ediscovery));
-    let app = |id: &str, t: &str| {
+    // Real Hawk captures write `env_time: null` in every application audit record.
+    let app = |id: &str| {
         ps_json(&json!({
             "Id": id, "Operation": "Consent to application.", "ResultStatus": "Success",
             "Workload": "AzureActiveDirectory", "ClientIP": null, "UserId": "alice@contoso.example",
-            "ActorUPN": "alice@contoso.example", "targetName": "Invoice Viewer", "env_time": t,
+            "ActorUPN": "alice@contoso.example", "targetName": "Invoice Viewer", "env_time": null,
             "correlationId": "f0f0f0f0-0000-4000-8000-000000000001"
         }))
     };
@@ -90,8 +91,8 @@ pub fn hawk3_tree(base: &Path) -> PathBuf {
         "Tenant/Azure_Application_Audit.json",
         &utf16le_bom(&format!(
             "{}\r\n{}\r\n",
-            app(ual::ID_H3_APP_1, "2026-09-02T09:00:00Z"),
-            app(ual::ID_H3_APP_2, "2026-09-02T09:05:00Z")
+            app(ual::ID_H3_APP_1),
+            app(ual::ID_H3_APP_2)
         )),
     );
     write(

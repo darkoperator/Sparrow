@@ -4,7 +4,9 @@ use serde::Serialize;
 use sparrow_core::Case;
 use sparrow_core::discovery::{Registry, discover_collections, list_collection_files};
 use sparrow_core::ingest::parser::ParserRegistry;
-use sparrow_core::ingest::{DEFAULT_MAX_FILE_BYTES, IngestOptions, ingest_path};
+use sparrow_core::ingest::{
+    DEFAULT_MAX_FILE_BYTES, IngestOptions, ingest_collections, no_collections_error,
+};
 use sparrow_core::readers::time::parse_culture;
 use sparrow_core::verify::verify_record;
 use std::path::{Path, PathBuf};
@@ -220,10 +222,7 @@ fn cmd_ingest(
     };
     let collections = discover_collections(path)?;
     if collections.is_empty() {
-        anyhow::bail!(
-            "no Hawk, Microsoft-Extractor-Suite or portal export output found under {}",
-            path.display()
-        );
+        return Err(no_collections_error(path).into());
     }
     let case_abs = absolute_file_path(case_path);
     for c in &collections {
@@ -238,7 +237,7 @@ fn cmd_ingest(
     }
     let mut case = Case::create_or_open(case_path)
         .with_context(|| format!("opening {}", case_path.display()))?;
-    let report = ingest_path(&mut case, path, &ParserRegistry::builtin(), &opts)?;
+    let report = ingest_collections(&mut case, &collections, &ParserRegistry::builtin(), &opts)?;
     if json {
         print_json(&report)?;
     } else {

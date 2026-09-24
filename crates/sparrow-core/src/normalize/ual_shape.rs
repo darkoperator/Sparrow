@@ -163,7 +163,11 @@ pub fn to_audit(
         UalShape::AppAudit => {
             let mut audit = record.clone();
             if get_ci(&audit, "CreationTime").is_none() {
-                if let Some(t) = get_ci(record, "env_time").cloned() {
+                // Hawk writes `env_time: null` in real captures; null or blank is no time.
+                if let Some(t) = get_ci(record, "env_time")
+                    .filter(|t| value_text(t).is_some())
+                    .cloned()
+                {
                     audit.insert("CreationTime".into(), t);
                 }
             }

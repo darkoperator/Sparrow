@@ -35,6 +35,19 @@ impl ArtifactParser for JsonFailsParser {
     }
 }
 
+/// On .json files every record is a parse error; loads lines otherwise.
+struct JsonRecordsFailParser;
+impl ArtifactParser for JsonRecordsFailParser {
+    fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
+        if ctx.rel_path.ends_with(".json") {
+            let span = line_spans(&ctx.text.text)[0];
+            ctx.stats.read += 1;
+            return ctx.parse_error(1, span, "unreadable record");
+        }
+        LinesParser.parse(ctx)
+    }
+}
+
 /// Always reports an unsupported record shape.
 struct LegacyShapeParser;
 impl ArtifactParser for LegacyShapeParser {
@@ -113,6 +126,27 @@ fn csv_is_parsed_when_its_json_twin_fails() {
     assert_eq!(
         row(&report, "Tenant/Consent_Grants.json").status,
         FileStatus::Error
+    );
+    assert_eq!(
+        row(&report, "Tenant/Consent_Grants.csv").status,
+        FileStatus::Parsed
+    );
+}
+
+#[test]
+fn csv_is_parsed_when_every_record_of_its_json_twin_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    fixtures::write(&root, "Tenant/Consent_Grants.json", b"[{\"a\":1}]\n");
+    fixtures::write(&root, "Tenant/Consent_Grants.csv", b"\"a\"\r\n\"1\"\r\n");
+    let parsers = registry(&["hawk.tenant.consent_grants"], || {
+        Box::new(JsonRecordsFailParser)
+    });
+    let (_case, report) = ingest(dir.path(), &parsers);
+    let json = row(&report, "Tenant/Consent_Grants.json");
+    assert_eq!(
+        (json.status, json.records_read, json.records_error),
+        (FileStatus::Parsed, 1, 1)
     );
     assert_eq!(
         row(&report, "Tenant/Consent_Grants.csv").status,

@@ -102,6 +102,15 @@ impl IngestReport {
     }
 }
 
+/// The error for a path under which discovery found no collection.
+pub fn no_collections_error(path: &Path) -> Error {
+    Error::Invalid(format!(
+        "no Hawk, Microsoft-Extractor-Suite or portal export output found under {}",
+        path.display()
+    ))
+}
+
+/// Discover the collections under `path` and ingest them.
 pub fn ingest_path(
     case: &mut Case,
     path: &Path,
@@ -110,13 +119,20 @@ pub fn ingest_path(
 ) -> Result<IngestReport> {
     let collections = discover_collections(path)?;
     if collections.is_empty() {
-        return Err(Error::Invalid(format!(
-            "no Hawk, Microsoft-Extractor-Suite or portal export output found under {}",
-            path.display()
-        )));
+        return Err(no_collections_error(path));
     }
+    ingest_collections(case, &collections, parsers, opts)
+}
+
+/// Ingest already-discovered collections, one after another.
+pub fn ingest_collections(
+    case: &mut Case,
+    collections: &[DiscoveredCollection],
+    parsers: &ParserRegistry,
+    opts: &IngestOptions,
+) -> Result<IngestReport> {
     let mut report = IngestReport::default();
-    for dc in &collections {
+    for dc in collections {
         report
             .collections
             .push(ingest_collection(case, dc, parsers, opts)?);
@@ -163,10 +179,7 @@ fn ingest_collection(
             superseded_by: handled.superseded_by(&f.rel, derived),
         };
         let report = ingest_file(case, &job, parsers, opts)?;
-        if matches!(
-            report.status,
-            FileStatus::Parsed | FileStatus::DuplicateFile
-        ) {
+        if supersedes_counterparts(&report) {
             handled.insert(&f.rel);
         }
         files.push(report);
@@ -195,6 +208,19 @@ fn ingest_collection(
         root,
         files,
     })
+}
+
+/// A file makes its CSV twin / derived counterpart redundant only when it was already
+/// ingested or actually yielded records; a file whose every record failed does not
+/// (spec A.4: "if the JSON is missing or fails").
+fn supersedes_counterparts(report: &FileReport) -> bool {
+    match report.status {
+        FileStatus::DuplicateFile => true,
+        FileStatus::Parsed => {
+            report.records_read == 0 || report.records_loaded + report.records_duplicate > 0
+        }
+        _ => false,
+    }
 }
 
 fn upsert_collection(conn: &Connection, dc: &DiscoveredCollection, root: &str) -> Result<i64> {
