@@ -1,0 +1,89 @@
+//! Forward-only schema migrations for case databases.
+
+use crate::{Error, Result};
+use duckdb::Connection;
+
+pub struct Migration {
+    pub version: u32,
+    pub name: &'static str,
+    pub sql: &'static str,
+}
+
+pub const MIGRATIONS: &[Migration] = &[Migration {
+    version: 1,
+    name: "core_provenance",
+    sql: include_str!("../../migrations/0001_core_provenance.sql"),
+}];
+
+pub fn latest_version() -> u32 {
+    MIGRATIONS.last().map(|m| m.version).unwrap_or(0)
+}
+
+pub fn current_version(conn: &Connection) -> Result<u32> {
+    let exists: bool = conn.query_row(
+        "SELECT count(*) > 0 FROM duckdb_tables() WHERE schema_name = 'main' AND table_name = 'schema_migrations'",
+        [],
+        |r| r.get(0),
+    )?;
+    if !exists {
+        return Ok(0);
+    }
+    let v: Option<i64> = conn.query_row(
+        "SELECT CAST(max(version) AS BIGINT) FROM schema_migrations",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(v.unwrap_or(0) as u32)
+}
+
+/// Apply pending migrations. Fails if the database is newer than this build.
+pub fn migrate(conn: &Connection) -> Result<u32> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name VARCHAR NOT NULL,
+            applied_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp
+        );",
+    )?;
+    let current = current_version(conn)?;
+    let latest = latest_version();
+    if current > latest {
+        return Err(Error::SchemaTooNew {
+            db: current,
+            supported: latest,
+        });
+    }
+    for m in MIGRATIONS.iter().filter(|m| m.version > current) {
+        let batch = format!(
+            "BEGIN TRANSACTION;\n{}\nINSERT INTO schema_migrations (version, name) VALUES ({}, '{}');\nCOMMIT;",
+            m.sql, m.version, m.name
+        );
+        if let Err(source) = conn.execute_batch(&batch) {
+            let _ = conn.execute_batch("ROLLBACK;");
+            return Err(Error::Migration {
+                version: m.version,
+                source,
+            });
+        }
+    }
+    Ok(latest)
+}
+
+/// Check a database opened read-only is exactly at this build's schema version.
+pub fn check_readable(conn: &Connection) -> Result<u32> {
+    let current = current_version(conn)?;
+    let latest = latest_version();
+    if current > latest {
+        return Err(Error::SchemaTooNew {
+            db: current,
+            supported: latest,
+        });
+    }
+    if current < latest {
+        return Err(Error::SchemaOutdated {
+            db: current,
+            supported: latest,
+        });
+    }
+    Ok(current)
+}
