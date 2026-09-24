@@ -299,10 +299,7 @@ fn path_without_collections_is_an_error() {
     let mut case = Case::in_memory().unwrap();
     let err =
         ingest_path(&mut case, dir.path(), &parsers(), &IngestOptions::default()).unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("no Hawk or Microsoft-Extractor-Suite output")
-    );
+    assert!(err.to_string().contains("no Hawk"));
 }
 
 #[test]
@@ -714,4 +711,58 @@ fn status_row<'r>(report: &'r IngestReport, rel: &str) -> &'r sparrow_core::inge
         .flat_map(|c| &c.files)
         .find(|f| f.rel_path == rel)
         .unwrap_or_else(|| panic!("{rel} not in report"))
+}
+
+#[test]
+fn portal_folder_ingests_as_portal_export_collection() {
+    let dir = tempfile::tempdir().unwrap();
+    let guid = "0f8fad5b-d9cb-469f-a165-70867728950e.csv";
+    fixtures::write(
+        &dir.path().join("exports"),
+        guid,
+        b"RecordId,CreationDate,RecordType,Operation,UserId,AuditData\r\n",
+    );
+    let mut case = Case::in_memory().unwrap();
+    let report = ingest_path(
+        &mut case,
+        dir.path(),
+        &ParserRegistry::empty(),
+        &IngestOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        report.collections[0].tool,
+        sparrow_core::discovery::Tool::PortalExport
+    );
+    let f = status_row(&report, guid);
+    assert_eq!(f.artifact_id.as_deref(), Some("portal.ual"));
+    assert_eq!(f.status, FileStatus::NotSupported);
+    let tool: String = case
+        .conn()
+        .query_row("SELECT CAST(tool AS VARCHAR) FROM collections", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(tool, "portal_export");
+}
+
+#[test]
+fn hawk_folder_stamp_is_flagged_as_assumed_utc() {
+    let dir = tempfile::tempdir().unwrap();
+    fixtures::hawk_tree(dir.path());
+    let mut case = Case::in_memory().unwrap();
+    ingest_path(
+        &mut case,
+        dir.path(),
+        &ParserRegistry::empty(),
+        &IngestOptions::default(),
+    )
+    .unwrap();
+    let assumed: bool = case
+        .conn()
+        .query_row("SELECT collected_at_tz_assumed FROM collections", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert!(assumed);
 }

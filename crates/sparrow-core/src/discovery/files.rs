@@ -41,12 +41,16 @@ pub struct CollectionListing {
     pub errors: Vec<EntryError>,
 }
 
-/// All regular files under `root`, sorted by path, excluding OS junk files. An unreadable
-/// entry below the root is reported in `errors` and the walk continues; only an unreadable
-/// root is fatal.
-pub fn list_collection_files(root: &Path) -> Result<CollectionListing> {
+/// All regular files under `root` (only those directly in `root` when `shallow`), sorted by
+/// path, excluding OS junk files. An unreadable entry below the root is reported in `errors`
+/// and the walk continues; only an unreadable root is fatal.
+pub fn list_collection_files(root: &Path, shallow: bool) -> Result<CollectionListing> {
     let mut out = CollectionListing::default();
-    for entry in walkdir::WalkDir::new(root).sort_by_file_name() {
+    let max_depth = if shallow { 1 } else { usize::MAX };
+    for entry in walkdir::WalkDir::new(root)
+        .max_depth(max_depth)
+        .sort_by_file_name()
+    {
         let entry = match entry {
             Ok(entry) => entry,
             Err(e) if e.depth() == 0 => {

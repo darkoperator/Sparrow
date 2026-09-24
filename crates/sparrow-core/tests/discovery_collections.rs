@@ -1,4 +1,4 @@
-use sparrow_core::discovery::{Tool, discover_collections};
+use sparrow_core::discovery::{Tool, discover_collections, list_collection_files};
 use sparrow_core::fixtures;
 
 #[test]
@@ -59,11 +59,98 @@ fn file_path_is_rejected() {
 fn detects_hawk_root_with_literal_backslash_tenant() {
     let dir = tempfile::tempdir().unwrap();
     let hawk_root = dir.path().join("Hawk_Foo_20260101_000000");
-    fixtures::write(&hawk_root, "\\Tenant/x.csv", b"data");
+    fixtures::write(&hawk_root, "\\Tenant/Consent_Grants.csv", b"data");
     let found = discover_collections(dir.path()).unwrap();
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].tool, Tool::Hawk);
     assert_eq!(found[0].root, hawk_root);
     assert_eq!(found[0].tenant_hint.as_deref(), Some("Foo"));
     assert_eq!(found[0].started_hint.as_deref(), Some("20260101_000000"));
+}
+
+const PURVIEW_HEADER: &str = "RecordId,CreationDate,RecordType,Operation,UserId,AuditData,AssociatedAdminUnits,AssociatedAdminUnitsNames\r\n";
+const GUID_CSV: &str = "0f8fad5b-d9cb-469f-a165-70867728950e.csv";
+
+#[test]
+fn hawk_capture_without_log_is_found_by_tenant_artifacts() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("capture b");
+    fixtures::write(&root, "Tenant/Consent_Grants.json", b"[]");
+    let found = discover_collections(dir.path()).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].tool, Tool::Hawk);
+    assert_eq!(found[0].root, root);
+    assert_eq!(found[0].tenant_hint, None);
+    assert_eq!(found[0].started_hint, None);
+    assert!(!found[0].shallow);
+}
+
+#[test]
+fn hawk_capture_is_found_by_a_user_folder_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("x");
+    fixtures::write(
+        &root,
+        "alice@contoso.example/InboxRules_alice@contoso.example.json",
+        b"[]",
+    );
+    let found = discover_collections(dir.path()).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].root, root);
+}
+
+#[test]
+fn capture_folder_named_like_an_upn_is_the_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("case_bob@contoso.example");
+    fixtures::write(&root, "Hawk.log", fixtures::HAWK_LOG.as_bytes());
+    fixtures::write(&root, "Tenant/Consent_Grants.json", b"[]");
+    fixtures::write(
+        &root,
+        "bob@contoso.example/InboxRules_bob@contoso.example.json",
+        b"[]",
+    );
+    let found = discover_collections(dir.path()).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].root, root);
+}
+
+#[test]
+fn tenant_folder_with_only_unknown_files_is_not_hawk() {
+    let dir = tempfile::tempdir().unwrap();
+    fixtures::write(&dir.path().join("y"), "Tenant/notes.txt", b"hi");
+    assert!(discover_collections(dir.path()).unwrap().is_empty());
+}
+
+#[test]
+fn standalone_portal_folder_is_a_portal_collection() {
+    let dir = tempfile::tempdir().unwrap();
+    let exports = dir.path().join("exports");
+    fixtures::write(&exports, GUID_CSV, PURVIEW_HEADER.as_bytes());
+    fixtures::write(&exports, "notes.txt", b"hi");
+    let hawk = fixtures::hawk_tree(&exports.join("nested"));
+    let found = discover_collections(dir.path()).unwrap();
+    assert_eq!(found.len(), 2);
+    assert_eq!(found[0].tool, Tool::PortalExport);
+    assert_eq!(found[0].root, exports);
+    assert!(found[0].shallow);
+    assert_eq!(found[1].tool, Tool::Hawk);
+    assert_eq!(found[1].root, hawk);
+    let rels: Vec<String> = list_collection_files(&exports, true)
+        .unwrap()
+        .files
+        .into_iter()
+        .map(|f| f.rel)
+        .collect();
+    assert_eq!(rels, vec![GUID_CSV.to_string(), "notes.txt".to_string()]);
+}
+
+#[test]
+fn portal_file_inside_a_capture_stays_in_the_capture() {
+    let dir = tempfile::tempdir().unwrap();
+    let hawk = fixtures::hawk_tree(dir.path());
+    fixtures::write(&hawk, GUID_CSV, PURVIEW_HEADER.as_bytes());
+    let found = discover_collections(dir.path()).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].tool, Tool::Hawk);
 }

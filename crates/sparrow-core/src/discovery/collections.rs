@@ -1,5 +1,6 @@
 //! Locate Hawk and Microsoft-Extractor-Suite collection roots under a path.
 
+use crate::discovery::registry::Registry;
 use crate::{Error, Result};
 use regex::Regex;
 use serde::Serialize;
@@ -33,6 +34,8 @@ pub struct DiscoveredCollection {
     pub root: PathBuf,
     pub tenant_hint: Option<String>,
     pub started_hint: Option<String>,
+    /// List only the files directly in `root` (portal export folders).
+    pub shallow: bool,
 }
 
 /// Top-level component folders written by Microsoft-Extractor-Suite (`Init-OutputDir`).
@@ -104,8 +107,18 @@ fn visit(dir: &Path, depth: usize, found: &mut Vec<DiscoveredCollection>) {
             root: dir.to_path_buf(),
             tenant_hint: None,
             started_hint: None,
+            shallow: false,
         });
         return;
+    }
+    if has_portal_files(dir) {
+        found.push(DiscoveredCollection {
+            tool: Tool::PortalExport,
+            root: dir.to_path_buf(),
+            tenant_hint: None,
+            started_hint: None,
+            shallow: true,
+        });
     }
     if depth >= MAX_DEPTH {
         return;
@@ -115,30 +128,94 @@ fn visit(dir: &Path, depth: usize, found: &mut Vec<DiscoveredCollection>) {
     }
 }
 
+/// Hawk roots are recognized by content (Addendum A.2). The `Hawk_<tenant>_<ts>` folder
+/// name, when present, only supplies tenant and timestamp hints.
 fn as_hawk_root(dir: &Path) -> Option<DiscoveredCollection> {
-    let name = dir.file_name()?.to_str()?;
-    let caps = re_hawk_root().captures(name)?;
-    let looks_like_hawk = dir.join("Hawk.log").is_file()
-        || dir.join("Tenant").is_dir()
-        || has_literal_backslash_tenant(dir);
-    if !looks_like_hawk {
+    let is_hawk =
+        dir.join("Hawk.log").is_file() || has_hawk_tenant_dir(dir) || has_hawk_user_dir(dir);
+    if !is_hawk {
         return None;
     }
+    let caps = dir_name(dir).and_then(|n| re_hawk_root().captures(n));
     Some(DiscoveredCollection {
         tool: Tool::Hawk,
         root: dir.to_path_buf(),
-        tenant_hint: Some(caps[1].to_string()),
-        started_hint: Some(caps[2].to_string()),
+        tenant_hint: caps.as_ref().map(|c| c[1].to_string()),
+        started_hint: caps.as_ref().map(|c| c[2].to_string()),
+        shallow: false,
     })
 }
 
-/// PowerShell 7 on macOS/Linux creates subdirs with literal backslash in name: `\Tenant`.
-fn has_literal_backslash_tenant(dir: &Path) -> bool {
+fn dir_name(p: &Path) -> Option<&str> {
+    p.file_name().and_then(|n| n.to_str())
+}
+
+/// `Tenant`, or `\Tenant` as PowerShell 7 on macOS/Linux names it.
+fn is_tenant_dir_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("Tenant") || name.eq_ignore_ascii_case("\\Tenant")
+}
+
+/// A Tenant folder holding at least one known Hawk tenant artifact.
+fn has_hawk_tenant_dir(dir: &Path) -> bool {
+    subdirs(dir)
+        .iter()
+        .filter(|d| dir_name(d).is_some_and(is_tenant_dir_name))
+        .any(|d| {
+            file_names(d).iter().any(|f| {
+                Registry::builtin()
+                    .classify(Tool::Hawk, &format!("Tenant/{f}"))
+                    .is_some_and(|c| {
+                        c.artifact_id.starts_with("hawk.tenant.")
+                            || c.artifact_id == "hawk.investigate_file"
+                    })
+            })
+        })
+}
+
+/// A `<user>@<domain>` folder holding at least one known Hawk per-user artifact. A folder
+/// that is itself a capture (own Hawk.log or Tenant folder) is not a user folder.
+fn has_hawk_user_dir(dir: &Path) -> bool {
     subdirs(dir).iter().any(|d| {
-        d.file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n == "\\Tenant")
+        let Some(name) = dir_name(d) else {
+            return false;
+        };
+        if !name.contains('@')
+            || d.join("Hawk.log").is_file()
+            || subdirs(d)
+                .iter()
+                .any(|s| dir_name(s).is_some_and(is_tenant_dir_name))
+        {
+            return false;
+        }
+        file_names(d).iter().any(|f| {
+            Registry::builtin()
+                .classify(Tool::Hawk, &format!("{name}/{f}"))
+                .is_some_and(|c| c.artifact_id.starts_with("hawk.user."))
+        })
     })
+}
+
+/// A folder directly containing a CSV recognized as a portal export by its header.
+fn has_portal_files(dir: &Path) -> bool {
+    file_names(dir).iter().any(|f| {
+        Registry::builtin()
+            .classify_file(Tool::PortalExport, f, &dir.join(f))
+            .is_some()
+    })
+}
+
+/// Names of the readable regular files directly in `dir`, sorted.
+fn file_names(dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_file())
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .collect();
+    out.sort();
+    out
 }
 
 fn is_invictus_root(dir: &Path) -> bool {

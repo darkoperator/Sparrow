@@ -5,8 +5,8 @@ pub mod context;
 pub mod parser;
 
 use crate::discovery::{
-    Classification, DiscoveredCollection, FileFormat, Registry, Tool, canonical_root_string,
-    discover_collections, format_from_path, list_collection_files,
+    Classification, DiscoveredCollection, FileFormat, Registry, SNIFF_BYTES, Tool,
+    canonical_root_string, discover_collections, format_from_path, list_collection_files,
 };
 use crate::ingest::context::{FileStats, ParseContext};
 use crate::ingest::parser::ParserRegistry;
@@ -108,7 +108,7 @@ pub fn ingest_path(
     let collections = discover_collections(path)?;
     if collections.is_empty() {
         return Err(Error::Invalid(format!(
-            "no Hawk or Microsoft-Extractor-Suite output found under {}",
+            "no Hawk, Microsoft-Extractor-Suite or portal export output found under {}",
             path.display()
         )));
     }
@@ -129,7 +129,7 @@ fn ingest_collection(
 ) -> Result<CollectionReport> {
     let root = canonical_root_string(&dc.root);
     let collection_id = upsert_collection(case.conn(), dc, &root)?;
-    let listing = list_collection_files(&dc.root)?;
+    let listing = list_collection_files(&dc.root, dc.shallow)?;
     let mut files = Vec::new();
     for f in &listing.files {
         files.push(ingest_file(
@@ -185,9 +185,9 @@ fn upsert_collection(conn: &Connection, dc: &DiscoveredCollection, root: &str) -
         .and_then(|s| parse_timestamp(s, None).ok())
         .map(|t| t.rfc3339());
     let id = conn.query_row(
-        "INSERT INTO collections (tool, root_path, tenant_name_reported, collected_at, sparrow_version)
-         VALUES (?, ?, ?, CAST(? AS TIMESTAMPTZ), ?) RETURNING collection_id",
-        params![dc.tool.as_str(), root, dc.tenant_hint, collected_at, VERSION],
+        "INSERT INTO collections (tool, root_path, tenant_name_reported, collected_at, collected_at_tz_assumed, sparrow_version)
+         VALUES (?, ?, ?, CAST(? AS TIMESTAMPTZ), ?, ?) RETURNING collection_id",
+        params![dc.tool.as_str(), root, dc.tenant_hint, collected_at, collected_at.is_some(), VERSION],
         |r| r.get(0),
     )?;
     Ok(id)
@@ -306,12 +306,13 @@ fn ingest_file(
     parsers: &ParserRegistry,
     opts: &IngestOptions,
 ) -> Result<FileReport> {
-    let class: Option<Classification> = Registry::builtin().classify(tool, rel);
+    let reg = Registry::builtin();
+    let path_class: Option<Classification> = reg.classify_with_head(tool, rel, None);
     let mut nf = NewFile {
         collection_id,
         rel_path: rel,
-        artifact_id: class.as_ref().map(|c| c.artifact_id),
-        subject: class.as_ref().and_then(|c| c.subject.as_deref()),
+        artifact_id: path_class.as_ref().map(|c| c.artifact_id),
+        subject: path_class.as_ref().and_then(|c| c.subject.as_deref()),
         format: format_from_path(rel),
         encoding: None,
         size: 0,
@@ -349,6 +350,10 @@ fn ingest_file(
     };
     let sha = hex::encode(Sha256::digest(&raw));
     nf.sha256 = &sha;
+    let class: Option<Classification> =
+        reg.classify_with_head(tool, rel, Some(&raw[..raw.len().min(SNIFF_BYTES)]));
+    nf.artifact_id = class.as_ref().map(|c| c.artifact_id);
+    nf.subject = class.as_ref().and_then(|c| c.subject.as_deref());
 
     // A row for this exact collection + rel_path + sha256 with status `parsed`,
     // `duplicate_file` or `skipped_superseded` means this content was already handled

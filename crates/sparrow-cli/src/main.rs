@@ -141,12 +141,12 @@ fn cmd_discover(path: &Path, json: bool) -> Result<ExitCode> {
         collections: Vec::new(),
     };
     for dc in discover_collections(path)? {
-        let listing = list_collection_files(&dc.root)?;
+        let listing = list_collection_files(&dc.root, dc.shallow)?;
         let mut files: Vec<DiscoverFile> = listing
             .files
             .into_iter()
             .map(|f| {
-                let c = Registry::builtin().classify(dc.tool, &f.rel);
+                let c = Registry::builtin().classify_file(dc.tool, &f.rel, &f.abs);
                 DiscoverFile {
                     artifact_id: c.as_ref().map(|c| c.artifact_id),
                     target: c.as_ref().map(|c| c.target),
