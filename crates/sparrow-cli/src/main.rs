@@ -106,6 +106,9 @@ struct DiscoverFile {
     target: Option<&'static str>,
     derived: bool,
     subject: Option<String>,
+    /// Why the entry could not be read (unreadable directory, ...); absent for readable files.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -127,7 +130,9 @@ fn cmd_discover(path: &Path, json: bool) -> Result<ExitCode> {
         collections: Vec::new(),
     };
     for dc in discover_collections(path)? {
-        let files = list_collection_files(&dc.root)?
+        let listing = list_collection_files(&dc.root)?;
+        let mut files: Vec<DiscoverFile> = listing
+            .files
             .into_iter()
             .map(|f| {
                 let c = Registry::builtin().classify(dc.tool, &f.rel);
@@ -137,9 +142,18 @@ fn cmd_discover(path: &Path, json: bool) -> Result<ExitCode> {
                     derived: c.as_ref().is_some_and(|c| c.derived),
                     subject: c.and_then(|c| c.subject),
                     rel_path: f.rel,
+                    error: None,
                 }
             })
             .collect();
+        files.extend(listing.errors.into_iter().map(|e| DiscoverFile {
+            rel_path: e.rel,
+            artifact_id: None,
+            target: None,
+            derived: false,
+            subject: None,
+            error: Some(e.message),
+        }));
         out.collections.push(DiscoverCollection {
             tool: dc.tool,
             root: dc.root.display().to_string(),
@@ -154,7 +168,10 @@ fn cmd_discover(path: &Path, json: bool) -> Result<ExitCode> {
         for c in &out.collections {
             println!("{} collection: {}", c.tool.as_str(), c.root);
             for f in &c.files {
-                println!("  {:<40} {}", f.artifact_id.unwrap_or("-"), f.rel_path);
+                match &f.error {
+                    Some(err) => println!("  {:<40} {}  [{err}]", "ERROR", f.rel_path),
+                    None => println!("  {:<40} {}", f.artifact_id.unwrap_or("-"), f.rel_path),
+                }
             }
         }
     }

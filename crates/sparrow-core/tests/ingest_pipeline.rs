@@ -572,3 +572,146 @@ fn lossy_decoding_is_reported_as_a_file_warning() {
         .unwrap();
     assert!(stored.contains("lossy"), "{stored}");
 }
+
+#[test]
+fn repeated_early_errors_leave_one_row_after_success() {
+    let dir = tempfile::tempdir().unwrap();
+    fixtures::hawk_tree(dir.path());
+    let mut case = Case::in_memory().unwrap();
+    let tiny = IngestOptions {
+        max_file_bytes: 10,
+        ..IngestOptions::default()
+    };
+    for _ in 0..2 {
+        let r = ingest_path(&mut case, dir.path(), &parsers(), &tiny).unwrap();
+        assert_eq!(status_of(&r, "Hawk.log"), FileStatus::Error);
+        assert_eq!(
+            count(
+                &case,
+                "SELECT count(*) FROM source_files WHERE rel_path = 'Hawk.log'"
+            ),
+            1
+        );
+    }
+    let r = ingest_path(&mut case, dir.path(), &parsers(), &IngestOptions::default()).unwrap();
+    assert_eq!(status_of(&r, "Hawk.log"), FileStatus::Parsed);
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM source_files WHERE rel_path = 'Hawk.log'"
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM source_files WHERE rel_path = 'Hawk.log' AND status = 'parsed'"
+        ),
+        1
+    );
+}
+
+#[test]
+fn identical_files_for_different_subjects_are_both_parsed() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fixtures::hawk_tree(dir.path());
+    let body = b"[]";
+    fixtures::write(&root, "bob@contoso.example/InboxRules_x.json", body);
+    fixtures::write(&root, "carol@contoso.example/InboxRules_x.json", body);
+    let mut r = ParserRegistry::empty();
+    r.register("hawk.user.inbox_rules", Box::new(LinesParser));
+    let mut case = Case::in_memory().unwrap();
+    let report = ingest_path(&mut case, dir.path(), &r, &IngestOptions::default()).unwrap();
+    for rel in [
+        "bob@contoso.example/InboxRules_x.json",
+        "carol@contoso.example/InboxRules_x.json",
+    ] {
+        assert_eq!(status_of(&report, rel), FileStatus::Parsed, "{rel}");
+    }
+    let subjects = count(
+        &case,
+        "SELECT count(DISTINCT subject) FROM source_files WHERE rel_path LIKE '%/InboxRules_x.json'",
+    );
+    assert_eq!(subjects, 2);
+}
+
+#[test]
+fn record_errors_make_the_report_have_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    fixtures::hawk_tree(dir.path());
+    let mut r = ParserRegistry::empty();
+    r.register("hawk.log", Box::new(PartiallyFailingParser));
+    let mut case = Case::in_memory().unwrap();
+    let report = ingest_path(&mut case, dir.path(), &r, &IngestOptions::default()).unwrap();
+    assert_eq!(status_of(&report, "Hawk.log"), FileStatus::Parsed);
+    assert!(report.has_errors());
+}
+
+#[test]
+fn clean_ingest_has_no_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    fixtures::hawk_tree(dir.path());
+    let mut r = ParserRegistry::empty();
+    r.register("hawk.log", Box::new(LinesParser));
+    let mut case = Case::in_memory().unwrap();
+    let report = ingest_path(&mut case, dir.path(), &r, &IngestOptions::default()).unwrap();
+    assert!(!report.has_errors());
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_directory_is_an_error_row_and_ingest_continues() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = fixtures::hawk_tree(dir.path());
+    let locked = root.join("alice@contoso.example");
+    // An unreadable folder next to the collection must not stop discovery either.
+    let sibling = dir.path().join("unrelated");
+    std::fs::create_dir(&sibling).unwrap();
+    let original = std::fs::metadata(&locked).unwrap().permissions();
+    let lock = |mode| {
+        for d in [&locked, &sibling] {
+            std::fs::set_permissions(d, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+    };
+    lock(0o000);
+    if std::fs::read_dir(&locked).is_ok() {
+        lock(original.mode());
+        eprintln!(
+            "skipping unreadable_directory_is_an_error_row_and_ingest_continues: chmod 000 directory is still readable (running as root?)"
+        );
+        return;
+    }
+    let mut case = Case::in_memory().unwrap();
+    let result = ingest_path(&mut case, dir.path(), &parsers(), &IngestOptions::default());
+    lock(original.mode());
+    let report = result.unwrap();
+    assert_eq!(status_of(&report, "Hawk.log"), FileStatus::Parsed);
+    let f = status_row(&report, "alice@contoso.example");
+    assert_eq!(f.status, FileStatus::Error);
+    assert!(
+        f.warnings
+            .iter()
+            .any(|w| w.contains("alice@contoso.example")),
+        "{:?}",
+        f.warnings
+    );
+    assert!(report.has_errors());
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM source_files WHERE rel_path = 'alice@contoso.example' AND status = 'error' AND size_bytes = 0 AND sha256 = ''"
+        ),
+        1
+    );
+}
+
+fn status_row<'r>(report: &'r IngestReport, rel: &str) -> &'r sparrow_core::ingest::FileReport {
+    report
+        .collections
+        .iter()
+        .flat_map(|c| &c.files)
+        .find(|f| f.rel_path == rel)
+        .unwrap_or_else(|| panic!("{rel} not in report"))
+}

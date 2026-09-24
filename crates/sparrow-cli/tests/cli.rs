@@ -195,3 +195,41 @@ fn human_output_for_ingest_mentions_statuses() {
         .stdout(contains("parsed"))
         .stdout(contains("not_supported"));
 }
+
+#[cfg(unix)]
+#[test]
+fn discover_lists_unreadable_directories_as_errors() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = fixtures::hawk_tree(dir.path());
+    let locked = root.join("alice@contoso.example");
+    let original = std::fs::metadata(&locked).unwrap().permissions();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read_dir(&locked).is_ok() {
+        std::fs::set_permissions(&locked, original).unwrap();
+        eprintln!("skipping: chmod 000 directory is still readable (running as root?)");
+        return;
+    }
+    let out = sparrow()
+        .args(["--json", "discover"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    std::fs::set_permissions(&locked, original).unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let files = v["collections"][0]["files"].as_array().unwrap();
+    let e = files
+        .iter()
+        .find(|f| f["rel_path"] == "alice@contoso.example")
+        .unwrap();
+    assert!(e["artifact_id"].is_null());
+    assert!(
+        e["error"]
+            .as_str()
+            .unwrap()
+            .contains("alice@contoso.example")
+    );
+    assert!(files.iter().any(|f| f["rel_path"] == "Hawk.log"));
+}

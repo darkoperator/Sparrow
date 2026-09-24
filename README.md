@@ -19,5 +19,6 @@ sparrow schema --case case.duckdb                 # tables and column descriptio
 sparrow verify collection_log 12:8 --case case.duckdb [--root /moved/evidence]
 ```
 
-Add `--json` to any command for machine-readable output. `ingest` and `verify` exit with code 2 when a file
-failed or a record no longer matches its source.
+Add `--json` to any command for machine-readable output. `ingest` exits with code 2 when it completed but a file
+failed, a record could not be parsed, or a file's record counts did not reconcile; `verify` exits with code 2 when
+a record no longer matches its source.

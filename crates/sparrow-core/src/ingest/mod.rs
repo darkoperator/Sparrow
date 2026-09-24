@@ -86,11 +86,16 @@ pub struct IngestReport {
 }
 
 impl IngestReport {
+    /// True when any file failed, any record failed to parse, or a file's record counts
+    /// did not reconcile (spec §11: exit code 2).
     pub fn has_errors(&self) -> bool {
-        self.collections
-            .iter()
-            .flat_map(|c| &c.files)
-            .any(|f| f.status == FileStatus::Error)
+        self.collections.iter().flat_map(|c| &c.files).any(|f| {
+            f.status == FileStatus::Error
+                || f.records_error > 0
+                || f.warnings
+                    .iter()
+                    .any(|w| w.starts_with("reconciliation mismatch"))
+        })
     }
 }
 
@@ -124,8 +129,9 @@ fn ingest_collection(
 ) -> Result<CollectionReport> {
     let root = canonical_root_string(&dc.root);
     let collection_id = upsert_collection(case.conn(), dc, &root)?;
+    let listing = list_collection_files(&dc.root)?;
     let mut files = Vec::new();
-    for f in list_collection_files(&dc.root)? {
+    for f in &listing.files {
         files.push(ingest_file(
             case,
             collection_id,
@@ -134,6 +140,24 @@ fn ingest_collection(
             &f.rel,
             parsers,
             opts,
+        )?);
+    }
+    for err in &listing.errors {
+        let nf = NewFile {
+            collection_id,
+            rel_path: &err.rel,
+            artifact_id: None,
+            subject: None,
+            format: FileFormat::Unknown,
+            encoding: None,
+            size: 0,
+            sha256: "",
+        };
+        files.push(record_simple(
+            case,
+            &nf,
+            FileStatus::Error,
+            vec![err.message.clone()],
         )?);
     }
     Ok(CollectionReport {
@@ -173,6 +197,8 @@ struct NewFile<'a> {
     collection_id: i64,
     rel_path: &'a str,
     artifact_id: Option<&'static str>,
+    /// User UPN / IP / message / operation taken from the path, if the artifact has one.
+    subject: Option<&'a str>,
     format: FileFormat,
     encoding: Option<&'static str>,
     size: u64,
@@ -191,12 +217,13 @@ fn insert_file_row(
         Some(serde_json::to_string(warnings).expect("strings serialize"))
     };
     let id = conn.query_row(
-        "INSERT INTO source_files (collection_id, rel_path, artifact_type, format, encoding, size_bytes, sha256, status, warnings)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON)) RETURNING file_id",
+        "INSERT INTO source_files (collection_id, rel_path, artifact_type, subject, format, encoding, size_bytes, sha256, status, warnings)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON)) RETURNING file_id",
         params![
             nf.collection_id,
             nf.rel_path,
             nf.artifact_id,
+            nf.subject,
             nf.format.as_str(),
             nf.encoding,
             nf.size as i64,
@@ -229,13 +256,37 @@ fn report_for(
     }
 }
 
+/// Delete rows of earlier ingests of this collection + rel_path that never gained (or lost
+/// through rollback) their provenance, so the file's new outcome replaces them: every
+/// `error` row (whatever its sha256, which is empty when the file could not be read or was
+/// too large), and `not_supported` / `unrecognized` rows for the same content.
+fn delete_stale_rows(conn: &Connection, nf: &NewFile) -> Result<()> {
+    const STALE: &str = "collection_id = ? AND rel_path = ?
+        AND (status = 'error' OR (status IN ('not_supported', 'unrecognized') AND sha256 = ?))";
+    conn.execute(
+        &format!(
+            "DELETE FROM parse_errors WHERE file_id IN (SELECT file_id FROM source_files WHERE {STALE})"
+        ),
+        params![nf.collection_id, nf.rel_path, nf.sha256],
+    )?;
+    conn.execute(
+        &format!("DELETE FROM source_files WHERE {STALE}"),
+        params![nf.collection_id, nf.rel_path, nf.sha256],
+    )?;
+    Ok(())
+}
+
+/// Replace stale rows with one status row, in one transaction.
 fn record_simple(
-    conn: &Connection,
+    case: &mut Case,
     nf: &NewFile,
     status: FileStatus,
     warnings: Vec<String>,
 ) -> Result<FileReport> {
-    let id = insert_file_row(conn, nf, status, &warnings)?;
+    let tx = case.conn_mut().transaction()?;
+    delete_stale_rows(&tx, nf)?;
+    let id = insert_file_row(&tx, nf, status, &warnings)?;
+    tx.commit()?;
     Ok(report_for(
         nf,
         Some(id),
@@ -260,6 +311,7 @@ fn ingest_file(
         collection_id,
         rel_path: rel,
         artifact_id: class.as_ref().map(|c| c.artifact_id),
+        subject: class.as_ref().and_then(|c| c.subject.as_deref()),
         format: format_from_path(rel),
         encoding: None,
         size: 0,
@@ -269,7 +321,7 @@ fn ingest_file(
         Ok(m) => m.len(),
         Err(e) => {
             return record_simple(
-                case.conn(),
+                case,
                 &nf,
                 FileStatus::Error,
                 vec![format!("cannot stat file: {e}")],
@@ -282,13 +334,13 @@ fn ingest_file(
             "file is {size} bytes, above the {} byte limit; raise --max-file-size to ingest it",
             opts.max_file_bytes
         );
-        return record_simple(case.conn(), &nf, FileStatus::Error, vec![msg]);
+        return record_simple(case, &nf, FileStatus::Error, vec![msg]);
     }
     let raw = match std::fs::read(abs) {
         Ok(b) => b,
         Err(e) => {
             return record_simple(
-                case.conn(),
+                case,
                 &nf,
                 FileStatus::Error,
                 vec![format!("cannot read file: {e}")],
@@ -298,65 +350,59 @@ fn ingest_file(
     let sha = hex::encode(Sha256::digest(&raw));
     nf.sha256 = &sha;
 
-    // Rows already recorded for this exact collection + rel_path + sha256. A row with status
-    // `parsed`, `duplicate_file` or `skipped_superseded` means this content was already handled
-    // successfully: report it as a duplicate. A row with status `error`, `not_supported` or
-    // `unrecognized` never gained provenance (or, for `error`, its provenance was rolled back),
-    // so it is stale and this file is retried from scratch: the stale row (and any of its
-    // parse_errors, though those statuses never produce any) is deleted first.
-    let existing_rows: Vec<(i64, String)> = {
-        let mut stmt = case.conn().prepare(
-            "SELECT file_id, CAST(status AS VARCHAR) FROM source_files
-             WHERE collection_id = ? AND rel_path = ? AND sha256 = ? ORDER BY file_id",
-        )?;
-        stmt.query_map(params![collection_id, rel, &sha], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?
-    };
-    if let Some((existing_id, _)) = existing_rows.iter().find(|(_, status)| {
-        matches!(
-            status.as_str(),
-            "parsed" | "duplicate_file" | "skipped_superseded"
+    // A row for this exact collection + rel_path + sha256 with status `parsed`,
+    // `duplicate_file` or `skipped_superseded` means this content was already handled
+    // successfully: report it as a duplicate (and drop any stale error rows left by
+    // failed attempts). Otherwise the file is (re)tried from scratch; stale rows of earlier
+    // attempts (see `delete_stale_rows`) are replaced in the same transaction as the new row.
+    let already: Option<i64> = case
+        .conn()
+        .query_row(
+            "SELECT file_id FROM source_files
+             WHERE collection_id = ? AND rel_path = ? AND sha256 = ?
+               AND status IN ('parsed', 'duplicate_file', 'skipped_superseded')
+             ORDER BY file_id LIMIT 1",
+            params![collection_id, rel, &sha],
+            |r| r.get(0),
         )
-    }) {
+        .optional()?;
+    if let Some(existing_id) = already {
+        let tx = case.conn_mut().transaction()?;
+        delete_stale_rows(&tx, &nf)?;
+        tx.commit()?;
         return Ok(report_for(
             &nf,
-            Some(*existing_id),
+            Some(existing_id),
             FileStatus::DuplicateFile,
             FileStats::default(),
             vec!["already ingested".into()],
         ));
     }
-    for (stale_id, _) in &existing_rows {
-        case.conn().execute(
-            "DELETE FROM parse_errors WHERE file_id = ?",
-            params![stale_id],
-        )?;
-        case.conn().execute(
-            "DELETE FROM source_files WHERE file_id = ?",
-            params![stale_id],
-        )?;
-    }
+    // Byte-identical content already parsed for the same artifact and subject (e.g. a moved
+    // copy of the collection) adds nothing. Identical files for different subjects (e.g. two
+    // users' header-only CSVs) are each parsed: each is that subject's coverage.
     if size > 0 {
         let first: Option<i64> = case
             .conn()
             .query_row(
-                "SELECT file_id FROM source_files WHERE sha256 = ? AND status = 'parsed' ORDER BY file_id LIMIT 1",
-                params![&sha],
+                "SELECT file_id FROM source_files
+                 WHERE sha256 = ? AND status = 'parsed'
+                   AND artifact_type IS NOT DISTINCT FROM ? AND subject IS NOT DISTINCT FROM ?
+                 ORDER BY file_id LIMIT 1",
+                params![&sha, nf.artifact_id, nf.subject],
                 |r| r.get(0),
             )
             .optional()?;
         if let Some(first) = first {
             let msg = format!("identical to already-ingested file_id {first}");
-            return record_simple(case.conn(), &nf, FileStatus::DuplicateFile, vec![msg]);
+            return record_simple(case, &nf, FileStatus::DuplicateFile, vec![msg]);
         }
     }
-    let Some(class) = class else {
-        return record_simple(case.conn(), &nf, FileStatus::Unrecognized, vec![]);
+    let Some(class) = class.as_ref() else {
+        return record_simple(case, &nf, FileStatus::Unrecognized, vec![]);
     };
     let Some(parser) = parsers.get(class.artifact_id) else {
-        return record_simple(case.conn(), &nf, FileStatus::NotSupported, vec![]);
+        return record_simple(case, &nf, FileStatus::NotSupported, vec![]);
     };
 
     let decoded = decode(&raw);
@@ -364,6 +410,7 @@ fn ingest_file(
     let decode_warning = decoded.lossy_warning();
     let index = LineIndex::new(&decoded.text);
     let tx = case.conn_mut().transaction()?;
+    delete_stale_rows(&tx, &nf)?;
     let file_id = insert_file_row(&tx, &nf, FileStatus::Parsed, &[])?;
     let mut ctx = ParseContext::new(
         &tx,
@@ -404,7 +451,7 @@ fn ingest_file(
             tx.rollback()?;
             let msg = format!("parser {} failed: {e}", class.artifact_id);
             let warnings = std::iter::once(msg).chain(decode_warning).collect();
-            record_simple(case.conn(), &nf, FileStatus::Error, warnings)
+            record_simple(case, &nf, FileStatus::Error, warnings)
         }
     }
 }

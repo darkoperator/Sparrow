@@ -9,11 +9,18 @@ pub struct Migration {
     pub sql: &'static str,
 }
 
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "core_provenance",
-    sql: include_str!("../../migrations/0001_core_provenance.sql"),
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "core_provenance",
+        sql: include_str!("../../migrations/0001_core_provenance.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "source_file_subject",
+        sql: include_str!("../../migrations/0002_source_file_subject.sql"),
+    },
+];
 
 pub fn latest_version() -> u32 {
     MIGRATIONS.last().map(|m| m.version).unwrap_or(0)

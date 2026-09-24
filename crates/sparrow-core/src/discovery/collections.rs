@@ -80,33 +80,34 @@ pub fn discover_collections(path: &Path) -> Result<Vec<DiscoveredCollection>> {
             path.display()
         )));
     }
+    // The top-level path itself must be readable; unreadable folders below it are skipped.
+    std::fs::read_dir(path).map_err(|e| Error::io(path, e))?;
     let mut found = Vec::new();
-    visit(path, 0, &mut found)?;
+    visit(path, 0, &mut found);
     found.sort_by(|a, b| a.root.cmp(&b.root));
     Ok(found)
 }
 
-fn visit(dir: &Path, depth: usize, found: &mut Vec<DiscoveredCollection>) -> Result<()> {
+fn visit(dir: &Path, depth: usize, found: &mut Vec<DiscoveredCollection>) {
     if let Some(c) = as_hawk_root(dir) {
         found.push(c);
-        return Ok(());
+        return;
     }
-    if is_invictus_root(dir)? {
+    if is_invictus_root(dir) {
         found.push(DiscoveredCollection {
             tool: Tool::Invictus,
             root: dir.to_path_buf(),
             tenant_hint: None,
             started_hint: None,
         });
-        return Ok(());
+        return;
     }
     if depth >= MAX_DEPTH {
-        return Ok(());
+        return;
     }
-    for sub in subdirs(dir)? {
-        visit(&sub, depth + 1, found)?;
+    for sub in subdirs(dir) {
+        visit(&sub, depth + 1, found);
     }
-    Ok(())
 }
 
 fn as_hawk_root(dir: &Path) -> Option<DiscoveredCollection> {
@@ -114,7 +115,7 @@ fn as_hawk_root(dir: &Path) -> Option<DiscoveredCollection> {
     let caps = re_hawk_root().captures(name)?;
     let looks_like_hawk = dir.join("Hawk.log").is_file()
         || dir.join("Tenant").is_dir()
-        || has_literal_backslash_tenant(dir).unwrap_or(false);
+        || has_literal_backslash_tenant(dir);
     if !looks_like_hawk {
         return None;
     }
@@ -127,22 +128,19 @@ fn as_hawk_root(dir: &Path) -> Option<DiscoveredCollection> {
 }
 
 /// PowerShell 7 on macOS/Linux creates subdirs with literal backslash in name: `\Tenant`.
-fn has_literal_backslash_tenant(dir: &Path) -> Result<bool> {
-    if let Ok(subs) = subdirs(dir) {
-        return Ok(subs.iter().any(|d| {
-            d.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n == "\\Tenant")
-        }));
-    }
-    Ok(false)
+fn has_literal_backslash_tenant(dir: &Path) -> bool {
+    subdirs(dir).iter().any(|d| {
+        d.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n == "\\Tenant")
+    })
 }
 
-fn is_invictus_root(dir: &Path) -> Result<bool> {
+fn is_invictus_root(dir: &Path) -> bool {
     if dir.join("LogFile.txt").is_file() {
-        return Ok(true);
+        return true;
     }
-    for sub in subdirs(dir)? {
+    for sub in subdirs(dir) {
         let Some(name) = sub.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
@@ -152,27 +150,29 @@ fn is_invictus_root(dir: &Path) -> Result<bool> {
         {
             continue;
         }
-        let stamped = subdirs(&sub)?.iter().any(|d| {
+        let stamped = subdirs(&sub).iter().any(|d| {
             d.file_name()
                 .and_then(|n| n.to_str())
                 .is_some_and(|n| re_invictus_stamp().is_match(n))
         });
         if stamped {
-            return Ok(true);
+            return true;
         }
     }
-    Ok(false)
+    false
 }
 
-fn subdirs(dir: &Path) -> Result<Vec<PathBuf>> {
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir(dir).map_err(|e| Error::io(dir, e))? {
-        let entry = entry.map_err(|e| Error::io(dir, e))?;
-        let path = entry.path();
-        if path.is_dir() {
-            out.push(path);
-        }
-    }
+/// Readable subdirectories of `dir`, sorted. Unreadable directories and entries are skipped:
+/// they simply are not searched for collections.
+fn subdirs(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
     out.sort();
-    Ok(out)
+    out
 }

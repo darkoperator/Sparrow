@@ -26,16 +26,52 @@ fn rel_path(root: &Path, path: &Path) -> String {
         .join("/")
 }
 
-/// All regular files under `root`, sorted by path, excluding OS junk files.
-pub fn list_collection_files(root: &Path) -> Result<Vec<CollectionFile>> {
-    let mut out = Vec::new();
+/// A directory entry under a collection root that could not be read.
+#[derive(Debug, Clone)]
+pub struct EntryError {
+    /// Path of the entry relative to the collection root (same form as `CollectionFile::rel`).
+    pub rel: String,
+    pub message: String,
+}
+
+/// The readable files of a collection plus every entry that could not be read.
+#[derive(Debug, Clone, Default)]
+pub struct CollectionListing {
+    pub files: Vec<CollectionFile>,
+    pub errors: Vec<EntryError>,
+}
+
+/// All regular files under `root`, sorted by path, excluding OS junk files. An unreadable
+/// entry below the root is reported in `errors` and the walk continues; only an unreadable
+/// root is fatal.
+pub fn list_collection_files(root: &Path) -> Result<CollectionListing> {
+    let mut out = CollectionListing::default();
     for entry in walkdir::WalkDir::new(root).sort_by_file_name() {
-        let entry =
-            entry.map_err(|e| Error::Invalid(format!("cannot walk {}: {e}", root.display())))?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) if e.depth() == 0 => {
+                return Err(Error::Invalid(format!(
+                    "cannot walk {}: {e}",
+                    root.display()
+                )));
+            }
+            Err(e) => {
+                let rel = e.path().map(|p| rel_path(root, p)).unwrap_or_default();
+                let cause = e
+                    .io_error()
+                    .map(|io| io.to_string())
+                    .unwrap_or_else(|| e.to_string());
+                out.errors.push(EntryError {
+                    message: format!("cannot read {rel}: {cause}"),
+                    rel,
+                });
+                continue;
+            }
+        };
         if !entry.file_type().is_file() || is_os_junk(&entry.file_name().to_string_lossy()) {
             continue;
         }
-        out.push(CollectionFile {
+        out.files.push(CollectionFile {
             abs: entry.path().to_path_buf(),
             rel: rel_path(root, entry.path()),
         });
