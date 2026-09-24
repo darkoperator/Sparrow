@@ -1,4 +1,5 @@
 use sparrow_core::fixtures;
+use sparrow_core::fixtures::{hawk4, portal, ual};
 use sparrow_core::ingest::context::ParseContext;
 use sparrow_core::ingest::parser::{ArtifactParser, ParserRegistry};
 use sparrow_core::ingest::{IngestOptions, ingest_path};
@@ -84,6 +85,27 @@ fn moved_collection_verifies_with_root_override_and_missing_file_is_reported() {
     assert!(!rep.sightings[0].file_found);
     let rep = verify_record(&case, "collection_log", &key, Some(&moved)).unwrap();
     assert!(rep.ok);
+}
+
+#[test]
+fn root_override_relocates_only_the_moved_collection() {
+    let dir = tempfile::tempdir().unwrap();
+    hawk4::hawk4_tree(&dir.path().join("a"));
+    portal::portal_tree(&dir.path().join("b"));
+    let mut case = Case::in_memory().unwrap();
+    ingest_path(
+        &mut case,
+        dir.path(),
+        &ParserRegistry::builtin(),
+        &IngestOptions::default(),
+    )
+    .unwrap();
+    let moved = dir.path().join("c").join(hawk4::HAWK4_ROOT_NAME);
+    std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
+    std::fs::rename(dir.path().join("a").join(hawk4::HAWK4_ROOT_NAME), &moved).unwrap();
+    let rep = verify_record(&case, "ual_events", ual::ID_RULE, Some(&moved)).unwrap();
+    assert_eq!(rep.sightings.len(), 3);
+    assert!(rep.ok, "{rep:?}");
 }
 
 #[test]

@@ -5,6 +5,7 @@ use crate::{Case, Error, Result};
 use duckdb::params;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 const EXCERPT_LIMIT: usize = 10_000;
@@ -80,7 +81,16 @@ pub fn verify_record(
     if sightings.is_empty() {
         return Err(Error::NotFound(format!("{table} record {record_key}")));
     }
-    let checks: Vec<SightingCheck> = sightings.iter().map(|s| check(s, root_override)).collect();
+    let single_collection = sightings
+        .iter()
+        .map(|s| s.root_path.as_str())
+        .collect::<HashSet<_>>()
+        .len()
+        == 1;
+    let checks: Vec<SightingCheck> = sightings
+        .iter()
+        .map(|s| check(s, relocated(s, root_override, single_collection)))
+        .collect();
     let ok = checks
         .iter()
         .all(|c| c.file_found && c.file_hash_ok && c.record_hash_ok);
@@ -90,6 +100,22 @@ pub fn verify_record(
         ok,
         sightings: checks,
     })
+}
+
+/// `--root` relocates one moved collection: it applies to sightings whose recorded
+/// collection root has the override's folder name, or to all sightings when they all come
+/// from one collection (moved and possibly renamed).
+fn relocated<'p>(
+    s: &Sighting,
+    root_override: Option<&'p Path>,
+    single_collection: bool,
+) -> Option<&'p Path> {
+    let o = root_override?;
+    if single_collection {
+        return Some(o);
+    }
+    let recorded = PathBuf::from(&s.root_path);
+    (recorded.file_name().is_some() && recorded.file_name() == o.file_name()).then_some(o)
 }
 
 fn check(s: &Sighting, root_override: Option<&Path>) -> SightingCheck {

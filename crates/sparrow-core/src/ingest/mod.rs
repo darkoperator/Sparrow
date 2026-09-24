@@ -21,7 +21,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
-pub const DEFAULT_MAX_FILE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+pub const DEFAULT_MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct IngestOptions {
@@ -129,6 +129,8 @@ struct FileJob<'a> {
     tool: Tool,
     abs: &'a Path,
     rel: &'a str,
+    /// True when a path component is not valid UTF-8 (rel shows U+FFFD).
+    lossy_name: bool,
     /// Already-handled file that makes this one redundant.
     superseded_by: Option<String>,
 }
@@ -157,6 +159,7 @@ fn ingest_collection(
             tool: dc.tool,
             abs: &f.abs,
             rel: &f.rel,
+            lossy_name: f.lossy_name,
             superseded_by: handled.superseded_by(&f.rel, derived),
         };
         let report = ingest_file(case, &job, parsers, opts)?;
@@ -322,6 +325,10 @@ fn record_simple(
     ))
 }
 
+fn with_pre(pre: &[String], warnings: Vec<String>) -> Vec<String> {
+    pre.iter().cloned().chain(warnings).collect()
+}
+
 fn ingest_file(
     case: &mut Case,
     job: &FileJob,
@@ -341,6 +348,12 @@ fn ingest_file(
         size: 0,
         sha256: "",
     };
+    let mut pre: Vec<String> = Vec::new();
+    if job.lossy_name {
+        pre.push(
+            "file name is not valid UTF-8; rel_path shows replacement characters and verify cannot reopen the file".into(),
+        );
+    }
     let size = match std::fs::metadata(abs) {
         Ok(m) => m.len(),
         Err(e) => {
@@ -348,7 +361,7 @@ fn ingest_file(
                 case,
                 &nf,
                 FileStatus::Error,
-                vec![format!("cannot stat file: {e}")],
+                with_pre(&pre, vec![format!("cannot stat file: {e}")]),
             );
         }
     };
@@ -358,7 +371,7 @@ fn ingest_file(
             "file is {size} bytes, above the {} byte limit; raise --max-file-size to ingest it",
             opts.max_file_bytes
         );
-        return record_simple(case, &nf, FileStatus::Error, vec![msg]);
+        return record_simple(case, &nf, FileStatus::Error, with_pre(&pre, vec![msg]));
     }
     let raw = match std::fs::read(abs) {
         Ok(b) => b,
@@ -367,12 +380,22 @@ fn ingest_file(
                 case,
                 &nf,
                 FileStatus::Error,
-                vec![format!("cannot read file: {e}")],
+                with_pre(&pre, vec![format!("cannot read file: {e}")]),
             );
         }
     };
     let sha = hex::encode(Sha256::digest(&raw));
     nf.sha256 = &sha;
+    let changed: bool = case.conn().query_row(
+        "SELECT count(*) > 0 FROM source_files
+         WHERE collection_id = ? AND rel_path = ? AND sha256 <> ? AND sha256 <> ''
+           AND status IN ('parsed', 'duplicate_file', 'skipped_superseded')",
+        params![collection_id, rel, &sha],
+        |r| r.get(0),
+    )?;
+    if changed {
+        pre.push("file content changed since an earlier ingest of this collection (different SHA-256); records from both versions are kept".into());
+    }
     let class: Option<Classification> =
         reg.classify_with_head(tool, rel, Some(&raw[..raw.len().min(SNIFF_BYTES)]));
     nf.artifact_id = class.as_ref().map(|c| c.artifact_id);
@@ -423,7 +446,12 @@ fn ingest_file(
             .optional()?;
         if let Some(first) = first {
             let msg = format!("identical to already-ingested file_id {first}");
-            return record_simple(case, &nf, FileStatus::DuplicateFile, vec![msg]);
+            return record_simple(
+                case,
+                &nf,
+                FileStatus::DuplicateFile,
+                with_pre(&pre, vec![msg]),
+            );
         }
     }
     if let Some(other) = &job.superseded_by {
@@ -431,14 +459,14 @@ fn ingest_file(
             case,
             &nf,
             FileStatus::SkippedSuperseded,
-            vec![format!("superseded by {other}")],
+            with_pre(&pre, vec![format!("superseded by {other}")]),
         );
     }
     let Some(class) = class.as_ref() else {
-        return record_simple(case, &nf, FileStatus::Unrecognized, vec![]);
+        return record_simple(case, &nf, FileStatus::Unrecognized, with_pre(&pre, vec![]));
     };
     let Some(parser) = parsers.get(class.artifact_id) else {
-        return record_simple(case, &nf, FileStatus::NotSupported, vec![]);
+        return record_simple(case, &nf, FileStatus::NotSupported, with_pre(&pre, vec![]));
     };
 
     let decoded = decode(&raw);
@@ -462,8 +490,10 @@ fn ingest_file(
     match parser.parse(&mut ctx) {
         Ok(()) => {
             let (stats, parser_warnings) = ctx.finish();
-            let warnings: Vec<String> = decode_warning
-                .into_iter()
+            let warnings: Vec<String> = pre
+                .iter()
+                .cloned()
+                .chain(decode_warning)
                 .chain(parser_warnings)
                 .chain(truncation_warning(class.artifact_id, stats.read))
                 .collect();
@@ -499,7 +529,7 @@ fn ingest_file(
                     format!("parser {} failed: {other}", class.artifact_id),
                 ),
             };
-            let warnings = std::iter::once(msg).chain(decode_warning).collect();
+            let warnings = with_pre(&pre, std::iter::once(msg).chain(decode_warning).collect());
             record_simple(case, &nf, status, warnings)
         }
     }

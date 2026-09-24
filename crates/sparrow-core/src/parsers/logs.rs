@@ -81,6 +81,7 @@ fn entries(
 }
 
 fn store(ctx: &mut ParseContext<'_>, entries: &[Entry], tz_assumed: bool) -> Result<()> {
+    let mut bad = 0u64;
     for (ordinal, e) in entries.iter().enumerate() {
         let key = format!("{}:{}", ctx.file_id, ordinal);
         let ts = e
@@ -88,6 +89,9 @@ fn store(ctx: &mut ParseContext<'_>, entries: &[Entry], tz_assumed: bool) -> Res
             .as_deref()
             .and_then(|s| parse_timestamp(s, None).ok())
             .map(|t| t.rfc3339());
+        if e.ts_raw.is_some() && ts.is_none() {
+            bad += 1;
+        }
         ctx.conn
             .prepare_cached(
                 "INSERT INTO collection_log (log_key, collection_id, file_id, record_ordinal, ts, ts_raw, tz_assumed, level, message)
@@ -97,6 +101,11 @@ fn store(ctx: &mut ParseContext<'_>, entries: &[Entry], tz_assumed: bool) -> Res
         ctx.record_source("collection_log", &key, ordinal as u64, e.span)?;
         ctx.stats.read += 1;
         ctx.stats.loaded += 1;
+    }
+    if bad > 0 {
+        ctx.warn(format!(
+            "{bad} log entries have timestamps that could not be parsed (ts is NULL)"
+        ));
     }
     Ok(())
 }
@@ -138,11 +147,33 @@ impl ArtifactParser for InvictusLogParser {
     }
 }
 
-fn capture(pattern: &str, message: &str) -> Option<String> {
-    Regex::new(pattern)
-        .ok()?
-        .captures(message)
-        .map(|c| c[1].trim().to_string())
+fn capture(re: &Regex, message: &str) -> Option<String> {
+    re.captures(message).map(|c| c[1].trim().to_string())
+}
+
+fn re_meta_version() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    cached(&R, r"(?i)^Hawk Version\s*:\s*(\S+)")
+}
+
+fn re_meta_tenant() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    cached(&R, r"(?i)^Tenant Name\s*:\s*(.+)$")
+}
+
+fn re_meta_start() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    cached(&R, r"(?i)^Start Date\s*:\s*(.+)$")
+}
+
+fn re_meta_start_set() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    cached(&R, r"(?i)^Start date set to:\s*(.+)$")
+}
+
+fn re_meta_end() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    cached(&R, r"(?i)^End Date\s*:\s*(.+)$")
 }
 
 fn apply_hawk_metadata(ctx: &mut ParseContext<'_>, list: &[Entry]) -> Result<()> {
@@ -152,12 +183,12 @@ fn apply_hawk_metadata(ctx: &mut ParseContext<'_>, list: &[Entry]) -> Result<()>
     let mut end_raw = None;
     for e in list {
         let m = e.message.trim();
-        version = version.or_else(|| capture(r"(?i)^Hawk Version\s*:\s*(\S+)", m));
-        tenant = tenant.or_else(|| capture(r"(?i)^Tenant Name\s*:\s*(.+)$", m));
+        version = version.or_else(|| capture(re_meta_version(), m));
+        tenant = tenant.or_else(|| capture(re_meta_tenant(), m));
         start_raw = start_raw
-            .or_else(|| capture(r"(?i)^Start Date\s*:\s*(.+)$", m))
-            .or_else(|| capture(r"(?i)^Start date set to:\s*(.+)$", m));
-        end_raw = end_raw.or_else(|| capture(r"(?i)^End Date\s*:\s*(.+)$", m));
+            .or_else(|| capture(re_meta_start(), m))
+            .or_else(|| capture(re_meta_start_set(), m));
+        end_raw = end_raw.or_else(|| capture(re_meta_end(), m));
     }
     let strip = |s: &String| s.trim_end_matches(['Z', 'z']).trim().to_string();
     let start_raw = start_raw.as_ref().map(strip);

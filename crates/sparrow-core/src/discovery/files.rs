@@ -10,6 +10,8 @@ pub struct CollectionFile {
     /// backslash inside a component (PowerShell 7 on macOS/Linux writes a folder literally
     /// named `\Tenant`) is preserved, so the path round-trips to the real file.
     pub rel: String,
+    /// True when a path component is not valid UTF-8 (rel shows U+FFFD).
+    pub lossy_name: bool,
 }
 
 pub fn is_os_junk(name: &str) -> bool {
@@ -75,9 +77,15 @@ pub fn list_collection_files(root: &Path, shallow: bool) -> Result<CollectionLis
         if !entry.file_type().is_file() || is_os_junk(&entry.file_name().to_string_lossy()) {
             continue;
         }
+        let lossy_name = entry
+            .path()
+            .strip_prefix(root)
+            .map(|p| p.to_str().is_none())
+            .unwrap_or(false);
         out.files.push(CollectionFile {
             abs: entry.path().to_path_buf(),
             rel: rel_path(root, entry.path()),
+            lossy_name,
         });
     }
     Ok(out)

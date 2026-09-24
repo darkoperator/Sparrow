@@ -167,6 +167,8 @@ fn parameters_json(p: &[(String, String)]) -> Option<String> {
     Some(serde_json::Value::Array(entries).to_string())
 }
 
+/// Callers must hold a transaction: this is not atomic on its own (it runs several
+/// statements against TEMP staging tables, then merges them into the evidence tables).
 pub fn load_ual_batch(
     conn: &Connection,
     collection_id: i64,

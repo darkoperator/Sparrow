@@ -134,3 +134,34 @@ fn invictus_utf16_log_with_levels_and_assumed_timezone() {
     assert!(rows[1].3);
     assert_eq!(rows[0].0, None);
 }
+
+#[test]
+fn unparseable_log_timestamps_are_warned_about() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("cap");
+    sparrow_core::fixtures::write(
+        &root,
+        "Hawk.log",
+        b"[2026-13-45 10:00:00Z] - bad month\r\n[2026-09-10 14:15:00Z] - ok\r\n",
+    );
+    let mut case = Case::in_memory().unwrap();
+    let report = ingest_path(
+        &mut case,
+        dir.path(),
+        &ParserRegistry::builtin(),
+        &IngestOptions::default(),
+    )
+    .unwrap();
+    let f = report.collections[0]
+        .files
+        .iter()
+        .find(|f| f.rel_path == "Hawk.log")
+        .unwrap();
+    assert!(
+        f.warnings
+            .iter()
+            .any(|w| w.contains("1 log entries have timestamps that could not be parsed")),
+        "{:?}",
+        f.warnings
+    );
+}

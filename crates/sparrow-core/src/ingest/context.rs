@@ -110,6 +110,10 @@ impl<'a> ParseContext<'a> {
 
     /// Record a record-level parse failure. Increments `stats.error`.
     pub fn parse_error(&mut self, ordinal: u64, span: Span, message: &str) -> Result<()> {
+        let text = &self.text.text;
+        let end = floor_char_boundary(text, span.end.min(text.len()));
+        let start = floor_char_boundary(text, span.start.min(end));
+        let span = Span { start, end };
         let pos = self.locate(span);
         let snippet: String = self.text.text[span.start..span.end]
             .chars()
@@ -153,4 +157,12 @@ impl<'a> ParseContext<'a> {
         }
         (s, warnings)
     }
+}
+
+/// Largest char boundary of `s` at or below `i`.
+fn floor_char_boundary(s: &str, mut i: usize) -> usize {
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
 }

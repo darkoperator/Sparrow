@@ -1,7 +1,9 @@
 use sparrow_core::fixtures;
+use sparrow_core::ingest::DEFAULT_MAX_FILE_BYTES;
 use sparrow_core::ingest::context::ParseContext;
 use sparrow_core::ingest::parser::{ArtifactParser, ParserRegistry};
 use sparrow_core::ingest::{FileStatus, IngestOptions, IngestReport, ingest_path};
+use sparrow_core::readers::text::Span;
 use sparrow_core::readers::text::line_spans;
 use sparrow_core::{Case, Error, Result};
 
@@ -765,4 +767,80 @@ fn hawk_folder_stamp_is_flagged_as_assumed_utc() {
         })
         .unwrap();
     assert!(assumed);
+}
+
+/// Test parser that reports an error with a span past the end of the text.
+struct BadSpanParser;
+impl ArtifactParser for BadSpanParser {
+    fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
+        ctx.stats.read += 1;
+        ctx.parse_error(
+            0,
+            Span {
+                start: 3,
+                end: 10_000_000,
+            },
+            "bad span",
+        )
+    }
+}
+
+#[test]
+fn parse_error_with_out_of_range_span_is_clamped() {
+    let dir = tempfile::tempdir().unwrap();
+    fixtures::hawk_tree(dir.path());
+    let mut r = ParserRegistry::empty();
+    r.register("hawk.log", Box::new(BadSpanParser));
+    let mut case = Case::in_memory().unwrap();
+    let report = ingest_path(&mut case, dir.path(), &r, &IngestOptions::default()).unwrap();
+    assert_eq!(status_row(&report, "Hawk.log").records_error, 1);
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM parse_errors WHERE line_start = 1"
+        ),
+        1
+    );
+}
+
+#[test]
+fn changed_content_at_the_same_path_is_flagged() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fixtures::hawk_tree(dir.path());
+    let mut case = Case::in_memory().unwrap();
+    ingest_path(&mut case, dir.path(), &parsers(), &IngestOptions::default()).unwrap();
+    let mut log = fixtures::HAWK_LOG.to_string();
+    log.push_str("[2026-09-10 14:31:00Z] - [INFO]   - appended later\r\n");
+    fixtures::write(&root, "Hawk.log", log.as_bytes());
+    let report = ingest_path(&mut case, dir.path(), &parsers(), &IngestOptions::default()).unwrap();
+    let f = status_row(&report, "Hawk.log");
+    assert_eq!(f.status, FileStatus::Parsed);
+    assert!(
+        f.warnings[0].contains("content changed"),
+        "{:?}",
+        f.warnings
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn non_utf8_file_names_are_flagged() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = tempfile::tempdir().unwrap();
+    let root = fixtures::hawk_tree(dir.path());
+    let name = std::ffi::OsStr::from_bytes(b"bad\xffname.txt");
+    std::fs::write(root.join("Tenant").join(name), b"x").unwrap();
+    let mut case = Case::in_memory().unwrap();
+    let report = ingest_path(&mut case, dir.path(), &parsers(), &IngestOptions::default()).unwrap();
+    let f = report.collections[0]
+        .files
+        .iter()
+        .find(|f| f.rel_path.contains('\u{fffd}'))
+        .unwrap();
+    assert!(f.warnings.iter().any(|w| w.contains("not valid UTF-8")));
+}
+
+#[test]
+fn default_max_file_size_is_one_gib() {
+    assert_eq!(DEFAULT_MAX_FILE_BYTES, 1 << 30);
 }
