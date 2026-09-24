@@ -499,3 +499,45 @@ fn unreadable_file_is_reported_as_error() {
         f.warnings
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn literal_backslash_tenant_dir_keeps_its_true_rel_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fixtures::hawk_tree(dir.path());
+    fixtures::write(&root, "\\Tenant/Simple_x.json", b"[{\"a\":1}]");
+    fixtures::write(&root, "Tenant/Simple_x.json", b"[{\"a\":2}]");
+    let mut case = Case::in_memory().unwrap();
+    ingest_path(
+        &mut case,
+        dir.path(),
+        &ParserRegistry::empty(),
+        &IngestOptions::default(),
+    )
+    .unwrap();
+    let mut stmt = case
+        .conn()
+        .prepare(
+            "SELECT rel_path, artifact_type FROM source_files
+             WHERE rel_path LIKE '%Simple_x.json' ORDER BY rel_path",
+        )
+        .unwrap();
+    let rows: Vec<(String, Option<String>)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            (
+                "Tenant/Simple_x.json".to_string(),
+                Some("hawk.tenant.simple_ual".to_string())
+            ),
+            (
+                "\\Tenant/Simple_x.json".to_string(),
+                Some("hawk.tenant.simple_ual".to_string())
+            ),
+        ]
+    );
+}

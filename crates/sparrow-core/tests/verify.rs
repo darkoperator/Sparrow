@@ -1,8 +1,10 @@
 use sparrow_core::fixtures;
-use sparrow_core::ingest::parser::ParserRegistry;
+use sparrow_core::ingest::context::ParseContext;
+use sparrow_core::ingest::parser::{ArtifactParser, ParserRegistry};
 use sparrow_core::ingest::{IngestOptions, ingest_path};
+use sparrow_core::readers::text::line_spans;
 use sparrow_core::verify::{source_ref, verify_record};
-use sparrow_core::{Case, Error};
+use sparrow_core::{Case, Error, Result};
 use std::path::PathBuf;
 
 fn setup() -> (tempfile::TempDir, PathBuf, Case, String) {
@@ -100,4 +102,57 @@ fn source_ref_formats_single_and_multi_line() {
         "Hawk_X/Tenant/a.json:4"
     );
     assert_eq!(source_ref("Output", "a.csv", 2, 5), "Output/a.csv:2-5");
+}
+
+/// Test parser: every physical line becomes a record in table "test_lines".
+struct LinesParser;
+impl ArtifactParser for LinesParser {
+    fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
+        for (n, span) in line_spans(&ctx.text.text).into_iter().enumerate() {
+            let key = format!("{}:{}", ctx.file_id, n);
+            ctx.record_source("test_lines", &key, n as u64, span)?;
+            ctx.stats.read += 1;
+            ctx.stats.loaded += 1;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn record_under_literal_backslash_tenant_dir_verifies() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fixtures::hawk_tree(dir.path());
+    // On Unix a backslash is an ordinary file-name character: this is one component.
+    let literal_backslash_tenant = std::ffi::OsStr::new("\\Tenant");
+    std::fs::rename(root.join("Tenant"), root.join(literal_backslash_tenant)).unwrap();
+    let mut parsers = ParserRegistry::builtin();
+    parsers.register("hawk.tenant.entra_users", Box::new(LinesParser));
+    let mut case = Case::in_memory().unwrap();
+    let report = ingest_path(&mut case, dir.path(), &parsers, &IngestOptions::default()).unwrap();
+    let files = &report.collections[0].files;
+    let status = |rel: &str| {
+        files
+            .iter()
+            .find(|f| f.rel_path == rel)
+            .unwrap_or_else(|| panic!("{rel} not in report: {files:?}"))
+            .status
+    };
+    assert_eq!(status("Hawk.log"), sparrow_core::ingest::FileStatus::Parsed);
+    assert_eq!(
+        status("\\Tenant/EntraIDUsers.json"),
+        sparrow_core::ingest::FileStatus::Parsed
+    );
+    let key: String = case
+        .conn()
+        .query_row(
+            "SELECT rs.record_key FROM record_sources rs JOIN source_files sf USING (file_id)
+             WHERE rs.table_name = 'test_lines' AND sf.rel_path = '\\Tenant/EntraIDUsers.json'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let rep = verify_record(&case, "test_lines", &key, None).unwrap();
+    assert!(rep.sightings[0].file_found, "{rep:?}");
+    assert!(rep.ok, "{rep:?}");
 }
