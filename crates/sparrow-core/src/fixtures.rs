@@ -69,7 +69,14 @@ pub fn hawk_tree(base: &Path) -> PathBuf {
     write(
         &root,
         "Tenant/RBAC_Changes.csv",
-        b"\"Operations\",\"AuditData\"\r\n\"New-ManagementRoleAssignment\",\"{}\"\r\n",
+        concat!(
+            "\"RecordType\",\"CreationDate\",\"UserIds\",\"Operations\",\"AuditData\"\r\n",
+            "\"ExchangeAdmin\",\"9/1/2026 10:00:00 AM\",\"admin@contoso.example\",\"New-ManagementRoleAssignment\",",
+            "\"{\"\"CreationTime\"\":\"\"2026-09-01T10:00:00\"\",\"\"Id\"\":\"\"c0000000-0000-4000-8000-000000000001\"\",",
+            "\"\"Operation\"\":\"\"New-ManagementRoleAssignment\"\",\"\"RecordType\"\":1,",
+            "\"\"UserId\"\":\"\"admin@contoso.example\"\",\"\"Workload\"\":\"\"Exchange\"\"}\"\r\n",
+        )
+        .as_bytes(),
     );
     write(
         &root,
