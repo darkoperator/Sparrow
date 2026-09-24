@@ -6,6 +6,7 @@ pub mod error;
 #[doc(hidden)]
 pub mod fixtures;
 pub mod ingest;
+pub mod normalize;
 pub mod parsers;
 pub mod readers;
 pub mod verify;
