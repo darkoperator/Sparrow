@@ -3,6 +3,7 @@
 pub mod db;
 pub mod discovery;
 pub mod error;
+#[cfg(any(test, feature = "test-fixtures"))]
 #[doc(hidden)]
 pub mod fixtures;
 pub mod ingest;

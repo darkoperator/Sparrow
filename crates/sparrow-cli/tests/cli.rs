@@ -284,6 +284,44 @@ fn upgrade_refuses_to_create_a_missing_case() {
 }
 
 #[test]
+fn ingest_hawk4_capture_and_verify_a_ual_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let evidence = dir.path().join("evidence");
+    fixtures::hawk4::hawk4_tree(&evidence);
+    let case = dir.path().join("case.duckdb");
+    let v = json_out(
+        sparrow()
+            .args(["--json", "ingest"])
+            .arg(&evidence)
+            .arg("--case")
+            .arg(&case),
+        0,
+    );
+    let files = v["collections"][0]["files"].as_array().unwrap();
+    assert!(
+        files
+            .iter()
+            .any(|f| f["rel_path"] == fixtures::hawk4::HAWK4_PURVIEW
+                && f["artifact_id"] == "portal.ual"
+                && f["status"] == "parsed")
+    );
+    let v = json_out(
+        sparrow()
+            .args([
+                "--json",
+                "verify",
+                "ual_events",
+                fixtures::ual::ID_RULE,
+                "--case",
+            ])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["sightings"].as_array().unwrap().len(), 2);
+}
+
+#[test]
 fn fatal_errors_are_json_on_stdout_with_json_flag() {
     let dir = tempfile::tempdir().unwrap();
     let case = dir.path().join("case.duckdb");

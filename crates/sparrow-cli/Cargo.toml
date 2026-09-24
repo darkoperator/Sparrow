@@ -20,4 +20,5 @@ assert_cmd.workspace = true
 duckdb.workspace = true
 predicates.workspace = true
 serde_json.workspace = true
+sparrow-core = { path = "../sparrow-core", features = ["test-fixtures"] }
 tempfile.workspace = true

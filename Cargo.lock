@@ -1410,6 +1410,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sparrow-core",
  "tempfile",
  "thiserror",
  "uuid",

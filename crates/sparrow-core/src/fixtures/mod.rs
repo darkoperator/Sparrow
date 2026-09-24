@@ -1,5 +1,11 @@
 //! Synthetic collector output trees used by tests. Contains no real client data.
 
+pub mod hawk3;
+pub mod hawk4;
+pub mod portal;
+pub mod ual;
+
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 pub fn write(root: &Path, rel: &str, bytes: &[u8]) {
@@ -126,4 +132,32 @@ pub fn invictus_tree(base: &Path) -> PathBuf {
     );
     write(&root, "Case1/weird.xyz", b"?");
     root
+}
+
+/// One Export-Csv line: every field quoted, quotes doubled, CRLF.
+pub fn csv_line(fields: &[&str]) -> String {
+    let quoted: Vec<String> = fields
+        .iter()
+        .map(|f| format!("\"{}\"", f.replace('"', "\"\"")))
+        .collect();
+    format!("{}\r\n", quoted.join(","))
+}
+
+/// UTF-16LE without a byte-order mark (Exchange admin center message trace download).
+pub fn utf16le_no_bom(s: &str) -> Vec<u8> {
+    s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect()
+}
+
+/// Pretty JSON with CRLF line ends, like PowerShell's ConvertTo-Json output on Windows.
+pub fn ps_json(v: &Value) -> String {
+    serde_json::to_string_pretty(v)
+        .expect("fixture JSON serializes")
+        .replace('\n', "\r\n")
+}
+
+/// Windows PowerShell 5.1 writes DateTime values as `"\/Date(ms)\/"`: turn every
+/// `"/Date(ms)/"` string in `json` into that form.
+pub fn ps51_dates(json: &str) -> String {
+    json.replace("\"/Date(", "\"\\/Date(")
+        .replace(")/\"", ")\\/\"")
 }

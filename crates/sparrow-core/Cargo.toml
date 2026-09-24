@@ -18,5 +18,10 @@ thiserror.workspace = true
 uuid.workspace = true
 walkdir.workspace = true
 
+[features]
+# Synthetic collector trees for tests (never real client data).
+test-fixtures = []
+
 [dev-dependencies]
+sparrow-core = { path = ".", features = ["test-fixtures"] }
 tempfile.workspace = true
