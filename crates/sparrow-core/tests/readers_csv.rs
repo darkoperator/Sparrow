@@ -59,3 +59,35 @@ fn blank_lines_between_rows_do_not_shift_spans() {
     assert_eq!(t.rows.len(), 2);
     assert_eq!(&text[t.rows[1].span.start..t.rows[1].span.end], "2");
 }
+
+#[test]
+fn type_line_is_skipped_and_portal_headers_are_normalized() {
+    let text = "#TYPE System.Management.Automation.PSCustomObject\r\n\
+                \"Date (UTC)\",\"Application ID \",\"Autonomous system  number\",\"Incoming token type\",\"Incoming token type\"\r\n\
+                \"a\",\"b\",\"c\",\"d\",\"e\"\r\n";
+    let t = read_csv(text);
+    assert_eq!(
+        t.headers,
+        vec![
+            "Date (UTC)",
+            "Application ID",
+            "Autonomous system number",
+            "Incoming token type",
+            "Incoming token type_2"
+        ]
+    );
+    assert_eq!(t.rows.len(), 1);
+    assert_eq!(t.rows[0].ordinal, 0);
+    assert_eq!(
+        &text[t.rows[0].span.start..t.rows[0].span.end],
+        "\"a\",\"b\",\"c\",\"d\",\"e\""
+    );
+}
+
+#[test]
+fn normalize_headers_strips_bom_and_numbers_duplicates() {
+    assert_eq!(
+        normalize_headers(["\u{feff}RecordId", " A  B ", "x", "x", "x"]),
+        vec!["RecordId", "A B", "x", "x_2", "x_3"]
+    );
+}

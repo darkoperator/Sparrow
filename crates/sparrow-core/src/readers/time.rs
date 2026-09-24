@@ -19,10 +19,21 @@ pub enum Precision {
     Minute,
 }
 
+impl Precision {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Precision::Second => "second",
+            Precision::Minute => "minute",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParsedTime {
     pub utc: DateTime<Utc>,
     pub precision: Precision,
+    /// True when the text carried no zone or offset and UTC was assumed.
+    pub tz_assumed: bool,
 }
 
 impl ParsedTime {
@@ -39,6 +50,8 @@ pub enum TimeError {
     Ambiguous(String),
     #[error("unrecognized timestamp '{0}'")]
     Unrecognized(String),
+    #[error("'{0}' contradicts the day/month order given by --culture")]
+    Contradicts(String),
 }
 
 pub fn parse_culture(s: &str) -> Result<DateOrder, String> {
@@ -96,12 +109,14 @@ pub fn parse_timestamp(input: &str, order: Option<DateOrder>) -> Result<ParsedTi
         return Ok(ParsedTime {
             utc,
             precision: Precision::Second,
+            tz_assumed: false,
         });
     }
     if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
         return Ok(ParsedTime {
             utc: dt.with_timezone(&Utc),
             precision: Precision::Second,
+            tz_assumed: false,
         });
     }
     let iso = s.trim_end_matches(['Z', 'z']).replacen(' ', "T", 1);
@@ -114,6 +129,7 @@ pub fn parse_timestamp(input: &str, order: Option<DateOrder>) -> Result<ParsedTi
             return Ok(ParsedTime {
                 utc: Utc.from_utc_datetime(&n),
                 precision,
+                tz_assumed: !s.ends_with(['Z', 'z']),
             });
         }
     }
@@ -126,6 +142,7 @@ pub fn parse_timestamp(input: &str, order: Option<DateOrder>) -> Result<ParsedTi
         return Ok(ParsedTime {
             utc: Utc.from_utc_datetime(&n),
             precision: Precision::Second,
+            tz_assumed: true,
         });
     }
     if let Some(c) = re_culture().captures(s) {
@@ -145,7 +162,7 @@ fn parse_culture_match(
     let (month, day) = match (a > 12, b > 12, order) {
         (true, true, _) => return Err(unrec(s)),
         (true, false, Some(DateOrder::MonthFirst)) | (false, true, Some(DateOrder::DayFirst)) => {
-            return Err(unrec(s));
+            return Err(TimeError::Contradicts(s.to_string()));
         }
         (true, false, _) => (b, a),
         (false, true, _) => (a, b),
@@ -192,6 +209,7 @@ fn parse_culture_match(
     Ok(ParsedTime {
         utc: Utc.from_utc_datetime(&n),
         precision,
+        tz_assumed: true,
     })
 }
 
@@ -200,13 +218,13 @@ fn parse_culture_match(
 pub struct DateOrderDetector {
     month_first: bool,
     day_first: bool,
-    saw_culture_dates: bool,
+    /// Saw a value whose day and month are both <= 12 and differ (e.g. 6/12).
+    ambiguous: bool,
 }
 
 impl DateOrderDetector {
     pub fn observe(&mut self, s: &str) {
         if let Some(c) = re_culture().captures(s.trim()) {
-            self.saw_culture_dates = true;
             let a: u32 = c[1].parse().unwrap_or(0);
             let b: u32 = c[2].parse().unwrap_or(0);
             if a > 12 {
@@ -214,6 +232,9 @@ impl DateOrderDetector {
             }
             if b > 12 {
                 self.month_first = true;
+            }
+            if a <= 12 && b <= 12 && a != b {
+                self.ambiguous = true;
             }
         }
     }
@@ -228,7 +249,7 @@ impl DateOrderDetector {
             }
             (true, false) => Ok(Some(DateOrder::MonthFirst)),
             (false, true) => Ok(Some(DateOrder::DayFirst)),
-            (false, false) if self.saw_culture_dates => {
+            (false, false) if self.ambiguous => {
                 Err("ambiguous day/month order; pass --culture (e.g. en-US or en-GB)".into())
             }
             (false, false) => Ok(None),

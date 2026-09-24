@@ -2,6 +2,7 @@
 
 use crate::readers::text::Span;
 use serde_json::{Map, Value};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct CsvRow {
@@ -24,6 +25,25 @@ pub struct CsvTable {
     pub errors: Vec<CsvRowError>,
 }
 
+/// Header cleanup for collector and portal CSVs: strip a BOM, trim, collapse internal
+/// whitespace runs to one space, and number repeated names (`x`, `x_2`, `x_3`).
+pub fn normalize_headers<'a>(fields: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    fields
+        .into_iter()
+        .map(|h| {
+            let base = h
+                .trim_start_matches('\u{feff}')
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            let n = seen.entry(base.clone()).or_insert(0);
+            *n += 1;
+            if *n == 1 { base } else { format!("{base}_{n}") }
+        })
+        .collect()
+}
+
 pub fn read_csv(text: &str) -> CsvTable {
     let mut rdr = ::csv::ReaderBuilder::new()
         .has_headers(false)
@@ -41,10 +61,14 @@ pub fn read_csv(text: &str) -> CsvTable {
                 let end = trim_line_end(text, rdr.position().byte() as usize);
                 let start = skip_newlines(text, before, end);
                 if !have_header {
-                    table.headers = record
-                        .iter()
-                        .map(|h| h.trim_start_matches('\u{feff}').trim().to_string())
-                        .collect();
+                    let is_type_line = record.len() == 1
+                        && record
+                            .get(0)
+                            .is_some_and(|f| f.trim_start_matches('\u{feff}').starts_with("#TYPE"));
+                    if is_type_line {
+                        continue;
+                    }
+                    table.headers = normalize_headers(record.iter());
                     have_header = true;
                     continue;
                 }

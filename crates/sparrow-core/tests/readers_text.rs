@@ -148,3 +148,13 @@ fn line_spans_strip_terminators() {
         .collect();
     assert_eq!(spans, vec!["a", "bc", "", "d"]);
 }
+
+#[test]
+fn bomless_utf16le_csv_with_quoted_header_decodes() {
+    let s = "\"origin_timestamp_utc\",\"sender_address\"\r\n\"2026-09-01T10:00:00.0000000Z\",\"a@contoso.example\"\r\n";
+    let d = decode(&utf16le(s, false));
+    assert_eq!(d.encoding, TextEncoding::Utf16Le);
+    assert_eq!(d.bom_len, 0);
+    assert!(!d.lossy);
+    assert_eq!(d.text, s);
+}

@@ -142,3 +142,77 @@ fn detector_resolves_from_evidence() {
     let empty = DateOrderDetector::default();
     assert_eq!(empty.resolve(None).unwrap(), None);
 }
+
+#[test]
+fn tz_assumed_only_when_the_text_has_no_zone() {
+    let assumed = |s: &str| {
+        parse_timestamp(s, Some(DateOrder::MonthFirst))
+            .unwrap()
+            .tz_assumed
+    };
+    assert!(!assumed("2026-09-01T10:00:00Z"));
+    assert!(!assumed("2026-09-01T10:00:00.1234567Z"));
+    assert!(!assumed("2026-09-01T12:00:00+02:00"));
+    assert!(!assumed(r"\/Date(1788256740000)\/"));
+    assert!(!assumed("2026-09-10 14:15:00Z"));
+    assert!(assumed("2026-09-01T10:00:00"));
+    assert!(assumed("2026-09-01T10:00:00.1234"));
+    assert!(assumed("9/1/2026 10:00:00 AM"));
+    assert!(assumed("20260901_100000"));
+}
+
+#[test]
+fn addendum_a_date_formats() {
+    assert_eq!(iso("9/14/2026 3:04 PM", None), "2026-09-14T15:04:00+00:00");
+    assert_eq!(
+        iso("2026-09-01T10:00:00.1234567", None),
+        "2026-09-01T10:00:00.123456700+00:00"
+    );
+    assert_eq!(
+        iso("2026-09-01T10:00:00.5", None),
+        "2026-09-01T10:00:00.500+00:00"
+    );
+    assert_eq!(
+        iso("09/14/2026 15:04:05", None),
+        "2026-09-14T15:04:05+00:00"
+    );
+    assert_eq!(
+        iso("2026-09-02 08:00:00.123", None),
+        "2026-09-02T08:00:00.123+00:00"
+    );
+    assert_eq!(
+        iso("2026-09-01T10:00:00.0000000Z", None),
+        "2026-09-01T10:00:00+00:00"
+    );
+    assert_eq!(
+        iso(r"\/Date(1788256740000)\/", None),
+        "2026-09-01T09:59:00+00:00"
+    );
+}
+
+#[test]
+fn contradiction_with_explicit_order_names_the_culture_flag() {
+    let err = parse_timestamp("24/09/2026 10:00:00", Some(DateOrder::MonthFirst)).unwrap_err();
+    assert_eq!(err, TimeError::Contradicts("24/09/2026 10:00:00".into()));
+    assert!(err.to_string().contains("--culture"));
+}
+
+#[test]
+fn detector_ignores_same_day_and_month_values() {
+    let mut d = DateOrderDetector::default();
+    d.observe("5/5/2026 1:00:00 PM");
+    d.observe("12/12/2026 1:00:00 PM");
+    assert_eq!(d.resolve(None).unwrap(), None);
+    assert_eq!(
+        parse_timestamp("5/5/2026 1:00:00 PM", None)
+            .unwrap()
+            .rfc3339(),
+        "2026-05-05T13:00:00+00:00"
+    );
+}
+
+#[test]
+fn precision_names() {
+    assert_eq!(Precision::Second.as_str(), "second");
+    assert_eq!(Precision::Minute.as_str(), "minute");
+}
