@@ -112,8 +112,9 @@ fn visit(dir: &Path, depth: usize, found: &mut Vec<DiscoveredCollection>) -> Res
 fn as_hawk_root(dir: &Path) -> Option<DiscoveredCollection> {
     let name = dir.file_name()?.to_str()?;
     let caps = re_hawk_root().captures(name)?;
-    let looks_like_hawk =
-        dir.join("Hawk.log").is_file() || dir.join("Tenant").is_dir();
+    let looks_like_hawk = dir.join("Hawk.log").is_file()
+        || dir.join("Tenant").is_dir()
+        || has_literal_backslash_tenant(dir).unwrap_or(false);
     if !looks_like_hawk {
         return None;
     }
@@ -123,6 +124,18 @@ fn as_hawk_root(dir: &Path) -> Option<DiscoveredCollection> {
         tenant_hint: Some(caps[1].to_string()),
         started_hint: Some(caps[2].to_string()),
     })
+}
+
+/// PowerShell 7 on macOS/Linux creates subdirs with literal backslash in name: `\Tenant`.
+fn has_literal_backslash_tenant(dir: &Path) -> Result<bool> {
+    if let Ok(subs) = subdirs(dir) {
+        return Ok(subs.iter().any(|d| {
+            d.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n == "\\Tenant")
+        }));
+    }
+    Ok(false)
 }
 
 fn is_invictus_root(dir: &Path) -> Result<bool> {

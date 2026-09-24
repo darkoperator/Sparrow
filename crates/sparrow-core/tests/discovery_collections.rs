@@ -53,3 +53,17 @@ fn file_path_is_rejected() {
     fixtures::write(dir.path(), "a.txt", b"x");
     assert!(discover_collections(&dir.path().join("a.txt")).is_err());
 }
+
+#[test]
+#[cfg(unix)]
+fn detects_hawk_root_with_literal_backslash_tenant() {
+    let dir = tempfile::tempdir().unwrap();
+    let hawk_root = dir.path().join("Hawk_Foo_20260101_000000");
+    fixtures::write(&hawk_root, "\\Tenant/x.csv", b"data");
+    let found = discover_collections(dir.path()).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].tool, Tool::Hawk);
+    assert_eq!(found[0].root, hawk_root);
+    assert_eq!(found[0].tenant_hint.as_deref(), Some("Foo"));
+    assert_eq!(found[0].started_hint.as_deref(), Some("20260101_000000"));
+}
