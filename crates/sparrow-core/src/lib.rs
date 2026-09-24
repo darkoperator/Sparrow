@@ -5,6 +5,8 @@ pub mod discovery;
 pub mod error;
 #[doc(hidden)]
 pub mod fixtures;
+pub mod ingest;
+pub mod parsers;
 pub mod readers;
 
 pub use db::Case;
