@@ -1,0 +1,23 @@
+# Third-party collectors (not part of this repo)
+/Collectors/
+/collectors/
+
+# Design specs and implementation plans (kept local)
+/docs/superpowers/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# Case data / local artifacts
+*.duckdb
+*.duckdb.wal
+*.mmdb
+
+.DS_Store
