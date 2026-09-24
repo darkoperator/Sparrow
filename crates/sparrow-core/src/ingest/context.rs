@@ -71,6 +71,14 @@ impl<'a> ParseContext<'a> {
         ))
     }
 
+    /// Position and raw-bytes SHA-256 of a record, for bulk loaders that write
+    /// `record_sources` themselves.
+    pub fn sighting(&mut self, span: Span) -> (SourcePos, String) {
+        let pos = self.locate(span);
+        let hash = self.raw_sha256(&pos);
+        (pos, hash)
+    }
+
     /// Record that `record_key` in `table` was seen at `span` of this file.
     pub fn record_source(
         &mut self,
@@ -79,8 +87,7 @@ impl<'a> ParseContext<'a> {
         ordinal: u64,
         span: Span,
     ) -> Result<SourcePos> {
-        let pos = self.locate(span);
-        let hash = self.raw_sha256(&pos);
+        let (pos, hash) = self.sighting(span);
         self.conn
             .prepare_cached(
                 "INSERT INTO record_sources (table_name, record_key, file_id, record_ordinal, line_start, line_end,

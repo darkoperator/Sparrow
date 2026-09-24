@@ -1,6 +1,7 @@
 //! Ingest: discover collections, register every file with its hash, and run parsers
 //! inside one transaction per file.
 
+pub mod bulk;
 pub mod context;
 pub mod parser;
 pub mod supersede;
