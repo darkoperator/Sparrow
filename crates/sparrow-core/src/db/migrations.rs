@@ -20,6 +20,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "source_file_subject",
         sql: include_str!("../../migrations/0002_source_file_subject.sql"),
     },
+    Migration {
+        version: 3,
+        name: "ual_evidence",
+        sql: include_str!("../../migrations/0003_ual_evidence.sql"),
+    },
 ];
 
 pub fn latest_version() -> u32 {

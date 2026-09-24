@@ -28,6 +28,10 @@ pub enum Error {
     NotFound(String),
     #[error("{0}")]
     Invalid(String),
+    /// The file's records have a shape this version cannot load. Ingest records the file as
+    /// `not_supported` (retried by later versions) instead of `error`.
+    #[error("unsupported record shape: {0}")]
+    UnsupportedShape(String),
 }
 
 impl Error {

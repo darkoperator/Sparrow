@@ -22,10 +22,15 @@ fn fresh_case_has_provenance_tables() {
         vec![
             "collection_log",
             "collections",
+            "file_events",
+            "mail_items_accessed",
             "parse_errors",
             "record_sources",
             "schema_migrations",
-            "source_files"
+            "search_queries",
+            "sharing_events",
+            "source_files",
+            "ual_events"
         ]
     );
     assert_eq!(case.schema_version().unwrap(), latest_version());
@@ -147,4 +152,82 @@ fn describe_lists_tables_columns_and_comments() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn collector_tool_accepts_portal_export() {
+    let case = Case::in_memory().unwrap();
+    case.conn()
+        .execute(
+            "INSERT INTO collections (tool, root_path, sparrow_version) VALUES ('portal_export', '/x', 't')",
+            [],
+        )
+        .unwrap();
+    assert!(
+        case.conn()
+            .execute(
+                "INSERT INTO collections (tool, root_path, sparrow_version) VALUES ('nope', '/y', 't')",
+                [],
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn upgrading_a_v2_case_keeps_collections_and_adds_ual_tables() {
+    use sparrow_core::db::migrations::MIGRATIONS;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.duckdb");
+    {
+        let conn = duckdb::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name VARCHAR NOT NULL,
+             applied_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp);",
+        )
+        .unwrap();
+        for m in &MIGRATIONS[..2] {
+            conn.execute_batch(m.sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
+                duckdb::params![m.version as i64, m.name],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO collections (tool, root_path, sparrow_version) VALUES ('hawk', '/evidence/Hawk_X', '0.1.0')",
+            [],
+        )
+        .unwrap();
+    }
+    let (from, to) = Case::upgrade(&path).unwrap();
+    assert_eq!((from, to), (2, latest_version()));
+    let case = Case::open_read_only(&path).unwrap();
+    let tool: String = case
+        .conn()
+        .query_row("SELECT CAST(tool AS VARCHAR) FROM collections", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(tool, "hawk");
+    let comment: Option<String> = case
+        .conn()
+        .query_row(
+            "SELECT comment FROM duckdb_columns() WHERE table_name = 'collections' AND column_name = 'tool'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(comment.unwrap().contains("portal_export"));
+    assert!(tables(&case).contains(&"ual_events".to_string()));
+}
+
+#[test]
+fn ual_events_reject_a_second_row_with_the_same_record_id() {
+    let case = Case::in_memory().unwrap();
+    let insert = "INSERT INTO ual_events (record_id, collection_id, event_time, time_tz_assumed, time_precision,
+                  data_completeness, synthetic_id, audit_data)
+                  VALUES ('a1111111-1111-4111-8111-111111111111', 1, '2026-09-01 10:00:00+00', true, 'second',
+                  'full', false, '{}')";
+    case.conn().execute(insert, []).unwrap();
+    assert!(case.conn().execute(insert, []).is_err());
 }
