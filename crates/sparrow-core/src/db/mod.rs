@@ -1,6 +1,9 @@
 //! The per-case DuckDB database.
 
+pub mod describe;
 pub mod migrations;
+
+pub use describe::{ColumnInfo, TableInfo, describe};
 
 use crate::{Error, Result};
 use duckdb::{AccessMode, Config, Connection};

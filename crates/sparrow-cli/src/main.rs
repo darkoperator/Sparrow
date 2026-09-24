@@ -1,4 +1,13 @@
-use clap::Parser;
+use anyhow::{Context, Result};
+use clap::{CommandFactory, Parser, Subcommand};
+use serde::Serialize;
+use sparrow_core::Case;
+use sparrow_core::discovery::{Registry, discover_collections, list_collection_files};
+use sparrow_core::ingest::parser::ParserRegistry;
+use sparrow_core::ingest::{DEFAULT_MAX_FILE_BYTES, IngestOptions, ingest_path};
+use sparrow_core::readers::time::parse_culture;
+use sparrow_core::verify::verify_record;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 #[derive(Parser)]
@@ -11,9 +20,258 @@ struct Cli {
     /// Emit machine-readable JSON
     #[arg(long, global = true)]
     json: bool,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// List collector outputs under PATH and how each file is classified
+    Discover { path: PathBuf },
+    /// Ingest collector output into a case database
+    Ingest {
+        path: PathBuf,
+        /// Case database file (created if missing)
+        #[arg(long)]
+        case: PathBuf,
+        /// Day/month order of culture-formatted dates: en-US, en-GB, mdy, dmy, ...
+        #[arg(long)]
+        culture: Option<String>,
+        /// Files larger than this many bytes are recorded as errors instead of loaded
+        #[arg(long, default_value_t = DEFAULT_MAX_FILE_BYTES)]
+        max_file_size: u64,
+    },
+    /// Re-check a record against its original source file(s)
+    Verify {
+        table: String,
+        record_key: String,
+        #[arg(long)]
+        case: PathBuf,
+        /// Use this folder as the collection root (when the evidence was moved)
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+    /// Describe the case database tables and columns
+    Schema {
+        #[arg(long)]
+        case: PathBuf,
+        table: Option<String>,
+    },
 }
 
 fn main() -> ExitCode {
-    let _cli = Cli::parse();
-    ExitCode::SUCCESS
+    let cli = Cli::parse();
+    match run(cli) {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("error: {e:#}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn run(cli: Cli) -> Result<ExitCode> {
+    let json = cli.json;
+    match cli.command {
+        None => {
+            Cli::command().print_help()?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Some(Command::Discover { path }) => cmd_discover(&path, json),
+        Some(Command::Ingest {
+            path,
+            case,
+            culture,
+            max_file_size,
+        }) => cmd_ingest(&path, &case, culture.as_deref(), max_file_size, json),
+        Some(Command::Verify {
+            table,
+            record_key,
+            case,
+            root,
+        }) => cmd_verify(&table, &record_key, &case, root.as_deref(), json),
+        Some(Command::Schema { case, table }) => cmd_schema(&case, table.as_deref(), json),
+    }
+}
+
+fn print_json<T: Serialize>(value: &T) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct DiscoverFile {
+    rel_path: String,
+    artifact_id: Option<&'static str>,
+    target: Option<&'static str>,
+    derived: bool,
+    subject: Option<String>,
+}
+
+#[derive(Serialize)]
+struct DiscoverCollection {
+    tool: sparrow_core::discovery::Tool,
+    root: String,
+    tenant_hint: Option<String>,
+    started_hint: Option<String>,
+    files: Vec<DiscoverFile>,
+}
+
+#[derive(Serialize)]
+struct DiscoverOutput {
+    collections: Vec<DiscoverCollection>,
+}
+
+fn cmd_discover(path: &Path, json: bool) -> Result<ExitCode> {
+    let mut out = DiscoverOutput {
+        collections: Vec::new(),
+    };
+    for dc in discover_collections(path)? {
+        let files = list_collection_files(&dc.root)?
+            .into_iter()
+            .map(|f| {
+                let c = Registry::builtin().classify(dc.tool, &f.rel);
+                DiscoverFile {
+                    artifact_id: c.as_ref().map(|c| c.artifact_id),
+                    target: c.as_ref().map(|c| c.target),
+                    derived: c.as_ref().is_some_and(|c| c.derived),
+                    subject: c.and_then(|c| c.subject),
+                    rel_path: f.rel,
+                }
+            })
+            .collect();
+        out.collections.push(DiscoverCollection {
+            tool: dc.tool,
+            root: dc.root.display().to_string(),
+            tenant_hint: dc.tenant_hint,
+            started_hint: dc.started_hint,
+            files,
+        });
+    }
+    if json {
+        print_json(&out)?;
+    } else {
+        for c in &out.collections {
+            println!("{} collection: {}", c.tool.as_str(), c.root);
+            for f in &c.files {
+                println!("  {:<40} {}", f.artifact_id.unwrap_or("-"), f.rel_path);
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_ingest(
+    path: &Path,
+    case_path: &Path,
+    culture: Option<&str>,
+    max_file_size: u64,
+    json: bool,
+) -> Result<ExitCode> {
+    let date_order = culture
+        .map(parse_culture)
+        .transpose()
+        .map_err(anyhow::Error::msg)?;
+    let opts = IngestOptions {
+        date_order,
+        max_file_bytes: max_file_size,
+    };
+    let mut case = Case::create_or_open(case_path)
+        .with_context(|| format!("opening {}", case_path.display()))?;
+    let report = ingest_path(&mut case, path, &ParserRegistry::builtin(), &opts)?;
+    if json {
+        print_json(&report)?;
+    } else {
+        for c in &report.collections {
+            println!(
+                "{} collection {} ({})",
+                c.tool.as_str(),
+                c.collection_id,
+                c.root
+            );
+            for f in &c.files {
+                println!(
+                    "  {:<18} {:>7} rec  {}{}",
+                    f.status.as_str(),
+                    f.records_loaded,
+                    f.rel_path,
+                    if f.warnings.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  [{}]", f.warnings.join("; "))
+                    }
+                );
+            }
+        }
+    }
+    Ok(if report.has_errors() {
+        ExitCode::from(2)
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+fn cmd_verify(
+    table: &str,
+    key: &str,
+    case_path: &Path,
+    root: Option<&Path>,
+    json: bool,
+) -> Result<ExitCode> {
+    let case = Case::open_read_only(case_path)?;
+    let report = verify_record(&case, table, key, root)?;
+    if json {
+        print_json(&report)?;
+    } else {
+        println!(
+            "{} {} -> {}",
+            table,
+            key,
+            if report.ok { "OK" } else { "MISMATCH" }
+        );
+        for s in &report.sightings {
+            println!(
+                "  {}  found={} file_hash_ok={} record_hash_ok={}",
+                s.source_ref, s.file_found, s.file_hash_ok, s.record_hash_ok
+            );
+            if let Some(ex) = &s.excerpt {
+                for line in ex.lines() {
+                    println!("    | {line}");
+                }
+            }
+        }
+    }
+    Ok(if report.ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(2)
+    })
+}
+
+#[derive(Serialize)]
+struct SchemaOutput {
+    tables: Vec<sparrow_core::db::TableInfo>,
+}
+
+fn cmd_schema(case_path: &Path, table: Option<&str>, json: bool) -> Result<ExitCode> {
+    let case = Case::open_read_only(case_path)?;
+    let out = SchemaOutput {
+        tables: sparrow_core::db::describe(&case, table)?,
+    };
+    if json {
+        print_json(&out)?;
+    } else {
+        for t in &out.tables {
+            println!("{} — {}", t.table, t.comment.as_deref().unwrap_or(""));
+            for c in &t.columns {
+                println!(
+                    "  {:<22} {:<14} {}",
+                    c.name,
+                    c.data_type,
+                    c.comment.as_deref().unwrap_or("")
+                );
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }

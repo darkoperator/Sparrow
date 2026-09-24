@@ -130,3 +130,21 @@ fn read_only_open_of_missing_file_is_not_found() {
         Err(Error::NotFound(_))
     ));
 }
+
+#[test]
+fn describe_lists_tables_columns_and_comments() {
+    let case = Case::in_memory().unwrap();
+    let all = sparrow_core::db::describe(&case, None).unwrap();
+    assert!(all.iter().any(|t| t.table == "record_sources"));
+    let one = sparrow_core::db::describe(&case, Some("source_files")).unwrap();
+    assert_eq!(one.len(), 1);
+    assert!(one[0].comment.as_deref().unwrap().contains("SHA-256"));
+    let sha = one[0].columns.iter().find(|c| c.name == "sha256").unwrap();
+    assert_eq!(sha.data_type, "VARCHAR");
+    assert!(sha.comment.is_some());
+    assert!(
+        sparrow_core::db::describe(&case, Some("nope"))
+            .unwrap()
+            .is_empty()
+    );
+}
