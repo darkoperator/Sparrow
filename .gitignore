@@ -22,3 +22,6 @@ build/
 *.mmdb
 
 .DS_Store
+
+# Real customer evidence used for local validation only (never commit)
+/hawk test captures/
