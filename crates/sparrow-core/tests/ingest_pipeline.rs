@@ -30,6 +30,42 @@ impl ArtifactParser for FailingParser {
     }
 }
 
+/// Test parser: the first physical line is reported as a parse error, the rest load normally.
+struct PartiallyFailingParser;
+impl ArtifactParser for PartiallyFailingParser {
+    fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
+        for (n, span) in line_spans(&ctx.text.text).into_iter().enumerate() {
+            ctx.stats.read += 1;
+            if n == 0 {
+                ctx.parse_error(n as u64, span, "bad record")?;
+                continue;
+            }
+            let key = format!("{}:{}", ctx.file_id, n);
+            ctx.record_source("test_lines", &key, n as u64, span)?;
+            ctx.stats.loaded += 1;
+        }
+        Ok(())
+    }
+}
+
+/// Test parser with a reconciliation bug: it reads the first line but never records it as
+/// loaded, duplicate or errored.
+struct UndercountingParser;
+impl ArtifactParser for UndercountingParser {
+    fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
+        for (n, span) in line_spans(&ctx.text.text).into_iter().enumerate() {
+            ctx.stats.read += 1;
+            if n == 0 {
+                continue;
+            }
+            let key = format!("{}:{}", ctx.file_id, n);
+            ctx.record_source("test_lines", &key, n as u64, span)?;
+            ctx.stats.loaded += 1;
+        }
+        Ok(())
+    }
+}
+
 fn parsers() -> ParserRegistry {
     let mut r = ParserRegistry::empty();
     r.register("hawk.log", Box::new(LinesParser));
@@ -266,5 +302,200 @@ fn path_without_collections_is_an_error() {
     assert!(
         err.to_string()
             .contains("no Hawk or Microsoft-Extractor-Suite output")
+    );
+}
+
+#[test]
+fn parse_errors_are_recorded_and_reconciled() {
+    let dir = tempfile::tempdir().unwrap();
+    fixtures::hawk_tree(dir.path());
+    let mut case = Case::in_memory().unwrap();
+    let mut r = ParserRegistry::empty();
+    r.register("hawk.log", Box::new(PartiallyFailingParser));
+    let report = ingest_path(&mut case, dir.path(), &r, &IngestOptions::default()).unwrap();
+    let f = report.collections[0]
+        .files
+        .iter()
+        .find(|f| f.rel_path == "Hawk.log")
+        .unwrap();
+    assert_eq!(f.status, FileStatus::Parsed);
+    assert_eq!(
+        (f.records_read, f.records_loaded, f.records_error),
+        (11, 10, 1)
+    );
+    assert!(
+        f.warnings.is_empty(),
+        "no reconciliation mismatch expected: {:?}",
+        f.warnings
+    );
+
+    let (pe_file_id, pe_line_start): (i64, i64) = case
+        .conn()
+        .query_row(
+            "SELECT pe.file_id, pe.line_start FROM parse_errors pe JOIN source_files sf USING (file_id)
+             WHERE sf.rel_path = 'Hawk.log'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(pe_file_id, f.file_id.unwrap());
+    assert_eq!(pe_line_start, 1);
+
+    let records_error_db: i64 = case
+        .conn()
+        .query_row(
+            "SELECT records_error FROM source_files WHERE rel_path = 'Hawk.log'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(records_error_db, 1);
+}
+
+#[test]
+fn undercounted_records_produce_a_reconciliation_mismatch_warning() {
+    let dir = tempfile::tempdir().unwrap();
+    fixtures::hawk_tree(dir.path());
+    let mut case = Case::in_memory().unwrap();
+    let mut r = ParserRegistry::empty();
+    r.register("hawk.log", Box::new(UndercountingParser));
+    let report = ingest_path(&mut case, dir.path(), &r, &IngestOptions::default()).unwrap();
+    let f = report.collections[0]
+        .files
+        .iter()
+        .find(|f| f.rel_path == "Hawk.log")
+        .unwrap();
+    assert_eq!(f.status, FileStatus::Parsed);
+    assert!(
+        f.warnings
+            .iter()
+            .any(|w| w.contains("reconciliation mismatch")),
+        "expected a reconciliation mismatch warning, got {:?}",
+        f.warnings
+    );
+}
+
+#[test]
+fn reingest_reports_already_ingested_with_original_file_id() {
+    let dir = tempfile::tempdir().unwrap();
+    fixtures::hawk_tree(dir.path());
+    let mut case = Case::in_memory().unwrap();
+    let report1 =
+        ingest_path(&mut case, dir.path(), &parsers(), &IngestOptions::default()).unwrap();
+    let original_id = report1.collections[0]
+        .files
+        .iter()
+        .find(|f| f.rel_path == "Hawk.log")
+        .unwrap()
+        .file_id
+        .unwrap();
+
+    let report2 =
+        ingest_path(&mut case, dir.path(), &parsers(), &IngestOptions::default()).unwrap();
+    let f = report2.collections[0]
+        .files
+        .iter()
+        .find(|f| f.rel_path == "Hawk.log")
+        .unwrap();
+    assert_eq!(f.status, FileStatus::DuplicateFile);
+    assert_eq!(f.file_id, Some(original_id));
+    assert_eq!(f.warnings, vec!["already ingested".to_string()]);
+}
+
+#[test]
+fn failed_file_is_retried_on_next_ingest_once_a_parser_succeeds() {
+    let dir = tempfile::tempdir().unwrap();
+    fixtures::hawk_tree(dir.path());
+    let mut case = Case::in_memory().unwrap();
+
+    let mut failing = ParserRegistry::empty();
+    failing.register("hawk.investigate_txt", Box::new(FailingParser));
+    let report1 = ingest_path(&mut case, dir.path(), &failing, &IngestOptions::default()).unwrap();
+    assert_eq!(status_of(&report1, "_Investigate.txt"), FileStatus::Error);
+
+    let mut succeeding = ParserRegistry::empty();
+    succeeding.register("hawk.investigate_txt", Box::new(LinesParser));
+    let report2 = ingest_path(
+        &mut case,
+        dir.path(),
+        &succeeding,
+        &IngestOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(status_of(&report2, "_Investigate.txt"), FileStatus::Parsed);
+
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM source_files WHERE rel_path = '_Investigate.txt'"
+        ),
+        1
+    );
+}
+
+#[test]
+fn not_supported_file_is_retried_once_a_parser_is_added() {
+    let dir = tempfile::tempdir().unwrap();
+    fixtures::hawk_tree(dir.path());
+    let mut case = Case::in_memory().unwrap();
+
+    let empty = ParserRegistry::empty();
+    let report1 = ingest_path(&mut case, dir.path(), &empty, &IngestOptions::default()).unwrap();
+    assert_eq!(status_of(&report1, "Hawk.log"), FileStatus::NotSupported);
+
+    let mut with_parser = ParserRegistry::empty();
+    with_parser.register("hawk.log", Box::new(LinesParser));
+    let report2 = ingest_path(
+        &mut case,
+        dir.path(),
+        &with_parser,
+        &IngestOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(status_of(&report2, "Hawk.log"), FileStatus::Parsed);
+
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM source_files WHERE rel_path = 'Hawk.log'"
+        ),
+        1
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_file_is_reported_as_error() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    fixtures::hawk_tree(dir.path());
+    let path = dir.path().join(fixtures::HAWK_ROOT_NAME).join("Hawk.log");
+    let original = std::fs::metadata(&path).unwrap().permissions();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let can_still_read = std::fs::read(&path).is_ok();
+    if can_still_read {
+        std::fs::set_permissions(&path, original).unwrap();
+        eprintln!(
+            "skipping unreadable_file_is_reported_as_error: this process can read a chmod 000 file (running as root?)"
+        );
+        return;
+    }
+
+    let mut case = Case::in_memory().unwrap();
+    let result = ingest_path(&mut case, dir.path(), &parsers(), &IngestOptions::default());
+    std::fs::set_permissions(&path, original).unwrap();
+    let report = result.unwrap();
+    let f = report.collections[0]
+        .files
+        .iter()
+        .find(|f| f.rel_path == "Hawk.log")
+        .unwrap();
+    assert_eq!(f.status, FileStatus::Error);
+    assert!(
+        f.warnings.iter().any(|w| w.contains("cannot read file")),
+        "{:?}",
+        f.warnings
     );
 }

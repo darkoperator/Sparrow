@@ -298,28 +298,51 @@ fn ingest_file(
     let sha = hex::encode(Sha256::digest(&raw));
     nf.sha256 = &sha;
 
-    let same: Option<i64> = case
-        .conn()
-        .query_row(
-            "SELECT file_id FROM source_files WHERE collection_id = ? AND rel_path = ? AND sha256 = ? ORDER BY file_id LIMIT 1",
-            params![collection_id, rel, &sha],
-            |r| r.get(0),
+    // Rows already recorded for this exact collection + rel_path + sha256. A row with status
+    // `parsed`, `duplicate_file` or `skipped_superseded` means this content was already handled
+    // successfully: report it as a duplicate. A row with status `error`, `not_supported` or
+    // `unrecognized` never gained provenance (or, for `error`, its provenance was rolled back),
+    // so it is stale and this file is retried from scratch: the stale row (and any of its
+    // parse_errors, though those statuses never produce any) is deleted first.
+    let existing_rows: Vec<(i64, String)> = {
+        let mut stmt = case.conn().prepare(
+            "SELECT file_id, CAST(status AS VARCHAR) FROM source_files
+             WHERE collection_id = ? AND rel_path = ? AND sha256 = ? ORDER BY file_id",
+        )?;
+        stmt.query_map(params![collection_id, rel, &sha], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+    };
+    if let Some((existing_id, _)) = existing_rows.iter().find(|(_, status)| {
+        matches!(
+            status.as_str(),
+            "parsed" | "duplicate_file" | "skipped_superseded"
         )
-        .optional()?;
-    if let Some(existing) = same {
+    }) {
         return Ok(report_for(
             &nf,
-            Some(existing),
+            Some(*existing_id),
             FileStatus::DuplicateFile,
             FileStats::default(),
             vec!["already ingested".into()],
         ));
     }
+    for (stale_id, _) in &existing_rows {
+        case.conn().execute(
+            "DELETE FROM parse_errors WHERE file_id = ?",
+            params![stale_id],
+        )?;
+        case.conn().execute(
+            "DELETE FROM source_files WHERE file_id = ?",
+            params![stale_id],
+        )?;
+    }
     if size > 0 {
         let first: Option<i64> = case
             .conn()
             .query_row(
-                "SELECT file_id FROM source_files WHERE sha256 = ? AND status <> 'error' ORDER BY file_id LIMIT 1",
+                "SELECT file_id FROM source_files WHERE sha256 = ? AND status = 'parsed' ORDER BY file_id LIMIT 1",
                 params![&sha],
                 |r| r.get(0),
             )
