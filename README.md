@@ -16,9 +16,10 @@ cargo build --release   # first build compiles DuckDB (several minutes)
 sparrow discover /evidence                        # what was found and how each file is classified
 sparrow ingest /evidence --case case.duckdb       # add --culture en-US|en-GB|... if dates are ambiguous
 sparrow schema --case case.duckdb                 # tables and column descriptions
+sparrow upgrade --case case.duckdb                # bring a case made by an older sparrow up to date
 sparrow verify collection_log 12:8 --case case.duckdb [--root /moved/evidence]
 ```
 
 Add `--json` to any command for machine-readable output. `ingest` exits with code 2 when it completed but a file
 failed, a record could not be parsed, or a file's record counts did not reconcile; `verify` exits with code 2 when
-a record no longer matches its source.
+a record no longer matches its source. With `--json`, fatal errors (exit code 1) are also printed to stdout as `{"error": "..."}`.

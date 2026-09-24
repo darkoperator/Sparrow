@@ -233,3 +233,71 @@ fn discover_lists_unreadable_directories_as_errors() {
     );
     assert!(files.iter().any(|f| f["rel_path"] == "Hawk.log"));
 }
+
+#[test]
+fn outdated_case_needs_upgrade_then_schema_works() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = dir.path().join("old.duckdb");
+    {
+        let conn = duckdb::Connection::open(&case).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name VARCHAR NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp);",
+        )
+        .unwrap();
+    }
+    sparrow()
+        .args(["schema", "--case"])
+        .arg(&case)
+        .assert()
+        .code(1)
+        .stderr(contains("sparrow upgrade"));
+    let v = json_out(
+        sparrow().args(["--json", "upgrade", "--case"]).arg(&case),
+        0,
+    );
+    assert_eq!(v["from"], 0);
+    assert!(v["to"].as_u64().unwrap() >= 2);
+    sparrow()
+        .args(["schema", "--case"])
+        .arg(&case)
+        .assert()
+        .success()
+        .stdout(contains("source_files"));
+    sparrow()
+        .args(["upgrade", "--case"])
+        .arg(&case)
+        .assert()
+        .success();
+}
+
+#[test]
+fn upgrade_refuses_to_create_a_missing_case() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = dir.path().join("nope.duckdb");
+    sparrow()
+        .args(["upgrade", "--case"])
+        .arg(&case)
+        .assert()
+        .code(1)
+        .stderr(contains("not found"));
+    assert!(!case.exists());
+}
+
+#[test]
+fn fatal_errors_are_json_on_stdout_with_json_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = dir.path().join("case.duckdb");
+    let v = json_out(
+        sparrow()
+            .args(["--json", "ingest"])
+            .arg(dir.path())
+            .arg("--case")
+            .arg(&case)
+            .args(["--culture", "xx-YY"]),
+        1,
+    );
+    assert!(
+        v["error"].as_str().unwrap().contains("unsupported culture"),
+        "{v}"
+    );
+}

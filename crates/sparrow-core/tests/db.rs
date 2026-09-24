@@ -119,7 +119,7 @@ fn read_only_open_of_outdated_schema_is_rejected() {
     }
     let err = Case::open_read_only(&path).err().unwrap();
     assert!(matches!(err, Error::SchemaOutdated { db: 0, .. }));
-    assert!(err.to_string().contains("sparrow ingest"));
+    assert!(err.to_string().contains("sparrow upgrade"));
 }
 
 #[test]

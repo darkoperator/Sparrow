@@ -27,6 +27,18 @@ impl Case {
         })
     }
 
+    /// Bring an existing case database's schema up to date. Never creates a new file.
+    /// Returns the schema version before and after.
+    pub fn upgrade(path: &Path) -> Result<(u32, u32)> {
+        if !path.is_file() {
+            return Err(Error::NotFound(format!("case database {}", path.display())));
+        }
+        let conn = Connection::open(path)?;
+        let from = migrations::current_version(&conn)?;
+        let to = migrations::migrate(&conn)?;
+        Ok((from, to))
+    }
+
     /// Open an existing case database read-only. The schema must match this build exactly.
     pub fn open_read_only(path: &Path) -> Result<Case> {
         if !path.is_file() {

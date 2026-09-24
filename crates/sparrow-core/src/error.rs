@@ -15,7 +15,7 @@ pub enum Error {
     )]
     SchemaTooNew { db: u32, supported: u32 },
     #[error(
-        "case database schema v{db} is older than v{supported}; open it for writing once (e.g. `sparrow ingest`) to upgrade"
+        "case database schema v{db} is older than v{supported}; run `sparrow upgrade --case <file>` to upgrade it"
     )]
     SchemaOutdated { db: u32, supported: u32 },
     #[error("migration {version} failed: {source}")]

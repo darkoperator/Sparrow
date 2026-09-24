@@ -1383,6 +1383,7 @@ dependencies = [
  "anyhow",
  "assert_cmd",
  "clap",
+ "duckdb",
  "predicates",
  "serde",
  "serde_json",

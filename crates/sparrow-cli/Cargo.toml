@@ -17,6 +17,7 @@ sparrow-core = { path = "../sparrow-core" }
 
 [dev-dependencies]
 assert_cmd.workspace = true
+duckdb.workspace = true
 predicates.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

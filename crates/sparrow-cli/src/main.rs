@@ -51,6 +51,11 @@ enum Command {
         #[arg(long)]
         root: Option<PathBuf>,
     },
+    /// Upgrade an existing case database to this version's schema
+    Upgrade {
+        #[arg(long)]
+        case: PathBuf,
+    },
     /// Describe the case database tables and columns
     Schema {
         #[arg(long)]
@@ -61,10 +66,15 @@ enum Command {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    let json = cli.json;
     match run(cli) {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("error: {e:#}");
+            let msg = format!("{e:#}");
+            eprintln!("error: {msg}");
+            if json {
+                println!("{}", serde_json::json!({ "error": msg }));
+            }
             ExitCode::from(1)
         }
     }
@@ -90,6 +100,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             case,
             root,
         }) => cmd_verify(&table, &record_key, &case, root.as_deref(), json),
+        Some(Command::Upgrade { case }) => cmd_upgrade(&case, json),
         Some(Command::Schema { case, table }) => cmd_schema(&case, table.as_deref(), json),
     }
 }
@@ -263,6 +274,27 @@ fn cmd_verify(
     } else {
         ExitCode::from(2)
     })
+}
+
+#[derive(Serialize)]
+struct UpgradeOutput {
+    from: u32,
+    to: u32,
+}
+
+fn cmd_upgrade(case_path: &Path, json: bool) -> Result<ExitCode> {
+    let (from, to) = Case::upgrade(case_path)?;
+    if json {
+        print_json(&UpgradeOutput { from, to })?;
+    } else if from == to {
+        println!("{}: schema already at v{to}", case_path.display());
+    } else {
+        println!(
+            "{}: schema upgraded from v{from} to v{to}",
+            case_path.display()
+        );
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 #[derive(Serialize)]
