@@ -3,13 +3,15 @@
 
 pub mod context;
 pub mod parser;
+pub mod supersede;
 
 use crate::discovery::{
-    Classification, DiscoveredCollection, FileFormat, Registry, SNIFF_BYTES, Tool,
+    Classification, CollectionFile, DiscoveredCollection, FileFormat, Registry, SNIFF_BYTES, Tool,
     canonical_root_string, discover_collections, format_from_path, list_collection_files,
 };
 use crate::ingest::context::{FileStats, ParseContext};
 use crate::ingest::parser::ParserRegistry;
+use crate::ingest::supersede::{Handled, processing_key, truncation_warning};
 use crate::readers::text::{LineIndex, decode};
 use crate::readers::time::{DateOrder, parse_timestamp};
 use crate::{Case, Error, Result, VERSION};
@@ -121,6 +123,15 @@ pub fn ingest_path(
     Ok(report)
 }
 
+struct FileJob<'a> {
+    collection_id: i64,
+    tool: Tool,
+    abs: &'a Path,
+    rel: &'a str,
+    /// Already-handled file that makes this one redundant.
+    superseded_by: Option<String>,
+}
+
 fn ingest_collection(
     case: &mut Case,
     dc: &DiscoveredCollection,
@@ -130,17 +141,31 @@ fn ingest_collection(
     let root = canonical_root_string(&dc.root);
     let collection_id = upsert_collection(case.conn(), dc, &root)?;
     let listing = list_collection_files(&dc.root, dc.shallow)?;
+    let reg = Registry::builtin();
+    let mut ordered: Vec<(&CollectionFile, bool)> = listing
+        .files
+        .iter()
+        .map(|f| (f, reg.classify(dc.tool, &f.rel).is_some_and(|c| c.derived)))
+        .collect();
+    ordered.sort_by_key(|(f, derived)| processing_key(&f.rel, *derived));
+    let mut handled = Handled::default();
     let mut files = Vec::new();
-    for f in &listing.files {
-        files.push(ingest_file(
-            case,
+    for (f, derived) in ordered {
+        let job = FileJob {
             collection_id,
-            dc.tool,
-            &f.abs,
-            &f.rel,
-            parsers,
-            opts,
-        )?);
+            tool: dc.tool,
+            abs: &f.abs,
+            rel: &f.rel,
+            superseded_by: handled.superseded_by(&f.rel, derived),
+        };
+        let report = ingest_file(case, &job, parsers, opts)?;
+        if matches!(
+            report.status,
+            FileStatus::Parsed | FileStatus::DuplicateFile
+        ) {
+            handled.insert(&f.rel);
+        }
+        files.push(report);
     }
     for err in &listing.errors {
         let nf = NewFile {
@@ -296,16 +321,13 @@ fn record_simple(
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn ingest_file(
     case: &mut Case,
-    collection_id: i64,
-    tool: Tool,
-    abs: &Path,
-    rel: &str,
+    job: &FileJob,
     parsers: &ParserRegistry,
     opts: &IngestOptions,
 ) -> Result<FileReport> {
+    let (collection_id, tool, abs, rel) = (job.collection_id, job.tool, job.abs, job.rel);
     let reg = Registry::builtin();
     let path_class: Option<Classification> = reg.classify_with_head(tool, rel, None);
     let mut nf = NewFile {
@@ -403,6 +425,14 @@ fn ingest_file(
             return record_simple(case, &nf, FileStatus::DuplicateFile, vec![msg]);
         }
     }
+    if let Some(other) = &job.superseded_by {
+        return record_simple(
+            case,
+            &nf,
+            FileStatus::SkippedSuperseded,
+            vec![format!("superseded by {other}")],
+        );
+    }
     let Some(class) = class.as_ref() else {
         return record_simple(case, &nf, FileStatus::Unrecognized, vec![]);
     };
@@ -431,7 +461,11 @@ fn ingest_file(
     match parser.parse(&mut ctx) {
         Ok(()) => {
             let (stats, parser_warnings) = ctx.finish();
-            let warnings: Vec<String> = decode_warning.into_iter().chain(parser_warnings).collect();
+            let warnings: Vec<String> = decode_warning
+                .into_iter()
+                .chain(parser_warnings)
+                .chain(truncation_warning(class.artifact_id, stats.read))
+                .collect();
             let warnings_json = if warnings.is_empty() {
                 None
             } else {
@@ -454,9 +488,18 @@ fn ingest_file(
         Err(e) => {
             drop(ctx);
             tx.rollback()?;
-            let msg = format!("parser {} failed: {e}", class.artifact_id);
+            let (status, msg) = match e {
+                Error::UnsupportedShape(why) => (
+                    FileStatus::NotSupported,
+                    format!("{}: {why}", class.artifact_id),
+                ),
+                other => (
+                    FileStatus::Error,
+                    format!("parser {} failed: {other}", class.artifact_id),
+                ),
+            };
             let warnings = std::iter::once(msg).chain(decode_warning).collect();
-            record_simple(case, &nf, FileStatus::Error, warnings)
+            record_simple(case, &nf, status, warnings)
         }
     }
 }
