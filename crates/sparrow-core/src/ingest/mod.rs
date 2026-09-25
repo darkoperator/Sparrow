@@ -15,7 +15,7 @@ use crate::ingest::context::{FileStats, ParseContext};
 use crate::ingest::parser::ParserRegistry;
 use crate::ingest::supersede::{Handled, processing_key, truncation_warning};
 use crate::readers::text::{LineIndex, decode};
-use crate::readers::time::{DateOrder, parse_timestamp};
+use crate::readers::time::{DateOrder, ParsedTime, parse_timestamp};
 use crate::{Case, Error, Result, VERSION};
 use duckdb::{Connection, OptionalExt, params};
 use serde::Serialize;
@@ -125,20 +125,34 @@ pub fn ingest_path(
     ingest_collections(case, &collections, parsers, opts)
 }
 
-/// Ingest already-discovered collections, one after another.
+/// Ingest already-discovered collections, oldest first (collection time ascending, unknown
+/// times first, then root path) so a single run merges state in collection order. The
+/// report lists the collections in the given order.
 pub fn ingest_collections(
     case: &mut Case,
     collections: &[DiscoveredCollection],
     parsers: &ParserRegistry,
     opts: &IngestOptions,
 ) -> Result<IngestReport> {
-    let mut report = IngestReport::default();
-    for dc in collections {
-        report
-            .collections
-            .push(ingest_collection(case, dc, parsers, opts)?);
+    let mut order: Vec<usize> = (0..collections.len()).collect();
+    order.sort_by_cached_key(|&i| {
+        let dc = &collections[i];
+        (started_at(dc).map(|t| t.utc), dc.root.clone())
+    });
+    let mut done: Vec<Option<CollectionReport>> = vec![None; collections.len()];
+    for i in order {
+        done[i] = Some(ingest_collection(case, &collections[i], parsers, opts)?);
     }
-    Ok(report)
+    Ok(IngestReport {
+        collections: done.into_iter().flatten().collect(),
+    })
+}
+
+/// Collection time from the collection's folder name, when it has one.
+fn started_at(dc: &DiscoveredCollection) -> Option<ParsedTime> {
+    dc.started_hint
+        .as_deref()
+        .and_then(|s| parse_timestamp(s, None).ok())
 }
 
 struct FileJob<'a> {
@@ -235,11 +249,7 @@ fn upsert_collection(conn: &Connection, dc: &DiscoveredCollection, root: &str) -
     if let Some(id) = existing {
         return Ok(id);
     }
-    let collected_at = dc
-        .started_hint
-        .as_deref()
-        .and_then(|s| parse_timestamp(s, None).ok())
-        .map(|t| t.rfc3339());
+    let collected_at = started_at(dc).map(|t| t.rfc3339());
     let id = conn.query_row(
         "INSERT INTO collections (tool, root_path, tenant_name_reported, collected_at, collected_at_tz_assumed, sparrow_version)
          VALUES (?, ?, ?, CAST(? AS TIMESTAMPTZ), ?, ?) RETURNING collection_id",

@@ -124,6 +124,16 @@ pub fn hawk4_state_tree(base: &Path) -> PathBuf {
 /// dates), the user folder by Windows PowerShell 5.1 (UTF-8 BOM JSON with `\/Date(ms)\/`,
 /// UTF-16LE TXT). `forwarding` is alice's ForwardingSmtpAddress.
 pub fn hawk4_state_tree_at(base: &Path, stamp: &str, forwarding: &str) -> PathBuf {
+    hawk4_state_tree_with(base, stamp, forwarding, true)
+}
+
+/// [`hawk4_state_tree_at`], writing alice's `AutoReply_alice.txt` only when `auto_reply`.
+pub fn hawk4_state_tree_with(
+    base: &Path,
+    stamp: &str,
+    forwarding: &str,
+    auto_reply: bool,
+) -> PathBuf {
     let root = base.join(format!("Hawk_Contoso_Ltd_{stamp}"));
     let tenant =
         |rel: &str, v: &Value| write(&root, &format!("Tenant/{rel}"), ps_json(v).as_bytes());
@@ -385,7 +395,9 @@ pub fn hawk4_state_tree_at(base: &Path, stamp: &str, forwarding: &str) -> PathBu
             ("PrimarySmtpAddress", ALICE),
         ])),
     );
-    user("AutoReply_alice.txt", &utf16le_bom(AUTO_REPLY));
+    if auto_reply {
+        user("AutoReply_alice.txt", &utf16le_bom(AUTO_REPLY));
+    }
     root
 }
 

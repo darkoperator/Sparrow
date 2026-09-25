@@ -253,7 +253,13 @@ fn state_table_specs_match_the_schema() {
     let case = Case::in_memory().unwrap();
     assert_eq!(case.schema_version().unwrap(), 4);
     for spec in ALL {
-        for common in ["record_key", "collection_id", "collected_at", "raw"] {
+        for common in [
+            "record_key",
+            "collection_id",
+            "collected_at",
+            "raw",
+            "column_collections",
+        ] {
             assert!(
                 data_type(&case, spec.table, common).is_some(),
                 "{}.{common} missing",

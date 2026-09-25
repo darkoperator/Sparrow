@@ -1,9 +1,12 @@
 use sparrow_core::Case;
+use sparrow_core::discovery::discover_collections;
 use sparrow_core::fixtures::state::{
-    ALICE, BOB, hawk3_state_tree, hawk4_state_tree, hawk4_state_tree_at,
+    ALICE, BOB, hawk3_state_tree, hawk4_state_tree, hawk4_state_tree_at, hawk4_state_tree_with,
 };
 use sparrow_core::ingest::parser::ParserRegistry;
-use sparrow_core::ingest::{FileReport, FileStatus, IngestOptions, IngestReport, ingest_path};
+use sparrow_core::ingest::{
+    FileReport, FileStatus, IngestOptions, IngestReport, ingest_collections, ingest_path,
+};
 use sparrow_core::verify::verify_record;
 use std::path::Path;
 
@@ -270,5 +273,105 @@ fn state_rows_verify_against_the_original_files() {
             .as_deref()
             .is_some_and(|e| e.contains("UnifiedAuditLogIngestionEnabled")),
         "{rep:?}"
+    );
+}
+
+/// Every row of state table `table`, values only. Provenance (`collection_id`,
+/// `collected_at`, `column_collections`) is left out: byte-identical files of the second
+/// capture are skipped as `duplicate_file`, so which capture re-confirmed a value depends
+/// on the order even though the value does not.
+fn state_values(case: &Case, table: &str) -> Vec<String> {
+    let sql = format!(
+        "SELECT CAST(x AS VARCHAR)
+         FROM (SELECT * EXCLUDE (collection_id, collected_at, column_collections, raw) FROM {table}) x
+         ORDER BY x.record_key"
+    );
+    let mut stmt = case.conn().prepare(&sql).unwrap();
+    stmt.query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[test]
+fn columns_only_an_older_capture_supplies_survive_in_either_order() {
+    let new_dir = tempfile::tempdir().unwrap();
+    let old_dir = tempfile::tempdir().unwrap();
+    // The newer capture lacks AutoReply_alice.txt; the older one has it.
+    let new_root = hawk4_state_tree_with(
+        new_dir.path(),
+        "20260920_090000",
+        "smtp:new@fabrikam.example",
+        false,
+    );
+    let old_root = hawk4_state_tree_with(
+        old_dir.path(),
+        "20260910_090000",
+        "smtp:old@fabrikam.example",
+        true,
+    );
+    let mut finals = Vec::new();
+    for order in [[&new_root, &old_root], [&old_root, &new_root]] {
+        let mut case = Case::in_memory().unwrap();
+        for root in order {
+            assert!(!ingest_into(&mut case, root).has_errors());
+        }
+        assert_eq!(
+            text(
+                &case,
+                "SELECT forwarding_smtp_address || '|' || auto_reply_state || '|' || auto_reply_external_audience FROM mailboxes"
+            ),
+            "smtp:new@fabrikam.example|Enabled|All"
+        );
+        assert!(
+            text(
+                &case,
+                "SELECT c.root_path FROM mailboxes m JOIN collections c ON c.collection_id = CAST(m.column_collections->>'$.auto_reply_state' AS BIGINT)"
+            )
+            .ends_with("Hawk_Contoso_Ltd_20260910_090000")
+        );
+        finals.push(
+            ["mailboxes", "users", "inbox_rules"]
+                .map(|t| state_values(&case, t))
+                .concat(),
+        );
+    }
+    assert_eq!(finals[0], finals[1]);
+}
+
+#[test]
+fn one_run_ingests_collections_oldest_first_and_reports_in_the_given_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let new_root = hawk4_state_tree_at(
+        &dir.path().join("a"),
+        "20260920_090000",
+        "smtp:new@fabrikam.example",
+    );
+    let old_root = hawk4_state_tree_at(
+        &dir.path().join("b"),
+        "20260910_090000",
+        "smtp:old@fabrikam.example",
+    );
+    let mut given = discover_collections(&new_root).unwrap();
+    given.extend(discover_collections(&old_root).unwrap());
+    let mut case = Case::in_memory().unwrap();
+    let report = ingest_collections(
+        &mut case,
+        &given,
+        &ParserRegistry::builtin(),
+        &IngestOptions::default(),
+    )
+    .unwrap();
+    assert!(!report.has_errors());
+    let roots: Vec<_> = report.collections.iter().map(|c| c.root.clone()).collect();
+    assert!(roots[0].ends_with("20260920_090000"), "{roots:?}");
+    assert!(roots[1].ends_with("20260910_090000"), "{roots:?}");
+    assert!(
+        text(
+            &case,
+            "SELECT root_path FROM collections ORDER BY collection_id LIMIT 1"
+        )
+        .ends_with("Hawk_Contoso_Ltd_20260910_090000"),
+        "the older capture is processed (and registered) first"
     );
 }

@@ -3,8 +3,9 @@
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadMode {
-    /// Latest wins (spec 5.2): a copy from a collection that is not older replaces the
-    /// columns it provides; an older collection's copy only adds a sighting.
+    /// Latest wins (spec 5.2), per column: a copy writes each column it provides unless a
+    /// newer collection already wrote that column (`column_collections`), so the final
+    /// values do not depend on the ingest order.
     LatestWins,
     /// The first copy wins; later copies only add sightings.
     InsertOnly,

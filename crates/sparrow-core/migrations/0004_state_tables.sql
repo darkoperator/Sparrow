@@ -15,14 +15,14 @@ CREATE TABLE users (
     user_id VARCHAR, upn VARCHAR, display_name VARCHAR, mail VARCHAR, account_enabled BOOLEAN,
     created TIMESTAMPTZ, deleted TIMESTAMPTZ, last_password_change TIMESTAMPTZ, user_type VARCHAR,
     on_prem_sync BOOLEAN, state_changed TIMESTAMPTZ, last_signin TIMESTAMPTZ, department VARCHAR,
-    job_title VARCHAR, raw JSON
+    job_title VARCHAR, raw JSON, column_collections JSON
 );
 
 CREATE TABLE role_assignments (
     record_key VARCHAR NOT NULL, collection_id BIGINT NOT NULL, collected_at TIMESTAMPTZ,
     source role_source, role_name VARCHAR, principal_upn VARCHAR, principal_id VARCHAR,
     principal_name VARCHAR, principal_type VARCHAR, assignment_type VARCHAR, assignment_name VARCHAR,
-    enabled BOOLEAN, start_time TIMESTAMPTZ, end_time TIMESTAMPTZ, raw JSON
+    enabled BOOLEAN, start_time TIMESTAMPTZ, end_time TIMESTAMPTZ, raw JSON, column_collections JSON
 );
 
 CREATE TABLE oauth_grants (
@@ -30,13 +30,13 @@ CREATE TABLE oauth_grants (
     permission_type permission_type, client_id VARCHAR, client_name VARCHAR, resource_id VARCHAR,
     resource_name VARCHAR, permission VARCHAR, consent_type VARCHAR, principal_id VARCHAR,
     principal_name VARCHAR, principal_upn VARCHAR, risk_category VARCHAR, publisher VARCHAR,
-    verified_publisher VARCHAR, created TIMESTAMPTZ, sign_in_audience VARCHAR, raw JSON
+    verified_publisher VARCHAR, created TIMESTAMPTZ, sign_in_audience VARCHAR, raw JSON, column_collections JSON
 );
 
 CREATE TABLE app_credentials (
     record_key VARCHAR NOT NULL, collection_id BIGINT NOT NULL, collected_at TIMESTAMPTZ,
     app_object_id VARCHAR, app_name VARCHAR, key_id VARCHAR, cred_type credential_type,
-    key_type VARCHAR, start_time TIMESTAMPTZ, end_time TIMESTAMPTZ, owner credential_owner, raw JSON
+    key_type VARCHAR, start_time TIMESTAMPTZ, end_time TIMESTAMPTZ, owner credential_owner, raw JSON, column_collections JSON
 );
 
 CREATE TABLE inbox_rules (
@@ -47,7 +47,7 @@ CREATE TABLE inbox_rules (
     soft_delete BOOLEAN, move_to_folder VARCHAR, copy_to_folder VARCHAR, mark_as_read BOOLEAN,
     stop_processing BOOLEAN, from_addresses VARCHAR[], subject_contains VARCHAR[],
     body_contains VARCHAR[], subject_or_body_contains VARCHAR[], has_attachment BOOLEAN,
-    source_folder VARCHAR, description VARCHAR, raw JSON
+    source_folder VARCHAR, description VARCHAR, raw JSON, column_collections JSON
 );
 
 CREATE TABLE mailboxes (
@@ -59,19 +59,19 @@ CREATE TABLE mailboxes (
     imap_enabled BOOLEAN, ews_enabled BOOLEAN, owa_enabled BOOLEAN, activesync_enabled BOOLEAN,
     mapi_enabled BOOLEAN, auto_reply_state VARCHAR, auto_reply_start TIMESTAMPTZ,
     auto_reply_end TIMESTAMPTZ, auto_reply_external_audience VARCHAR, auto_reply_message VARCHAR,
-    auto_reply_external_message VARCHAR, when_changed TIMESTAMPTZ, raw JSON
+    auto_reply_external_message VARCHAR, when_changed TIMESTAMPTZ, raw JSON, column_collections JSON
 );
 
 CREATE TABLE audit_config (
     record_key VARCHAR NOT NULL, collection_id BIGINT NOT NULL, collected_at TIMESTAMPTZ,
     admin_audit_log_enabled BOOLEAN, unified_audit_log_ingestion_enabled BOOLEAN,
     admin_audit_log_age_limit VARCHAR, log_level VARCHAR, audit_disabled BOOLEAN,
-    security_defaults_enabled BOOLEAN, raw JSON
+    security_defaults_enabled BOOLEAN, raw JSON, column_collections JSON
 );
 
 CREATE TABLE tenant_settings (
     record_key VARCHAR NOT NULL, collection_id BIGINT NOT NULL, collected_at TIMESTAMPTZ,
-    source VARCHAR, name VARCHAR, value JSON, raw JSON
+    source VARCHAR, name VARCHAR, value JSON, raw JSON, column_collections JSON
 );
 
 CREATE TABLE transport_rules (
@@ -79,13 +79,13 @@ CREATE TABLE transport_rules (
     name VARCHAR, guid VARCHAR, state VARCHAR, mode VARCHAR, priority INTEGER, created_by VARCHAR,
     last_modified_by VARCHAR, when_changed TIMESTAMPTZ, description VARCHAR, conditions JSON,
     exceptions JSON, actions JSON, redirect_to VARCHAR[], blind_copy_to VARCHAR[], copy_to VARCHAR[],
-    add_to_recipients VARCHAR[], raw JSON
+    add_to_recipients VARCHAR[], raw JSON, column_collections JSON
 );
 
 CREATE TABLE remote_domains (
     record_key VARCHAR NOT NULL, collection_id BIGINT NOT NULL, collected_at TIMESTAMPTZ,
     domain_name VARCHAR, name VARCHAR, auto_forward_enabled BOOLEAN, allowed_ooo_type VARCHAR,
-    when_changed TIMESTAMPTZ, raw JSON
+    when_changed TIMESTAMPTZ, raw JSON, column_collections JSON
 );
 
 CREATE TABLE mobile_devices (
@@ -93,14 +93,14 @@ CREATE TABLE mobile_devices (
     mailbox VARCHAR, device_id VARCHAR, friendly_name VARCHAR, device_type VARCHAR, model VARCHAR,
     os VARCHAR, user_agent VARCHAR, client_type VARCHAR, first_sync TIMESTAMPTZ, last_sync TIMESTAMPTZ,
     access_state VARCHAR, access_state_reason VARCHAR, is_managed BOOLEAN, is_compliant BOOLEAN,
-    is_disabled BOOLEAN, when_created TIMESTAMPTZ, raw JSON
+    is_disabled BOOLEAN, when_created TIMESTAMPTZ, raw JSON, column_collections JSON
 );
 
 CREATE TABLE risky_users (
     record_key VARCHAR NOT NULL, collection_id BIGINT NOT NULL, collected_at TIMESTAMPTZ,
     user_id VARCHAR, upn VARCHAR, display_name VARCHAR, risk_level VARCHAR, risk_state VARCHAR,
     risk_detail VARCHAR, risk_last_updated TIMESTAMPTZ, is_deleted BOOLEAN, is_processing BOOLEAN,
-    raw JSON
+    raw JSON, column_collections JSON
 );
 
 CREATE TABLE risk_detections (
@@ -111,21 +111,22 @@ CREATE TABLE risk_detections (
     token_issuer_type VARCHAR, ip VARCHAR, user_upn VARCHAR, user_id VARCHAR,
     user_display_name VARCHAR, correlation_id VARCHAR, request_id VARCHAR,
     location STRUCT(city VARCHAR, state VARCHAR, country VARCHAR, latitude DOUBLE, longitude DOUBLE),
-    additional_info JSON, raw JSON
+    additional_info JSON, raw JSON, column_collections JSON
 );
 
 CREATE TABLE collector_flags (
     record_key VARCHAR NOT NULL, collection_id BIGINT NOT NULL, collected_at TIMESTAMPTZ,
     file_id BIGINT, flag_type VARCHAR, category VARCHAR, flag_time TIMESTAMPTZ, subject VARCHAR,
-    description VARCHAR, linked_table VARCHAR, linked_key VARCHAR, raw JSON
+    description VARCHAR, linked_table VARCHAR, linked_key VARCHAR, raw JSON, column_collections JSON
 );
 
 -- Common columns.
 COMMENT ON TABLE users IS 'Directory users at collection time (Hawk 4 EntraIDUsers, Hawk 3 AzureADUsers). One row per record_key; a newer collection replaces the columns it provides (latest wins).';
 COMMENT ON COLUMN users.record_key IS 'Entra object id (lower-case), else the lower-cased UPN.';
-COMMENT ON COLUMN users.collection_id IS 'Collection that last wrote this row''s values.';
+COMMENT ON COLUMN users.collection_id IS 'Newest collection that wrote or re-confirmed any of this row''s columns (per-column writers: column_collections).';
 COMMENT ON COLUMN users.collected_at IS 'collected_at of that collection (NULL when unknown).';
 COMMENT ON COLUMN users.raw IS 'Source record(s) as loaded; objects from several sources are merged (json_merge_patch).';
+COMMENT ON COLUMN users.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
 COMMENT ON COLUMN users.user_id IS 'Entra object id (Graph Id / MSOnline ObjectID), lower-case.';
 COMMENT ON COLUMN users.upn IS 'UserPrincipalName, lower-case.';
 COMMENT ON COLUMN users.display_name IS 'DisplayName.';
@@ -143,9 +144,10 @@ COMMENT ON COLUMN users.job_title IS 'Job title when the source provides it (not
 
 COMMENT ON TABLE role_assignments IS 'Admin role memberships and Exchange role assignments (Entra directory roles, Exchange role groups, eDiscovery and ApplicationImpersonation assignments). Latest wins per record_key.';
 COMMENT ON COLUMN role_assignments.record_key IS '<source>|<lower role name>|<principal>: principal is the lower UPN, else the object id, else the lower display name; empty for a role without members.';
-COMMENT ON COLUMN role_assignments.collection_id IS 'Collection that last wrote this row''s values.';
+COMMENT ON COLUMN role_assignments.collection_id IS 'Newest collection that wrote or re-confirmed any of this row''s columns (per-column writers: column_collections).';
 COMMENT ON COLUMN role_assignments.collected_at IS 'collected_at of that collection (NULL when unknown).';
 COMMENT ON COLUMN role_assignments.raw IS 'Source record as loaded.';
+COMMENT ON COLUMN role_assignments.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
 COMMENT ON COLUMN role_assignments.source IS 'entra_directory (EntraIDAdministrators / AzureADAdministrators), exchange_rbac (ExchangeOnlineAdministrators, Impersonation_Rights), exchange_ediscovery (EDiscoveryRoleAssignments, CustomEDiscoveryRoles), entra_pim (Extractor Suite, later).';
 COMMENT ON COLUMN role_assignments.role_name IS 'Directory role, role group or management role name.';
 COMMENT ON COLUMN role_assignments.principal_upn IS 'Member UPN / e-mail (lower-case) when the source gives one.';
@@ -160,9 +162,10 @@ COMMENT ON COLUMN role_assignments.end_time IS 'Assignment end (PIM), when known
 
 COMMENT ON TABLE oauth_grants IS 'OAuth consent grants: one row per client, resource, permission and principal (Hawk Consent_Grants). Latest wins per record_key.';
 COMMENT ON COLUMN oauth_grants.record_key IS '<client_id>|<resource_id>|<lower permission>|<principal_id or empty>.';
-COMMENT ON COLUMN oauth_grants.collection_id IS 'Collection that last wrote this row''s values.';
+COMMENT ON COLUMN oauth_grants.collection_id IS 'Newest collection that wrote or re-confirmed any of this row''s columns (per-column writers: column_collections).';
 COMMENT ON COLUMN oauth_grants.collected_at IS 'collected_at of that collection (NULL when unknown).';
 COMMENT ON COLUMN oauth_grants.raw IS 'Source record as loaded.';
+COMMENT ON COLUMN oauth_grants.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
 COMMENT ON COLUMN oauth_grants.permission_type IS 'delegated (oauth2PermissionGrant scope) or application (app role assignment).';
 COMMENT ON COLUMN oauth_grants.client_id IS 'Client service principal object id (Hawk ClientObjectId), lower-case.';
 COMMENT ON COLUMN oauth_grants.client_name IS 'Client application display name.';
@@ -181,9 +184,10 @@ COMMENT ON COLUMN oauth_grants.sign_in_audience IS 'Client sign-in audience when
 
 COMMENT ON TABLE app_credentials IS 'Secrets and certificates on app registrations and service principals (Hawk ApplicationCertsAndSecrets, SPNCertsAndSecrets). Latest wins per record_key.';
 COMMENT ON COLUMN app_credentials.record_key IS '<lower app_object_id>|<lower key_id>.';
-COMMENT ON COLUMN app_credentials.collection_id IS 'Collection that last wrote this row''s values.';
+COMMENT ON COLUMN app_credentials.collection_id IS 'Newest collection that wrote or re-confirmed any of this row''s columns (per-column writers: column_collections).';
 COMMENT ON COLUMN app_credentials.collected_at IS 'collected_at of that collection (NULL when unknown).';
 COMMENT ON COLUMN app_credentials.raw IS 'Source record as loaded.';
+COMMENT ON COLUMN app_credentials.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
 COMMENT ON COLUMN app_credentials.app_object_id IS 'Object id of the application or service principal, lower-case.';
 COMMENT ON COLUMN app_credentials.app_name IS 'Application / service principal display name.';
 COMMENT ON COLUMN app_credentials.key_id IS 'Credential KeyId.';
@@ -195,9 +199,10 @@ COMMENT ON COLUMN app_credentials.owner IS 'application (app registration) or se
 
 COMMENT ON TABLE inbox_rules IS 'Inbox rules (Get-InboxRule) and sweep rules (Get-SweepRule) at collection time. Latest wins per record_key.';
 COMMENT ON COLUMN inbox_rules.record_key IS '<kind>|<lower mailbox>|<rule_identity>.';
-COMMENT ON COLUMN inbox_rules.collection_id IS 'Collection that last wrote this row''s values.';
+COMMENT ON COLUMN inbox_rules.collection_id IS 'Newest collection that wrote or re-confirmed any of this row''s columns (per-column writers: column_collections).';
 COMMENT ON COLUMN inbox_rules.collected_at IS 'collected_at of that collection (NULL when unknown).';
 COMMENT ON COLUMN inbox_rules.raw IS 'Source record as loaded.';
+COMMENT ON COLUMN inbox_rules.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
 COMMENT ON COLUMN inbox_rules.kind IS 'inbox or sweep.';
 COMMENT ON COLUMN inbox_rules.mailbox IS 'MailboxOwnerId (lower-case), else the user folder UPN.';
 COMMENT ON COLUMN inbox_rules.mailbox_upn IS 'UPN of the Hawk user folder the rule came from (kept when a tenant-wide copy lacks it).';
@@ -225,9 +230,10 @@ COMMENT ON COLUMN inbox_rules.description IS 'Exchange''s human-readable rule de
 
 COMMENT ON TABLE mailboxes IS 'Mailbox settings merged from several Hawk files (ForwardingReport, Mailbox_Info.txt, CAS_Mailbox_Info.txt, AutoReply.txt); each file fills its own columns. Latest wins per column.';
 COMMENT ON COLUMN mailboxes.record_key IS 'Lower-case UPN (Hawk user folder name, else the record UserPrincipalName).';
-COMMENT ON COLUMN mailboxes.collection_id IS 'Collection that last wrote this row''s values.';
+COMMENT ON COLUMN mailboxes.collection_id IS 'Newest collection that wrote or re-confirmed any of this row''s columns (per-column writers: column_collections).';
 COMMENT ON COLUMN mailboxes.collected_at IS 'collected_at of that collection (NULL when unknown).';
-COMMENT ON COLUMN mailboxes.raw IS 'Source records merged (json_merge_patch) in load order.';
+COMMENT ON COLUMN mailboxes.raw IS 'Source records merged (json_merge_patch, top-level nulls ignored); keys from a newer collection take precedence.';
+COMMENT ON COLUMN mailboxes.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
 COMMENT ON COLUMN mailboxes.upn IS 'Mailbox UPN, lower-case.';
 COMMENT ON COLUMN mailboxes.display_name IS 'DisplayName.';
 COMMENT ON COLUMN mailboxes.primary_smtp_address IS 'PrimarySmtpAddress, lower-case.';
@@ -257,9 +263,10 @@ COMMENT ON COLUMN mailboxes.when_changed IS 'Mailbox WhenChangedUTC from the for
 
 COMMENT ON TABLE audit_config IS 'Organization audit configuration (AdminAuditLogConfig, OrganizationConfig). One row, record_key organization; each source fills its own columns.';
 COMMENT ON COLUMN audit_config.record_key IS 'Always organization.';
-COMMENT ON COLUMN audit_config.collection_id IS 'Collection that last wrote this row''s values.';
+COMMENT ON COLUMN audit_config.collection_id IS 'Newest collection that wrote or re-confirmed any of this row''s columns (per-column writers: column_collections).';
 COMMENT ON COLUMN audit_config.collected_at IS 'collected_at of that collection (NULL when unknown).';
 COMMENT ON COLUMN audit_config.raw IS 'Source objects merged (json_merge_patch).';
+COMMENT ON COLUMN audit_config.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
 COMMENT ON COLUMN audit_config.admin_audit_log_enabled IS 'AdminAuditLogConfig AdminAuditLogEnabled.';
 COMMENT ON COLUMN audit_config.unified_audit_log_ingestion_enabled IS 'AdminAuditLogConfig UnifiedAuditLogIngestionEnabled (false = no unified audit log).';
 COMMENT ON COLUMN audit_config.admin_audit_log_age_limit IS 'AdminAuditLogAgeLimit as reported (e.g. 90.00:00:00).';
@@ -269,18 +276,20 @@ COMMENT ON COLUMN audit_config.security_defaults_enabled IS 'Entra security defa
 
 COMMENT ON TABLE tenant_settings IS 'Name/value tenant settings: every AdminAuditLogConfig, OrganizationConfig and TransportConfig property, and Exchange management role entries. Latest wins per record_key.';
 COMMENT ON COLUMN tenant_settings.record_key IS '<source>|<lower name>.';
-COMMENT ON COLUMN tenant_settings.collection_id IS 'Collection that last wrote this row''s values.';
+COMMENT ON COLUMN tenant_settings.collection_id IS 'Newest collection that wrote or re-confirmed any of this row''s columns (per-column writers: column_collections).';
 COMMENT ON COLUMN tenant_settings.collected_at IS 'collected_at of that collection (NULL when unknown).';
 COMMENT ON COLUMN tenant_settings.raw IS 'Unused (NULL): value holds the setting.';
+COMMENT ON COLUMN tenant_settings.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
 COMMENT ON COLUMN tenant_settings.source IS 'admin_audit_log_config, organization_config, transport_config or exchange_role_entry.';
 COMMENT ON COLUMN tenant_settings.name IS 'Property name (role entries: Identity, i.e. <role>\<cmdlet>).';
 COMMENT ON COLUMN tenant_settings.value IS 'Value as JSON: text for Format-List sources, typed JSON for JSON sources, an object for role entries.';
 
 COMMENT ON TABLE transport_rules IS 'Exchange transport (mail flow) rules at collection time. Latest wins per record_key.';
 COMMENT ON COLUMN transport_rules.record_key IS 'Lower-case rule name.';
-COMMENT ON COLUMN transport_rules.collection_id IS 'Collection that last wrote this row''s values.';
+COMMENT ON COLUMN transport_rules.collection_id IS 'Newest collection that wrote or re-confirmed any of this row''s columns (per-column writers: column_collections).';
 COMMENT ON COLUMN transport_rules.collected_at IS 'collected_at of that collection (NULL when unknown).';
 COMMENT ON COLUMN transport_rules.raw IS 'Source record as loaded (JSON sources carry every rule property).';
+COMMENT ON COLUMN transport_rules.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
 COMMENT ON COLUMN transport_rules.name IS 'Rule name.';
 COMMENT ON COLUMN transport_rules.guid IS 'Rule Guid.';
 COMMENT ON COLUMN transport_rules.state IS 'Enabled or Disabled.';
@@ -300,9 +309,10 @@ COMMENT ON COLUMN transport_rules.add_to_recipients IS 'AddToRecipients.';
 
 COMMENT ON TABLE remote_domains IS 'Exchange remote domains (Get-RemoteDomain): automatic forwarding and out-of-office policy per domain. Latest wins per record_key.';
 COMMENT ON COLUMN remote_domains.record_key IS 'Lower-case DomainName.';
-COMMENT ON COLUMN remote_domains.collection_id IS 'Collection that last wrote this row''s values.';
+COMMENT ON COLUMN remote_domains.collection_id IS 'Newest collection that wrote or re-confirmed any of this row''s columns (per-column writers: column_collections).';
 COMMENT ON COLUMN remote_domains.collected_at IS 'collected_at of that collection (NULL when unknown).';
 COMMENT ON COLUMN remote_domains.raw IS 'Source record as loaded.';
+COMMENT ON COLUMN remote_domains.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
 COMMENT ON COLUMN remote_domains.domain_name IS 'DomainName (* for the Default remote domain).';
 COMMENT ON COLUMN remote_domains.name IS 'Remote domain name.';
 COMMENT ON COLUMN remote_domains.auto_forward_enabled IS 'AutoForwardEnabled - true on * allows external auto-forwarding.';
@@ -311,9 +321,10 @@ COMMENT ON COLUMN remote_domains.when_changed IS 'WhenChangedUTC, else WhenChang
 
 COMMENT ON TABLE mobile_devices IS 'Exchange ActiveSync / mobile devices per mailbox (Get-MobileDevice). Latest wins per record_key.';
 COMMENT ON COLUMN mobile_devices.record_key IS '<lower mailbox>|<lower device_id>.';
-COMMENT ON COLUMN mobile_devices.collection_id IS 'Collection that last wrote this row''s values.';
+COMMENT ON COLUMN mobile_devices.collection_id IS 'Newest collection that wrote or re-confirmed any of this row''s columns (per-column writers: column_collections).';
 COMMENT ON COLUMN mobile_devices.collected_at IS 'collected_at of that collection (NULL when unknown).';
 COMMENT ON COLUMN mobile_devices.raw IS 'Source record as loaded.';
+COMMENT ON COLUMN mobile_devices.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
 COMMENT ON COLUMN mobile_devices.mailbox IS 'Mailbox UPN (Hawk user folder), lower-case.';
 COMMENT ON COLUMN mobile_devices.device_id IS 'DeviceId.';
 COMMENT ON COLUMN mobile_devices.friendly_name IS 'FriendlyName.';
@@ -333,9 +344,10 @@ COMMENT ON COLUMN mobile_devices.when_created IS 'WhenCreatedUTC, else WhenCreat
 
 COMMENT ON TABLE risky_users IS 'Entra ID Protection risky users (Get-MgRiskyUser). Latest wins per record_key.';
 COMMENT ON COLUMN risky_users.record_key IS 'Lower-case user object id, else lower-case UPN.';
-COMMENT ON COLUMN risky_users.collection_id IS 'Collection that last wrote this row''s values.';
+COMMENT ON COLUMN risky_users.collection_id IS 'Newest collection that wrote or re-confirmed any of this row''s columns (per-column writers: column_collections).';
 COMMENT ON COLUMN risky_users.collected_at IS 'collected_at of that collection (NULL when unknown).';
 COMMENT ON COLUMN risky_users.raw IS 'Source record as loaded.';
+COMMENT ON COLUMN risky_users.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
 COMMENT ON COLUMN risky_users.user_id IS 'User object id, lower-case.';
 COMMENT ON COLUMN risky_users.upn IS 'UserPrincipalName, lower-case.';
 COMMENT ON COLUMN risky_users.display_name IS 'UserDisplayName.';
@@ -348,9 +360,10 @@ COMMENT ON COLUMN risky_users.is_processing IS 'IsProcessing.';
 
 COMMENT ON TABLE risk_detections IS 'Entra ID Protection risk detections (Get-MgRiskDetection; Hawk Risk_Detections, JSON preferred over the flattened CSV). Keyed by detection id; a newer collection''s copy updates risk_state and other columns (latest wins).';
 COMMENT ON COLUMN risk_detections.record_key IS 'Lower-case detection id.';
-COMMENT ON COLUMN risk_detections.collection_id IS 'Collection that last wrote this row''s values.';
+COMMENT ON COLUMN risk_detections.collection_id IS 'Newest collection that wrote or re-confirmed any of this row''s columns (per-column writers: column_collections).';
 COMMENT ON COLUMN risk_detections.collected_at IS 'collected_at of that collection (NULL when unknown).';
 COMMENT ON COLUMN risk_detections.raw IS 'Source record as loaded.';
+COMMENT ON COLUMN risk_detections.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
 COMMENT ON COLUMN risk_detections.detection_id IS 'Detection Id.';
 COMMENT ON COLUMN risk_detections.detected_time IS 'DetectedDateTime.';
 COMMENT ON COLUMN risk_detections.activity_time IS 'ActivityDateTime (when the risky activity happened).';
@@ -377,6 +390,7 @@ COMMENT ON COLUMN collector_flags.record_key IS 'SHA-256 hex of flag_type, linke
 COMMENT ON COLUMN collector_flags.collection_id IS 'Collection in which the flag was first loaded.';
 COMMENT ON COLUMN collector_flags.collected_at IS 'collected_at of that collection (NULL when unknown).';
 COMMENT ON COLUMN collector_flags.raw IS 'Flagged record, or {line} for _Investigate.txt entries.';
+COMMENT ON COLUMN collector_flags.column_collections IS 'Object {column: collection_id} naming the collection that wrote each column (set on insert; this table is insert-only). Columns loaded as NULL that keep the stored value are absent.';
 COMMENT ON COLUMN collector_flags.file_id IS 'source_files.file_id of the first file the flag was read from.';
 COMMENT ON COLUMN collector_flags.flag_type IS 'inbox_rule, risky_consent_grant, impersonation_rights, risky_user, compromised_user, risk_detection, confirmed_compromised_risk_detection, new_mobile_device, admin_inbox_rule_change, mailbox_permission_change, risky_signin, investigate_note, investigate_file_reference or other.';
 COMMENT ON COLUMN collector_flags.category IS 'Hawk 3 _Investigate.txt section tag (## Tag ##).';

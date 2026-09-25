@@ -1,6 +1,6 @@
 use duckdb::params;
 use sparrow_core::db::state_tables::{
-    COLLECTOR_FLAGS, INBOX_RULES, REMOTE_DOMAINS, RISK_DETECTIONS,
+    COLLECTOR_FLAGS, INBOX_RULES, MAILBOXES, REMOTE_DOMAINS, RISK_DETECTIONS,
 };
 use sparrow_core::ingest::IngestOptions;
 use sparrow_core::ingest::context::ParseContext;
@@ -530,4 +530,257 @@ fn load_tables_fails_the_file_when_every_date_is_ambiguous() {
     );
     let err = load_tables(&mut ctx, vec![t]).unwrap_err();
     assert!(err.to_string().contains("--culture"), "{err}");
+}
+
+/// Mailbox row for alice with `cells` aligned to `cols` (upn first).
+fn mbx(cells: &[Option<&str>], raw: &str) -> StagedRow {
+    StagedRow {
+        cells: cells.iter().map(|c| c.map(Into::into)).collect(),
+        raw: Some(raw.into()),
+        ..rule(0, "alice@contoso.example", None, "x", None)
+    }
+}
+
+type Load<'a> = (i64, &'a [&'a str], StagedRow);
+
+/// Loads `loads` in order into a fresh case; returns the case.
+fn load_in_order(
+    dated: &[(&str, Option<&str>)],
+    order: &[usize],
+    loads: &[Load],
+) -> (Case, Vec<LoadOutcome>) {
+    let case = Case::in_memory().unwrap();
+    let ids: Vec<i64> = dated
+        .iter()
+        .map(|(name, at)| collection(&case, name, *at))
+        .collect();
+    let mut outs = Vec::new();
+    for &i in order {
+        let (c, cols, row) = &loads[i];
+        let cid = ids[*c as usize];
+        outs.push(
+            load_rows(
+                case.conn(),
+                &MAILBOXES,
+                cols,
+                cid,
+                file(&case, cid),
+                std::slice::from_ref(row),
+            )
+            .unwrap(),
+        );
+    }
+    (case, outs)
+}
+
+const MBX_STATE: &str = "SELECT coalesce(forwarding_smtp_address, '-') || '|' || coalesce(auto_reply_state, '-') || '|' || coalesce(display_name, '-') || '|' || collection_id FROM mailboxes";
+
+/// Final mailbox values plus `column_collections` as a key-sorted map.
+fn mbx_state(case: &Case) -> (String, std::collections::BTreeMap<String, i64>) {
+    let cc = text(
+        case,
+        "SELECT CAST(column_collections AS VARCHAR) FROM mailboxes",
+    );
+    (text(case, MBX_STATE), serde_json::from_str(&cc).unwrap())
+}
+
+const NEWER_OLDER: &[(&str, Option<&str>)] = &[
+    ("newer", Some("2026-09-20T00:00:00Z")),
+    ("older", Some("2026-09-10T00:00:00Z")),
+];
+
+#[test]
+fn older_collection_fills_columns_the_newer_one_never_provided_in_either_order() {
+    let fwd: &[&str] = &["upn", "forwarding_smtp_address"];
+    let ar: &[&str] = &["upn", "auto_reply_state"];
+    let loads: Vec<Load> = vec![
+        (
+            0,
+            fwd,
+            mbx(
+                &[
+                    Some("alice@contoso.example"),
+                    Some("smtp:x@fabrikam.example"),
+                ],
+                r#"{"ForwardingSmtpAddress":"smtp:x@fabrikam.example"}"#,
+            ),
+        ),
+        (
+            1,
+            ar,
+            mbx(
+                &[Some("alice@contoso.example"), Some("Enabled")],
+                r#"{"AutoReplyState":"Enabled"}"#,
+            ),
+        ),
+    ];
+    let mut finals = Vec::new();
+    for order in [[0, 1], [1, 0]] {
+        let (case, outs) = load_in_order(NEWER_OLDER, &order, &loads);
+        assert_eq!(
+            (outs[1].inserted, outs[1].updated),
+            (0, 1),
+            "order {order:?}: the second load writes a column"
+        );
+        assert_eq!(
+            text(
+                &case,
+                "SELECT forwarding_smtp_address || '|' || auto_reply_state FROM mailboxes"
+            ),
+            "smtp:x@fabrikam.example|Enabled",
+            "order {order:?}"
+        );
+        let newer = count(
+            &case,
+            "SELECT collection_id FROM collections WHERE root_path = '/cases/newer'",
+        );
+        let older = count(
+            &case,
+            "SELECT collection_id FROM collections WHERE root_path = '/cases/older'",
+        );
+        assert_eq!(
+            count(&case, "SELECT collection_id FROM mailboxes"),
+            newer,
+            "order {order:?}"
+        );
+        assert_eq!(
+            count(
+                &case,
+                "SELECT CAST(column_collections->>'$.auto_reply_state' AS BIGINT) FROM mailboxes"
+            ),
+            older,
+            "order {order:?}"
+        );
+        assert_eq!(
+            count(
+                &case,
+                "SELECT CAST(column_collections->>'$.forwarding_smtp_address' AS BIGINT) FROM mailboxes"
+            ),
+            newer,
+            "order {order:?}"
+        );
+        assert_eq!(
+            text(
+                &case,
+                "SELECT raw->>'$.AutoReplyState' || '|' || (raw->>'$.ForwardingSmtpAddress') FROM mailboxes"
+            ),
+            "Enabled|smtp:x@fabrikam.example",
+            "order {order:?}: raw carries both sources"
+        );
+        finals.push(mbx_state(&case));
+    }
+    assert_eq!(finals[0], finals[1]);
+}
+
+#[test]
+fn newer_null_is_not_resurrected_by_an_older_value_in_either_order() {
+    let fwd: &[&str] = &["upn", "forwarding_smtp_address"];
+    let loads: Vec<Load> = vec![
+        (
+            0,
+            fwd,
+            mbx(
+                &[Some("alice@contoso.example"), None],
+                r#"{"ForwardingSmtpAddress":null}"#,
+            ),
+        ),
+        (
+            1,
+            fwd,
+            mbx(
+                &[
+                    Some("alice@contoso.example"),
+                    Some("smtp:x@fabrikam.example"),
+                ],
+                r#"{"ForwardingSmtpAddress":"smtp:x@fabrikam.example"}"#,
+            ),
+        ),
+    ];
+    let mut finals = Vec::new();
+    for order in [[0, 1], [1, 0]] {
+        let (case, _) = load_in_order(NEWER_OLDER, &order, &loads);
+        assert_eq!(
+            count(
+                &case,
+                "SELECT count(*) FROM mailboxes WHERE forwarding_smtp_address IS NULL"
+            ),
+            1,
+            "order {order:?}: the newer capture cleared forwarding"
+        );
+        finals.push(mbx_state(&case));
+    }
+    assert_eq!(finals[0], finals[1]);
+}
+
+#[test]
+fn keep_when_null_columns_take_the_newest_non_null_value_in_any_order() {
+    // display_name is keep_when_null: a NULL never claims the column.
+    let cols: &[&str] = &["upn", "display_name"];
+    let dated: &[(&str, Option<&str>)] = &[
+        ("a", Some("2026-09-10T00:00:00Z")),
+        ("b", Some("2026-09-15T00:00:00Z")),
+        ("c", Some("2026-09-20T00:00:00Z")),
+    ];
+    let loads: Vec<Load> = vec![
+        (
+            0,
+            cols,
+            mbx(&[Some("alice@contoso.example"), Some("Old")], "{}"),
+        ),
+        (
+            1,
+            cols,
+            mbx(&[Some("alice@contoso.example"), Some("Mid")], "{}"),
+        ),
+        (2, cols, mbx(&[Some("alice@contoso.example"), None], "{}")),
+    ];
+    let mut finals = Vec::new();
+    for order in [[0, 1, 2], [2, 1, 0], [1, 2, 0], [2, 0, 1]] {
+        let (case, _) = load_in_order(dated, &order, &loads);
+        assert_eq!(
+            text(&case, "SELECT display_name FROM mailboxes"),
+            "Mid",
+            "order {order:?}"
+        );
+        finals.push(mbx_state(&case));
+    }
+    assert!(finals.windows(2).all(|w| w[0] == w[1]), "{finals:#?}");
+}
+
+#[test]
+fn merged_raw_ignores_top_level_nulls() {
+    let case = Case::in_memory().unwrap();
+    let c = collection(&case, "a", None);
+    let cols: &[&str] = &["upn", "auto_reply_state"];
+    load_rows(
+        case.conn(),
+        &MAILBOXES,
+        cols,
+        c,
+        file(&case, c),
+        &[mbx(
+            &[Some("alice@contoso.example"), Some("Enabled")],
+            r#"{"Keep":"x","AutoReplyState":"Enabled"}"#,
+        )],
+    )
+    .unwrap();
+    load_rows(
+        case.conn(),
+        &MAILBOXES,
+        cols,
+        c,
+        file(&case, c),
+        &[mbx(
+            &[Some("alice@contoso.example"), Some("Disabled")],
+            r#"{"Keep":null,"AutoReplyState":"Disabled"}"#,
+        )],
+    )
+    .unwrap();
+    assert_eq!(
+        text(
+            &case,
+            "SELECT raw->>'$.Keep' || '|' || (raw->>'$.AutoReplyState') FROM mailboxes"
+        ),
+        "x|Disabled"
+    );
 }
