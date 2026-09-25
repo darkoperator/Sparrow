@@ -222,6 +222,64 @@ fn admin_audit_flags_from_a_non_utc_host_keep_a_null_link() {
 }
 
 #[test]
+fn admin_audit_flags_link_to_a_csv_source_parsed_after_them_by_name() {
+    // The TXT flag file sorts before the CSV source (JSON/TXT before CSV); flag files must
+    // still be parsed after every other file so the zone-less key finds its row.
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    let csv = fixtures::csv_line(&[
+        "ObjectModified",
+        "CmdletName",
+        "Caller",
+        "Succeeded",
+        "RunDate",
+    ]) + &fixtures::csv_line(&[
+        "contoso.example/alice/Rule1",
+        "New-InboxRule",
+        "admin@contoso.example",
+        "True",
+        "9/14/2026 8:05:00 AM",
+    ]);
+    fixtures::write(
+        &root,
+        "Tenant/New_InboxRules.csv",
+        &fixtures::utf8_bom(&csv),
+    );
+    fixtures::write(
+        &root,
+        "Tenant/_Investigate_New_InboxRules.txt",
+        concat!(
+            "\r\n\r\n",
+            "ObjectModified   : contoso.example/alice/Rule1\r\n",
+            "CmdletName       : New-InboxRule\r\n",
+            "CmdletParameters : {Name, ForwardTo}\r\n",
+            "Caller           : admin@contoso.example\r\n",
+            "RunDate          : 9/14/2026 8:05:00 AM\r\n",
+            "\r\n",
+        )
+        .as_bytes(),
+    );
+    let (case, report) = ingest(dir.path(), None);
+    assert!(!report.has_errors(), "{report:#?}");
+    assert_eq!(count(&case, "SELECT count(*) FROM admin_audit_events"), 1);
+    let f = row(&report, "Tenant/_Investigate_New_InboxRules.txt");
+    assert_eq!(f.status, FileStatus::Parsed);
+    assert!(
+        !f.warnings.iter().any(|w| w.contains("not linked")),
+        "{:?}",
+        f.warnings
+    );
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM collector_flags WHERE linked_table = 'admin_audit_events'
+               AND linked_key IN (SELECT record_key FROM admin_audit_events)"
+        ),
+        1
+    );
+}
+
+#[test]
 fn admin_audit_flags_with_ambiguous_dates_keep_a_null_link() {
     let dir = tempfile::tempdir().unwrap();
     let root = capture(dir.path());

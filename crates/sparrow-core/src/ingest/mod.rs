@@ -195,12 +195,19 @@ fn ingest_collection(
     let collection_id = upsert_collection(case.conn(), dc, &root)?;
     let listing = list_collection_files(&dc.root, dc.shallow)?;
     let reg = Registry::builtin();
-    let mut ordered: Vec<(&CollectionFile, bool)> = listing
+    let mut keyed: Vec<(&CollectionFile, bool, bool)> = listing
         .files
         .iter()
-        .map(|f| (f, reg.classify(dc.tool, &f.rel).is_some_and(|c| c.derived)))
+        .map(|f| {
+            let class = reg.classify(dc.tool, &f.rel);
+            let derived = class.as_ref().is_some_and(|c| c.derived);
+            let flag = class.is_some_and(|c| c.artifact_id == "hawk.investigate_file");
+            (f, derived, flag)
+        })
         .collect();
-    ordered.sort_by_key(|(f, derived)| processing_key(&f.rel, *derived));
+    // Collector flags last: their links look up rows the other files load.
+    keyed.sort_by_cached_key(|(f, derived, flag)| (*flag, processing_key(&f.rel, *derived)));
+    let ordered: Vec<(&CollectionFile, bool)> = keyed.into_iter().map(|(f, d, _)| (f, d)).collect();
     let mut handled = Handled::default();
     let mut files = Vec::new();
     let mut deferred: Vec<(&CollectionFile, bool)> = Vec::new();
