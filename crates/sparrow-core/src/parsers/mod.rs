@@ -2,6 +2,7 @@
 
 pub mod logs;
 pub mod records;
+pub mod stage;
 pub mod ual;
 
 use crate::ingest::parser::ParserRegistry;

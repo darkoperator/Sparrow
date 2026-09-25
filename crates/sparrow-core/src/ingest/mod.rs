@@ -4,6 +4,7 @@
 pub mod bulk;
 pub mod context;
 pub mod parser;
+pub mod state;
 pub mod supersede;
 
 use crate::discovery::{
