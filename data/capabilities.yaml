@@ -1,0 +1,174 @@
+# Licensing and retention facts behind `capabilities` and `evidence_availability`.
+# Every fact cites Microsoft Learn (or a Microsoft blog) and the date it was checked.
+# Fields:
+#   baseline: assumed present in every Microsoft 365 tenant with Exchange Online unless a
+#     high-confidence licence list proves otherwise.
+#   unlocked_by_service_plans: Graph subscribedSkus servicePlans[].servicePlanName values
+#     (a tenant licence list containing any of them unlocks the capability).
+#   hawk_license_tiers: Hawk.log "M365 License type detected: <tier>" values that suggest the
+#     capability (low confidence: Hawk matches SKU-name substrings, see notes).
+#   retention_days: how long the evidence stays retrievable; absent = current state, no limit.
+#   evidence: evidence_availability ids this capability provides.
+# External files (--data DIR / SPARROW_DATA) replace entries by id and may add new ones.
+version: 1
+capabilities:
+  - id: ual_standard
+    title: Microsoft Purview Audit (Standard)
+    baseline: true
+    unlocked_by_service_plans: [EXCHANGE_S_STANDARD, EXCHANGE_S_ENTERPRISE, EXCHANGE_S_DESKLESS, EXCHANGE_S_ESSENTIALS, EXCHANGE_S_STANDARD_GOV, EXCHANGE_S_ENTERPRISE_GOV, EXCHANGE_S_DESKLESS_GOV]
+    retention_days: 180
+    evidence: [ual, mail_items_accessed, mail_send, search_queries]
+    notes: >-
+      Audit (Standard) keeps records 180 days (90 days for records created before 2023-10-17);
+      retention is fixed when a record is ingested. Included in Microsoft 365 E3/A3/A1/G3/F3/F1,
+      Office 365 E3/E1/A3/A1/G3/G1/F3 and Microsoft 365 Business Basic/Standard/Premium. There
+      is no dedicated service plan: any Exchange Online plan stands in for it. Since 2024
+      MailItemsAccessed, Send, SearchQueryInitiatedExchange and SearchQueryInitiatedSharePoint
+      are Audit (Standard) events; Learn still contradicts itself (audit-log-identify-mailboxes
+      says MailItemsAccessed needs E5), so a missing MailItemsAccessed for a non-E5 user is a
+      caveat, not proof of no licence.
+    sources:
+      - https://learn.microsoft.com/en-us/purview/audit-solutions-overview
+      - https://learn.microsoft.com/office365/servicedescriptions/microsoft-365-service-descriptions/microsoft-365-tenantlevel-services-licensing-guidance/microsoft-purview-service-description#microsoft-purview-audit-standard
+      - https://techcommunity.microsoft.com/blog/microsoft-security-blog/increased-security-visibility-through-new-standard-logs-in-microsoft-purview-aud/4144454
+      - https://learn.microsoft.com/en-us/purview/audit-log-investigate-accounts
+      - https://learn.microsoft.com/en-us/purview/audit-log-identify-mailboxes
+    as_of: 2026-09-25
+  - id: audit_premium
+    title: Microsoft Purview Audit (Premium)
+    unlocked_by_service_plans: [M365_ADVANCED_AUDITING]
+    hawk_license_tiers: [E5, G5]
+    retention_days: 365
+    evidence: [ual, mail_items_accessed, mail_send, search_queries]
+    notes: >-
+      Service plan M365_ADVANCED_AUDITING (Microsoft 365 Advanced Auditing): Microsoft 365
+      E5/A5/G5/E7, Office 365 E5/A5/G5, Microsoft 365 E5 Compliance, the E5/G5/F5 eDiscovery and
+      Audit add-ons and the Purview Suite add-ons (not the A5 student use benefit SKUs). Keeps
+      Entra ID, Exchange, OneDrive and SharePoint records 1 year (other workloads 180 days);
+      non-user actors are kept 1 year on every licence. Per user: only users with the licence
+      get 1-year retention. Hawk's "E5" tier matches SKU-name substrings, including
+      M365_E5_SUITE_COMPONENTS which has no audit plan, so it is only a hint.
+    sources:
+      - https://learn.microsoft.com/en-us/purview/audit-solutions-overview
+      - https://learn.microsoft.com/office365/servicedescriptions/microsoft-365-service-descriptions/microsoft-365-tenantlevel-services-licensing-guidance/microsoft-purview-service-description#microsoft-purview-audit-premium
+      - https://learn.microsoft.com/en-us/entra/identity/users/licensing-service-plan-reference
+    as_of: 2026-09-25
+  - id: entra_signin_logs
+    title: Microsoft Entra sign-in logs (every edition)
+    baseline: true
+    retention_days: 7
+    evidence: [signins]
+    notes: >-
+      Kept 7 days on Microsoft Entra ID Free (30 days with P1/P2, see entra_id_p1). The portal
+      download works on every edition; downloading through Microsoft Graph (Hawk,
+      Microsoft-Extractor-Suite) needs P1 or P2.
+    sources:
+      - https://learn.microsoft.com/en-us/entra/identity/monitoring-health/reference-reports-data-retention
+      - https://learn.microsoft.com/entra/identity/monitoring-health/howto-download-logs
+    as_of: 2026-09-25
+  - id: entra_audit_logs
+    title: Microsoft Entra audit logs (every edition)
+    baseline: true
+    retention_days: 7
+    evidence: [directory_audits]
+    notes: Kept 7 days on Microsoft Entra ID Free, 30 days with P1/P2 (see entra_id_p1).
+    sources:
+      - https://learn.microsoft.com/en-us/entra/identity/monitoring-health/reference-reports-data-retention
+    as_of: 2026-09-25
+  - id: entra_id_p1
+    title: Microsoft Entra ID P1 (30-day log retention, Graph access to sign-ins)
+    unlocked_by_service_plans: [AAD_PREMIUM, AAD_PREMIUM_P2]
+    retention_days: 30
+    evidence: [signins, directory_audits]
+    notes: >-
+      AAD_PREMIUM is in Microsoft 365 E3/E5/A3/A5/G3/G5/F1/F3, Business Premium, EMS E3/E5 and
+      the Entra ID P1/P2 SKUs. Office 365 E3/E5 and Business Basic/Standard include neither P1
+      nor P2. Sign-in and audit logs are kept 30 days. Microsoft Graph refuses sign-in log
+      downloads without P1/P2.
+    sources:
+      - https://learn.microsoft.com/en-us/entra/identity/monitoring-health/reference-reports-data-retention
+      - https://learn.microsoft.com/entra/identity/monitoring-health/howto-analyze-activity-logs-with-microsoft-graph
+      - https://learn.microsoft.com/en-us/entra/identity/users/licensing-service-plan-reference
+    as_of: 2026-09-25
+  - id: identity_protection
+    title: Microsoft Entra ID Protection (P2)
+    unlocked_by_service_plans: [AAD_PREMIUM_P2]
+    retention_days: 90
+    evidence: [risk_detections, risky_users]
+    notes: >-
+      Needs Entra ID P2 (Microsoft 365 E5/A5/G5, EMS E5, Entra ID P2, Microsoft 365 E5
+      Security). Below P2 sign-in risk levels read "hidden", premium detections show as
+      "generic", risky users show medium and high only, and Graph risk reports are refused.
+      Risky sign-ins are kept 7/30/90 days (Free/P1/P2); risky users are kept until remediated.
+    sources:
+      - https://learn.microsoft.com/entra/id-protection/overview-identity-protection#license-requirements
+      - https://learn.microsoft.com/entra/id-protection/concept-identity-protection-risks
+      - https://learn.microsoft.com/en-us/entra/identity/monitoring-health/reference-reports-data-retention
+    as_of: 2026-09-25
+  - id: mdo_p1
+    title: Microsoft Defender for Office 365 Plan 1
+    unlocked_by_service_plans: [ATP_ENTERPRISE, ATP_ENTERPRISE_GOV]
+    hawk_license_tiers: [E5, G5]
+    retention_days: 30
+    evidence: [email_threat_events]
+    notes: >-
+      Service plan ATP_ENTERPRISE: Business Premium, and Office 365 E3 / Microsoft 365 E3 from
+      2026-07-01 (not the "no Teams" E3 variants); every Plan 2 SKU also carries it.
+      Real-time detections and the email entity page keep 30 days. Neither Hawk nor
+      Microsoft-Extractor-Suite exports this data.
+    sources:
+      - https://learn.microsoft.com/office365/servicedescriptions/office-365-advanced-threat-protection-service-description
+      - https://learn.microsoft.com/defender-office-365/mdo-data-retention
+    as_of: 2026-09-25
+  - id: mdo_p2
+    title: Microsoft Defender for Office 365 Plan 2
+    unlocked_by_service_plans: [THREAT_INTELLIGENCE, THREAT_INTELLIGENCE_GOV]
+    hawk_license_tiers: [E5, G5]
+    retention_days: 30
+    evidence: [email_threat_events, url_clicks]
+    notes: >-
+      Service plan THREAT_INTELLIGENCE: Microsoft 365 and Office 365 E5/A5/G5 and Microsoft 365
+      E5 Security. Adds Threat Explorer (including Safe Links URL clicks) and advanced hunting
+      (EmailEvents, UrlClickEvents), 30 days each.
+    sources:
+      - https://learn.microsoft.com/defender-office-365/mdo-data-retention
+      - https://learn.microsoft.com/defender-office-365/threat-explorer-real-time-detections-about
+    as_of: 2026-09-25
+  - id: message_trace
+    title: Exchange Online message trace
+    baseline: true
+    unlocked_by_service_plans: [EXCHANGE_S_STANDARD, EXCHANGE_S_ENTERPRISE, EXCHANGE_S_DESKLESS, EXCHANGE_S_ESSENTIALS, EXCHANGE_S_STANDARD_GOV, EXCHANGE_S_ENTERPRISE_GOV, EXCHANGE_S_DESKLESS_GOV]
+    retention_days: 90
+    evidence: [message_trace]
+    notes: >-
+      Every organization with cloud mailboxes. Get-MessageTraceV2 searches the last 90 days,
+      10 days per query, up to 5,000 results per query; times are UTC.
+    sources:
+      - https://learn.microsoft.com/en-us/powershell/module/exchangepowershell/get-messagetracev2
+      - https://learn.microsoft.com/defender-office-365/message-trace-defender-portal
+    as_of: 2026-09-25
+  - id: mailbox_audit_legacy
+    title: Exchange mailbox audit log (Search-MailboxAuditLog)
+    baseline: true
+    retention_days: 90
+    evidence: [mailbox_audit_legacy]
+    notes: >-
+      Entries stay in the mailbox for 90 days by default (Set-Mailbox -AuditLogAgeLimit changes
+      it). Search-MailboxAuditLog "will be deprecated"; the same actions are in the unified
+      audit log.
+    sources:
+      - https://learn.microsoft.com/troubleshoot/microsoft-365/purview/audit-logs/mailbox-audit-logs
+      - https://learn.microsoft.com/en-us/purview/audit-mailboxes
+    as_of: 2026-09-25
+  - id: exchange_admin_audit
+    title: Exchange administrator audit log (Search-AdminAuditLog)
+    baseline: true
+    retention_days: 90
+    evidence: [admin_audit]
+    notes: >-
+      Kept 90 days by default (Set-AdminAuditLogConfig -AdminAuditLogAgeLimit). Exchange admin
+      cmdlets are also in the unified audit log (RecordType ExchangeAdmin).
+    sources:
+      - https://learn.microsoft.com/exchange/manage-administrator-audit-logging-exchange-2013-help
+      - https://learn.microsoft.com/purview/audit-log-activities#exchange-admin-activities
+    as_of: 2026-09-25

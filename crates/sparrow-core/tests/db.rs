@@ -35,6 +35,7 @@ fn fresh_case_has_provenance_tables() {
             "admin_audit_events",
             "app_credentials",
             "audit_config",
+            "capabilities",
             "collection_log",
             "collections",
             "collector_flags",

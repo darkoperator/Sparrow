@@ -2,11 +2,13 @@ use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 use serde::Serialize;
 use sparrow_core::Case;
+use sparrow_core::data::DataDirs;
 use sparrow_core::discovery::{Registry, discover_collections, list_collection_files};
 use sparrow_core::ingest::parser::ParserRegistry;
 use sparrow_core::ingest::{
     DEFAULT_MAX_FILE_BYTES, IngestOptions, ingest_collections, no_collections_error,
 };
+use sparrow_core::profile::{ProfileOptions, ProfileReport, refresh};
 use sparrow_core::readers::time::parse_culture;
 use sparrow_core::verify::verify_record;
 use std::path::{Path, PathBuf};
@@ -42,6 +44,26 @@ enum Command {
         /// Files larger than this many bytes are recorded as errors instead of loaded
         #[arg(long, default_value_t = DEFAULT_MAX_FILE_BYTES)]
         max_file_size: u64,
+        /// Directory overriding the embedded data files (capabilities.yaml, ...); default $SPARROW_DATA
+        #[arg(long)]
+        data: Option<PathBuf>,
+        /// Directory overriding the embedded rule lists (lists/hosting_asns.yaml); default $SPARROW_RULES
+        #[arg(long)]
+        rules: Option<PathBuf>,
+        /// Folder with MaxMind GeoLite2 City / ASN .mmdb files for IP enrichment
+        #[arg(long)]
+        geoip_dir: Option<PathBuf>,
+    },
+    /// Re-derive the tenant profile, capabilities, IP enrichment and identities of a case
+    Profile {
+        #[arg(long)]
+        case: PathBuf,
+        #[arg(long)]
+        data: Option<PathBuf>,
+        #[arg(long)]
+        rules: Option<PathBuf>,
+        #[arg(long)]
+        geoip_dir: Option<PathBuf>,
     },
     /// Re-check a record against its original source file(s)
     Verify {
@@ -109,7 +131,35 @@ fn run(cli: Cli) -> Result<ExitCode> {
             case,
             culture,
             max_file_size,
-        }) => cmd_ingest(&path, &case, culture.as_deref(), max_file_size, json),
+            data,
+            rules,
+            geoip_dir,
+        }) => cmd_ingest(
+            &path,
+            &case,
+            culture.as_deref(),
+            max_file_size,
+            ProfileOptions {
+                dirs: DataDirs::with_env_fallback(data, rules),
+                geoip_dir,
+                as_of: None,
+            },
+            json,
+        ),
+        Some(Command::Profile {
+            case,
+            data,
+            rules,
+            geoip_dir,
+        }) => cmd_profile(
+            &case,
+            ProfileOptions {
+                dirs: DataDirs::with_env_fallback(data, rules),
+                geoip_dir,
+                as_of: None,
+            },
+            json,
+        ),
         Some(Command::Verify {
             table,
             record_key,
@@ -210,6 +260,7 @@ fn cmd_ingest(
     case_path: &Path,
     culture: Option<&str>,
     max_file_size: u64,
+    profile_opts: ProfileOptions,
     json: bool,
 ) -> Result<ExitCode> {
     let date_order = culture
@@ -238,8 +289,16 @@ fn cmd_ingest(
     let mut case = Case::create_or_open(case_path)
         .with_context(|| format!("opening {}", case_path.display()))?;
     let report = ingest_collections(&mut case, &collections, &ParserRegistry::builtin(), &opts)?;
+    let profile = refresh(&mut case, &profile_opts).map_err(|e| {
+        anyhow::anyhow!(
+            "evidence loaded; the profile step failed: {e:#} (fix and run `sparrow profile --case ...`)"
+        )
+    })?;
     if json {
-        print_json(&report)?;
+        print_json(&IngestOutput {
+            report: &report,
+            profile: &profile,
+        })?;
     } else {
         for c in &report.collections {
             println!(
@@ -262,12 +321,49 @@ fn cmd_ingest(
                 );
             }
         }
+        print_profile_summary(&profile);
     }
     Ok(if report.has_errors() {
         ExitCode::from(2)
     } else {
         ExitCode::SUCCESS
     })
+}
+
+#[derive(Serialize)]
+struct IngestOutput<'a> {
+    #[serde(flatten)]
+    report: &'a sparrow_core::ingest::IngestReport,
+    profile: &'a ProfileReport,
+}
+
+fn print_profile_summary(profile: &ProfileReport) {
+    println!(
+        "profile: {} capabilities, {} tenants, {} identities",
+        profile.capabilities, profile.tenants, profile.identities
+    );
+    for w in &profile.warnings {
+        println!("  warning: {w}");
+    }
+}
+
+fn cmd_profile(case_path: &Path, profile_opts: ProfileOptions, json: bool) -> Result<ExitCode> {
+    if !case_path.is_file() {
+        return Err(sparrow_core::Error::NotFound(format!(
+            "case database {}",
+            case_path.display()
+        ))
+        .into());
+    }
+    let mut case = Case::create_or_open(case_path)
+        .with_context(|| format!("opening {}", case_path.display()))?;
+    let profile = refresh(&mut case, &profile_opts)?;
+    if json {
+        print_json(&profile)?;
+    } else {
+        print_profile_summary(&profile);
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Absolute form of a file path that may not exist yet (its parent is canonicalized).

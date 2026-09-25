@@ -62,3 +62,22 @@ COMMENT ON TABLE audit_config IS 'Organization audit configuration reported by o
 COMMENT ON COLUMN audit_config.record_key IS 'organization|<collection_id>. Cases ingested before schema 7 keep one row that merged every collection, keyed by the collection that last wrote it.';
 COMMENT ON TABLE tenant_settings IS 'Name/value tenant settings reported by one collection: every AdminAuditLogConfig, OrganizationConfig and TransportConfig property, Microsoft-Extractor-Suite security defaults, and Exchange management role entries. View tenant_settings_current keeps the newest value per tenant.';
 COMMENT ON COLUMN tenant_settings.record_key IS '<collection_id>|<source>|<lower name>.';
+
+-- Task 2: capability definitions (data/capabilities.yaml plus --data overrides).
+CREATE TABLE capabilities (
+    capability_id VARCHAR NOT NULL, title VARCHAR NOT NULL, baseline BOOLEAN NOT NULL,
+    unlocked_by_service_plans VARCHAR[], hawk_license_tiers VARCHAR[], retention_days INTEGER,
+    evidence VARCHAR[], notes VARCHAR, sources VARCHAR[], as_of DATE, origin VARCHAR NOT NULL
+);
+COMMENT ON TABLE capabilities IS 'Licensing and retention facts (data/capabilities.yaml, embedded; --data DIR overrides entries by id). Rewritten by every profile run (sparrow ingest / sparrow profile).';
+COMMENT ON COLUMN capabilities.capability_id IS 'Capability id (ual_standard, audit_premium, entra_id_p1, identity_protection, ...).';
+COMMENT ON COLUMN capabilities.title IS 'Human-readable name.';
+COMMENT ON COLUMN capabilities.baseline IS 'Assumed present in every Microsoft 365 tenant with Exchange Online unless a high-confidence licence list proves otherwise.';
+COMMENT ON COLUMN capabilities.unlocked_by_service_plans IS 'Graph subscribedSkus service plan names that unlock it.';
+COMMENT ON COLUMN capabilities.hawk_license_tiers IS 'Hawk.log licence tiers (E5, G5, E3, G3) that suggest it (low confidence).';
+COMMENT ON COLUMN capabilities.retention_days IS 'Days the evidence stays retrievable from Microsoft 365; NULL for current-state data.';
+COMMENT ON COLUMN capabilities.evidence IS 'evidence_availability ids this capability provides.';
+COMMENT ON COLUMN capabilities.notes IS 'Caveats (SKU lists, contradictions in Microsoft documentation).';
+COMMENT ON COLUMN capabilities.sources IS 'Microsoft Learn (or Microsoft blog) URLs the facts were verified against.';
+COMMENT ON COLUMN capabilities.as_of IS 'Date the facts were last verified.';
+COMMENT ON COLUMN capabilities.origin IS 'builtin, or the path of the external file that supplied the entry.';

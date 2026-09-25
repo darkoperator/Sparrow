@@ -395,6 +395,30 @@ fn schema_of_an_unknown_table_is_an_error() {
 }
 
 #[test]
+fn ingest_runs_the_profile_and_profile_reruns_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = sparrow_core::fixtures::hawk_tree(dir.path());
+    let case = dir.path().join("case.duckdb");
+    let out = json_out(
+        sparrow()
+            .args(["--json", "ingest"])
+            .arg(&root)
+            .arg("--case")
+            .arg(&case),
+        0,
+    );
+    assert!(
+        out["profile"]["capabilities"].as_u64().unwrap() >= 11,
+        "{out}"
+    );
+    let out = json_out(
+        sparrow().args(["--json", "profile", "--case"]).arg(&case),
+        0,
+    );
+    assert!(out["capabilities"].as_u64().unwrap() >= 11, "{out}");
+}
+
+#[test]
 fn usage_errors_exit_1_and_are_json_with_the_flag() {
     let v = json_out(sparrow().args(["--json", "ingest"]), 1);
     assert!(v["error"].as_str().unwrap().contains("required"));

@@ -22,6 +22,7 @@ regex = "1"
 rust_xlsxwriter = "0.99"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+serde_norway = "0.9.42"
 sha2 = "0.10"
 tempfile = "3"
 thiserror = "2"
