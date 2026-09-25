@@ -1,5 +1,6 @@
-//! Unified audit log artifacts: every Hawk 3.x/4.x UAL file and the Purview audit search
-//! export. The record shape is detected from the keys, never from the file name (Addendum A.3).
+//! Unified audit log artifacts: every Hawk 3.x/4.x UAL file, every Microsoft-Extractor-Suite
+//! Get-UAL output and the Purview audit search export. The record shape is detected from the
+//! keys, never from the file name (Addendum A.3).
 
 use crate::discovery::{FileFormat, format_from_path};
 use crate::ingest::bulk::{StagedUal, load_ual_batch};
@@ -25,6 +26,11 @@ pub const UAL_ARTIFACTS: &[(&str, bool)] = &[
     ("hawk.user.converted_auth", true),
     ("hawk.ip.events", false),
     ("portal.ual", false),
+    // Microsoft-Extractor-Suite Get-UAL: CSV, JSON, JSONL, SOF-ELK and -AuditDataOnly all
+    // reach the Raw / Record shapes. The Merged copy is complete (not flattened); the
+    // registry marks it derived only so that it is processed last and superseded.
+    ("inv.ual.window", false),
+    ("inv.ual.merged", false),
 ];
 
 pub struct UalParser {

@@ -139,6 +139,11 @@ fn is_event_artifact(artifact_id: &str) -> bool {
 
 /// Warning when a file's record count sits exactly at a known platform cap.
 pub fn truncation_warning(artifact_id: &str, records: u64) -> Option<String> {
+    if artifact_id == "inv.ual.window" && records == 5_000 {
+        return Some(
+            "row count equals the 5000-record Search-UnifiedAuditLog page Get-UAL requests per window — the collector writes partial data when it cannot shrink the window further; check LogFile.txt for \"SOME EVENTS IN THIS RANGE ARE NOT CAPTURED\"".into(),
+        );
+    }
     let cap = match artifact_id {
         "portal.ual" => Some(50_000),
         "portal.entra_signins" => Some(100_000),
