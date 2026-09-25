@@ -47,8 +47,9 @@ Microsoft-Extractor-Suite output loads into the same tables:
 - `mailboxes`: audit settings, bypass and effective audit state, from MailboxAuditStatus.
 - `mailbox_permissions`: one row per FullAccess, SendAs, SendOnBehalf or folder grant.
 - `tenant_settings` and `audit_config`: security defaults, and organization auditing as reported by the collector.
-- MailItemsAccessed Sessions / MessageIDs: a row whose raw UAL record is loaded adds a sighting to it; other
-  rows load as partial records.
+- MailItemsAccessed Sessions / MessageIDs: a row whose raw UAL record is loaded adds a sighting to it. Other
+  Sessions rows load as partial `ual_events` records; other MessageIDs rows load as parent-less
+  `mail_items_accessed` rows (no `record_id`, with their own time, user and IP).
 
 Repeated runs of a cmdlet merge by entity, and the latest run's values win. `collector_runs` lists every run
 folder with its file count, so a run that returned nothing is visible. Empty exports (0 bytes or a bare BOM) get a
