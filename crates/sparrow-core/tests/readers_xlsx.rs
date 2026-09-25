@@ -75,3 +75,22 @@ fn not_a_workbook_is_an_error() {
     assert!(read_xlsx(b"not a zip").is_err());
     assert!(xlsx_headers(b"PK\x03\x04junk").is_none());
 }
+
+#[test]
+fn rows_drop_trailing_empty_cells() {
+    let bytes = workbook(
+        &[
+            (0, 0, "Date (UTC)"),
+            (0, 1, "Request ID"),
+            (1, 0, "2026-09-01T10:00:00Z"),
+            (2, 0, "2026-09-02T10:00:00Z"),
+            (2, 3, "wide"),
+        ],
+        &[],
+        &[],
+    );
+    let t = read_xlsx(&bytes).unwrap();
+    assert_eq!(t.rows[0].fields, vec!["2026-09-01T10:00:00Z"]);
+    assert_eq!(t.rows[0].text(), "2026-09-01T10:00:00Z");
+    assert_eq!(t.rows[1].text(), "2026-09-02T10:00:00Z\t\t\twide");
+}

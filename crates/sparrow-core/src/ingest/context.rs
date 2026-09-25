@@ -119,24 +119,7 @@ impl<'a> ParseContext<'a> {
     ) -> Result<()> {
         let (pos, _) = self.row_sighting(row, row_text);
         let snippet: String = row_text.chars().take(500).collect();
-        self.conn
-            .prepare_cached(
-                "INSERT INTO parse_errors (file_id, record_ordinal, line_start, line_end, byte_offset, byte_length,
-                                           error, raw_snippet)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            )?
-            .execute(params![
-                self.file_id,
-                ordinal as i64,
-                pos.line_start as i64,
-                pos.line_end as i64,
-                pos.byte_offset as i64,
-                pos.byte_length as i64,
-                message,
-                snippet
-            ])?;
-        self.stats.error += 1;
-        Ok(())
+        self.insert_parse_error(ordinal, &pos, message, &snippet)
     }
 
     /// Record that `record_key` in `table` was seen at `span` of this file.
@@ -179,6 +162,17 @@ impl<'a> ParseContext<'a> {
             .chars()
             .take(500)
             .collect();
+        self.insert_parse_error(ordinal, &pos, message, &snippet)
+    }
+
+    /// Write one `parse_errors` row and count it in `stats.error`.
+    fn insert_parse_error(
+        &mut self,
+        ordinal: u64,
+        pos: &SourcePos,
+        message: &str,
+        snippet: &str,
+    ) -> Result<()> {
         self.conn
             .prepare_cached(
                 "INSERT INTO parse_errors (file_id, record_ordinal, line_start, line_end, byte_offset, byte_length,

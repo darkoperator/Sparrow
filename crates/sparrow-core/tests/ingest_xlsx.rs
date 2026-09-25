@@ -144,3 +144,48 @@ fn workbooks_that_are_not_portal_exports_are_unrecognized() {
         (None, FileStatus::Unrecognized)
     );
 }
+
+#[test]
+fn purview_audit_workbooks_are_unrecognized() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("exports");
+    // The sign-in workbook makes the folder a portal-export collection.
+    sparrow_core::fixtures::write(
+        &root,
+        NAME,
+        &workbook(&[HEADER, &["2026-09-01T10:00:00Z", "a1", "ua", "c1"]]),
+    );
+    sparrow_core::fixtures::write(
+        &root,
+        "audit.xlsx",
+        &workbook(&[
+            &[
+                "RecordId",
+                "CreationDate",
+                "RecordType",
+                "Operation",
+                "UserId",
+                "AuditData",
+            ],
+            &[
+                "11111111-1111-1111-1111-111111111111",
+                "2026-09-01T10:00:00Z",
+                "ExchangeItem",
+                "Send",
+                "a@contoso.example",
+                "{}",
+            ],
+        ]),
+    );
+    let (_case, report) = ingest(dir.path());
+    let f = report.collections[0]
+        .files
+        .iter()
+        .find(|f| f.rel_path == "audit.xlsx")
+        .unwrap();
+    assert_eq!(
+        (f.artifact_id.as_deref(), f.status),
+        (None, FileStatus::Unrecognized),
+        "{f:#?}"
+    );
+}

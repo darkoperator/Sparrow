@@ -856,3 +856,40 @@ fn xlsx_portal_exports_are_recognized_by_their_header_row() {
     assert_eq!(format_from_path("a/B.XLSX"), FileFormat::Xlsx);
     assert_eq!(FileFormat::Xlsx.as_str(), "xlsx");
 }
+
+#[test]
+fn only_sign_in_exports_are_recognized_as_xlsx() {
+    let header_workbook = |cols: &[(u16, &str)]| {
+        let mut wb = rust_xlsxwriter::Workbook::new();
+        let ws = wb.add_worksheet();
+        for (c, h) in cols {
+            ws.write_string(0, *c, *h).unwrap();
+        }
+        wb.save_to_buffer().unwrap()
+    };
+    let purview = header_workbook(&[
+        (0, "RecordId"),
+        (1, "CreationDate"),
+        (2, "RecordType"),
+        (3, "Operation"),
+        (4, "UserId"),
+        (5, "AuditData"),
+    ]);
+    assert!(sniff_portal_xlsx(&purview).is_none());
+    let reg = Registry::builtin();
+    assert!(
+        reg.classify_with_head(Tool::Hawk, "Tenant/audit.xlsx", Some(&purview))
+            .is_none()
+    );
+    // A leading empty column and a gap in the header row do not matter.
+    let gappy = header_workbook(&[
+        (1, "Date (UTC)"),
+        (2, "Request ID"),
+        (4, "User agent"),
+        (5, "Correlation ID"),
+    ]);
+    assert_eq!(
+        sniff_portal_xlsx(&gappy).map(|c| c.artifact_id),
+        Some("portal.entra_signins")
+    );
+}

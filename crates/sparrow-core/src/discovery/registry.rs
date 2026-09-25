@@ -758,6 +758,8 @@ struct PortalDef {
     columns: &'static [&'static str],
     /// The header must have exactly these columns.
     exact: bool,
+    /// Also recognized as an Excel workbook (only exports whose parser reads XLSX rows).
+    xlsx: bool,
 }
 
 static PORTAL_DEFS: &[PortalDef] = &[
@@ -773,6 +775,7 @@ static PORTAL_DEFS: &[PortalDef] = &[
             "auditdata",
         ],
         exact: false,
+        xlsx: false,
     },
     // Older Microsoft 365 audit log search export: exactly these four columns. Hawk's raw
     // Search-UnifiedAuditLog CSVs have more (RecordType, ResultIndex, ...), so they never match.
@@ -781,12 +784,14 @@ static PORTAL_DEFS: &[PortalDef] = &[
         target: "ual_events",
         columns: &["creationdate", "userids", "operations", "auditdata"],
         exact: true,
+        xlsx: false,
     },
     PortalDef {
         id: "portal.entra_signins",
         target: "signins",
         columns: &["date (utc)", "request id", "user agent", "correlation id"],
         exact: false,
+        xlsx: true,
     },
     PortalDef {
         id: "portal.message_trace",
@@ -798,12 +803,14 @@ static PORTAL_DEFS: &[PortalDef] = &[
             "message_id",
         ],
         exact: false,
+        xlsx: false,
     },
 ];
 
-fn portal_by_headers(headers: &HashSet<String>) -> Option<Classification> {
+fn portal_by_headers(headers: &HashSet<String>, xlsx: bool) -> Option<Classification> {
     PORTAL_DEFS
         .iter()
+        .filter(|d| !xlsx || d.xlsx)
         .find(|d| {
             d.columns.iter().all(|c| headers.contains(*c))
                 && (!d.exact || headers.len() == d.columns.len())
@@ -829,18 +836,23 @@ pub fn sniff_portal(head: &[u8]) -> Option<Classification> {
         .iter()
         .map(|h| h.to_ascii_lowercase())
         .collect();
-    portal_by_headers(&headers)
+    portal_by_headers(&headers, false)
 }
 
 /// Recognize a portal export saved as an Excel workbook from its first sheet's header row.
-/// `bytes` must be the whole file (the header row is inside the zip).
+/// `bytes` must be the whole file (the header row is inside the zip). Only exports whose
+/// parser reads workbooks (`PortalDef::xlsx`) match; empty header cells are ignored.
 pub fn sniff_portal_xlsx(bytes: &[u8]) -> Option<Classification> {
     let raw = xlsx_headers(bytes)?;
-    let headers: HashSet<String> = normalize_headers(raw.iter().map(String::as_str))
+    let named = raw
+        .iter()
+        .map(String::as_str)
+        .filter(|h| !h.trim().is_empty());
+    let headers: HashSet<String> = normalize_headers(named)
         .into_iter()
         .map(|h| h.to_ascii_lowercase())
         .collect();
-    portal_by_headers(&headers)
+    portal_by_headers(&headers, true)
 }
 
 fn read_head(abs: &Path) -> Option<Vec<u8>> {

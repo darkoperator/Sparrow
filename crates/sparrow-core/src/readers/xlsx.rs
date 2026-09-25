@@ -4,7 +4,8 @@
 use calamine::{Data, DataRef, ExcelDateTime, Reader, Xlsx};
 use std::io::Cursor;
 
-/// One non-blank sheet row: its 1-based row number and its cell texts.
+/// One non-blank sheet row: its 1-based row number and its cell texts, without trailing
+/// empty cells.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct XlsxRow {
     pub row: u32,
@@ -123,6 +124,12 @@ pub fn read_xlsx(bytes: &[u8]) -> Result<XlsxTable, String> {
             table.headers = fields;
             have_header = true;
             continue;
+        }
+        // Trailing blanks depend on the sheet's widest row, not on this row: drop them so
+        // `text()` (the provenance hash input) is stable.
+        let mut fields = fields;
+        while fields.last().is_some_and(|f| f.is_empty()) {
+            fields.pop();
         }
         table.rows.push(XlsxRow {
             row: first_row + i as u32 + 1,
