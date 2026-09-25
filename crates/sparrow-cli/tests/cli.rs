@@ -425,3 +425,71 @@ fn usage_errors_exit_1_and_are_json_with_the_flag() {
     sparrow().args(["ingest"]).assert().code(1);
     sparrow().args(["--help"]).assert().success();
 }
+
+#[test]
+fn tenant_domains_add_list_remove() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = sparrow_core::fixtures::hawk_tree(dir.path());
+    let case = dir.path().join("case.duckdb");
+    sparrow()
+        .args(["ingest"])
+        .arg(&root)
+        .arg("--case")
+        .arg(&case)
+        .assert()
+        .success();
+    json_out(
+        sparrow()
+            .args([
+                "--json",
+                "tenant",
+                "domains",
+                "add",
+                "contoso-legacy.example",
+                "--case",
+            ])
+            .arg(&case),
+        0,
+    );
+    let listed = json_out(
+        sparrow()
+            .args(["--json", "tenant", "domains", "list", "--case"])
+            .arg(&case),
+        0,
+    );
+    assert!(
+        listed["domains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["domain"] == "contoso-legacy.example" && d["source"] == "analyst"),
+        "{listed}"
+    );
+    json_out(
+        sparrow()
+            .args([
+                "--json",
+                "tenant",
+                "domains",
+                "remove",
+                "contoso-legacy.example",
+                "--case",
+            ])
+            .arg(&case),
+        0,
+    );
+    let listed = json_out(
+        sparrow()
+            .args(["--json", "tenant", "domains", "list", "--case"])
+            .arg(&case),
+        0,
+    );
+    assert!(
+        !listed["domains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["domain"] == "contoso-legacy.example"),
+        "{listed}"
+    );
+}

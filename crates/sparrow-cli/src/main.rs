@@ -8,6 +8,9 @@ use sparrow_core::ingest::parser::ParserRegistry;
 use sparrow_core::ingest::{
     DEFAULT_MAX_FILE_BYTES, IngestOptions, ingest_collections, no_collections_error,
 };
+use sparrow_core::profile::tenant::{
+    DomainAction, TenantDomain, list_domains, only_tenant, set_domain,
+};
 use sparrow_core::profile::{ProfileOptions, ProfileReport, refresh};
 use sparrow_core::readers::time::parse_culture;
 use sparrow_core::verify::verify_record;
@@ -85,6 +88,52 @@ enum Command {
         #[arg(long)]
         case: PathBuf,
         table: Option<String>,
+    },
+    /// Tenant settings kept by the analyst
+    Tenant {
+        #[command(subcommand)]
+        command: TenantCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum TenantCommand {
+    /// Domains that count as internal to the tenant
+    Domains {
+        #[command(subcommand)]
+        command: DomainCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum DomainCommand {
+    /// Mark a domain as internal to the tenant (kept even if the evidence does not show it)
+    Add {
+        domain: String,
+        #[arg(long)]
+        case: PathBuf,
+        #[arg(long)]
+        tenant: Option<String>,
+        /// Recorded as the actor of this decision; default $SPARROW_ANALYST or "unknown"
+        #[arg(long)]
+        analyst: Option<String>,
+    },
+    /// Mark a domain as external to the tenant (dropped even if the evidence shows it)
+    Remove {
+        domain: String,
+        #[arg(long)]
+        case: PathBuf,
+        #[arg(long)]
+        tenant: Option<String>,
+        #[arg(long)]
+        analyst: Option<String>,
+    },
+    /// List the tenant's domains
+    List {
+        #[arg(long)]
+        case: PathBuf,
+        #[arg(long)]
+        tenant: Option<String>,
     },
 }
 
@@ -168,6 +217,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         }) => cmd_verify(&table, &record_key, &case, root.as_deref(), json),
         Some(Command::Upgrade { case }) => cmd_upgrade(&case, json),
         Some(Command::Schema { case, table }) => cmd_schema(&case, table.as_deref(), json),
+        Some(Command::Tenant { command }) => cmd_tenant(command, json),
     }
 }
 
@@ -456,7 +506,12 @@ fn cmd_schema(case_path: &Path, table: Option<&str>, json: bool) -> Result<ExitC
         print_json(&out)?;
     } else {
         for t in &out.tables {
-            println!("{} — {}", t.table, t.comment.as_deref().unwrap_or(""));
+            let suffix = if t.kind == "view" { " (view)" } else { "" };
+            println!(
+                "{}{suffix} — {}",
+                t.table,
+                t.comment.as_deref().unwrap_or("")
+            );
             for c in &t.columns {
                 println!(
                     "  {:<22} {:<14} {}",
@@ -468,4 +523,112 @@ fn cmd_schema(case_path: &Path, table: Option<&str>, json: bool) -> Result<ExitC
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// `analyst:<name>` from `--analyst`, else `$SPARROW_ANALYST`, else `analyst:unknown`.
+fn analyst_actor(explicit: Option<String>) -> String {
+    let name = explicit.or_else(|| {
+        std::env::var("SPARROW_ANALYST")
+            .ok()
+            .filter(|a| !a.trim().is_empty())
+    });
+    match name {
+        Some(n) => format!("analyst:{n}"),
+        None => "analyst:unknown".to_string(),
+    }
+}
+
+fn open_case_for_write(case_path: &Path) -> Result<Case> {
+    if !case_path.is_file() {
+        return Err(sparrow_core::Error::NotFound(format!(
+            "case database {}",
+            case_path.display()
+        ))
+        .into());
+    }
+    Case::create_or_open(case_path).with_context(|| format!("opening {}", case_path.display()))
+}
+
+#[derive(Serialize)]
+struct DomainActionOutput {
+    tenant_key: String,
+    domain: String,
+    action: &'static str,
+}
+
+fn print_domain_action(
+    json: bool,
+    tenant_key: &str,
+    domain: &str,
+    action: &'static str,
+) -> Result<ExitCode> {
+    if json {
+        print_json(&DomainActionOutput {
+            tenant_key: tenant_key.to_string(),
+            domain: domain.to_string(),
+            action,
+        })?;
+    } else {
+        println!("{tenant_key}  {action} {domain}");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+#[derive(Serialize)]
+struct DomainsOutput {
+    domains: Vec<TenantDomain>,
+}
+
+fn cmd_tenant(command: TenantCommand, json: bool) -> Result<ExitCode> {
+    let TenantCommand::Domains { command } = command;
+    match command {
+        DomainCommand::Add {
+            domain,
+            case,
+            tenant,
+            analyst,
+        } => {
+            let actor = analyst_actor(analyst);
+            let mut c = open_case_for_write(&case)?;
+            let normalized = set_domain(
+                &mut c,
+                tenant.as_deref(),
+                &domain,
+                DomainAction::Add,
+                &actor,
+            )?;
+            let key = only_tenant(c.conn(), tenant.as_deref())?;
+            print_domain_action(json, &key, &normalized, "add")
+        }
+        DomainCommand::Remove {
+            domain,
+            case,
+            tenant,
+            analyst,
+        } => {
+            let actor = analyst_actor(analyst);
+            let mut c = open_case_for_write(&case)?;
+            let normalized = set_domain(
+                &mut c,
+                tenant.as_deref(),
+                &domain,
+                DomainAction::Remove,
+                &actor,
+            )?;
+            let key = only_tenant(c.conn(), tenant.as_deref())?;
+            print_domain_action(json, &key, &normalized, "remove")
+        }
+        DomainCommand::List { case, tenant } => {
+            let c = Case::open_read_only(&case)?;
+            let domains = list_domains(&c, tenant.as_deref())?;
+            if json {
+                print_json(&DomainsOutput { domains })?;
+            } else {
+                for d in &domains {
+                    println!("{}  {}  {}", d.tenant_key, d.domain, d.source);
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+    }
 }

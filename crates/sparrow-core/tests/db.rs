@@ -61,6 +61,9 @@ fn fresh_case_has_provenance_tables() {
             "sharing_events",
             "signins",
             "source_files",
+            "tenant",
+            "tenant_domain_overrides",
+            "tenant_domains",
             "tenant_settings",
             "transport_rules",
             "ual_events",
@@ -254,6 +257,15 @@ fn upgrading_a_v2_case_keeps_collections_and_adds_ual_tables() {
     assert!(comment.unwrap().contains("portal_export"));
     assert!(tables(&case).contains(&"ual_events".to_string()));
     assert!(tables(&case).contains(&"users".to_string()));
+}
+
+#[test]
+fn describe_lists_views_with_their_kind() {
+    let case = Case::in_memory().unwrap();
+    let all = sparrow_core::db::describe(&case, Some("tenant_audit_config")).unwrap();
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].kind, "view");
+    assert!(all[0].comment.as_deref().is_some_and(|c| !c.is_empty()));
 }
 
 #[test]

@@ -16,18 +16,25 @@ pub struct ColumnInfo {
 pub struct TableInfo {
     pub table: String,
     pub comment: Option<String>,
+    /// "table" or "view".
+    pub kind: String,
     pub columns: Vec<ColumnInfo>,
 }
 
 pub fn describe(case: &Case, table: Option<&str>) -> Result<Vec<TableInfo>> {
     let mut stmt = case.conn().prepare(
-        "SELECT t.table_name, t.comment, c.column_name, c.data_type, c.comment
-         FROM duckdb_tables() t
-         JOIN duckdb_columns() c ON c.database_name = t.database_name AND c.schema_name = t.schema_name
-                                AND c.table_name = t.table_name
-         WHERE t.schema_name = 'main' AND t.database_name = current_database()
-               AND (CAST(? AS VARCHAR) IS NULL OR t.table_name = ?)
-         ORDER BY t.table_name, c.column_index",
+        "WITH objs AS (
+             SELECT database_name, schema_name, table_name AS name, comment, 'table' AS kind FROM duckdb_tables()
+             UNION ALL
+             SELECT database_name, schema_name, view_name, comment, 'view' FROM duckdb_views() WHERE NOT internal
+         )
+         SELECT o.name, o.comment, o.kind, c.column_name, c.data_type, c.comment
+         FROM objs o
+         JOIN duckdb_columns() c ON c.database_name = o.database_name AND c.schema_name = o.schema_name
+                                AND c.table_name = o.name
+         WHERE o.schema_name = 'main' AND o.database_name = current_database()
+               AND (CAST(? AS VARCHAR) IS NULL OR o.name = ?)
+         ORDER BY o.name, c.column_index",
     )?;
     let rows = stmt.query_map(params![table, table], |r| {
         Ok((
@@ -35,16 +42,18 @@ pub fn describe(case: &Case, table: Option<&str>) -> Result<Vec<TableInfo>> {
             r.get::<_, Option<String>>(1)?,
             r.get::<_, String>(2)?,
             r.get::<_, String>(3)?,
-            r.get::<_, Option<String>>(4)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, Option<String>>(5)?,
         ))
     })?;
     let mut out: Vec<TableInfo> = Vec::new();
     for row in rows {
-        let (t, table_comment, name, data_type, comment) = row?;
+        let (t, table_comment, kind, name, data_type, comment) = row?;
         if out.last().is_none_or(|x| x.table != t) {
             out.push(TableInfo {
                 table: t,
                 comment: table_comment,
+                kind,
                 columns: Vec::new(),
             });
         }

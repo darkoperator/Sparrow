@@ -3,6 +3,7 @@
 //! can run any number of times (after every ingest, or `sparrow profile`).
 
 pub mod capabilities;
+pub mod tenant;
 
 use crate::data::DataDirs;
 use crate::{Case, Result};
@@ -45,5 +46,11 @@ pub fn refresh(case: &mut Case, opts: &ProfileOptions) -> Result<ProfileReport> 
     let mut report = ProfileReport::default();
     let defs = crate::data::capabilities(&opts.dirs)?;
     report.capabilities = capabilities::store_definitions(case, &defs)?;
+
+    let tx = case.conn_mut().transaction()?;
+    report.tenants = tenant::resolve_tenants(&tx)?;
+    tenant::rebuild_domains(&tx, None)?;
+    tx.commit()?;
+
     Ok(report)
 }

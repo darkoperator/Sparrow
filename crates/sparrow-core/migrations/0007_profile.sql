@@ -81,3 +81,88 @@ COMMENT ON COLUMN capabilities.notes IS 'Caveats (SKU lists, contradictions in M
 COMMENT ON COLUMN capabilities.sources IS 'Microsoft Learn (or Microsoft blog) URLs the facts were verified against.';
 COMMENT ON COLUMN capabilities.as_of IS 'Date the facts were last verified.';
 COMMENT ON COLUMN capabilities.origin IS 'builtin, or the path of the external file that supplied the entry.';
+
+-- Task 3: tenants.
+ALTER TABLE collections ADD COLUMN tenant_key VARCHAR;
+COMMENT ON COLUMN collections.tenant_key IS 'Tenant the collection belongs to (tenant.tenant_key), set by the profile step: the tenant id its evidence carries, else name:<reported name>, else collection:<id>.';
+
+CREATE TYPE domain_source AS ENUM ('derived_upn', 'message_trace_org', 'analyst');
+CREATE TYPE domain_action AS ENUM ('add', 'remove');
+
+CREATE TABLE tenant (
+    tenant_key VARCHAR NOT NULL, tenant_id VARCHAR, tenant_id_source VARCHAR, tenant_name VARCHAR,
+    tenant_name_source VARCHAR, collections INTEGER NOT NULL, first_collected_at TIMESTAMPTZ,
+    last_collected_at TIMESTAMPTZ
+);
+CREATE TABLE tenant_domains (
+    tenant_key VARCHAR NOT NULL, domain VARCHAR NOT NULL, source domain_source NOT NULL, rows_seen BIGINT
+);
+CREATE TABLE tenant_domain_overrides (
+    tenant_key VARCHAR NOT NULL, domain VARCHAR NOT NULL, action domain_action NOT NULL,
+    actor VARCHAR NOT NULL, changed_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp
+);
+
+COMMENT ON TABLE tenant IS 'One row per tenant seen in the case, rewritten by every profile run. tenant_key groups the case''s collections: the Entra tenant id when evidence carried one, else name:<reported name>, else collection:<id> for a collection that reported neither.';
+COMMENT ON COLUMN tenant.tenant_key IS 'Grouping key: the lower-case Entra tenant id when found in evidence, else name:<lower trimmed tenant name>, else collection:<collection_id>.';
+COMMENT ON COLUMN tenant.tenant_id IS 'Entra tenant id (lower-case GUID) found in this tenant''s evidence (ual_events.organization_id or signins.resource_tenant_id); NULL when no collection of this tenant reported one.';
+COMMENT ON COLUMN tenant.tenant_id_source IS 'Which evidence column supplied tenant_id: ual_organization_id or signin_resource_tenant.';
+COMMENT ON COLUMN tenant.tenant_name IS 'Tenant name the newest collection reported (Hawk folder name / log; Microsoft-Extractor-Suite reports none), lower-cased.';
+COMMENT ON COLUMN tenant.tenant_name_source IS 'collector_reported when tenant_name is set; NULL otherwise.';
+COMMENT ON COLUMN tenant.collections IS 'Number of collections grouped under this tenant_key.';
+COMMENT ON COLUMN tenant.first_collected_at IS 'Earliest collections.collected_at over this tenant''s collections.';
+COMMENT ON COLUMN tenant.last_collected_at IS 'Latest collections.collected_at over this tenant''s collections.';
+
+COMMENT ON TABLE tenant_domains IS 'Domains that belong to the tenant, used to tell internal from external addresses. Rebuilt by every profile run from the evidence, then the tenant''s tenant_domain_overrides are applied (a removed domain is dropped even when derived; an added domain is kept with source analyst).';
+COMMENT ON COLUMN tenant_domains.tenant_key IS 'tenant.tenant_key this domain belongs to.';
+COMMENT ON COLUMN tenant_domains.domain IS 'Lower-case domain (the part of a UPN/address after @).';
+COMMENT ON COLUMN tenant_domains.source IS 'derived_upn: from users.upn / mailboxes.upn / signins.user_upn. message_trace_org: from message_trace.organization. analyst: added by sparrow tenant domains add.';
+COMMENT ON COLUMN tenant_domains.rows_seen IS 'Rows whose UPN or organization had this domain, summed over the deriving sources; NULL for analyst-added rows the evidence did not show.';
+
+COMMENT ON TABLE tenant_domain_overrides IS 'Analyst decisions from sparrow tenant domains add|remove, kept across profile runs (rebuild_domains re-applies them after re-deriving tenant_domains from evidence). The latest decision per (tenant_key, domain) wins.';
+COMMENT ON COLUMN tenant_domain_overrides.tenant_key IS 'tenant.tenant_key the decision applies to.';
+COMMENT ON COLUMN tenant_domain_overrides.domain IS 'Lower-case domain the decision names.';
+COMMENT ON COLUMN tenant_domain_overrides.action IS 'add: treat the domain as internal even if evidence does not show it. remove: treat the domain as external even if evidence does show it.';
+COMMENT ON COLUMN tenant_domain_overrides.actor IS 'Who made the decision, e.g. analyst:<name> (from --analyst or $SPARROW_ANALYST, else analyst:unknown).';
+COMMENT ON COLUMN tenant_domain_overrides.changed_at IS 'When the decision was recorded.';
+
+CREATE VIEW tenant_audit_config AS
+WITH rows AS (
+    SELECT coalesce(c.tenant_key, 'collection:' || c.collection_id) AS tenant_key, a.*,
+           row_number() OVER (PARTITION BY coalesce(c.tenant_key, 'collection:' || c.collection_id)
+                              ORDER BY c.collected_at DESC NULLS LAST, c.collection_id DESC) AS rn
+    FROM audit_config a JOIN collections c ON c.collection_id = a.collection_id
+)
+SELECT tenant_key,
+    first(admin_audit_log_enabled ORDER BY rn) FILTER (WHERE json_exists(column_collections, '$.admin_audit_log_enabled')) AS admin_audit_log_enabled,
+    first(unified_audit_log_ingestion_enabled ORDER BY rn) FILTER (WHERE json_exists(column_collections, '$.unified_audit_log_ingestion_enabled')) AS unified_audit_log_ingestion_enabled,
+    first(admin_audit_log_age_limit ORDER BY rn) FILTER (WHERE json_exists(column_collections, '$.admin_audit_log_age_limit')) AS admin_audit_log_age_limit,
+    first(log_level ORDER BY rn) FILTER (WHERE json_exists(column_collections, '$.log_level')) AS log_level,
+    first(audit_disabled ORDER BY rn) FILTER (WHERE json_exists(column_collections, '$.audit_disabled')) AS audit_disabled,
+    first(security_defaults_enabled ORDER BY rn) FILTER (WHERE json_exists(column_collections, '$.security_defaults_enabled')) AS security_defaults_enabled,
+    list(collection_id ORDER BY rn) AS collection_ids
+FROM rows GROUP BY tenant_key;
+
+COMMENT ON VIEW tenant_audit_config IS 'Per-tenant organization audit configuration, merging every collection''s audit_config row: each column comes from the newest collection (by collected_at, then collection_id) whose load actually provided that column (its key is set in column_collections), so a newer capture that only reports AdminAuditLogConfig does not blank a column only OrganizationConfig reports (for example audit_disabled). Rows with a NULL column_collections (no loader currently produces this) are treated as providing nothing.';
+COMMENT ON COLUMN tenant_audit_config.tenant_key IS 'tenant.tenant_key (or collection:<id> for a collection with no tenant_key, which should not occur after a profile run).';
+COMMENT ON COLUMN tenant_audit_config.admin_audit_log_enabled IS 'Newest value a collection''s load provided for audit_config.admin_audit_log_enabled.';
+COMMENT ON COLUMN tenant_audit_config.unified_audit_log_ingestion_enabled IS 'Newest value a collection''s load provided for audit_config.unified_audit_log_ingestion_enabled.';
+COMMENT ON COLUMN tenant_audit_config.admin_audit_log_age_limit IS 'Newest value a collection''s load provided for audit_config.admin_audit_log_age_limit.';
+COMMENT ON COLUMN tenant_audit_config.log_level IS 'Newest value a collection''s load provided for audit_config.log_level.';
+COMMENT ON COLUMN tenant_audit_config.audit_disabled IS 'Newest value a collection''s load provided for audit_config.audit_disabled.';
+COMMENT ON COLUMN tenant_audit_config.security_defaults_enabled IS 'Newest value a collection''s load provided for audit_config.security_defaults_enabled.';
+COMMENT ON COLUMN tenant_audit_config.collection_ids IS 'This tenant''s collections, newest first, that contributed audit_config rows.';
+
+CREATE VIEW tenant_settings_current AS
+SELECT coalesce(c.tenant_key, 'collection:' || c.collection_id) AS tenant_key, s.source, s.name, s.value,
+       s.collection_id, c.collected_at
+FROM tenant_settings s JOIN collections c ON c.collection_id = s.collection_id
+QUALIFY row_number() OVER (PARTITION BY coalesce(c.tenant_key, 'collection:' || c.collection_id), s.source, lower(s.name)
+                           ORDER BY c.collected_at DESC NULLS LAST, c.collection_id DESC) = 1;
+
+COMMENT ON VIEW tenant_settings_current IS 'Newest tenant_settings row per (tenant, source, lower(name)), merging every collection''s reported settings so the newest capture''s value wins per named setting.';
+COMMENT ON COLUMN tenant_settings_current.tenant_key IS 'tenant.tenant_key (or collection:<id> for a collection with no tenant_key, which should not occur after a profile run).';
+COMMENT ON COLUMN tenant_settings_current.source IS 'tenant_settings.source (organization_config, admin_audit_log_config, transport_config, security_defaults, rbac_role_entry, ...).';
+COMMENT ON COLUMN tenant_settings_current.name IS 'tenant_settings.name, in the case of the collection that reported the newest value.';
+COMMENT ON COLUMN tenant_settings_current.value IS 'tenant_settings.value from the newest collection to report this (tenant, source, lower(name)).';
+COMMENT ON COLUMN tenant_settings_current.collection_id IS 'Collection whose row won.';
+COMMENT ON COLUMN tenant_settings_current.collected_at IS 'collections.collected_at of the winning collection.';
