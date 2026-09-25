@@ -318,8 +318,8 @@ CREATE TABLE operation_catalog (
 
 COMMENT ON TABLE operation_catalog IS 'Operations Sparrow knows, with a category for the timeline and ATT&CK techniques (data/operation_catalog.yaml, embedded; --data DIR overrides entries by (operation, workload) and may add new ones). Rewritten by every profile run.';
 COMMENT ON COLUMN operation_catalog.operation IS 'Operation name as UAL / Graph / Exchange write it.';
-COMMENT ON COLUMN operation_catalog.operation_key IS 'Join key: operation_key(operation) - lower-case, trimmed, trailing "." removed - so UAL "Consent to application." and Graph "Consent to application" meet.';
-COMMENT ON COLUMN operation_catalog.workload IS 'Workload the entry applies to (Exchange, AzureActiveDirectory, SharePoint, OneDrive); NULL matches any workload.';
+COMMENT ON COLUMN operation_catalog.operation_key IS 'Join key: operation_key(operation) - lower-case, trimmed, trailing "." removed - so UAL "Consent to application." and Graph "Consent to application" meet. The timeline view recomputes this in SQL (lower(trim(rtrim(trim(operation), ''.'')))); DuckDB''s trim() strips plain ASCII whitespace only, unlike Rust''s Unicode-aware trim, which is not expected to matter for these operation names.';
+COMMENT ON COLUMN operation_catalog.workload IS 'Workload the entry applies to (Exchange, AzureActiveDirectory, SharePoint, OneDrive); NULL matches any workload. Matched case-insensitively against the event''s workload (an override may spell it in any case).';
 COMMENT ON COLUMN operation_catalog.category IS 'Category the timeline view uses for this operation.';
 COMMENT ON COLUMN operation_catalog.description IS 'Human-readable description of the operation.';
 COMMENT ON COLUMN operation_catalog.mitre IS 'ATT&CK technique ids the operation maps to; empty when no technique clearly applies.';
@@ -362,7 +362,8 @@ WITH ev AS (
     UNION ALL
     SELECT d.event_time, d.time_tz_assumed, 'directory_audits', d.record_key, 'AzureActiveDirectory', d.activity,
            coalesce(d.initiated_by_upn, d.initiated_by_app_name),
-           coalesce(d.targets->>'$[0].UserPrincipalName', d.targets->>'$[0].DisplayName'),
+           coalesce(d.targets->>'$[0].UserPrincipalName', d.targets->>'$[0].userPrincipalName',
+                    d.targets->>'$[0].DisplayName', d.targets->>'$[0].displayName'),
            d.initiated_by_ip, NULL, concat_ws(' ', d.category, d.activity, d.result)
     FROM directory_audits d
     UNION ALL
@@ -385,8 +386,8 @@ WITH ev AS (
 SELECT ev.event_time, ev.time_tz_assumed, ev.source_table, ev.record_key,
        coalesce(
            (SELECT o.category FROM operation_catalog o
-            WHERE o.operation_key = lower(rtrim(trim(ev.operation), '.'))
-              AND (o.workload IS NULL OR o.workload = ev.workload)
+            WHERE o.operation_key = lower(trim(rtrim(trim(ev.operation), '.')))
+              AND (o.workload IS NULL OR lower(o.workload) = lower(ev.workload))
             ORDER BY o.workload NULLS LAST LIMIT 1),
            CASE ev.source_table WHEN 'signins' THEN 'auth' WHEN 'risk_detections' THEN 'auth'
                                 WHEN 'message_trace' THEN 'mail_flow' ELSE 'other' END::event_category
@@ -402,10 +403,10 @@ COMMENT ON COLUMN timeline.event_time IS 'Event time (UTC): ual_events.event_tim
 COMMENT ON COLUMN timeline.time_tz_assumed IS 'True when the source time had no timezone and UTC was assumed. Always false for risk_detections: it has no time_tz_assumed column because its times are Graph UTC.';
 COMMENT ON COLUMN timeline.source_table IS 'Evidence table the row came from: ual_events, mail_items_accessed, signins, directory_audits, message_trace, mailbox_audit_legacy, admin_audit_events or risk_detections.';
 COMMENT ON COLUMN timeline.record_key IS 'Key of the record in source_table (record_sources.record_key), joined against record_source_refs and, via that, verify.';
-COMMENT ON COLUMN timeline.category IS 'From operation_catalog (matched on operation_key and workload, most specific workload match wins); else auth for signins/risk_detections, mail_flow for message_trace, other otherwise.';
+COMMENT ON COLUMN timeline.category IS 'From operation_catalog (matched on operation_key = operation_key(operation) and workload, case-insensitively, most specific workload match wins); else auth for signins/risk_detections, mail_flow for message_trace, other otherwise.';
 COMMENT ON COLUMN timeline.operation IS 'Operation name: ual_events.operation, MailItemsAccessed for a parent-less mail_items_accessed row, SignInSucceeded/SignInFailed (Sparrow timeline name) for signins, directory_audits.activity, MessageTrace (Sparrow timeline name) for message_trace, mailbox_audit_legacy.operation, admin_audit_events.cmdlet, or risk_detections.risk_event_type.';
 COMMENT ON COLUMN timeline.actor_upn IS 'Who performed the action, from the source row (falls back to an app/service name where the source has no user).';
-COMMENT ON COLUMN timeline.target IS 'What the action touched, from the source row.';
+COMMENT ON COLUMN timeline.target IS 'What the action touched, from the source row. For directory_audits: TargetResources[0]''s UPN, else display name, matching either casing (Hawk''s Get-MgAuditLogDirectoryAudit is PascalCase; Microsoft-Extractor-Suite''s Graph REST JSON is camelCase).';
 COMMENT ON COLUMN timeline.ip IS 'Client IP text as the source table stores it; join key into ip_intel.';
 COMMENT ON COLUMN timeline.ip_country IS 'ip_intel.country_iso for ip.';
 COMMENT ON COLUMN timeline.ip_asn_org IS 'ip_intel.asn_org for ip.';

@@ -2,8 +2,9 @@
 
 use sparrow_core::Case;
 use sparrow_core::data::DataDirs;
-use sparrow_core::fixtures::events::{SIGNIN_2, hawk4_events_tree};
+use sparrow_core::fixtures::events::{AUDIT_1, SIGNIN_2, hawk4_events_tree};
 use sparrow_core::fixtures::hawk4::hawk4_tree;
+use sparrow_core::fixtures::invictus::{BOB as INV_BOB, invictus_output_tree};
 use sparrow_core::fixtures::mmdb::{asn, city, write_mmdb};
 use sparrow_core::fixtures::ual;
 use sparrow_core::ingest::parser::ParserRegistry;
@@ -236,4 +237,83 @@ fn catalog_override_changes_a_category() {
         ),
     );
     assert_eq!(category, "config_change");
+}
+
+/// The catalog overlay merges an override entry by `(operation_key, lower(workload))`, so an
+/// override spelled `workload: exchange` replaces the built-in `New-InboxRule`/`Exchange` entry
+/// (whose stored `workload` column is then literally `exchange`). The timeline view must still
+/// match it against `ual_events.workload = 'Exchange'` case-insensitively.
+#[test]
+fn catalog_override_workload_matches_case_insensitively() {
+    let (_dir, mut case) = case_with_events();
+    let data_dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        data_dir.path().join("operation_catalog.yaml"),
+        "version: 1\noperations:\n  - {operation: New-InboxRule, workload: exchange, category: config_change, description: overridden}\n",
+    )
+    .unwrap();
+    let opts = ProfileOptions {
+        dirs: DataDirs {
+            data: Some(data_dir.path().to_path_buf()),
+            rules: None,
+        },
+        ..Default::default()
+    };
+    refresh(&mut case, &opts).unwrap();
+    let category = text(
+        &case,
+        &format!(
+            "SELECT CAST(category AS VARCHAR) FROM timeline
+             WHERE source_table = 'ual_events' AND record_key = '{}'",
+            ual::ID_RULE
+        ),
+    );
+    assert_eq!(category, "config_change");
+}
+
+/// `directory_audits.targets` stores `TargetResources` verbatim: Hawk's Get-MgAuditLogDirectoryAudit
+/// is PascalCase (`UserPrincipalName`/`DisplayName`), but Microsoft-Extractor-Suite's Graph REST
+/// JSON is camelCase (`userPrincipalName`/`displayName`). The `timeline.target` expression must
+/// resolve both, not just Hawk's.
+#[test]
+fn directory_audits_target_resolves_hawk_and_extractor_suite_casing() {
+    // Hawk (PascalCase TargetResources): regression check, this already worked.
+    let (_dir, mut hawk_case) = case_with_events();
+    refresh(&mut hawk_case, &ProfileOptions::default()).unwrap();
+    let hawk_target: Option<String> = hawk_case
+        .conn()
+        .query_row(
+            &format!(
+                "SELECT target FROM timeline
+                 WHERE source_table = 'directory_audits' AND record_key = '{}'",
+                AUDIT_1.to_lowercase()
+            ),
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(hawk_target.is_some(), "Hawk directory_audits target");
+
+    // Microsoft-Extractor-Suite (camelCase targetResources): the actual regression.
+    let dir = tempfile::tempdir().unwrap();
+    invictus_output_tree(dir.path());
+    let mut case = Case::in_memory().unwrap();
+    let report = ingest_path(
+        &mut case,
+        dir.path(),
+        &ParserRegistry::builtin(),
+        &IngestOptions::default(),
+    )
+    .unwrap();
+    assert!(!report.has_errors(), "{report:#?}");
+    refresh(&mut case, &ProfileOptions::default()).unwrap();
+    let inv_target: Option<String> = case
+        .conn()
+        .query_row(
+            "SELECT target FROM timeline WHERE source_table = 'directory_audits' LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(inv_target.as_deref(), Some(INV_BOB));
 }
