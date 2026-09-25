@@ -10,6 +10,7 @@ pub mod logs;
 pub mod mailbox;
 pub mod mailbox_audit;
 pub mod mailbox_audit_status;
+pub mod mailbox_permissions;
 pub mod message_trace;
 pub mod records;
 pub mod risk;
@@ -32,6 +33,7 @@ pub fn register_builtin(registry: &mut ParserRegistry) {
     mailbox::register(registry);
     mailbox_audit::register(registry);
     mailbox_audit_status::register(registry);
+    mailbox_permissions::register(registry);
     message_trace::register(registry);
     tenant_config::register(registry);
     admin_audit::register(registry);
