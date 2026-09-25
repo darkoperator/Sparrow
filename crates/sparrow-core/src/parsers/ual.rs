@@ -7,9 +7,7 @@ use crate::ingest::context::ParseContext;
 use crate::ingest::parser::{ArtifactParser, ParserRegistry};
 use crate::normalize::ual::{event_time_text, normalize_audit};
 use crate::normalize::ual_shape::{AuditInput, UalShape, detect_shape, to_audit};
-use crate::readers::csv_scan::read_csv;
-use crate::readers::json_scan::scan_json;
-use crate::readers::text::Span;
+use crate::parsers::records::{RecordFormat, SourceRecord, read_records};
 use crate::readers::time::DateOrderDetector;
 use crate::{Error, Result};
 use serde_json::{Map, Value};
@@ -38,63 +36,29 @@ pub fn register(r: &mut ParserRegistry) {
     }
 }
 
-struct SourceRecord {
-    ordinal: u64,
-    span: Span,
-    map: Map<String, Value>,
-}
-
-/// Every record of the file as a key → value map. Unreadable records go to `parse_errors`.
-fn read_records(ctx: &mut ParseContext<'_>, is_csv: bool) -> Result<Vec<SourceRecord>> {
-    let text = ctx.text;
-    let mut out = Vec::new();
-    if is_csv {
-        let table = read_csv(&text.text);
-        for e in &table.errors {
-            ctx.stats.read += 1;
-            ctx.parse_error(e.ordinal, e.span, &e.message)?;
-        }
-        for row in &table.rows {
-            ctx.stats.read += 1;
-            out.push(SourceRecord {
-                ordinal: row.ordinal,
-                span: row.span,
-                map: table.row_map(row),
-            });
-        }
-    } else {
-        let scan = scan_json(&text.text);
-        for e in &scan.errors {
-            ctx.stats.read += 1;
-            ctx.parse_error(e.ordinal, e.span, &e.message)?;
-        }
-        for r in scan.records {
-            ctx.stats.read += 1;
-            match r.value {
-                Value::Object(map) => out.push(SourceRecord {
-                    ordinal: r.ordinal,
-                    span: r.span,
-                    map,
-                }),
-                _ => ctx.parse_error(r.ordinal, r.span, "record is not a JSON object")?,
-            }
-        }
-    }
-    Ok(out)
-}
-
 fn preview_keys(map: &Map<String, Value>) -> String {
-    map.keys()
+    let mut s = map
+        .keys()
         .take(12)
         .map(String::as_str)
         .collect::<Vec<_>>()
-        .join(", ")
+        .join(", ");
+    if map.len() > 12 {
+        s.push_str(&format!(", … ({} more)", map.len() - 12));
+    }
+    s
 }
 
 impl ArtifactParser for UalParser {
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
         let is_csv = format_from_path(ctx.rel_path) == FileFormat::Csv;
-        let records = read_records(ctx, is_csv)?;
+        let format = if is_csv {
+            RecordFormat::Csv
+        } else {
+            RecordFormat::Json
+        };
+        let records = read_records(ctx, format)?;
+        ctx.stats.read += records.len() as u64;
         let Some(first) = records.first() else {
             return Ok(());
         };

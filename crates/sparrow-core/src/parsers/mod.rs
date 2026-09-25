@@ -1,6 +1,7 @@
 //! Built-in artifact parsers.
 
 pub mod logs;
+pub mod records;
 pub mod ual;
 
 use crate::ingest::parser::ParserRegistry;
