@@ -364,3 +364,108 @@ fn files_without_session_columns_are_not_supported() {
         sparrow_core::ingest::FileStatus::NotSupported
     );
 }
+
+/// A raw UAL window holding the given MailItemsAccessed AuditData objects.
+fn raw_ual_of(records: &[Value]) -> Vec<u8> {
+    let mut s = csv_line(RAW_HEADER);
+    for a in records {
+        s.push_str(&csv_line(&[
+            "ExchangeItemAggregated",
+            "8/20/2026 10:00:00 AM",
+            ALICE,
+            "MailItemsAccessed",
+            &a.to_string(),
+            "1",
+            "1",
+            "",
+            a["Id"].as_str().unwrap(),
+            "True",
+            "Unchanged",
+        ]));
+    }
+    utf8_bom(&s)
+}
+
+/// Read/loaded/duplicate/error counts of the MessageIDs file, and the parent-less rows.
+fn message_ids_outcome(case: &Case, report: &IngestReport) -> ((u64, u64, u64, u64), i64, i64) {
+    let f = row(report, MESSAGE_IDS);
+    let sightings = count(
+        case,
+        &format!(
+            "SELECT count(*) FROM record_sources rs JOIN source_files sf USING (file_id)
+             WHERE rs.table_name = 'ual_events' AND rs.record_key = '{R1}'
+               AND sf.artifact_type = 'inv.mia.message_ids'"
+        ),
+    );
+    let parentless = count(
+        case,
+        "SELECT count(*) FROM mail_items_accessed WHERE record_id IS NULL",
+    );
+    (
+        (
+            f.records_read,
+            f.records_loaded,
+            f.records_duplicate,
+            f.records_error,
+        ),
+        sightings,
+        parentless,
+    )
+}
+
+#[test]
+fn bind_row_without_a_message_id_matches_a_raw_item_without_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("OUT");
+    let mut a = mia(R1, 1, &[]);
+    a["Folders"] = json!([{"Path": "\\Inbox", "FolderItems": [{"SizeInBytes": 500}]}]);
+    fixtures::write(&out, UAL, &raw_ual_of(&[a]));
+    let body = format!(
+        "{IDS_HEADER}\"8/20/2026 10:00:00 AM\",\"{ALICE}\",\"{IP}\",,\"Bind\",\"\\Inbox\",,\"500\"\r\n"
+    );
+    fixtures::write(&out, MESSAGE_IDS, &utf8_bom(&body));
+    let (case, report) = ingest(dir.path());
+    assert_eq!(message_ids_outcome(&case, &report), ((1, 0, 1, 0), 1, 0));
+}
+
+#[test]
+fn sync_row_matches_a_raw_folder_without_items() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("OUT");
+    let mut a = mia(R1, 1, &[]);
+    a["OperationProperties"] = json!([{"Name": "MailAccessType", "Value": "Sync"}]);
+    a["Folders"] = json!([{"Path": "\\Archive"}]);
+    fixtures::write(&out, UAL, &raw_ual_of(&[a]));
+    let body = format!(
+        "{IDS_HEADER}\"8/20/2026 10:00:00 AM\",\"{ALICE}\",\"{IP}\",,\"Sync\",\"\\Archive\",\"N/A (Sync - entire folder)\",\r\n"
+    );
+    fixtures::write(&out, MESSAGE_IDS, &utf8_bom(&body));
+    let (case, report) = ingest(dir.path());
+    assert_eq!(message_ids_outcome(&case, &report), ((1, 0, 1, 0), 1, 0));
+}
+
+#[test]
+fn parent_less_rows_keep_whether_the_time_had_a_zone() {
+    let dir = tempfile::tempdir().unwrap();
+    let body = format!(
+        "{IDS_HEADER}\"2026-08-20T10:05:00Z\",\"{ALICE}\",\"{IP}\",,\"Bind\",,\"<i9@contoso.example>\",\r\n\"2026-08-20T10:06:00\",\"{ALICE}\",\"{IP}\",,\"Bind\",,\"<i8@contoso.example>\",\r\n"
+    );
+    fixtures::write(&dir.path().join("OUT"), MESSAGE_IDS, &utf8_bom(&body));
+    let (case, _report) = ingest(dir.path());
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM mail_items_accessed WHERE internet_message_id = '<i9@contoso.example>'
+               AND NOT time_tz_assumed AND epoch(event_time)::BIGINT = 1787220300"
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM mail_items_accessed WHERE internet_message_id = '<i8@contoso.example>'
+               AND time_tz_assumed"
+        ),
+        1
+    );
+}

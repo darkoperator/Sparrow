@@ -17,7 +17,7 @@ use crate::parsers::records::RecordFormat;
 use crate::parsers::records::SourceRecord;
 use crate::parsers::stage::{file_date_order, read_state_records, reject, require_any_key};
 use crate::readers::time::{DateOrder, parse_timestamp};
-use duckdb::{OptionalExt, params};
+use duckdb::{OptionalExt, params, params_from_iter};
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use uuid::Uuid;
@@ -33,6 +33,8 @@ struct Access {
     creation_time: String,
     /// The same instant as RFC 3339, for SQL.
     rfc3339: String,
+    /// True when the time carried no zone and UTC was assumed.
+    tz_assumed: bool,
     user: String,
     ip: Option<String>,
     session: Option<String>,
@@ -64,6 +66,7 @@ fn access(
     Ok(Access {
         creation_time: t.utc.format("%Y-%m-%dT%H:%M:%S").to_string(),
         rfc3339: t.rfc3339(),
+        tz_assumed: t.tz_assumed,
         user,
         ip: rec.first_text(ip_keys).and_then(|s| normalize_ip(&s)),
         session: rec.first_text(session_keys),
@@ -107,18 +110,38 @@ fn raw_session_match(
     Ok(ids.into_iter().find(|id| !used.contains(id)))
 }
 
-/// The raw record holding the item a MessageIDs row names.
+/// The raw record holding the item a MessageIDs row names: by message id, else by access
+/// type (a Bind item without a message id; a Sync of the row's folder; with the type
+/// unknown, an item of the row's folder without a message id).
 fn raw_item_match(
     ctx: &ParseContext<'_>,
     a: &Access,
+    access_type: Option<&str>,
     message_id: Option<&str>,
     folder: Option<&str>,
 ) -> Result<Option<String>> {
-    let item = if message_id.is_some() {
-        "m.internet_message_id = ?"
-    } else {
-        "m.internet_message_id IS NULL AND m.access_type = 'sync' AND m.folder_path IS NOT DISTINCT FROM ?"
+    // The item condition, and whether it binds a value (a message id or folder path).
+    let (item, value): (&str, Option<Option<&str>>) = match (message_id, access_type) {
+        (Some(m), _) => ("m.internet_message_id = ?", Some(Some(m))),
+        (None, Some("bind")) => (
+            "m.internet_message_id IS NULL AND m.access_type = 'bind'",
+            None,
+        ),
+        (None, Some(_)) => (
+            "m.internet_message_id IS NULL AND m.access_type = 'sync' AND m.folder_path IS NOT DISTINCT FROM ?",
+            Some(folder),
+        ),
+        (None, None) => (
+            "m.internet_message_id IS NULL AND m.folder_path IS NOT DISTINCT FROM ?",
+            Some(folder),
+        ),
     };
+    let mut values: Vec<Option<&str>> = vec![
+        Some(a.user.as_str()),
+        Some(a.rfc3339.as_str()),
+        a.ip.as_deref(),
+    ];
+    values.extend(value);
     let found = ctx
         .conn
         .prepare_cached(&format!(
@@ -126,10 +149,7 @@ fn raw_item_match(
              JOIN ual_events e ON e.record_id = m.record_id
              WHERE {RAW_MATCH} AND {item} ORDER BY 1 LIMIT 1"
         ))?
-        .query_row(
-            params![a.user, a.rfc3339, a.ip, message_id.or(folder)],
-            |r| r.get::<_, String>(0),
-        )
+        .query_row(params_from_iter(values), |r| r.get::<_, String>(0))
         .optional()?;
     Ok(found)
 }
@@ -273,12 +293,23 @@ impl ArtifactParser for MessageIdsParser {
                 }
             };
             // Sync rows carry "N/A (Sync - entire folder)" instead of a message id.
-            let message_id = rec
-                .text("InternetMessageId")
-                .filter(|m| !m.starts_with("N/A"));
+            let id_text = rec.text("InternetMessageId");
+            let message_id = id_text.clone().filter(|m| !m.starts_with("N/A"));
+            let access_type = a.access_type.or_else(|| {
+                id_text
+                    .as_deref()
+                    .is_some_and(|m| m.to_ascii_lowercase().starts_with("n/a (sync"))
+                    .then_some("sync")
+            });
             let folder = rec.text("FolderPath");
             ctx.stats.read += 1;
-            if let Some(id) = raw_item_match(ctx, &a, message_id.as_deref(), folder.as_deref())? {
+            if let Some(id) = raw_item_match(
+                ctx,
+                &a,
+                access_type,
+                message_id.as_deref(),
+                folder.as_deref(),
+            )? {
                 ctx.record_source("ual_events", &id, r.ordinal, r.span)?;
                 ctx.stats.duplicate += 1;
                 matched += 1;
@@ -299,7 +330,7 @@ impl ArtifactParser for MessageIdsParser {
                 "INSERT INTO mail_items_accessed (record_id, item_ordinal, collection_id, access_type, folder_path,
                      internet_message_id, size_bytes, item_key, event_time, time_tz_assumed, user_upn,
                      client_ip, session_id)
-                 VALUES (NULL, 0, ?, CAST(? AS mail_access_type), ?, ?, ?, ?, CAST(? AS TIMESTAMPTZ), true, ?, ?, ?)",
+                 VALUES (NULL, 0, ?, CAST(? AS mail_access_type), ?, ?, ?, ?, CAST(? AS TIMESTAMPTZ), ?, ?, ?, ?)",
                 params![
                     ctx.collection_id,
                     a.access_type,
@@ -308,6 +339,7 @@ impl ArtifactParser for MessageIdsParser {
                     rec.int("SizeInBytes"),
                     key,
                     a.rfc3339,
+                    a.tz_assumed,
                     a.user,
                     a.ip,
                     a.session
