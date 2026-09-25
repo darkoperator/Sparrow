@@ -255,3 +255,27 @@ fn ambiguous_investigate_times_are_null_with_warning() {
         1
     );
 }
+
+#[test]
+fn unknown_investigate_file_is_an_unlinked_other_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    json_file(
+        &root,
+        "Tenant/_Investigate_Something_New.json",
+        &json!({"Name": "x", "Value": 1}),
+    );
+    let (case, report) = ingest(dir.path(), None);
+    assert_eq!(
+        row(&report, "Tenant/_Investigate_Something_New.json").status,
+        FileStatus::Parsed
+    );
+    assert_eq!(count(&case, "SELECT count(*) FROM collector_flags"), 1);
+    assert_eq!(
+        text(
+            &case,
+            "SELECT flag_type || '|' || (linked_table IS NULL) || '|' || (linked_key IS NULL) FROM collector_flags"
+        ),
+        "other|true|true"
+    );
+}
