@@ -259,7 +259,7 @@ fn hawk3_capture_is_found_by_content_and_loads_ual_shapes() {
             &b("Exchange_Mailbox_Audit_bob@contoso.example.json")
         )
         .status,
-        FileStatus::NotSupported
+        FileStatus::Parsed
     );
     let psf = row(&report, "2026-09-02_logs.csv");
     assert_eq!(
