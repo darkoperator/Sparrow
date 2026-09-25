@@ -79,14 +79,14 @@ pub fn load_rows(
     }
     let vcols: String = (0..cols.len()).map(|i| format!(", v{i} VARCHAR")).collect();
     conn.execute_batch(&format!(
-        "CREATE OR REPLACE TEMP TABLE stage_state (ord BIGINT, record_key VARCHAR, raw VARCHAR,
+        "CREATE OR REPLACE TEMP TABLE stage_state (ord BIGINT, seq BIGINT, record_key VARCHAR, raw VARCHAR,
              line_start BIGINT, line_end BIGINT, byte_offset BIGINT, byte_length BIGINT,
              raw_sha256 VARCHAR{vcols});"
     ))?;
     {
         let mut app = conn.appender("stage_state")?;
         let text = |s: &Option<String>| s.clone().map_or(DbValue::Null, DbValue::Text);
-        for r in rows {
+        for (seq, r) in rows.iter().enumerate() {
             if r.cells.len() != cols.len() {
                 return Err(Error::Invalid(format!(
                     "{t}: row {} has {} cells for {} columns",
@@ -97,6 +97,7 @@ pub fn load_rows(
             }
             let mut vals = vec![
                 DbValue::BigInt(r.ordinal as i64),
+                DbValue::BigInt(seq as i64),
                 DbValue::Text(r.record_key.clone()),
                 text(&r.raw),
                 DbValue::BigInt(r.pos.line_start as i64),
@@ -112,7 +113,7 @@ pub fn load_rows(
     }
     conn.execute_batch(&format!(
         "CREATE OR REPLACE TEMP TABLE stage_pick AS SELECT * FROM stage_state
-             QUALIFY row_number() OVER (PARTITION BY record_key ORDER BY ord) = 1;
+             QUALIFY row_number() OVER (PARTITION BY record_key ORDER BY ord, seq) = 1;
          CREATE OR REPLACE TEMP TABLE stage_new AS SELECT p.* FROM stage_pick p
              WHERE NOT EXISTS (SELECT 1 FROM {t} t WHERE t.record_key = p.record_key);"
     ))?;
@@ -126,16 +127,24 @@ pub fn load_rows(
             .map(|(i, c)| format!("t.{} IS NOT DISTINCT FROM {}", c.name, new_value(c, i, "t")))
             .collect::<Vec<_>>()
             .join(" AND ");
+        // `stage_newer`: rows of this batch whose incoming collection is not older than the
+        // one already stored for that key. Split into `stage_upd` (at least one listed
+        // column would change: full update, counted as `updated`) and `stage_touch` (values
+        // identical: only collection_id/collected_at advance to the newer snapshot, still a
+        // duplicate — a later, still-unchanged copy must not leave the row tagged with an
+        // older collection than one already merged in between).
         conn.execute_batch(&format!(
-            "CREATE OR REPLACE TEMP TABLE stage_upd AS
-             SELECT p.* FROM stage_pick p
+            "CREATE OR REPLACE TEMP TABLE stage_newer AS
+             SELECT p.*, NOT ({unchanged}) AS changed
+             FROM stage_pick p
              JOIN {t} t ON t.record_key = p.record_key
              JOIN collections old ON old.collection_id = t.collection_id
              JOIN collections cur ON cur.collection_id = {collection_id}
              WHERE NOT (CASE WHEN old.collected_at IS NOT NULL AND cur.collected_at IS NOT NULL
                              THEN old.collected_at > cur.collected_at
-                             ELSE old.collection_id > cur.collection_id END)
-               AND NOT ({unchanged});"
+                             ELSE old.collection_id > cur.collection_id END);
+             CREATE OR REPLACE TEMP TABLE stage_upd AS SELECT * FROM stage_newer WHERE changed;
+             CREATE OR REPLACE TEMP TABLE stage_touch AS SELECT * FROM stage_newer WHERE NOT changed;"
         ))?;
         let n: i64 = conn.query_row("SELECT count(*) FROM stage_upd", [], |r| r.get(0))?;
         let sets = cols
@@ -150,6 +159,13 @@ pub fn load_rows(
                      raw = CASE WHEN p.raw IS NULL THEN {t}.raw
                                 ELSE json_merge_patch(coalesce({t}.raw, CAST('{{}}' AS JSON)), CAST(p.raw AS JSON)) END
                  FROM stage_upd p WHERE {t}.record_key = p.record_key"
+            ),
+            [],
+        )?;
+        conn.execute(
+            &format!(
+                "UPDATE {t} SET collection_id = {collection_id}, collected_at = {collected_at}
+                 FROM stage_touch p WHERE {t}.record_key = p.record_key"
             ),
             [],
         )?;

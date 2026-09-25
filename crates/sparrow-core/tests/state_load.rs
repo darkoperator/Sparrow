@@ -235,6 +235,60 @@ fn older_collection_never_replaces_newer_and_undated_falls_back_to_ingest_order(
 }
 
 #[test]
+fn newest_unchanged_copy_still_advances_the_stored_collection() {
+    // Ingest order A (oldest), C (newest, same value as A), B (middle, a different value).
+    // C must win: once C's unchanged copy is merged in, B (older than C) must not replace it.
+    let case = Case::in_memory().unwrap();
+    let a = collection(&case, "a", Some("2026-09-10T00:00:00Z"));
+    let c = collection(&case, "c", Some("2026-09-20T00:00:00Z"));
+    let b = collection(&case, "b", Some("2026-09-15T00:00:00Z"));
+    load_rows(
+        case.conn(),
+        &INBOX_RULES,
+        RULE_COLS,
+        a,
+        file(&case, a),
+        &[rule(0, "k1", None, "X", None)],
+    )
+    .unwrap();
+    let out_c = load_rows(
+        case.conn(),
+        &INBOX_RULES,
+        RULE_COLS,
+        c,
+        file(&case, c),
+        &[rule(0, "k1", None, "X", None)],
+    )
+    .unwrap();
+    assert_eq!(
+        (out_c.updated, out_c.duplicate()),
+        (0, 1),
+        "unchanged values are not counted as an update"
+    );
+    assert_eq!(
+        count(&case, "SELECT collection_id FROM inbox_rules"),
+        c,
+        "the row must still advance to C's collection even though nothing changed"
+    );
+    let out_b = load_rows(
+        case.conn(),
+        &INBOX_RULES,
+        RULE_COLS,
+        b,
+        file(&case, b),
+        &[rule(0, "k1", None, "Y", None)],
+    )
+    .unwrap();
+    assert_eq!((out_b.updated, out_b.duplicate()), (0, 1));
+    assert_eq!(
+        text(&case, "SELECT name FROM inbox_rules"),
+        "X",
+        "B is older than the row's current (C) collection and must not replace it"
+    );
+    assert_eq!(count(&case, "SELECT collection_id FROM inbox_rules"), c);
+}
+
+#[test]
 fn keep_when_null_columns_keep_the_stored_value() {
     let case = Case::in_memory().unwrap();
     let c = collection(&case, "a", None);
