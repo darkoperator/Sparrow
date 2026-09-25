@@ -1,8 +1,10 @@
 use sparrow_core::Case;
 use sparrow_core::fixtures;
+use sparrow_core::fixtures::csv_line;
 use sparrow_core::ingest::parser::ParserRegistry;
 use sparrow_core::ingest::{FileStatus, IngestOptions, ingest_path};
 use sparrow_core::readers::time::DateOrder;
+use std::path::Path;
 
 fn ingest_hawk(
     opts: &IngestOptions,
@@ -164,4 +166,278 @@ fn unparseable_log_timestamps_are_warned_about() {
         "{:?}",
         f.warnings
     );
+}
+
+fn ingest_dir(base: &Path) -> (Case, sparrow_core::ingest::IngestReport) {
+    let mut case = Case::in_memory().unwrap();
+    let report = ingest_path(
+        &mut case,
+        base,
+        &ParserRegistry::builtin(),
+        &IngestOptions::default(),
+    )
+    .unwrap();
+    (case, report)
+}
+
+fn log_rows(case: &Case, file: &str) -> Vec<(Option<String>, String, i64, bool)> {
+    let mut stmt = case
+        .conn()
+        .prepare(
+            "SELECT l.level, l.message, epoch(l.ts)::BIGINT, l.tz_assumed FROM collection_log l
+             JOIN source_files s ON s.file_id = l.file_id WHERE s.rel_path = ? ORDER BY l.record_ordinal",
+        )
+        .unwrap();
+    stmt.query_map([file], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+}
+
+#[test]
+fn hawk3_log_culture_times_tags_sections_and_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("cap3");
+    fixtures::write(
+        &root,
+        "Hawk.log",
+        &fixtures::utf16le_bom(concat!(
+            "[9/14/2026 2:15:00 PM] - *** Version 3.1.0 ***\r\n",
+            "[9/14/2026 2:15:01 PM] - ## Tenant ## - Starting tenant investigation\r\n",
+            "[9/14/2026 2:15:02 PM] - [WARNING] - Mailbox auditing is off\r\n",
+            "    for 2 mailboxes\r\n",
+            "[9/14/2026 2:15:03 PM] - [ACTION] - Collecting inbox rules\r\n",
+        )),
+    );
+    let (case, report) = ingest_dir(dir.path());
+    assert!(!report.has_errors(), "{report:#?}");
+    assert_eq!(
+        log_rows(&case, "Hawk.log"),
+        vec![
+            (None, "*** Version 3.1.0 ***".to_string(), 1789395300, true),
+            (
+                None,
+                "## Tenant ## - Starting tenant investigation".to_string(),
+                1789395301,
+                true
+            ),
+            (
+                Some("WARNING".to_string()),
+                "Mailbox auditing is off\n    for 2 mailboxes".to_string(),
+                1789395302,
+                true
+            ),
+            (
+                Some("ACTION".to_string()),
+                "Collecting inbox rules".to_string(),
+                1789395303,
+                true
+            ),
+        ]
+    );
+    let version: String = case
+        .conn()
+        .query_row("SELECT tool_version FROM collections", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, "3.1.0");
+    let (ls, le): (i64, i64) = case
+        .conn()
+        .query_row(
+            "SELECT line_start, line_end FROM record_sources WHERE table_name = 'collection_log' AND record_ordinal = 2",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((ls, le), (3, 4));
+}
+
+#[test]
+fn hawk3_log_with_only_ambiguous_times_uses_the_collection_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("cap3");
+    fixtures::write(
+        &root,
+        "Hawk.log",
+        b"[9/10/2026 2:15:00 PM] - *** Version 3.1.0 ***\r\n",
+    );
+    let evidence = csv_line(&["CreationTime", "Id", "Operation", "Workload", "UserId"])
+        + &csv_line(&[
+            "9/15/2026 8:30:00 AM",
+            "e2e2e2e2-0000-4000-8000-000000000002",
+            "SearchExported",
+            "SecurityComplianceCenter",
+            "admin@contoso.example",
+        ]);
+    fixtures::write(&root, "Tenant/eDiscoveryLogs.csv", evidence.as_bytes());
+    let (case, report) = ingest_dir(dir.path());
+    assert!(!report.has_errors(), "{report:#?}");
+    assert_eq!(log_rows(&case, "Hawk.log")[0].2, 1789049700);
+    let f = report.collections[0]
+        .files
+        .iter()
+        .find(|f| f.rel_path == "Hawk.log")
+        .unwrap();
+    assert!(
+        f.warnings
+            .iter()
+            .any(|w| w.contains("other files of this collection")),
+        "{:?}",
+        f.warnings
+    );
+}
+
+#[test]
+fn hawk3_log_without_any_order_keeps_null_times() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("cap3");
+    fixtures::write(
+        &root,
+        "Hawk.log",
+        b"[9/10/2026 2:15:00 PM] - *** Version 3.1.0 ***\r\n",
+    );
+    let (case, report) = ingest_dir(dir.path());
+    let f = report.collections[0]
+        .files
+        .iter()
+        .find(|f| f.rel_path == "Hawk.log")
+        .unwrap();
+    assert_eq!(f.status, FileStatus::Parsed);
+    assert!(
+        f.warnings
+            .iter()
+            .any(|w| w.starts_with("log entry times not parsed") && w.contains("--culture")),
+        "{:?}",
+        f.warnings
+    );
+    let ts: Option<String> = case
+        .conn()
+        .query_row("SELECT CAST(ts AS VARCHAR) FROM collection_log", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(ts, None);
+}
+
+#[test]
+fn hawk4_prompt_lines_keep_their_level() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("cap4");
+    fixtures::write(
+        &root,
+        "Hawk.log",
+        concat!(
+            "[2026-09-10 14:15:03Z] - [PROMPT] -  Please provide the start date\r\n",
+            "[2026-09-10 14:15:04Z] - [ERROR]  - Could not connect\r\n",
+        )
+        .as_bytes(),
+    );
+    let (case, _report) = ingest_dir(dir.path());
+    assert_eq!(
+        log_rows(&case, "Hawk.log"),
+        vec![
+            (
+                Some("PROMPT".to_string()),
+                "Please provide the start date".to_string(),
+                1789049703,
+                false
+            ),
+            (
+                Some("ERROR".to_string()),
+                "Could not connect".to_string(),
+                1789049704,
+                false
+            ),
+        ]
+    );
+}
+
+#[test]
+fn psframework_log_rows_load_into_collection_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("cap3");
+    fixtures::write(&root, "Hawk.log", fixtures::HAWK_LOG.as_bytes());
+    let header = csv_line(&[
+        "ComputerName",
+        "File",
+        "FunctionName",
+        "Level",
+        "Line",
+        "Message",
+        "ModuleName",
+        "Runspace",
+        "Tags",
+        "TargetObject",
+        "Timestamp",
+        "Type",
+        "Username",
+    ]);
+    let row = |level: &str, message: &str, ts: &str| {
+        csv_line(&[
+            "WS01",
+            "Start-HawkTenantInvestigation.ps1",
+            "Out-LogFile",
+            level,
+            "12",
+            message,
+            "HAWK",
+            "1",
+            "",
+            "",
+            ts,
+            "Information",
+            "CONTOSO\\analyst",
+        ])
+    };
+    let csv = header
+        + &row("Host", "Starting", "2026-09-02 08:00:00.123")
+        + &row("Warning", "@{Name=x}", "2026-09-02 08:05:00.000");
+    fixtures::write(&root, "2026-09-02_logs.csv", &fixtures::utf8_bom(&csv));
+    let (case, report) = ingest_dir(dir.path());
+    assert!(!report.has_errors(), "{report:#?}");
+    assert_eq!(
+        log_rows(&case, "2026-09-02_logs.csv"),
+        vec![
+            (
+                Some("HOST".to_string()),
+                "Starting".to_string(),
+                1788336000,
+                true
+            ),
+            (
+                Some("WARNING".to_string()),
+                "@{Name=x}".to_string(),
+                1788336300,
+                true
+            ),
+        ]
+    );
+    let line: i64 = case
+        .conn()
+        .query_row(
+            "SELECT rs.line_start FROM record_sources rs JOIN source_files s ON s.file_id = rs.file_id
+             WHERE s.rel_path = '2026-09-02_logs.csv' AND rs.record_ordinal = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(line, 3);
+}
+
+#[test]
+fn psframework_file_without_log_columns_is_not_supported() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("cap3");
+    fixtures::write(&root, "Hawk.log", fixtures::HAWK_LOG.as_bytes());
+    fixtures::write(
+        &root,
+        "2026-09-03_logs.csv",
+        (csv_line(&["A", "B"]) + &csv_line(&["1", "2"])).as_bytes(),
+    );
+    let (_case, report) = ingest_dir(dir.path());
+    let f = report.collections[0]
+        .files
+        .iter()
+        .find(|f| f.rel_path == "2026-09-03_logs.csv")
+        .unwrap();
+    assert_eq!(f.status, FileStatus::NotSupported, "{f:#?}");
 }

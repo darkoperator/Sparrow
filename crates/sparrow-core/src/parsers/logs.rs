@@ -1,20 +1,27 @@
-//! Collector run logs: Hawk `Hawk.log` and Microsoft-Extractor-Suite `LogFile.txt`.
+//! Collector run logs: Hawk `Hawk.log` (4.x UTC times; 3.x culture-formatted local times,
+//! `## Tag ##` section lines and a `*** Version X ***` line), the PSFramework log export Hawk 3
+//! wrote (`<date>_logs.csv`) and Microsoft-Extractor-Suite `LogFile.txt`.
 
 use crate::ingest::context::ParseContext;
 use crate::ingest::parser::{ArtifactParser, ParserRegistry};
+use crate::normalize::ual_shape::get_ci;
+use crate::readers::csv_scan::read_csv;
 use crate::readers::text::{Span, line_spans};
-use crate::readers::time::{DateOrderDetector, parse_timestamp};
+use crate::readers::time::{DateOrder, DateOrderDetector, parse_timestamp};
 use crate::{Error, Result};
 use duckdb::params;
 use regex::Regex;
+use serde_json::Value;
 use std::sync::OnceLock;
 
 pub struct HawkLogParser;
 pub struct InvictusLogParser;
+pub struct PsFrameworkLogParser;
 
 pub fn register(r: &mut ParserRegistry) {
     r.register("hawk.log", Box::new(HawkLogParser));
     r.register("inv.logfile", Box::new(InvictusLogParser));
+    r.register("hawk.psframework_log", Box::new(PsFrameworkLogParser));
 }
 
 struct Entry {
@@ -28,11 +35,13 @@ fn cached(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
     cell.get_or_init(|| Regex::new(pattern).expect("valid regex"))
 }
 
+/// `[yyyy-MM-dd HH:mm:ssZ]` (Hawk 4, UTC) or `[M/d/yyyy h:mm:ss tt]` (Hawk 3, local time in the
+/// collecting machine's culture), then an optional `[LEVEL]` tag padded with spaces.
 fn re_hawk() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     cached(
         &R,
-        r"^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\dZ)\] - (?:\[(ACTION|ERROR|INVESTIGATE|INFO|WARNING|PROMPT)\]\s+-\s+)?(.*)$",
+        r"^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\dZ|\d{1,2}[/.\-]\d{1,2}[/.\-]\d{4} \d{1,2}:\d{2}(?::\d{2})?(?:\s*[AaPp]\.?[Mm]\.?)?)\] - (?:\[(ACTION|ERROR|INVESTIGATE|INFO|WARNING|PROMPT|NOTICE)\]\s+-\s+)?(.*)$",
     )
 }
 
@@ -80,18 +89,26 @@ fn entries(
     out
 }
 
-fn store(ctx: &mut ParseContext<'_>, entries: &[Entry], tz_assumed: bool) -> Result<()> {
+/// Store `entries`. `order` resolves culture-formatted times; an entry whose time cannot be
+/// parsed keeps `ts` NULL and gets `untimed_tz_assumed`.
+fn store(
+    ctx: &mut ParseContext<'_>,
+    entries: &[Entry],
+    order: Option<DateOrder>,
+    untimed_tz_assumed: bool,
+) -> Result<()> {
     let mut bad = 0u64;
     for (ordinal, e) in entries.iter().enumerate() {
         let key = format!("{}:{}", ctx.file_id, ordinal);
-        let ts = e
+        let parsed = e
             .ts_raw
             .as_deref()
-            .and_then(|s| parse_timestamp(s, None).ok())
-            .map(|t| t.rfc3339());
-        if e.ts_raw.is_some() && ts.is_none() {
+            .and_then(|s| parse_timestamp(s, order).ok());
+        if e.ts_raw.is_some() && parsed.is_none() {
             bad += 1;
         }
+        let ts = parsed.map(|t| t.rfc3339());
+        let tz_assumed = parsed.map_or(untimed_tz_assumed, |t| t.tz_assumed);
         ctx.conn
             .prepare_cached(
                 "INSERT INTO collection_log (log_key, collection_id, file_id, record_ordinal, ts, ts_raw, tz_assumed, level, message)
@@ -122,8 +139,34 @@ impl ArtifactParser for HawkLogParser {
                 )
             })
         });
-        store(ctx, &list, false)?;
-        apply_hawk_metadata(ctx, &list)
+        let meta = HawkMeta::read(&list);
+        let mut detector = DateOrderDetector::default();
+        for s in list
+            .iter()
+            .filter_map(|e| e.ts_raw.as_deref())
+            .chain(meta.window())
+        {
+            detector.observe(s);
+        }
+        let order = match ctx.resolve_date_order(&detector) {
+            Ok(order) => order,
+            Err(Error::DateOrderDeferred) => return Err(Error::DateOrderDeferred),
+            Err(reason) => {
+                if meta.window().next().is_some() {
+                    ctx.warn(format!("collection window not parsed: {reason}"));
+                }
+                if list
+                    .iter()
+                    .filter_map(|e| e.ts_raw.as_deref())
+                    .any(|s| !s.ends_with('Z'))
+                {
+                    ctx.warn(format!("log entry times not parsed (ts is NULL): {reason}"));
+                }
+                None
+            }
+        };
+        store(ctx, &list, order, false)?;
+        meta.apply(ctx, order)
     }
 }
 
@@ -143,7 +186,47 @@ impl ArtifactParser for InvictusLogParser {
                 }
             })
         });
-        store(ctx, &list, true)
+        store(ctx, &list, None, true)
+    }
+}
+
+/// Hawk 3 `<date>_logs.csv`: PSFramework's log export, one entry per row. Timestamp is the
+/// local time of the collecting machine (`yyyy-MM-dd HH:mm:ss.fff`).
+impl ArtifactParser for PsFrameworkLogParser {
+    fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
+        let table = read_csv(&ctx.text.text);
+        let has = |h: &str| table.headers.iter().any(|x| x.eq_ignore_ascii_case(h));
+        if !(has("Timestamp") && has("Message")) {
+            return Err(Error::UnsupportedShape(format!(
+                "no PSFramework log columns (Timestamp, Message) in [{}]",
+                table.headers.join(", ")
+            )));
+        }
+        for e in &table.errors {
+            ctx.stats.read += 1;
+            ctx.parse_error(e.ordinal, e.span, &e.message)?;
+        }
+        let text_of = |map: &serde_json::Map<String, Value>, k: &str| {
+            get_ci(map, k)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        let list: Vec<Entry> = table
+            .rows
+            .iter()
+            .map(|row| {
+                let map = table.row_map(row);
+                Entry {
+                    span: row.span,
+                    ts_raw: text_of(&map, "Timestamp"),
+                    level: text_of(&map, "Level").map(|l| l.to_ascii_uppercase()),
+                    message: text_of(&map, "Message").unwrap_or_default(),
+                }
+            })
+            .collect();
+        store(ctx, &list, None, true)
     }
 }
 
@@ -154,6 +237,12 @@ fn capture(re: &Regex, message: &str) -> Option<String> {
 fn re_meta_version() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     cached(&R, r"(?i)^Hawk Version\s*:\s*(\S+)")
+}
+
+/// Hawk 3: `*** Version 3.1.0 ***`.
+fn re_meta_h3_version() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    cached(&R, r"(?i)^\*{3}\s*Version\s+(\S+)\s*\*{3}$")
 }
 
 fn re_meta_tenant() -> &'static Regex {
@@ -176,50 +265,67 @@ fn re_meta_end() -> &'static Regex {
     cached(&R, r"(?i)^End Date\s*:\s*(.+)$")
 }
 
-fn apply_hawk_metadata(ctx: &mut ParseContext<'_>, list: &[Entry]) -> Result<()> {
-    let mut version = None;
-    let mut tenant = None;
-    let mut start_raw = None;
-    let mut end_raw = None;
-    for e in list {
-        let m = e.message.trim();
-        version = version.or_else(|| capture(re_meta_version(), m));
-        tenant = tenant.or_else(|| capture(re_meta_tenant(), m));
-        start_raw = start_raw
-            .or_else(|| capture(re_meta_start(), m))
-            .or_else(|| capture(re_meta_start_set(), m));
-        end_raw = end_raw.or_else(|| capture(re_meta_end(), m));
-    }
-    let strip = |s: &String| s.trim_end_matches(['Z', 'z']).trim().to_string();
-    let start_raw = start_raw.as_ref().map(strip);
-    let end_raw = end_raw.as_ref().map(strip);
+/// Collection facts Hawk writes into its log.
+#[derive(Debug, Default)]
+struct HawkMeta {
+    version: Option<String>,
+    tenant: Option<String>,
+    start_raw: Option<String>,
+    end_raw: Option<String>,
+}
 
-    let mut detector = DateOrderDetector::default();
-    for s in [&start_raw, &end_raw].into_iter().flatten() {
-        detector.observe(s);
-    }
-    let (mut window_start, mut window_end) = (None, None);
-    match ctx.resolve_date_order(&detector) {
-        Ok(order) => {
-            let parse = |s: &Option<String>| {
-                s.as_deref()
-                    .and_then(|v| parse_timestamp(v, order).ok())
-                    .map(|t| t.rfc3339())
-            };
-            window_start = parse(&start_raw);
-            window_end = parse(&end_raw);
+impl HawkMeta {
+    fn read(list: &[Entry]) -> HawkMeta {
+        let mut m = HawkMeta::default();
+        for e in list {
+            let msg = e.message.trim();
+            m.version = m
+                .version
+                .or_else(|| capture(re_meta_version(), msg))
+                .or_else(|| capture(re_meta_h3_version(), msg));
+            m.tenant = m.tenant.or_else(|| capture(re_meta_tenant(), msg));
+            m.start_raw = m
+                .start_raw
+                .or_else(|| capture(re_meta_start(), msg))
+                .or_else(|| capture(re_meta_start_set(), msg));
+            m.end_raw = m.end_raw.or_else(|| capture(re_meta_end(), msg));
         }
-        Err(Error::DateOrderDeferred) => return Err(Error::DateOrderDeferred),
-        Err(reason) => ctx.warn(format!("collection window not parsed: {reason}")),
+        let strip = |s: String| s.trim_end_matches(['Z', 'z']).trim().to_string();
+        m.start_raw = m.start_raw.map(strip);
+        m.end_raw = m.end_raw.map(strip);
+        m
     }
-    ctx.conn.execute(
-        "UPDATE collections SET
-            tool_version = coalesce(?, tool_version),
-            tenant_name_reported = coalesce(?, tenant_name_reported),
-            window_start = coalesce(CAST(? AS TIMESTAMPTZ), window_start),
-            window_end = coalesce(CAST(? AS TIMESTAMPTZ), window_end)
-         WHERE collection_id = ?",
-        params![version, tenant, window_start, window_end, ctx.collection_id],
-    )?;
-    Ok(())
+
+    /// Culture-formatted window dates, for day/month order resolution.
+    fn window(&self) -> impl Iterator<Item = &str> {
+        self.start_raw
+            .as_deref()
+            .into_iter()
+            .chain(self.end_raw.as_deref())
+    }
+
+    fn apply(&self, ctx: &mut ParseContext<'_>, order: Option<DateOrder>) -> Result<()> {
+        let parse = |s: &Option<String>| {
+            s.as_deref()
+                .and_then(|v| parse_timestamp(v, order).ok())
+                .map(|t| t.rfc3339())
+        };
+        let (window_start, window_end) = (parse(&self.start_raw), parse(&self.end_raw));
+        ctx.conn.execute(
+            "UPDATE collections SET
+                tool_version = coalesce(?, tool_version),
+                tenant_name_reported = coalesce(?, tenant_name_reported),
+                window_start = coalesce(CAST(? AS TIMESTAMPTZ), window_start),
+                window_end = coalesce(CAST(? AS TIMESTAMPTZ), window_end)
+             WHERE collection_id = ?",
+            params![
+                self.version,
+                self.tenant,
+                window_start,
+                window_end,
+                ctx.collection_id
+            ],
+        )?;
+        Ok(())
+    }
 }

@@ -264,7 +264,7 @@ fn hawk3_capture_is_found_by_content_and_loads_ual_shapes() {
     let psf = row(&report, "2026-09-02_logs.csv");
     assert_eq!(
         (psf.artifact_id.as_deref(), psf.status),
-        (Some("hawk.psframework_log"), FileStatus::NotSupported)
+        (Some("hawk.psframework_log"), FileStatus::Parsed)
     );
     assert_eq!(
         row(&report, "tenant_analysis.log").status,
