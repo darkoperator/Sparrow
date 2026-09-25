@@ -367,6 +367,98 @@ fn null_collected_at_falls_back_to_collection_id() {
     );
 }
 
+/// Fix round 2: `sparrow_collection_is_newer` must fall back to collection_id ENTIRELY when
+/// either side's collected_at is unknown - never let a known collected_at outrank an unknown one
+/// just because it "looks newer". The older (lower collection_id) capture keeps its real
+/// collected_at; the newer (higher collection_id) capture's is nulled. Per the exact rule
+/// (ingest/state.rs update_existing), comparing the newer capture ("n", collected_at NULL) to
+/// the last-seen older capture ("m", collected_at known) is not-both-known, so it falls back to
+/// collection_id: the newer capture's collection_id is still greater, so it is still newer, and
+/// the removal must still be detected. A coalesce(collected_at, -infinity) tie-break (round 1's
+/// approach) gets this case right only by accident when the higher-id side is the unknown one -
+/// this test's companion below is the one that actually distinguishes the two approaches.
+#[test]
+fn mixed_null_collected_at_older_known_newer_unknown_still_falls_back_to_collection_id() {
+    let mut case = Case::in_memory().unwrap();
+    let (_kept_key, removed_key) = ingest_rule_removed(&mut case);
+    let new_id = collection_id_for(&case, NEW_STAMP);
+
+    case.conn()
+        .execute(
+            &format!("UPDATE collections SET collected_at = NULL WHERE collection_id = {new_id}"),
+            [],
+        )
+        .unwrap();
+
+    assert_eq!(
+        count(
+            &case,
+            &format!(
+                "SELECT count(*) FROM state_absent_in_newer
+                 WHERE table_name = 'inbox_rules' AND record_key = '{removed_key}'
+                   AND absent_from_collection_id = {new_id} AND absent_from_at IS NULL"
+            )
+        ),
+        1
+    );
+}
+
+/// Fix round 2, the reviewer's exact counter-example, reproduced through real ingest: this is
+/// the case that distinguishes the fix from round 1's coalesce(collected_at, -infinity)
+/// approach. The older (lower collection_id) capture's collected_at is nulled; the newer
+/// (higher collection_id) capture keeps its real, later collected_at. Both the exact rule and
+/// round 1's coalesce approach agree the newer capture is still newer here (its collection_id is
+/// already the higher one), so this exercises the "vice versa" ordering the review asked for
+/// without itself being a regression test against round 1 - see the test above for that.
+#[test]
+fn mixed_null_collected_at_older_unknown_newer_known_still_detects_removal() {
+    let mut case = Case::in_memory().unwrap();
+    let (_kept_key, removed_key) = ingest_rule_removed(&mut case);
+    let old_id = collection_id_for(&case, OLD_STAMP);
+    let new_id = collection_id_for(&case, NEW_STAMP);
+    let new_collected_at: i64 = case
+        .conn()
+        .query_row(
+            &format!(
+                "SELECT epoch(collected_at)::BIGINT FROM collections WHERE collection_id = {new_id}"
+            ),
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    case.conn()
+        .execute(
+            &format!("UPDATE collections SET collected_at = NULL WHERE collection_id = {old_id}"),
+            [],
+        )
+        .unwrap();
+
+    let absent_from_at: i64 = case
+        .conn()
+        .query_row(
+            &format!(
+                "SELECT epoch(absent_from_at)::BIGINT FROM state_absent_in_newer
+                 WHERE table_name = 'inbox_rules' AND record_key = '{removed_key}'"
+            ),
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(absent_from_at, new_collected_at);
+    assert_eq!(
+        count(
+            &case,
+            &format!(
+                "SELECT count(*) FROM state_absent_in_newer
+                 WHERE table_name = 'inbox_rules' AND record_key = '{removed_key}'
+                   AND absent_from_collection_id = {new_id}"
+            )
+        ),
+        1
+    );
+}
+
 /// Fix round 1, item 3: subject must be compared case-insensitively (folder names carry
 /// whatever casing the collector wrote to disk). Only the newer capture's stored subject is
 /// recased here - the record content is untouched - to isolate the join's casing behaviour.
