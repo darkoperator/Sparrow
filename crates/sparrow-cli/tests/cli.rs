@@ -532,6 +532,11 @@ fn capabilities_json_lists_tenants_capabilities_and_evidence() {
         "collected",
         "empty Users export: ran, nothing found: {out}"
     );
+    assert_ne!(
+        ev("licenses")["status"],
+        "collected",
+        "the Licenses folder holds only EntraSecurityDefaults (audit_config): {out}"
+    );
     assert!(
         t["capabilities"]
             .as_array()

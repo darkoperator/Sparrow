@@ -31,6 +31,9 @@ pub struct EvidenceDef {
     /// ... GROUP BY 1` (times NULL for state kinds without a time, users NULL without a user
     /// column). None when no collector exports the evidence.
     pub facts_sql: Option<&'static str>,
+    /// `SELECT DISTINCT c.tenant_key`: tenants with rows of this evidence sighted in a file
+    /// whose warnings name a known export cap (the export was likely truncated).
+    pub truncated_sql: Option<&'static str>,
     /// Artifact ids of the files that carry the evidence (`*` suffix = prefix match).
     pub artifacts: &'static [&'static str],
     /// Microsoft-Extractor-Suite run folders: (component, run label prefix). `None` = a run
@@ -52,21 +55,38 @@ pub struct EvidenceDef {
     pub portal: Option<&'static str>,
 }
 
-/// `SELECT c.tenant_key, rows, min ms, max ms, users` over `$from` (which must alias its rows
-/// `x` with a `collection_id` column).
-macro_rules! facts {
-    ($from:literal, $time:literal, $users:literal) => {
-        Some(concat!(
-            "SELECT c.tenant_key, count(*), epoch_ms(min(",
-            $time,
-            ")), epoch_ms(max(",
-            $time,
-            ")), ",
-            $users,
-            " FROM ",
-            $from,
-            " JOIN collections c ON c.collection_id = x.collection_id GROUP BY 1"
-        ))
+/// An evidence source read from `$from` (which must alias its rows `x` with a
+/// `collection_id` column): `facts_sql` counts rows, times and users per tenant;
+/// `truncated_sql` lists the tenants whose rows were sighted (`record_sources` table `$table`,
+/// key `$key`) in a file carrying a truncation warning.
+macro_rules! source {
+    ($from:literal, $time:literal, $users:literal, $table:literal, $key:literal) => {
+        EvidenceDef {
+            facts_sql: Some(concat!(
+                "SELECT c.tenant_key, count(*), epoch_ms(min(",
+                $time,
+                ")), epoch_ms(max(",
+                $time,
+                ")), ",
+                $users,
+                " FROM ",
+                $from,
+                " JOIN collections c ON c.collection_id = x.collection_id GROUP BY 1"
+            )),
+            truncated_sql: Some(concat!(
+                "SELECT DISTINCT c.tenant_key FROM ",
+                $from,
+                " JOIN record_sources rs ON rs.table_name = ",
+                $table,
+                " AND rs.record_key = ",
+                $key,
+                " JOIN source_files sf ON sf.file_id = rs.file_id",
+                " JOIN collections c ON c.collection_id = x.collection_id",
+                " WHERE c.tenant_key IS NOT NULL",
+                " AND CAST(sf.warnings AS VARCHAR) LIKE '%known export cap%'"
+            )),
+            ..BASE
+        }
     };
 }
 
@@ -76,6 +96,7 @@ const BASE: EvidenceDef = EvidenceDef {
     title: "",
     kind: Kind::State,
     facts_sql: None,
+    truncated_sql: None,
     artifacts: &[],
     invictus_runs: &[],
     hawk_log: None,
@@ -98,7 +119,6 @@ pub static EVIDENCE: &[EvidenceDef] = &[
         id: "ual",
         title: "Unified audit log",
         kind: Kind::Event,
-        facts_sql: facts!("ual_events x", "x.event_time", "count(DISTINCT lower(x.user_upn))"),
         artifacts: &[
             "inv.ual.*",
             "inv.quickual.*",
@@ -119,21 +139,15 @@ pub static EVIDENCE: &[EvidenceDef] = &[
         invictus: Some("Get-UAL -StartDate {start} -EndDate {end}"),
         hawk: Some("Start-HawkTenantInvestigation (Hawk searches selected operations only)"),
         portal: Some("Purview portal > Audit > New search, export (50,000 rows per export)"),
-        ..BASE
+        ..source!(
+            "ual_events x", "x.event_time", "count(DISTINCT lower(x.user_upn))",
+            "'ual_events'", "CAST(x.record_id AS VARCHAR)"
+        )
     },
     EvidenceDef {
         id: "mail_items_accessed",
         title: "MailItemsAccessed (mailbox reads)",
         kind: Kind::Event,
-        facts_sql: facts!(
-            "(SELECT collection_id, event_time AS t, user_upn AS u FROM ual_events
-               WHERE operation = 'MailItemsAccessed'
-              UNION ALL
-              SELECT collection_id, event_time, user_upn FROM mail_items_accessed
-               WHERE record_id IS NULL) x",
-            "x.t",
-            "count(DISTINCT lower(x.u))"
-        ),
         artifacts: &["inv.mia.*"],
         invictus_runs: &[("MailItemsAccessed", None)],
         hawk_log: Some(r"^Initiating collection of MailItemsAccessed for (\S+)"),
@@ -146,17 +160,23 @@ pub static EVIDENCE: &[EvidenceDef] = &[
         ),
         invictus: Some("Get-UAL -StartDate {start} -EndDate {end} -Operations MailItemsAccessed"),
         hawk: Some("Get-HawkUserMailItemsAccessed -UserPrincipalName <upn>"),
-        ..BASE
+        ..source!(
+            "(SELECT collection_id, event_time AS t, user_upn AS u, 'ual_events' AS tn,
+                     CAST(record_id AS VARCHAR) AS k FROM ual_events
+               WHERE operation = 'MailItemsAccessed'
+              UNION ALL
+              SELECT collection_id, event_time, user_upn, 'mail_items_accessed', item_key
+                FROM mail_items_accessed
+               WHERE record_id IS NULL) x",
+            "x.t",
+            "count(DISTINCT lower(x.u))",
+            "x.tn", "x.k"
+        )
     },
     EvidenceDef {
         id: "mail_send",
         title: "Mail sent (Send, SendAs, SendOnBehalf)",
         kind: Kind::Event,
-        facts_sql: facts!(
-            "(SELECT * FROM ual_events WHERE operation IN ('Send', 'SendAs', 'SendOnBehalf')) x",
-            "x.event_time",
-            "count(DISTINCT lower(x.user_upn))"
-        ),
         hawk_log: Some(r"^Initiating collection of mail 'Send' logs for (\S+)"),
         needs_ual: true,
         needs_mailbox_audit: true,
@@ -166,18 +186,17 @@ pub static EVIDENCE: &[EvidenceDef] = &[
             "Get-UAL -StartDate {start} -EndDate {end} -Operations Send,SendAs,SendOnBehalf",
         ),
         hawk: Some("Get-HawkUserMailSendActivity -UserPrincipalName <upn>"),
-        ..BASE
+        ..source!(
+            "(SELECT * FROM ual_events WHERE operation IN ('Send', 'SendAs', 'SendOnBehalf')) x",
+            "x.event_time",
+            "count(DISTINCT lower(x.user_upn))",
+            "'ual_events'", "CAST(x.record_id AS VARCHAR)"
+        )
     },
     EvidenceDef {
         id: "search_queries",
         title: "Search queries (Exchange, SharePoint)",
         kind: Kind::Event,
-        facts_sql: facts!(
-            "(SELECT * FROM ual_events
-               WHERE operation IN ('SearchQueryInitiatedExchange', 'SearchQueryInitiatedSharePoint')) x",
-            "x.event_time",
-            "count(DISTINCT lower(x.user_upn))"
-        ),
         hawk_log: Some(r"^Initiating collection of (?:Exchange|SharePoint) Search queries for (\S+)"),
         needs_ual: true,
         full_ual_covers: true,
@@ -188,59 +207,66 @@ pub static EVIDENCE: &[EvidenceDef] = &[
             "Get-UAL -StartDate {start} -EndDate {end} -Operations SearchQueryInitiatedExchange,SearchQueryInitiatedSharePoint",
         ),
         hawk: Some("Get-HawkUserExchangeSearchQuery -UserPrincipalName <upn>"),
-        ..BASE
+        ..source!(
+            "(SELECT * FROM ual_events
+               WHERE operation IN ('SearchQueryInitiatedExchange', 'SearchQueryInitiatedSharePoint')) x",
+            "x.event_time",
+            "count(DISTINCT lower(x.user_upn))",
+            "'ual_events'", "CAST(x.record_id AS VARCHAR)"
+        )
     },
     EvidenceDef {
         id: "signins",
         title: "Entra ID sign-in logs",
         kind: Kind::Event,
-        facts_sql: facts!("signins x", "x.event_time", "count(DISTINCT lower(x.user_upn))"),
         artifacts: &["inv.signins*", "hawk.user.entra_signin", "portal.entra_signins"],
         invictus_runs: &[("EntraID", Some("SignInLogs"))],
         hawk_log: Some(r"^Initiating collection of sign-in logs for (\S+) from Entra ID"),
         invictus: Some("Get-GraphEntraSignInLogs -startDate {start} -endDate {end}"),
         hawk: Some("Get-HawkUserEntraIDSignInLog -UserPrincipalName <upn>"),
         portal: Some("Entra admin center > Sign-in logs > Download (works on every edition)"),
-        ..BASE
+        ..source!(
+            "signins x", "x.event_time", "count(DISTINCT lower(x.user_upn))",
+            "'signins'", "x.record_key"
+        )
     },
     EvidenceDef {
         id: "directory_audits",
         title: "Entra ID audit logs",
         kind: Kind::Event,
-        facts_sql: facts!(
-            "directory_audits x",
-            "x.event_time",
-            "count(DISTINCT lower(x.initiated_by_upn))"
-        ),
         artifacts: &["inv.entra_audit*", "hawk.tenant.entra_audit"],
         invictus_runs: &[("EntraID", Some("AuditLogs"))],
         hawk_log: Some(r"^Initiating collection of Entra ID audit events"),
         invictus: Some("Get-GraphEntraAuditLogs -startDate {start} -endDate {end}"),
         hawk: Some("Get-HawkTenantEntraIDAuditLog"),
         portal: Some("Entra admin center > Audit logs > Download"),
-        ..BASE
+        ..source!(
+            "directory_audits x",
+            "x.event_time",
+            "count(DISTINCT lower(x.initiated_by_upn))",
+            "'directory_audits'", "x.record_key"
+        )
     },
     EvidenceDef {
         id: "risk_detections",
         title: "Entra ID Protection risk detections",
         kind: Kind::Event,
-        facts_sql: facts!(
-            "risk_detections x",
-            "coalesce(x.activity_time, x.detected_time)",
-            "count(DISTINCT lower(x.user_upn))"
-        ),
         artifacts: &["inv.risk_detections", "hawk.tenant.risk_detections"],
         invictus_runs: &[("RiskyEvents", None)],
         hawk_log: Some(r"^Initiating collection of Risk Detection events"),
         invictus: Some("Get-RiskyDetections"),
         hawk: Some("Get-HawkTenantRiskDetections"),
-        ..BASE
+        ..source!(
+            "risk_detections x",
+            "coalesce(x.activity_time, x.detected_time)",
+            "count(DISTINCT lower(x.user_upn))",
+            "'risk_detections'", "x.record_key"
+        )
     },
     EvidenceDef {
         id: "message_trace",
         title: "Exchange Online message trace",
         kind: Kind::Event,
-        facts_sql: facts!("message_trace x", "x.received", "count(DISTINCT lower(x.sender))"),
         artifacts: &[
             "inv.message_trace",
             "hawk.user.message_trace",
@@ -251,38 +277,41 @@ pub static EVIDENCE: &[EvidenceDef] = &[
         invictus: Some("Get-MessageTraceLog -StartDate {start} -EndDate {end}"),
         hawk: Some("Get-HawkUserMessageTrace -UserPrincipalName <upn>"),
         portal: Some("Exchange admin center > Mail flow > Message trace"),
-        ..BASE
+        ..source!(
+            "message_trace x", "x.received", "count(DISTINCT lower(x.sender))",
+            "'message_trace'", "x.record_key"
+        )
     },
     EvidenceDef {
         id: "mailbox_audit_legacy",
         title: "Mailbox audit log (Search-MailboxAuditLog)",
         kind: Kind::Event,
-        facts_sql: facts!(
-            "mailbox_audit_legacy x",
-            "x.event_time",
-            "count(DISTINCT lower(x.mailbox_upn))"
-        ),
         artifacts: &["inv.mailbox_audit_legacy", "hawk.user.mailbox_audit_legacy"],
         invictus_runs: &[("Mailbox Audit Log", Some("Legacy"))],
         needs_mailbox_audit: true,
         invictus: Some(
             "Get-MailboxAuditLogLegacy -UserIds <upn> -StartDate {start} -EndDate {end}",
         ),
-        ..BASE
+        ..source!(
+            "mailbox_audit_legacy x",
+            "x.event_time",
+            "count(DISTINCT lower(x.mailbox_upn))",
+            "'mailbox_audit_legacy'", "x.record_key"
+        )
     },
     EvidenceDef {
         id: "admin_audit",
         title: "Exchange admin audit log",
         kind: Kind::Event,
-        facts_sql: facts!(
-            "admin_audit_events x",
-            "x.run_time",
-            "count(DISTINCT lower(x.caller))"
-        ),
         artifacts: &["hawk.tenant.admin_audit"],
         invictus: Some("Get-UAL -StartDate {start} -EndDate {end} -RecordType ExchangeAdmin"),
         hawk: Some("Start-HawkTenantInvestigation"),
-        ..BASE
+        ..source!(
+            "admin_audit_events x",
+            "x.run_time",
+            "count(DISTINCT lower(x.caller))",
+            "'admin_audit_events'", "x.record_key"
+        )
     },
     EvidenceDef {
         id: "email_threat_events",
@@ -306,27 +335,22 @@ pub static EVIDENCE: &[EvidenceDef] = &[
         id: "risky_users",
         title: "Entra ID Protection risky users",
         kind: Kind::State,
-        facts_sql: facts!(
-            "risky_users x",
-            "x.risk_last_updated",
-            "count(DISTINCT lower(x.upn))"
-        ),
         artifacts: &["inv.risky_users", "hawk.tenant.risky_users"],
         invictus_runs: &[("RiskyEvents", None)],
         hawk_log: Some(r"^Initiating collection of Risky Users"),
         invictus: Some("Get-RiskyUsers"),
         hawk: Some("Get-HawkTenantRiskyUsers"),
-        ..BASE
+        ..source!(
+            "risky_users x",
+            "x.risk_last_updated",
+            "count(DISTINCT lower(x.upn))",
+            "'risky_users'", "x.record_key"
+        )
     },
     EvidenceDef {
         id: "inbox_rules",
         title: "Inbox and sweep rules",
         kind: Kind::State,
-        facts_sql: facts!(
-            "inbox_rules x",
-            "CAST(NULL AS TIMESTAMPTZ)",
-            "count(DISTINCT lower(x.mailbox_upn))"
-        ),
         artifacts: &[
             "inv.mailbox_rules*",
             "hawk.user.inbox_rules",
@@ -338,17 +362,17 @@ pub static EVIDENCE: &[EvidenceDef] = &[
         hawk_log: Some(r"^Initiating collection of Exchange Inbox Rules for (\S+)"),
         invictus: Some("Get-MailboxRules"),
         hawk: Some("Get-HawkUserInboxRule -UserPrincipalName <upn>"),
-        ..BASE
+        ..source!(
+            "inbox_rules x",
+            "CAST(NULL AS TIMESTAMPTZ)",
+            "count(DISTINCT lower(x.mailbox_upn))",
+            "'inbox_rules'", "x.record_key"
+        )
     },
     EvidenceDef {
         id: "mailbox_config",
         title: "Mailbox configuration (forwarding, auto-reply, auditing)",
         kind: Kind::State,
-        facts_sql: facts!(
-            "mailboxes x",
-            "CAST(NULL AS TIMESTAMPTZ)",
-            "count(DISTINCT lower(x.upn))"
-        ),
         artifacts: &[
             "inv.audit_status",
             "hawk.user.mailbox_txt",
@@ -360,31 +384,31 @@ pub static EVIDENCE: &[EvidenceDef] = &[
         hawk_log: Some(r"^Initiating collection of mailbox configuration for (\S+)"),
         invictus: Some("Get-MailboxAuditStatus"),
         hawk: Some("Get-HawkUserConfiguration -UserPrincipalName <upn>"),
-        ..BASE
+        ..source!(
+            "mailboxes x",
+            "CAST(NULL AS TIMESTAMPTZ)",
+            "count(DISTINCT lower(x.upn))",
+            "'mailboxes'", "x.record_key"
+        )
     },
     EvidenceDef {
         id: "mailbox_permissions",
         title: "Mailbox permissions",
         kind: Kind::State,
-        facts_sql: facts!(
-            "mailbox_permissions x",
-            "CAST(NULL AS TIMESTAMPTZ)",
-            "count(DISTINCT lower(x.mailbox_upn))"
-        ),
         artifacts: &["inv.mailbox_permissions"],
         invictus_runs: &[("Mailbox Permissions", None)],
         invictus: Some("Get-MailboxPermissions"),
-        ..BASE
+        ..source!(
+            "mailbox_permissions x",
+            "CAST(NULL AS TIMESTAMPTZ)",
+            "count(DISTINCT lower(x.mailbox_upn))",
+            "'mailbox_permissions'", "x.record_key"
+        )
     },
     EvidenceDef {
         id: "users",
         title: "Entra ID users",
         kind: Kind::State,
-        facts_sql: facts!(
-            "users x",
-            "CAST(NULL AS TIMESTAMPTZ)",
-            "count(DISTINCT lower(x.upn))"
-        ),
         artifacts: &[
             "inv.users",
             "hawk.tenant.entra_users",
@@ -394,17 +418,17 @@ pub static EVIDENCE: &[EvidenceDef] = &[
         hawk_log: Some(r"^Initiating collection of users from Entra ID"),
         invictus: Some("Get-Users"),
         hawk: Some("Get-HawkTenantEntraIDUser"),
-        ..BASE
+        ..source!(
+            "users x",
+            "CAST(NULL AS TIMESTAMPTZ)",
+            "count(DISTINCT lower(x.upn))",
+            "'users'", "x.record_key"
+        )
     },
     EvidenceDef {
         id: "role_assignments",
         title: "Admin role assignments (Entra ID, Exchange, eDiscovery)",
         kind: Kind::State,
-        facts_sql: facts!(
-            "role_assignments x",
-            "CAST(NULL AS TIMESTAMPTZ)",
-            "CAST(NULL AS BIGINT)"
-        ),
         artifacts: &[
             "inv.admins*",
             "inv.roles.*",
@@ -421,79 +445,79 @@ pub static EVIDENCE: &[EvidenceDef] = &[
         ),
         invictus: Some("Get-AdminUsers"),
         hawk: Some("Get-HawkTenantEntraIDAdmin; Get-HawkTenantEXOAdmin"),
-        ..BASE
+        ..source!(
+            "role_assignments x",
+            "CAST(NULL AS TIMESTAMPTZ)",
+            "CAST(NULL AS BIGINT)",
+            "'role_assignments'", "x.record_key"
+        )
     },
     EvidenceDef {
         id: "oauth_grants",
         title: "OAuth / application permission grants",
         kind: Kind::State,
-        facts_sql: facts!(
-            "oauth_grants x",
-            "CAST(NULL AS TIMESTAMPTZ)",
-            "CAST(NULL AS BIGINT)"
-        ),
         artifacts: &["inv.oauth", "hawk.tenant.consent_grants"],
         invictus_runs: &[("EntraID", Some("OAuthPermissions"))],
         hawk_log: Some(r"^Initiating collection of OAuth / Application Grants"),
         invictus: Some("Get-OAuthPermissionsGraph"),
         hawk: Some("Get-HawkTenantConsentGrant"),
-        ..BASE
+        ..source!(
+            "oauth_grants x",
+            "CAST(NULL AS TIMESTAMPTZ)",
+            "CAST(NULL AS BIGINT)",
+            "'oauth_grants'", "x.record_key"
+        )
     },
     EvidenceDef {
         id: "app_credentials",
         title: "Application and service principal credentials",
         kind: Kind::State,
-        facts_sql: facts!(
-            "app_credentials x",
-            "CAST(NULL AS TIMESTAMPTZ)",
-            "CAST(NULL AS BIGINT)"
-        ),
         artifacts: &["hawk.tenant.app_credentials"],
         hawk_log: Some(
             r"^Initiating collection of application and service principal credentials",
         ),
         hawk: Some("Get-HawkTenantAppAndSPNCredentialDetail"),
-        ..BASE
+        ..source!(
+            "app_credentials x",
+            "CAST(NULL AS TIMESTAMPTZ)",
+            "CAST(NULL AS BIGINT)",
+            "'app_credentials'", "x.record_key"
+        )
     },
     EvidenceDef {
         id: "transport_rules",
         title: "Exchange transport rules",
         kind: Kind::State,
-        facts_sql: facts!(
-            "transport_rules x",
-            "CAST(NULL AS TIMESTAMPTZ)",
-            "CAST(NULL AS BIGINT)"
-        ),
         artifacts: &["inv.transport_rules", "hawk.tenant.transport_rules"],
         invictus_runs: &[("Rules", None)],
         hawk_log: Some(r"^Gathering Transport Rules"),
         invictus: Some("Get-TransportRules"),
         hawk: Some("Get-HawkTenantConfiguration"),
-        ..BASE
+        ..source!(
+            "transport_rules x",
+            "CAST(NULL AS TIMESTAMPTZ)",
+            "CAST(NULL AS BIGINT)",
+            "'transport_rules'", "x.record_key"
+        )
     },
     EvidenceDef {
         id: "mobile_devices",
         title: "Mobile devices attached to mailboxes",
         kind: Kind::State,
-        facts_sql: facts!(
-            "mobile_devices x",
-            "CAST(NULL AS TIMESTAMPTZ)",
-            "count(DISTINCT lower(x.mailbox))"
-        ),
         artifacts: &["hawk.user.mobile_devices"],
         hawk_log: Some(r"^Initiating collection of mobile devices attached to (\S+)"),
         hawk: Some("Get-HawkUserMobileDevice -UserPrincipalName <upn>"),
-        ..BASE
+        ..source!(
+            "mobile_devices x",
+            "CAST(NULL AS TIMESTAMPTZ)",
+            "count(DISTINCT lower(x.mailbox))",
+            "'mobile_devices'", "x.record_key"
+        )
     },
     EvidenceDef {
         id: "audit_config",
         title: "Organization audit configuration",
         kind: Kind::State,
-        facts_sql: facts!(
-            "audit_config x",
-            "CAST(NULL AS TIMESTAMPTZ)",
-            "CAST(NULL AS BIGINT)"
-        ),
         artifacts: &[
             "hawk.tenant.admin_audit_log_config",
             "hawk.tenant.org_config",
@@ -504,29 +528,32 @@ pub static EVIDENCE: &[EvidenceDef] = &[
         hawk_log: Some(r"^Gathering Admin Audit Log"),
         invictus: Some("Get-MailboxAuditStatus; Get-EntraSecurityDefaults"),
         hawk: Some("Get-HawkTenantConfiguration"),
-        ..BASE
+        ..source!(
+            "audit_config x",
+            "CAST(NULL AS TIMESTAMPTZ)",
+            "CAST(NULL AS BIGINT)",
+            "'audit_config'", "x.record_key"
+        )
     },
     EvidenceDef {
         id: "licenses",
         title: "Tenant licences",
         kind: Kind::State,
-        facts_sql: facts!(
-            "licenses x",
-            "CAST(NULL AS TIMESTAMPTZ)",
-            "CAST(NULL AS BIGINT)"
-        ),
-        artifacts: &["inv.licenses.tenant", "inv.licenses.user", "hawk.log"],
+        artifacts: &["inv.licenses.tenant", "inv.licenses.user"],
         invictus_runs: &[("Licenses", None)],
         hawk_log: Some(r"^M365 License type detected"),
         invictus: Some("Get-Licenses; Get-LicensesByUser"),
-        ..BASE
+        ..source!(
+            "licenses x",
+            "CAST(NULL AS TIMESTAMPTZ)",
+            "CAST(NULL AS BIGINT)",
+            "'licenses'", "x.record_key"
+        )
     },
 ];
 
 /// Full unified audit log exports: evidence marked `full_ual_covers` is in them when present.
 const FULL_UAL_ARTIFACTS: &[&str] = &["inv.ual.window", "inv.ual.merged", "portal.ual"];
-
-const TRUNCATION_MARK: &str = "known export cap";
 
 /// One row of `evidence_availability`.
 #[derive(Debug, Clone, Serialize)]
@@ -580,10 +607,13 @@ struct Facts {
     min_ms: Option<i64>,
     max_ms: Option<i64>,
     users: Option<i64>,
+    /// Some of these rows were sighted in a file carrying a truncation warning.
+    truncated: bool,
 }
 
 #[derive(Debug, Clone)]
 struct FileRow {
+    collection_id: i64,
     tool: String,
     artifact: String,
     status: String,
@@ -615,6 +645,7 @@ impl FileRow {
 
 #[derive(Debug, Clone)]
 struct RunRow {
+    collection_id: i64,
     component: Option<String>,
     label: Option<String>,
     rel_dir: String,
@@ -727,6 +758,7 @@ fn load_facts(conn: &Connection, def: &EvidenceDef) -> Result<HashMap<String, Fa
                 min_ms: r.get(2)?,
                 max_ms: r.get(3)?,
                 users: r.get(4)?,
+                truncated: false,
             },
         ))
     })?;
@@ -735,6 +767,15 @@ fn load_facts(conn: &Connection, def: &EvidenceDef) -> Result<HashMap<String, Fa
         let (key, facts) = row?;
         if let Some(key) = key {
             out.insert(key, facts);
+        }
+    }
+    if let Some(sql) = def.truncated_sql {
+        let mut stmt = conn.prepare(sql)?;
+        let keys = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        for key in keys {
+            if let Some(f) = out.get_mut(&key?) {
+                f.truncated = true;
+            }
         }
     }
     Ok(out)
@@ -881,7 +922,8 @@ fn load_tenant_facts(
     {
         let mut stmt = conn.prepare(
             "SELECT c.tenant_key, CAST(c.tool AS VARCHAR), sf.artifact_type,
-                    CAST(sf.status AS VARCHAR), CAST(sf.warnings AS VARCHAR), sf.rel_path
+                    CAST(sf.status AS VARCHAR), CAST(sf.warnings AS VARCHAR), sf.rel_path,
+                    sf.collection_id
              FROM source_files sf JOIN collections c ON c.collection_id = sf.collection_id
              WHERE sf.artifact_type IS NOT NULL AND c.tenant_key IS NOT NULL
              ORDER BY sf.file_id",
@@ -894,15 +936,17 @@ fn load_tenant_facts(
                 r.get::<_, String>(3)?,
                 r.get::<_, Option<String>>(4)?,
                 r.get::<_, String>(5)?,
+                r.get::<_, i64>(6)?,
             ))
         })?;
         for row in rows {
-            let (key, tool, artifact, status, warnings, rel_path) = row?;
+            let (key, tool, artifact, status, warnings, rel_path, collection_id) = row?;
             let warnings: Vec<String> = warnings
                 .and_then(|w| serde_json::from_str(&w).ok())
                 .unwrap_or_default();
             if let Some(tf) = map.get_mut(&key) {
                 tf.files.push(FileRow {
+                    collection_id,
                     tool,
                     artifact,
                     status,
@@ -916,7 +960,7 @@ fn load_tenant_facts(
     // Microsoft-Extractor-Suite run folders.
     {
         let mut stmt = conn.prepare(
-            "SELECT c.tenant_key, r.component, r.run_label, r.rel_dir
+            "SELECT c.tenant_key, r.component, r.run_label, r.rel_dir, r.collection_id
              FROM collector_runs r JOIN collections c ON c.collection_id = r.collection_id
              WHERE c.tenant_key IS NOT NULL ORDER BY r.rel_dir",
         )?;
@@ -927,6 +971,7 @@ fn load_tenant_facts(
                     component: r.get(1)?,
                     label: r.get(2)?,
                     rel_dir: r.get(3)?,
+                    collection_id: r.get(4)?,
                 },
             ))
         })?;
@@ -1084,6 +1129,21 @@ fn mailbox_action_gap(tf: &TenantFacts, action: &str) -> (usize, usize) {
     (known, lacking)
 }
 
+/// A run folder shared by several cmdlets (Rules, RiskyEvents, Licenses, ...) counts for `def`
+/// only when none of the classified files directly in it belongs to a different evidence
+/// source; a folder without such files stays ambiguous and counts for every evidence of its
+/// component.
+fn run_belongs_elsewhere(def: &EvidenceDef, tf: &TenantFacts, run: &RunRow) -> bool {
+    tf.files.iter().any(|f| {
+        f.collection_id == run.collection_id
+            && f.rel_path.rsplit_once('/').map(|(dir, _)| dir) == Some(run.rel_dir.as_str())
+            && !any_artifact_matches(def.artifacts, &f.artifact)
+            && EVIDENCE
+                .iter()
+                .any(|e| e.id != def.id && any_artifact_matches(e.artifacts, &f.artifact))
+    })
+}
+
 /// Why the collector is known to have run, if it did.
 fn collector_ran(
     def: &EvidenceDef,
@@ -1104,7 +1164,7 @@ fn collector_ran(
                     Some(prefix) => r.label.as_deref().is_some_and(|l| l.starts_with(prefix)),
                     None => r.label.is_none(),
                 }
-        })
+        }) && !run_belongs_elsewhere(def, tf, r)
     }) {
         return Some(format!(
             "the collector ran and returned no records (Microsoft-Extractor-Suite run folder {})",
@@ -1188,10 +1248,7 @@ fn evaluate(
 
     let (status, reason) = if facts.rows > 0 {
         let mut reasons: Vec<String> = Vec::new();
-        if ev_files
-            .iter()
-            .any(|f| f.warnings.iter().any(|w| w.contains(TRUNCATION_MARK)))
-        {
+        if facts.truncated {
             reasons.push(
                 "an export hit a known export cap (row count equals the cap; results likely truncated)"
                     .to_string(),

@@ -459,3 +459,154 @@ fn snapshot_matches_compute() {
         .unwrap();
     assert_eq!(evaluated, n);
 }
+
+fn run_folder(case: &Case, c: i64, rel_dir: &str, component: &str, files: i32) {
+    case.conn()
+        .execute(
+            "INSERT INTO collector_runs (collection_id, rel_dir, component, run_label, files, empty_files, bytes)
+             VALUES (?, ?, ?, NULL, ?, 0, 0)",
+            params![c, rel_dir, component, files],
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_shared_run_folder_counts_only_for_the_evidence_its_files_belong_to() {
+    let mut case = Case::in_memory().unwrap();
+    let c = collection(&case, "invictus", "2026-09-20 00:00:00+00", None);
+    run_folder(&case, c, "Rules/20260910-101100", "Rules", 1);
+    file(
+        &case,
+        c,
+        "Rules/20260910-101100/20260910-101100-TransportRules.csv",
+        "inv.transport_rules",
+        "parsed",
+        None,
+    );
+    let rows = evaluate(&mut case);
+    let r = row(&rows, "inbox_rules");
+    assert_ne!(
+        r.status, "collected",
+        "a Get-TransportRules folder says nothing about inbox rules: {r:?}"
+    );
+    assert_eq!(row(&rows, "transport_rules").status, "collected");
+}
+
+#[test]
+fn an_empty_shared_run_folder_counts_for_every_evidence_of_its_component() {
+    let mut case = Case::in_memory().unwrap();
+    let c = collection(&case, "invictus", "2026-09-20 00:00:00+00", None);
+    run_folder(&case, c, "Rules/20260910-101100", "Rules", 0);
+    let rows = evaluate(&mut case);
+    for ev in ["inbox_rules", "transport_rules"] {
+        let r = row(&rows, ev);
+        assert_eq!(r.status, "collected", "{r:?}");
+        assert!(r.reason.contains("run folder"), "{r:?}");
+    }
+}
+
+#[test]
+fn truncation_comes_from_the_files_that_sighted_the_rows() {
+    let mut case = Case::in_memory().unwrap();
+    let c = collection(&case, "portal_export", "2026-09-20 00:00:00+00", None);
+    let f = file(
+        &case,
+        c,
+        "audit.csv",
+        "portal.ual",
+        "parsed",
+        Some(r#"["row count equals known export cap 50000 — results likely truncated"]"#),
+    );
+    ual(
+        &case,
+        c,
+        f,
+        "11111111-1111-4111-8111-111111111111",
+        "2026-09-01 10:00:00+00",
+        "MailItemsAccessed",
+        "alice@contoso.example",
+    );
+    let rows = evaluate(&mut case);
+    let r = row(&rows, "mail_items_accessed");
+    assert_eq!(r.status, "partial", "{r:?}");
+    assert!(r.reason.contains("export cap"), "{r:?}");
+    let r = row(&rows, "signins");
+    assert!(!r.reason.contains("export cap"), "{r:?}");
+}
+
+#[test]
+fn each_tenant_sees_only_its_own_evidence() {
+    const T2: &str = "d8d8d8d8-0000-4000-8000-000000000002";
+    let mut case = Case::in_memory().unwrap();
+    let c1 = collection(&case, "invictus", "2026-09-20 00:00:00+00", None);
+    let f1 = file(
+        &case,
+        c1,
+        "EntraID/x-SignInLogs.json",
+        "inv.signins",
+        "parsed",
+        None,
+    );
+    case.conn()
+        .execute_batch(&format!(
+            "INSERT INTO signins (record_key, collection_id, event_time, user_upn, resource_tenant_id)
+                 VALUES ('s1', {c1}, TIMESTAMPTZ '2026-09-01 10:00:00+00', 'alice@contoso.example', '{T1}');
+             INSERT INTO record_sources VALUES ('signins', 's1', {f1}, 0, 1, 1, 0, 1, 'h');"
+        ))
+        .unwrap();
+    let c2 = collection(&case, "hawk", "2026-09-21 00:00:00+00", None);
+    let f2 = file(
+        &case,
+        c2,
+        "Tenant/x.json",
+        "hawk.tenant.raw_ual",
+        "parsed",
+        None,
+    );
+    case.conn()
+        .execute(
+            "INSERT INTO ual_events (record_id, collection_id, event_time, time_tz_assumed, time_precision,
+                 organization_id, workload, operation, user_upn, audit_data, data_completeness, synthetic_id)
+             VALUES ('22222222-2222-4222-8222-222222222222', ?, TIMESTAMPTZ '2026-09-02 10:00:00+00', false,
+                 'second', CAST(? AS UUID), 'Exchange', 'Send', 'bob@fabrikam.example', '{}', 'full', false)",
+            params![c2, T2],
+        )
+        .unwrap();
+    case.conn()
+        .execute(
+            "INSERT INTO record_sources VALUES ('ual_events', '22222222-2222-4222-8222-222222222222', ?, 0, 1, 1, 0, 1, 'h')",
+            params![f2],
+        )
+        .unwrap();
+    let rows = evaluate(&mut case);
+    let get = |tenant: &str, ev: &str| {
+        rows.iter()
+            .find(|r| r.tenant_key == tenant && r.evidence == ev)
+            .unwrap_or_else(|| panic!("no row for {tenant} {ev}: {rows:?}"))
+    };
+    assert_eq!(get(T1, "signins").status, "collected");
+    assert_eq!(get(T1, "signins").rows, 1);
+    assert_ne!(get(T2, "signins").status, "collected");
+    assert_eq!(get(T2, "signins").rows, 0);
+    assert_eq!(get(T2, "ual").rows, 1);
+    assert_eq!(get(T1, "ual").rows, 0);
+}
+
+#[test]
+fn a_parsed_hawk_log_alone_does_not_mean_licences_were_collected() {
+    let mut case = Case::in_memory().unwrap();
+    let c = collection(&case, "hawk", "2026-09-20 00:00:00+00", None);
+    file(&case, c, "Hawk.log", "hawk.log", "parsed", None);
+    let rows = evaluate(&mut case);
+    let r = row(&rows, "licenses");
+    assert_ne!(r.status, "collected", "{r:?}");
+    case.conn()
+        .execute(
+            "INSERT INTO collection_log (log_key, collection_id, file_id, record_ordinal, tz_assumed, level, message)
+             VALUES ('k1', ?, 0, 0, false, 'INFO', 'M365 License type detected: Unknown')",
+            params![c],
+        )
+        .unwrap();
+    let rows = evaluate(&mut case);
+    assert_eq!(row(&rows, "licenses").status, "collected");
+}
