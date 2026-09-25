@@ -8,6 +8,7 @@ pub mod logs;
 pub mod mailbox;
 pub mod records;
 pub mod risk;
+pub mod signins;
 pub mod stage;
 pub mod tenant_config;
 pub mod ual;
@@ -20,6 +21,7 @@ pub fn register_builtin(registry: &mut ParserRegistry) {
     directory::register(registry);
     apps::register(registry);
     risk::register(registry);
+    signins::register(registry);
     exchange::register(registry);
     mailbox::register(registry);
     tenant_config::register(registry);

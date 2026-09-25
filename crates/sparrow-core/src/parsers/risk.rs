@@ -80,8 +80,9 @@ impl ArtifactParser for RiskyUsersParser {
     }
 }
 
-/// The Location object as the table's STRUCT (every key present, as the cast requires).
-fn location(rec: &Rec) -> Option<Value> {
+/// Graph Location object (city, state, countryOrRegion, geoCoordinates) as the location
+/// STRUCT (every key present, as the cast requires).
+pub fn graph_location(rec: &Rec) -> Option<Value> {
     let Value::Object(loc) = rec.json("Location")? else {
         return None;
     };
@@ -170,7 +171,7 @@ impl ArtifactParser for RiskDetectionsParser {
                     Cell::text(rec.text("UserDisplayName")),
                     Cell::text(rec.text("CorrelationId")),
                     Cell::text(rec.text("RequestId")),
-                    Cell::json(location(&rec)),
+                    Cell::json(graph_location(&rec)),
                     Cell::json(additional_info(&rec)),
                 ],
             );
