@@ -387,10 +387,8 @@ fn portal_row(rec: &Rec, event_type: Option<&'static str>) -> Vec<Cell> {
     let mut c = CellRow::new(COLS);
     c.set("signin_id", Cell::text(signin_key(rec)))
         .set("event_time", Cell::time(time.clone()))
-        .set(
-            "time_tz_assumed",
-            Cell::bool(time.as_deref().map(zone_assumed)),
-        )
+        // Date (UTC) is UTC by definition, even when XLSX renders it without a zone.
+        .set("time_tz_assumed", Cell::bool(time.as_ref().map(|_| false)))
         .set("event_type", Cell::text(event_type.map(Into::into)))
         .set("user_upn", Cell::text(upn(rec.text("Username"))))
         .set("user_id", Cell::text(lower(rec.text("User ID"))))

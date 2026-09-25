@@ -400,9 +400,10 @@ fn portal_xlsx_rows_load_with_sheet_row_provenance() {
         ),
         (
             3,
+            // XLSX renders Date (UTC) without a zone.
             portal_row(
                 S3,
-                "2026-09-01T11:00:00Z",
+                "2026-09-01 11:00:00",
                 "Seattle, Washington, US",
                 "Yes",
                 "sess-3",
@@ -435,10 +436,11 @@ fn portal_xlsx_rows_load_with_sheet_row_provenance() {
         text(
             &case,
             &format!(
-                "SELECT session_id || '|' || event_type FROM signins WHERE record_key = '{S3}'"
+                "SELECT session_id || '|' || event_type || '|' || time_tz_assumed || '|' || epoch(event_time)::BIGINT
+                 FROM signins WHERE record_key = '{S3}'"
             )
         ),
-        "sess-3|interactive"
+        "sess-3|interactive|false|1788260400"
     );
     let v = verify_record(&case, "signins", S3, None).unwrap();
     assert!(v.ok, "{v:#?}");
