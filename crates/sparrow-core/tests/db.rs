@@ -41,6 +41,7 @@ fn fresh_case_has_provenance_tables() {
             "collector_flags",
             "collector_runs",
             "directory_audits",
+            "evidence_availability",
             "file_events",
             "inbox_rules",
             "licenses",

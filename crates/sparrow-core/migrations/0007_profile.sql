@@ -227,3 +227,27 @@ COMMENT ON COLUMN tenant_capabilities.status IS 'licensed, not_licensed or unkno
 COMMENT ON COLUMN tenant_capabilities.confidence IS 'high (licence list or direct evidence) or low (Hawk tier or baseline assumption); NULL when unknown.';
 COMMENT ON COLUMN tenant_capabilities.basis IS 'Why, in words, naming the evidence (and any disagreeing evidence).';
 COMMENT ON COLUMN tenant_capabilities.retention_days IS 'Retention the capability gives (capabilities.retention_days).';
+
+-- Task 6: evidence availability snapshot.
+CREATE TYPE availability_status AS ENUM ('collected', 'available_not_collected', 'not_licensed',
+    'not_enabled', 'beyond_retention', 'partial', 'unknown');
+CREATE TABLE evidence_availability (
+    tenant_key VARCHAR NOT NULL, evidence VARCHAR NOT NULL, title VARCHAR NOT NULL,
+    status availability_status NOT NULL, reason VARCHAR NOT NULL, remediation VARCHAR,
+    rows BIGINT NOT NULL, min_time TIMESTAMPTZ, max_time TIMESTAMPTZ, users_covered BIGINT,
+    retention_days INTEGER, evaluated_at TIMESTAMPTZ NOT NULL
+);
+
+COMMENT ON TABLE evidence_availability IS 'Per tenant and evidence source: whether the evidence is in the case and, if not, why (not licensed, not enabled, beyond retention, not collected). Snapshot written by every profile run; sparrow capabilities recomputes it for the current time.';
+COMMENT ON COLUMN evidence_availability.tenant_key IS 'tenant.tenant_key.';
+COMMENT ON COLUMN evidence_availability.evidence IS 'Evidence source id (ual, mail_items_accessed, signins, ...), as listed in capabilities.evidence.';
+COMMENT ON COLUMN evidence_availability.title IS 'Human-readable name of the evidence source.';
+COMMENT ON COLUMN evidence_availability.status IS 'collected: in the case (rows may be 0 when the collector ran and found nothing). partial: in the case but incomplete (truncated export, files this Sparrow version does not parse, Hawk''s selected operations or selected users, mailboxes not auditing the action, window reaching past retention). not_licensed: the tenant lacks the licence that produces it. not_enabled: licensed but switched off (UAL ingestion, organization mailbox auditing, or no mailbox audits the action). beyond_retention: not collected and the tenant window ended before Microsoft''s retention reaches back. available_not_collected: could still be collected. unknown: licence unknown and not part of every plan.';
+COMMENT ON COLUMN evidence_availability.reason IS 'Why, in words: the counted rows, the partial reasons, the licence basis or the setting that decided the status.';
+COMMENT ON COLUMN evidence_availability.remediation IS 'Collector command (or portal path) that would fill the gap.';
+COMMENT ON COLUMN evidence_availability.rows IS 'Rows in the case for this tenant.';
+COMMENT ON COLUMN evidence_availability.min_time IS 'Earliest event time in those rows (NULL for state evidence or no rows).';
+COMMENT ON COLUMN evidence_availability.max_time IS 'Latest event time in those rows (NULL for state evidence or no rows).';
+COMMENT ON COLUMN evidence_availability.users_covered IS 'Distinct users in those rows.';
+COMMENT ON COLUMN evidence_availability.retention_days IS 'Longest retention among the tenant''s licensed capabilities that provide this evidence (NULL for state evidence or when unknown).';
+COMMENT ON COLUMN evidence_availability.evaluated_at IS 'The time the snapshot was evaluated for (retention decisions depend on it).';

@@ -2,6 +2,7 @@
 //! loaded evidence. It never changes evidence rows; it rewrites derived tables only, so it
 //! can run any number of times (after every ingest, or `sparrow profile`).
 
+pub mod availability;
 pub mod capabilities;
 pub mod tenant;
 
@@ -53,6 +54,7 @@ pub fn refresh(case: &mut Case, opts: &ProfileOptions) -> Result<ProfileReport> 
         report.warnings.push(warning);
     }
     capabilities::derive(&tx)?;
+    availability::snapshot(&tx, opts.now())?;
     tx.commit()?;
 
     Ok(report)

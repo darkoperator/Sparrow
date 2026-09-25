@@ -9,7 +9,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 /// A `VARCHAR[]` column read back as `Value::List`, flattened to strings (NULL elements dropped).
-fn string_list(v: Value) -> Vec<String> {
+pub(crate) fn string_list(v: Value) -> Vec<String> {
     match v {
         Value::List(items) | Value::Array(items) => items
             .into_iter()
@@ -450,6 +450,7 @@ pub fn derive(conn: &Connection) -> Result<usize> {
 #[derive(Debug, Clone, Serialize)]
 pub struct TenantCapability {
     pub tenant_key: String,
+    #[serde(rename = "id")]
     pub capability_id: String,
     pub status: String,
     pub confidence: Option<String>,

@@ -8,6 +8,7 @@ use sparrow_core::ingest::parser::ParserRegistry;
 use sparrow_core::ingest::{
     DEFAULT_MAX_FILE_BYTES, IngestOptions, ingest_collections, no_collections_error,
 };
+use sparrow_core::profile::availability::capabilities_report;
 use sparrow_core::profile::tenant::{
     DomainAction, TenantDomain, list_domains, only_tenant, set_domain,
 };
@@ -67,6 +68,11 @@ enum Command {
         rules: Option<PathBuf>,
         #[arg(long)]
         geoip_dir: Option<PathBuf>,
+    },
+    /// Evidence availability: what the case holds, what is missing and why (first call for agents)
+    Capabilities {
+        #[arg(long)]
+        case: PathBuf,
     },
     /// Re-check a record against its original source file(s)
     Verify {
@@ -209,6 +215,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             },
             json,
         ),
+        Some(Command::Capabilities { case }) => cmd_capabilities(&case, json),
         Some(Command::Verify {
             table,
             record_key,
@@ -412,6 +419,59 @@ fn cmd_profile(case_path: &Path, profile_opts: ProfileOptions, json: bool) -> Re
         print_json(&profile)?;
     } else {
         print_profile_summary(&profile);
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_capabilities(case_path: &Path, json: bool) -> Result<ExitCode> {
+    let case = Case::open_read_only(case_path)?;
+    let report = capabilities_report(&case, chrono::Utc::now())?;
+    if report.tenants.is_empty() {
+        anyhow::bail!(
+            "the case has no tenant profile; run `sparrow profile --case {}` first",
+            case_path.display()
+        );
+    }
+    if json {
+        print_json(&report)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    println!("evaluated at {}", report.as_of);
+    for t in &report.tenants {
+        println!();
+        println!(
+            "tenant {}{}{}",
+            t.tenant_key,
+            t.tenant_name
+                .as_deref()
+                .map(|n| format!("  name {n}"))
+                .unwrap_or_default(),
+            if t.domains.is_empty() {
+                String::new()
+            } else {
+                format!("  domains {}", t.domains.join(", "))
+            }
+        );
+        println!("  capabilities:");
+        for c in &t.capabilities {
+            println!(
+                "    {:<22} {:<13} ({})  {}",
+                c.capability_id,
+                c.status,
+                c.confidence.as_deref().unwrap_or("-"),
+                c.basis
+            );
+        }
+        println!("  evidence:");
+        for e in &t.evidence {
+            println!(
+                "    {:<22} {:<24} {:>9}  {}",
+                e.evidence, e.status, e.rows, e.reason
+            );
+            if let Some(r) = &e.remediation {
+                println!("      -> {r}");
+            }
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

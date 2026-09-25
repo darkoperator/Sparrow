@@ -493,3 +493,73 @@ fn tenant_domains_add_list_remove() {
         "{listed}"
     );
 }
+
+#[test]
+fn capabilities_json_lists_tenants_capabilities_and_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = sparrow_core::fixtures::invictus::invictus_output_tree(dir.path());
+    let case = dir.path().join("case.duckdb");
+    sparrow()
+        .args(["ingest"])
+        .arg(&root)
+        .arg("--case")
+        .arg(&case)
+        .assert()
+        .success();
+    let out = json_out(
+        sparrow()
+            .args(["--json", "capabilities", "--case"])
+            .arg(&case),
+        0,
+    );
+    let t = &out["tenants"][0];
+    assert_eq!(
+        t["tenant_id"], "0e0e0e0e-0000-4000-8000-00000000000a",
+        "{out}"
+    );
+    let ev = |id: &str| {
+        t["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["evidence"] == id)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(ev("signins")["status"], "collected", "{out}");
+    assert_eq!(
+        ev("users")["status"],
+        "collected",
+        "empty Users export: ran, nothing found: {out}"
+    );
+    assert!(
+        t["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["id"] == "entra_id_p1")
+    );
+
+    let text = sparrow()
+        .args(["capabilities", "--case"])
+        .arg(&case)
+        .output()
+        .unwrap();
+    assert!(text.status.success());
+    let text = String::from_utf8_lossy(&text.stdout);
+    assert!(text.contains("evidence:"), "{text}");
+    assert!(text.contains("signins"), "{text}");
+}
+
+#[test]
+fn capabilities_without_a_profile_asks_for_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = dir.path().join("case.duckdb");
+    drop(sparrow_core::Case::create_or_open(&case).unwrap());
+    sparrow()
+        .args(["capabilities", "--case"])
+        .arg(&case)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("sparrow profile --case"));
+}
