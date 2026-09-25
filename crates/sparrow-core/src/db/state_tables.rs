@@ -1,6 +1,6 @@
-//! Column specs of the state tables (migration 0004) and the Phase 2c event tables (migration
-//! 0005), used by the staged loader (`ingest::state`). `columns` lists everything between
-//! `collected_at` and `raw`.
+//! Column specs of the state tables (migration 0004), the Phase 2c event tables (migration
+//! 0005) and the Phase 3 tables (migration 0006), used by the staged loader (`ingest::state`).
+//! `columns` lists everything between `collected_at` and `raw`.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadMode {
@@ -200,6 +200,9 @@ pub static MAILBOXES: TableSpec = TableSpec {
         col("auto_reply_message", V),
         col("auto_reply_external_message", V),
         col("when_changed", T),
+        col("audit_bypass_enabled", B),
+        col("default_audit_set", L),
+        col("effective_audit_state", V),
     ],
 };
 
@@ -490,6 +493,23 @@ pub static ADMIN_AUDIT_EVENTS: TableSpec = TableSpec {
     ],
 };
 
+pub static MAILBOX_PERMISSIONS: TableSpec = TableSpec {
+    table: "mailbox_permissions",
+    mode: LoadMode::LatestWins,
+    columns: &[
+        col("mailbox_upn", V),
+        keep("mailbox_display_name", V),
+        keep("recipient_type", V),
+        col("grantee", V),
+        keep("grantee_upn", V),
+        col("permission", "mailbox_right"),
+        col("folder", V),
+        col("access_rights", L),
+        col("deny", B),
+        col("inheritance", V),
+    ],
+};
+
 pub static ALL: &[&TableSpec] = &[
     &USERS,
     &ROLE_ASSIGNMENTS,
@@ -510,4 +530,5 @@ pub static ALL: &[&TableSpec] = &[
     &MESSAGE_TRACE,
     &MAILBOX_AUDIT_LEGACY,
     &ADMIN_AUDIT_EVENTS,
+    &MAILBOX_PERMISSIONS,
 ];

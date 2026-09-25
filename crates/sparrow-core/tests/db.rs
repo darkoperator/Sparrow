@@ -38,11 +38,13 @@ fn fresh_case_has_provenance_tables() {
             "collection_log",
             "collections",
             "collector_flags",
+            "collector_runs",
             "directory_audits",
             "file_events",
             "inbox_rules",
             "mail_items_accessed",
             "mailbox_audit_legacy",
+            "mailbox_permissions",
             "mailboxes",
             "message_trace",
             "mobile_devices",
@@ -256,7 +258,7 @@ fn upgrading_a_v2_case_keeps_collections_and_adds_ual_tables() {
 #[test]
 fn state_table_specs_match_the_schema() {
     let case = Case::in_memory().unwrap();
-    assert_eq!(case.schema_version().unwrap(), 5);
+    assert_eq!(case.schema_version().unwrap(), 6);
     for spec in ALL {
         for common in [
             "record_key",
@@ -363,4 +365,51 @@ fn provenance_comments_describe_xlsx_rows() {
         )
         .unwrap();
     assert!(c.contains("XLSX"), "{c}");
+}
+
+#[test]
+fn phase3_columns_exist() {
+    let case = Case::in_memory().unwrap();
+    for (table, column, ty) in [
+        ("collector_runs", "rel_dir", "VARCHAR"),
+        ("collector_runs", "run_stamp", "TIMESTAMP WITH TIME ZONE"),
+        ("collector_runs", "files", "INTEGER"),
+        ("collector_runs", "empty_files", "INTEGER"),
+        ("collector_runs", "bytes", "BIGINT"),
+        ("mailboxes", "audit_bypass_enabled", "BOOLEAN"),
+        ("mailboxes", "default_audit_set", "VARCHAR[]"),
+        ("mailboxes", "effective_audit_state", "VARCHAR"),
+        ("mail_items_accessed", "item_key", "VARCHAR"),
+        (
+            "mail_items_accessed",
+            "event_time",
+            "TIMESTAMP WITH TIME ZONE",
+        ),
+        ("mail_items_accessed", "user_upn", "VARCHAR"),
+        ("mail_items_accessed", "client_ip", "VARCHAR"),
+        ("mail_items_accessed", "session_id", "VARCHAR"),
+        ("mail_items_accessed", "time_tz_assumed", "BOOLEAN"),
+    ] {
+        assert_eq!(
+            data_type(&case, table, column).as_deref(),
+            Some(ty),
+            "{table}.{column}"
+        );
+    }
+}
+
+#[test]
+fn mailbox_permissions_spec_is_latest_wins() {
+    use sparrow_core::db::state_tables::MAILBOX_PERMISSIONS;
+    assert_eq!(MAILBOX_PERMISSIONS.mode, LoadMode::LatestWins);
+    assert!(ALL.iter().any(|s| s.table == "mailbox_permissions"));
+    let case = Case::in_memory().unwrap();
+    // The enum rejects unknown rights.
+    assert!(
+        case.conn()
+            .execute_batch(
+                "INSERT INTO mailbox_permissions (record_key, collection_id, permission) VALUES ('k', 1, 'owner')"
+            )
+            .is_err()
+    );
 }
