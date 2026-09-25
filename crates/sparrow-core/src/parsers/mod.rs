@@ -2,6 +2,7 @@
 
 pub mod apps;
 pub mod directory;
+pub mod directory_audits;
 pub mod exchange;
 pub mod flags;
 pub mod logs;
@@ -19,6 +20,7 @@ pub fn register_builtin(registry: &mut ParserRegistry) {
     logs::register(registry);
     ual::register(registry);
     directory::register(registry);
+    directory_audits::register(registry);
     apps::register(registry);
     risk::register(registry);
     signins::register(registry);
