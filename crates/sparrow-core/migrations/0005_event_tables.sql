@@ -73,7 +73,7 @@ COMMENT ON TABLE collection_log IS 'Collector run log lines: Hawk.log (3.x and 4
 COMMENT ON COLUMN collection_log.ts IS 'Entry time. Hawk 4: UTC. Hawk 3, PSFramework and Extractor Suite: local time of the collecting machine stored as if UTC (see tz_assumed). Hawk 3 culture dates use the day/month order of the log, else of its collection.';
 COMMENT ON COLUMN collection_log.level IS 'Log level tag when present (INFO, ACTION, WARNING, ERROR, INVESTIGATE, PROMPT, ...; PSFramework Level upper-cased).';
 COMMENT ON COLUMN collector_flags.linked_table IS 'Table holding the flagged record (ual_events, inbox_rules, oauth_grants, role_assignments, risky_users, risk_detections, mobile_devices, signins, admin_audit_events, source_files).';
-COMMENT ON COLUMN collector_flags.linked_key IS 'record_key of the flagged row in linked_table. For source_files: the rel_path guessed from the absolute path Hawk logged; join through collector_flags.file_id -> source_files.collection_id to stay in the same collection. NULL when not computable (no id, or an admin audit flag whose dates stay ambiguous).';
+COMMENT ON COLUMN collector_flags.linked_key IS 'record_key of the flagged row in linked_table. For source_files: the rel_path guessed from the absolute path Hawk logged; join through collector_flags.file_id -> source_files.collection_id to stay in the same collection. NULL when not computable (no id, or an admin audit flag whose dates stay ambiguous, or an admin audit flag with a local RunDate that matches no row).';
 
 -- Shared text of the event tables.
 COMMENT ON TABLE signins IS 'Entra ID sign-ins: Hawk Entra_Sign_In_Log (Get-MgAuditLogSignIn; JSON preferred over the flattened CSV) and Entra admin center sign-in exports (CSV or XLSX). One row per sign-in id; a copy from another file or collection only fills columns that are still NULL.';
@@ -200,7 +200,7 @@ COMMENT ON COLUMN mailbox_audit_legacy.app_id IS 'AppId, lower-case.';
 COMMENT ON COLUMN mailbox_audit_legacy.client_app_id IS 'ClientAppId, lower-case.';
 
 COMMENT ON TABLE admin_audit_events IS 'Exchange admin audit log (Hawk 3 Search-AdminAuditLog files: New_/Set_/Remove_InboxRules, RBAC_Changes, User_Changes, and the five-column Simple_* summaries when the full file is absent). The same command from JSON, CSV, Format-List text, _Investigate_ copies or a Simple_* summary gets one record_key.';
-COMMENT ON COLUMN admin_audit_events.record_key IS 'SHA-256 hex of run time (UTC, seconds), cmdlet, ObjectModified after its last / and \, and the caller as Hawk''s Simple_* summary writes it, all lower-case. Parameters are not part of the key: Simple_* summaries have none.';
+COMMENT ON COLUMN admin_audit_events.record_key IS 'SHA-256 hex of run time (UTC, seconds), cmdlet, ObjectModified after its last / and \, and the caller as Hawk''s Simple_* summary writes it, all lower-case. Parameters are not part of the key: Simple_* summaries have none. Zone-less copies (Format-List, full-form CSV) are read as UTC, so they share the key only when the collecting host ran in UTC.';
 COMMENT ON COLUMN admin_audit_events.collection_id IS 'Collection in which the command was first loaded.';
 COMMENT ON COLUMN admin_audit_events.collected_at IS 'collected_at of that collection (NULL when unknown).';
 COMMENT ON COLUMN admin_audit_events.raw IS 'Source record as first loaded; later copies add only the keys it lacks (json_merge_patch).';

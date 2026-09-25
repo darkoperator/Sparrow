@@ -18,7 +18,7 @@ use crate::parsers::stage::{
     RowDraft, TableRows, file_date_order, load_tables, lower, read_state_records,
 };
 use crate::readers::text::{Span, line_spans};
-use crate::readers::time::{DateOrder, DateOrderDetector, parse_timestamp};
+use crate::readers::time::{DateOrder, DateOrderDetector, parse_timestamp, zone_assumed};
 use crate::{Error, Result};
 use regex::Regex;
 use serde_json::{Map, Value, json};
@@ -174,6 +174,23 @@ fn linked_key(
     }
 }
 
+/// The record's run date is `RunDate` without a zone (Format-List, full-form CSV): host-local
+/// time. The `RunDate(UTC)` summary and `/Date(ms)/` or offset forms are UTC.
+fn local_run_date(map: &Map<String, Value>, lossy: bool) -> bool {
+    Rec::new(map, lossy)
+        .text("RunDate")
+        .is_some_and(|s| zone_assumed(&s))
+}
+
+fn admin_audit_row_exists(ctx: &ParseContext<'_>, key: &str) -> Result<bool> {
+    let n: i64 = ctx.conn.query_row(
+        "SELECT count(*) FROM admin_audit_events WHERE record_key = ?",
+        [key],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
 /// JSON with object keys sorted recursively (stable basis for flag keys).
 fn canonical(v: &Value) -> Value {
     match v {
@@ -246,12 +263,23 @@ impl ArtifactParser for InvestigateFileParser {
             None
         };
         let mut rows = TableRows::new(&COLLECTOR_FLAGS, FLAG_COLS);
+        let mut local_unlinked = false;
         for r in &records {
-            let linked = if links_ok {
+            let mut linked = if links_ok {
                 table.and_then(|t| linked_key(t, &r.map, format.lossy(), subject.as_deref(), order))
             } else {
                 None
             };
+            // A zone-less RunDate is the collecting host's local time but keys as UTC: keep
+            // the link only when it joins a row, else it would silently point at nothing.
+            if table == Some("admin_audit_events") {
+                if let Some(k) = linked.as_deref() {
+                    if local_run_date(&r.map, format.lossy()) && !admin_audit_row_exists(ctx, k)? {
+                        linked = None;
+                        local_unlinked = true;
+                    }
+                }
+            }
             let basis = linked
                 .clone()
                 .unwrap_or_else(|| canonical(&Value::Object(r.map.clone())).to_string());
@@ -269,6 +297,11 @@ impl ArtifactParser for InvestigateFileParser {
                     Cell::text(table.map(Into::into)),
                     Cell::text(linked),
                 ],
+            );
+        }
+        if local_unlinked {
+            ctx.warn(
+                "admin audit flags with local (zone-less) RunDate not linked: no admin_audit_events row at the same UTC time; the collecting host was probably not on UTC",
             );
         }
         load_tables(ctx, vec![rows])

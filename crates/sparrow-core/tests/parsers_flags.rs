@@ -127,25 +127,43 @@ fn investigate_files_link_to_the_rows_their_parsers_create() {
 }
 
 fn investigate_new_inbox_rules_txt(root: &Path) {
+    investigate_new_inbox_rules_txt_at(root, 8);
+}
+
+/// `_Investigate_New_InboxRules.txt` (Format-List, host-local RunDate) for rules run at
+/// `hour`:00 and `hour`:05 AM on 9/2/2026, host time.
+fn investigate_new_inbox_rules_txt_at(root: &Path, hour: u32) {
+    let block = |object: &str, params: &str, minute: u32| {
+        format!(
+            "ObjectModified   : {object}\r\nCmdletName       : New-InboxRule\r\nCmdletParameters : {{Name, {params}}}\r\nCaller           : admin@contoso.example\r\nRunDate          : 9/2/2026 {hour}:{minute:02}:00 AM\r\n\r\n"
+        )
+    };
+    let text = format!(
+        "\r\n\r\n{}{}",
+        block("contoso.example/alice/Rule1", "ForwardTo", 0),
+        block("contoso.example/bob/Rule2", "DeleteMessage", 5)
+    );
     fixtures::write(
         root,
         "Tenant/_Investigate_New_InboxRules.txt",
-        concat!(
-            "\r\n\r\n",
-            "ObjectModified   : contoso.example/alice/Rule1\r\n",
-            "CmdletName       : New-InboxRule\r\n",
-            "CmdletParameters : {Name, ForwardTo}\r\n",
-            "Caller           : admin@contoso.example\r\n",
-            "RunDate          : 9/2/2026 8:00:00 AM\r\n",
-            "\r\n",
-            "ObjectModified   : contoso.example/bob/Rule2\r\n",
-            "CmdletName       : New-InboxRule\r\n",
-            "CmdletParameters : {Name, DeleteMessage}\r\n",
-            "Caller           : admin@contoso.example\r\n",
-            "RunDate          : 9/2/2026 8:05:00 AM\r\n",
-            "\r\n",
-        )
-        .as_bytes(),
+        text.as_bytes(),
+    );
+}
+
+/// `Tenant/New_InboxRules.json` with the two rules at 2026-09-02 08:00 and 08:05 UTC.
+fn new_inbox_rules_json(root: &Path) {
+    let rule = |object: &str, ms: u64| {
+        json!({"ObjectModified": object, "CmdletName": "New-InboxRule",
+               "CmdletParameters": [{"Name": "Name", "Value": "x"}], "Caller": "admin@contoso.example",
+               "Succeeded": true, "RunDate": format!("/Date({ms})/")})
+    };
+    json_file(
+        root,
+        "Tenant/New_InboxRules.json",
+        &json!([
+            rule("contoso.example/alice/Rule1", 1788336000000),
+            rule("contoso.example/bob/Rule2", 1788336300000)
+        ]),
     );
 }
 
@@ -154,19 +172,7 @@ fn hawk3_admin_audit_flags_link_to_admin_audit_events() {
     let dir = tempfile::tempdir().unwrap();
     let root = capture(dir.path());
     investigate_new_inbox_rules_txt(&root);
-    let rule = |object: &str, ms: u64| {
-        json!({"ObjectModified": object, "CmdletName": "New-InboxRule",
-               "CmdletParameters": [{"Name": "Name", "Value": "x"}], "Caller": "admin@contoso.example",
-               "Succeeded": true, "RunDate": format!("/Date({ms})/")})
-    };
-    json_file(
-        &root,
-        "Tenant/New_InboxRules.json",
-        &json!([
-            rule("contoso.example/alice/Rule1", 1788336000000),
-            rule("contoso.example/bob/Rule2", 1788336300000)
-        ]),
-    );
+    new_inbox_rules_json(&root);
     let (case, report) = ingest(dir.path(), Some(DateOrder::MonthFirst));
     assert!(!report.has_errors(), "{report:#?}");
     assert_eq!(count(&case, "SELECT count(*) FROM admin_audit_events"), 2);
@@ -182,6 +188,34 @@ fn hawk3_admin_audit_flags_link_to_admin_audit_events() {
         count(
             &case,
             "SELECT count(*) FROM collector_flags WHERE raw->>'$.CmdletName' = 'New-InboxRule'"
+        ),
+        2
+    );
+}
+
+#[test]
+fn admin_audit_flags_from_a_non_utc_host_keep_a_null_link() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    // A UTC+2 host writes the 08:00 UTC run as 10:00 local, with no zone.
+    investigate_new_inbox_rules_txt_at(&root, 10);
+    new_inbox_rules_json(&root);
+    let (case, report) = ingest(dir.path(), Some(DateOrder::MonthFirst));
+    assert!(!report.has_errors(), "{report:#?}");
+    assert_eq!(count(&case, "SELECT count(*) FROM admin_audit_events"), 2);
+    let f = row(&report, "Tenant/_Investigate_New_InboxRules.txt");
+    assert_eq!(f.status, FileStatus::Parsed);
+    assert!(
+        f.warnings
+            .iter()
+            .any(|w| w.contains("local (zone-less) RunDate not linked")),
+        "{:?}",
+        f.warnings
+    );
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM collector_flags WHERE linked_table = 'admin_audit_events' AND linked_key IS NULL"
         ),
         2
     );
