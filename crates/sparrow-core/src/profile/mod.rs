@@ -52,6 +52,7 @@ pub fn refresh(case: &mut Case, opts: &ProfileOptions) -> Result<ProfileReport> 
     if let Some(warning) = tenant::rebuild_domains(&tx, None)? {
         report.warnings.push(warning);
     }
+    capabilities::derive(&tx)?;
     tx.commit()?;
 
     Ok(report)

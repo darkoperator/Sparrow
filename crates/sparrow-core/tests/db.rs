@@ -63,6 +63,7 @@ fn fresh_case_has_provenance_tables() {
             "signins",
             "source_files",
             "tenant",
+            "tenant_capabilities",
             "tenant_domain_overrides",
             "tenant_domains",
             "tenant_settings",

@@ -212,3 +212,18 @@ COMMENT ON COLUMN user_licenses.service_plans IS 'Service plan names assigned to
 COMMENT ON COLUMN user_licenses.raw IS 'Source record as loaded.';
 COMMENT ON COLUMN user_licenses.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
 COMMENT ON COLUMN user_licenses.tz_assumed IS 'Object {column: true} naming each time column whose value came without a time zone and was stored as if UTC (for example Hawk WhenChanged or AutoReply StartTime, written in the collecting host''s local time). Per column like column_collections: the load that writes a column sets or clears its entry. NULL for rows loaded before schema 7 or loads without a time column.';
+
+-- Task 5: capability status per tenant.
+CREATE TYPE capability_status AS ENUM ('licensed', 'not_licensed', 'unknown');
+CREATE TABLE tenant_capabilities (
+    tenant_key VARCHAR NOT NULL, capability_id VARCHAR NOT NULL, status capability_status NOT NULL,
+    confidence license_confidence, basis VARCHAR NOT NULL, retention_days INTEGER
+);
+
+COMMENT ON TABLE tenant_capabilities IS 'Whether each capability (capabilities) is available to each tenant, derived by every profile run from, strongest first: a high-confidence licence list (service plans), evidence signals (visible sign-in risk levels, Graph sign-in downloads, Microsoft-Extractor-Suite HasPremiumLicense, UAL records older than Audit (Standard) retention), the Hawk.log licence tier, and baseline assumptions.';
+COMMENT ON COLUMN tenant_capabilities.tenant_key IS 'tenant.tenant_key.';
+COMMENT ON COLUMN tenant_capabilities.capability_id IS 'capabilities.capability_id.';
+COMMENT ON COLUMN tenant_capabilities.status IS 'licensed, not_licensed or unknown.';
+COMMENT ON COLUMN tenant_capabilities.confidence IS 'high (licence list or direct evidence) or low (Hawk tier or baseline assumption); NULL when unknown.';
+COMMENT ON COLUMN tenant_capabilities.basis IS 'Why, in words, naming the evidence (and any disagreeing evidence).';
+COMMENT ON COLUMN tenant_capabilities.retention_days IS 'Retention the capability gives (capabilities.retention_days).';
