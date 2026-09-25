@@ -76,3 +76,8 @@ COMMENT ON COLUMN mail_items_accessed.time_tz_assumed IS 'True when event_time c
 COMMENT ON COLUMN mail_items_accessed.user_upn IS 'Mailbox user of a parent-less row, lower-case; NULL for child rows.';
 COMMENT ON COLUMN mail_items_accessed.client_ip IS 'Client IP of a parent-less row, normalized; NULL for child rows.';
 COMMENT ON COLUMN mail_items_accessed.session_id IS 'Session id of a parent-less row; NULL for child rows and when the collector left it empty.';
+
+-- Sign-ins: Microsoft-Extractor-Suite reads Graph beta sign-ins.
+COMMENT ON COLUMN signins.event_type IS 'interactive, noninteractive, service_principal or managed_identity: from Graph beta signInEventTypes (Microsoft-Extractor-Suite), else isInteractive (Hawk Graph v1.0 objects; interactive or noninteractive only), else the portal export file name.';
+COMMENT ON COLUMN signins.mfa_detail IS 'Portal Multifactor authentication auth detail, or Graph beta mfaDetail.authDetail.';
+COMMENT ON COLUMN signins.auth_methods IS 'Authentication methods used (portal Multifactor authentication auth method; Graph beta authenticationDetails, with mfaDetail.authMethod appended when not already listed).';

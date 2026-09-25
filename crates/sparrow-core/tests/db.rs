@@ -413,3 +413,36 @@ fn mailbox_permissions_spec_is_latest_wins() {
             .is_err()
     );
 }
+
+#[test]
+fn signin_comments_describe_extractor_suite_sources() {
+    let case = Case::in_memory().unwrap();
+    let comment = |col: &str| -> String {
+        case.conn()
+            .query_row(
+                "SELECT comment FROM duckdb_columns() WHERE table_name = 'signins' AND column_name = ?",
+                [col],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let et = comment("event_type");
+    for part in [
+        "signInEventTypes",
+        "isInteractive",
+        "portal export file name",
+        "managed_identity",
+    ] {
+        assert!(et.contains(part), "{et}");
+    }
+    let mfa = comment("mfa_detail");
+    assert!(
+        mfa.contains("Portal") && mfa.contains("mfaDetail.authDetail"),
+        "{mfa}"
+    );
+    let am = comment("auth_methods");
+    assert!(
+        am.contains("authenticationDetails") && am.contains("mfaDetail.authMethod"),
+        "{am}"
+    );
+}
