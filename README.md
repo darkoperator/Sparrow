@@ -10,13 +10,14 @@ range and hash so an analyst can verify it.
   folders with known Hawk files). The folder name does not matter.
 - **Microsoft-Extractor-Suite** output (parsers arrive in a later phase).
 - **Portal exports** recognized by their header wherever they are: Purview audit log search CSV, Entra ID
-  sign-in CSV, Exchange admin center message trace. A folder holding only such files is ingested as a
+  sign-in CSV or XLSX, Exchange admin center message trace. A folder holding only such files is ingested as a
   `portal_export` collection.
 
 Unified audit log records from every source (raw, expanded, `Simple_*`, Purview) land in `ual_events`, one row per
 AuditData `Id`, with every sighting in `record_sources`. JSON files are preferred over their CSV twins and raw
-files over derived ones (`skipped_superseded`). Hawk 3 admin-audit files are reported as `not_supported` until a
-later version loads them.
+files over derived ones (`skipped_superseded`). Hawk 3 admin-audit files (Search-AdminAuditLog) load into
+`admin_audit_events`, one row per command whatever the copy (JSON, CSV, Format-List, `_Investigate_`, `Simple_*`
+summary).
 
 Hawk identity, configuration and state artifacts load into state tables: `users`, `role_assignments`
 (Entra and Exchange admins, eDiscovery and ApplicationImpersonation assignments), `oauth_grants`,
@@ -26,6 +27,15 @@ OrganizationConfig and TransportConfig property, and Exchange role entries), `tr
 `mobile_devices`, `risky_users` and `risk_detections`. When several collections of the same case hold the same
 entity, the newest collection's values win whatever the ingest order. Records Hawk itself flagged
 (`_Investigate_*` files, `_Investigate.txt`) are in `collector_flags`, linked to the flagged row.
+
+Event evidence loads into `signins` (Hawk Entra sign-in logs and Entra admin center sign-in exports, CSV or
+XLSX), `directory_audits` (Hawk `EntraIDAuditLogs`), `message_trace` (Hawk 3 `Message_Trace` and Exchange admin
+center summary reports), `mailbox_audit_legacy` (Hawk 3 `Exchange_Mailbox_Audit`) and `admin_audit_events`.
+The same event from several files or collections is one row: the first copy's values are kept and later copies
+only fill values it lacks (a portal export adds the session id, ASN and MFA detail to a Graph sign-in). Hawk 3
+`Hawk.log` and PSFramework `<date>_logs.csv` load into `collection_log`. When every culture date in a small file
+is ambiguous, the day/month order the rest of its collection shows is used and the file gets a warning. XLSX rows
+are verified by sheet row.
 
 ## Build
 

@@ -1,5 +1,6 @@
 //! Synthetic collector output trees used by tests. Contains no real client data.
 
+pub mod events;
 pub mod hawk3;
 pub mod hawk4;
 pub mod portal;
