@@ -97,3 +97,17 @@ fn refresh_loads_the_capabilities_table_and_is_repeatable() {
         .unwrap();
     assert_eq!(origin, "builtin");
 }
+
+#[test]
+fn operation_catalog_keys_ignore_case_and_trailing_dots() {
+    use sparrow_core::data::{operation_catalog, operation_key};
+    assert_eq!(
+        operation_key(" Consent to application. "),
+        "consent to application"
+    );
+    let ops = operation_catalog(&DataDirs::default()).unwrap();
+    assert!(
+        ops.iter()
+            .any(|o| o.operation == "New-InboxRule" && o.mitre.contains(&"T1564.008".to_string()))
+    );
+}

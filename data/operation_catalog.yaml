@@ -1,0 +1,100 @@
+# Operations Sparrow knows, with a category for the timeline and ATT&CK techniques.
+# operation: as UAL / Graph / Exchange write it (matching ignores case and a trailing ".").
+# External files (--data DIR) replace entries by (operation, workload) and may add new ones.
+version: 1
+operations:
+  # auth
+  - {operation: UserLoggedIn, category: auth, description: Successful sign-in (UAL), mitre: [T1078.004]}
+  - {operation: UserLoginFailed, category: auth, description: Failed sign-in (UAL), mitre: [T1110]}
+  - {operation: MailboxLogin, workload: Exchange, category: auth, description: Mailbox sign-in, mitre: [T1078.004]}
+  - {operation: SignInSucceeded, category: auth, description: Entra sign-in succeeded (Sparrow timeline name), mitre: [T1078.004]}
+  - {operation: SignInFailed, category: auth, description: Entra sign-in failed (Sparrow timeline name), mitre: [T1110]}
+  # mail read / send / search
+  - {operation: MailItemsAccessed, workload: Exchange, category: mail_read, description: Mail items read or synced, mitre: [T1114.002]}
+  - {operation: Send, workload: Exchange, category: mail_send, description: Message sent, mitre: []}
+  - {operation: SendAs, workload: Exchange, category: mail_send, description: Message sent as another mailbox, mitre: [T1534]}
+  - {operation: SendOnBehalf, workload: Exchange, category: mail_send, description: Message sent on behalf of another mailbox, mitre: [T1534]}
+  - {operation: SearchQueryInitiatedExchange, workload: Exchange, category: search, description: Mailbox search in Outlook, mitre: [T1114.002]}
+  - {operation: SearchQueryInitiatedSharePoint, workload: SharePoint, category: search, description: SharePoint search, mitre: [T1213.002]}
+  - {operation: HardDelete, workload: Exchange, category: other, description: Item purged from Recoverable Items, mitre: [T1070.008]}
+  - {operation: SoftDelete, workload: Exchange, category: other, description: Item deleted to Recoverable Items, mitre: [T1070.008]}
+  - {operation: MoveToDeletedItems, workload: Exchange, category: other, description: Item moved to Deleted Items, mitre: [T1070.008]}
+  # rules and forwarding
+  - {operation: New-InboxRule, workload: Exchange, category: mail_rule, description: Inbox rule created, mitre: [T1564.008, T1114.003]}
+  - {operation: Set-InboxRule, workload: Exchange, category: mail_rule, description: Inbox rule changed, mitre: [T1564.008, T1114.003]}
+  - {operation: Enable-InboxRule, workload: Exchange, category: mail_rule, description: Inbox rule enabled, mitre: [T1564.008]}
+  - {operation: Disable-InboxRule, workload: Exchange, category: mail_rule, description: Inbox rule disabled, mitre: []}
+  - {operation: Remove-InboxRule, workload: Exchange, category: mail_rule, description: Inbox rule removed, mitre: [T1070]}
+  - {operation: UpdateInboxRules, workload: Exchange, category: mail_rule, description: Inbox rules changed from an Outlook client, mitre: [T1564.008, T1114.003]}
+  - {operation: Set-MailboxJunkEmailConfiguration, workload: Exchange, category: mail_rule, description: Junk mail settings changed, mitre: [T1564.008]}
+  - {operation: Set-Mailbox, workload: Exchange, category: forwarding, description: "Mailbox settings changed (forwarding, auditing, ...)", mitre: [T1114.003]}
+  - {operation: New-TransportRule, workload: Exchange, category: forwarding, description: Transport rule created, mitre: [T1114.003]}
+  - {operation: Set-TransportRule, workload: Exchange, category: forwarding, description: Transport rule changed, mitre: [T1114.003]}
+  - {operation: Remove-TransportRule, workload: Exchange, category: config_change, description: Transport rule removed, mitre: []}
+  - {operation: Set-RemoteDomain, workload: Exchange, category: forwarding, description: Remote domain settings changed (auto-forward), mitre: [T1114.003]}
+  # permissions and roles
+  - {operation: Add-MailboxPermission, workload: Exchange, category: permission, description: FullAccess granted on a mailbox, mitre: [T1098.002]}
+  - {operation: Remove-MailboxPermission, workload: Exchange, category: permission, description: Mailbox permission removed, mitre: []}
+  - {operation: Add-RecipientPermission, workload: Exchange, category: permission, description: SendAs granted, mitre: [T1098.002]}
+  - {operation: Add-MailboxFolderPermission, workload: Exchange, category: permission, description: Folder permission granted, mitre: [T1098.002]}
+  - {operation: Set-MailboxFolderPermission, workload: Exchange, category: permission, description: Folder permission changed, mitre: [T1098.002]}
+  - {operation: AddFolderPermissions, workload: Exchange, category: permission, description: Folder permission granted (mailbox audit), mitre: [T1098.002]}
+  - {operation: UpdateFolderPermissions, workload: Exchange, category: permission, description: Folder permission changed (mailbox audit), mitre: [T1098.002]}
+  - {operation: New-ManagementRoleAssignment, workload: Exchange, category: role_change, description: Exchange role assigned, mitre: [T1098.003]}
+  - {operation: Add-RoleGroupMember, workload: Exchange, category: role_change, description: Exchange role group member added, mitre: [T1098.003]}
+  - {operation: Add member to role, workload: AzureActiveDirectory, category: role_change, description: Entra role assigned, mitre: [T1098.003]}
+  - {operation: Add eligible member to role, workload: AzureActiveDirectory, category: role_change, description: Entra role made eligible (PIM), mitre: [T1098.003]}
+  - {operation: Remove member from role, workload: AzureActiveDirectory, category: role_change, description: Entra role removed, mitre: []}
+  # applications and consent
+  - {operation: Consent to application, workload: AzureActiveDirectory, category: app_consent, description: Consent granted to an application, mitre: [T1528]}
+  - {operation: Add delegated permission grant, workload: AzureActiveDirectory, category: app_consent, description: Delegated permission granted, mitre: [T1528]}
+  - {operation: Add app role assignment grant to user, workload: AzureActiveDirectory, category: app_consent, description: App role assigned to a user, mitre: [T1528]}
+  - {operation: Add app role assignment to service principal, workload: AzureActiveDirectory, category: app_consent, description: Application permission granted, mitre: [T1098.003]}
+  - {operation: Add service principal credentials, workload: AzureActiveDirectory, category: app_credential, description: Credential added to a service principal, mitre: [T1098.001]}
+  - {operation: Update application – Certificates and secrets management, workload: AzureActiveDirectory, category: app_credential, description: Application secret or certificate changed, mitre: [T1098.001]}
+  - {operation: Add application, workload: AzureActiveDirectory, category: config_change, description: Application registered, mitre: []}
+  - {operation: Add service principal, workload: AzureActiveDirectory, category: config_change, description: Service principal created, mitre: []}
+  # MFA and users
+  - {operation: User registered security info, workload: AzureActiveDirectory, category: mfa_change, description: User added an MFA method, mitre: [T1556.006]}
+  - {operation: User registered all required security info, workload: AzureActiveDirectory, category: mfa_change, description: User completed MFA registration, mitre: [T1556.006]}
+  - {operation: Admin registered security info, workload: AzureActiveDirectory, category: mfa_change, description: Admin added an MFA method for a user, mitre: [T1556.006]}
+  - {operation: User deleted security info, workload: AzureActiveDirectory, category: mfa_change, description: User removed an MFA method, mitre: [T1556.006]}
+  - {operation: User changed default security info, workload: AzureActiveDirectory, category: mfa_change, description: User changed the default MFA method, mitre: [T1556.006]}
+  - {operation: Add user, workload: AzureActiveDirectory, category: config_change, description: User created, mitre: [T1136.003]}
+  - {operation: Update user, workload: AzureActiveDirectory, category: config_change, description: User changed, mitre: []}
+  - {operation: Delete user, workload: AzureActiveDirectory, category: config_change, description: User deleted, mitre: [T1531]}
+  - {operation: Reset user password, workload: AzureActiveDirectory, category: config_change, description: Password reset by an admin, mitre: [T1098]}
+  - {operation: Change user password, workload: AzureActiveDirectory, category: config_change, description: Password changed by the user, mitre: [T1098]}
+  - {operation: Add registered owner to device, workload: AzureActiveDirectory, category: device, description: Device owner added, mitre: [T1098.005]}
+  - {operation: Add device, workload: AzureActiveDirectory, category: device, description: Device registered, mitre: [T1098.005]}
+  - {operation: Register device, workload: AzureActiveDirectory, category: device, description: Device registered, mitre: [T1098.005]}
+  # domains and tenant configuration
+  - {operation: Add domain to company, workload: AzureActiveDirectory, category: config_change, description: Domain added, mitre: [T1484.002]}
+  - {operation: Verify domain, workload: AzureActiveDirectory, category: config_change, description: Domain verified, mitre: [T1484.002]}
+  - {operation: Set domain authentication, workload: AzureActiveDirectory, category: config_change, description: Domain authentication changed (federation), mitre: [T1484.002]}
+  - {operation: Set federation settings on domain, workload: AzureActiveDirectory, category: config_change, description: Domain federation changed, mitre: [T1484.002]}
+  - {operation: Set-CASMailbox, workload: Exchange, category: config_change, description: "Mailbox client access changed (POP, IMAP, EWS, ...)", mitre: []}
+  # audit tampering
+  - {operation: Set-AdminAuditLogConfig, workload: Exchange, category: audit_tamper, description: Admin / unified audit log settings changed, mitre: [T1562.008]}
+  - {operation: Set-OrganizationConfig, workload: Exchange, category: audit_tamper, description: "Organization settings changed (AuditDisabled, ...)", mitre: [T1562.008]}
+  - {operation: Set-MailboxAuditBypassAssociation, workload: Exchange, category: audit_tamper, description: Mailbox audit bypass set, mitre: [T1562.008]}
+  # eDiscovery
+  - {operation: New-ComplianceSearch, category: ediscovery, description: Content search created, mitre: [T1114.002]}
+  - {operation: Start-ComplianceSearch, category: ediscovery, description: Content search started, mitre: [T1114.002]}
+  - {operation: New-ComplianceSearchAction, category: ediscovery, description: Content search export or purge, mitre: [T1114.002]}
+  - {operation: SearchExported, category: ediscovery, description: Content search exported, mitre: [T1114.002]}
+  - {operation: New-MailboxExportRequest, workload: Exchange, category: ediscovery, description: Mailbox exported to PST, mitre: [T1114.002]}
+  - {operation: New-MailboxSearch, workload: Exchange, category: ediscovery, description: In-Place eDiscovery search created, mitre: [T1114.002]}
+  # files
+  - {operation: FileAccessed, category: file_access, description: File opened, mitre: [T1213.002]}
+  - {operation: FilePreviewed, category: file_access, description: File previewed, mitre: [T1213.002]}
+  - {operation: FileDownloaded, category: file_download, description: File downloaded, mitre: [T1530]}
+  - {operation: FileSyncDownloadedFull, category: file_download, description: File synced to a device, mitre: [T1530]}
+  - {operation: FileUploaded, category: lure_staging, description: File uploaded, mitre: []}
+  - {operation: AnonymousLinkCreated, category: file_share, description: Anyone link created, mitre: [T1537]}
+  - {operation: CompanyLinkCreated, category: file_share, description: Organization link created, mitre: []}
+  - {operation: SecureLinkCreated, category: file_share, description: Specific-people link created, mitre: []}
+  - {operation: SharingInvitationCreated, category: file_share, description: File shared with a person, mitre: []}
+  - {operation: AddedToSecureLink, category: file_share, description: Person added to a sharing link, mitre: []}
+  # mail flow (message trace rows)
+  - {operation: MessageTrace, category: mail_flow, description: Message trace entry (Sparrow timeline name), mitre: []}

@@ -4,6 +4,7 @@
 
 pub mod availability;
 pub mod capabilities;
+pub mod catalog;
 pub mod identities;
 pub mod tenant;
 
@@ -49,6 +50,8 @@ pub fn refresh(case: &mut Case, opts: &ProfileOptions) -> Result<ProfileReport> 
     let mut report = ProfileReport::default();
     let defs = crate::data::capabilities(&opts.dirs)?;
     report.capabilities = capabilities::store_definitions(case, &defs)?;
+    let ops = crate::data::operation_catalog(&opts.dirs)?;
+    catalog::store(case.conn(), &ops)?;
 
     let tx = case.conn_mut().transaction()?;
     report.tenants = tenant::resolve_tenants(&tx)?;

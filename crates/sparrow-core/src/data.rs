@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 const CAPABILITIES: &str = include_str!("../../../data/capabilities.yaml");
 const MS365_RANGES: &str = include_str!("../../../data/ms365_ip_ranges.json");
 const HOSTING_ASNS: &str = include_str!("../../../rules/lists/hosting_asns.yaml");
+const OPERATION_CATALOG: &str = include_str!("../../../data/operation_catalog.yaml");
 
 #[derive(Debug, Clone, Default)]
 pub struct DataDirs {
@@ -230,6 +231,106 @@ pub fn hosting_asns(dirs: &DataDirs) -> Result<Vec<HostingAsn>> {
             let name = path.display().to_string();
             let extra = hosting_asns_file(&text, &name)?;
             Ok(overlay_by_key(base, extra, |a| a.asn))
+        }
+        None => Ok(base),
+    }
+}
+
+// Task 9: operation catalog (timeline categories, ATT&CK techniques).
+
+/// `event_category` enum values (migration 0007, Task 9).
+const CATEGORIES: &[&str] = &[
+    "auth",
+    "mail_read",
+    "mail_send",
+    "mail_rule",
+    "forwarding",
+    "permission",
+    "app_consent",
+    "app_credential",
+    "role_change",
+    "mfa_change",
+    "file_access",
+    "file_download",
+    "file_share",
+    "lure_staging",
+    "search",
+    "ediscovery",
+    "audit_tamper",
+    "config_change",
+    "device",
+    "mail_flow",
+    "other",
+];
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperationDef {
+    pub operation: String,
+    pub workload: Option<String>,
+    pub category: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub mitre: Vec<String>,
+    /// `builtin` or the external file's path (not in the YAML).
+    #[serde(skip)]
+    pub origin: String,
+}
+
+/// Matching key of an operation name: lower-case, trimmed, trailing "." removed. UAL writes some
+/// operations (e.g. `Consent to application.`) with a trailing full stop that Graph's own name
+/// for the same activity does not have.
+pub fn operation_key(op: &str) -> String {
+    op.trim().trim_end_matches('.').trim().to_lowercase()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OperationCatalogFile {
+    version: u32,
+    operations: Vec<OperationDef>,
+}
+
+fn operation_catalog_file(text: &str, name: &str, origin: &str) -> Result<Vec<OperationDef>> {
+    let f: OperationCatalogFile = parse_yaml(text, name)?;
+    if f.version != 1 {
+        return Err(Error::Invalid(format!(
+            "{name}: unsupported version {}",
+            f.version
+        )));
+    }
+    let mut out = f.operations;
+    for o in &mut out {
+        if !CATEGORIES.contains(&o.category.as_str()) {
+            return Err(Error::Invalid(format!(
+                "{name}: operation {:?} has unknown category {:?}",
+                o.operation, o.category
+            )));
+        }
+        o.origin = origin.to_string();
+    }
+    Ok(out)
+}
+
+/// Operation catalog (spec §5.3): built-in, overlaid by `<data>/operation_catalog.yaml` (entries
+/// replace by `(operation_key, lower-case workload)`; new entries are appended).
+pub fn operation_catalog(dirs: &DataDirs) -> Result<Vec<OperationDef>> {
+    let base = operation_catalog_file(
+        OPERATION_CATALOG,
+        "built-in data/operation_catalog.yaml",
+        "builtin",
+    )?;
+    match read_overlay(dirs.data.as_deref(), "operation_catalog.yaml")? {
+        Some((text, path)) => {
+            let name = path.display().to_string();
+            let extra = operation_catalog_file(&text, &name, &name)?;
+            Ok(overlay_by_key(base, extra, |o| {
+                (
+                    operation_key(&o.operation),
+                    o.workload.as_deref().map(str::to_lowercase),
+                )
+            }))
         }
         None => Ok(base),
     }

@@ -55,6 +55,7 @@ fn fresh_case_has_provenance_tables() {
             "message_trace",
             "mobile_devices",
             "oauth_grants",
+            "operation_catalog",
             "parse_errors",
             "record_sources",
             "remote_domains",
