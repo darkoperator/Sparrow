@@ -43,6 +43,8 @@ fn fresh_case_has_provenance_tables() {
             "directory_audits",
             "evidence_availability",
             "file_events",
+            "identities",
+            "identity_aliases",
             "inbox_rules",
             "ip_intel",
             "licenses",

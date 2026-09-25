@@ -275,3 +275,33 @@ COMMENT ON COLUMN ip_intel.is_microsoft IS 'In the bundled Microsoft 365 endpoin
 COMMENT ON COLUMN ip_intel.microsoft_service_area IS 'Microsoft 365 service area (Exchange, SharePoint, Skype, Common) of the matching range, when is_microsoft is true.';
 COMMENT ON COLUMN ip_intel.is_private IS 'RFC 1918, loopback, link-local, CGNAT 100.64.0.0/10, unspecified, IPv6 unique-local/link-local, or an IPv4-mapped IPv6 form of one of those (spec §5.3). Documentation ranges (203.0.113.0/24, 198.51.100.0/24, 2001:db8::/32) are not private.';
 COMMENT ON COLUMN ip_intel.source_db_version IS 'The MaxMind City/ASN database versions (build date) and the ms365-endpoints snapshot version used to derive this row, e.g. "GeoLite2-City 2026-09-20; GeoLite2-ASN 2026-09-22; ms365-endpoints 2026081400".';
+
+-- Task 8: identities.
+CREATE TYPE identity_kind AS ENUM ('user', 'service_principal', 'app', 'system', 'external');
+CREATE TABLE identities (
+    identity_id VARCHAR NOT NULL, tenant_key VARCHAR, kind identity_kind NOT NULL, upn VARCHAR,
+    object_id VARCHAR, puid VARCHAR, app_id VARCHAR, display_names VARCHAR[], sources VARCHAR[],
+    aliases INTEGER NOT NULL
+);
+CREATE TABLE identity_aliases (
+    alias_type VARCHAR NOT NULL, alias VARCHAR NOT NULL, identity_id VARCHAR NOT NULL,
+    sources VARCHAR[]
+);
+
+COMMENT ON TABLE identities IS 'One row per actor, however the evidence names it (UPN, Entra object id, UAL UserKey PUID, application id). Rebuilt by every profile run from users, mailboxes, sign-ins, UAL, directory audits, risk, role assignments, consent grants, mailbox permissions and admin audit rows.';
+COMMENT ON COLUMN identities.identity_id IS 'Preferred alias as <type>:<value> (object_id, then app_id, upn, puid, name). Stable while that alias exists.';
+COMMENT ON COLUMN identities.tenant_key IS 'Tenant of most observations.';
+COMMENT ON COLUMN identities.kind IS 'external when a UPN contains #ext# or any source said Guest, or when the tenant has domains in tenant_domains and none of the identity''s UPN domains is one of them; else system, service_principal, app or user by the first hint in that order of precedence (system > service_principal > app > user).';
+COMMENT ON COLUMN identities.upn IS 'The identity''s UPN (smallest when several).';
+COMMENT ON COLUMN identities.object_id IS 'The identity''s Entra object id (smallest when several).';
+COMMENT ON COLUMN identities.puid IS 'The identity''s UAL UserKey PUID (smallest when several).';
+COMMENT ON COLUMN identities.app_id IS 'The identity''s application id (smallest when several).';
+COMMENT ON COLUMN identities.display_names IS 'Display names observed, sorted distinct.';
+COMMENT ON COLUMN identities.sources IS 'Tables the identity was observed in, sorted distinct.';
+COMMENT ON COLUMN identities.aliases IS 'Number of identity_aliases rows resolving to this identity.';
+
+COMMENT ON TABLE identity_aliases IS 'Every identifier observed, with the identity it resolves to; join events on (alias_type, lower(value)).';
+COMMENT ON COLUMN identity_aliases.alias_type IS 'upn, object_id, puid, app_id or name.';
+COMMENT ON COLUMN identity_aliases.alias IS 'Lower-cased identifier.';
+COMMENT ON COLUMN identity_aliases.identity_id IS 'identities.identity_id.';
+COMMENT ON COLUMN identity_aliases.sources IS 'Tables it was observed in.';

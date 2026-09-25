@@ -4,6 +4,7 @@
 
 pub mod availability;
 pub mod capabilities;
+pub mod identities;
 pub mod tenant;
 
 use crate::data::DataDirs;
@@ -57,6 +58,15 @@ pub fn refresh(case: &mut Case, opts: &ProfileOptions) -> Result<ProfileReport> 
     let ip_intel = crate::enrich::ip::refresh_ip_intel(&tx, &opts.dirs, opts.geoip_dir.as_deref())?;
     report.warnings.extend(ip_intel.warnings.clone());
     report.ip_intel = Some(ip_intel);
+    let ids = identities::rebuild(&tx)?;
+    report.identities = ids.identities;
+    if ids.conflicts > 0 {
+        report.warnings.push(format!(
+            "{} identifiers link to more than one Entra object id (e.g. a UPN reused after the \
+             account was recreated); each stays with the first",
+            ids.conflicts
+        ));
+    }
     capabilities::derive(&tx)?;
     availability::snapshot(&tx, opts.now())?;
     tx.commit()?;
