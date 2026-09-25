@@ -256,3 +256,24 @@ fn graph_rest_directory_audits_load() {
         1
     );
 }
+
+#[test]
+fn graph_rest_mfa_detail_loads() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = signin(S1, "interactiveUser", true);
+    s["mfaDetail"] =
+        json!({"authMethod": "Mobile app notification", "authDetail": "Notification approved"});
+    fixtures::write(
+        &dir.path().join("OUT"),
+        USERS_PAGE,
+        ps_json(&json!([s])).as_bytes(),
+    );
+    let (case, _report) = ingest(dir.path());
+    assert_eq!(
+        text(
+            &case,
+            &format!("SELECT mfa_detail FROM signins WHERE record_key = '{S1}'")
+        ),
+        "Notification approved"
+    );
+}
