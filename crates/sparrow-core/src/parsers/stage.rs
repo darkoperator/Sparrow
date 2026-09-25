@@ -5,7 +5,7 @@ use crate::db::state_tables::TableSpec;
 use crate::ingest::context::ParseContext;
 use crate::ingest::state::{StagedRow, load_rows};
 use crate::normalize::fields::Cell;
-use crate::parsers::records::SourceRecord;
+use crate::parsers::records::{RecordFormat, SourceRecord, placeholder_warning, read_records};
 use crate::readers::text::Span;
 use crate::readers::time::DateOrderDetector;
 use crate::{Error, Result};
@@ -55,6 +55,22 @@ impl TableRows {
         );
         self.rows.push(d);
     }
+}
+
+/// Records of a state file; CSV records holding PowerShell placeholders add a warning.
+pub fn read_state_records(
+    ctx: &mut ParseContext<'_>,
+    format: RecordFormat,
+) -> Result<Vec<SourceRecord>> {
+    let records = read_records(ctx, format)?;
+    if let Some(w) = placeholder_warning(&records, format) {
+        ctx.warn(w);
+    }
+    Ok(records)
+}
+
+pub fn lower(v: Option<String>) -> Option<String> {
+    v.map(|s| s.to_lowercase())
 }
 
 /// Count `r` as read and record why it could not be loaded.

@@ -57,7 +57,7 @@ fn hawk4_capture_loads_ual_with_dedup_superseding_and_provenance() {
             "Tenant/Simple_Admin_Inbox_Rules_Creation.json",
             FileStatus::SkippedSuperseded,
         ),
-        ("Tenant/EntraIDUsers.json", FileStatus::NotSupported),
+        ("Tenant/EntraIDUsers.json", FileStatus::Parsed),
         (HAWK4_MTSUMMARY, FileStatus::NotSupported),
     ];
     for (rel, status) in expect {

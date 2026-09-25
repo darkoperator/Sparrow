@@ -1,5 +1,6 @@
 //! Built-in artifact parsers.
 
+pub mod directory;
 pub mod logs;
 pub mod records;
 pub mod stage;
@@ -10,4 +11,5 @@ use crate::ingest::parser::ParserRegistry;
 pub fn register_builtin(registry: &mut ParserRegistry) {
     logs::register(registry);
     ual::register(registry);
+    directory::register(registry);
 }
