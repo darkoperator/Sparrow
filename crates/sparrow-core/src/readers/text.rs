@@ -268,17 +268,18 @@ pub fn locate(text: &str, index: &LineIndex, mapper: &mut OffsetMapper, span: Sp
     }
 }
 
-/// True when `raw` holds nothing but an optional byte-order mark plus whitespace / NUL bytes:
-/// what Export-Csv and Out-File write when given zero objects (0 bytes on PowerShell 7, a
-/// bare BOM on Windows PowerShell 5.1).
+/// True when `raw` holds nothing but an optional byte-order mark plus whitespace: what
+/// Export-Csv and Out-File write when given zero objects (0 bytes on PowerShell 7, a bare
+/// BOM on Windows PowerShell 5.1). NUL bytes count as blank only after a UTF-16 BOM (the
+/// high byte of UTF-16 whitespace); an all-NUL file without one is corrupt, not empty.
 pub fn is_blank_content(raw: &[u8]) -> bool {
-    let body = raw
-        .strip_prefix(b"\xEF\xBB\xBF".as_slice())
-        .or_else(|| raw.strip_prefix(b"\xFF\xFE".as_slice()))
-        .or_else(|| raw.strip_prefix(b"\xFE\xFF".as_slice()))
-        .unwrap_or(raw);
+    let (body, utf16) = match raw {
+        [0xFF, 0xFE, rest @ ..] | [0xFE, 0xFF, rest @ ..] => (rest, true),
+        [0xEF, 0xBB, 0xBF, rest @ ..] => (rest, false),
+        _ => (raw, false),
+    };
     body.iter()
-        .all(|b| matches!(b, b' ' | b'\t' | b'\r' | b'\n' | 0))
+        .all(|&b| matches!(b, b' ' | b'\t' | b'\r' | b'\n') || (utf16 && b == 0))
 }
 
 /// Every physical line as a span excluding its `\r\n` / `\n` terminator.

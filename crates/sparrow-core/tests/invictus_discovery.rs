@@ -93,6 +93,11 @@ fn blank_content_is_empty_or_bom_and_whitespace() {
     assert!(is_blank_content(b"\r\n"));
     assert!(!is_blank_content(b"\"a\"\r\n"));
     assert!(!is_blank_content(&[0xEF, 0xBB, 0xBF, b'[', b']']));
+    // NUL is the high byte of UTF-16 whitespace, not blank on its own: an all-NUL file
+    // without a UTF-16 BOM is corrupt, not empty.
+    assert!(is_blank_content(&[0xFE, 0xFF, 0, b'\r', 0, b'\n']));
+    assert!(!is_blank_content(&[0, 0, 0, 0]));
+    assert!(!is_blank_content(&[0xEF, 0xBB, 0xBF, 0, 0]));
 }
 
 #[test]
