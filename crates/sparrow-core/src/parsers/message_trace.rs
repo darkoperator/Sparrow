@@ -1,7 +1,9 @@
 //! Exchange Online message trace (spec 5.1 `message_trace`): Hawk 3 `Message_Trace_<user>`
 //! (Get-MessageTrace) and the Exchange admin center summary report download (`MTSummary_*`,
-//! snake_case columns, one line per message with `recipient##status` entries). Both key a row
-//! by message trace id (= network message id) and recipient.
+//! snake_case columns, one line per message with `recipient##status` entries), plus the
+//! Microsoft-Extractor-Suite `Get-MessageTraceLog` CSVs (`MessageTrace/<ts>/<ts>-MessageTrace.csv`
+//! and `MessageTrace/<ts>/<user>-MTL.csv`), which share the Get-MessageTrace columns. All shapes
+//! key a row by message trace id (= network message id) and recipient.
 
 use crate::db::state_tables::MESSAGE_TRACE;
 use crate::ingest::context::ParseContext;
@@ -16,6 +18,7 @@ use crate::{Error, Result};
 pub fn register(r: &mut ParserRegistry) {
     r.register("hawk.user.message_trace", Box::new(MessageTraceParser));
     r.register("portal.message_trace", Box::new(MessageTraceParser));
+    r.register("inv.message_trace", Box::new(MessageTraceParser));
 }
 
 /// message_trace.record_key: `<message trace id>|<recipient>`, lower-case.
