@@ -2,6 +2,7 @@
 
 pub mod apps;
 pub mod directory;
+pub mod exchange;
 pub mod logs;
 pub mod records;
 pub mod risk;
@@ -16,4 +17,5 @@ pub fn register_builtin(registry: &mut ParserRegistry) {
     directory::register(registry);
     apps::register(registry);
     risk::register(registry);
+    exchange::register(registry);
 }
