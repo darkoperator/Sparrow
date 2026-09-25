@@ -2,6 +2,7 @@
 
 pub mod describe;
 pub mod migrations;
+pub mod state_tables;
 
 pub use describe::{ColumnInfo, TableInfo, describe};
 
