@@ -25,3 +25,6 @@ build/
 
 # Real customer evidence used for local validation only (never commit)
 /hawk test captures/
+
+# Microsoft-Extractor-Suite sample output from a test tenant (local only)
+/invictus/
