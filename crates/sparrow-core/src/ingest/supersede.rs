@@ -1,6 +1,7 @@
 //! Choosing which copy of the same evidence to parse (spec §4 "superseded artifacts",
 //! Addendum A.4 "prefer JSON over CSV") and warning about row counts at export caps (A.5).
 
+use crate::discovery::Registry;
 use std::collections::HashMap;
 
 /// Stems of the raw files that make a derived Hawk artifact redundant.
@@ -89,6 +90,24 @@ pub fn processing_key(rel: &str, derived: bool) -> (bool, bool, String) {
     )
 }
 
+/// Hawk artifacts holding event records, where a round row count means a paged pull was
+/// cut off. State dumps (users, settings) are not paged at 5000.
+fn is_event_artifact(artifact_id: &str) -> bool {
+    Registry::builtin()
+        .defs()
+        .find(|d| d.id == artifact_id)
+        .is_some_and(|d| {
+            matches!(
+                d.target,
+                "ual_events"
+                    | "message_trace"
+                    | "signins"
+                    | "directory_audits"
+                    | "mailbox_audit_legacy"
+            )
+        })
+}
+
 /// Warning when a file's record count sits exactly at a known platform cap.
 pub fn truncation_warning(artifact_id: &str, records: u64) -> Option<String> {
     let cap = match artifact_id {
@@ -102,7 +121,7 @@ pub fn truncation_warning(artifact_id: &str, records: u64) -> Option<String> {
         });
     }
     if artifact_id.starts_with("hawk.")
-        && artifact_id != "hawk.log"
+        && is_event_artifact(artifact_id)
         && records > 0
         && records % 5_000 == 0
     {

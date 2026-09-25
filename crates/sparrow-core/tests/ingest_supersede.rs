@@ -312,3 +312,10 @@ fn truncation_warnings_at_known_caps() {
     assert_eq!(truncation_warning("hawk.user.raw_ual", 0), None);
     assert_eq!(truncation_warning("hawk.log", 5_000), None);
 }
+
+#[test]
+fn page_size_warning_only_for_event_artifacts() {
+    assert!(truncation_warning("hawk.user.raw_ual", 10_000).is_some());
+    assert!(truncation_warning("hawk.tenant.entra_users", 5_000).is_none());
+    assert!(truncation_warning("hawk.tenant.org_config", 5_000).is_none());
+}

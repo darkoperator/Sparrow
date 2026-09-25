@@ -18,6 +18,15 @@ AuditData `Id`, with every sighting in `record_sources`. JSON files are preferre
 files over derived ones (`skipped_superseded`). Hawk 3 admin-audit files are reported as `not_supported` until a
 later version loads them.
 
+Hawk identity, configuration and state artifacts load into state tables: `users`, `role_assignments`
+(Entra and Exchange admins, eDiscovery and ApplicationImpersonation assignments), `oauth_grants`,
+`app_credentials`, `inbox_rules` (inbox and sweep rules), `mailboxes` (forwarding, identity, client protocols and
+auto-reply, merged from several files), `audit_config`, `tenant_settings` (every AdminAuditLogConfig,
+OrganizationConfig and TransportConfig property, and Exchange role entries), `transport_rules`, `remote_domains`,
+`mobile_devices`, `risky_users` and `risk_detections`. When several collections of the same case hold the same
+entity, the newest collection's values win whatever the ingest order. Records Hawk itself flagged
+(`_Investigate_*` files, `_Investigate.txt`) are in `collector_flags`, linked to the flagged row.
+
 ## Build
 
 ```bash

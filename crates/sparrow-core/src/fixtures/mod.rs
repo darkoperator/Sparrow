@@ -3,6 +3,7 @@
 pub mod hawk3;
 pub mod hawk4;
 pub mod portal;
+pub mod state;
 pub mod ual;
 
 use serde_json::Value;
