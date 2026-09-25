@@ -22,6 +22,7 @@ COMMENT ON COLUMN collector_runs.run_label IS 'Suffix of that run folder after t
 COMMENT ON COLUMN collector_runs.files IS 'Regular files directly in the folder (OS junk such as .DS_Store excluded).';
 COMMENT ON COLUMN collector_runs.empty_files IS 'Of those, files with no content (0 bytes, or only a byte-order mark and whitespace): the cmdlet exported zero objects.';
 COMMENT ON COLUMN collector_runs.bytes IS 'Total size of those files in bytes.';
+COMMENT ON COLUMN collections.collected_at IS 'When the collection started: the Hawk folder timestamp, or the earliest Microsoft-Extractor-Suite run folder stamp. The stamp is the collecting machine''s local time stored as if UTC (see collected_at_tz_assumed).';
 
 CREATE TYPE mailbox_right AS ENUM ('full_access', 'send_as', 'send_on_behalf', 'folder');
 

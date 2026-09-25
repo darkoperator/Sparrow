@@ -52,7 +52,9 @@ impl Handled {
 
     /// The handled file that makes `rel` redundant: the JSON twin of a CSV (same folder and
     /// stem; the CSV keeps only the first record's columns and flattens objects), or for a
-    /// derived artifact its raw counterpart in the same folder.
+    /// derived artifact its raw counterpart in the same folder. A derived file in a `Merged`
+    /// folder (Microsoft-Extractor-Suite `Merge-OutputFiles`) is made redundant by any handled
+    /// file directly in the folder above it.
     pub fn superseded_by(&self, rel: &str, derived: bool) -> Option<String> {
         let (dir, file) = match rel.rsplit_once('/') {
             Some((d, f)) => (Some(d), f),
@@ -77,8 +79,35 @@ impl Handled {
                 }
             }
         }
+        if derived {
+            if let Some(t) = dir
+                .and_then(merged_parent)
+                .and_then(|p| self.any_file_in(p))
+            {
+                return Some(t.to_string());
+            }
+        }
         None
     }
+
+    /// A handled file directly in `dir` (the smallest path, for a stable message).
+    fn any_file_in(&self, dir: &str) -> Option<&str> {
+        let prefix = format!("{}/", dir.to_lowercase());
+        self.by_lower
+            .iter()
+            .filter(|(k, _)| {
+                k.strip_prefix(&prefix)
+                    .is_some_and(|rest| !rest.contains('/'))
+            })
+            .map(|(_, v)| v.as_str())
+            .min()
+    }
+}
+
+/// `dir` without its last component when that component is `Merged` (any case).
+fn merged_parent(dir: &str) -> Option<&str> {
+    let (parent, last) = dir.rsplit_once('/')?;
+    last.eq_ignore_ascii_case("merged").then_some(parent)
 }
 
 /// Sort key for processing a collection: raw before derived, JSON before CSV, then path.

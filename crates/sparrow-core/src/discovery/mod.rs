@@ -3,6 +3,7 @@
 pub mod collections;
 pub mod files;
 pub mod registry;
+pub mod runs;
 
 pub use collections::{DiscoveredCollection, Tool, discover_collections};
 pub use files::{

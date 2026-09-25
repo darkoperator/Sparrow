@@ -106,7 +106,7 @@ fn visit(dir: &Path, depth: usize, found: &mut Vec<DiscoveredCollection>) {
             tool: Tool::Invictus,
             root: dir.to_path_buf(),
             tenant_hint: None,
-            started_hint: None,
+            started_hint: crate::discovery::runs::earliest_run_stamp(dir),
             shallow: false,
         });
         return;

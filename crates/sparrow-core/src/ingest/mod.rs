@@ -7,6 +7,7 @@ pub mod parser;
 pub mod state;
 pub mod supersede;
 
+use crate::discovery::runs::run_dirs;
 use crate::discovery::{
     Classification, CollectionFile, DiscoveredCollection, FileFormat, Registry, SNIFF_BYTES, Tool,
     canonical_root_string, discover_collections, format_from_path, list_collection_files,
@@ -14,7 +15,7 @@ use crate::discovery::{
 use crate::ingest::context::{FileStats, ParseContext};
 use crate::ingest::parser::ParserRegistry;
 use crate::ingest::supersede::{Handled, processing_key, truncation_warning};
-use crate::readers::text::{DecodedText, LineIndex, decode};
+use crate::readers::text::{DecodedText, LineIndex, decode, is_blank_content};
 use crate::readers::time::{DateOrder, ParsedTime, parse_timestamp};
 use crate::{Case, Error, Result, VERSION};
 use duckdb::{Connection, OptionalExt, params};
@@ -23,6 +24,43 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 
 pub const DEFAULT_MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Warning on a file with no content (0 bytes, or a byte-order mark and whitespace only).
+pub const EMPTY_FILE_WARNING: &str = "file is empty: the collector ran and wrote no records";
+
+/// Replace this collection's `collector_runs` rows with the run folders now on disk.
+fn record_collector_runs(case: &mut Case, collection_id: i64, root: &Path) -> Result<()> {
+    let runs = run_dirs(root);
+    let tx = case.conn_mut().transaction()?;
+    tx.execute(
+        "DELETE FROM collector_runs WHERE collection_id = ?",
+        params![collection_id],
+    )?;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO collector_runs (collection_id, rel_dir, component, run_stamp, run_stamp_tz_assumed,
+                                         run_label, files, empty_files, bytes)
+             VALUES (?, ?, ?, CAST(? AS TIMESTAMPTZ), true, ?, ?, ?, ?)",
+        )?;
+        for r in &runs {
+            let stamp = parse_timestamp(&r.stamp.replace('-', "_"), None)
+                .ok()
+                .map(|t| t.rfc3339());
+            stmt.execute(params![
+                collection_id,
+                r.rel_dir,
+                r.component,
+                stamp,
+                r.label,
+                r.files as i64,
+                r.empty_files as i64,
+                r.bytes as i64
+            ])?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 pub struct IngestOptions {
@@ -193,6 +231,9 @@ fn ingest_collection(
 ) -> Result<CollectionReport> {
     let root = canonical_root_string(&dc.root);
     let collection_id = upsert_collection(case.conn(), dc, &root)?;
+    if dc.tool == Tool::Invictus {
+        record_collector_runs(case, collection_id, &dc.root)?;
+    }
     let listing = list_collection_files(&dc.root, dc.shallow)?;
     let reg = Registry::builtin();
     let mut keyed: Vec<(&CollectionFile, bool, bool)> = listing
@@ -525,6 +566,9 @@ fn ingest_file(
             .map(Outcome::plain);
         }
     };
+    if is_blank_content(&raw) {
+        pre.push(EMPTY_FILE_WARNING.into());
+    }
     let sha = hex::encode(Sha256::digest(&raw));
     nf.sha256 = &sha;
     let changed: bool = case.conn().query_row(

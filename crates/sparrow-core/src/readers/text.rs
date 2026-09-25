@@ -268,6 +268,19 @@ pub fn locate(text: &str, index: &LineIndex, mapper: &mut OffsetMapper, span: Sp
     }
 }
 
+/// True when `raw` holds nothing but an optional byte-order mark plus whitespace / NUL bytes:
+/// what Export-Csv and Out-File write when given zero objects (0 bytes on PowerShell 7, a
+/// bare BOM on Windows PowerShell 5.1).
+pub fn is_blank_content(raw: &[u8]) -> bool {
+    let body = raw
+        .strip_prefix(b"\xEF\xBB\xBF".as_slice())
+        .or_else(|| raw.strip_prefix(b"\xFF\xFE".as_slice()))
+        .or_else(|| raw.strip_prefix(b"\xFE\xFF".as_slice()))
+        .unwrap_or(raw);
+    body.iter()
+        .all(|b| matches!(b, b' ' | b'\t' | b'\r' | b'\n' | 0))
+}
+
 /// Every physical line as a span excluding its `\r\n` / `\n` terminator.
 pub fn line_spans(text: &str) -> Vec<Span> {
     let mut spans = Vec::new();
