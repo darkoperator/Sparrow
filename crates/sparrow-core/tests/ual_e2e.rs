@@ -58,7 +58,7 @@ fn hawk4_capture_loads_ual_with_dedup_superseding_and_provenance() {
             FileStatus::SkippedSuperseded,
         ),
         ("Tenant/EntraIDUsers.json", FileStatus::Parsed),
-        (HAWK4_MTSUMMARY, FileStatus::NotSupported),
+        (HAWK4_MTSUMMARY, FileStatus::Parsed),
     ];
     for (rel, status) in expect {
         assert_eq!(row(&report, rel).status, status, "{rel}");
@@ -324,7 +324,7 @@ fn standalone_portal_folder_joins_cross_collection_dedup() {
     );
     assert_eq!(
         row(&report, PORTAL_MTSUMMARY).status,
-        FileStatus::NotSupported
+        FileStatus::DuplicateFile
     );
     assert_eq!(row(&report, "notes.txt").status, FileStatus::Unrecognized);
     let v = verify_record(&case, "ual_events", ual::ID_RULE, None).unwrap();

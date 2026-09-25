@@ -7,6 +7,7 @@ pub mod exchange;
 pub mod flags;
 pub mod logs;
 pub mod mailbox;
+pub mod message_trace;
 pub mod records;
 pub mod risk;
 pub mod signins;
@@ -26,6 +27,7 @@ pub fn register_builtin(registry: &mut ParserRegistry) {
     signins::register(registry);
     exchange::register(registry);
     mailbox::register(registry);
+    message_trace::register(registry);
     tenant_config::register(registry);
     flags::register(registry);
 }
