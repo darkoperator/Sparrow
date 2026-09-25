@@ -2,7 +2,7 @@
 //! Addendum A.4 "prefer JSON over CSV") and warning about row counts at export caps (A.5).
 
 use crate::discovery::Registry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Stems of the raw files that make a derived Hawk artifact redundant.
 /// `Simple_X` → `X` (and `Xs`: Hawk 3 `Simple_New_InboxRule` pairs with `New_InboxRules`),
@@ -35,15 +35,28 @@ pub fn counterpart_stems(stem: &str) -> Vec<String> {
 }
 
 /// Files of the current collection already handled successfully (`parsed` or
-/// `duplicate_file`), keyed by lower-cased relative path.
+/// `duplicate_file`), keyed by lower-cased relative path, and the files that failed or
+/// are still pending (their records may exist only in a `Merged` copy).
 #[derive(Debug, Default)]
 pub struct Handled {
     by_lower: HashMap<String, String>,
+    failed: HashSet<String>,
 }
 
 impl Handled {
     pub fn insert(&mut self, rel: &str) {
-        self.by_lower.insert(rel.to_lowercase(), rel.to_string());
+        let lower = rel.to_lowercase();
+        self.failed.remove(&lower);
+        self.by_lower.insert(lower, rel.to_string());
+    }
+
+    /// Record a file that failed (error, not supported, every record failed) or was
+    /// deferred: a `Merged` copy of its folder is then parsed.
+    pub fn insert_failed(&mut self, rel: &str) {
+        let lower = rel.to_lowercase();
+        if !self.by_lower.contains_key(&lower) {
+            self.failed.insert(lower);
+        }
     }
 
     fn get(&self, rel: &str) -> Option<&str> {
@@ -53,8 +66,9 @@ impl Handled {
     /// The handled file that makes `rel` redundant: the JSON twin of a CSV (same folder and
     /// stem; the CSV keeps only the first record's columns and flattens objects), or for a
     /// derived artifact its raw counterpart in the same folder. A derived file in a `Merged`
-    /// folder (Microsoft-Extractor-Suite `Merge-OutputFiles`) is made redundant by any handled
-    /// file directly in the folder above it.
+    /// folder (Microsoft-Extractor-Suite `Merge-OutputFiles`) is made redundant by the handled
+    /// files directly in the folder above it, unless one of the files there failed (spec A.4:
+    /// the copy is parsed when the original is missing or fails).
     pub fn superseded_by(&self, rel: &str, derived: bool) -> Option<String> {
         let (dir, file) = match rel.rsplit_once('/') {
             Some((d, f)) => (Some(d), f),
@@ -80,11 +94,12 @@ impl Handled {
             }
         }
         if derived {
-            if let Some(t) = dir
-                .and_then(merged_parent)
-                .and_then(|p| self.any_file_in(p))
-            {
-                return Some(t.to_string());
+            if let Some(p) = dir.and_then(merged_parent) {
+                if !self.any_failed_in(p) {
+                    if let Some(t) = self.any_file_in(p) {
+                        return Some(t.to_string());
+                    }
+                }
             }
         }
         None
@@ -95,13 +110,22 @@ impl Handled {
         let prefix = format!("{}/", dir.to_lowercase());
         self.by_lower
             .iter()
-            .filter(|(k, _)| {
-                k.strip_prefix(&prefix)
-                    .is_some_and(|rest| !rest.contains('/'))
-            })
+            .filter(|(k, _)| directly_in(k, &prefix))
             .map(|(_, v)| v.as_str())
             .min()
     }
+
+    /// True when a failed or pending file sits directly in `dir`.
+    fn any_failed_in(&self, dir: &str) -> bool {
+        let prefix = format!("{}/", dir.to_lowercase());
+        self.failed.iter().any(|k| directly_in(k, &prefix))
+    }
+}
+
+/// True when lower-cased `path` is a file directly below lower-cased `prefix` (`dir/`).
+fn directly_in(path: &str, prefix: &str) -> bool {
+    path.strip_prefix(prefix)
+        .is_some_and(|rest| !rest.contains('/'))
 }
 
 /// `dir` without its last component when that component is `Merged` (any case).

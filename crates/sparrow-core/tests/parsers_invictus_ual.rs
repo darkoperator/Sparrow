@@ -376,3 +376,57 @@ fn full_window_file_warns_of_truncation() {
     assert_eq!(truncation_warning("inv.ual.window", 4_999), None);
     assert_eq!(truncation_warning("inv.ual.merged", 5_000), None);
 }
+
+#[test]
+fn merged_combined_is_parsed_when_a_sibling_window_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("OUT");
+    let good = raw_row(&audit(ID_1, "2026-09-01T10:20:00", "Set-Mailbox"));
+    let lost = raw_row(&audit(ID_2, "2026-09-01T10:21:00", "New-InboxRule"));
+    let good_window = "UnifiedAuditLog/20260910-100000/UAL-20260901000000-20260902000000.csv";
+    let bad_window = "UnifiedAuditLog/20260910-100000/UAL-20260902000000-20260903000000.csv";
+    let merged = "UnifiedAuditLog/20260910-100000/Merged/UAL-Combined.csv";
+    fixtures::write(
+        &out,
+        good_window,
+        &utf8_bom(&format!("{}{good}", csv_line(RAW_HEADER))),
+    );
+    // Every record of this window is unreadable: its AuditData is not JSON.
+    let broken = csv_line(&[
+        "ExchangeAdmin",
+        "9/2/2026 10:21:00 AM",
+        ALICE,
+        "New-InboxRule",
+        "{not json",
+        "1",
+        "1",
+        "",
+        ID_2,
+        "True",
+        "Unchanged",
+    ]);
+    fixtures::write(
+        &out,
+        bad_window,
+        &utf8_bom(&format!("{}{broken}", csv_line(RAW_HEADER))),
+    );
+    fixtures::write(
+        &out,
+        merged,
+        &utf8_bom(&format!("{}{good}{lost}", csv_line(RAW_HEADER))),
+    );
+    let (case, report) = ingest(dir.path());
+    assert_eq!(row(&report, good_window).records_loaded, 1);
+    let bad = row(&report, bad_window);
+    assert_eq!(bad.records_loaded + bad.records_duplicate, 0, "{bad:?}");
+    let m = row(&report, merged);
+    assert_eq!(m.status, FileStatus::Parsed, "{m:?}");
+    assert_eq!((m.records_loaded, m.records_duplicate), (1, 1), "{m:?}");
+    assert_eq!(
+        count(
+            &case,
+            &format!("SELECT count(*) FROM ual_events WHERE record_id = '{ID_2}'")
+        ),
+        1
+    );
+}

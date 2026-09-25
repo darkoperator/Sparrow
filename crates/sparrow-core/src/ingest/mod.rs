@@ -267,11 +267,12 @@ fn ingest_collection(
             orders_conflict: false,
         };
         match ingest_file(case, &job, parsers, opts)? {
-            Outcome::Deferred => deferred.push((f, derived)),
+            Outcome::Deferred => {
+                handled.insert_failed(&f.rel);
+                deferred.push((f, derived));
+            }
             Outcome::Done(report, orders) => {
-                if supersedes_counterparts(&report) {
-                    handled.insert(&f.rel);
-                }
+                mark_handled(&mut handled, &f.rel, &report);
                 for o in orders {
                     if !proved.contains(&o) {
                         proved.push(o);
@@ -301,9 +302,7 @@ fn ingest_collection(
         };
         match ingest_file(case, &job, parsers, opts)? {
             Outcome::Done(report, _) => {
-                if supersedes_counterparts(&report) {
-                    handled.insert(&f.rel);
-                }
+                mark_handled(&mut handled, &f.rel, &report);
                 files.push(report);
             }
             Outcome::Deferred => {
@@ -380,6 +379,20 @@ fn supersedes_counterparts(report: &FileReport) -> bool {
     }
 }
 
+/// Record a file's outcome for the supersede rules: a success makes its counterparts
+/// redundant; a failure (error, not supported, every record failed) keeps a `Merged` copy
+/// of its folder from being skipped.
+fn mark_handled(handled: &mut Handled, rel: &str, report: &FileReport) {
+    if supersedes_counterparts(report) {
+        handled.insert(rel);
+    } else if matches!(
+        report.status,
+        FileStatus::Parsed | FileStatus::NotSupported | FileStatus::Error
+    ) {
+        handled.insert_failed(rel);
+    }
+}
+
 fn upsert_collection(conn: &Connection, dc: &DiscoveredCollection, root: &str) -> Result<i64> {
     let existing: Option<i64> = conn
         .query_row(
@@ -388,10 +401,19 @@ fn upsert_collection(conn: &Connection, dc: &DiscoveredCollection, root: &str) -
             |r| r.get(0),
         )
         .optional()?;
+    let collected_at = started_at(dc).map(|t| t.rfc3339());
     if let Some(id) = existing {
+        // A collection first ingested before its time was known (e.g. an Extractor Suite
+        // root from before run stamps were read) gains it now.
+        if let Some(at) = &collected_at {
+            conn.execute(
+                "UPDATE collections SET collected_at = CAST(? AS TIMESTAMPTZ), collected_at_tz_assumed = true
+                 WHERE collection_id = ? AND collected_at IS NULL",
+                params![at, id],
+            )?;
+        }
         return Ok(id);
     }
-    let collected_at = started_at(dc).map(|t| t.rfc3339());
     let id = conn.query_row(
         "INSERT INTO collections (tool, root_path, tenant_name_reported, collected_at, collected_at_tz_assumed, sparrow_version)
          VALUES (?, ?, ?, CAST(? AS TIMESTAMPTZ), ?, ?) RETURNING collection_id",

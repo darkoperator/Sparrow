@@ -259,3 +259,52 @@ fn merged_rule_only_applies_to_derived_files_below_a_merged_folder() {
         None
     );
 }
+
+#[test]
+fn collection_created_without_a_time_gains_the_earliest_run_on_reingest() {
+    let dir = tempfile::tempdir().unwrap();
+    output_root(dir.path());
+    let (mut case, _) = ingest(dir.path(), &ParserRegistry::builtin());
+    // As created before run stamps were known.
+    case.conn()
+        .execute(
+            "UPDATE collections SET collected_at = NULL, collected_at_tz_assumed = false",
+            [],
+        )
+        .unwrap();
+    ingest_path(
+        &mut case,
+        dir.path(),
+        &ParserRegistry::builtin(),
+        &IngestOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        count(&case, "SELECT epoch(collected_at)::BIGINT FROM collections"),
+        1_789_034_400
+    );
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM collections WHERE collected_at_tz_assumed"
+        ),
+        1
+    );
+}
+
+#[test]
+fn merged_copy_is_kept_when_a_file_beside_its_folder_failed() {
+    use sparrow_core::ingest::supersede::Handled;
+    let merged = "UnifiedAuditLog/20260910-100000/Merged/UAL-Combined.csv";
+    let mut h = Handled::default();
+    h.insert("UnifiedAuditLog/20260910-100000/UAL-1.csv");
+    // A failure in another folder does not matter.
+    h.insert_failed("UnifiedAuditLog/20260910-110000/UAL-1.csv");
+    h.insert_failed("UnifiedAuditLog/20260910-100000/Merged/Other.csv");
+    assert!(h.superseded_by(merged, true).is_some());
+    h.insert_failed("UnifiedAuditLog/20260910-100000/UAL-2.csv");
+    assert_eq!(h.superseded_by(merged, true), None);
+    // A file deferred and later handled no longer counts as failed.
+    h.insert("UnifiedAuditLog/20260910-100000/UAL-2.csv");
+    assert!(h.superseded_by(merged, true).is_some());
+}
