@@ -4,9 +4,11 @@ pub mod apps;
 pub mod directory;
 pub mod exchange;
 pub mod logs;
+pub mod mailbox;
 pub mod records;
 pub mod risk;
 pub mod stage;
+pub mod tenant_config;
 pub mod ual;
 
 use crate::ingest::parser::ParserRegistry;
@@ -18,4 +20,6 @@ pub fn register_builtin(registry: &mut ParserRegistry) {
     apps::register(registry);
     risk::register(registry);
     exchange::register(registry);
+    mailbox::register(registry);
+    tenant_config::register(registry);
 }
