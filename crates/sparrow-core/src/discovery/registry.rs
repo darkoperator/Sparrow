@@ -924,10 +924,15 @@ impl Registry {
     }
 
     /// `classify_with_head`, reading the head of CSV files (the whole of XLSX files) from `abs`.
+    /// An XLSX larger than `ingest::DEFAULT_MAX_FILE_BYTES` is not read: it is classified by
+    /// path alone (ingest then refuses it by size).
     pub fn classify_file(&self, tool: Tool, rel_path: &str, abs: &Path) -> Option<Classification> {
         let head = match format_from_path(rel_path) {
             FileFormat::Csv => read_head(abs),
-            FileFormat::Xlsx => std::fs::read(abs).ok(),
+            FileFormat::Xlsx => std::fs::metadata(abs)
+                .is_ok_and(|m| m.len() <= crate::ingest::DEFAULT_MAX_FILE_BYTES)
+                .then(|| std::fs::read(abs).ok())
+                .flatten(),
             _ => None,
         };
         self.classify_with_head(tool, rel_path, head.as_deref())
