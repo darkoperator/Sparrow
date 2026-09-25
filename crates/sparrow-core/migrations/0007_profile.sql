@@ -461,11 +461,17 @@ COMMENT ON COLUMN auth_events.correlation_id IS 'signins.correlation_id; NULL fo
 --          THEN x.collected_at > y.collected_at ELSE x.collection_id > y.collection_id END
 -- (sparrow_collection_is_newer below). That relation is well-defined for any two collections
 -- taken directly - all this view ever needs - but is NOT a total order across 3+ collections
--- with a mix of known/unknown collected_at (it can cycle: a single sort key cannot represent
--- it). So wherever this view picks "the newer of several candidates" - which sighting is the
--- record's last-seen one, and which later-and-still-absent capture is reported - it does so by
--- keeping only the candidate no other candidate in the same comparison beats by this rule (a
--- NOT EXISTS "nothing outranks it" check), not by sorting on a single derived key.
+-- with a mix of known/unknown collected_at: it can cycle (e.g. x beats z by collected_at, z
+-- beats y by collection_id because y's collected_at is unknown, y beats x by collection_id
+-- because y's collected_at is unknown), in which case a NOT EXISTS "beaten by nobody" pick finds
+-- ZERO rows and silently drops the whole group.
+-- Fix round 3 (review): so wherever this view picks "the newer of several candidates" - which
+-- sighting is a record's last-seen one, and which later-and-still-absent capture is reported -
+-- it ranks candidates by how many *other* candidates in the same comparison beat them
+-- (ascending), collection_id descending to break ties, and keeps rank 1. An unbeaten candidate
+-- (rank count 0) still wins exactly as the NOT EXISTS version would; inside a cycle, every
+-- member is beaten by exactly one other, so all tie on the beaten-by count and the
+-- collection_id tie-break deterministically picks one - always exactly one row, never zero.
 CREATE MACRO sparrow_collection_is_newer(x_collected_at, x_collection_id, y_collected_at, y_collection_id) AS
     CASE WHEN x_collected_at IS NOT NULL AND y_collected_at IS NOT NULL
          THEN x_collected_at > y_collected_at
@@ -496,33 +502,40 @@ sightings AS (
                            'mailboxes', 'transport_rules', 'remote_domains', 'mobile_devices',
                            'risky_users', 'mailbox_permissions')
 ),
--- One row per (table_name, record_key, artifact_type, subject, tenant_key): the sighting no
--- other sighting of the same group is newer than (sparrow_collection_is_newer). Several files
--- of one collection sighting the same record tie exactly (same collected_at/collection_id);
--- any one of them is picked (their output columns are identical).
+-- One row per (table_name, record_key, artifact_type, subject, tenant_key): the sighting with
+-- the fewest other sightings of the same group newer than it (0 when an outright winner
+-- exists, tied but never empty inside a cycle - see above), collection_id breaking ties.
+-- Several files of one collection sighting the same record tie exactly on both keys; any one of
+-- them is picked (their output columns are identical).
 seen AS (
-    SELECT s.table_name, s.record_key, s.artifact_type, s.subject, s.tenant_key,
-           s.collected_at, s.collection_id
-    FROM sightings s
-    WHERE NOT EXISTS (
-        SELECT 1 FROM sightings o
-        WHERE o.table_name = s.table_name AND o.record_key = s.record_key
-          AND o.artifact_type = s.artifact_type AND o.subject IS NOT DISTINCT FROM s.subject
-          AND o.tenant_key IS NOT DISTINCT FROM s.tenant_key
-          AND sparrow_collection_is_newer(o.collected_at, o.collection_id, s.collected_at, s.collection_id))
-    QUALIFY row_number() OVER (PARTITION BY s.table_name, s.record_key, s.artifact_type, s.subject, s.tenant_key
-                               ORDER BY s.collection_id DESC) = 1
+    SELECT table_name, record_key, artifact_type, subject, tenant_key, collected_at, collection_id
+    FROM (
+        SELECT s.table_name, s.record_key, s.artifact_type, s.subject, s.tenant_key,
+               s.collected_at, s.collection_id,
+               (SELECT count(*) FROM sightings o
+                WHERE o.table_name = s.table_name AND o.record_key = s.record_key
+                  AND o.artifact_type = s.artifact_type AND o.subject IS NOT DISTINCT FROM s.subject
+                  AND o.tenant_key IS NOT DISTINCT FROM s.tenant_key
+                  AND sparrow_collection_is_newer(o.collected_at, o.collection_id, s.collected_at, s.collection_id)
+               ) AS beaten_by
+        FROM sightings s
+    )
+    QUALIFY row_number() OVER (PARTITION BY table_name, record_key, artifact_type, subject, tenant_key
+                               ORDER BY beaten_by ASC, collection_id DESC) = 1
 ),
 -- The same record_key's overall last sighting across every (artifact_type, subject, tenant_key)
--- variant in `seen`, same rule.
+-- variant in `seen`, same ranking.
 last_any AS (
-    SELECT sn.table_name, sn.record_key, sn.collected_at AS seen_at, sn.collection_id AS seen_collection_id
-    FROM seen sn
-    WHERE NOT EXISTS (
-        SELECT 1 FROM seen o
-        WHERE o.table_name = sn.table_name AND o.record_key = sn.record_key
-          AND sparrow_collection_is_newer(o.collected_at, o.collection_id, sn.collected_at, sn.collection_id))
-    QUALIFY row_number() OVER (PARTITION BY sn.table_name, sn.record_key ORDER BY sn.collection_id DESC) = 1
+    SELECT table_name, record_key, collected_at AS seen_at, collection_id AS seen_collection_id
+    FROM (
+        SELECT sn.table_name, sn.record_key, sn.collected_at, sn.collection_id,
+               (SELECT count(*) FROM seen o
+                WHERE o.table_name = sn.table_name AND o.record_key = sn.record_key
+                  AND sparrow_collection_is_newer(o.collected_at, o.collection_id, sn.collected_at, sn.collection_id)
+               ) AS beaten_by
+        FROM seen sn
+    )
+    QUALIFY row_number() OVER (PARTITION BY table_name, record_key ORDER BY beaten_by ASC, collection_id DESC) = 1
 ),
 candidates AS (
     SELECT s.table_name, s.record_key, s.artifact_type, s.subject, s.collection_id AS last_seen_collection_id,
@@ -538,23 +551,27 @@ candidates AS (
         SELECT 1 FROM holds h2
         WHERE h2.file_id = n.file_id AND h2.table_name = s.table_name AND h2.record_key = s.record_key)
 )
-SELECT c.table_name, c.record_key, c.artifact_type, c.subject, c.last_seen_collection_id, c.last_seen_at,
-       c.absent_from_collection_id, c.absent_from_at
-FROM candidates c
-WHERE NOT EXISTS (
-    SELECT 1 FROM candidates o
-    WHERE o.table_name = c.table_name AND o.record_key = c.record_key AND o.artifact_type = c.artifact_type
-      AND sparrow_collection_is_newer(o.absent_from_at, o.absent_from_collection_id,
-                                       c.absent_from_at, c.absent_from_collection_id))
-QUALIFY row_number() OVER (PARTITION BY c.table_name, c.record_key, c.artifact_type
-                           ORDER BY c.absent_from_collection_id DESC) = 1;
+SELECT table_name, record_key, artifact_type, subject, last_seen_collection_id, last_seen_at,
+       absent_from_collection_id, absent_from_at
+FROM (
+    SELECT c.table_name, c.record_key, c.artifact_type, c.subject, c.last_seen_collection_id, c.last_seen_at,
+           c.absent_from_collection_id, c.absent_from_at,
+           (SELECT count(*) FROM candidates o
+            WHERE o.table_name = c.table_name AND o.record_key = c.record_key AND o.artifact_type = c.artifact_type
+              AND sparrow_collection_is_newer(o.absent_from_at, o.absent_from_collection_id,
+                                               c.absent_from_at, c.absent_from_collection_id)
+           ) AS beaten_by
+    FROM candidates c
+)
+QUALIFY row_number() OVER (PARTITION BY table_name, record_key, artifact_type
+                           ORDER BY beaten_by ASC, absent_from_collection_id DESC) = 1;
 
-COMMENT ON VIEW state_absent_in_newer IS 'State rows a newer capture of the same artifact, for the same subject and tenant, no longer holds. Latest-wins (Phase 2b) never deletes, so a row removed between two captures (e.g. an inbox rule) otherwise still reads as current; this view lists it instead. Rule: same artifact_type, same subject (case-insensitively), same tenant_key, a collection exists for that (artifact_type, subject, tenant_key) that sparrow_collection_is_newer than the record''s last-seen collection and whose files do not hold the record. sparrow_collection_is_newer(x, y) is exactly ingest/state.rs update_existing''s rule: compare collected_at when both x and y have one, else compare collection_id - never mixing the two, so an unknown collected_at is not "very old", it simply makes the comparison fall back to collection_id entirely, on both sides. That relation is well-defined for any two collections directly but is not a total order across 3+ with mixed known/unknown collected_at, so "last seen" and "absent from" are each picked as the one candidate no other candidate beats by the rule, not by sorting on one derived key. A byte-identical newer file (duplicate_file) counts as holding whatever its parsed twin (same sha256, artifact_type and, case-insensitively, subject) holds, mirroring the ingest dedup check in ingest/mod.rs. A subject not collected at all in the newer capture (no file for it) yields no later file to compare against, so its rows are not listed - coverage gaps are not the same as removal.';
+COMMENT ON VIEW state_absent_in_newer IS 'State rows a newer capture of the same artifact, for the same subject and tenant, no longer holds. Latest-wins (Phase 2b) never deletes, so a row removed between two captures (e.g. an inbox rule) otherwise still reads as current; this view lists it instead. Rule: same artifact_type, same subject (case-insensitively), same tenant_key, a collection exists for that (artifact_type, subject, tenant_key) that sparrow_collection_is_newer than the record''s last-seen collection and whose files do not hold the record. sparrow_collection_is_newer(x, y) is exactly ingest/state.rs update_existing''s rule: compare collected_at when both x and y have one, else compare collection_id - never mixing the two, so an unknown collected_at is not "very old", it simply makes the comparison fall back to collection_id entirely, on both sides. That relation is well-defined for any two collections directly but is not a total order across 3+ with mixed known/unknown collected_at (it can cycle), so "last seen" and "absent from" are each picked by ranking every candidate by how many other candidates in the same comparison beat it (ascending; 0 for an outright winner, tied but never all beaten inside a cycle) with collection_id descending as the deterministic tie-break - never by sorting on one derived key, and never by keeping only an unbeaten row (which a cycle can leave empty). A byte-identical newer file (duplicate_file) counts as holding whatever its parsed twin (same sha256, artifact_type and, case-insensitively, subject) holds, mirroring the ingest dedup check in ingest/mod.rs. A subject not collected at all in the newer capture (no file for it) yields no later file to compare against, so its rows are not listed - coverage gaps are not the same as removal.';
 COMMENT ON COLUMN state_absent_in_newer.table_name IS 'Evidence table holding the record (record_sources.table_name); one of the Phase 2b state tables.';
 COMMENT ON COLUMN state_absent_in_newer.record_key IS 'Key of the record in table_name.';
 COMMENT ON COLUMN state_absent_in_newer.artifact_type IS 'source_files.artifact_type the record was last seen in.';
 COMMENT ON COLUMN state_absent_in_newer.subject IS 'source_files.subject (e.g. the mailbox UPN) the record was last seen under, in the casing of its own source file; NULL for a tenant-wide artifact. Matched case-insensitively against later captures.';
-COMMENT ON COLUMN state_absent_in_newer.last_seen_collection_id IS 'collections.collection_id of the sighting collection no other sighting of the record beats via sparrow_collection_is_newer.';
+COMMENT ON COLUMN state_absent_in_newer.last_seen_collection_id IS 'collections.collection_id of the sighting collection ranked first (fewest other sightings of the record beating it via sparrow_collection_is_newer, collection_id breaking ties).';
 COMMENT ON COLUMN state_absent_in_newer.last_seen_at IS 'collections.collected_at of last_seen_collection_id; may be NULL.';
-COMMENT ON COLUMN state_absent_in_newer.absent_from_collection_id IS 'collections.collection_id of the capture of the same artifact_type/subject/tenant, newer than last_seen_collection_id per sparrow_collection_is_newer, whose files do not hold the record (the one no other such capture beats by the same rule, when several exist).';
+COMMENT ON COLUMN state_absent_in_newer.absent_from_collection_id IS 'collections.collection_id of the capture of the same artifact_type/subject/tenant, newer than last_seen_collection_id per sparrow_collection_is_newer, whose files do not hold the record (the one ranked first among such captures, when several exist).';
 COMMENT ON COLUMN state_absent_in_newer.absent_from_at IS 'collections.collected_at of absent_from_collection_id; may be NULL.';

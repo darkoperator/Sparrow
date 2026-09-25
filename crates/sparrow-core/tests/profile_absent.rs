@@ -374,9 +374,13 @@ fn null_collected_at_falls_back_to_collection_id() {
 /// (ingest/state.rs update_existing), comparing the newer capture ("n", collected_at NULL) to
 /// the last-seen older capture ("m", collected_at known) is not-both-known, so it falls back to
 /// collection_id: the newer capture's collection_id is still greater, so it is still newer, and
-/// the removal must still be detected. A coalesce(collected_at, -infinity) tie-break (round 1's
-/// approach) gets this case right only by accident when the higher-id side is the unknown one -
-/// this test's companion below is the one that actually distinguishes the two approaches.
+/// the removal must still be detected. THIS is the ordering that actually distinguishes the fix
+/// from round 1's coalesce(collected_at, -infinity) tie-break: coalescing "n"'s NULL to
+/// -infinity makes its tuple compare as older than "m"'s known timestamp regardless of
+/// collection_id, so round 1 wrongly concluded "n" was not newer and the removal went
+/// undetected (confirmed by reverting to round 1's SQL: this test fails, `left: 0, right: 1`).
+/// The companion test right after this one exercises the reverse ordering, which round 1 happens
+/// to get right too - see its docstring for why that one does not distinguish the two approaches.
 #[test]
 fn mixed_null_collected_at_older_known_newer_unknown_still_falls_back_to_collection_id() {
     let mut case = Case::in_memory().unwrap();
@@ -403,13 +407,14 @@ fn mixed_null_collected_at_older_known_newer_unknown_still_falls_back_to_collect
     );
 }
 
-/// Fix round 2, the reviewer's exact counter-example, reproduced through real ingest: this is
-/// the case that distinguishes the fix from round 1's coalesce(collected_at, -infinity)
-/// approach. The older (lower collection_id) capture's collected_at is nulled; the newer
-/// (higher collection_id) capture keeps its real, later collected_at. Both the exact rule and
-/// round 1's coalesce approach agree the newer capture is still newer here (its collection_id is
-/// already the higher one), so this exercises the "vice versa" ordering the review asked for
-/// without itself being a regression test against round 1 - see the test above for that.
+/// Fix round 2, the "vice versa" ordering the review asked for, reproduced through real ingest.
+/// The older (lower collection_id) capture's collected_at is nulled instead; the newer (higher
+/// collection_id) capture keeps its real, later collected_at. Both the exact rule and round 1's
+/// coalesce(collected_at, -infinity) approach agree the newer capture is still newer here
+/// (coalescing the OLDER capture's NULL to -infinity still leaves it "older" than any real
+/// timestamp, so round 1 reaches the right answer too) - this ordering does NOT distinguish the
+/// two approaches (it passes even against round 1's SQL). See the test above for the ordering
+/// that does distinguish them.
 #[test]
 fn mixed_null_collected_at_older_unknown_newer_known_still_detects_removal() {
     let mut case = Case::in_memory().unwrap();
@@ -487,5 +492,84 @@ fn subject_casing_differs_but_removal_is_still_detected() {
             )
         ),
         1
+    );
+}
+
+/// Fix round 3: three collections sighting the same record form the cycle the review
+/// demonstrated with duckdb directly - collection 1 (collected_at known, "big"), collection 2
+/// (collected_at unknown), collection 3 (collected_at known, "small") - where 1 beats 3 by
+/// collected_at, 3 beats 2 by collection_id (2's collected_at is unknown), and 2 beats 1 by
+/// collection_id (2's collected_at is unknown) too. Realistic trigger: two known-time captures
+/// ingested out of time order (collection 1's Sept 20 capture ingested BEFORE collection 3's
+/// Sept 5 one) plus one with an unknown collected_at in between. Round 2's "keep the row nothing
+/// beats" (NOT EXISTS) finds no winner in a cycle like this - every member is beaten by exactly
+/// one other - so it drops the whole `seen` group, and with it the record, rather than reporting
+/// a removal. Collections 1-3 all reproduce the same InboxRules_alice.json byte-for-byte (2 and
+/// 3 are duplicate_file, borrowed via the twin join), so both rules are sighted identically by
+/// all three; a fourth, unambiguously later capture (Sept 30, ingested last) then genuinely
+/// drops the "Newsletters" rule. Asserts the removal is still listed - the record must not
+/// vanish just because its `seen` group cycles - and that the surviving "." rule is not.
+#[test]
+fn three_collection_cycle_in_seen_does_not_drop_the_record() {
+    const STAMP_1: &str = "20260920_090000"; // Sept 20 - known, "big" collected_at
+    const STAMP_2: &str = "20260912_090000"; // collected_at nulled below - the unknown vertex
+    const STAMP_3: &str = "20260905_090000"; // Sept 5 - known, "small" collected_at
+    const STAMP_4: &str = "20260930_090000"; // unambiguously later than 1, 2 and 3 - the removal
+
+    let dir1 = tempfile::tempdir().unwrap();
+    let dir2 = tempfile::tempdir().unwrap();
+    let dir3 = tempfile::tempdir().unwrap();
+    let dir4 = tempfile::tempdir().unwrap();
+    let root1 = hawk4_state_tree_at(dir1.path(), STAMP_1, FORWARDING);
+    let root2 = hawk4_state_tree_at(dir2.path(), STAMP_2, FORWARDING);
+    let root3 = hawk4_state_tree_at(dir3.path(), STAMP_3, FORWARDING);
+    let root4 = hawk4_state_tree_at(dir4.path(), STAMP_4, FORWARDING);
+    // root2 and root3 reproduce root1's InboxRules_alice.json byte-for-byte (both rules survive
+    // unmodified) - genuine duplicate_file sightings of both rules, not fresh parses.
+    write_rules(&root4, ALICE, "alice", &[inbox_rule("alice", 1111, ".")]);
+
+    let mut case = Case::in_memory().unwrap();
+    ingest(&mut case, &root1);
+    ingest(&mut case, &root2);
+    ingest(&mut case, &root3);
+    ingest(&mut case, &root4);
+    case.conn()
+        .execute(
+            &format!(
+                "UPDATE collections SET collected_at = NULL WHERE collection_id = {}",
+                collection_id_for(&case, STAMP_2)
+            ),
+            [],
+        )
+        .unwrap();
+
+    let kept_key = text(&case, "SELECT record_key FROM inbox_rules WHERE name = '.'");
+    let removed_key = text(
+        &case,
+        "SELECT record_key FROM inbox_rules WHERE name = 'Newsletters'",
+    );
+    refresh(&mut case, &ProfileOptions::default()).unwrap();
+
+    assert_eq!(
+        count(
+            &case,
+            &format!(
+                "SELECT count(*) FROM state_absent_in_newer
+                 WHERE table_name = 'inbox_rules' AND record_key = '{removed_key}'
+                   AND absent_from_collection_id = {}",
+                collection_id_for(&case, STAMP_4)
+            )
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            &case,
+            &format!(
+                "SELECT count(*) FROM state_absent_in_newer
+                 WHERE table_name = 'inbox_rules' AND record_key = '{kept_key}'"
+            )
+        ),
+        0
     );
 }
