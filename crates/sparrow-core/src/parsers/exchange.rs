@@ -8,7 +8,9 @@ use crate::ingest::parser::{ArtifactParser, ParserRegistry};
 use crate::normalize::fields::{Cell, Rec};
 use crate::normalize::net::normalize_upn;
 use crate::parsers::records::RecordFormat;
-use crate::parsers::stage::{TableRows, load_tables, lower, read_state_records, reject};
+use crate::parsers::stage::{
+    TableRows, load_tables, lower, read_state_records, reject, require_any_key,
+};
 
 pub fn register(r: &mut ParserRegistry) {
     r.register(
@@ -102,6 +104,20 @@ impl ArtifactParser for RulesParser {
         let subject = ctx.subject;
         let sweep = self.kind == "sweep";
         let records = read_state_records(ctx, format)?;
+        let shape: &[&str] = if sweep {
+            &["RuleId", "Identity", "MailboxOwnerId"]
+        } else {
+            // Rule properties too: Hawk's per-user files may lack every identity column.
+            &[
+                "RuleIdentity",
+                "Identity",
+                "MailboxOwnerId",
+                "ForwardTo",
+                "DeleteMessage",
+                "RedirectTo",
+            ]
+        };
+        require_any_key(&records, shape, &format!("{} rule", self.kind))?;
         let mut rows = TableRows::new(&INBOX_RULES, if sweep { SWEEP_COLS } else { INBOX_COLS });
         for r in &records {
             let rec = Rec::new(&r.map, format.lossy());

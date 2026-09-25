@@ -8,7 +8,9 @@ use crate::ingest::parser::{ArtifactParser, ParserRegistry};
 use crate::normalize::fields::{Cell, Rec};
 use crate::normalize::net::normalize_upn;
 use crate::parsers::records::{RecordFormat, SourceRecord};
-use crate::parsers::stage::{TableRows, load_tables, lower, read_state_records, reject};
+use crate::parsers::stage::{
+    TableRows, load_tables, lower, read_state_records, reject, require_any_key,
+};
 use crate::{Error, Result};
 use serde_json::json;
 
@@ -64,6 +66,7 @@ impl ArtifactParser for UsersParser {
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
         let format = RecordFormat::of(ctx.rel_path);
         let records = read_state_records(ctx, format)?;
+        require_any_key(&records, &["UserPrincipalName"], "user")?;
         // Hawk 3 used the MSOnline/AzureAD modules, Hawk 4 uses Graph: different columns.
         let azuread = records.iter().any(|r| {
             let rec = Rec::new(&r.map, false);

@@ -4,7 +4,7 @@
 use crate::db::state_tables::TableSpec;
 use crate::ingest::context::ParseContext;
 use crate::ingest::state::{StagedRow, load_rows};
-use crate::normalize::fields::Cell;
+use crate::normalize::fields::{Cell, Rec};
 use crate::parsers::records::{RecordFormat, SourceRecord, placeholder_warning, read_records};
 use crate::readers::text::Span;
 use crate::readers::time::DateOrderDetector;
@@ -54,6 +54,28 @@ impl TableRows {
             self.spec.table
         );
         self.rows.push(d);
+    }
+}
+
+/// `UnsupportedShape` naming `what` and the first record's keys.
+pub fn unsupported(first: &SourceRecord, what: &str) -> Error {
+    let cols: Vec<&str> = first.map.keys().take(12).map(String::as_str).collect();
+    Error::UnsupportedShape(format!("no {what} fields in [{}]", cols.join(", ")))
+}
+
+/// Shape check: unless no record was read, some record must have one of `keys`
+/// (case-insensitive), else the file is `not_supported`.
+pub fn require_any_key(records: &[SourceRecord], keys: &[&str], what: &str) -> Result<()> {
+    match records.first() {
+        Some(first)
+            if !records.iter().any(|r| {
+                let rec = Rec::new(&r.map, false);
+                keys.iter().any(|k| rec.has(k))
+            }) =>
+        {
+            Err(unsupported(first, what))
+        }
+        _ => Ok(()),
     }
 }
 

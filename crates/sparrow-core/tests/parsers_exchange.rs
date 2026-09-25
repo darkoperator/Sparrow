@@ -252,7 +252,7 @@ fn rule_without_mailbox_or_identity_is_a_record_error() {
     json_file(
         &root,
         "Tenant/All_InboxRules.json",
-        &json!([{"Enabled": true}]),
+        &json!([{"Enabled": true, "ForwardTo": null}]),
     );
     let (_case, report) = ingest(dir.path());
     let f = row(&report, "Tenant/All_InboxRules.json");
@@ -260,4 +260,28 @@ fn rule_without_mailbox_or_identity_is_a_record_error() {
         (f.status, f.records_read, f.records_error),
         (FileStatus::Parsed, 1, 1)
     );
+}
+
+#[test]
+fn rule_files_of_another_shape_are_not_supported() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    json_file(
+        &root,
+        "Tenant/All_InboxRules.json",
+        &json!([{"Name": "x", "Enabled": true}]),
+    );
+    json_file(
+        &root,
+        &format!("{ALICE}/SweepRules_alice.json"),
+        &json!([{"Name": "x", "Enabled": true, "ForwardTo": null}]),
+    );
+    let (case, report) = ingest(dir.path());
+    for rel in [
+        "Tenant/All_InboxRules.json".to_string(),
+        format!("{ALICE}/SweepRules_alice.json"),
+    ] {
+        assert_eq!(row(&report, &rel).status, FileStatus::NotSupported, "{rel}");
+    }
+    assert_eq!(count(&case, "SELECT count(*) FROM inbox_rules"), 0);
 }

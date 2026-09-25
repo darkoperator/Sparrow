@@ -294,3 +294,31 @@ fn admin_audit_and_org_config_fill_audit_config_and_settings() {
         "true"
     );
 }
+
+#[test]
+fn forwarding_report_without_forwarding_columns_is_not_supported() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    fixtures::write(
+        &root,
+        &format!("{ALICE}/ForwardingReport_alice.json"),
+        &forwarding("smtp:x@fabrikam.example"),
+    );
+    json_file(
+        &root,
+        "Tenant/User_ForwardingReport.json",
+        &json!([{"UserPrincipalName": ALICE, "DisplayName": "Alice", "Department": "Sales"}]),
+    );
+    let (case, report) = ingest(dir.path(), None);
+    let f = row(&report, "Tenant/User_ForwardingReport.json");
+    assert_eq!(f.status, FileStatus::NotSupported, "{f:#?}");
+    assert!(
+        f.warnings.iter().any(|w| w.contains("Department")),
+        "{f:#?}"
+    );
+    assert_eq!(
+        text(&case, "SELECT forwarding_smtp_address FROM mailboxes"),
+        "smtp:x@fabrikam.example",
+        "the unsupported file must not overwrite the forwarding row"
+    );
+}

@@ -3,14 +3,16 @@
 //! (Get-Mailbox identity), CAS_Mailbox_Info (Get-CASMailbox protocols) and AutoReply
 //! (Get-MailboxAutoReplyConfiguration).
 
+use crate::Result;
 use crate::db::state_tables::MAILBOXES;
 use crate::ingest::context::ParseContext;
 use crate::ingest::parser::{ArtifactParser, ParserRegistry};
 use crate::normalize::fields::{Cell, Rec};
 use crate::normalize::net::normalize_upn;
-use crate::parsers::records::{RecordFormat, SourceRecord};
-use crate::parsers::stage::{TableRows, load_tables, lower, read_state_records, reject};
-use crate::{Error, Result};
+use crate::parsers::records::RecordFormat;
+use crate::parsers::stage::{
+    TableRows, load_tables, lower, read_state_records, reject, require_any_key, unsupported,
+};
 
 pub fn register(r: &mut ParserRegistry) {
     r.register("hawk.user.forwarding", Box::new(ForwardingParser));
@@ -28,11 +30,6 @@ pub fn mailbox_key(rec: &Rec, subject: Option<&str>) -> Option<String> {
         rec.text("UserPrincipalName")
             .and_then(|u| normalize_upn(&u))
     })
-}
-
-fn unsupported(first: &SourceRecord, what: &str) -> Error {
-    let cols: Vec<&str> = first.map.keys().take(12).map(String::as_str).collect();
-    Error::UnsupportedShape(format!("no {what} fields in [{}]", cols.join(", ")))
 }
 
 const FORWARDING_COLS: &[&str] = &[
@@ -55,6 +52,15 @@ impl ArtifactParser for ForwardingParser {
         let format = RecordFormat::of(ctx.rel_path);
         let subject = ctx.subject;
         let records = read_state_records(ctx, format)?;
+        require_any_key(
+            &records,
+            &[
+                "ForwardingSmtpAddress",
+                "ForwardingAddress",
+                "DeliverToMailboxAndForward",
+            ],
+            "forwarding",
+        )?;
         let mut rows = TableRows::new(&MAILBOXES, FORWARDING_COLS);
         for r in &records {
             let rec = Rec::new(&r.map, format.lossy());

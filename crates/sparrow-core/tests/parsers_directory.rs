@@ -344,3 +344,18 @@ fn unknown_role_file_shape_is_not_supported() {
         f.warnings
     );
 }
+
+#[test]
+fn user_list_without_user_principal_names_is_not_supported() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    json_file(
+        &root,
+        "Tenant/EntraIDUsers.json",
+        &json!([{"GroupName": "Sales", "Members": 3}]),
+    );
+    let (case, report) = ingest(dir.path());
+    let f = row(&report, "Tenant/EntraIDUsers.json");
+    assert_eq!(f.status, FileStatus::NotSupported, "{f:#?}");
+    assert_eq!(count(&case, "SELECT count(*) FROM users"), 0);
+}
