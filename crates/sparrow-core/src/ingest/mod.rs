@@ -14,7 +14,7 @@ use crate::discovery::{
 use crate::ingest::context::{FileStats, ParseContext};
 use crate::ingest::parser::ParserRegistry;
 use crate::ingest::supersede::{Handled, processing_key, truncation_warning};
-use crate::readers::text::{LineIndex, decode};
+use crate::readers::text::{DecodedText, LineIndex, decode};
 use crate::readers::time::{DateOrder, ParsedTime, parse_timestamp};
 use crate::{Case, Error, Result, VERSION};
 use duckdb::{Connection, OptionalExt, params};
@@ -530,8 +530,12 @@ fn ingest_file(
     if changed {
         pre.push("file content changed since an earlier ingest of this collection (different SHA-256); records from both versions are kept".into());
     }
-    let class: Option<Classification> =
-        reg.classify_with_head(tool, rel, Some(&raw[..raw.len().min(SNIFF_BYTES)]));
+    let head: &[u8] = if nf.format == FileFormat::Xlsx {
+        &raw
+    } else {
+        &raw[..raw.len().min(SNIFF_BYTES)]
+    };
+    let class: Option<Classification> = reg.classify_with_head(tool, rel, Some(head));
     nf.artifact_id = class.as_ref().map(|c| c.artifact_id);
     nf.subject = class.as_ref().and_then(|c| c.subject.as_deref());
 
@@ -607,8 +611,13 @@ fn ingest_file(
             .map(Outcome::plain);
     };
 
-    let decoded = decode(&raw);
-    nf.encoding = Some(decoded.encoding.as_str());
+    // XLSX is a zip: parsers read it from the raw bytes, so it is not decoded.
+    let decoded = if nf.format == FileFormat::Xlsx {
+        DecodedText::binary()
+    } else {
+        decode(&raw)
+    };
+    nf.encoding = (nf.format != FileFormat::Xlsx).then(|| decoded.encoding.as_str());
     let decode_warning = decoded.lossy_warning();
     let index = LineIndex::new(&decoded.text);
     let tx = case.conn_mut().transaction()?;

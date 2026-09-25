@@ -92,6 +92,7 @@ impl ArtifactParser for ConfigParser {
                         Cell::json(value),
                     ],
                     raw: None,
+                    sheet_row: None,
                 });
             }
             if !self.audit_columns.is_empty() {

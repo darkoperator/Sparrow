@@ -828,3 +828,31 @@ fn portal_export_tool_name() {
     );
     assert_eq!(serde_json::to_string(&Hawk).unwrap(), "\"hawk\"");
 }
+
+#[test]
+fn xlsx_portal_exports_are_recognized_by_their_header_row() {
+    let mut wb = rust_xlsxwriter::Workbook::new();
+    let ws = wb.add_worksheet();
+    for (i, h) in ["Date (UTC)", "Request ID", "User agent ", "Correlation ID"]
+        .iter()
+        .enumerate()
+    {
+        ws.write_string(2, i as u16, *h).unwrap();
+    }
+    let bytes = wb.save_to_buffer().unwrap();
+    let reg = Registry::builtin();
+    let c = reg
+        .classify_with_head(
+            Tool::Hawk,
+            "Tenant/InteractiveSignins_a_b.xlsx",
+            Some(&bytes),
+        )
+        .unwrap();
+    assert_eq!(c.artifact_id, "portal.entra_signins");
+    assert!(
+        reg.classify_with_head(Tool::Hawk, "Tenant/x.xlsx", Some(b"not a zip"))
+            .is_none()
+    );
+    assert_eq!(format_from_path("a/B.XLSX"), FileFormat::Xlsx);
+    assert_eq!(FileFormat::Xlsx.as_str(), "xlsx");
+}

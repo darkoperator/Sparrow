@@ -373,6 +373,7 @@ impl ArtifactParser for InvestigateTxtParser {
                     Cell::text(reference),
                 ],
                 raw: Some(json!({ "line": &text.text[e.span.start..e.span.end] })),
+                sheet_row: None,
             });
         }
         if unparsed > 0 {

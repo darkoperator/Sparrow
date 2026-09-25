@@ -11,12 +11,22 @@ use crate::readers::time::{DateOrder, DateOrderDetector, parse_timestamp};
 use crate::{Error, Result};
 use serde_json::Value;
 
+/// A spreadsheet row (XLSX has no text lines): sheet row number and the row's cell texts
+/// joined by tabs.
+#[derive(Debug, Clone)]
+pub struct SheetRow {
+    pub row: u32,
+    pub text: String,
+}
+
 pub struct RowDraft {
     pub ordinal: u64,
     pub span: Span,
     pub record_key: String,
     pub cells: Vec<Cell>,
     pub raw: Option<Value>,
+    /// XLSX rows: provenance is the sheet row (`span` is then unused).
+    pub sheet_row: Option<SheetRow>,
 }
 
 /// Rows of one table read from one file; `cells` of each row align with `columns`.
@@ -43,6 +53,7 @@ impl TableRows {
             record_key,
             cells,
             raw: Some(Value::Object(r.map.clone())),
+            sheet_row: None,
         });
     }
 
@@ -97,8 +108,22 @@ pub fn lower(v: Option<String>) -> Option<String> {
 
 /// Count `r` as read and record why it could not be loaded.
 pub fn reject(ctx: &mut ParseContext<'_>, r: &SourceRecord, msg: &str) -> Result<()> {
+    reject_at(ctx, r.ordinal, r.span, None, msg)
+}
+
+/// Count a record as read and record why it could not be loaded, at its span or sheet row.
+pub fn reject_at(
+    ctx: &mut ParseContext<'_>,
+    ordinal: u64,
+    span: Span,
+    sheet_row: Option<&SheetRow>,
+    msg: &str,
+) -> Result<()> {
     ctx.stats.read += 1;
-    ctx.parse_error(r.ordinal, r.span, msg)
+    match sheet_row {
+        Some(s) => ctx.row_parse_error(ordinal, s.row, &s.text, msg),
+        None => ctx.parse_error(ordinal, span, msg),
+    }
 }
 
 /// Cells addressed by column name, in the order of `columns`; unset columns stay NULL.
@@ -170,7 +195,10 @@ pub fn load_tables(ctx: &mut ParseContext<'_>, tables: Vec<TableRows>) -> Result
                 r.cells.iter().map(|c| c.stage(order)).collect();
             match cells {
                 Ok(cells) => {
-                    let (pos, raw_sha256) = ctx.sighting(r.span);
+                    let (pos, raw_sha256) = match &r.sheet_row {
+                        Some(s) => ctx.row_sighting(s.row, &s.text),
+                        None => ctx.sighting(r.span),
+                    };
                     staged.push(StagedRow {
                         ordinal: r.ordinal,
                         pos,
@@ -181,7 +209,11 @@ pub fn load_tables(ctx: &mut ParseContext<'_>, tables: Vec<TableRows>) -> Result
                     });
                 }
                 Err(msg) => {
-                    ctx.parse_error(r.ordinal, r.span, &format!("{}: {msg}", t.spec.table))?
+                    let msg = format!("{}: {msg}", t.spec.table);
+                    match &r.sheet_row {
+                        Some(s) => ctx.row_parse_error(r.ordinal, s.row, &s.text, &msg)?,
+                        None => ctx.parse_error(r.ordinal, r.span, &msg)?,
+                    }
                 }
             }
         }

@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+calamine.workspace = true
 chrono.workspace = true
 csv.workspace = true
 duckdb.workspace = true
@@ -24,4 +25,5 @@ test-fixtures = []
 
 [dev-dependencies]
 sparrow-core = { path = ".", features = ["test-fixtures"] }
+rust_xlsxwriter.workspace = true
 tempfile.workspace = true

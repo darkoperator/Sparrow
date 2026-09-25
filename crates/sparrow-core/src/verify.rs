@@ -1,6 +1,7 @@
 //! Re-validate evidence records against the original collector files.
 
 use crate::readers::text::{LineIndex, decode};
+use crate::readers::xlsx::read_xlsx;
 use crate::{Case, Error, Result};
 use duckdb::params;
 use serde::Serialize;
@@ -144,6 +145,10 @@ fn check(s: &Sighting, root_override: Option<&Path>) -> SightingCheck {
     };
     result.file_found = true;
     result.file_hash_ok = hex::encode(Sha256::digest(&raw)) == s.file_sha;
+    if s.rel_path.to_ascii_lowercase().ends_with(".xlsx") {
+        check_sheet_row(s, &raw, &mut result);
+        return result;
+    }
     let start = s.byte_offset as usize;
     let end = start.saturating_add(s.byte_length as usize);
     if end <= raw.len() {
@@ -156,4 +161,24 @@ fn check(s: &Sighting, root_override: Option<&Path>) -> SightingCheck {
         result.excerpt = Some(text.chars().take(EXCERPT_LIMIT).collect());
     }
     result
+}
+
+/// XLSX sighting: re-read sheet row `line_start`, re-hash its tab-joined cell texts and show
+/// the row as `header: value` lines.
+fn check_sheet_row(s: &Sighting, raw: &[u8], result: &mut SightingCheck) {
+    let Ok(table) = read_xlsx(raw) else {
+        return;
+    };
+    let Some(row) = table.rows.iter().find(|r| r.row == s.line_start) else {
+        return;
+    };
+    result.record_hash_ok = hex::encode(Sha256::digest(row.text().as_bytes())) == s.raw_sha;
+    let lines: Vec<String> = row
+        .fields
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(i, v)| format!("{}: {v}", table.headers.get(i).map_or("", String::as_str)))
+        .collect();
+    result.excerpt = Some(lines.join("\n").chars().take(EXCERPT_LIMIT).collect());
 }

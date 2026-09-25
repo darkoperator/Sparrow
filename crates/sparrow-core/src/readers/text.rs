@@ -50,6 +50,16 @@ pub struct DecodedText {
 }
 
 impl DecodedText {
+    /// Empty text for binary files (XLSX) that parsers read from the raw bytes.
+    pub fn binary() -> DecodedText {
+        DecodedText {
+            text: String::new(),
+            encoding: TextEncoding::Utf8,
+            bom_len: 0,
+            lossy: false,
+        }
+    }
+
     /// Warning to record on the file when decoding was lossy.
     pub fn lossy_warning(&self) -> Option<String> {
         if !self.lossy {

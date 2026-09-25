@@ -10,6 +10,7 @@ rust-version = "1.85"
 [workspace.dependencies]
 anyhow = "1"
 assert_cmd = "2"
+calamine = { version = "=0.35.0", features = ["dates"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 clap = { version = "4.6", features = ["derive"] }
 csv = "1.4"
@@ -18,6 +19,7 @@ encoding_rs = "0.8"
 hex = "0.4"
 predicates = "3"
 regex = "1"
+rust_xlsxwriter = "0.99"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"

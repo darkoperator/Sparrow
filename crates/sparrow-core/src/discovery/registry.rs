@@ -3,8 +3,9 @@
 //! to the collection root. Named group `subject` captures the user/IP/message/operation.
 
 use crate::discovery::collections::Tool;
-use crate::readers::csv_scan::read_csv;
+use crate::readers::csv_scan::{normalize_headers, read_csv};
 use crate::readers::text::decode;
+use crate::readers::xlsx::xlsx_headers;
 use regex::Regex;
 use serde::Serialize;
 use std::collections::HashSet;
@@ -39,6 +40,7 @@ pub enum FileFormat {
     Log,
     Eml,
     Xml,
+    Xlsx,
     Unknown,
 }
 
@@ -52,6 +54,7 @@ impl FileFormat {
             FileFormat::Log => "log",
             FileFormat::Eml => "eml",
             FileFormat::Xml => "xml",
+            FileFormat::Xlsx => "xlsx",
             FileFormat::Unknown => "unknown",
         }
     }
@@ -798,6 +801,21 @@ static PORTAL_DEFS: &[PortalDef] = &[
     },
 ];
 
+fn portal_by_headers(headers: &HashSet<String>) -> Option<Classification> {
+    PORTAL_DEFS
+        .iter()
+        .find(|d| {
+            d.columns.iter().all(|c| headers.contains(*c))
+                && (!d.exact || headers.len() == d.columns.len())
+        })
+        .map(|d| Classification {
+            artifact_id: d.id,
+            target: d.target,
+            derived: false,
+            subject: None,
+        })
+}
+
 /// Recognize an analyst portal export (Purview audit search, Entra sign-ins, EAC message
 /// trace) from the first bytes of a CSV file, whatever its name or location.
 pub fn sniff_portal(head: &[u8]) -> Option<Classification> {
@@ -811,18 +829,18 @@ pub fn sniff_portal(head: &[u8]) -> Option<Classification> {
         .iter()
         .map(|h| h.to_ascii_lowercase())
         .collect();
-    PORTAL_DEFS
-        .iter()
-        .find(|d| {
-            d.columns.iter().all(|c| headers.contains(*c))
-                && (!d.exact || headers.len() == d.columns.len())
-        })
-        .map(|d| Classification {
-            artifact_id: d.id,
-            target: d.target,
-            derived: false,
-            subject: None,
-        })
+    portal_by_headers(&headers)
+}
+
+/// Recognize a portal export saved as an Excel workbook from its first sheet's header row.
+/// `bytes` must be the whole file (the header row is inside the zip).
+pub fn sniff_portal_xlsx(bytes: &[u8]) -> Option<Classification> {
+    let raw = xlsx_headers(bytes)?;
+    let headers: HashSet<String> = normalize_headers(raw.iter().map(String::as_str))
+        .into_iter()
+        .map(|h| h.to_ascii_lowercase())
+        .collect();
+    portal_by_headers(&headers)
 }
 
 fn read_head(abs: &Path) -> Option<Vec<u8>> {
@@ -873,28 +891,32 @@ impl Registry {
             })
     }
 
-    /// Classify a file given the first `SNIFF_BYTES` of its content: CSV portal exports are
-    /// recognized by header first (anywhere, under any tool), then `tool`'s path patterns apply.
+    /// Classify a file given its head: CSV portal exports are recognized by the header in the
+    /// first `SNIFF_BYTES`, XLSX ones by their first sheet's header row (`head` is then the
+    /// whole file), under any tool; then `tool`'s path patterns apply.
     pub fn classify_with_head(
         &self,
         tool: Tool,
         rel_path: &str,
         head: Option<&[u8]>,
     ) -> Option<Classification> {
-        if format_from_path(rel_path) == FileFormat::Csv {
-            if let Some(c) = head.and_then(sniff_portal) {
-                return Some(c);
-            }
+        let sniffed = match format_from_path(rel_path) {
+            FileFormat::Csv => head.and_then(sniff_portal),
+            FileFormat::Xlsx => head.and_then(sniff_portal_xlsx),
+            _ => None,
+        };
+        if let Some(c) = sniffed {
+            return Some(c);
         }
         self.classify(tool, rel_path)
     }
 
-    /// `classify_with_head`, reading the head of CSV files from `abs`.
+    /// `classify_with_head`, reading the head of CSV files (the whole of XLSX files) from `abs`.
     pub fn classify_file(&self, tool: Tool, rel_path: &str, abs: &Path) -> Option<Classification> {
-        let head = if format_from_path(rel_path) == FileFormat::Csv {
-            read_head(abs)
-        } else {
-            None
+        let head = match format_from_path(rel_path) {
+            FileFormat::Csv => read_head(abs),
+            FileFormat::Xlsx => std::fs::read(abs).ok(),
+            _ => None,
         };
         self.classify_with_head(tool, rel_path, head.as_deref())
     }
@@ -944,6 +966,7 @@ pub fn format_from_path(p: &str) -> FileFormat {
         "log" => FileFormat::Log,
         "eml" => FileFormat::Eml,
         "xml" => FileFormat::Xml,
+        "xlsx" => FileFormat::Xlsx,
         _ => FileFormat::Unknown,
     }
 }

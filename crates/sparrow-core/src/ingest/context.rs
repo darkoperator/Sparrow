@@ -94,6 +94,51 @@ impl<'a> ParseContext<'a> {
         (pos, hash)
     }
 
+    /// Provenance of spreadsheet row `row` (1-based sheet row): `line_start = line_end = row`,
+    /// the whole file as the byte range, and the SHA-256 of `row_text` (the row's cell texts
+    /// joined by tabs), which `verify` recomputes from the workbook.
+    pub fn row_sighting(&self, row: u32, row_text: &str) -> (SourcePos, String) {
+        (
+            SourcePos {
+                line_start: row,
+                line_end: row,
+                byte_offset: 0,
+                byte_length: self.raw.len() as u64,
+            },
+            hex::encode(Sha256::digest(row_text.as_bytes())),
+        )
+    }
+
+    /// Record-level failure of spreadsheet row `row`. Increments `stats.error`.
+    pub fn row_parse_error(
+        &mut self,
+        ordinal: u64,
+        row: u32,
+        row_text: &str,
+        message: &str,
+    ) -> Result<()> {
+        let (pos, _) = self.row_sighting(row, row_text);
+        let snippet: String = row_text.chars().take(500).collect();
+        self.conn
+            .prepare_cached(
+                "INSERT INTO parse_errors (file_id, record_ordinal, line_start, line_end, byte_offset, byte_length,
+                                           error, raw_snippet)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            )?
+            .execute(params![
+                self.file_id,
+                ordinal as i64,
+                pos.line_start as i64,
+                pos.line_end as i64,
+                pos.byte_offset as i64,
+                pos.byte_length as i64,
+                message,
+                snippet
+            ])?;
+        self.stats.error += 1;
+        Ok(())
+    }
+
     /// Record that `record_key` in `table` was seen at `span` of this file.
     pub fn record_source(
         &mut self,
