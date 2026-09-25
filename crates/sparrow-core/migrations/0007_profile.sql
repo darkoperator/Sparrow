@@ -447,6 +447,14 @@ COMMENT ON COLUMN auth_events.session_id IS 'signins.session_id or ual_events.se
 COMMENT ON COLUMN auth_events.correlation_id IS 'signins.correlation_id; NULL for a UAL row (UAL carries no correlation id).';
 
 -- Task 10: state rows missing from a newer capture.
+-- Fix round 1 (review): the duplicate_file twin join is scoped by artifact_type and
+-- lower(subject) too, matching the ingest dedup check (ingest/mod.rs, artifact_type IS NOT
+-- DISTINCT FROM / subject IS NOT DISTINCT FROM) so an unrelated same-bytes file (e.g. two
+-- near-empty files of different artifacts/subjects) cannot borrow its rows; "newer" falls back
+-- to collection_id when collected_at is NULL on either side, matching the loader's own rule
+-- (ingest/state.rs update_existing); and subject is compared case-insensitively everywhere a
+-- capture is matched to its own later self, since collector folder names carry whatever casing
+-- was on disk.
 CREATE VIEW state_absent_in_newer AS
 WITH files AS (
     SELECT sf.file_id, sf.collection_id, sf.artifact_type, sf.subject, sf.status, sf.sha256,
@@ -460,42 +468,66 @@ holds AS (
     SELECT d.file_id, rs.table_name, rs.record_key
     FROM files d
     JOIN source_files p ON p.sha256 = d.sha256 AND p.status = 'parsed' AND p.file_id <> d.file_id
+                        AND p.artifact_type IS NOT DISTINCT FROM d.artifact_type
+                        AND lower(p.subject) IS NOT DISTINCT FROM lower(d.subject)
     JOIN record_sources rs ON rs.file_id = p.file_id
     WHERE d.status = 'duplicate_file'
 ),
+-- One row per (table_name, record_key, artifact_type, subject, tenant_key): its most recent
+-- sighting, "most recent" meaning greatest (coalesce(collected_at, -infinity), collection_id)
+-- so a pair of captures with unknown collected_at still orders by collection_id.
 seen AS (
-    SELECT h.table_name, h.record_key, f.artifact_type, f.subject, f.tenant_key,
-           max(f.collected_at) AS last_seen_at,
-           arg_max(f.collection_id, f.collected_at) AS last_seen_collection_id
-    FROM holds h JOIN files f ON f.file_id = h.file_id
-    WHERE h.table_name IN ('users', 'role_assignments', 'oauth_grants', 'app_credentials', 'inbox_rules',
-                           'mailboxes', 'transport_rules', 'remote_domains', 'mobile_devices',
-                           'risky_users', 'mailbox_permissions')
-    GROUP BY ALL
+    SELECT table_name, record_key, artifact_type, subject, tenant_key, collected_at, collection_id
+    FROM (
+        SELECT h.table_name, h.record_key, f.artifact_type, f.subject, f.tenant_key,
+               f.collected_at, f.collection_id,
+               row_number() OVER (
+                   PARTITION BY h.table_name, h.record_key, f.artifact_type, f.subject, f.tenant_key
+                   ORDER BY coalesce(f.collected_at, '-infinity'::TIMESTAMPTZ) DESC, f.collection_id DESC
+               ) AS rn
+        FROM holds h JOIN files f ON f.file_id = h.file_id
+        WHERE h.table_name IN ('users', 'role_assignments', 'oauth_grants', 'app_credentials', 'inbox_rules',
+                               'mailboxes', 'transport_rules', 'remote_domains', 'mobile_devices',
+                               'risky_users', 'mailbox_permissions')
+    )
+    WHERE rn = 1
 ),
+-- The same record_key's overall last sighting across every (artifact_type, subject, tenant_key)
+-- variant in `seen`, same NULL-safe ordering.
 last_any AS (
-    SELECT table_name, record_key, max(last_seen_at) AS seen_at FROM seen GROUP BY ALL
+    SELECT table_name, record_key, collected_at AS seen_at, collection_id AS seen_collection_id
+    FROM (
+        SELECT table_name, record_key, collected_at, collection_id,
+               row_number() OVER (
+                   PARTITION BY table_name, record_key
+                   ORDER BY coalesce(collected_at, '-infinity'::TIMESTAMPTZ) DESC, collection_id DESC
+               ) AS rn
+        FROM seen
+    )
+    WHERE rn = 1
 )
-SELECT s.table_name, s.record_key, s.artifact_type, s.subject, s.last_seen_collection_id, s.last_seen_at,
+SELECT s.table_name, s.record_key, s.artifact_type, s.subject, s.collection_id AS last_seen_collection_id,
+       s.collected_at AS last_seen_at,
        n.collection_id AS absent_from_collection_id, n.collected_at AS absent_from_at
 FROM seen s
 JOIN last_any la ON la.table_name = s.table_name AND la.record_key = s.record_key
 JOIN files n ON n.artifact_type = s.artifact_type
-            AND n.subject IS NOT DISTINCT FROM s.subject
+            AND lower(n.subject) IS NOT DISTINCT FROM lower(s.subject)
             AND n.tenant_key IS NOT DISTINCT FROM s.tenant_key
-            AND n.collected_at > la.seen_at
+            AND (coalesce(n.collected_at, '-infinity'::TIMESTAMPTZ), n.collection_id)
+              > (coalesce(la.seen_at, '-infinity'::TIMESTAMPTZ), la.seen_collection_id)
 WHERE NOT EXISTS (
     SELECT 1 FROM holds h2
     WHERE h2.file_id = n.file_id AND h2.table_name = s.table_name AND h2.record_key = s.record_key)
 QUALIFY row_number() OVER (PARTITION BY s.table_name, s.record_key, s.artifact_type
-                           ORDER BY n.collected_at DESC, n.collection_id DESC) = 1;
+                           ORDER BY coalesce(n.collected_at, '-infinity'::TIMESTAMPTZ) DESC, n.collection_id DESC) = 1;
 
-COMMENT ON VIEW state_absent_in_newer IS 'State rows a newer capture of the same artifact, for the same subject and tenant, no longer holds. Latest-wins (Phase 2b) never deletes, so a row removed between two captures (e.g. an inbox rule) otherwise still reads as current; this view lists it instead. Rule: same artifact_type, same subject, same tenant_key, a strictly later collection exists for that (artifact_type, subject, tenant_key), and that later collection''s files do not hold the record. A byte-identical newer file (duplicate_file) counts as holding whatever its parsed twin holds. A subject not collected at all in the newer capture (no file for it) yields no later file to compare against, so its rows are not listed - coverage gaps are not the same as removal.';
+COMMENT ON VIEW state_absent_in_newer IS 'State rows a newer capture of the same artifact, for the same subject and tenant, no longer holds. Latest-wins (Phase 2b) never deletes, so a row removed between two captures (e.g. an inbox rule) otherwise still reads as current; this view lists it instead. Rule: same artifact_type, same subject (case-insensitively), same tenant_key, a later collection exists for that (artifact_type, subject, tenant_key) - "later" meaning a greater (collected_at, collection_id) pair, collection_id deciding when collected_at is NULL on either side, matching ingest/state.rs update_existing - and that later collection''s files do not hold the record. A byte-identical newer file (duplicate_file) counts as holding whatever its parsed twin (same sha256, artifact_type and, case-insensitively, subject) holds, mirroring the ingest dedup check in ingest/mod.rs. A subject not collected at all in the newer capture (no file for it) yields no later file to compare against, so its rows are not listed - coverage gaps are not the same as removal.';
 COMMENT ON COLUMN state_absent_in_newer.table_name IS 'Evidence table holding the record (record_sources.table_name); one of the Phase 2b state tables.';
 COMMENT ON COLUMN state_absent_in_newer.record_key IS 'Key of the record in table_name.';
 COMMENT ON COLUMN state_absent_in_newer.artifact_type IS 'source_files.artifact_type the record was last seen in.';
-COMMENT ON COLUMN state_absent_in_newer.subject IS 'source_files.subject (e.g. the mailbox UPN) the record was last seen under; NULL for a tenant-wide artifact.';
-COMMENT ON COLUMN state_absent_in_newer.last_seen_collection_id IS 'collections.collection_id of the latest capture that still held the record.';
-COMMENT ON COLUMN state_absent_in_newer.last_seen_at IS 'collections.collected_at of last_seen_collection_id.';
+COMMENT ON COLUMN state_absent_in_newer.subject IS 'source_files.subject (e.g. the mailbox UPN) the record was last seen under, in the casing of its own source file; NULL for a tenant-wide artifact. Matched case-insensitively against later captures.';
+COMMENT ON COLUMN state_absent_in_newer.last_seen_collection_id IS 'collections.collection_id of the latest capture that still held the record (greatest (collected_at, collection_id), NULL collected_at losing to any known one).';
+COMMENT ON COLUMN state_absent_in_newer.last_seen_at IS 'collections.collected_at of last_seen_collection_id; may be NULL.';
 COMMENT ON COLUMN state_absent_in_newer.absent_from_collection_id IS 'collections.collection_id of the newer capture of the same artifact_type/subject/tenant that no longer holds the record (the latest such capture, when several exist).';
-COMMENT ON COLUMN state_absent_in_newer.absent_from_at IS 'collections.collected_at of absent_from_collection_id.';
+COMMENT ON COLUMN state_absent_in_newer.absent_from_at IS 'collections.collected_at of absent_from_collection_id; may be NULL.';

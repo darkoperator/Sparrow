@@ -55,6 +55,20 @@ fn write_rules(root: &Path, subject: &str, file_stem: &str, rules: &[Value]) {
     );
 }
 
+/// Like `inbox_rule`, but with no `MailboxOwnerId`: the loader then falls back to the folder
+/// subject for the mailbox, so byte-identical rule content placed under two different subject
+/// folders lands on two different record_keys despite sharing one sha256.
+fn inbox_rule_no_owner(identity: u64, name: &str) -> Value {
+    json!({
+        "Description": "desc", "Enabled": true, "Identity": format!("x\\{identity}"),
+        "InError": false, "Name": name, "Priority": 1, "RuleIdentity": identity,
+        "BodyContainsWords": [], "From": null, "HasAttachment": false, "SubjectContainsWords": [],
+        "SubjectOrBodyContainsWords": [], "CopyToFolder": null, "DeleteMessage": false,
+        "ForwardAsAttachmentTo": null, "ForwardTo": null, "MarkAsRead": false, "MoveToFolder": null,
+        "RedirectTo": null, "SoftDeleteMessage": false, "StopProcessingRules": false
+    })
+}
+
 fn collection_id_for(case: &Case, stamp: &str) -> i64 {
     case.conn()
         .query_row(
@@ -247,5 +261,139 @@ fn order_of_ingest_does_not_matter() {
             )
         ),
         0
+    );
+}
+
+/// Fix round 1, item 1: the duplicate_file twin join must be scoped by artifact_type and
+/// subject, not sha256 alone. Alice's and bob's rule files coincidentally share one sha256
+/// (identical bytes; each rule has no `MailboxOwnerId`, so the mailbox - and so the record_key -
+/// comes from its own folder subject instead). Alice's newer-capture file is a genuine
+/// duplicate_file of her own older file; bob's rule is genuinely gone in the newer capture. An
+/// unscoped twin join would let alice's duplicate_file "borrow" bob's row (same sha256) and,
+/// via `last_any`, wrongly advance bob's last-seen time to alice's, hiding bob's real removal.
+#[test]
+fn duplicate_twin_join_is_scoped_by_artifact_and_subject() {
+    let old_dir = tempfile::tempdir().unwrap();
+    let new_dir = tempfile::tempdir().unwrap();
+    let old_root = hawk4_state_tree_at(old_dir.path(), OLD_STAMP, FORWARDING);
+    let new_root = hawk4_state_tree_at(new_dir.path(), NEW_STAMP, FORWARDING);
+
+    let shared = [inbox_rule_no_owner(9999, "Shared")];
+    write_rules(&old_root, ALICE, "alice", &shared);
+    write_rules(&old_root, BOB, "bob", &shared);
+    write_rules(&new_root, ALICE, "alice", &shared);
+    write_rules(&new_root, BOB, "bob", &[]);
+
+    let mut case = Case::in_memory().unwrap();
+    ingest(&mut case, &old_root);
+    let old_id = collection_id_for(&case, OLD_STAMP);
+    // Repro precondition: two unrelated parsed files (different subjects) really do share one
+    // sha256.
+    assert_eq!(
+        count(
+            &case,
+            &format!(
+                "SELECT count(DISTINCT sha256) FROM source_files
+                 WHERE collection_id = {old_id}
+                   AND rel_path IN ('{ALICE}/InboxRules_alice.json', '{BOB}/InboxRules_bob.json')"
+            )
+        ),
+        1
+    );
+    let bob_key = text(
+        &case,
+        "SELECT record_key FROM inbox_rules WHERE mailbox_upn = 'bob@contoso.example'",
+    );
+
+    ingest(&mut case, &new_root);
+    let new_id = collection_id_for(&case, NEW_STAMP);
+    assert_eq!(
+        text(
+            &case,
+            &format!(
+                "SELECT CAST(status AS VARCHAR) FROM source_files
+                 WHERE collection_id = {new_id} AND rel_path = '{ALICE}/InboxRules_alice.json'"
+            )
+        ),
+        "duplicate_file"
+    );
+
+    refresh(&mut case, &ProfileOptions::default()).unwrap();
+    assert_eq!(
+        count(
+            &case,
+            &format!(
+                "SELECT count(*) FROM state_absent_in_newer
+                 WHERE table_name = 'inbox_rules' AND record_key = '{bob_key}'"
+            )
+        ),
+        1
+    );
+}
+
+/// Fix round 1, item 2: "newer" must fall back to collection_id when collected_at is NULL on
+/// either side (the loader's own rule in ingest/state.rs update_existing), not go silent.
+#[test]
+fn null_collected_at_falls_back_to_collection_id() {
+    let mut case = Case::in_memory().unwrap();
+    let (_kept_key, removed_key) = ingest_rule_removed(&mut case);
+
+    case.conn()
+        .execute("UPDATE collections SET collected_at = NULL", [])
+        .unwrap();
+
+    assert_eq!(
+        count(
+            &case,
+            &format!(
+                "SELECT count(*) FROM state_absent_in_newer
+                 WHERE table_name = 'inbox_rules' AND record_key = '{removed_key}'"
+            )
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            &case,
+            &format!(
+                "SELECT count(*) FROM state_absent_in_newer
+                 WHERE table_name = 'inbox_rules' AND record_key = '{removed_key}'
+                   AND absent_from_collection_id = {}
+                   AND absent_from_at IS NULL",
+                collection_id_for(&case, NEW_STAMP)
+            )
+        ),
+        1
+    );
+}
+
+/// Fix round 1, item 3: subject must be compared case-insensitively (folder names carry
+/// whatever casing the collector wrote to disk). Only the newer capture's stored subject is
+/// recased here - the record content is untouched - to isolate the join's casing behaviour.
+#[test]
+fn subject_casing_differs_but_removal_is_still_detected() {
+    let mut case = Case::in_memory().unwrap();
+    let (_kept_key, removed_key) = ingest_rule_removed(&mut case);
+
+    case.conn()
+        .execute(
+            &format!(
+                "UPDATE source_files SET subject = 'Alice@Contoso.EXAMPLE'
+                 WHERE collection_id = {} AND rel_path = '{ALICE}/InboxRules_alice.json'",
+                collection_id_for(&case, NEW_STAMP)
+            ),
+            [],
+        )
+        .unwrap();
+
+    assert_eq!(
+        count(
+            &case,
+            &format!(
+                "SELECT count(*) FROM state_absent_in_newer
+                 WHERE table_name = 'inbox_rules' AND record_key = '{removed_key}'"
+            )
+        ),
+        1
     );
 }
