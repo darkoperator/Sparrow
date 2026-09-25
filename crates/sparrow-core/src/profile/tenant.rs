@@ -59,6 +59,11 @@ pub fn resolve_tenants(conn: &Connection) -> Result<usize> {
          QUALIFY row_number() OVER (PARTITION BY collection_id ORDER BY n DESC, source_rank, tenant_id) = 1;",
     )?;
 
+    // Reset first: otherwise passes 2-4 (WHERE tenant_key IS NULL) never revisit a key set by
+    // an earlier profile run, so a collection whose evidence changes (or newly arrives on a
+    // later collection of the same tenant) can never move off a stale key.
+    conn.execute("UPDATE collections SET tenant_key = NULL", [])?;
+
     // Pass 1: a collection with tenant id evidence takes that id.
     conn.execute(
         "UPDATE collections SET tenant_key = e.tenant_id
@@ -142,8 +147,18 @@ pub fn resolve_tenants(conn: &Connection) -> Result<usize> {
 }
 
 /// Rebuild `tenant_domains` for `tenant_key` (all tenants when `None`) from the evidence plus
-/// `tenant_domain_overrides`.
-pub fn rebuild_domains(conn: &Connection, tenant_key: Option<&str>) -> Result<()> {
+/// `tenant_domain_overrides`. Returns a warning when overrides exist whose `tenant_key` no
+/// longer names a current tenant, even after the `name:<n>` fallback lookup below (only
+/// computed for a full, unscoped rebuild — `tenant_key: None`).
+///
+/// An override's `tenant_key` is fixed at the moment `set_domain` wrote it, but `resolve_tenants`
+/// can later replace a `name:<n>` key with the tenant's Entra id once evidence arrives. To keep
+/// such overrides from being orphaned, an override whose literal `tenant_key` no longer exists in
+/// `tenant` is remapped to the current tenant whose `tenant_name` equals the name it carries
+/// (case-insensitive; `tenant.tenant_name` is already stored lower-case). Overrides that still
+/// resolve to no tenant (their key was `collection:<id>`, or no current tenant reports that name)
+/// are left unapplied and reported back for `ProfileReport.warnings`.
+pub fn rebuild_domains(conn: &Connection, tenant_key: Option<&str>) -> Result<Option<String>> {
     conn.execute(
         "DELETE FROM tenant_domains WHERE (CAST(? AS VARCHAR) IS NULL OR tenant_key = ?)",
         params![tenant_key, tenant_key],
@@ -189,10 +204,27 @@ pub fn rebuild_domains(conn: &Connection, tenant_key: Option<&str>) -> Result<()
         params![tenant_key, tenant_key, tenant_key, tenant_key],
     )?;
 
+    // Resolve every override to its current tenant: an exact tenant_key match, else (for a
+    // name:<n> key) the tenant currently reporting that name; NULL when neither resolves. Ties
+    // within a (tenant, domain) pair break on `rowid` (insertion order), since two decisions in
+    // one transaction can share `changed_at`.
     conn.execute_batch(
-        "CREATE OR REPLACE TEMP TABLE latest_overrides AS
-         SELECT tenant_key, domain, action FROM tenant_domain_overrides
-         QUALIFY row_number() OVER (PARTITION BY tenant_key, domain ORDER BY changed_at DESC) = 1;",
+        "CREATE OR REPLACE TEMP TABLE resolved_overrides AS
+         SELECT o.tenant_key AS original_tenant_key, o.domain, o.action, o.changed_at, o.rowid,
+                COALESCE(
+                    (SELECT t.tenant_key FROM tenant t WHERE t.tenant_key = o.tenant_key),
+                    (SELECT t.tenant_key FROM tenant t
+                     WHERE o.tenant_key LIKE 'name:%' AND t.tenant_name = substr(o.tenant_key, 6)
+                     LIMIT 1)
+                ) AS effective_tenant_key
+         FROM tenant_domain_overrides o;
+
+         CREATE OR REPLACE TEMP TABLE latest_overrides AS
+         SELECT effective_tenant_key AS tenant_key, domain, action
+         FROM resolved_overrides
+         WHERE effective_tenant_key IS NOT NULL
+         QUALIFY row_number() OVER (PARTITION BY effective_tenant_key, domain
+                                    ORDER BY changed_at DESC, rowid DESC) = 1;",
     )?;
     conn.execute(
         "DELETE FROM tenant_domains
@@ -212,7 +244,33 @@ pub fn rebuild_domains(conn: &Connection, tenant_key: Option<&str>) -> Result<()
                )",
         params![tenant_key, tenant_key],
     )?;
-    Ok(())
+
+    if tenant_key.is_some() {
+        return Ok(None);
+    }
+    let mut stmt = conn.prepare(
+        "SELECT original_tenant_key FROM (
+             SELECT original_tenant_key, domain
+             FROM resolved_overrides
+             WHERE effective_tenant_key IS NULL
+             QUALIFY row_number() OVER (PARTITION BY original_tenant_key, domain
+                                        ORDER BY changed_at DESC, rowid DESC) = 1
+         ) ORDER BY original_tenant_key",
+    )?;
+    let orphan_decisions: Vec<String> = stmt
+        .query_map([], |r| r.get(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if orphan_decisions.is_empty() {
+        return Ok(None);
+    }
+    let count = orphan_decisions.len();
+    let mut keys = orphan_decisions;
+    keys.sort();
+    keys.dedup();
+    Ok(Some(format!(
+        "{count} analyst domain decisions refer to tenants no longer in the case: {}",
+        keys.join(", ")
+    )))
 }
 
 /// Resolve `tenant_key` to a tenant that exists (`Error::NotFound` when named but absent);
@@ -238,6 +296,11 @@ pub fn only_tenant(conn: &Connection, tenant_key: Option<&str>) -> Result<String
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             match keys.len() {
                 1 => Ok(keys.into_iter().next().expect("len checked")),
+                0 => Err(Error::Invalid(
+                    "the case has no tenants yet; run `sparrow profile --case <path>` (or \
+                     `sparrow ingest`) first"
+                        .to_string(),
+                )),
                 n => Err(Error::Invalid(format!(
                     "the case has {n} tenants; pass --tenant (one of: {})",
                     keys.join(", ")

@@ -49,7 +49,9 @@ pub fn refresh(case: &mut Case, opts: &ProfileOptions) -> Result<ProfileReport> 
 
     let tx = case.conn_mut().transaction()?;
     report.tenants = tenant::resolve_tenants(&tx)?;
-    tenant::rebuild_domains(&tx, None)?;
+    if let Some(warning) = tenant::rebuild_domains(&tx, None)? {
+        report.warnings.push(warning);
+    }
     tx.commit()?;
 
     Ok(report)

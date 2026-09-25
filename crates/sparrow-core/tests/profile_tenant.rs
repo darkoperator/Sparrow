@@ -1,5 +1,6 @@
 use duckdb::params;
 use sparrow_core::Case;
+use sparrow_core::Error;
 use sparrow_core::profile::tenant::{DomainAction, list_domains, set_domain};
 use sparrow_core::profile::{ProfileOptions, refresh};
 
@@ -212,6 +213,198 @@ fn domains_are_derived_and_analyst_overrides_survive_a_refresh() {
         expect,
         "overrides survive a new profile run"
     );
+}
+
+/// Regression (fix round 1, critical): `resolve_tenants` used to only ever set a NULL
+/// `tenant_key`, so a name-only collection's stale `name:<n>` key could never be revisited once
+/// a later collection of the same tenant supplied id evidence.
+#[test]
+fn a_name_only_collection_moves_onto_id_evidence_a_later_collection_of_the_same_tenant_brings() {
+    let mut case = Case::in_memory().unwrap();
+    let a = collection(&case, "/x/A", Some("Contoso"), "2026-09-01T00:00:00Z");
+    refresh(&mut case, &ProfileOptions::default()).unwrap();
+    assert_eq!(
+        text(
+            &case,
+            &format!("SELECT tenant_key FROM collections WHERE collection_id = {a}")
+        ),
+        "name:contoso"
+    );
+
+    let b = collection(&case, "/x/B", Some("Contoso"), "2026-09-02T00:00:00Z");
+    let fb = file(&case, b);
+    ual(
+        &case,
+        b,
+        fb,
+        "33333333-3333-4333-8333-333333333333",
+        T1,
+        "alice@contoso.example",
+    );
+    refresh(&mut case, &ProfileOptions::default()).unwrap();
+    let key = |id: i64| {
+        text(
+            &case,
+            &format!("SELECT tenant_key FROM collections WHERE collection_id = {id}"),
+        )
+    };
+    assert_eq!(key(a), T1, "the stale name:contoso key is revisited");
+    assert_eq!(key(b), T1);
+    assert_eq!(
+        count(&case, "SELECT count(*) FROM tenant"),
+        1,
+        "a and b merge into one tenant, not two"
+    );
+}
+
+/// Regression (fix round 1, important — controller ruling): an override written while the
+/// tenant only had a name:<n> key must not be orphaned once resolve_tenants replaces that key
+/// with the tenant's Entra id; rebuild_domains remaps it by tenant_name instead.
+#[test]
+fn an_override_on_a_name_only_tenant_moves_with_it_once_evidence_resolves_an_id() {
+    let mut case = Case::in_memory().unwrap();
+    let a = collection(&case, "/x/A", Some("Contoso"), "2026-09-01T00:00:00Z");
+    refresh(&mut case, &ProfileOptions::default()).unwrap();
+    assert_eq!(
+        text(
+            &case,
+            &format!("SELECT tenant_key FROM collections WHERE collection_id = {a}")
+        ),
+        "name:contoso"
+    );
+
+    set_domain(
+        &mut case,
+        None,
+        "contoso-legacy.example",
+        DomainAction::Add,
+        "analyst:test",
+    )
+    .unwrap();
+    assert_eq!(
+        text(
+            &case,
+            "SELECT tenant_key FROM tenant_domain_overrides WHERE domain = 'contoso-legacy.example'"
+        ),
+        "name:contoso",
+        "the override is recorded under the tenant's key at the time"
+    );
+
+    let fa = file(&case, a);
+    ual(
+        &case,
+        a,
+        fa,
+        "44444444-4444-4444-8444-444444444444",
+        T1,
+        "alice@contoso.example",
+    );
+    let report = refresh(&mut case, &ProfileOptions::default()).unwrap();
+    assert_eq!(
+        text(
+            &case,
+            &format!("SELECT tenant_key FROM collections WHERE collection_id = {a}")
+        ),
+        T1
+    );
+    let domains = list_domains(&case, None)
+        .unwrap()
+        .into_iter()
+        .map(|d| format!("{}:{}:{}", d.tenant_key, d.domain, d.source))
+        .collect::<Vec<_>>();
+    assert!(
+        domains.contains(&format!("{T1}:contoso-legacy.example:analyst")),
+        "{domains:?}"
+    );
+    assert!(
+        report.warnings.is_empty(),
+        "the override resolved, so no orphan warning: {:?}",
+        report.warnings
+    );
+}
+
+/// Regression (fix round 1, important): an override whose tenant no longer exists at all (not
+/// even by name) produces a profile warning instead of being silently dropped or applied nowhere.
+#[test]
+fn an_override_that_matches_no_tenant_by_key_or_name_produces_a_warning() {
+    let mut case = Case::in_memory().unwrap();
+    collection(&case, "/x/A", Some("Contoso"), "2026-09-01T00:00:00Z");
+    refresh(&mut case, &ProfileOptions::default()).unwrap();
+    // Simulate a stale override from a tenant that has since vanished entirely (its case was
+    // merged elsewhere, or the collection was removed): no current tenant has this key or
+    // reports this name, so it can never be remapped.
+    case.conn()
+        .execute(
+            "INSERT INTO tenant_domain_overrides (tenant_key, domain, action, actor)
+             VALUES ('name:ghostco', 'ghost.example', 'add', 'analyst:test')",
+            [],
+        )
+        .unwrap();
+    let report = refresh(&mut case, &ProfileOptions::default()).unwrap();
+    assert!(
+        report.warnings.iter().any(|w| {
+            w.contains("1 analyst domain decisions refer to tenants no longer in the case")
+                && w.contains("name:ghostco")
+        }),
+        "{:?}",
+        report.warnings
+    );
+    assert!(
+        !list_domains(&case, None)
+            .unwrap()
+            .iter()
+            .any(|d| d.domain == "ghost.example"),
+        "an unresolved override is never applied"
+    );
+}
+
+/// Regression (fix round 1, minor): two decisions on the same domain sharing `changed_at`
+/// (as two overrides recorded in one transaction can) must still resolve deterministically —
+/// the later insertion wins, not an arbitrary tie.
+#[test]
+fn overrides_with_the_same_changed_at_break_ties_by_insertion_order() {
+    let mut case = Case::in_memory().unwrap();
+    collection(&case, "/x/A", Some("Contoso"), "2026-09-01T00:00:00Z");
+    refresh(&mut case, &ProfileOptions::default()).unwrap();
+    let key = text(&case, "SELECT tenant_key FROM tenant");
+    case.conn()
+        .execute_batch(&format!(
+            "INSERT INTO tenant_domain_overrides (tenant_key, domain, action, actor, changed_at) VALUES
+                 ('{key}', 'tie.example', 'add', 'analyst:test', TIMESTAMPTZ '2026-09-10 00:00:00+00'),
+                 ('{key}', 'tie.example', 'remove', 'analyst:test', TIMESTAMPTZ '2026-09-10 00:00:00+00');"
+        ))
+        .unwrap();
+    refresh(&mut case, &ProfileOptions::default()).unwrap();
+    assert!(
+        !list_domains(&case, None)
+            .unwrap()
+            .iter()
+            .any(|d| d.domain == "tie.example"),
+        "the later-inserted decision (remove) wins the tie"
+    );
+}
+
+/// Regression (fix round 1, minor): a zero-tenant case (no collections ingested yet, or none
+/// with any evidence at all) should point the analyst at `sparrow profile`/`sparrow ingest`
+/// rather than the nonsensical "the case has 0 tenants; pass --tenant (one of: )".
+#[test]
+fn set_domain_on_a_zero_tenant_case_names_profile_or_ingest() {
+    let mut case = Case::in_memory().unwrap();
+    refresh(&mut case, &ProfileOptions::default()).unwrap();
+    assert_eq!(count(&case, "SELECT count(*) FROM tenant"), 0);
+    let err = set_domain(
+        &mut case,
+        None,
+        "x.example",
+        DomainAction::Add,
+        "analyst:test",
+    )
+    .expect_err("no tenants yet");
+    let Error::Invalid(msg) = err else {
+        panic!("expected Error::Invalid, got {err:?}");
+    };
+    assert!(msg.contains("sparrow profile"), "{msg}");
+    assert!(msg.contains("sparrow ingest"), "{msg}");
 }
 
 #[test]
