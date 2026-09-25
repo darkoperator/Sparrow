@@ -119,11 +119,19 @@ pub fn resolve_tenants(conn: &Connection) -> Result<usize> {
              SELECT DISTINCT c.tenant_key
              FROM tenant_evidence e JOIN collections c ON c.collection_id = e.collection_id
          ),
+         -- Newest tenant_name_reported per tenant_key. Bug fix (Task 11): arg_max(name,
+         -- collected_at) silently drops a group whose only row has a NULL collected_at (a Hawk
+         -- capture whose root folder does not carry a Hawk_<tenant>_<timestamp> name), the same
+         -- pitfall Task 10's sparrow_collection_is_newer works around; ranked with collection_id
+         -- as the tie-break/fallback instead.
          names AS (
-             SELECT tenant_key, arg_max(lower(trim(tenant_name_reported)), collected_at) AS tenant_name
-             FROM collections
-             WHERE tenant_name_reported IS NOT NULL
-             GROUP BY tenant_key
+             SELECT tenant_key, tenant_name FROM (
+                 SELECT tenant_key, lower(trim(tenant_name_reported)) AS tenant_name,
+                        row_number() OVER (PARTITION BY tenant_key
+                                           ORDER BY collected_at DESC NULLS LAST, collection_id DESC) AS rn
+                 FROM collections
+                 WHERE tenant_name_reported IS NOT NULL
+             ) WHERE rn = 1
          ),
          agg AS (
              SELECT tenant_key, count(*) AS collections, min(collected_at) AS first_collected_at,

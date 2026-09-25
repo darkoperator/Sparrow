@@ -14,6 +14,7 @@ use sparrow_core::profile::tenant::{
 };
 use sparrow_core::profile::{ProfileOptions, ProfileReport, refresh};
 use sparrow_core::readers::time::parse_culture;
+use sparrow_core::summary::summarize;
 use sparrow_core::verify::verify_record;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -71,6 +72,11 @@ enum Command {
     },
     /// Evidence availability: what the case holds, what is missing and why (first call for agents)
     Capabilities {
+        #[arg(long)]
+        case: PathBuf,
+    },
+    /// Tenant, licences, collections, coverage window, row counts, top actors and evidence gaps
+    Summary {
         #[arg(long)]
         case: PathBuf,
     },
@@ -216,6 +222,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             json,
         ),
         Some(Command::Capabilities { case }) => cmd_capabilities(&case, json),
+        Some(Command::Summary { case }) => cmd_summary(&case, json),
         Some(Command::Verify {
             table,
             record_key,
@@ -472,6 +479,92 @@ fn cmd_capabilities(case_path: &Path, json: bool) -> Result<ExitCode> {
                 println!("      -> {r}");
             }
         }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_summary(case_path: &Path, json: bool) -> Result<ExitCode> {
+    let case = Case::open_read_only(case_path)?;
+    let report = summarize(&case)?;
+    if report.tenants.is_empty() {
+        anyhow::bail!(
+            "the case has no tenant profile; run `sparrow profile --case {}` first",
+            case_path.display()
+        );
+    }
+    if json {
+        print_json(&report)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    if let Some(at) = &report.profile_evaluated_at {
+        println!("profile evaluated at {at}");
+    }
+    for t in &report.tenants {
+        println!();
+        println!(
+            "tenant {}{}{}",
+            t.tenant_key,
+            t.tenant_name
+                .as_deref()
+                .map(|n| format!("  name {n}"))
+                .unwrap_or_default(),
+            if t.domains.is_empty() {
+                String::new()
+            } else {
+                format!("  domains {}", t.domains.join(", "))
+            }
+        );
+        println!(
+            "  licences: {}",
+            if t.licenses.is_empty() {
+                "-".to_string()
+            } else {
+                t.licenses.join(", ")
+            }
+        );
+        println!("  collections:");
+        for c in &t.collections {
+            println!(
+                "    {:<5} {:<9} {}  collected {}  window {} .. {}",
+                c.collection_id,
+                c.tool,
+                c.root,
+                c.collected_at.as_deref().unwrap_or("-"),
+                c.window_start.as_deref().unwrap_or("-"),
+                c.window_end.as_deref().unwrap_or("-"),
+            );
+        }
+        println!("  coverage:");
+        for cov in &t.coverage {
+            println!(
+                "    {:<22} {:>8} rows  {} .. {}",
+                cov.source_table,
+                cov.rows,
+                cov.first.as_deref().unwrap_or("-"),
+                cov.last.as_deref().unwrap_or("-"),
+            );
+        }
+        println!("  top actors:");
+        for a in &t.top_actors {
+            println!("    {:<40} {:>8} rows", a.actor, a.rows);
+        }
+        println!(
+            "  hosting ips: {}   state rows absent in a newer capture: {}",
+            t.hosting_ips, t.absent_in_newer
+        );
+        println!(
+            "  gaps: {}",
+            if t.gaps.is_empty() {
+                "-".to_string()
+            } else {
+                t.gaps.join(", ")
+            }
+        );
+    }
+    println!();
+    println!("tables:");
+    for tc in &report.tables {
+        println!("  {:<24} {:>10} rows", tc.table, tc.rows);
     }
     Ok(ExitCode::SUCCESS)
 }

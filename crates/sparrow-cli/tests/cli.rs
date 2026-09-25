@@ -570,6 +570,71 @@ fn capabilities_without_a_profile_asks_for_one() {
 }
 
 #[test]
+fn summary_json_reports_tenant_licences_coverage_and_gaps() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = sparrow_core::fixtures::events::hawk4_events_tree(dir.path());
+    let case = dir.path().join("case.duckdb");
+    sparrow()
+        .args(["ingest"])
+        .arg(&root)
+        .arg("--case")
+        .arg(&case)
+        .assert()
+        .success();
+
+    let out = json_out(
+        sparrow().args(["--json", "summary", "--case"]).arg(&case),
+        0,
+    );
+    let t = &out["tenants"][0];
+    assert!(t["tenant_key"].as_str().is_some(), "{out}");
+    assert_eq!(t["tenant_name"], "contoso_ltd", "{out}");
+    assert!(
+        t["licenses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l == "E5 (low, Hawk.log)"),
+        "{out}"
+    );
+    assert!(!t["gaps"].as_array().unwrap().is_empty(), "{out}");
+    let ual = out["tables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tc| tc["table"] == "ual_events")
+        .unwrap();
+    assert!(ual["rows"].as_i64().is_some(), "{out}");
+
+    let text = sparrow()
+        .args(["summary", "--case"])
+        .arg(&case)
+        .output()
+        .unwrap();
+    assert!(text.status.success());
+    let text = String::from_utf8_lossy(&text.stdout);
+    assert!(text.contains("tenant "), "{text}");
+    assert!(text.contains("licences:"), "{text}");
+    assert!(text.contains("collections:"), "{text}");
+    assert!(text.contains("coverage:"), "{text}");
+    assert!(text.contains("top actors:"), "{text}");
+    assert!(text.contains("gaps:"), "{text}");
+}
+
+#[test]
+fn summary_without_a_profile_asks_for_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = dir.path().join("case.duckdb");
+    drop(sparrow_core::Case::create_or_open(&case).unwrap());
+    sparrow()
+        .args(["summary", "--case"])
+        .arg(&case)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("sparrow profile --case"));
+}
+
+#[test]
 fn ingest_enriches_ips_from_geoip_dir() {
     use sparrow_core::fixtures::mmdb::{asn, city, write_mmdb};
 
