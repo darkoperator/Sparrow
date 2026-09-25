@@ -259,3 +259,19 @@ fn zone_assumed_whatever_the_day_month_order() {
     assert!(!zone_assumed("/Date(1788336000000)/"));
     assert!(zone_assumed("garbage"));
 }
+
+#[test]
+fn detector_reports_evidence_and_ambiguity() {
+    let mut d = DateOrderDetector::default();
+    assert_eq!((d.evidence(), d.only_ambiguous()), (None, false));
+    d.observe("6/9/2026 8:00:00 AM");
+    assert_eq!((d.evidence(), d.only_ambiguous()), (None, true));
+    d.observe("9/24/2026 8:00:00 AM");
+    assert_eq!(
+        (d.evidence(), d.only_ambiguous()),
+        (Some(DateOrder::MonthFirst), false)
+    );
+    d.observe("24/9/2026 8:00:00");
+    assert_eq!((d.evidence(), d.only_ambiguous()), (None, false));
+    assert!(DateOrder::DayFirst.describe().contains("day-first"));
+}

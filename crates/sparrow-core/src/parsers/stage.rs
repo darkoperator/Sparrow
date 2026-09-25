@@ -139,6 +139,19 @@ pub fn key_time(s: &str, order: Option<DateOrder>) -> String {
         .unwrap_or_else(|_| s.trim().to_string())
 }
 
+/// Day/month order of one file's culture dates `texts`, resolved like
+/// `ParseContext::resolve_date_order` (collection hint, deferral, `--culture`).
+pub fn file_date_order<'t>(
+    ctx: &mut ParseContext<'_>,
+    texts: impl IntoIterator<Item = &'t str>,
+) -> Result<Option<DateOrder>> {
+    let mut detector = DateOrderDetector::default();
+    for t in texts {
+        detector.observe(t);
+    }
+    ctx.resolve_date_order(&detector)
+}
+
 /// Resolve the file's day/month order from every time cell, stage every row (a time that
 /// cannot be parsed makes that row a parse error) and load each table.
 pub fn load_tables(ctx: &mut ParseContext<'_>, tables: Vec<TableRows>) -> Result<()> {
@@ -148,9 +161,7 @@ pub fn load_tables(ctx: &mut ParseContext<'_>, tables: Vec<TableRows>) -> Result
             detector.observe(s);
         }
     }
-    let order = detector
-        .resolve(ctx.options.date_order)
-        .map_err(Error::Invalid)?;
+    let order = ctx.resolve_date_order(&detector)?;
     for t in tables {
         let mut staged = Vec::with_capacity(t.rows.len());
         for r in t.rows {

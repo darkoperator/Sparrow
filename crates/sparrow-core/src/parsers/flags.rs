@@ -2,7 +2,6 @@
 //! the lines of `_Investigate.txt`. A flag's linked_key comes from the key function of the
 //! flagged table's parser, so flags join directly to their rows.
 
-use crate::Result;
 use crate::db::state_tables::COLLECTOR_FLAGS;
 use crate::ingest::context::ParseContext;
 use crate::ingest::parser::{ArtifactParser, ParserRegistry};
@@ -17,6 +16,7 @@ use crate::parsers::risk::{risk_detection_key, risky_user_key};
 use crate::parsers::stage::{RowDraft, TableRows, load_tables, lower, read_state_records};
 use crate::readers::text::{Span, line_spans};
 use crate::readers::time::{DateOrderDetector, parse_timestamp};
+use crate::{Error, Result};
 use regex::Regex;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -324,8 +324,9 @@ impl ArtifactParser for InvestigateTxtParser {
         for ts in list.iter().filter_map(|e| e.ts.as_deref()) {
             detector.observe(ts);
         }
-        let resolved = match detector.resolve(ctx.options.date_order) {
+        let resolved = match ctx.resolve_date_order(&detector) {
             Ok(order) => Some(order),
+            Err(Error::DateOrderDeferred) => return Err(Error::DateOrderDeferred),
             Err(reason) => {
                 ctx.warn(format!(
                     "_Investigate.txt times not parsed (flag_time is NULL): {reason}"

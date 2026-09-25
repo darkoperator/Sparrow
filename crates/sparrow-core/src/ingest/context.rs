@@ -1,8 +1,10 @@
 //! Everything a parser needs while handling one file inside its transaction.
 
+use crate::Error;
 use crate::Result;
 use crate::ingest::IngestOptions;
 use crate::readers::text::{DecodedText, LineIndex, OffsetMapper, SourcePos, Span, locate};
+use crate::readers::time::{DateOrder, DateOrderDetector};
 use duckdb::{Connection, params};
 use sha2::{Digest, Sha256};
 
@@ -25,6 +27,12 @@ pub struct ParseContext<'a> {
     pub index: &'a LineIndex,
     pub options: &'a IngestOptions,
     pub stats: FileStats,
+    /// Day/month order the other files of this collection proved (retry pass only).
+    pub date_hint: Option<DateOrder>,
+    /// First pass: a file whose culture dates are all ambiguous is deferred
+    /// (`Error::DateOrderDeferred`) until the rest of its collection has been read.
+    pub defer_ambiguous_dates: bool,
+    orders_seen: Vec<DateOrder>,
     warnings: Vec<String>,
     mapper: OffsetMapper,
 }
@@ -53,6 +61,9 @@ impl<'a> ParseContext<'a> {
             index,
             options,
             stats: FileStats::default(),
+            date_hint: None,
+            defer_ambiguous_dates: false,
+            orders_seen: Vec::new(),
             warnings: Vec::new(),
             mapper: OffsetMapper::new(text, raw.len() as u64),
         }
@@ -144,6 +155,46 @@ impl<'a> ParseContext<'a> {
         if !self.warnings.contains(&msg) {
             self.warnings.push(msg);
         }
+    }
+
+    /// Day/month order for this file's culture-formatted dates. `--culture` wins (checked
+    /// against the file). Otherwise the file's own values decide. When they are all ambiguous,
+    /// the order the collection's other files proved is used (with a warning). On the first
+    /// pass such a file is deferred instead, and without any order it fails naming `--culture`.
+    pub fn resolve_date_order(
+        &mut self,
+        detector: &DateOrderDetector,
+    ) -> Result<Option<DateOrder>> {
+        if self.options.date_order.is_some() {
+            return detector
+                .resolve(self.options.date_order)
+                .map_err(Error::Invalid);
+        }
+        if !detector.only_ambiguous() {
+            let order = detector.resolve(None).map_err(Error::Invalid)?;
+            if let Some(o) = detector.evidence() {
+                if !self.orders_seen.contains(&o) {
+                    self.orders_seen.push(o);
+                }
+            }
+            return Ok(order);
+        }
+        if let Some(hint) = self.date_hint {
+            self.warn(format!(
+                "every day/month value in this file is ambiguous; read as {}, the order the other files of this collection show",
+                hint.describe()
+            ));
+            return Ok(Some(hint));
+        }
+        if self.defer_ambiguous_dates {
+            return Err(Error::DateOrderDeferred);
+        }
+        detector.resolve(None).map_err(Error::Invalid)
+    }
+
+    /// Orders this file's own dates proved (they resolve other files of the collection).
+    pub fn orders_seen(&self) -> &[DateOrder] {
+        &self.orders_seen
     }
 
     pub fn finish(self) -> (FileStats, Vec<String>) {

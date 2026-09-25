@@ -1,10 +1,10 @@
 //! Collector run logs: Hawk `Hawk.log` and Microsoft-Extractor-Suite `LogFile.txt`.
 
-use crate::Result;
 use crate::ingest::context::ParseContext;
 use crate::ingest::parser::{ArtifactParser, ParserRegistry};
 use crate::readers::text::{Span, line_spans};
 use crate::readers::time::{DateOrderDetector, parse_timestamp};
+use crate::{Error, Result};
 use duckdb::params;
 use regex::Regex;
 use std::sync::OnceLock;
@@ -199,7 +199,7 @@ fn apply_hawk_metadata(ctx: &mut ParseContext<'_>, list: &[Entry]) -> Result<()>
         detector.observe(s);
     }
     let (mut window_start, mut window_end) = (None, None);
-    match detector.resolve(ctx.options.date_order) {
+    match ctx.resolve_date_order(&detector) {
         Ok(order) => {
             let parse = |s: &Option<String>| {
                 s.as_deref()
@@ -209,6 +209,7 @@ fn apply_hawk_metadata(ctx: &mut ParseContext<'_>, list: &[Entry]) -> Result<()>
             window_start = parse(&start_raw);
             window_end = parse(&end_raw);
         }
+        Err(Error::DateOrderDeferred) => return Err(Error::DateOrderDeferred),
         Err(reason) => ctx.warn(format!("collection window not parsed: {reason}")),
     }
     ctx.conn.execute(

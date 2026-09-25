@@ -164,6 +164,23 @@ struct FileJob<'a> {
     lossy_name: bool,
     /// Already-handled file that makes this one redundant.
     superseded_by: Option<String>,
+    /// Day/month order proved by the rest of the collection (retry pass).
+    date_hint: Option<DateOrder>,
+    /// Defer the file when all its culture dates are ambiguous (first pass).
+    defer: bool,
+}
+
+/// Result of handling one file: done (with the day/month orders its dates proved), or
+/// deferred to the collection's retry pass.
+enum Outcome {
+    Done(FileReport, Vec<DateOrder>),
+    Deferred,
+}
+
+impl Outcome {
+    fn plain(report: FileReport) -> Self {
+        Outcome::Done(report, Vec::new())
+    }
 }
 
 fn ingest_collection(
@@ -184,6 +201,8 @@ fn ingest_collection(
     ordered.sort_by_key(|(f, derived)| processing_key(&f.rel, *derived));
     let mut handled = Handled::default();
     let mut files = Vec::new();
+    let mut deferred: Vec<(&CollectionFile, bool)> = Vec::new();
+    let mut proved: Vec<DateOrder> = Vec::new();
     for (f, derived) in ordered {
         let job = FileJob {
             collection_id,
@@ -192,12 +211,55 @@ fn ingest_collection(
             rel: &f.rel,
             lossy_name: f.lossy_name,
             superseded_by: handled.superseded_by(&f.rel, derived),
+            date_hint: None,
+            defer: true,
         };
-        let report = ingest_file(case, &job, parsers, opts)?;
-        if supersedes_counterparts(&report) {
-            handled.insert(&f.rel);
+        match ingest_file(case, &job, parsers, opts)? {
+            Outcome::Deferred => deferred.push((f, derived)),
+            Outcome::Done(report, orders) => {
+                if supersedes_counterparts(&report) {
+                    handled.insert(&f.rel);
+                }
+                for o in orders {
+                    if !proved.contains(&o) {
+                        proved.push(o);
+                    }
+                }
+                files.push(report);
+            }
         }
-        files.push(report);
+    }
+    // Files whose culture dates were all ambiguous: retry them with the order the rest of
+    // the collection proved, when it proved exactly one.
+    let hint = match proved.as_slice() {
+        [only] => Some(*only),
+        _ => None,
+    };
+    for (f, derived) in deferred {
+        let job = FileJob {
+            collection_id,
+            tool: dc.tool,
+            abs: &f.abs,
+            rel: &f.rel,
+            lossy_name: f.lossy_name,
+            superseded_by: handled.superseded_by(&f.rel, derived),
+            date_hint: hint,
+            defer: false,
+        };
+        match ingest_file(case, &job, parsers, opts)? {
+            Outcome::Done(report, _) => {
+                if supersedes_counterparts(&report) {
+                    handled.insert(&f.rel);
+                }
+                files.push(report);
+            }
+            Outcome::Deferred => {
+                return Err(Error::Invalid(format!(
+                    "{} was deferred again on the retry pass",
+                    f.rel
+                )));
+            }
+        }
     }
     for err in &listing.errors {
         let nf = NewFile {
@@ -371,7 +433,7 @@ fn ingest_file(
     job: &FileJob,
     parsers: &ParserRegistry,
     opts: &IngestOptions,
-) -> Result<FileReport> {
+) -> Result<Outcome> {
     let (collection_id, tool, abs, rel) = (job.collection_id, job.tool, job.abs, job.rel);
     let reg = Registry::builtin();
     let path_class: Option<Classification> = reg.classify_with_head(tool, rel, None);
@@ -399,7 +461,8 @@ fn ingest_file(
                 &nf,
                 FileStatus::Error,
                 with_pre(&pre, vec![format!("cannot stat file: {e}")]),
-            );
+            )
+            .map(Outcome::plain);
         }
     };
     nf.size = size;
@@ -408,7 +471,8 @@ fn ingest_file(
             "file is {size} bytes, above the {} byte limit; raise --max-file-size to ingest it",
             opts.max_file_bytes
         );
-        return record_simple(case, &nf, FileStatus::Error, with_pre(&pre, vec![msg]));
+        return record_simple(case, &nf, FileStatus::Error, with_pre(&pre, vec![msg]))
+            .map(Outcome::plain);
     }
     let raw = match std::fs::read(abs) {
         Ok(b) => b,
@@ -418,7 +482,8 @@ fn ingest_file(
                 &nf,
                 FileStatus::Error,
                 with_pre(&pre, vec![format!("cannot read file: {e}")]),
-            );
+            )
+            .map(Outcome::plain);
         }
     };
     let sha = hex::encode(Sha256::digest(&raw));
@@ -458,13 +523,13 @@ fn ingest_file(
         let tx = case.conn_mut().transaction()?;
         delete_stale_rows(&tx, &nf)?;
         tx.commit()?;
-        return Ok(report_for(
+        return Ok(Outcome::plain(report_for(
             &nf,
             Some(existing_id),
             FileStatus::DuplicateFile,
             FileStats::default(),
             vec!["already ingested".into()],
-        ));
+        )));
     }
     // Byte-identical content already parsed for the same artifact and subject (e.g. a moved
     // copy of the collection) adds nothing. Identical files for different subjects (e.g. two
@@ -488,7 +553,8 @@ fn ingest_file(
                 &nf,
                 FileStatus::DuplicateFile,
                 with_pre(&pre, vec![msg]),
-            );
+            )
+            .map(Outcome::plain);
         }
     }
     if let Some(other) = &job.superseded_by {
@@ -497,13 +563,16 @@ fn ingest_file(
             &nf,
             FileStatus::SkippedSuperseded,
             with_pre(&pre, vec![format!("superseded by {other}")]),
-        );
+        )
+        .map(Outcome::plain);
     }
     let Some(class) = class.as_ref() else {
-        return record_simple(case, &nf, FileStatus::Unrecognized, with_pre(&pre, vec![]));
+        return record_simple(case, &nf, FileStatus::Unrecognized, with_pre(&pre, vec![]))
+            .map(Outcome::plain);
     };
     let Some(parser) = parsers.get(class.artifact_id) else {
-        return record_simple(case, &nf, FileStatus::NotSupported, with_pre(&pre, vec![]));
+        return record_simple(case, &nf, FileStatus::NotSupported, with_pre(&pre, vec![]))
+            .map(Outcome::plain);
     };
 
     let decoded = decode(&raw);
@@ -524,8 +593,11 @@ fn ingest_file(
         &index,
         opts,
     );
+    ctx.date_hint = job.date_hint;
+    ctx.defer_ambiguous_dates = job.defer;
     match parser.parse(&mut ctx) {
         Ok(()) => {
+            let orders = ctx.orders_seen().to_vec();
             let (stats, parser_warnings) = ctx.finish();
             let warnings: Vec<String> = pre
                 .iter()
@@ -545,13 +617,15 @@ fn ingest_file(
                 params![stats.read as i64, stats.loaded as i64, stats.duplicate as i64, stats.error as i64, warnings_json, file_id],
             )?;
             tx.commit()?;
-            Ok(report_for(
-                &nf,
-                Some(file_id),
-                FileStatus::Parsed,
-                stats,
-                warnings,
+            Ok(Outcome::Done(
+                report_for(&nf, Some(file_id), FileStatus::Parsed, stats, warnings),
+                orders,
             ))
+        }
+        Err(Error::DateOrderDeferred) => {
+            drop(ctx);
+            tx.rollback()?;
+            Ok(Outcome::Deferred)
         }
         Err(e) => {
             drop(ctx);
@@ -567,7 +641,7 @@ fn ingest_file(
                 ),
             };
             let warnings = with_pre(&pre, std::iter::once(msg).chain(decode_warning).collect());
-            record_simple(case, &nf, status, warnings)
+            record_simple(case, &nf, status, warnings).map(Outcome::plain)
         }
     }
 }

@@ -99,9 +99,7 @@ impl ArtifactParser for UalParser {
                 detector.observe(&t);
             }
         }
-        let order = detector
-            .resolve(ctx.options.date_order)
-            .map_err(Error::Invalid)?;
+        let order = ctx.resolve_date_order(&detector)?;
         let mut staged = Vec::with_capacity(inputs.len());
         for (r, input) in inputs {
             match input.and_then(|i| normalize_audit(&i, order)) {

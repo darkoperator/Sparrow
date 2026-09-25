@@ -13,6 +13,16 @@ pub enum DateOrder {
     DayFirst,
 }
 
+impl DateOrder {
+    /// How warnings name the order.
+    pub fn describe(self) -> &'static str {
+        match self {
+            DateOrder::MonthFirst => "month-first (e.g. 9/24/2026)",
+            DateOrder::DayFirst => "day-first (e.g. 24/9/2026)",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Precision {
     Second,
@@ -246,6 +256,21 @@ impl DateOrderDetector {
                 self.ambiguous = true;
             }
         }
+    }
+
+    /// The order the observed values prove on their own (a month or day above 12); `None`
+    /// when they prove none or both.
+    pub fn evidence(&self) -> Option<DateOrder> {
+        match (self.month_first, self.day_first) {
+            (true, false) => Some(DateOrder::MonthFirst),
+            (false, true) => Some(DateOrder::DayFirst),
+            _ => None,
+        }
+    }
+
+    /// Culture dates were seen, but none of them shows the order.
+    pub fn only_ambiguous(&self) -> bool {
+        self.ambiguous && !self.month_first && !self.day_first
     }
 
     pub fn resolve(&self, override_order: Option<DateOrder>) -> Result<Option<DateOrder>, String> {

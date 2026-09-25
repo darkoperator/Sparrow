@@ -32,6 +32,10 @@ pub enum Error {
     /// `not_supported` (retried by later versions) instead of `error`.
     #[error("unsupported record shape: {0}")]
     UnsupportedShape(String),
+    /// Every culture-formatted date in the file is ambiguous. Ingest retries the file after
+    /// the rest of its collection, with the day/month order the other files show.
+    #[error("ambiguous day/month order; retried after the other files of the collection")]
+    DateOrderDeferred,
 }
 
 impl Error {
