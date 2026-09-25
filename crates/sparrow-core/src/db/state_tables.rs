@@ -1,5 +1,6 @@
-//! Column specs of the state tables (migration 0004), used by the staged loader
-//! (`ingest::state`). `columns` lists everything between `collected_at` and `raw`.
+//! Column specs of the state tables (migration 0004) and the Phase 2c event tables (migration
+//! 0005), used by the staged loader (`ingest::state`). `columns` lists everything between
+//! `collected_at` and `raw`.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadMode {
@@ -9,6 +10,9 @@ pub enum LoadMode {
     LatestWins,
     /// The first copy wins; later copies only add sightings.
     InsertOnly,
+    /// Evidence tables: the first copy of a record wins; a later copy adds a sighting and fills
+    /// only the columns the stored row still has as NULL (never overwrites).
+    FillMissing,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -56,6 +60,8 @@ const T: &str = "TIMESTAMPTZ";
 const L: &str = "VARCHAR[]";
 const J: &str = "JSON";
 const I: &str = "INTEGER";
+const BI: &str = "BIGINT";
+const M: &str = "MAP(VARCHAR, VARCHAR)";
 
 pub static USERS: TableSpec = TableSpec {
     table: "users",
@@ -335,6 +341,155 @@ pub static COLLECTOR_FLAGS: TableSpec = TableSpec {
     ],
 };
 
+pub const DEVICE_TYPE: &str = "STRUCT(device_id VARCHAR, display_name VARCHAR, os VARCHAR, browser VARCHAR, is_compliant BOOLEAN, is_managed BOOLEAN, trust_type VARCHAR)";
+
+pub static SIGNINS: TableSpec = TableSpec {
+    table: "signins",
+    mode: LoadMode::FillMissing,
+    columns: &[
+        col("signin_id", V),
+        col("event_time", T),
+        col("time_tz_assumed", B),
+        col("event_type", "signin_event_type"),
+        col("user_upn", V),
+        col("user_id", V),
+        col("user_display_name", V),
+        col("app_id", V),
+        col("app_name", V),
+        col("resource_id", V),
+        col("resource_name", V),
+        col("ip", V),
+        col("user_agent", V),
+        col("client_app", V),
+        col("is_interactive", B),
+        col("status", V),
+        col("error_code", I),
+        col("failure_reason", V),
+        col("ca_status", V),
+        col("ca_policies", J),
+        col("risk_level_during", V),
+        col("risk_level_aggregated", V),
+        col("risk_state", V),
+        col("risk_detail", V),
+        col("risk_event_types", L),
+        col("auth_requirement", V),
+        col("mfa_result", V),
+        col("mfa_detail", V),
+        col("auth_methods", L),
+        col("device", DEVICE_TYPE),
+        col("location", LOCATION_TYPE),
+        col("asn", I),
+        col("session_id", V),
+        col("correlation_id", V),
+        col("unique_token_id", V),
+        col("token_issuer_type", V),
+        col("incoming_token_type", V),
+        col("cross_tenant_access_type", V),
+        col("home_tenant_id", V),
+        col("resource_tenant_id", V),
+    ],
+};
+
+pub static DIRECTORY_AUDITS: TableSpec = TableSpec {
+    table: "directory_audits",
+    mode: LoadMode::FillMissing,
+    columns: &[
+        col("audit_id", V),
+        col("event_time", T),
+        col("time_tz_assumed", B),
+        col("activity", V),
+        col("category", V),
+        col("operation_type", V),
+        col("result", V),
+        col("result_reason", V),
+        col("logged_by_service", V),
+        col("initiated_by_upn", V),
+        col("initiated_by_user_id", V),
+        col("initiated_by_app_id", V),
+        col("initiated_by_app_name", V),
+        col("initiated_by_ip", V),
+        col("targets", J),
+        col("modified_properties", J),
+        col("additional_details", J),
+        col("correlation_id", V),
+    ],
+};
+
+pub static MESSAGE_TRACE: TableSpec = TableSpec {
+    table: "message_trace",
+    mode: LoadMode::FillMissing,
+    columns: &[
+        col("message_trace_id", V),
+        col("received", T),
+        col("time_tz_assumed", B),
+        col("sender", V),
+        col("recipient", V),
+        col("subject", V),
+        col("status", V),
+        col("from_ip", V),
+        col("to_ip", V),
+        col("size_bytes", BI),
+        col("internet_message_id", V),
+        col("organization", V),
+        col("direction", V),
+        col("connector_id", V),
+    ],
+};
+
+pub static MAILBOX_AUDIT_LEGACY: TableSpec = TableSpec {
+    table: "mailbox_audit_legacy",
+    mode: LoadMode::FillMissing,
+    columns: &[
+        col("event_time", T),
+        col("time_tz_assumed", B),
+        col("mailbox_upn", V),
+        col("mailbox_guid", V),
+        col("operation", V),
+        col("operation_result", V),
+        col("logon_type", V),
+        col("logon_user", V),
+        col("logon_user_sid", V),
+        col("client_ip", V),
+        col("client_info", V),
+        col("client_machine", V),
+        col("client_process", V),
+        col("external_access", B),
+        col("folder_path", V),
+        col("dest_folder_path", V),
+        col("dest_mailbox_upn", V),
+        col("cross_mailbox", B),
+        col("subjects", L),
+        col("internet_message_ids", L),
+        col("session_id", V),
+        col("app_id", V),
+        col("client_app_id", V),
+    ],
+};
+
+pub static ADMIN_AUDIT_EVENTS: TableSpec = TableSpec {
+    table: "admin_audit_events",
+    mode: LoadMode::FillMissing,
+    columns: &[
+        col("run_time", T),
+        col("time_tz_assumed", B),
+        col("caller", V),
+        col("cmdlet", V),
+        col("object_modified", V),
+        col("parameters", M),
+        col("modified_properties", J),
+        col("succeeded", B),
+        col("error", V),
+        col("external_access", B),
+        col("client_ip", V),
+        col("session_id", V),
+        col("app_id", V),
+        col("client_app_id", V),
+        col("originating_server", V),
+        col("full_command", V),
+        col("data_completeness", "data_completeness"),
+    ],
+};
+
 pub static ALL: &[&TableSpec] = &[
     &USERS,
     &ROLE_ASSIGNMENTS,
@@ -350,4 +505,9 @@ pub static ALL: &[&TableSpec] = &[
     &RISKY_USERS,
     &RISK_DETECTIONS,
     &COLLECTOR_FLAGS,
+    &SIGNINS,
+    &DIRECTORY_AUDITS,
+    &MESSAGE_TRACE,
+    &MAILBOX_AUDIT_LEGACY,
+    &ADMIN_AUDIT_EVENTS,
 ];

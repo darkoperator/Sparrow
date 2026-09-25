@@ -32,15 +32,19 @@ fn fresh_case_has_provenance_tables() {
     assert_eq!(
         tables(&case),
         vec![
+            "admin_audit_events",
             "app_credentials",
             "audit_config",
             "collection_log",
             "collections",
             "collector_flags",
+            "directory_audits",
             "file_events",
             "inbox_rules",
             "mail_items_accessed",
+            "mailbox_audit_legacy",
             "mailboxes",
+            "message_trace",
             "mobile_devices",
             "oauth_grants",
             "parse_errors",
@@ -52,6 +56,7 @@ fn fresh_case_has_provenance_tables() {
             "schema_migrations",
             "search_queries",
             "sharing_events",
+            "signins",
             "source_files",
             "tenant_settings",
             "transport_rules",
@@ -251,7 +256,7 @@ fn upgrading_a_v2_case_keeps_collections_and_adds_ual_tables() {
 #[test]
 fn state_table_specs_match_the_schema() {
     let case = Case::in_memory().unwrap();
-    assert_eq!(case.schema_version().unwrap(), 4);
+    assert_eq!(case.schema_version().unwrap(), 5);
     for spec in ALL {
         for common in [
             "record_key",
@@ -313,4 +318,49 @@ fn ual_events_reject_a_second_row_with_the_same_record_id() {
                   'full', false, '{}')";
     case.conn().execute(insert, []).unwrap();
     assert!(case.conn().execute(insert, []).is_err());
+}
+
+#[test]
+fn event_tables_fill_missing_values() {
+    use sparrow_core::db::state_tables::{
+        ADMIN_AUDIT_EVENTS, DIRECTORY_AUDITS, MAILBOX_AUDIT_LEGACY, MESSAGE_TRACE, SIGNINS,
+    };
+    for spec in [
+        &SIGNINS,
+        &DIRECTORY_AUDITS,
+        &MESSAGE_TRACE,
+        &MAILBOX_AUDIT_LEGACY,
+        &ADMIN_AUDIT_EVENTS,
+    ] {
+        assert_eq!(spec.mode, LoadMode::FillMissing, "{}", spec.table);
+        assert!(
+            ALL.iter().any(|s| s.table == spec.table),
+            "{} not in ALL",
+            spec.table
+        );
+    }
+    let case = Case::in_memory().unwrap();
+    assert_eq!(
+        data_type(&case, "admin_audit_events", "parameters").as_deref(),
+        Some("MAP(VARCHAR, VARCHAR)")
+    );
+    let bad = case.conn().execute(
+        "INSERT INTO signins (record_key, collection_id, event_type) VALUES ('x', 1, 'bogus')",
+        [],
+    );
+    assert!(bad.is_err(), "signin_event_type must reject unknown values");
+}
+
+#[test]
+fn provenance_comments_describe_xlsx_rows() {
+    let case = Case::in_memory().unwrap();
+    let c: String = case
+        .conn()
+        .query_row(
+            "SELECT comment FROM duckdb_columns() WHERE table_name = 'record_sources' AND column_name = 'raw_sha256'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(c.contains("XLSX"), "{c}");
 }
