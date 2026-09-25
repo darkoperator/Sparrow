@@ -8,7 +8,8 @@ range and hash so an analyst can verify it.
 
 - **Hawk** 3.x and 4.x output folders, found by content (`Hawk.log`, a `Tenant` folder or `<user>@<domain>`
   folders with known Hawk files). The folder name does not matter.
-- **Microsoft-Extractor-Suite** output (parsers arrive in a later phase).
+- **Microsoft-Extractor-Suite** 4.x Output roots (a folder of `<Component>/<yyyyMMdd-HHmmss>` run folders, with
+  or without `LogFile.txt`). One root is one collection, however many runs it holds.
 - **Portal exports** recognized by their header wherever they are: Purview audit log search CSV, Entra ID
   sign-in CSV or XLSX, Exchange admin center message trace. A folder holding only such files is ingested as a
   `portal_export` collection.
@@ -36,6 +37,24 @@ only fill values it lacks (a portal export adds the session id, ASN and MFA deta
 `Hawk.log` and PSFramework `<date>_logs.csv` load into `collection_log`. When every culture date in a small file
 is ambiguous, the day/month order the rest of its collection shows is used and the file gets a warning. XLSX rows
 are verified by sheet row.
+
+Microsoft-Extractor-Suite output loads into the same tables:
+- `ual_events`: every Get-UAL format (CSV, JSON, JSONL, SOF-ELK), including the nested Mailbox Audit Log run.
+  `Merged/` copies are `skipped_superseded` when their per-window or per-page files are present.
+- `signins` and `directory_audits`: Graph sign-in and audit logs; `event_type` comes from the beta
+  `signInEventTypes`.
+- `message_trace`.
+- `mailboxes`: audit settings, bypass and effective audit state, from MailboxAuditStatus.
+- `mailbox_permissions`: one row per FullAccess, SendAs, SendOnBehalf or folder grant.
+- `tenant_settings` and `audit_config`: security defaults, and organization auditing as reported by the collector.
+- MailItemsAccessed Sessions / MessageIDs: a row whose raw UAL record is loaded adds a sighting to it; other
+  rows load as partial records.
+
+Repeated runs of a cmdlet merge by entity, and the latest run's values win. `collector_runs` lists every run
+folder with its file count, so a run that returned nothing is visible. Empty exports (0 bytes or a bare BOM) get a
+warning. Artifacts with no parser yet (users, roles, MFA, Conditional Access, devices, groups, risk, alerts,
+secure score, licences, inbox and transport rules, activity logs, Get-UALGraph, QuickUAL) are reported
+`not_supported`.
 
 ## Build
 
