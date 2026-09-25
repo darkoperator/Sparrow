@@ -9,7 +9,9 @@ use crate::ingest::parser::{ArtifactParser, ParserRegistry};
 use crate::normalize::fields::{Cell, Rec};
 use crate::parsers::mailbox::mailbox_key;
 use crate::parsers::records::RecordFormat;
-use crate::parsers::stage::{TableRows, load_tables, read_state_records, reject, require_any_key};
+use crate::parsers::stage::{
+    TableRows, load_tables, org_key, read_state_records, reject, require_any_key,
+};
 
 pub fn register(r: &mut ParserRegistry) {
     r.register("inv.audit_status", Box::new(MailboxAuditStatusParser));
@@ -112,7 +114,7 @@ impl ArtifactParser for MailboxAuditStatusParser {
         } else if let Some((disabled, i)) = org {
             audit.push(
                 &records[i],
-                "organization".into(),
+                org_key(ctx.collection_id),
                 vec![Cell::bool(Some(disabled))],
             );
         }

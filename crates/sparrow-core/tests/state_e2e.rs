@@ -262,7 +262,7 @@ fn state_rows_verify_against_the_original_files() {
     let rep = verify_record(
         &case,
         "tenant_settings",
-        "admin_audit_log_config|unifiedauditlogingestionenabled",
+        "1|admin_audit_log_config|unifiedauditlogingestionenabled",
         None,
     )
     .unwrap();

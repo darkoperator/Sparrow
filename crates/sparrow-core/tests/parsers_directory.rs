@@ -303,7 +303,7 @@ fn role_entries_go_to_tenant_settings_and_assignments_to_role_assignments() {
     assert_eq!(
         text(
             &case,
-            "SELECT value->>'$.cmdlet' FROM tenant_settings WHERE record_key = 'exchange_role_entry|mailbox search\\new-mailboxsearch'"
+            "SELECT value->>'$.cmdlet' FROM tenant_settings WHERE record_key = '1|exchange_role_entry|mailbox search\\new-mailboxsearch'"
         ),
         "New-MailboxSearch"
     );

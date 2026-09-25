@@ -187,4 +187,15 @@ impl Cell {
             Cell::Json(v) => Some(v.to_string()),
         })
     }
+
+    /// `stage`, plus whether a time came without a zone and was stored as if UTC.
+    pub fn stage_zoned(&self, order: Option<DateOrder>) -> Result<(Option<String>, bool), String> {
+        match self {
+            Cell::Time(s) => {
+                let t = parse_timestamp(s, order).map_err(|e| e.to_string())?;
+                Ok((Some(t.rfc3339()), t.tz_assumed))
+            }
+            other => Ok((other.stage(order)?, false)),
+        }
+    }
 }

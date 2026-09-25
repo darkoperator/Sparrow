@@ -20,6 +20,9 @@ pub struct StagedRow {
     pub cells: Vec<Option<String>>,
     /// Source record as JSON text (merged into `raw` on update).
     pub raw: Option<String>,
+    /// Per cell: the value is a time that came without a zone (stored as if UTC). Empty means
+    /// false for every cell.
+    pub tz_assumed: Vec<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -85,6 +88,54 @@ fn insert_claims(cols: &[&Col], collection_id: i64) -> String {
     format!("json_merge_patch(CAST('{{}}' AS JSON), json_object({pairs}))")
 }
 
+/// Loaded columns that hold times.
+fn time_columns<'c>(cols: &'c [&'c Col]) -> impl Iterator<Item = (usize, &'c Col)> + 'c {
+    cols.iter()
+        .copied()
+        .enumerate()
+        .filter(|(_, c)| c.sql_type == "TIMESTAMPTZ")
+}
+
+/// `tz_assumed` of a new row: `{column: true}` for each time column staged without a zone;
+/// SQL NULL when no time column is loaded.
+fn insert_zones(cols: &[&Col]) -> String {
+    let pairs: Vec<String> = time_columns(cols)
+        .map(|(i, c)| format!("'{}', CASE WHEN p.z{i} THEN to_json(true) END", c.name))
+        .collect();
+    if pairs.is_empty() {
+        "CAST(NULL AS JSON)".into()
+    } else {
+        format!(
+            "json_merge_patch(CAST('{{}}' AS JSON), json_object({}))",
+            pairs.join(", ")
+        )
+    }
+}
+
+/// `SET` clause updating `tz_assumed` for the columns a batch writes (`flag` is the
+/// per-column write flag, `w` or `f`); empty when no time column is loaded. A written column
+/// sets (`true`) or removes (JSON null in the patch) its entry; others keep theirs.
+fn zone_set(t: &str, cols: &[&Col], flag: &str) -> String {
+    let pairs: Vec<String> = time_columns(cols)
+        .map(|(i, c)| {
+            format!(
+                "'{n}', CASE WHEN p.{flag}{i} THEN (CASE WHEN p.z{i} THEN to_json(true) END)
+                             ELSE json_extract({t}.tz_assumed, {path}) END",
+                n = c.name,
+                path = cc_path(c.name)
+            )
+        })
+        .collect();
+    if pairs.is_empty() {
+        String::new()
+    } else {
+        format!(
+            ", tz_assumed = json_merge_patch(coalesce({t}.tz_assumed, CAST('{{}}' AS JSON)), json_object({}))",
+            pairs.join(", ")
+        )
+    }
+}
+
 /// Load `rows` into `spec.table`, filling only `columns`. Callers must hold a transaction.
 pub fn load_rows(
     conn: &Connection,
@@ -105,7 +156,9 @@ pub fn load_rows(
     if rows.is_empty() {
         return Ok(LoadOutcome::default());
     }
-    let vcols: String = (0..cols.len()).map(|i| format!(", v{i} VARCHAR")).collect();
+    let vcols: String = (0..cols.len())
+        .map(|i| format!(", v{i} VARCHAR, z{i} BOOLEAN"))
+        .collect();
     conn.execute_batch(&format!(
         "CREATE OR REPLACE TEMP TABLE stage_state (ord BIGINT, seq BIGINT, record_key VARCHAR, raw VARCHAR,
              raw_patch VARCHAR, line_start BIGINT, line_end BIGINT, byte_offset BIGINT, byte_length BIGINT,
@@ -123,6 +176,14 @@ pub fn load_rows(
                     cols.len()
                 )));
             }
+            if !r.tz_assumed.is_empty() && r.tz_assumed.len() != cols.len() {
+                return Err(Error::Invalid(format!(
+                    "{t}: row {} has {} tz_assumed flags for {} columns",
+                    r.record_key,
+                    r.tz_assumed.len(),
+                    cols.len()
+                )));
+            }
             let mut vals = vec![
                 DbValue::BigInt(r.ordinal as i64),
                 DbValue::BigInt(seq as i64),
@@ -135,7 +196,12 @@ pub fn load_rows(
                 DbValue::BigInt(r.pos.byte_length as i64),
                 DbValue::Text(r.raw_sha256.clone()),
             ];
-            vals.extend(r.cells.iter().map(text));
+            for (i, cell) in r.cells.iter().enumerate() {
+                vals.push(text(cell));
+                vals.push(DbValue::Boolean(
+                    r.tz_assumed.get(i).copied().unwrap_or(false),
+                ));
+            }
             app.append_row(appender_params_from_iter(vals))?;
         }
         app.flush()?;
@@ -162,10 +228,11 @@ pub fn load_rows(
         .collect::<Vec<_>>()
         .join(", ");
     let claims = insert_claims(&cols, collection_id);
+    let zones = insert_zones(&cols);
     conn.execute(
         &format!(
-            "INSERT INTO {t} (record_key, collection_id, collected_at, {names}, raw, column_collections)
-             SELECT p.record_key, {collection_id}, {collected_at}, {casts}, CAST(p.raw AS JSON), {claims}
+            "INSERT INTO {t} (record_key, collection_id, collected_at, {names}, raw, column_collections, tz_assumed)
+             SELECT p.record_key, {collection_id}, {collected_at}, {casts}, CAST(p.raw AS JSON), {claims}, {zones}
              FROM stage_new p"
         ),
         [],
@@ -282,11 +349,12 @@ fn update_existing(
                  collected_at = CASE WHEN p.row_ok THEN {collected_at} ELSE {t}.collected_at END,
                  raw = CASE WHEN NOT p.changed OR p.raw_patch IS NULL THEN {t}.raw
                             WHEN p.row_ok THEN json_merge_patch(coalesce({t}.raw, CAST('{{}}' AS JSON)), CAST(p.raw_patch AS JSON))
-                            ELSE json_merge_patch(CAST(p.raw_patch AS JSON), coalesce({t}.raw, CAST('{{}}' AS JSON))) END
+                            ELSE json_merge_patch(CAST(p.raw_patch AS JSON), coalesce({t}.raw, CAST('{{}}' AS JSON))) END{zones}
              FROM stage_match p WHERE {t}.record_key = p.record_key AND ({any})",
             sets = sets.join(", "),
             claims = claims.join(", "),
-            any = any_write.join(" OR ")
+            any = any_write.join(" OR "),
+            zones = zone_set(t, cols, "w")
         ),
         [],
     )?;
@@ -349,8 +417,9 @@ fn fill_missing(conn: &Connection, t: &str, cols: &[&Col], collection_id: i64) -
                  column_collections = json_merge_patch(coalesce({t}.column_collections, CAST('{{}}' AS JSON)),
                                                        json_object({claims})),
                  raw = CASE WHEN p.raw_patch IS NULL THEN {t}.raw
-                            ELSE json_merge_patch(CAST(p.raw_patch AS JSON), coalesce({t}.raw, CAST('{{}}' AS JSON))) END
-             FROM stage_fill p WHERE {t}.record_key = p.record_key AND ({any})"
+                            ELSE json_merge_patch(CAST(p.raw_patch AS JSON), coalesce({t}.raw, CAST('{{}}' AS JSON))) END{zones}
+             FROM stage_fill p WHERE {t}.record_key = p.record_key AND ({any})",
+            zones = zone_set(t, cols, "f")
         ),
         [],
     )?;

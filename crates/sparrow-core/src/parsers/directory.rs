@@ -9,7 +9,7 @@ use crate::normalize::fields::{Cell, Rec};
 use crate::normalize::net::normalize_upn;
 use crate::parsers::records::{RecordFormat, SourceRecord};
 use crate::parsers::stage::{
-    TableRows, load_tables, lower, read_state_records, reject, require_any_key,
+    TableRows, load_tables, lower, read_state_records, reject, require_any_key, setting_key,
 };
 use crate::{Error, Result};
 use serde_json::json;
@@ -338,7 +338,7 @@ impl ArtifactParser for ExchangeRolesParser {
                 });
                 entries.push(
                     r,
-                    format!("exchange_role_entry|{}", name.to_lowercase()),
+                    setting_key(ctx.collection_id, "exchange_role_entry", &name),
                     vec![
                         Cell::text(Some("exchange_role_entry".into())),
                         Cell::text(Some(name)),

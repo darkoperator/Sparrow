@@ -259,7 +259,7 @@ fn admin_audit_and_org_config_fill_audit_config_and_settings() {
     assert_eq!(
         text(
             &case,
-            "SELECT admin_audit_log_enabled || '|' || unified_audit_log_ingestion_enabled || '|' || audit_disabled || '|' || admin_audit_log_age_limit || '|' || log_level FROM audit_config WHERE record_key = 'organization'"
+            "SELECT admin_audit_log_enabled || '|' || unified_audit_log_ingestion_enabled || '|' || audit_disabled || '|' || admin_audit_log_age_limit || '|' || log_level FROM audit_config WHERE record_key = 'organization|1'"
         ),
         "true|false|true|90.00:00:00|None"
     );
@@ -268,30 +268,53 @@ fn admin_audit_and_org_config_fill_audit_config_and_settings() {
     assert_eq!(
         text(
             &case,
-            "SELECT value->>'$' FROM tenant_settings WHERE record_key = 'admin_audit_log_config|adminauditlogexcludedcmdlets'"
+            "SELECT value->>'$' FROM tenant_settings WHERE record_key = '1|admin_audit_log_config|adminauditlogexcludedcmdlets'"
         ),
         "{Set-MailboxAuditBypassAssociation, New-MailboxAuditBypass , Set-Foo}"
     );
     assert_eq!(
         count(
             &case,
-            "SELECT rs.line_start FROM record_sources rs WHERE rs.table_name = 'tenant_settings' AND rs.record_key = 'admin_audit_log_config|unifiedauditlogingestionenabled'"
+            "SELECT rs.line_start FROM record_sources rs WHERE rs.table_name = 'tenant_settings' AND rs.record_key = '1|admin_audit_log_config|unifiedauditlogingestionenabled'"
         ),
         9
     );
     assert_eq!(
         text(
             &case,
-            "SELECT value->>'$.Major' FROM tenant_settings WHERE record_key = 'transport_config|transportruleminproductversion'"
+            "SELECT value->>'$.Major' FROM tenant_settings WHERE record_key = '1|transport_config|transportruleminproductversion'"
         ),
         "15"
     );
     assert_eq!(
         text(
             &case,
-            "SELECT CAST(value AS VARCHAR) FROM tenant_settings WHERE record_key = 'transport_config|smtpclientauthenticationdisabled'"
+            "SELECT CAST(value AS VARCHAR) FROM tenant_settings WHERE record_key = '1|transport_config|smtpclientauthenticationdisabled'"
         ),
         "true"
+    );
+}
+
+#[test]
+fn culture_formatted_local_times_are_flagged_in_tz_assumed() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    fixtures::write(
+        &root,
+        &format!("{ALICE}/AutoReply_alice.txt"),
+        &fixtures::utf16le_bom(&auto_reply("9/24/2026 8:00:00 AM", "9/30/2026 5:00:00 PM")),
+    );
+    fixtures::write(
+        &root,
+        &format!("{ALICE}/ForwardingReport_alice.json"),
+        &forwarding("smtp:x@fabrikam.example"),
+    );
+    let (case, report) = ingest(dir.path(), None);
+    assert!(!report.has_errors(), "{report:#?}");
+    // AutoReply times are the collecting host's local time; WhenChangedUTC is /Date(ms)/ (UTC).
+    assert_eq!(
+        text(&case, "SELECT CAST(tz_assumed AS VARCHAR) FROM mailboxes"),
+        r#"{"auto_reply_start":true,"auto_reply_end":true}"#
     );
 }
 

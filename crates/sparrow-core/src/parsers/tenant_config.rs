@@ -1,7 +1,7 @@
 //! Organization configuration: AdminAuditLogConfig.txt and OrgConfig.txt (Format-List, one
 //! object) and TransportConfig (JSON/CSV), and Microsoft-Extractor-Suite EntraSecurityDefaults.csv.
 //! Every property becomes a tenant_settings row pointing at its own lines; the audit switches
-//! also fill the single audit_config row.
+//! also fill the collection's audit_config row.
 
 use crate::Result;
 use crate::db::state_tables::{AUDIT_CONFIG, TENANT_SETTINGS};
@@ -10,7 +10,7 @@ use crate::ingest::parser::{ArtifactParser, ParserRegistry};
 use crate::normalize::fields::{Cell, Rec};
 use crate::parsers::records::RecordFormat;
 use crate::parsers::stage::{
-    RowDraft, TableRows, load_tables, read_state_records, require_any_key,
+    RowDraft, TableRows, load_tables, org_key, read_state_records, require_any_key, setting_key,
 };
 use serde_json::Value;
 
@@ -92,7 +92,7 @@ impl ArtifactParser for ConfigParser {
                 settings.push_draft(RowDraft {
                     ordinal: r.ordinal,
                     span,
-                    record_key: format!("{}|{}", self.source, name.to_lowercase()),
+                    record_key: setting_key(ctx.collection_id, self.source, name),
                     cells: vec![
                         Cell::text(Some(self.source.into())),
                         Cell::text(Some(name.clone())),
@@ -115,7 +115,7 @@ impl ArtifactParser for ConfigParser {
                         }
                     })
                     .collect();
-                audit.push(r, "organization".into(), cells);
+                audit.push(r, org_key(ctx.collection_id), cells);
             }
         }
         load_tables(ctx, vec![audit, settings])
@@ -164,7 +164,7 @@ impl ArtifactParser for SecurityDefaultsParser {
                 settings.push_draft(RowDraft {
                     ordinal: r.ordinal,
                     span: r.span,
-                    record_key: format!("{SECURITY_DEFAULTS_SOURCE}|{}", name.to_lowercase()),
+                    record_key: setting_key(ctx.collection_id, SECURITY_DEFAULTS_SOURCE, name),
                     cells: vec![
                         Cell::text(Some(SECURITY_DEFAULTS_SOURCE.into())),
                         Cell::text(Some(name.clone())),
@@ -177,7 +177,7 @@ impl ArtifactParser for SecurityDefaultsParser {
             let rec = Rec::new(&r.map, format.lossy());
             audit.push(
                 r,
-                "organization".into(),
+                org_key(ctx.collection_id),
                 vec![Cell::bool(yes_no(&rec, "SecurityDefaultsEnabled"))],
             );
         }

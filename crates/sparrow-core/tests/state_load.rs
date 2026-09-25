@@ -65,6 +65,7 @@ fn rule(ord: u64, key: &str, upn: Option<&str>, name: &str, fwd: Option<&str>) -
             Some("0".into()),
         ],
         raw: Some(format!("{{\"Name\":\"{name}\",\"Ord\":{ord}}}")),
+        tz_assumed: Vec::new(),
     }
 }
 
@@ -538,6 +539,7 @@ fn mbx(cells: &[Option<&str>], raw: &str) -> StagedRow {
     StagedRow {
         cells: cells.iter().map(|c| c.map(Into::into)).collect(),
         raw: Some(raw.into()),
+        tz_assumed: Vec::new(),
         ..rule(0, "alice@contoso.example", None, "x", None)
     }
 }
@@ -810,6 +812,7 @@ fn signin(
             session.map(Into::into),
         ],
         raw: Some(format!("{{\"Id\":\"{key}\",\"Ord\":{ord}}}")),
+        tz_assumed: Vec::new(),
     }
 }
 
@@ -960,4 +963,135 @@ fn key_time_is_utc_seconds_whatever_the_source_form() {
         "2026-09-02T08:00:00Z"
     );
     assert_eq!(key_time("  not a time ", None), "not a time");
+}
+
+const MBX_TIME_COLS: &[&str] = &["upn", "auto_reply_start", "when_changed"];
+
+fn mbx_times(ord: u64, start: Option<&str>, changed: Option<&str>, zones: [bool; 3]) -> StagedRow {
+    StagedRow {
+        ordinal: ord,
+        pos: SourcePos {
+            line_start: 1,
+            line_end: 1,
+            byte_offset: 0,
+            byte_length: 1,
+        },
+        raw_sha256: format!("sha{ord}"),
+        record_key: "alice@contoso.example".into(),
+        cells: vec![
+            Some("alice@contoso.example".into()),
+            start.map(Into::into),
+            changed.map(Into::into),
+        ],
+        raw: None,
+        tz_assumed: zones.to_vec(),
+    }
+}
+
+fn zones(case: &Case) -> String {
+    text(
+        case,
+        "SELECT coalesce(CAST(tz_assumed AS VARCHAR), 'NULL') FROM mailboxes",
+    )
+}
+
+#[test]
+fn tz_assumed_names_the_time_columns_stored_as_if_utc() {
+    let case = Case::in_memory().unwrap();
+    let c = collection(&case, "a", Some("2026-09-10T00:00:00Z"));
+    let f = file(&case, c);
+    load_rows(
+        case.conn(),
+        &MAILBOXES,
+        MBX_TIME_COLS,
+        c,
+        f,
+        &[mbx_times(
+            0,
+            Some("2026-09-01T08:00:00Z"),
+            Some("2026-09-02T08:00:00Z"),
+            [false, true, false],
+        )],
+    )
+    .unwrap();
+    assert_eq!(zones(&case), r#"{"auto_reply_start":true}"#);
+}
+
+#[test]
+fn a_newer_write_with_a_zone_clears_the_flag_and_unwritten_columns_keep_theirs() {
+    let case = Case::in_memory().unwrap();
+    let old = collection(&case, "old", Some("2026-09-10T00:00:00Z"));
+    let new = collection(&case, "new", Some("2026-09-20T00:00:00Z"));
+    let (fo, fnew) = (file(&case, old), file(&case, new));
+    load_rows(
+        case.conn(),
+        &MAILBOXES,
+        MBX_TIME_COLS,
+        old,
+        fo,
+        &[mbx_times(
+            0,
+            Some("2026-09-01T08:00:00Z"),
+            Some("2026-09-02T08:00:00Z"),
+            [false, true, true],
+        )],
+    )
+    .unwrap();
+    // The newer collection writes only when_changed, this time with a zone.
+    load_rows(
+        case.conn(),
+        &MAILBOXES,
+        &["upn", "when_changed"],
+        new,
+        fnew,
+        &[StagedRow {
+            cells: vec![
+                Some("alice@contoso.example".into()),
+                Some("2026-09-19T08:00:00Z".into()),
+            ],
+            tz_assumed: vec![false, false],
+            ..mbx_times(0, None, None, [false; 3])
+        }],
+    )
+    .unwrap();
+    assert_eq!(zones(&case), r#"{"auto_reply_start":true}"#);
+}
+
+#[test]
+fn an_older_write_never_touches_a_newer_flag() {
+    let case = Case::in_memory().unwrap();
+    let old = collection(&case, "old", Some("2026-09-10T00:00:00Z"));
+    let new = collection(&case, "new", Some("2026-09-20T00:00:00Z"));
+    let (fo, fnew) = (file(&case, old), file(&case, new));
+    load_rows(
+        case.conn(),
+        &MAILBOXES,
+        MBX_TIME_COLS,
+        new,
+        fnew,
+        &[mbx_times(
+            0,
+            None,
+            Some("2026-09-19T08:00:00Z"),
+            [false, false, false],
+        )],
+    )
+    .unwrap();
+    load_rows(
+        case.conn(),
+        &MAILBOXES,
+        MBX_TIME_COLS,
+        old,
+        fo,
+        &[mbx_times(
+            0,
+            Some("2026-09-01T08:00:00Z"),
+            Some("2026-09-02T08:00:00Z"),
+            [false, true, true],
+        )],
+    )
+    .unwrap();
+    // auto_reply_start was NULL from the newer collection (not keep_when_null), so the older
+    // value does not write it either; when_changed stays the newer, zoned value.
+    assert_eq!(zones(&case), "{}");
 }

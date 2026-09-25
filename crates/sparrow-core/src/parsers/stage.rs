@@ -191,10 +191,11 @@ pub fn load_tables(ctx: &mut ParseContext<'_>, tables: Vec<TableRows>) -> Result
         let mut staged = Vec::with_capacity(t.rows.len());
         for r in t.rows {
             ctx.stats.read += 1;
-            let cells: std::result::Result<Vec<Option<String>>, String> =
-                r.cells.iter().map(|c| c.stage(order)).collect();
+            let cells: std::result::Result<Vec<(Option<String>, bool)>, String> =
+                r.cells.iter().map(|c| c.stage_zoned(order)).collect();
             match cells {
                 Ok(cells) => {
+                    let (cells, tz_assumed): (Vec<_>, Vec<_>) = cells.into_iter().unzip();
                     let (pos, raw_sha256) = match &r.sheet_row {
                         Some(s) => ctx.row_sighting(s.row, &s.text),
                         None => ctx.sighting(r.span),
@@ -206,6 +207,7 @@ pub fn load_tables(ctx: &mut ParseContext<'_>, tables: Vec<TableRows>) -> Result
                         record_key: r.record_key,
                         cells,
                         raw: r.raw.map(|v| v.to_string()),
+                        tz_assumed,
                     });
                 }
                 Err(msg) => {
@@ -236,4 +238,14 @@ pub fn load_tables(ctx: &mut ParseContext<'_>, tables: Vec<TableRows>) -> Result
         }
     }
     Ok(())
+}
+
+/// Record key of a collection's organization-level row (`audit_config`, one per collection).
+pub fn org_key(collection_id: i64) -> String {
+    format!("organization|{collection_id}")
+}
+
+/// Record key of a collection's `tenant_settings` row.
+pub fn setting_key(collection_id: i64, source: &str, name: &str) -> String {
+    format!("{collection_id}|{source}|{}", name.to_lowercase())
 }

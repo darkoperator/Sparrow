@@ -1,4 +1,4 @@
-use sparrow_core::db::migrations::latest_version;
+use sparrow_core::db::migrations::{MIGRATIONS, latest_version, migrate};
 use sparrow_core::db::state_tables::{ALL, LoadMode};
 use sparrow_core::{Case, Error};
 
@@ -258,7 +258,7 @@ fn upgrading_a_v2_case_keeps_collections_and_adds_ual_tables() {
 #[test]
 fn state_table_specs_match_the_schema() {
     let case = Case::in_memory().unwrap();
-    assert_eq!(case.schema_version().unwrap(), 6);
+    assert_eq!(case.schema_version().unwrap(), 7);
     for spec in ALL {
         for common in [
             "record_key",
@@ -444,5 +444,70 @@ fn signin_comments_describe_extractor_suite_sources() {
     assert!(
         am.contains("authenticationDetails") && am.contains("mfaDetail.authMethod"),
         "{am}"
+    );
+}
+
+#[test]
+fn every_loaded_table_has_a_tz_assumed_column() {
+    let case = Case::in_memory().unwrap();
+    for spec in ALL {
+        assert_eq!(
+            data_type(&case, spec.table, "tz_assumed").as_deref(),
+            Some("JSON"),
+            "{}",
+            spec.table
+        );
+    }
+}
+
+/// A case created by schema 6 (one merged org row) gains per-collection org keys, and its
+/// sightings follow the rows so verify keeps working.
+#[test]
+fn migration_7_keys_org_state_by_collection() {
+    let conn = duckdb::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name VARCHAR NOT NULL,
+             applied_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp);",
+    )
+    .unwrap();
+    for m in MIGRATIONS.iter().filter(|m| m.version <= 6) {
+        conn.execute_batch(m.sql).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
+            duckdb::params![m.version, m.name],
+        )
+        .unwrap();
+    }
+    conn.execute_batch(
+        "INSERT INTO collections (collection_id, tool, root_path, sparrow_version) VALUES (3, 'hawk', '/c', 't');
+         INSERT INTO source_files (file_id, collection_id, rel_path, size_bytes, sha256, status)
+             VALUES (9, 3, 'Tenant/OrgConfig.txt', 1, 'h', 'parsed');
+         INSERT INTO audit_config (record_key, collection_id, audit_disabled) VALUES ('organization', 3, true);
+         INSERT INTO tenant_settings (record_key, collection_id, source, name)
+             VALUES ('organization_config|auditdisabled', 3, 'organization_config', 'AuditDisabled');
+         INSERT INTO record_sources VALUES
+             ('audit_config', 'organization', 9, 0, 2, 2, 0, 1, 'h'),
+             ('tenant_settings', 'organization_config|auditdisabled', 9, 0, 2, 2, 0, 1, 'h');",
+    )
+    .unwrap();
+    migrate(&conn).unwrap();
+    let keys: Vec<String> = conn
+        .prepare(
+            "SELECT record_key FROM audit_config UNION ALL SELECT record_key FROM tenant_settings
+             UNION ALL SELECT table_name || '=' || record_key FROM record_sources ORDER BY 1",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        keys,
+        vec![
+            "3|organization_config|auditdisabled",
+            "audit_config=organization|3",
+            "organization|3",
+            "tenant_settings=3|organization_config|auditdisabled",
+        ]
     );
 }

@@ -237,7 +237,7 @@ fn later_audit_status_run_wins_within_the_collection() {
     assert_eq!(
         count(
             &case,
-            "SELECT count(*) FROM audit_config WHERE record_key = 'organization' AND audit_disabled = false"
+            "SELECT count(*) FROM audit_config WHERE record_key = 'organization|1' AND audit_disabled = false"
         ),
         1
     );
@@ -306,14 +306,14 @@ fn security_defaults_fill_settings_and_audit_config() {
     assert_eq!(
         text(
             &case,
-            "SELECT value->>'$' FROM tenant_settings WHERE record_key = 'entra_security_defaults|haspremiumlicense'"
+            "SELECT value->>'$' FROM tenant_settings WHERE record_key = '1|entra_security_defaults|haspremiumlicense'"
         ),
         "No"
     );
     assert_eq!(
         count(
             &case,
-            "SELECT count(*) FROM audit_config WHERE record_key = 'organization' AND security_defaults_enabled = false"
+            "SELECT count(*) FROM audit_config WHERE record_key = 'organization|1' AND security_defaults_enabled = false"
         ),
         1
     );
