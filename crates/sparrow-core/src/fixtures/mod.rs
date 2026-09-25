@@ -4,6 +4,7 @@ pub mod events;
 pub mod hawk3;
 pub mod hawk4;
 pub mod invictus;
+pub mod mmdb;
 pub mod portal;
 pub mod state;
 pub mod ual;

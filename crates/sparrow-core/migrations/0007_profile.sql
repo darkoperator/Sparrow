@@ -251,3 +251,27 @@ COMMENT ON COLUMN evidence_availability.max_time IS 'Latest event time in those 
 COMMENT ON COLUMN evidence_availability.users_covered IS 'Distinct users in those rows.';
 COMMENT ON COLUMN evidence_availability.retention_days IS 'Longest retention among the tenant''s licensed capabilities that provide this evidence (NULL for state evidence or when unknown).';
 COMMENT ON COLUMN evidence_availability.evaluated_at IS 'The time the snapshot was evaluated for (retention decisions depend on it).';
+
+-- Task 7: IP enrichment.
+CREATE TABLE ip_intel (
+    ip VARCHAR NOT NULL, country_iso VARCHAR, country VARCHAR, city VARCHAR, latitude DOUBLE,
+    longitude DOUBLE, asn INTEGER, asn_org VARCHAR, is_hosting BOOLEAN, hosting_provider VARCHAR,
+    is_microsoft BOOLEAN NOT NULL, microsoft_service_area VARCHAR, is_private BOOLEAN NOT NULL,
+    source_db_version VARCHAR
+);
+
+COMMENT ON TABLE ip_intel IS 'One row per distinct IP address in the event tables, rewritten by every profile run; join on ip = <table>.<ip column>.';
+COMMENT ON COLUMN ip_intel.ip IS 'Text exactly as the event tables store it (client_ip / ip / initiated_by_ip / from_ip / to_ip), so joins work; lookups use the parsed address (normalize_ip).';
+COMMENT ON COLUMN ip_intel.country_iso IS 'MaxMind GeoLite2/GeoIP2 City database: ISO 3166-1 alpha-2 country code. NULL without --geoip-dir or a City database, or when the address is not in it.';
+COMMENT ON COLUMN ip_intel.country IS 'MaxMind City database: English country name.';
+COMMENT ON COLUMN ip_intel.city IS 'MaxMind City database: English city name.';
+COMMENT ON COLUMN ip_intel.latitude IS 'City-level estimate from MaxMind, not a precise location.';
+COMMENT ON COLUMN ip_intel.longitude IS 'City-level estimate from MaxMind, not a precise location.';
+COMMENT ON COLUMN ip_intel.asn IS 'MaxMind GeoLite2/GeoIP2 ASN database: autonomous system number. NULL without --geoip-dir or an ASN database, or when the address is not in it.';
+COMMENT ON COLUMN ip_intel.asn_org IS 'MaxMind ASN database: the organization registered against the ASN.';
+COMMENT ON COLUMN ip_intel.is_hosting IS 'Whether asn is a known hosting/cloud/VPS provider (rules/lists/hosting_asns.yaml). NULL when the ASN is unknown.';
+COMMENT ON COLUMN ip_intel.hosting_provider IS 'Name of the hosting provider from rules/lists/hosting_asns.yaml, when is_hosting is true.';
+COMMENT ON COLUMN ip_intel.is_microsoft IS 'In the bundled Microsoft 365 endpoints snapshot (service front ends: Microsoft infrastructure, not a trusted client).';
+COMMENT ON COLUMN ip_intel.microsoft_service_area IS 'Microsoft 365 service area (Exchange, SharePoint, Skype, Common) of the matching range, when is_microsoft is true.';
+COMMENT ON COLUMN ip_intel.is_private IS 'RFC 1918, loopback, link-local, CGNAT 100.64.0.0/10, unspecified, IPv6 unique-local/link-local, or an IPv4-mapped IPv6 form of one of those (spec §5.3). Documentation ranges (203.0.113.0/24, 198.51.100.0/24, 2001:db8::/32) are not private.';
+COMMENT ON COLUMN ip_intel.source_db_version IS 'The MaxMind City/ASN database versions (build date) and the ms365-endpoints snapshot version used to derive this row, e.g. "GeoLite2-City 2026-09-20; GeoLite2-ASN 2026-09-22; ms365-endpoints 2026081400".';

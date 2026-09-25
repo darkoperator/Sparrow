@@ -17,6 +17,8 @@ csv = "1.4"
 duckdb = { version = "=1.10505.0", features = ["bundled", "json"] }
 encoding_rs = "0.8"
 hex = "0.4"
+ipnet = "2.12"
+maxminddb = "0.32"
 predicates = "3"
 regex = "1"
 rust_xlsxwriter = "0.99"

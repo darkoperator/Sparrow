@@ -1,0 +1,28 @@
+# Autonomous systems of hosting, cloud and VPS providers. A sign-in or mailbox access from
+# one of them is unusual for an ordinary user (spec §8.5 "sign-in from hosting ASN").
+# Curated seed, as_of 2026-09-25; extend with --rules DIR (lists/hosting_asns.yaml, entries
+# replace built-ins by asn). Deliberately absent: Microsoft AS8075 (Microsoft 365 and Azure
+# share it; ip_intel.is_microsoft covers Microsoft 365 service ranges) and Cloudflare AS13335
+# (WARP carries ordinary users).
+version: 1
+asns:
+  - {asn: 16509, name: Amazon Web Services, kind: cloud}
+  - {asn: 14618, name: Amazon Web Services, kind: cloud}
+  - {asn: 396982, name: Google Cloud, kind: cloud}
+  - {asn: 31898, name: Oracle Cloud, kind: cloud}
+  - {asn: 45102, name: Alibaba Cloud, kind: cloud}
+  - {asn: 132203, name: Tencent Cloud, kind: cloud}
+  - {asn: 14061, name: DigitalOcean, kind: vps}
+  - {asn: 63949, name: Akamai Connected Cloud (Linode), kind: vps}
+  - {asn: 20473, name: Vultr (The Constant Company), kind: vps}
+  - {asn: 16276, name: OVHcloud, kind: vps}
+  - {asn: 24940, name: Hetzner Online, kind: vps}
+  - {asn: 51167, name: Contabo, kind: vps}
+  - {asn: 12876, name: Scaleway, kind: vps}
+  - {asn: 8560, name: IONOS, kind: vps}
+  - {asn: 47583, name: Hostinger, kind: vps}
+  - {asn: 60781, name: Leaseweb Netherlands, kind: vps}
+  - {asn: 53667, name: FranTech (BuyVM), kind: vps}
+  - {asn: 36352, name: ColoCrossing, kind: vps}
+  - {asn: 9009, name: M247, kind: vpn}
+  - {asn: 60068, name: Datacamp (CDN77), kind: vpn}

@@ -568,3 +568,59 @@ fn capabilities_without_a_profile_asks_for_one() {
         .failure()
         .stderr(predicates::str::contains("sparrow profile --case"));
 }
+
+#[test]
+fn ingest_enriches_ips_from_geoip_dir() {
+    use sparrow_core::fixtures::mmdb::{asn, city, write_mmdb};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = sparrow_core::fixtures::events::hawk4_events_tree(dir.path());
+    let case = dir.path().join("case.duckdb");
+
+    let geo = tempfile::tempdir().unwrap();
+    let city_db = write_mmdb(
+        "GeoLite2-City",
+        1_790_000_000,
+        &[(
+            "203.0.113.0".parse().unwrap(),
+            24,
+            city("NG", "Nigeria", "Lagos", 6.45, 3.39),
+        )],
+    );
+    let asn_db = write_mmdb(
+        "GeoLite2-ASN",
+        1_790_100_000,
+        &[(
+            "203.0.113.0".parse().unwrap(),
+            24,
+            asn(14061, "DIGITALOCEAN-ASN"),
+        )],
+    );
+    std::fs::write(geo.path().join("GeoLite2-City.mmdb"), city_db).unwrap();
+    std::fs::write(geo.path().join("GeoLite2-ASN.mmdb"), asn_db).unwrap();
+
+    let out = json_out(
+        sparrow()
+            .args(["--json", "ingest"])
+            .arg(&root)
+            .arg("--case")
+            .arg(&case)
+            .arg("--geoip-dir")
+            .arg(geo.path()),
+        0,
+    );
+    assert!(
+        out["profile"]["ip_intel"]["geolocated"].as_u64().unwrap() > 0,
+        "{out}"
+    );
+
+    let conn = duckdb::Connection::open(&case).unwrap();
+    let country_iso: String = conn
+        .query_row(
+            "SELECT country_iso FROM ip_intel WHERE ip = '203.0.113.10'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(country_iso, "NG");
+}

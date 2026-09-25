@@ -44,6 +44,7 @@ fn fresh_case_has_provenance_tables() {
             "evidence_availability",
             "file_events",
             "inbox_rules",
+            "ip_intel",
             "licenses",
             "mail_items_accessed",
             "mailbox_audit_legacy",

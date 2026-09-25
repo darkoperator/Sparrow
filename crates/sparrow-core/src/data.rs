@@ -8,6 +8,8 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 const CAPABILITIES: &str = include_str!("../../../data/capabilities.yaml");
+const MS365_RANGES: &str = include_str!("../../../data/ms365_ip_ranges.json");
+const HOSTING_ASNS: &str = include_str!("../../../rules/lists/hosting_asns.yaml");
 
 #[derive(Debug, Clone, Default)]
 pub struct DataDirs {
@@ -122,6 +124,22 @@ pub fn overlay_by<T>(mut base: Vec<T>, extra: Vec<T>, id: impl Fn(&T) -> &str) -
     base
 }
 
+/// Same merge as `overlay_by`, keyed by a `PartialEq` value instead of a borrowed `&str` (the
+/// `&str` case needs the narrower signature above so the borrow checker accepts the closure).
+pub fn overlay_by_key<T, K: PartialEq>(
+    mut base: Vec<T>,
+    extra: Vec<T>,
+    id: impl Fn(&T) -> K,
+) -> Vec<T> {
+    for e in extra {
+        match base.iter().position(|b| id(b) == id(&e)) {
+            Some(i) => base[i] = e,
+            None => base.push(e),
+        }
+    }
+    base
+}
+
 /// Capability definitions: built-in, overlaid by `<data>/capabilities.yaml`.
 pub fn capabilities(dirs: &DataDirs) -> Result<Vec<CapabilityDef>> {
     let base = capabilities_file(CAPABILITIES, "built-in data/capabilities.yaml", "builtin")?;
@@ -130,6 +148,88 @@ pub fn capabilities(dirs: &DataDirs) -> Result<Vec<CapabilityDef>> {
             let name = path.display().to_string();
             let extra = capabilities_file(&text, &name, &name)?;
             Ok(overlay_by(base, extra, |c| c.id.as_str()))
+        }
+        None => Ok(base),
+    }
+}
+
+// Task 7: Microsoft 365 service ranges and hosting ASNs (ip_intel).
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MsRange {
+    pub cidr: String,
+    pub service_area: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MsRanges {
+    pub version: String,
+    pub retrieved: String,
+    pub ranges: Vec<MsRange>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostingAsn {
+    pub asn: u32,
+    pub name: String,
+    pub kind: String,
+}
+
+fn parse_json<T: for<'de> Deserialize<'de>>(text: &str, name: &str) -> Result<T> {
+    serde_json::from_str(text).map_err(|e| Error::Invalid(format!("{name}: {e}")))
+}
+
+fn ms_ranges_file(text: &str, name: &str) -> Result<MsRanges> {
+    let ranges: MsRanges = parse_json(text, name)?;
+    for r in &ranges.ranges {
+        r.cidr.parse::<ipnet::IpNet>().map_err(|e| {
+            Error::Invalid(format!(
+                "{name}: range {:?} is not a valid CIDR: {e}",
+                r.cidr
+            ))
+        })?;
+    }
+    Ok(ranges)
+}
+
+/// Microsoft 365 service front-end IP ranges (spec §5.3 `ip_intel.is_microsoft`): the embedded
+/// snapshot, or, when `<data>/ms365_ip_ranges.json` exists, that file in its place (a snapshot
+/// is all-or-nothing, unlike `capabilities.yaml`'s per-id overlay).
+pub fn ms365_ranges(dirs: &DataDirs) -> Result<MsRanges> {
+    match read_overlay(dirs.data.as_deref(), "ms365_ip_ranges.json")? {
+        Some((text, path)) => ms_ranges_file(&text, &path.display().to_string()),
+        None => ms_ranges_file(MS365_RANGES, "built-in data/ms365_ip_ranges.json"),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostingAsnsFile {
+    version: u32,
+    asns: Vec<HostingAsn>,
+}
+
+fn hosting_asns_file(text: &str, name: &str) -> Result<Vec<HostingAsn>> {
+    let f: HostingAsnsFile = parse_yaml(text, name)?;
+    if f.version != 1 {
+        return Err(Error::Invalid(format!(
+            "{name}: unsupported version {}",
+            f.version
+        )));
+    }
+    Ok(f.asns)
+}
+
+/// Hosting/cloud/VPS autonomous systems (spec §5.3 `ip_intel.is_hosting`): built-in, overlaid by
+/// `<rules>/lists/hosting_asns.yaml` (entries replace built-ins by `asn`).
+pub fn hosting_asns(dirs: &DataDirs) -> Result<Vec<HostingAsn>> {
+    let base = hosting_asns_file(HOSTING_ASNS, "built-in rules/lists/hosting_asns.yaml")?;
+    match read_overlay(dirs.rules.as_deref(), "lists/hosting_asns.yaml")? {
+        Some((text, path)) => {
+            let name = path.display().to_string();
+            let extra = hosting_asns_file(&text, &name)?;
+            Ok(overlay_by_key(base, extra, |a| a.asn))
         }
         None => Ok(base),
     }

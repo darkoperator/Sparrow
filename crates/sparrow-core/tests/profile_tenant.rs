@@ -317,7 +317,10 @@ fn an_override_on_a_name_only_tenant_moves_with_it_once_evidence_resolves_an_id(
         "{domains:?}"
     );
     assert!(
-        report.warnings.is_empty(),
+        report
+            .warnings
+            .iter()
+            .all(|w| !w.contains("analyst domain decisions")),
         "the override resolved, so no orphan warning: {:?}",
         report.warnings
     );

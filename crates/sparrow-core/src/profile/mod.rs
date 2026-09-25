@@ -7,6 +7,7 @@ pub mod capabilities;
 pub mod tenant;
 
 use crate::data::DataDirs;
+use crate::enrich::ip::IpIntelReport;
 use crate::{Case, Result};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -32,7 +33,7 @@ pub struct ProfileReport {
     pub capabilities: usize,
     pub tenants: usize,
     pub identities: usize,
-    pub ip_intel: Option<serde_json::Value>,
+    pub ip_intel: Option<IpIntelReport>,
     pub warnings: Vec<String>,
 }
 
@@ -53,6 +54,9 @@ pub fn refresh(case: &mut Case, opts: &ProfileOptions) -> Result<ProfileReport> 
     if let Some(warning) = tenant::rebuild_domains(&tx, None)? {
         report.warnings.push(warning);
     }
+    let ip_intel = crate::enrich::ip::refresh_ip_intel(&tx, &opts.dirs, opts.geoip_dir.as_deref())?;
+    report.warnings.extend(ip_intel.warnings.clone());
+    report.ip_intel = Some(ip_intel);
     capabilities::derive(&tx)?;
     availability::snapshot(&tx, opts.now())?;
     tx.commit()?;
