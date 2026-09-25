@@ -168,6 +168,8 @@ struct FileJob<'a> {
     date_hint: Option<DateOrder>,
     /// Defer the file when all its culture dates are ambiguous (first pass).
     defer: bool,
+    /// The rest of the collection proved both orders (retry pass).
+    orders_conflict: bool,
 }
 
 /// Result of handling one file: done (with the day/month orders its dates proved), or
@@ -202,7 +204,8 @@ fn ingest_collection(
     let mut handled = Handled::default();
     let mut files = Vec::new();
     let mut deferred: Vec<(&CollectionFile, bool)> = Vec::new();
-    let mut proved: Vec<DateOrder> = Vec::new();
+    // Orders proved by files of this collection parsed in earlier runs count too.
+    let mut proved = orders_proved_earlier(case.conn(), collection_id)?;
     for (f, derived) in ordered {
         let job = FileJob {
             collection_id,
@@ -213,6 +216,7 @@ fn ingest_collection(
             superseded_by: handled.superseded_by(&f.rel, derived),
             date_hint: None,
             defer: true,
+            orders_conflict: false,
         };
         match ingest_file(case, &job, parsers, opts)? {
             Outcome::Deferred => deferred.push((f, derived)),
@@ -245,6 +249,7 @@ fn ingest_collection(
             superseded_by: handled.superseded_by(&f.rel, derived),
             date_hint: hint,
             defer: false,
+            orders_conflict: proved.len() > 1,
         };
         match ingest_file(case, &job, parsers, opts)? {
             Outcome::Done(report, _) => {
@@ -285,6 +290,33 @@ fn ingest_collection(
         root,
         files,
     })
+}
+
+fn date_order_str(o: DateOrder) -> &'static str {
+    match o {
+        DateOrder::MonthFirst => "month_first",
+        DateOrder::DayFirst => "day_first",
+    }
+}
+
+/// Distinct day/month orders proved by this collection's already-parsed files.
+fn orders_proved_earlier(conn: &Connection, collection_id: i64) -> Result<Vec<DateOrder>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT date_order FROM source_files
+         WHERE collection_id = ? AND status = 'parsed' AND date_order IS NOT NULL
+         ORDER BY date_order",
+    )?;
+    let names = stmt
+        .query_map(params![collection_id], |r| r.get::<_, String>(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(names
+        .iter()
+        .filter_map(|n| match n.as_str() {
+            "month_first" => Some(DateOrder::MonthFirst),
+            "day_first" => Some(DateOrder::DayFirst),
+            _ => None,
+        })
+        .collect())
 }
 
 /// A file makes its CSV twin / derived counterpart redundant only when it was already
@@ -595,9 +627,15 @@ fn ingest_file(
     );
     ctx.date_hint = job.date_hint;
     ctx.defer_ambiguous_dates = job.defer;
+    ctx.collection_orders_conflict = job.orders_conflict;
     match parser.parse(&mut ctx) {
         Ok(()) => {
             let orders = ctx.orders_seen().to_vec();
+            // One proved order is stored; a file that proved both stores NULL.
+            let date_order = match orders.as_slice() {
+                [only] => Some(date_order_str(*only)),
+                _ => None,
+            };
             let (stats, parser_warnings) = ctx.finish();
             let warnings: Vec<String> = pre
                 .iter()
@@ -613,8 +651,8 @@ fn ingest_file(
             };
             tx.execute(
                 "UPDATE source_files SET records_read = ?, records_loaded = ?, records_duplicate = ?, records_error = ?,
-                        warnings = CAST(? AS JSON) WHERE file_id = ?",
-                params![stats.read as i64, stats.loaded as i64, stats.duplicate as i64, stats.error as i64, warnings_json, file_id],
+                        warnings = CAST(? AS JSON), date_order = ? WHERE file_id = ?",
+                params![stats.read as i64, stats.loaded as i64, stats.duplicate as i64, stats.error as i64, warnings_json, date_order, file_id],
             )?;
             tx.commit()?;
             Ok(Outcome::Done(

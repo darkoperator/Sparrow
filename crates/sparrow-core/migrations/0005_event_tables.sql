@@ -222,3 +222,6 @@ COMMENT ON COLUMN admin_audit_events.client_app_id IS 'ClientAppId, lower-case.'
 COMMENT ON COLUMN admin_audit_events.originating_server IS 'OriginatingServer.';
 COMMENT ON COLUMN admin_audit_events.full_command IS 'FullCommand of Simple_* summaries (the command line Hawk rebuilt from the parameters).';
 COMMENT ON COLUMN admin_audit_events.data_completeness IS 'full for a JSON Search-AdminAuditLog record; partial for CSV (parameters lost) and Simple_* summaries.';
+
+ALTER TABLE source_files ADD COLUMN date_order VARCHAR;
+COMMENT ON COLUMN source_files.date_order IS 'Day/month order this file''s own culture-formatted dates proved (a day or month above 12): month_first or day_first; NULL when they proved none or both. Later ingests of the collection use it to read files whose dates are all ambiguous.';

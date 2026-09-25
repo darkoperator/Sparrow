@@ -32,6 +32,9 @@ pub struct ParseContext<'a> {
     /// First pass: a file whose culture dates are all ambiguous is deferred
     /// (`Error::DateOrderDeferred`) until the rest of its collection has been read.
     pub defer_ambiguous_dates: bool,
+    /// Other files of this collection proved both orders (retry pass only): an all-ambiguous
+    /// file then fails saying so.
+    pub collection_orders_conflict: bool,
     orders_seen: Vec<DateOrder>,
     warnings: Vec<String>,
     mapper: OffsetMapper,
@@ -63,6 +66,7 @@ impl<'a> ParseContext<'a> {
             stats: FileStats::default(),
             date_hint: None,
             defer_ambiguous_dates: false,
+            collection_orders_conflict: false,
             orders_seen: Vec::new(),
             warnings: Vec::new(),
             mapper: OffsetMapper::new(text, raw.len() as u64),
@@ -165,13 +169,10 @@ impl<'a> ParseContext<'a> {
         &mut self,
         detector: &DateOrderDetector,
     ) -> Result<Option<DateOrder>> {
-        if self.options.date_order.is_some() {
-            return detector
+        if self.options.date_order.is_some() || !detector.only_ambiguous() {
+            let order = detector
                 .resolve(self.options.date_order)
-                .map_err(Error::Invalid);
-        }
-        if !detector.only_ambiguous() {
-            let order = detector.resolve(None).map_err(Error::Invalid)?;
+                .map_err(Error::Invalid)?;
             if let Some(o) = detector.evidence() {
                 if !self.orders_seen.contains(&o) {
                     self.orders_seen.push(o);
@@ -188,6 +189,12 @@ impl<'a> ParseContext<'a> {
         }
         if self.defer_ambiguous_dates {
             return Err(Error::DateOrderDeferred);
+        }
+        if self.collection_orders_conflict {
+            return Err(Error::Invalid(
+                "ambiguous day/month order; other files of this collection show both orders; pass --culture"
+                    .into(),
+            ));
         }
         detector.resolve(None).map_err(Error::Invalid)
     }

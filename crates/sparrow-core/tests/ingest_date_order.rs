@@ -156,9 +156,43 @@ fn conflicting_orders_in_a_collection_still_fail() {
     let f = row(&report, USERS);
     assert_eq!(f.status, FileStatus::Error);
     assert!(
-        f.warnings.iter().any(|w| w.contains("--culture")),
+        f.warnings.iter().any(|w| w.contains("--culture")
+            && w.contains("other files of this collection show both orders")),
         "{:?}",
         f.warnings
+    );
+}
+
+#[test]
+fn order_proved_by_an_earlier_run_resolves_a_new_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    month_first_evidence(&root);
+    let mut case = Case::in_memory().unwrap();
+    let opts = IngestOptions::default();
+    let first = ingest_path(&mut case, dir.path(), &ParserRegistry::builtin(), &opts).unwrap();
+    assert!(!first.has_errors(), "{first:#?}");
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM source_files WHERE rel_path = 'Tenant/eDiscoveryLogs.csv' AND date_order = 'month_first'"
+        ),
+        1
+    );
+    ambiguous_users(&root);
+    let second = ingest_path(&mut case, dir.path(), &ParserRegistry::builtin(), &opts).unwrap();
+    let f = row(&second, USERS);
+    assert_eq!((f.status, f.records_loaded), (FileStatus::Parsed, 1));
+    assert!(
+        f.warnings
+            .iter()
+            .any(|w| w.contains("month-first") && w.contains("other files of this collection")),
+        "{:?}",
+        f.warnings
+    );
+    assert_eq!(
+        count(&case, "SELECT epoch(created)::BIGINT FROM users"),
+        1788336000
     );
 }
 
