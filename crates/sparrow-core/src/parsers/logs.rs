@@ -35,13 +35,15 @@ fn cached(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
     cell.get_or_init(|| Regex::new(pattern).expect("valid regex"))
 }
 
-/// `[yyyy-MM-dd HH:mm:ssZ]` (Hawk 4, UTC) or `[M/d/yyyy h:mm:ss tt]` (Hawk 3, local time in the
-/// collecting machine's culture), then an optional `[LEVEL]` tag padded with spaces.
+/// `[yyyy-MM-dd HH:mm:ssZ]` (Hawk 4, UTC) or the collecting machine's culture `G` format
+/// (Hawk 3, local time): `[M/d/yyyy h:mm:ss tt]`, `[d.M.yyyy HH:mm:ss]`, year-first
+/// `[yyyy-MM-dd HH:mm:ss]` (sv-SE, en-CA) or `[yyyy/MM/dd HH:mm:ss]` (ja-JP, zh-CN); then an
+/// optional `[LEVEL]` tag padded with spaces.
 fn re_hawk() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     cached(
         &R,
-        r"^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\dZ|\d{1,2}[/.\-]\d{1,2}[/.\-]\d{4} \d{1,2}:\d{2}(?::\d{2})?(?:\s*[AaPp]\.?[Mm]\.?)?)\] - (?:\[(ACTION|ERROR|INVESTIGATE|INFO|WARNING|PROMPT|NOTICE)\]\s+-\s+)?(.*)$",
+        r"^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\dZ?|\d{4}/\d{1,2}/\d{1,2} \d{1,2}:\d{2}(?::\d{2})?|\d{1,2}[/.\-]\d{1,2}[/.\-]\d{4} \d{1,2}:\d{2}(?::\d{2})?(?:\s*[AaPp]\.?[Mm]\.?)?)\] - (?:\[(ACTION|ERROR|INVESTIGATE|INFO|WARNING|PROMPT|NOTICE)\]\s+-\s+)?(.*)$",
     )
 }
 
@@ -139,6 +141,11 @@ impl ArtifactParser for HawkLogParser {
                 )
             })
         });
+        if !list.is_empty() && list.iter().all(|e| e.ts_raw.is_none()) {
+            ctx.warn(
+                "no line matched a known Hawk log format; the log was stored as one untimed entry",
+            );
+        }
         let meta = HawkMeta::read(&list);
         let mut detector = DateOrderDetector::default();
         for s in list

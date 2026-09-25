@@ -441,3 +441,72 @@ fn psframework_file_without_log_columns_is_not_supported() {
         .unwrap();
     assert_eq!(f.status, FileStatus::NotSupported, "{f:#?}");
 }
+
+fn hawk_log_report(
+    report: &sparrow_core::ingest::IngestReport,
+) -> &sparrow_core::ingest::FileReport {
+    report
+        .collections
+        .iter()
+        .flat_map(|c| &c.files)
+        .find(|f| f.rel_path == "Hawk.log")
+        .expect("Hawk.log report row")
+}
+
+#[test]
+fn hawk3_log_from_a_year_first_culture_splits_into_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("cap3");
+    fixtures::write(
+        &root,
+        "Hawk.log",
+        &fixtures::utf16le_bom(concat!(
+            "[2026-09-14 14:15:00] - *** Version 3.1.0 ***\r\n",
+            "[2026/09/14 14:15:01] - [WARNING] - x\r\n",
+        )),
+    );
+    let (case, report) = ingest_dir(dir.path());
+    assert!(!report.has_errors(), "{report:#?}");
+    assert_eq!(
+        log_rows(&case, "Hawk.log"),
+        vec![
+            (None, "*** Version 3.1.0 ***".to_string(), 1789395300, true),
+            (
+                Some("WARNING".to_string()),
+                "x".to_string(),
+                1789395301,
+                true
+            ),
+        ]
+    );
+    let version: String = case
+        .conn()
+        .query_row("SELECT tool_version FROM collections", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, "3.1.0");
+    let f = hawk_log_report(&report);
+    assert!(
+        !f.warnings.iter().any(|w| w.contains("no line matched")),
+        "{:?}",
+        f.warnings
+    );
+}
+
+#[test]
+fn hawk_log_in_an_unknown_format_is_warned_about() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("cap3");
+    fixtures::write(
+        &root,
+        "Hawk.log",
+        b"14.09.2026 T14:15:00 | Version 3.1.0\r\n14.09.2026 T14:15:01 | x\r\n",
+    );
+    let (_case, report) = ingest_dir(dir.path());
+    let f = hawk_log_report(&report);
+    assert!(
+        f.warnings.iter().any(|w| w
+            == "no line matched a known Hawk log format; the log was stored as one untimed entry"),
+        "{:?}",
+        f.warnings
+    );
+}

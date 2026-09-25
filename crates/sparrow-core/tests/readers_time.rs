@@ -275,3 +275,11 @@ fn detector_reports_evidence_and_ambiguity() {
     assert_eq!((d.evidence(), d.only_ambiguous()), (None, false));
     assert!(DateOrder::DayFirst.describe().contains("day-first"));
 }
+
+#[test]
+fn parses_year_first_slash_dates_as_assumed_utc() {
+    let t = parse_timestamp("2026/09/14 14:15:01", None).unwrap();
+    assert_eq!(t.rfc3339(), "2026-09-14T14:15:01+00:00");
+    assert!(t.tz_assumed);
+    assert_eq!(iso("2026/9/4 4:05", None), "2026-09-04T04:05:00+00:00");
+}

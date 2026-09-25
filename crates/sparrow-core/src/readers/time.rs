@@ -129,7 +129,13 @@ pub fn parse_timestamp(input: &str, order: Option<DateOrder>) -> Result<ParsedTi
             tz_assumed: false,
         });
     }
-    let iso = s.trim_end_matches(['Z', 'z']).replacen(' ', "T", 1);
+    let mut iso = s.trim_end_matches(['Z', 'z']).replacen(' ', "T", 1);
+    // Year-first culture dates (ja-JP, zh-CN `G`: yyyy/MM/dd HH:mm:ss) read like ISO.
+    if s.get(..5)
+        .is_some_and(|p| p.ends_with('/') && p[..4].bytes().all(|b| b.is_ascii_digit()))
+    {
+        iso = iso.replace('/', "-");
+    }
     for (fmt, precision) in [
         ("%Y-%m-%dT%H:%M:%S%.f", Precision::Second),
         ("%Y-%m-%dT%H:%M:%S", Precision::Second),
