@@ -213,6 +213,15 @@ fn parse_culture_match(
     })
 }
 
+/// True when `s` carries no zone or offset (UTC is assumed), whatever its day/month order;
+/// also true for text that is not a timestamp.
+pub fn zone_assumed(s: &str) -> bool {
+    [None, Some(DateOrder::MonthFirst), Some(DateOrder::DayFirst)]
+        .into_iter()
+        .find_map(|o| parse_timestamp(s, o).ok())
+        .is_none_or(|t| t.tz_assumed)
+}
+
 /// Collects evidence about day/month order across a file's culture-formatted values.
 #[derive(Debug, Clone, Default)]
 pub struct DateOrderDetector {

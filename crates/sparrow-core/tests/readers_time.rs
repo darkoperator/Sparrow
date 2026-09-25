@@ -246,3 +246,16 @@ fn precision_names() {
     assert_eq!(Precision::Second.as_str(), "second");
     assert_eq!(Precision::Minute.as_str(), "minute");
 }
+
+#[test]
+fn zone_assumed_whatever_the_day_month_order() {
+    use sparrow_core::readers::time::zone_assumed;
+    assert!(zone_assumed("9/24/2026 10:00:00 AM"));
+    assert!(zone_assumed("24/9/2026 10:00:00"));
+    assert!(zone_assumed("6/9/2026 10:00:00 AM"));
+    assert!(zone_assumed("2026-09-24T10:00:00"));
+    assert!(!zone_assumed("2026-09-24T10:00:00Z"));
+    assert!(!zone_assumed("2026-09-24T10:00:00.1234567+02:00"));
+    assert!(!zone_assumed("/Date(1788336000000)/"));
+    assert!(zone_assumed("garbage"));
+}

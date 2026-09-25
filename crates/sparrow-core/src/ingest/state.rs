@@ -1,7 +1,8 @@
-//! Staged loading of keyed rows into the state tables (spec 5.2, per-column latest wins), risk
-//! detections and collector flags. Same pattern as `bulk.rs`: an appender fills a TEMP
-//! staging table (every value as text) and set-based SQL merges it inside the caller's
-//! transaction. The tables have no key constraints; this module keeps `record_key` unique.
+//! Staged loading of keyed rows into the state tables (spec 5.2, per-column latest wins), the
+//! event tables (fill missing: evidence is never overwritten), risk detections and collector
+//! flags. Same pattern as `bulk.rs`: an appender fills a TEMP staging table (every value as
+//! text) and set-based SQL merges it inside the caller's transaction. The tables have no key
+//! constraints; this module keeps `record_key` unique.
 
 use crate::db::state_tables::{Col, LoadMode, TableSpec};
 use crate::readers::text::SourcePos;
@@ -38,9 +39,9 @@ impl LoadOutcome {
     }
 }
 
-/// `expr` (staged text) cast to `sql_type`; lists and structs go through JSON.
+/// `expr` (staged text) cast to `sql_type`; lists, structs and maps go through JSON.
 fn cast(sql_type: &str, expr: &str) -> String {
-    if sql_type.ends_with("[]") || sql_type.starts_with("STRUCT") {
+    if sql_type.ends_with("[]") || sql_type.starts_with("STRUCT") || sql_type.starts_with("MAP") {
         format!("CAST(CAST({expr} AS JSON) AS {sql_type})")
     } else {
         format!("CAST({expr} AS {sql_type})")
@@ -148,10 +149,10 @@ pub fn load_rows(
     let inserted: i64 = conn.query_row("SELECT count(*) FROM stage_new", [], |r| r.get(0))?;
     let collected_at =
         format!("(SELECT collected_at FROM collections WHERE collection_id = {collection_id})");
-    let updated = if spec.mode == LoadMode::LatestWins {
-        update_existing(conn, t, &cols, collection_id, &collected_at)?
-    } else {
-        0
+    let updated = match spec.mode {
+        LoadMode::LatestWins => update_existing(conn, t, &cols, collection_id, &collected_at)?,
+        LoadMode::FillMissing => fill_missing(conn, t, &cols, collection_id)?,
+        LoadMode::InsertOnly => 0,
     };
     let names = cols.iter().map(|c| c.name).collect::<Vec<_>>().join(", ");
     let casts = cols
@@ -286,6 +287,70 @@ fn update_existing(
             sets = sets.join(", "),
             claims = claims.join(", "),
             any = any_write.join(" OR ")
+        ),
+        [],
+    )?;
+    Ok(n as u64)
+}
+
+/// Evidence tables (spec 4 "Dedup"): the stored copy of a record is never overwritten; a
+/// later copy fills only the columns that are still NULL (e.g. a portal export adding the
+/// session id a Graph export lacks). Filled columns are claimed by this collection in
+/// `column_collections`; `raw` gains only the keys it lacked. Returns the number of rows
+/// that gained a value.
+fn fill_missing(conn: &Connection, t: &str, cols: &[&Col], collection_id: i64) -> Result<u64> {
+    let fills = cols
+        .iter()
+        .enumerate()
+        .map(|(i, c)| format!("(t.{n} IS NULL AND p.v{i} IS NOT NULL) AS f{i}", n = c.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    conn.execute_batch(&format!(
+        "CREATE OR REPLACE TEMP TABLE stage_fill AS
+         SELECT p.*, {fills} FROM stage_pick p JOIN {t} t ON t.record_key = p.record_key;"
+    ))?;
+    let any = (0..cols.len())
+        .map(|i| format!("p.f{i}"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    let n: i64 = conn.query_row(
+        &format!("SELECT count(*) FROM stage_fill p WHERE {any}"),
+        [],
+        |r| r.get(0),
+    )?;
+    let sets = cols
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            format!(
+                "{n} = CASE WHEN p.f{i} THEN {v} ELSE {t}.{n} END",
+                n = c.name,
+                v = cast(c.sql_type, &format!("p.v{i}"))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let claims = cols
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            format!(
+                "'{n}', CASE WHEN p.f{i} THEN to_json({collection_id})
+                             ELSE json_extract({t}.column_collections, {path}) END",
+                n = c.name,
+                path = cc_path(c.name)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    conn.execute(
+        &format!(
+            "UPDATE {t} SET {sets},
+                 column_collections = json_merge_patch(coalesce({t}.column_collections, CAST('{{}}' AS JSON)),
+                                                       json_object({claims})),
+                 raw = CASE WHEN p.raw_patch IS NULL THEN {t}.raw
+                            ELSE json_merge_patch(CAST(p.raw_patch AS JSON), coalesce({t}.raw, CAST('{{}}' AS JSON))) END
+             FROM stage_fill p WHERE {t}.record_key = p.record_key AND ({any})"
         ),
         [],
     )?;

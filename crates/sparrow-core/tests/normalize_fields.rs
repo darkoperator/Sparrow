@@ -90,3 +90,19 @@ fn cells_stage_as_text() {
         .unwrap_err();
     assert!(err.contains("--culture"), "{err}");
 }
+
+#[test]
+fn nested_objects_are_records_with_the_same_lossiness() {
+    use sparrow_core::normalize::fields::Rec;
+    let v = serde_json::json!({"Status": {"ErrorCode": 50126, "FailureReason": "Invalid password"}, "Flat": "x"});
+    let map = v.as_object().unwrap();
+    let rec = Rec::new(map, false);
+    let status = rec.object("status").unwrap();
+    assert_eq!(status.int("ErrorCode"), Some(50126));
+    assert_eq!(
+        status.text("FailureReason").as_deref(),
+        Some("Invalid password")
+    );
+    assert!(rec.object("Flat").is_none());
+    assert!(rec.object("Missing").is_none());
+}

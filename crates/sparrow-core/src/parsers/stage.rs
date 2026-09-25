@@ -1,13 +1,13 @@
 //! Shared plumbing for the state-table parsers: collect rows per table, resolve culture
 //! date order across the whole file, stage the cells and load them.
 
-use crate::db::state_tables::TableSpec;
+use crate::db::state_tables::{LoadMode, TableSpec};
 use crate::ingest::context::ParseContext;
 use crate::ingest::state::{StagedRow, load_rows};
 use crate::normalize::fields::{Cell, Rec};
 use crate::parsers::records::{RecordFormat, SourceRecord, placeholder_warning, read_records};
 use crate::readers::text::Span;
-use crate::readers::time::DateOrderDetector;
+use crate::readers::time::{DateOrder, DateOrderDetector, parse_timestamp};
 use crate::{Error, Result};
 use serde_json::Value;
 
@@ -101,6 +101,44 @@ pub fn reject(ctx: &mut ParseContext<'_>, r: &SourceRecord, msg: &str) -> Result
     ctx.parse_error(r.ordinal, r.span, msg)
 }
 
+/// Cells addressed by column name, in the order of `columns`; unset columns stay NULL.
+pub struct CellRow {
+    columns: &'static [&'static str],
+    cells: Vec<Cell>,
+}
+
+impl CellRow {
+    pub fn new(columns: &'static [&'static str]) -> Self {
+        CellRow {
+            columns,
+            cells: vec![Cell::Null; columns.len()],
+        }
+    }
+
+    /// Set `column`. Panics on a name not in `columns` (a programming error).
+    pub fn set(&mut self, column: &str, cell: Cell) -> &mut Self {
+        let i = self
+            .columns
+            .iter()
+            .position(|c| *c == column)
+            .unwrap_or_else(|| panic!("no column {column}"));
+        self.cells[i] = cell;
+        self
+    }
+
+    pub fn into_cells(self) -> Vec<Cell> {
+        self.cells
+    }
+}
+
+/// `s` as UTC `YYYY-MM-DDTHH:MM:SSZ` (sub-seconds dropped) for record keys built from a
+/// time; the trimmed text when it cannot be parsed (the row then fails when staged).
+pub fn key_time(s: &str, order: Option<DateOrder>) -> String {
+    parse_timestamp(s, order)
+        .map(|t| t.utc.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .unwrap_or_else(|_| s.trim().to_string())
+}
+
 /// Resolve the file's day/month order from every time cell, stage every row (a time that
 /// cannot be parsed makes that row a parse error) and load each table.
 pub fn load_tables(ctx: &mut ParseContext<'_>, tables: Vec<TableRows>) -> Result<()> {
@@ -136,9 +174,10 @@ pub fn load_tables(ctx: &mut ParseContext<'_>, tables: Vec<TableRows>) -> Result
                 }
             }
         }
+        let spec = t.spec;
         let out = load_rows(
             ctx.conn,
-            t.spec,
+            spec,
             t.columns,
             ctx.collection_id,
             ctx.file_id,
@@ -146,6 +185,12 @@ pub fn load_tables(ctx: &mut ParseContext<'_>, tables: Vec<TableRows>) -> Result
         )?;
         ctx.stats.loaded += out.inserted + out.updated;
         ctx.stats.duplicate += out.duplicate();
+        if spec.mode == LoadMode::FillMissing && out.updated > 0 {
+            ctx.warn(format!(
+                "{} {} records filled values missing from copies loaded earlier",
+                out.updated, spec.table
+            ));
+        }
     }
     Ok(())
 }

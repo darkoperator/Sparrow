@@ -1,6 +1,7 @@
 use duckdb::params;
 use sparrow_core::db::state_tables::{
-    COLLECTOR_FLAGS, INBOX_RULES, MAILBOXES, REMOTE_DOMAINS, RISK_DETECTIONS,
+    ADMIN_AUDIT_EVENTS, COLLECTOR_FLAGS, INBOX_RULES, MAILBOXES, REMOTE_DOMAINS, RISK_DETECTIONS,
+    SIGNINS,
 };
 use sparrow_core::ingest::IngestOptions;
 use sparrow_core::ingest::context::ParseContext;
@@ -783,4 +784,180 @@ fn merged_raw_ignores_top_level_nulls() {
         ),
         "x|Disabled"
     );
+}
+
+fn signin(
+    ord: u64,
+    key: &str,
+    upn: Option<&str>,
+    app: Option<&str>,
+    session: Option<&str>,
+) -> StagedRow {
+    StagedRow {
+        ordinal: ord,
+        pos: SourcePos {
+            line_start: 1 + ord as u32,
+            line_end: 1 + ord as u32,
+            byte_offset: ord * 10,
+            byte_length: 10,
+        },
+        raw_sha256: format!("s{ord}"),
+        record_key: key.into(),
+        cells: vec![
+            Some(key.into()),
+            upn.map(Into::into),
+            app.map(Into::into),
+            session.map(Into::into),
+        ],
+        raw: Some(format!("{{\"Id\":\"{key}\",\"Ord\":{ord}}}")),
+    }
+}
+
+const SIGNIN_COLS: &[&str] = &["signin_id", "user_upn", "app_name", "session_id"];
+
+#[test]
+fn fill_missing_keeps_the_first_copy_and_fills_nulls() {
+    let case = Case::in_memory().unwrap();
+    let c1 = collection(&case, "a", Some("2026-09-10T00:00:00Z"));
+    let c2 = collection(&case, "b", Some("2026-09-20T00:00:00Z"));
+    let first = load_rows(
+        case.conn(),
+        &SIGNINS,
+        SIGNIN_COLS,
+        c1,
+        file(&case, c1),
+        &[signin(0, "s1", Some("alice@contoso.example"), None, None)],
+    )
+    .unwrap();
+    assert_eq!((first.inserted, first.updated), (1, 0));
+    // A newer copy with a different UPN and the app name: the UPN stays, the app name fills.
+    let second = load_rows(
+        case.conn(),
+        &SIGNINS,
+        SIGNIN_COLS,
+        c2,
+        file(&case, c2),
+        &[signin(
+            1,
+            "s1",
+            Some("mallory@fabrikam.example"),
+            Some("Outlook"),
+            None,
+        )],
+    )
+    .unwrap();
+    assert_eq!(
+        (second.inserted, second.updated, second.duplicate()),
+        (0, 1, 0)
+    );
+    assert_eq!(
+        text(
+            &case,
+            "SELECT user_upn || '|' || app_name || '|' || collection_id FROM signins"
+        ),
+        format!("alice@contoso.example|Outlook|{c1}")
+    );
+    assert_eq!(
+        count(
+            &case,
+            &format!(
+                "SELECT count(*) FROM signins WHERE (column_collections->>'$.app_name' = '{c2}') AND (column_collections->>'$.user_upn' = '{c1}')"
+            )
+        ),
+        1
+    );
+    assert_eq!(text(&case, "SELECT raw->>'$.Ord' FROM signins"), "0");
+    // The same copy again only adds a sighting.
+    let third = load_rows(
+        case.conn(),
+        &SIGNINS,
+        SIGNIN_COLS,
+        c2,
+        file(&case, c2),
+        &[signin(
+            1,
+            "s1",
+            Some("mallory@fabrikam.example"),
+            Some("Outlook"),
+            None,
+        )],
+    )
+    .unwrap();
+    assert_eq!(
+        (third.inserted, third.updated, third.duplicate()),
+        (0, 0, 1)
+    );
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM record_sources WHERE table_name = 'signins'"
+        ),
+        3
+    );
+}
+
+#[test]
+fn map_columns_load_from_json_objects() {
+    let case = Case::in_memory().unwrap();
+    let c = collection(&case, "a", None);
+    let row = StagedRow {
+        cells: vec![
+            Some("New-InboxRule".into()),
+            Some(r#"{"ForwardTo":"x@fabrikam.example","Name":"r"}"#.into()),
+        ],
+        ..signin(0, "k", None, None, None)
+    };
+    load_rows(
+        case.conn(),
+        &ADMIN_AUDIT_EVENTS,
+        &["cmdlet", "parameters"],
+        c,
+        file(&case, c),
+        &[row],
+    )
+    .unwrap();
+    assert_eq!(
+        text(
+            &case,
+            "SELECT parameters['ForwardTo'] FROM admin_audit_events"
+        ),
+        "x@fabrikam.example"
+    );
+}
+
+#[test]
+fn cell_row_sets_cells_by_column_name() {
+    use sparrow_core::parsers::stage::CellRow;
+    let mut r = CellRow::new(&["a", "b", "c"]);
+    r.set("c", Cell::int(Some(3)))
+        .set("a", Cell::text(Some("x".into())));
+    assert_eq!(
+        r.into_cells(),
+        vec![Cell::Text("x".into()), Cell::Null, Cell::Int(3)]
+    );
+}
+
+#[test]
+#[should_panic(expected = "no column nope")]
+fn cell_row_rejects_unknown_columns() {
+    sparrow_core::parsers::stage::CellRow::new(&["a"]).set("nope", Cell::Null);
+}
+
+#[test]
+fn key_time_is_utc_seconds_whatever_the_source_form() {
+    use sparrow_core::parsers::stage::key_time;
+    use sparrow_core::readers::time::DateOrder;
+    assert_eq!(
+        key_time("9/2/2026 8:00:00 AM", Some(DateOrder::MonthFirst)),
+        "2026-09-02T08:00:00Z"
+    );
+    assert_eq!(
+        key_time("/Date(1788336000123)/", None),
+        "2026-09-02T08:00:00Z"
+    );
+    assert_eq!(
+        key_time("2026-09-02T10:00:00+02:00", None),
+        "2026-09-02T08:00:00Z"
+    );
+    assert_eq!(key_time("  not a time ", None), "not a time");
 }

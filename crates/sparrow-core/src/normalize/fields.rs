@@ -37,6 +37,18 @@ impl<'a> Rec<'a> {
         get_ci(self.map, key).is_some()
     }
 
+    /// Nested object `key` as a record with the same lossiness; `None` when missing or not
+    /// an object (CSV cells holding a .NET type name are not objects).
+    pub fn object(&self, key: &str) -> Option<Rec<'a>> {
+        match get_ci(self.map, key)? {
+            Value::Object(m) => Some(Rec {
+                map: m,
+                lossy: self.lossy,
+            }),
+            _ => None,
+        }
+    }
+
     fn scalar(&self, v: &Value) -> Option<String> {
         let s = match v {
             Value::String(s) => s.trim().to_string(),
