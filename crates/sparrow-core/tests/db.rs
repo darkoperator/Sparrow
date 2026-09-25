@@ -43,6 +43,7 @@ fn fresh_case_has_provenance_tables() {
             "directory_audits",
             "file_events",
             "inbox_rules",
+            "licenses",
             "mail_items_accessed",
             "mailbox_audit_legacy",
             "mailbox_permissions",
@@ -67,6 +68,7 @@ fn fresh_case_has_provenance_tables() {
             "tenant_settings",
             "transport_rules",
             "ual_events",
+            "user_licenses",
             "users"
         ]
     );

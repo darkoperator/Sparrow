@@ -2,9 +2,12 @@
 //! `## Tag ##` section lines and a `*** Version X ***` line), the PSFramework log export Hawk 3
 //! wrote (`<date>_logs.csv`) and Microsoft-Extractor-Suite `LogFile.txt`.
 
+use crate::db::state_tables::LICENSES;
 use crate::ingest::context::ParseContext;
 use crate::ingest::parser::{ArtifactParser, ParserRegistry};
+use crate::normalize::fields::Cell;
 use crate::normalize::ual_shape::get_ci;
+use crate::parsers::stage::{RowDraft, TableRows, load_tables};
 use crate::readers::csv_scan::read_csv;
 use crate::readers::text::{Span, line_spans};
 use crate::readers::time::{DateOrder, DateOrderDetector, parse_timestamp};
@@ -272,6 +275,11 @@ fn re_meta_end() -> &'static Regex {
     cached(&R, r"(?i)^End Date\s*:\s*(.+)$")
 }
 
+fn re_meta_license() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    cached(&R, r"(?i)^M365 License type detected:\s*(\S+)")
+}
+
 /// Collection facts Hawk writes into its log.
 #[derive(Debug, Default)]
 struct HawkMeta {
@@ -279,6 +287,8 @@ struct HawkMeta {
     tenant: Option<String>,
     start_raw: Option<String>,
     end_raw: Option<String>,
+    /// The licence tier and the span of the log entry it came from.
+    license: Option<(String, Span)>,
 }
 
 impl HawkMeta {
@@ -296,6 +306,11 @@ impl HawkMeta {
                 .or_else(|| capture(re_meta_start(), msg))
                 .or_else(|| capture(re_meta_start_set(), msg));
             m.end_raw = m.end_raw.or_else(|| capture(re_meta_end(), msg));
+            if m.license.is_none() {
+                if let Some(tier) = capture(re_meta_license(), msg) {
+                    m.license = Some((tier, e.span));
+                }
+            }
         }
         let strip = |s: String| s.trim_end_matches(['Z', 'z']).trim().to_string();
         m.start_raw = m.start_raw.map(strip);
@@ -333,6 +348,27 @@ impl HawkMeta {
                 ctx.collection_id
             ],
         )?;
+        if let Some((tier, span)) = &self.license {
+            let tier = tier.trim_end_matches('.').to_string();
+            let mut rows = TableRows::new(&LICENSES, &["source", "license_tier", "confidence"]);
+            rows.push_draft(RowDraft {
+                ordinal: 0,
+                span: *span,
+                record_key: format!("{}|hawk_log|{}", ctx.collection_id, tier.to_lowercase()),
+                cells: vec![
+                    Cell::text(Some("hawk_log".into())),
+                    Cell::text(Some(tier)),
+                    Cell::text(Some("low".into())),
+                ],
+                raw: None,
+                sheet_row: None,
+            });
+            load_tables(ctx, vec![rows])?;
+            // The licence row is a second view of the log entry already counted by `store`;
+            // undo the extra read/loaded count `load_tables` added for it.
+            ctx.stats.read -= 1;
+            ctx.stats.loaded -= 1;
+        }
         Ok(())
     }
 }

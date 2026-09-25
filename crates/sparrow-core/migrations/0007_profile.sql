@@ -166,3 +166,49 @@ COMMENT ON COLUMN tenant_settings_current.name IS 'tenant_settings.name, in the 
 COMMENT ON COLUMN tenant_settings_current.value IS 'tenant_settings.value from the newest collection to report this (tenant, source, lower(name)).';
 COMMENT ON COLUMN tenant_settings_current.collection_id IS 'Collection whose row won.';
 COMMENT ON COLUMN tenant_settings_current.collected_at IS 'collections.collected_at of the winning collection.';
+
+-- Task 4: licences.
+CREATE TYPE license_confidence AS ENUM ('high', 'low');
+CREATE TABLE licenses (
+    record_key VARCHAR NOT NULL, collection_id BIGINT NOT NULL, collected_at TIMESTAMPTZ,
+    source VARCHAR, sku_part_number VARCHAR, sku_id VARCHAR, license_tier VARCHAR,
+    capability_status VARCHAR, consumed_units INTEGER, enabled_units INTEGER,
+    service_plans VARCHAR[], confidence license_confidence, raw JSON, column_collections JSON,
+    tz_assumed JSON
+);
+CREATE TABLE user_licenses (
+    record_key VARCHAR NOT NULL, collection_id BIGINT NOT NULL, collected_at TIMESTAMPTZ,
+    source VARCHAR, upn VARCHAR, user_id VARCHAR, sku_part_number VARCHAR, sku_id VARCHAR,
+    service_plans VARCHAR[], raw JSON, column_collections JSON, tz_assumed JSON
+);
+
+COMMENT ON TABLE licenses IS 'Tenant licences reported by one collection. High confidence: Microsoft-Extractor-Suite TenantLicenses.csv (Graph subscribedSkus with service plans; parser planned for Phase 5). Low confidence: the Hawk.log line "M365 License type detected: <tier>", which Hawk derives from SKU-name substrings (E5 is also logged for Office 365 E5, which lacks Entra ID P1/P2; Microsoft 365 E3 is logged Unknown). tenant_capabilities interprets them.';
+COMMENT ON COLUMN licenses.record_key IS '<collection_id>|<source>|<lower sku_part_number or tier>.';
+COMMENT ON COLUMN licenses.collection_id IS 'Newest collection that wrote or re-confirmed any of this row''s columns (per-column writers: column_collections).';
+COMMENT ON COLUMN licenses.collected_at IS 'collected_at of that collection (NULL when unknown).';
+COMMENT ON COLUMN licenses.source IS 'hawk_log or invictus_tenant_licenses.';
+COMMENT ON COLUMN licenses.sku_part_number IS 'Graph SkuPartNumber; NULL for the Hawk tier.';
+COMMENT ON COLUMN licenses.sku_id IS 'Graph SkuId; NULL for the Hawk tier.';
+COMMENT ON COLUMN licenses.license_tier IS 'The Hawk tier (E5, G5, E3, G3, Unknown); NULL for SKU rows.';
+COMMENT ON COLUMN licenses.capability_status IS 'Graph capabilityStatus (Enabled, Warning, Suspended, Deleted, LockedOut).';
+COMMENT ON COLUMN licenses.consumed_units IS 'Assigned units when reported.';
+COMMENT ON COLUMN licenses.enabled_units IS 'Purchased units when reported.';
+COMMENT ON COLUMN licenses.service_plans IS 'Service plan names in the SKU (only plans whose provisioningStatus is Success when the source says).';
+COMMENT ON COLUMN licenses.confidence IS 'high for SKU lists with service plans, low for the Hawk tier.';
+COMMENT ON COLUMN licenses.raw IS 'Source record as loaded.';
+COMMENT ON COLUMN licenses.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
+COMMENT ON COLUMN licenses.tz_assumed IS 'Object {column: true} naming each time column whose value came without a time zone and was stored as if UTC (for example Hawk WhenChanged or AutoReply StartTime, written in the collecting host''s local time). Per column like column_collections: the load that writes a column sets or clears its entry. NULL for rows loaded before schema 7 or loads without a time column.';
+
+COMMENT ON TABLE user_licenses IS 'Licences assigned to users, per collection (Microsoft-Extractor-Suite UserLicenses.csv; parser planned for Phase 5). Empty until then.';
+COMMENT ON COLUMN user_licenses.record_key IS '<collection_id>|<lower upn>|<lower sku>.';
+COMMENT ON COLUMN user_licenses.collection_id IS 'Newest collection that wrote or re-confirmed any of this row''s columns (per-column writers: column_collections).';
+COMMENT ON COLUMN user_licenses.collected_at IS 'collected_at of that collection (NULL when unknown).';
+COMMENT ON COLUMN user_licenses.source IS 'invictus_user_licenses (Microsoft-Extractor-Suite UserLicenses.csv; parser planned for Phase 5).';
+COMMENT ON COLUMN user_licenses.upn IS 'User principal name the licence is assigned to.';
+COMMENT ON COLUMN user_licenses.user_id IS 'Entra user id the licence is assigned to.';
+COMMENT ON COLUMN user_licenses.sku_part_number IS 'Graph SkuPartNumber.';
+COMMENT ON COLUMN user_licenses.sku_id IS 'Graph SkuId.';
+COMMENT ON COLUMN user_licenses.service_plans IS 'Service plan names assigned to the user from this SKU.';
+COMMENT ON COLUMN user_licenses.raw IS 'Source record as loaded.';
+COMMENT ON COLUMN user_licenses.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
+COMMENT ON COLUMN user_licenses.tz_assumed IS 'Object {column: true} naming each time column whose value came without a time zone and was stored as if UTC (for example Hawk WhenChanged or AutoReply StartTime, written in the collecting host''s local time). Per column like column_collections: the load that writes a column sets or clears its entry. NULL for rows loaded before schema 7 or loads without a time column.';

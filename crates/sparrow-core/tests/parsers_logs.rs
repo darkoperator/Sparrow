@@ -493,6 +493,71 @@ fn hawk3_log_from_a_year_first_culture_splits_into_entries() {
 }
 
 #[test]
+fn hawk_licence_line_becomes_a_low_confidence_licence_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join(sparrow_core::fixtures::HAWK_ROOT_NAME);
+    sparrow_core::fixtures::write(
+        &root,
+        "Hawk.log",
+        sparrow_core::fixtures::HAWK_LOG.as_bytes(),
+    );
+    let mut case = sparrow_core::Case::in_memory().unwrap();
+    let report = sparrow_core::ingest::ingest_path(
+        &mut case,
+        dir.path(),
+        &sparrow_core::ingest::parser::ParserRegistry::builtin(),
+        &sparrow_core::ingest::IngestOptions::default(),
+    )
+    .unwrap();
+    assert!(!report.has_errors(), "{report:#?}");
+    let row: (String, String, String, Option<String>) = case
+        .conn()
+        .query_row(
+            "SELECT record_key, license_tier, CAST(confidence AS VARCHAR), sku_part_number FROM licenses",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        row,
+        ("1|hawk_log|e5".into(), "E5".into(), "low".into(), None)
+    );
+    let line: i64 = case
+        .conn()
+        .query_row(
+            "SELECT line_start FROM record_sources WHERE table_name = 'licenses'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(line, 7);
+}
+
+#[test]
+fn hawk_log_without_a_licence_line_writes_no_licence_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join(sparrow_core::fixtures::HAWK_ROOT_NAME);
+    sparrow_core::fixtures::write(
+        &root,
+        "Hawk.log",
+        b"[2026-09-10 14:15:00Z] - [INFO]   - Failed to detect license type. Max days of log retention is unknown.\r\n",
+    );
+    let mut case = sparrow_core::Case::in_memory().unwrap();
+    sparrow_core::ingest::ingest_path(
+        &mut case,
+        dir.path(),
+        &sparrow_core::ingest::parser::ParserRegistry::builtin(),
+        &sparrow_core::ingest::IngestOptions::default(),
+    )
+    .unwrap();
+    let n: i64 = case
+        .conn()
+        .query_row("SELECT count(*) FROM licenses", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 0);
+}
+
+#[test]
 fn hawk_log_in_an_unknown_format_is_warned_about() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("cap3");

@@ -510,6 +510,35 @@ pub static MAILBOX_PERMISSIONS: TableSpec = TableSpec {
     ],
 };
 
+pub static LICENSES: TableSpec = TableSpec {
+    table: "licenses",
+    mode: LoadMode::LatestWins,
+    columns: &[
+        col("source", V),
+        col("sku_part_number", V),
+        col("sku_id", V),
+        col("license_tier", V),
+        col("capability_status", V),
+        col("consumed_units", I),
+        col("enabled_units", I),
+        col("service_plans", L),
+        col("confidence", "license_confidence"),
+    ],
+};
+
+pub static USER_LICENSES: TableSpec = TableSpec {
+    table: "user_licenses",
+    mode: LoadMode::LatestWins,
+    columns: &[
+        col("source", V),
+        col("upn", V),
+        col("user_id", V),
+        col("sku_part_number", V),
+        col("sku_id", V),
+        col("service_plans", L),
+    ],
+};
+
 pub static ALL: &[&TableSpec] = &[
     &USERS,
     &ROLE_ASSIGNMENTS,
@@ -531,4 +560,6 @@ pub static ALL: &[&TableSpec] = &[
     &MAILBOX_AUDIT_LEGACY,
     &ADMIN_AUDIT_EVENTS,
     &MAILBOX_PERMISSIONS,
+    &LICENSES,
+    &USER_LICENSES,
 ];
