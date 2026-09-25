@@ -19,8 +19,10 @@ use crate::parsers::stage::{
     unsupported,
 };
 use crate::readers::time::{DateOrder, zone_assumed};
+use duckdb::OptionalExt;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub fn register(r: &mut ParserRegistry) {
     r.register("hawk.tenant.admin_audit", Box::new(AdminAuditParser));
@@ -100,6 +102,79 @@ fn parameters(rec: &Rec) -> Option<Value> {
     (!map.is_empty()).then_some(Value::Object(map))
 }
 
+/// Parameters as JSON with the names sorted (basis of the `#` key suffix and of comparisons).
+fn canonical_parameters(params: &Value) -> String {
+    let sorted: BTreeMap<&String, &Value> = params
+        .as_object()
+        .map(|m| m.iter().collect())
+        .unwrap_or_default();
+    serde_json::to_string(&sorted).unwrap_or_default()
+}
+
+/// Canonical parameters of the stored row with record key `key`; `None` without such a row or
+/// when it has no parameters.
+fn stored_parameters(ctx: &ParseContext<'_>, key: &str) -> Result<Option<String>> {
+    let text: Option<Option<String>> = ctx
+        .conn
+        .query_row(
+            "SELECT to_json(parameters)::VARCHAR FROM admin_audit_events WHERE record_key = ?",
+            [key],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(text
+        .flatten()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .map(|v| canonical_parameters(&v)))
+}
+
+/// Record keys of commands sharing a base key (`admin_audit_key`) but not their parameters.
+/// The row holding the base key keeps it; a command whose parameters differ from that row's
+/// gets `<base>#<first 12 hex chars of SHA-256 of its canonical parameters>`. Commands
+/// without parameters (summaries, CSV, Format-List) always take the base key.
+#[derive(Default)]
+struct KeyDisambiguator {
+    /// Base key -> canonical parameters of the row holding it (batch or stored).
+    base: HashMap<String, Option<String>>,
+    /// Suffixed keys handed out.
+    split: HashSet<String>,
+}
+
+impl KeyDisambiguator {
+    fn key(
+        &mut self,
+        ctx: &ParseContext<'_>,
+        base: String,
+        params: Option<&Value>,
+    ) -> Result<String> {
+        let Some(params) = params else {
+            return Ok(base);
+        };
+        let canon = canonical_parameters(params);
+        let known = match self.base.get_mut(&base) {
+            Some(k) => k,
+            None => {
+                let stored = stored_parameters(ctx, &base)?;
+                self.base.entry(base.clone()).or_insert(stored)
+            }
+        };
+        match known {
+            None => {
+                // The base row has no parameters yet: this command fills them.
+                *known = Some(canon);
+                Ok(base)
+            }
+            Some(k) if *k == canon => Ok(base),
+            Some(_) => {
+                let hash = hex::encode(Sha256::digest(canon.as_bytes()));
+                let key = format!("{base}#{}", &hash[..12]);
+                self.split.insert(key.clone());
+                Ok(key)
+            }
+        }
+    }
+}
+
 const COLS: &[&str] = &[
     "run_time",
     "time_tz_assumed",
@@ -135,12 +210,15 @@ pub fn load_admin_audit(
     let order = file_date_order(ctx, dates.iter().map(String::as_str))?;
     let completeness = if simple || lossy { "partial" } else { "full" };
     let mut rows = TableRows::new(&ADMIN_AUDIT_EVENTS, COLS);
+    let mut keys = KeyDisambiguator::default();
     for r in records {
         let rec = Rec::new(&r.map, lossy);
-        let Some(key) = admin_audit_key(&rec, order) else {
+        let Some(base) = admin_audit_key(&rec, order) else {
             reject(ctx, r, "admin audit record has no cmdlet or run date")?;
             continue;
         };
+        let params = parameters(&rec);
+        let key = keys.key(ctx, base, params.as_ref())?;
         let run = run_date(&rec);
         // The summary's RunDate(UTC) is UTC even though it carries no zone.
         let tz_assumed = run.as_deref().map(|s| !simple && zone_assumed(s));
@@ -156,7 +234,7 @@ pub fn load_admin_audit(
                 Cell::text(rec.first_text(&["CmdletName", "Cmdlet"])),
             )
             .set("object_modified", Cell::text(rec.text("ObjectModified")))
-            .set("parameters", Cell::json(parameters(&rec)))
+            .set("parameters", Cell::json(params))
             .set(
                 "modified_properties",
                 Cell::json(
@@ -184,6 +262,12 @@ pub fn load_admin_audit(
                 Cell::text(Some(completeness.to_string())),
             );
         rows.push(r, key, c.into_cells());
+    }
+    if !keys.split.is_empty() {
+        ctx.warn(format!(
+            "{} admin audit commands share a second, cmdlet, object and caller but differ in parameters; they are kept as separate rows (record_key suffixed with #<parameter hash>)",
+            keys.split.len()
+        ));
     }
     if simple && !records.is_empty() {
         ctx.warn(

@@ -319,3 +319,99 @@ fn hawk_caller_and_object_shortening() {
     assert_eq!(short_object(Some("Rule1")), "Rule1");
     assert_eq!(short_object(None), "");
 }
+
+/// Add-MailboxPermission on `victim` by the same caller in the same second, granting `user`.
+fn grant(user: &str) -> Value {
+    json!({
+        "ObjectModified": "victim", "CmdletName": "Add-MailboxPermission",
+        "CmdletParameters": [{"Name": "Identity", "Value": "victim"}, {"Name": "User", "Value": user},
+                             {"Name": "AccessRights", "Value": "FullAccess"}],
+        "ModifiedProperties": [], "Caller": "Admin@contoso.example", "ExternalAccess": false,
+        "Succeeded": true, "Error": "", "RunDate": "/Date(1789372800000)/",
+        "OriginatingServer": "SRV01", "ClientIP": "198.51.100.7", "SessionId": "s-3",
+        "AppId": null, "ClientAppId": null
+    })
+}
+
+#[test]
+fn commands_differing_only_in_parameters_stay_separate_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    let rel = "Tenant/RBAC_Changes.json";
+    ps51(&root, rel, &json!([grant("a"), grant("b")]));
+    let (case, report) = ingest(dir.path());
+    assert!(!report.has_errors(), "{report:#?}");
+    let f = row(&report, rel);
+    assert_eq!((f.records_loaded, f.records_duplicate), (2, 0), "{f:#?}");
+    assert!(
+        f.warnings.iter().any(|w| w.starts_with(
+            "1 admin audit commands share a second, cmdlet, object and caller but differ in parameters"
+        )),
+        "{:?}",
+        f.warnings
+    );
+    assert_eq!(
+        text(
+            &case,
+            "SELECT string_agg(parameters['User'], ',' ORDER BY parameters['User']) FROM admin_audit_events"
+        ),
+        "a,b"
+    );
+    // The first keeps the base key; the second gets it suffixed with its parameters' hash.
+    let base = text(
+        &case,
+        "SELECT record_key FROM admin_audit_events WHERE parameters['User'] = 'a'",
+    );
+    let other = text(
+        &case,
+        "SELECT record_key FROM admin_audit_events WHERE parameters['User'] = 'b'",
+    );
+    assert_eq!(base.len(), 64);
+    assert_eq!(other.len(), 64 + 13);
+    assert!(other.starts_with(&format!("{base}#")), "{base} {other}");
+}
+
+#[test]
+fn identical_commands_merge_into_one_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    let rel = "Tenant/RBAC_Changes.json";
+    ps51(&root, rel, &json!([grant("a"), grant("a")]));
+    let (case, report) = ingest(dir.path());
+    assert!(!report.has_errors(), "{report:#?}");
+    let f = row(&report, rel);
+    assert_eq!((f.records_loaded, f.records_duplicate), (1, 1), "{f:#?}");
+    assert!(
+        !f.warnings
+            .iter()
+            .any(|w| w.contains("differ in parameters")),
+        "{:?}",
+        f.warnings
+    );
+    assert_eq!(count(&case, "SELECT count(*) FROM admin_audit_events"), 1);
+}
+
+#[test]
+fn a_command_differing_from_a_stored_one_in_parameters_gets_its_own_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    ps51(&root, "Tenant/RBAC_Changes.json", &json!([grant("a")]));
+    ps51(&root, "Tenant/Set_InboxRules.json", &json!([grant("b")]));
+    let (case, report) = ingest(dir.path());
+    assert!(!report.has_errors(), "{report:#?}");
+    assert_eq!(count(&case, "SELECT count(*) FROM admin_audit_events"), 2);
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM admin_audit_events WHERE contains(record_key, '#')"
+        ),
+        1
+    );
+    assert_eq!(
+        text(
+            &case,
+            "SELECT string_agg(parameters['User'], ',' ORDER BY parameters['User']) FROM admin_audit_events"
+        ),
+        "a,b"
+    );
+}
