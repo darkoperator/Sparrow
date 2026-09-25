@@ -193,7 +193,7 @@ fn human_output_for_ingest_mentions_statuses() {
         .success()
         .stdout(contains("Hawk.log"))
         .stdout(contains("parsed"))
-        .stdout(contains("not_supported"));
+        .stdout(contains("unrecognized"));
 }
 
 #[cfg(unix)]

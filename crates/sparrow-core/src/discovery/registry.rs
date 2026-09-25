@@ -88,7 +88,7 @@ static DEFS: &[ArtifactDef] = &[
         Hawk,
         "collector_flags",
         false,
-        r"(?:[^/]+/)?_Investigate_[^/]+\.(?:csv|json|txt)"
+        r"(?:(?P<subject>[^/]+@[^/]+)/|[^/]+/)?_Investigate_[^/]+\.(?:csv|json|txt)"
     ),
     def!(
         "hawk.psframework_log",

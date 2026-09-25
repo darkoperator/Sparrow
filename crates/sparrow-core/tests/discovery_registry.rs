@@ -16,7 +16,7 @@ const SAMPLES: &[(Tool, &str, &str, Option<&str>)] = &[
         Hawk,
         "alice@contoso.example/_Investigate_InboxRules_alice.csv",
         "hawk.investigate_file",
-        None,
+        Some("alice@contoso.example"),
     ),
     (
         Hawk,

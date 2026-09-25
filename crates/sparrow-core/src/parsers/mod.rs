@@ -3,6 +3,7 @@
 pub mod apps;
 pub mod directory;
 pub mod exchange;
+pub mod flags;
 pub mod logs;
 pub mod mailbox;
 pub mod records;
@@ -22,4 +23,5 @@ pub fn register_builtin(registry: &mut ParserRegistry) {
     exchange::register(registry);
     mailbox::register(registry);
     tenant_config::register(registry);
+    flags::register(registry);
 }
