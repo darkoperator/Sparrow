@@ -1,6 +1,8 @@
 //! Entra ID sign-ins (spec 5.1 `signins`): Hawk `Entra_Sign_In_Log_*` (Get-MgAuditLogSignIn
-//! objects as JSON, or a CSV whose nested columns are .NET type names) and the Entra admin
-//! center sign-in export (CSV or XLSX). The record shape comes from the keys. Every source keys
+//! objects as JSON, or a CSV whose nested columns are .NET type names), the Entra admin
+//! center sign-in export (CSV or XLSX), and Microsoft-Extractor-Suite's
+//! Get-GraphEntraSignInLogs (beta `/auditLogs/signIns` REST JSON, one page per file under
+//! `EntraID/<ts>-SignInLogs/<type>/`). The record shape comes from the keys. Every source keys
 //! a sign-in by its lower-cased id (the portal's Request ID), so copies from several sources
 //! are one row that each source fills where the others lack a value.
 
@@ -25,6 +27,8 @@ use serde_json::{Map, Value, json};
 pub fn register(r: &mut ParserRegistry) {
     r.register("hawk.user.entra_signin", Box::new(SigninsParser));
     r.register("portal.entra_signins", Box::new(SigninsParser));
+    r.register("inv.signins", Box::new(SigninsParser));
+    r.register("inv.signins.merged", Box::new(SigninsParser));
 }
 
 /// signins.record_key: the sign-in id (Graph `Id`, portal `Request ID`), lower-case. The
@@ -250,13 +254,35 @@ fn portal_location(text: Option<String>) -> Option<Value> {
     }))
 }
 
+/// Graph SDK objects (Hawk) name it `RiskEventTypesV2`, the REST JSON `riskEventTypes_v2`;
+/// the legacy `riskEventTypes` is the fallback.
 fn risk_event_types(rec: &Rec) -> Vec<String> {
-    let v2 = rec.list("RiskEventTypesV2");
-    if v2.is_empty() {
-        rec.list("RiskEventTypes")
-    } else {
-        v2
-    }
+    ["RiskEventTypesV2", "RiskEventTypes_v2", "RiskEventTypes"]
+        .into_iter()
+        .map(|k| rec.list(k))
+        .find(|v| !v.is_empty())
+        .unwrap_or_default()
+}
+
+/// Beta `signInEventTypes` (Microsoft-Extractor-Suite reads /beta/auditLogs/signIns), else
+/// `isInteractive` (v1.0 objects, such as Hawk's, have no event types).
+fn graph_event_type(rec: &Rec) -> Option<String> {
+    let typed =
+        rec.list("SignInEventTypes")
+            .iter()
+            .find_map(|t| match t.to_ascii_lowercase().as_str() {
+                "interactiveuser" => Some("interactive"),
+                "noninteractiveuser" => Some("noninteractive"),
+                "serviceprincipal" => Some("service_principal"),
+                "managedidentity" => Some("managed_identity"),
+                _ => None,
+            });
+    typed
+        .or_else(|| {
+            rec.bool("IsInteractive")
+                .map(|i| if i { "interactive" } else { "noninteractive" })
+        })
+        .map(Into::into)
 }
 
 /// Graph beta `authenticationDetails[].authenticationMethod`, distinct, in order.
@@ -282,6 +308,13 @@ fn graph_row(rec: &Rec) -> Vec<Cell> {
     let error_code = status.as_ref().and_then(|s| s.int("ErrorCode"));
     let interactive = rec.bool("IsInteractive");
     let time = rec.text("CreatedDateTime");
+    let mfa = rec.object("MfaDetail");
+    let mut methods = graph_auth_methods(rec);
+    if let Some(m) = mfa.as_ref().and_then(|m| m.text("AuthMethod")) {
+        if !methods.contains(&m) {
+            methods.push(m);
+        }
+    }
     let mut c = CellRow::new(COLS);
     c.set("signin_id", Cell::text(signin_key(rec)))
         .set("event_time", Cell::time(time.clone()))
@@ -289,12 +322,7 @@ fn graph_row(rec: &Rec) -> Vec<Cell> {
             "time_tz_assumed",
             Cell::bool(time.as_deref().map(zone_assumed)),
         )
-        .set(
-            "event_type",
-            Cell::text(
-                interactive.map(|i| if i { "interactive" } else { "noninteractive" }.to_string()),
-            ),
-        )
+        .set("event_type", Cell::text(graph_event_type(rec)))
         .set("user_upn", Cell::text(upn(rec.text("UserPrincipalName"))))
         .set("user_id", Cell::text(lower(rec.text("UserId"))))
         .set("user_display_name", Cell::text(rec.text("UserDisplayName")))
@@ -338,7 +366,11 @@ fn graph_row(rec: &Rec) -> Vec<Cell> {
             "auth_requirement",
             Cell::text(rec.text("AuthenticationRequirement")),
         )
-        .set("auth_methods", Cell::list(graph_auth_methods(rec)))
+        .set(
+            "mfa_detail",
+            Cell::text(mfa.as_ref().and_then(|m| m.text("AuthDetail"))),
+        )
+        .set("auth_methods", Cell::list(methods))
         .set("device", Cell::json(graph_device(rec)))
         .set("location", Cell::json(graph_location(rec)))
         .set("asn", Cell::int(rec.int("AutonomousSystemNumber")))

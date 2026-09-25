@@ -1,6 +1,8 @@
 //! Entra ID directory audit events (spec 5.1 `directory_audits`): Hawk `EntraIDAuditLogs`
 //! (Get-MgAuditLogDirectoryAudit objects; the CSV twin holds .NET type names in its nested
-//! columns and is only used when the JSON is missing).
+//! columns and is only used when the JSON is missing), and Microsoft-Extractor-Suite's
+//! Get-GraphEntraAuditLogs (v1.0 `/auditLogs/directoryAudits` REST JSON, one page per file
+//! under `EntraID/<ts>-AuditLogs/`). Its keys match the Hawk parser unchanged.
 
 use crate::Result;
 use crate::db::state_tables::DIRECTORY_AUDITS;
@@ -18,6 +20,8 @@ use serde_json::{Value, json};
 
 pub fn register(r: &mut ParserRegistry) {
     r.register("hawk.tenant.entra_audit", Box::new(DirectoryAuditsParser));
+    r.register("inv.entra_audit", Box::new(DirectoryAuditsParser));
+    r.register("inv.entra_audit.merged", Box::new(DirectoryAuditsParser));
 }
 
 /// directory_audits.record_key: the audit Id, lower-case.
