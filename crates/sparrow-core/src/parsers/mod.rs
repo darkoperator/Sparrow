@@ -7,6 +7,7 @@ pub mod directory_audits;
 pub mod exchange;
 pub mod flags;
 pub mod logs;
+pub mod mail_items_accessed;
 pub mod mailbox;
 pub mod mailbox_audit;
 pub mod mailbox_audit_status;
@@ -30,6 +31,7 @@ pub fn register_builtin(registry: &mut ParserRegistry) {
     risk::register(registry);
     signins::register(registry);
     exchange::register(registry);
+    mail_items_accessed::register(registry);
     mailbox::register(registry);
     mailbox_audit::register(registry);
     mailbox_audit_status::register(registry);
