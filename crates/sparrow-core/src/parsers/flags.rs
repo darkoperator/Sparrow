@@ -8,14 +8,17 @@ use crate::ingest::parser::{ArtifactParser, ParserRegistry};
 use crate::normalize::fields::{Cell, Rec};
 use crate::normalize::net::normalize_upn;
 use crate::normalize::ual_shape::{detect_shape, to_audit};
+use crate::parsers::admin_audit::admin_audit_key;
 use crate::parsers::apps::oauth_grant_key;
 use crate::parsers::directory::exchange_assignment_key;
 use crate::parsers::exchange::{inbox_rule_key, mobile_device_key};
 use crate::parsers::records::RecordFormat;
 use crate::parsers::risk::{risk_detection_key, risky_user_key};
-use crate::parsers::stage::{RowDraft, TableRows, load_tables, lower, read_state_records};
+use crate::parsers::stage::{
+    RowDraft, TableRows, file_date_order, load_tables, lower, read_state_records,
+};
 use crate::readers::text::{Span, line_spans};
-use crate::readers::time::{DateOrderDetector, parse_timestamp};
+use crate::readers::time::{DateOrder, DateOrderDetector, parse_timestamp};
 use crate::{Error, Result};
 use regex::Regex;
 use serde_json::{Map, Value, json};
@@ -154,6 +157,7 @@ fn linked_key(
     map: &Map<String, Value>,
     lossy: bool,
     subject: Option<&str>,
+    order: Option<DateOrder>,
 ) -> Option<String> {
     let rec = Rec::new(map, lossy);
     match table {
@@ -165,6 +169,7 @@ fn linked_key(
         "mobile_devices" => mobile_device_key(&rec, subject),
         "signins" => lower(rec.text("Id")),
         "ual_events" => ual_record_id(map, lossy),
+        "admin_audit_events" => admin_audit_key(&rec, order),
         _ => None,
     }
 }
@@ -216,10 +221,37 @@ impl ArtifactParser for InvestigateFileParser {
         let format = RecordFormat::of(rel);
         let file_id = ctx.file_id;
         let records = read_state_records(ctx, format)?;
+        // Admin audit keys include the run time: resolve the day/month order of the file's
+        // run dates first. Without one, the flags stay unlinked rather than failing the file.
+        let mut links_ok = true;
+        let order = if table == Some("admin_audit_events") {
+            let dates: Vec<String> = records
+                .iter()
+                .filter_map(|r| {
+                    Rec::new(&r.map, format.lossy()).first_text(&["RunDate", "RunDate(UTC)"])
+                })
+                .collect();
+            match file_date_order(ctx, dates.iter().map(String::as_str)) {
+                Ok(order) => order,
+                Err(Error::DateOrderDeferred) => return Err(Error::DateOrderDeferred),
+                Err(reason) => {
+                    ctx.warn(format!(
+                        "admin audit flags not linked (linked_key is NULL): {reason}"
+                    ));
+                    links_ok = false;
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let mut rows = TableRows::new(&COLLECTOR_FLAGS, FLAG_COLS);
         for r in &records {
-            let linked =
-                table.and_then(|t| linked_key(t, &r.map, format.lossy(), subject.as_deref()));
+            let linked = if links_ok {
+                table.and_then(|t| linked_key(t, &r.map, format.lossy(), subject.as_deref(), order))
+            } else {
+                None
+            };
             let basis = linked
                 .clone()
                 .unwrap_or_else(|| canonical(&Value::Object(r.map.clone())).to_string());

@@ -225,12 +225,12 @@ fn hawk3_capture_is_found_by_content_and_loads_ual_shapes() {
     assert!(!report.has_errors(), "{report:#?}");
 
     let rbac = row(&report, "Tenant/RBAC_Changes.json");
-    assert_eq!(rbac.status, FileStatus::NotSupported);
-    assert!(rbac.warnings[0].contains("Search-AdminAuditLog"));
+    assert_eq!((rbac.status, rbac.records_loaded), (FileStatus::Parsed, 1));
     assert_eq!(
         row(&report, "Tenant/Simple_RBAC_Changes.csv").status,
-        FileStatus::NotSupported
+        FileStatus::SkippedSuperseded
     );
+    assert_eq!(count(&case, "SELECT count(*) FROM admin_audit_events"), 1);
     let ed = row(&report, "Tenant/eDiscoveryLogs.csv");
     assert_eq!((ed.status, ed.records_loaded), (FileStatus::Parsed, 2));
     let app = row(&report, "Tenant/Azure_Application_Audit.json");

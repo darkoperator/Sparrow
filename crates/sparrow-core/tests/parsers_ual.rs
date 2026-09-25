@@ -198,7 +198,7 @@ fn invalid_embedded_audit_data_is_a_record_error() {
 }
 
 #[test]
-fn admin_audit_shape_is_not_supported() {
+fn admin_audit_shape_loads_into_admin_audit_events() {
     let dir = tempfile::tempdir().unwrap();
     let root = capture(dir.path());
     let admin = json!([{
@@ -213,14 +213,24 @@ fn admin_audit_shape_is_not_supported() {
     );
     let (case, report) = ingest(dir.path(), None);
     let f = row(&report, "Tenant/RBAC_Changes.json");
-    assert_eq!(f.status, FileStatus::NotSupported);
-    assert!(
-        f.warnings[0].contains("Search-AdminAuditLog"),
-        "{:?}",
-        f.warnings
+    assert_eq!(
+        (f.status, f.records_loaded),
+        (FileStatus::Parsed, 1),
+        "{f:#?}"
     );
     assert_eq!(count(&case, "SELECT count(*) FROM ual_events"), 0);
-    assert!(!report.has_errors());
+    let loaded: String = case
+        .conn()
+        .query_row(
+            "SELECT cmdlet || '|' || parameters['Role'] FROM admin_audit_events",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        loaded,
+        "New-ManagementRoleAssignment|ApplicationImpersonation"
+    );
 }
 
 #[test]

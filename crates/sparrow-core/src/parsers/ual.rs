@@ -7,6 +7,7 @@ use crate::ingest::context::ParseContext;
 use crate::ingest::parser::{ArtifactParser, ParserRegistry};
 use crate::normalize::ual::{event_time_text, normalize_audit};
 use crate::normalize::ual_shape::{AuditInput, UalShape, detect_shape, to_audit};
+use crate::parsers::admin_audit::load_admin_audit;
 use crate::parsers::records::{RecordFormat, SourceRecord, read_records};
 use crate::readers::time::DateOrderDetector;
 use crate::{Error, Result};
@@ -58,16 +59,20 @@ impl ArtifactParser for UalParser {
             RecordFormat::Json
         };
         let records = read_records(ctx, format)?;
-        ctx.stats.read += records.len() as u64;
         let Some(first) = records.first() else {
             return Ok(());
         };
         let shape = detect_shape(first.map.keys().map(String::as_str), self.derived);
         match shape {
+            // Hawk 3 writes Search-AdminAuditLog records under UAL-looking names
+            // (RBAC_Changes, User_Changes, Simple_*): they belong in admin_audit_events.
             UalShape::AdminAudit | UalShape::AdminAuditSimple => {
-                return Err(Error::UnsupportedShape(
-                    "Search-AdminAuditLog records (Hawk 3.x); they load into admin_audit_events in a later sparrow version".into(),
-                ));
+                return load_admin_audit(
+                    ctx,
+                    &records,
+                    is_csv,
+                    shape == UalShape::AdminAuditSimple,
+                );
             }
             UalShape::Unknown => {
                 return Err(Error::UnsupportedShape(format!(
@@ -77,6 +82,7 @@ impl ArtifactParser for UalParser {
             }
             _ => {}
         }
+        ctx.stats.read += records.len() as u64;
         let lossy = is_csv || self.derived;
         let inputs: Vec<(SourceRecord, std::result::Result<AuditInput, String>)> = records
             .into_iter()

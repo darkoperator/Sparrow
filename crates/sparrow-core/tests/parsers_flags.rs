@@ -126,12 +126,9 @@ fn investigate_files_link_to_the_rows_their_parsers_create() {
     );
 }
 
-#[test]
-fn hawk3_admin_audit_flags_keep_a_null_link() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = capture(dir.path());
+fn investigate_new_inbox_rules_txt(root: &Path) {
     fixtures::write(
-        &root,
+        root,
         "Tenant/_Investigate_New_InboxRules.txt",
         concat!(
             "\r\n\r\n",
@@ -150,12 +147,34 @@ fn hawk3_admin_audit_flags_keep_a_null_link() {
         )
         .as_bytes(),
     );
-    let (case, report) = ingest(dir.path(), None);
+}
+
+#[test]
+fn hawk3_admin_audit_flags_link_to_admin_audit_events() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    investigate_new_inbox_rules_txt(&root);
+    let rule = |object: &str, ms: u64| {
+        json!({"ObjectModified": object, "CmdletName": "New-InboxRule",
+               "CmdletParameters": [{"Name": "Name", "Value": "x"}], "Caller": "admin@contoso.example",
+               "Succeeded": true, "RunDate": format!("/Date({ms})/")})
+    };
+    json_file(
+        &root,
+        "Tenant/New_InboxRules.json",
+        &json!([
+            rule("contoso.example/alice/Rule1", 1788336000000),
+            rule("contoso.example/bob/Rule2", 1788336300000)
+        ]),
+    );
+    let (case, report) = ingest(dir.path(), Some(DateOrder::MonthFirst));
     assert!(!report.has_errors(), "{report:#?}");
+    assert_eq!(count(&case, "SELECT count(*) FROM admin_audit_events"), 2);
     assert_eq!(
         count(
             &case,
-            "SELECT count(*) FROM collector_flags WHERE flag_type = 'admin_inbox_rule_change' AND linked_table = 'admin_audit_events' AND linked_key IS NULL"
+            "SELECT count(*) FROM collector_flags WHERE flag_type = 'admin_inbox_rule_change'
+               AND linked_table = 'admin_audit_events' AND linked_key IN (SELECT record_key FROM admin_audit_events)"
         ),
         2
     );
@@ -163,6 +182,30 @@ fn hawk3_admin_audit_flags_keep_a_null_link() {
         count(
             &case,
             "SELECT count(*) FROM collector_flags WHERE raw->>'$.CmdletName' = 'New-InboxRule'"
+        ),
+        2
+    );
+}
+
+#[test]
+fn admin_audit_flags_with_ambiguous_dates_keep_a_null_link() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    investigate_new_inbox_rules_txt(&root);
+    let (case, report) = ingest(dir.path(), None);
+    let f = row(&report, "Tenant/_Investigate_New_InboxRules.txt");
+    assert_eq!(f.status, FileStatus::Parsed);
+    assert!(
+        f.warnings
+            .iter()
+            .any(|w| w.contains("not linked") && w.contains("--culture")),
+        "{:?}",
+        f.warnings
+    );
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM collector_flags WHERE linked_table = 'admin_audit_events' AND linked_key IS NULL"
         ),
         2
     );

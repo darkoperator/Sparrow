@@ -1,5 +1,6 @@
 //! Built-in artifact parsers.
 
+pub mod admin_audit;
 pub mod apps;
 pub mod directory;
 pub mod directory_audits;
@@ -31,5 +32,6 @@ pub fn register_builtin(registry: &mut ParserRegistry) {
     mailbox_audit::register(registry);
     message_trace::register(registry);
     tenant_config::register(registry);
+    admin_audit::register(registry);
     flags::register(registry);
 }
