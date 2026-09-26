@@ -1,0 +1,22 @@
+name: audit-tamper
+description: Microsoft 365 E5 tenant where an attacker tampers with audit configuration mid-window.
+tenant:
+  name: Wingtip Example
+  domains: [wingtip.example, wingtip-toys.test]
+  users: 8
+  admins: 1
+  licence_profile: m365_e5
+  audit_profile: default
+  host_utc_offset_minutes: 540
+window:
+  start: 2026-08-15T00:00:00Z
+  days: 20
+  collected_at: 2026-09-05T08:00:00Z
+baseline:
+  signins_per_user_day: 4.0
+  ual_per_user_day: 12.0
+  messages_per_user_day: 6.0
+  work_hours: [8, 18]
+  weekend_factor: 0.1
+storylines: []
+lookalikes: []

@@ -1,0 +1,23 @@
+name: bec-aitm
+description: Adversary-in-the-middle sign-in and the full BEC kill chain on an E5 tenant.
+tenant:
+  name: Contoso Example
+  domains: [contoso.example, contoso-finance.test]
+  users: 12
+  admins: 1
+  licence_profile: m365_e5
+  audit_profile: search_audited
+  host_utc_offset_minutes: 120
+  hawk_users: [1, 2]
+window:
+  start: 2026-08-01T00:00:00Z
+  days: 40
+  collected_at: 2026-09-10T14:15:00Z
+baseline:
+  signins_per_user_day: 4.0
+  ual_per_user_day: 12.0
+  messages_per_user_day: 6.0
+  work_hours: [8, 18]
+  weekend_factor: 0.1
+storylines: []
+lookalikes: []

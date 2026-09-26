@@ -1,0 +1,24 @@
+name: hawk-investigate
+description: >-
+  Office 365 E5 tenant (Audit Premium and MDO P2, but no Entra ID P1/P2) exercising every
+  condition Start-HawkUserInvestigation checks.
+tenant:
+  name: Tailspin Example
+  domains: [tailspin.example, tailspin-toys.test]
+  users: 10
+  admins: 2
+  licence_profile: o365_e5
+  audit_profile: default
+  host_utc_offset_minutes: 0
+window:
+  start: 2026-07-20T00:00:00Z
+  days: 45
+  collected_at: 2026-09-04T11:00:00Z
+baseline:
+  signins_per_user_day: 4.0
+  ual_per_user_day: 12.0
+  messages_per_user_day: 6.0
+  work_hours: [8, 18]
+  weekend_factor: 0.1
+storylines: []
+lookalikes: []

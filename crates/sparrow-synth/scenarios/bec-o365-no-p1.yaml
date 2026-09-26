@@ -1,0 +1,24 @@
+name: bec-o365-no-p1
+description: >-
+  BEC kill chain on an Office 365 E3 tenant without Entra ID P1, so Microsoft-Extractor-Suite's
+  Graph sign-in download is refused and identity risk evidence is unavailable.
+tenant:
+  name: Northwind Example
+  domains: [northwind.example, northwind-traders.test]
+  users: 8
+  admins: 1
+  licence_profile: o365_e3
+  audit_profile: default
+  host_utc_offset_minutes: -300
+window:
+  start: 2026-08-10T00:00:00Z
+  days: 25
+  collected_at: 2026-09-05T16:30:00Z
+baseline:
+  signins_per_user_day: 4.0
+  ual_per_user_day: 12.0
+  messages_per_user_day: 6.0
+  work_hours: [8, 18]
+  weekend_factor: 0.1
+storylines: []
+lookalikes: []

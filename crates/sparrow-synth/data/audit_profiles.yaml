@@ -1,0 +1,53 @@
+# Organization and mailbox audit settings for generated tenants (Microsoft Learn
+# audit-mailboxes, as_of 2026-09-25; research survey §7). UserSel: none | all | victims |
+# [user numbers]. "victims" = the actors and targets of all storylines and look-alikes.
+version: 1
+profiles:
+  - id: default
+    title: Organization-default mailbox auditing
+    unified_audit_log_ingestion_enabled: true
+    org_audit_disabled: false
+    admin_audit_log_enabled: true
+    customized_owner: none
+    bypass: none
+    search_query_owner: none
+  - id: search_audited
+    title: Default auditing, and the victims' mailboxes also audit SearchQueryInitiated
+    unified_audit_log_ingestion_enabled: true
+    org_audit_disabled: false
+    admin_audit_log_enabled: true
+    customized_owner: none
+    bypass: none
+    search_query_owner: victims
+  - id: customized_owner
+    title: Owner actions customized before on-by-default auditing (no MailItemsAccessed or Send)
+    unified_audit_log_ingestion_enabled: true
+    org_audit_disabled: false
+    admin_audit_log_enabled: true
+    customized_owner: all
+    bypass: none
+    search_query_owner: none
+  - id: bypass_victims
+    title: The victims' accounts have a mailbox audit bypass association
+    unified_audit_log_ingestion_enabled: true
+    org_audit_disabled: false
+    admin_audit_log_enabled: true
+    customized_owner: none
+    bypass: victims
+    search_query_owner: none
+  - id: org_audit_disabled
+    title: Mailbox auditing off for the organization (AuditDisabled True)
+    unified_audit_log_ingestion_enabled: true
+    org_audit_disabled: true
+    admin_audit_log_enabled: true
+    customized_owner: none
+    bypass: none
+    search_query_owner: none
+  - id: ual_disabled
+    title: Unified audit log ingestion disabled (UnifiedAuditLogIngestionEnabled False)
+    unified_audit_log_ingestion_enabled: false
+    org_audit_disabled: false
+    admin_audit_log_enabled: true
+    customized_owner: none
+    bypass: none
+    search_query_owner: none

@@ -1,0 +1,72 @@
+# Licence profiles for generated tenants. `skus` are Graph subscribedSkus as
+# Microsoft-Extractor-Suite Get-Licenses exports them (plan names only). Service plans follow
+# the Microsoft licensing CSV (docs research 2026-09-25-phase4-licensing-research.md §A.0b,
+# as_of 2026-08-18). `expect` is the tenant_capabilities outcome Sparrow must derive for each
+# kind of delivered licence evidence, written by hand (see the plan's Task 2 rules).
+version: 1
+profiles:
+  - id: m365_e5
+    title: Microsoft 365 E5
+    skus:
+      - {sku: SPE_E5, status: Enabled, scope: User, units: 25, plans: [EXCHANGE_S_ENTERPRISE, M365_ADVANCED_AUDITING, AAD_PREMIUM, AAD_PREMIUM_P2, ATP_ENTERPRISE, THREAT_INTELLIGENCE, MFA_PREMIUM, SHAREPOINTENTERPRISE, TEAMS1]}
+      - {sku: FLOW_FREE, status: Enabled, scope: User, units: 3, plans: [FLOW_P2_VIRAL]}
+    expect:
+      invictus_list: "ual_standard=licensed/high audit_premium=licensed/high entra_signin_logs=licensed/low entra_audit_logs=licensed/low entra_id_p1=licensed/high identity_protection=licensed/high mdo_p1=licensed/high mdo_p2=licensed/high message_trace=licensed/high mailbox_audit_legacy=licensed/low exchange_admin_audit=licensed/low"
+      invictus_nolist: "ual_standard=licensed/low audit_premium=unknown/- entra_signin_logs=licensed/low entra_audit_logs=licensed/low entra_id_p1=licensed/high identity_protection=licensed/high mdo_p1=unknown/- mdo_p2=unknown/- message_trace=licensed/low mailbox_audit_legacy=licensed/low exchange_admin_audit=licensed/low"
+      hawk4: "ual_standard=licensed/low audit_premium=licensed/low entra_signin_logs=licensed/low entra_audit_logs=licensed/low entra_id_p1=licensed/high identity_protection=licensed/high mdo_p1=licensed/low mdo_p2=licensed/low message_trace=licensed/low mailbox_audit_legacy=licensed/low exchange_admin_audit=licensed/low"
+      hawk3: &nolicence "ual_standard=licensed/low audit_premium=unknown/- entra_signin_logs=licensed/low entra_audit_logs=licensed/low entra_id_p1=unknown/- identity_protection=unknown/- mdo_p1=unknown/- mdo_p2=unknown/- message_trace=licensed/low mailbox_audit_legacy=licensed/low exchange_admin_audit=licensed/low"
+      portal: *nolicence
+  - id: m365_e3
+    title: Microsoft 365 E3 (Entra ID P1, no P2, no Audit Premium)
+    skus:
+      - {sku: SPE_E3, status: Enabled, scope: User, units: 25, plans: [EXCHANGE_S_ENTERPRISE, AAD_PREMIUM, ATP_ENTERPRISE, MFA_PREMIUM, SHAREPOINTENTERPRISE, TEAMS1]}
+    expect:
+      invictus_list: "ual_standard=licensed/high audit_premium=not_licensed/high entra_signin_logs=licensed/low entra_audit_logs=licensed/low entra_id_p1=licensed/high identity_protection=not_licensed/high mdo_p1=licensed/high mdo_p2=not_licensed/high message_trace=licensed/high mailbox_audit_legacy=licensed/low exchange_admin_audit=licensed/low"
+      invictus_nolist: "ual_standard=licensed/low audit_premium=unknown/- entra_signin_logs=licensed/low entra_audit_logs=licensed/low entra_id_p1=licensed/high identity_protection=not_licensed/high mdo_p1=unknown/- mdo_p2=unknown/- message_trace=licensed/low mailbox_audit_legacy=licensed/low exchange_admin_audit=licensed/low"
+      hawk4: "ual_standard=licensed/low audit_premium=unknown/- entra_signin_logs=licensed/low entra_audit_logs=licensed/low entra_id_p1=licensed/high identity_protection=not_licensed/high mdo_p1=unknown/- mdo_p2=unknown/- message_trace=licensed/low mailbox_audit_legacy=licensed/low exchange_admin_audit=licensed/low"
+      hawk3: *nolicence
+      portal: *nolicence
+  - id: o365_e3
+    title: Office 365 E3 (no Entra ID P1/P2)
+    skus:
+      # "ATP_ENTERPRISE " with a trailing space: the licensing CSV spells it so for some SKUs
+      # (research §A.0); kept so the parser's trim is exercised.
+      - {sku: ENTERPRISEPACK, status: Enabled, scope: User, units: 25, plans: [EXCHANGE_S_ENTERPRISE, "ATP_ENTERPRISE ", SHAREPOINTENTERPRISE, TEAMS1]}
+    expect:
+      invictus_list: "ual_standard=licensed/high audit_premium=not_licensed/high entra_signin_logs=licensed/low entra_audit_logs=licensed/low entra_id_p1=not_licensed/high identity_protection=not_licensed/high mdo_p1=licensed/high mdo_p2=not_licensed/high message_trace=licensed/high mailbox_audit_legacy=licensed/low exchange_admin_audit=licensed/low"
+      invictus_nolist: "ual_standard=licensed/low audit_premium=unknown/- entra_signin_logs=licensed/low entra_audit_logs=licensed/low entra_id_p1=not_licensed/high identity_protection=not_licensed/high mdo_p1=unknown/- mdo_p2=unknown/- message_trace=licensed/low mailbox_audit_legacy=licensed/low exchange_admin_audit=licensed/low"
+      hawk4: *nolicence
+      hawk3: *nolicence
+      portal: *nolicence
+  - id: o365_e5
+    title: Office 365 E5 (Audit Premium and MDO P2, but no Entra ID P1/P2; Hawk logs "E5")
+    skus:
+      - {sku: ENTERPRISEPREMIUM, status: Enabled, scope: User, units: 25, plans: [EXCHANGE_S_ENTERPRISE, M365_ADVANCED_AUDITING, ATP_ENTERPRISE, THREAT_INTELLIGENCE, SHAREPOINTENTERPRISE, TEAMS1]}
+    expect:
+      invictus_list: "ual_standard=licensed/high audit_premium=licensed/high entra_signin_logs=licensed/low entra_audit_logs=licensed/low entra_id_p1=not_licensed/high identity_protection=not_licensed/high mdo_p1=licensed/high mdo_p2=licensed/high message_trace=licensed/high mailbox_audit_legacy=licensed/low exchange_admin_audit=licensed/low"
+      invictus_nolist: "ual_standard=licensed/low audit_premium=unknown/- entra_signin_logs=licensed/low entra_audit_logs=licensed/low entra_id_p1=not_licensed/high identity_protection=not_licensed/high mdo_p1=unknown/- mdo_p2=unknown/- message_trace=licensed/low mailbox_audit_legacy=licensed/low exchange_admin_audit=licensed/low"
+      hawk4: "ual_standard=licensed/low audit_premium=licensed/low entra_signin_logs=licensed/low entra_audit_logs=licensed/low entra_id_p1=unknown/- identity_protection=unknown/- mdo_p1=licensed/low mdo_p2=licensed/low message_trace=licensed/low mailbox_audit_legacy=licensed/low exchange_admin_audit=licensed/low"
+      hawk3: *nolicence
+      portal: *nolicence
+  - id: business_premium
+    title: Microsoft 365 Business Premium (P1 and MDO P1)
+    skus:
+      # A blank plan name: Get-Licenses joins names with '; ', so it renders "…; ; …" (Phase 4
+      # follow-up: a NULL/blank element must not break the profile).
+      - {sku: SPB, status: Enabled, scope: User, units: 25, plans: [EXCHANGE_S_STANDARD, AAD_PREMIUM, ATP_ENTERPRISE, MFA_PREMIUM, "", SHAREPOINTSTANDARD, TEAMS1]}
+    expect:
+      invictus_list: "ual_standard=licensed/high audit_premium=not_licensed/high entra_signin_logs=licensed/low entra_audit_logs=licensed/low entra_id_p1=licensed/high identity_protection=not_licensed/high mdo_p1=licensed/high mdo_p2=not_licensed/high message_trace=licensed/high mailbox_audit_legacy=licensed/low exchange_admin_audit=licensed/low"
+      invictus_nolist: "ual_standard=licensed/low audit_premium=unknown/- entra_signin_logs=licensed/low entra_audit_logs=licensed/low entra_id_p1=licensed/high identity_protection=not_licensed/high mdo_p1=unknown/- mdo_p2=unknown/- message_trace=licensed/low mailbox_audit_legacy=licensed/low exchange_admin_audit=licensed/low"
+      hawk4: "ual_standard=licensed/low audit_premium=unknown/- entra_signin_logs=licensed/low entra_audit_logs=licensed/low entra_id_p1=licensed/high identity_protection=not_licensed/high mdo_p1=unknown/- mdo_p2=unknown/- message_trace=licensed/low mailbox_audit_legacy=licensed/low exchange_admin_audit=licensed/low"
+      hawk3: *nolicence
+      portal: *nolicence
+  - id: business_basic
+    title: Microsoft 365 Business Basic (no premium features)
+    skus:
+      - {sku: O365_BUSINESS_ESSENTIALS, status: Enabled, scope: User, units: 25, plans: [EXCHANGE_S_STANDARD, SHAREPOINTSTANDARD, TEAMS1]}
+    expect:
+      invictus_list: "ual_standard=licensed/high audit_premium=not_licensed/high entra_signin_logs=licensed/low entra_audit_logs=licensed/low entra_id_p1=not_licensed/high identity_protection=not_licensed/high mdo_p1=not_licensed/high mdo_p2=not_licensed/high message_trace=licensed/high mailbox_audit_legacy=licensed/low exchange_admin_audit=licensed/low"
+      invictus_nolist: "ual_standard=licensed/low audit_premium=unknown/- entra_signin_logs=licensed/low entra_audit_logs=licensed/low entra_id_p1=not_licensed/high identity_protection=not_licensed/high mdo_p1=unknown/- mdo_p2=unknown/- message_trace=licensed/low mailbox_audit_legacy=licensed/low exchange_admin_audit=licensed/low"
+      hawk4: *nolicence
+      hawk3: *nolicence
+      portal: *nolicence

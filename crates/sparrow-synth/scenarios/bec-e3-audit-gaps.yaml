@@ -1,0 +1,25 @@
+name: bec-e3-audit-gaps
+description: >-
+  BEC kill chain on an E3 tenant where owner actions were customized before on-by-default
+  auditing took effect, so MailItemsAccessed and Send go unaudited, and Entra ID risk levels
+  stay hidden without Identity Protection.
+tenant:
+  name: Fabrikam Example
+  domains: [fabrikam.example, fabrikam-finance.test]
+  users: 10
+  admins: 1
+  licence_profile: m365_e3
+  audit_profile: customized_owner
+  host_utc_offset_minutes: 60
+window:
+  start: 2026-08-05T00:00:00Z
+  days: 30
+  collected_at: 2026-09-06T09:00:00Z
+baseline:
+  signins_per_user_day: 4.0
+  ual_per_user_day: 12.0
+  messages_per_user_day: 6.0
+  work_hours: [8, 18]
+  weekend_factor: 0.1
+storylines: []
+lookalikes: []

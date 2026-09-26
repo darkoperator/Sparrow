@@ -1,0 +1,22 @@
+name: business-basic
+description: Microsoft 365 Business Basic tenant with organization mailbox auditing disabled.
+tenant:
+  name: Adatum Example
+  domains: [adatum.example, adatum-corp.test]
+  users: 6
+  admins: 1
+  licence_profile: business_basic
+  audit_profile: org_audit_disabled
+  host_utc_offset_minutes: 60
+window:
+  start: 2026-08-20T00:00:00Z
+  days: 14
+  collected_at: 2026-09-04T10:00:00Z
+baseline:
+  signins_per_user_day: 4.0
+  ual_per_user_day: 12.0
+  messages_per_user_day: 6.0
+  work_hours: [8, 18]
+  weekend_factor: 0.1
+storylines: []
+lookalikes: []

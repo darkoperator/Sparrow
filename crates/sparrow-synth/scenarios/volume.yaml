@@ -1,0 +1,22 @@
+name: volume
+description: Large Microsoft 365 E5 tenant used as the base scenario for scale testing (Task 25).
+tenant:
+  name: Litware Example
+  domains: [litware.example, litware-inc.test]
+  users: 200
+  admins: 2
+  licence_profile: m365_e5
+  audit_profile: default
+  host_utc_offset_minutes: 0
+window:
+  start: 2026-07-01T00:00:00Z
+  days: 60
+  collected_at: 2026-09-01T12:00:00Z
+baseline:
+  signins_per_user_day: 4.0
+  ual_per_user_day: 12.0
+  messages_per_user_day: 6.0
+  work_hours: [8, 18]
+  weekend_factor: 0.1
+storylines: []
+lookalikes: []

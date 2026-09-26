@@ -6,7 +6,9 @@
 pub mod error;
 pub mod names;
 pub mod options;
+pub mod profiles;
 pub mod reserved;
 pub mod rng;
+pub mod scenario;
 
 pub use error::{Error, Result};
