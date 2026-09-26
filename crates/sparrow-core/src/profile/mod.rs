@@ -63,11 +63,13 @@ pub fn unprofiled_collections(conn: &duckdb::Connection) -> Result<Vec<i64>> {
 pub fn refresh(case: &mut Case, opts: &ProfileOptions) -> Result<ProfileReport> {
     let mut report = ProfileReport::default();
     let defs = crate::data::capabilities(&opts.dirs)?;
-    report.capabilities = capabilities::store_definitions(case, &defs)?;
     let ops = crate::data::operation_catalog(&opts.dirs)?;
-    catalog::store(case.conn(), &ops)?;
 
+    // One transaction for every derived table, the data tables included: a failed profile
+    // never leaves new capability or catalog rows next to stale tenants and availability.
     let tx = case.conn_mut().transaction()?;
+    report.capabilities = capabilities::store_definitions(&tx, &defs)?;
+    catalog::store(&tx, &ops)?;
     report.tenants = tenant::resolve_tenants(&tx)?;
     report
         .warnings

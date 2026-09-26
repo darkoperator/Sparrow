@@ -1,7 +1,7 @@
 //! Capability definitions (Task 2) and, per tenant, whether each is licensed (Task 5).
 
+use crate::Result;
 use crate::data::CapabilityDef;
-use crate::{Case, Result};
 use chrono::{DateTime, Utc};
 use duckdb::types::Value;
 use duckdb::{Connection, params};
@@ -22,12 +22,12 @@ pub(crate) fn string_list(v: Value) -> Vec<String> {
     }
 }
 
-/// Replace the `capabilities` table with `defs`. Returns the number of rows.
-pub fn store_definitions(case: &mut Case, defs: &[CapabilityDef]) -> Result<usize> {
-    let tx = case.conn_mut().transaction()?;
-    tx.execute("DELETE FROM capabilities", [])?;
+/// Replace the `capabilities` table with `defs` (inside the caller's transaction). Returns the
+/// number of rows.
+pub fn store_definitions(conn: &Connection, defs: &[CapabilityDef]) -> Result<usize> {
+    conn.execute("DELETE FROM capabilities", [])?;
     {
-        let mut stmt = tx.prepare(
+        let mut stmt = conn.prepare(
             "INSERT INTO capabilities (capability_id, title, baseline, unlocked_by_service_plans,
                  hawk_license_tiers, retention_days, evidence, notes, sources, as_of, origin)
              VALUES (?, ?, ?, CAST(CAST(? AS JSON) AS VARCHAR[]), CAST(CAST(? AS JSON) AS VARCHAR[]),
@@ -51,7 +51,6 @@ pub fn store_definitions(case: &mut Case, defs: &[CapabilityDef]) -> Result<usiz
             ])?;
         }
     }
-    tx.commit()?;
     Ok(defs.len())
 }
 

@@ -111,3 +111,26 @@ fn operation_catalog_keys_ignore_case_and_trailing_dots() {
             .any(|o| o.operation == "New-InboxRule" && o.mitre.contains(&"T1564.008".to_string()))
     );
 }
+
+/// The data tables are written inside the profile's single transaction: a profile that fails
+/// later leaves `capabilities` and `operation_catalog` as they were.
+#[test]
+fn a_failed_profile_leaves_the_data_tables_untouched() {
+    let mut case = Case::in_memory().unwrap();
+    refresh(&mut case, &ProfileOptions::default()).unwrap();
+    let n = |case: &Case, t: &str| -> i64 {
+        case.conn()
+            .query_row(&format!("SELECT count(*) FROM {t}"), [], |r| r.get(0))
+            .unwrap()
+    };
+    assert!(n(&case, "capabilities") > 0);
+    case.conn()
+        .execute_batch(
+            "DELETE FROM capabilities; DELETE FROM operation_catalog;
+             DROP TABLE evidence_availability;",
+        )
+        .unwrap();
+    assert!(refresh(&mut case, &ProfileOptions::default()).is_err());
+    assert_eq!(n(&case, "capabilities"), 0);
+    assert_eq!(n(&case, "operation_catalog"), 0);
+}
