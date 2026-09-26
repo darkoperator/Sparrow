@@ -94,6 +94,20 @@ fn a_high_confidence_licence_list_decides_both_ways() {
 }
 
 #[test]
+fn a_null_service_plan_element_does_not_abort_the_profile() {
+    let (mut case, c, _) = tenant_case();
+    case.conn()
+        .execute(
+            "INSERT INTO licenses (record_key, collection_id, source, sku_part_number, capability_status, service_plans, confidence)
+             VALUES (?, ?, 'invictus_tenant_licenses', 'SPB', 'Enabled', ['AAD_PREMIUM', NULL, 'EXCHANGE_S_STANDARD'], 'high')",
+            params![format!("{c}|invictus_tenant_licenses|spb"), c],
+        )
+        .unwrap();
+    assert_eq!(status(&mut case, "entra_id_p1"), "licensed/high");
+    assert_eq!(status(&mut case, "audit_premium"), "not_licensed/high");
+}
+
+#[test]
 fn hawk_tier_is_a_low_confidence_hint() {
     let (mut case, c, _) = tenant_case();
     case.conn()

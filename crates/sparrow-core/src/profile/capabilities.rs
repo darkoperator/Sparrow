@@ -160,7 +160,8 @@ pub fn derive(conn: &Connection) -> Result<usize> {
              SELECT lic.tenant_key, lic.sku_part_number, upper(trim(p.plan)) AS plan
              FROM lic JOIN newest USING (tenant_key, cid)
              CROSS JOIN UNNEST(coalesce(lic.service_plans, []::VARCHAR[])) AS p(plan)
-             WHERE lic.capability_status IS NULL OR lic.capability_status = 'Enabled'",
+             WHERE (lic.capability_status IS NULL OR lic.capability_status = 'Enabled')
+                   AND p.plan IS NOT NULL AND trim(p.plan) <> ''",
         )?;
         let rows: Vec<(String, Option<String>, String)> = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
