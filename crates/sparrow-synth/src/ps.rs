@@ -229,22 +229,26 @@ impl DateEvidence {
 }
 
 /// Records one culture-rendered date (a day/month-order culture only; ja-JP is year-first and
-/// records nothing).
+/// records nothing). A date whose day equals its month reads the same in either order and
+/// records nothing either.
 fn note_evidence(host: &Host, ev: &mut DateEvidence, d: &PsDate) {
     if host.culture == Culture::JaJp {
         return;
     }
-    let day = match &d.origin {
-        Origin::DotNet(kind) => host.wall(d.utc, *kind).day(),
+    let wall = match &d.origin {
+        Origin::DotNet(kind) => host.wall(d.utc, *kind),
         Origin::IsoText(_) => {
             if host.edition != PsEdition::Ps7 {
                 return;
             }
-            host.wall(d.utc, DtKind::Utc).day()
+            host.wall(d.utc, DtKind::Utc)
         }
     };
+    if wall.day() == wall.month() {
+        return;
+    }
     ev.culture_dates += 1;
-    if day > 12 {
+    if wall.day() > 12 {
         ev.decisive += 1;
     }
 }
@@ -361,6 +365,21 @@ fn scalar_text(
 /// Cell text for `Export-Csv` (never called for `Val::Null`; the caller handles nulls itself).
 fn csv_text(host: &Host, v: &Val, ev: &mut DateEvidence) -> String {
     scalar_text(host, v, ev, raw_to_csv_string)
+}
+
+/// What `Import-Csv` reads back from a row `Export-Csv` wrote: every value as its cell text,
+/// `$null` as an empty string (Microsoft-Extractor-Suite's `Merge-OutputFiles` re-exports these).
+pub fn csv_imported(host: &Host, row: &Row) -> Row {
+    let mut ev = DateEvidence::default();
+    row.iter()
+        .map(|(k, v)| {
+            let text = match v {
+                Val::Null => String::new(),
+                other => csv_text(host, other, &mut ev),
+            };
+            (k.clone(), Val::Str(text))
+        })
+        .collect()
 }
 
 fn quote_csv(s: &str) -> String {

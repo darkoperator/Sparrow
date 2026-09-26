@@ -14,8 +14,13 @@ use crate::tree::TreeOutcome;
 use crate::world::World;
 use crate::writers::parsed_by_sparrow;
 use crate::writers::portal::PURVIEW_EXPORT_CAP;
+use chrono::Duration;
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
+
+/// Entra ID sign-in and audit log retention with P1/P2 (Microsoft Learn
+/// reference-reports-data-retention, as of 2026-09-25).
+const ENTRA_P1_RETENTION_DAYS: i64 = 30;
 
 /// The tables a UAL record lands in when a collector delivers it as a UAL record: always
 /// `ual_events`, plus the child table its operation feeds (MailItemsAccessed →
@@ -112,13 +117,16 @@ fn org_audit_off_all_window(w: &World) -> bool {
 ///   `AdminAuditLogConfig.txt`) `{not_enabled}`, Microsoft-Extractor-Suite `{collected}` (the
 ///   run folder is written, nothing found).
 /// - `mail_items_accessed`: rows delivered → `{collected, partial}`; none delivered, every
-///   mailbox's owner list lacks MailItemsAccessed and the collector exports per-mailbox audit
-///   settings (Microsoft-Extractor-Suite MailboxAuditStatus) → `{not_enabled}`; organization
-///   auditing off for the whole window and the collector exports it (Hawk `OrgConfig.txt`,
-///   Microsoft-Extractor-Suite EffectiveAuditState `Disabled`) → `{not_enabled}`.
+///   mailbox's owner list lacks MailItemsAccessed and the tree delivers per-mailbox audit
+///   settings (a parsed Microsoft-Extractor-Suite MailboxAuditStatus file) → `{not_enabled}`;
+///   organization auditing off for the whole window and the tree delivers it (Hawk
+///   `OrgConfig.txt`, MailboxAuditStatus EffectiveAuditState `Disabled`) → `{not_enabled}`.
 /// - `signins`: Hawk 4 and Microsoft-Extractor-Suite (without Entra ID P1 the collector ran and
 ///   Graph refused, which Sparrow reads as "ran"), the portal, and any tree with P1 →
-///   `{collected}`.
+///   `{collected}`; except Microsoft-Extractor-Suite rows with Entra ID P1 expected licensed
+///   and a window starting more than P1's 30-day log retention before collection →
+///   `{partial}` (Graph cannot reach the start of the window; the run stamps date the
+///   collection).
 /// - `risk_detections`: expected `identity_protection` capability `not_licensed` →
 ///   `{not_licensed}`; with Entra ID P2 and rows delivered → `{collected}`.
 /// - `licenses`: `InvictusList` delivery → `{collected}`.
@@ -130,6 +138,10 @@ pub fn evidence(
     let mut m = BTreeMap::new();
     let hawk = matches!(opts.collector, Collector::Hawk3 | Collector::Hawk4);
     let invictus = opts.collector == Collector::Invictus;
+    let audit_status = out
+        .files
+        .iter()
+        .any(|f| f.artifact_id.as_deref() == Some("inv.audit_status") && f.status == "parsed");
 
     if rows(out, "ual_events") > 0 {
         let e = if hawk {
@@ -170,7 +182,7 @@ pub fn evidence(
                 "MailItemsAccessed rows delivered",
             ),
         );
-    } else if invictus
+    } else if audit_status
         && !world.mailboxes.is_empty()
         && world
             .mailboxes
@@ -184,7 +196,7 @@ pub fn evidence(
                 "no mailbox audits MailItemsAccessed (MailboxAuditStatus)",
             ),
         );
-    } else if (hawk || invictus) && org_audit_off_all_window(world) {
+    } else if (hawk || audit_status) && org_audit_off_all_window(world) {
         m.insert(
             "mail_items_accessed".to_string(),
             allowed(
@@ -198,17 +210,29 @@ pub fn evidence(
         opts.collector,
         Collector::Hawk4 | Collector::Invictus | Collector::Portal
     ) || world.licence.p1();
-    if signins_collected {
+    let caps = capabilities(
+        world,
+        delivery(opts, parsed_by_sparrow("inv.licenses.tenant")),
+    );
+    let p1_retention_short = caps
+        .get("entra_id_p1")
+        .is_some_and(|c| c.status == "licensed")
+        && world.window_start() < world.collected_at() - Duration::days(ENTRA_P1_RETENTION_DAYS);
+    if invictus && rows(out, "signins") > 0 && p1_retention_short {
+        m.insert(
+            "signins".to_string(),
+            allowed(
+                &["partial"],
+                "the window starts before Entra ID P1's 30-day sign-in retention",
+            ),
+        );
+    } else if signins_collected {
         m.insert(
             "signins".to_string(),
             allowed(&["collected"], "the sign-in collector ran"),
         );
     }
 
-    let caps = capabilities(
-        world,
-        delivery(opts, parsed_by_sparrow("inv.licenses.tenant")),
-    );
     let ip_not_licensed = caps
         .get("identity_protection")
         .is_some_and(|c| c.status == "not_licensed");

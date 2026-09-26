@@ -43,7 +43,7 @@ pub fn generate_with_policy(
     sink: &mut dyn Sink,
     policy: CulturePolicy,
 ) -> Result<Manifest> {
-    if opts.collector != Collector::Portal {
+    if !matches!(opts.collector, Collector::Portal | Collector::Invictus) {
         return Err(Error::Invalid(format!(
             "collector {} is not implemented yet",
             opts.collector
@@ -57,7 +57,10 @@ pub fn generate_with_policy(
         .collect();
     let root = writers::root_name(&world, opts);
     let mut tree = Tree::new(sink, &root, tracked, policy);
-    writers::portal::write(&world, opts, &mut tree)?;
+    match opts.collector {
+        Collector::Invictus => writers::invictus::write(&world, opts, &mut tree)?,
+        _ => writers::portal::write(&world, opts, &mut tree)?,
+    }
     let out = tree.finish()?;
     geo::write_geoip(&world, sink, GEOIP_DIR)?;
     let caps = expect::capabilities(

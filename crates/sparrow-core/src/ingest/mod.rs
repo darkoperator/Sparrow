@@ -248,68 +248,75 @@ fn ingest_collection(
         .collect();
     // Collector flags last: their links look up rows the other files load.
     keyed.sort_by_cached_key(|(f, derived, flag)| (*flag, processing_key(&f.rel, *derived)));
-    let ordered: Vec<(&CollectionFile, bool)> = keyed.into_iter().map(|(f, d, _)| (f, d)).collect();
+    // Raw files, then derived files and collector flags, each stage with its own retry pass:
+    // a raw file deferred for its ambiguous dates is handled before any derived file, so the
+    // raw records still supersede the derived copies (spec §6).
+    let (raw, rest): (Vec<_>, Vec<_>) = keyed
+        .into_iter()
+        .partition(|(_, derived, flag)| !derived && !flag);
     let mut handled = Handled::default();
     let mut files = Vec::new();
-    let mut deferred: Vec<(&CollectionFile, bool)> = Vec::new();
     // Orders proved by files of this collection parsed in earlier runs count too.
     let mut proved = orders_proved_earlier(case.conn(), collection_id)?;
-    for (f, derived) in ordered {
-        let job = FileJob {
-            collection_id,
-            tool: dc.tool,
-            abs: &f.abs,
-            rel: &f.rel,
-            lossy_name: f.lossy_name,
-            superseded_by: handled.superseded_by(&f.rel, derived),
-            date_hint: None,
-            defer: true,
-            orders_conflict: false,
-        };
-        match ingest_file(case, &job, parsers, opts)? {
-            Outcome::Deferred => {
-                handled.insert_failed(&f.rel);
-                deferred.push((f, derived));
-            }
-            Outcome::Done(report, orders) => {
-                mark_handled(&mut handled, &f.rel, &report);
-                for o in orders {
-                    if !proved.contains(&o) {
-                        proved.push(o);
-                    }
+    for stage in [raw, rest] {
+        let mut deferred: Vec<(&CollectionFile, bool)> = Vec::new();
+        for (f, derived, _) in stage {
+            let job = FileJob {
+                collection_id,
+                tool: dc.tool,
+                abs: &f.abs,
+                rel: &f.rel,
+                lossy_name: f.lossy_name,
+                superseded_by: handled.superseded_by(&f.rel, derived),
+                date_hint: None,
+                defer: true,
+                orders_conflict: false,
+            };
+            match ingest_file(case, &job, parsers, opts)? {
+                Outcome::Deferred => {
+                    handled.insert_failed(&f.rel);
+                    deferred.push((f, derived));
                 }
-                files.push(report);
+                Outcome::Done(report, orders) => {
+                    mark_handled(&mut handled, &f.rel, &report);
+                    for o in orders {
+                        if !proved.contains(&o) {
+                            proved.push(o);
+                        }
+                    }
+                    files.push(report);
+                }
             }
         }
-    }
-    // Files whose culture dates were all ambiguous: retry them with the order the rest of
-    // the collection proved, when it proved exactly one.
-    let hint = match proved.as_slice() {
-        [only] => Some(*only),
-        _ => None,
-    };
-    for (f, derived) in deferred {
-        let job = FileJob {
-            collection_id,
-            tool: dc.tool,
-            abs: &f.abs,
-            rel: &f.rel,
-            lossy_name: f.lossy_name,
-            superseded_by: handled.superseded_by(&f.rel, derived),
-            date_hint: hint,
-            defer: false,
-            orders_conflict: proved.len() > 1,
+        // Files whose culture dates were all ambiguous: retry them with the order the
+        // collection proved so far, when it proved exactly one.
+        let hint = match proved.as_slice() {
+            [only] => Some(*only),
+            _ => None,
         };
-        match ingest_file(case, &job, parsers, opts)? {
-            Outcome::Done(report, _) => {
-                mark_handled(&mut handled, &f.rel, &report);
-                files.push(report);
-            }
-            Outcome::Deferred => {
-                return Err(Error::Invalid(format!(
-                    "{} was deferred again on the retry pass",
-                    f.rel
-                )));
+        for (f, derived) in deferred {
+            let job = FileJob {
+                collection_id,
+                tool: dc.tool,
+                abs: &f.abs,
+                rel: &f.rel,
+                lossy_name: f.lossy_name,
+                superseded_by: handled.superseded_by(&f.rel, derived),
+                date_hint: hint,
+                defer: false,
+                orders_conflict: proved.len() > 1,
+            };
+            match ingest_file(case, &job, parsers, opts)? {
+                Outcome::Done(report, _) => {
+                    mark_handled(&mut handled, &f.rel, &report);
+                    files.push(report);
+                }
+                Outcome::Deferred => {
+                    return Err(Error::Invalid(format!(
+                        "{} was deferred again on the retry pass",
+                        f.rel
+                    )));
+                }
             }
         }
     }

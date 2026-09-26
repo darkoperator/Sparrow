@@ -143,6 +143,10 @@ fn date_evidence_counts_decisive_days() {
         &mut ja,
     );
     assert_eq!(ja.culture_dates, 0);
+    // 9/9 reads the same in either order: no evidence at all.
+    let mut same = DateEvidence::default();
+    export_csv(&gb, &[row(vec![("T", d(9))])], &mut same);
+    assert_eq!(same.culture_dates, 0);
 }
 
 #[test]

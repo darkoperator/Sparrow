@@ -491,3 +491,60 @@ fn a_large_table_of_cid_keys_is_refused() {
         "{err}"
     );
 }
+
+#[test]
+fn a_raw_window_retried_for_its_dates_still_supersedes_the_merged_copy() {
+    // Sparrow retries deferred raw files before it processes any derived file.
+    let mut sink = MemSink::default();
+    let mut t = Tree::new(&mut sink, "Output", BTreeSet::new(), CulturePolicy::Never);
+    let run = "P/UnifiedAuditLog/20260910-100000";
+    ambiguous(
+        &mut t,
+        &format!("{run}/UAL-20260809000000-20260810000000.csv"),
+        "inv.ual.window",
+    );
+    for (rel, derived) in [
+        (
+            format!("{run}/UAL-20260815000000-20260816000000.csv"),
+            false,
+        ),
+        (format!("{run}/Merged/UAL-Combined.csv"), true),
+    ] {
+        let mut spec = FileSpec::new(
+            &rel,
+            Some(if derived {
+                "inv.ual.merged"
+            } else {
+                "inv.ual.window"
+            }),
+            Encoding::Utf8,
+        );
+        if derived {
+            spec = spec.derived();
+        }
+        t.write(
+            &spec,
+            &format!("\"CreationTime\"\r\n\"8/15/2026 10:00:00 AM\"\r\n{derived}\r\n"),
+        )
+        .unwrap();
+        t.date_evidence(
+            &rel,
+            DateEvidence {
+                culture_dates: 1,
+                decisive: 1,
+            },
+        );
+    }
+    let out = t.finish().unwrap();
+    assert_eq!(
+        status(
+            &out,
+            &format!("{run}/UAL-20260809000000-20260810000000.csv")
+        ),
+        "parsed"
+    );
+    assert_eq!(
+        status(&out, &format!("{run}/Merged/UAL-Combined.csv")),
+        "skipped_superseded"
+    );
+}

@@ -1,9 +1,9 @@
 //! Microsoft-Extractor-Suite Get-Sessions and Get-MessageIDs
 //! (`MailItemsAccessed/<ts>/<ts>-Sessions*.csv`, `<ts>-MessageIDs*.csv`). Both are derived
 //! from the UAL MailItemsAccessed records. A row whose raw record (or raw item) is already
-//! loaded adds a sighting to that `ual_events` record (spec §6: the raw record supersedes
-//! it). Other rows load on their own: a Sessions row as a `partial` MailItemsAccessed
-//! record, a MessageIDs row as a parent-less `mail_items_accessed` row.
+//! loaded, complete or partial, adds a sighting to that `ual_events` record (spec §6: the raw
+//! record supersedes it). Other rows load on their own: a Sessions row as a `partial`
+//! MailItemsAccessed record, a MessageIDs row as a parent-less `mail_items_accessed` row.
 
 use crate::Result;
 use crate::ingest::bulk::{StagedUal, load_ual_batch};
@@ -87,10 +87,16 @@ fn times_order(
     file_date_order(ctx, times.iter().map(String::as_str))
 }
 
-const RAW_MATCH: &str = "e.operation = 'MailItemsAccessed' AND e.data_completeness = 'full'
-    AND e.user_upn = ? AND e.event_time = CAST(? AS TIMESTAMPTZ) AND e.client_ip IS NOT DISTINCT FROM ?";
+/// A raw MailItemsAccessed record of the row's user, time and address. Raw records loaded
+/// `partial` count too (Get-UAL `-AuditDataOnly` CSV keeps only the first record's columns, so
+/// a partial record may lack the address); records a Sessions row stood in for do not.
+const RAW_MATCH: &str = "e.operation = 'MailItemsAccessed'
+    AND json_extract_string(e.audit_data, '$.SparrowDerivedFrom') IS NULL
+    AND e.user_upn = ? AND e.event_time = CAST(? AS TIMESTAMPTZ)
+    AND (e.client_ip IS NOT DISTINCT FROM ? OR (e.data_completeness = 'partial' AND e.client_ip IS NULL))";
 
-/// Raw MailItemsAccessed records a Sessions row may stand for, not yet used by this file.
+/// Raw MailItemsAccessed records a Sessions row may stand for, not yet used by this file
+/// (complete records first; a partial record without OperationCount matches any count).
 fn raw_session_match(
     ctx: &ParseContext<'_>,
     a: &Access,
@@ -99,8 +105,10 @@ fn raw_session_match(
 ) -> Result<Option<String>> {
     let mut stmt = ctx.conn.prepare_cached(&format!(
         "SELECT CAST(e.record_id AS VARCHAR) FROM ual_events e WHERE {RAW_MATCH}
-           AND coalesce(TRY_CAST(json_extract_string(e.audit_data, '$.OperationCount') AS BIGINT), -1) = ?
-         ORDER BY 1"
+           AND (coalesce(TRY_CAST(json_extract_string(e.audit_data, '$.OperationCount') AS BIGINT), -1) = ?
+                OR (e.data_completeness = 'partial'
+                    AND json_extract(e.audit_data, '$.OperationCount') IS NULL))
+         ORDER BY e.data_completeness = 'full' DESC, 1"
     ))?;
     let ids = stmt
         .query_map(params![a.user, a.rfc3339, a.ip, count.unwrap_or(-1)], |r| {
@@ -112,7 +120,8 @@ fn raw_session_match(
 
 /// The raw record holding the item a MessageIDs row names: by message id, else by access
 /// type (a Bind item without a message id; a Sync of the row's folder; with the type
-/// unknown, an item of the row's folder without a message id).
+/// unknown, an item of the row's folder without a message id); else a partial raw record of
+/// the row's access whose items were not kept.
 fn raw_item_match(
     ctx: &ParseContext<'_>,
     a: &Access,
@@ -150,6 +159,25 @@ fn raw_item_match(
              WHERE {RAW_MATCH} AND {item} ORDER BY 1 LIMIT 1"
         ))?
         .query_row(params_from_iter(values), |r| r.get::<_, String>(0))
+        .optional()?;
+    if found.is_some() {
+        return Ok(found);
+    }
+    // A partial raw record whose file did not keep its items (`Folders` exported as
+    // `System.Object[]`) still holds the row's access; the first by id when several match.
+    let found = ctx
+        .conn
+        .prepare_cached(&format!(
+            "SELECT CAST(e.record_id AS VARCHAR) FROM ual_events e
+             WHERE {RAW_MATCH} AND e.data_completeness = 'partial'
+               AND NOT EXISTS (SELECT 1 FROM mail_items_accessed m WHERE m.record_id = e.record_id
+                                 AND (m.internet_message_id IS NOT NULL OR m.folder_path IS NOT NULL))
+             ORDER BY 1 LIMIT 1"
+        ))?
+        .query_row(
+            params![a.user.as_str(), a.rfc3339.as_str(), a.ip.as_deref()],
+            |r| r.get::<_, String>(0),
+        )
         .optional()?;
     Ok(found)
 }

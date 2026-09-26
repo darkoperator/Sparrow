@@ -469,3 +469,112 @@ fn parent_less_rows_keep_whether_the_time_had_a_zone() {
         1
     );
 }
+
+/// Get-UAL `-Output CSV -AuditDataOnly`: the AuditData properties flattened by Export-Csv
+/// (header from the first record, arrays as `System.Object[]`).
+fn audit_data_only_ual(records: &[Value]) -> Vec<u8> {
+    let keys: Vec<&str> = records[0]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    let mut s = csv_line(&keys);
+    for a in records {
+        let cells: Vec<String> = keys
+            .iter()
+            .map(|k| match &a[*k] {
+                Value::String(v) => v.clone(),
+                Value::Array(_) => "System.Object[]".to_string(),
+                Value::Null => String::new(),
+                v => v.to_string(),
+            })
+            .collect();
+        s.push_str(&csv_line(
+            &cells.iter().map(String::as_str).collect::<Vec<_>>(),
+        ));
+    }
+    utf8_bom(&s)
+}
+
+#[test]
+fn rows_of_raw_records_from_an_audit_data_only_csv_add_sightings() {
+    // The raw records load partial (their Folders are unreadable), but they are still the raw
+    // MailItemsAccessed events the Sessions and MessageIDs rows were derived from (spec §6):
+    // the rows must add sightings, not partial copies or parent-less items.
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("OUT");
+    let mut r2 = mia(R2, 1, &[("<i3@contoso.example>", 3000)]);
+    r2["CreationTime"] = json!("2026-08-20T10:07:00");
+    let r1 = mia(
+        R1,
+        2,
+        &[
+            ("<i1@contoso.example>", 1000),
+            ("<i2@contoso.example>", 2000),
+        ],
+    );
+    fixtures::write(&out, UAL, &audit_data_only_ual(&[r1, r2]));
+    fixtures::write(
+        &out,
+        SESSIONS,
+        &sessions(&[
+            ("8/20/2026 10:07:00 AM", "1"), // R2
+            ("8/20/2026 10:00:00 AM", "2"), // R1
+        ]),
+    );
+    let mut body = IDS_HEADER.to_string();
+    for (time, id, size) in [
+        ("8/20/2026 10:07:00 AM", "<i3@contoso.example>", ""),
+        ("8/20/2026 10:00:00 AM", "<i1@contoso.example>", "\"1000\""),
+        ("8/20/2026 10:00:00 AM", "<i2@contoso.example>", "\"2000\""),
+    ] {
+        body.push_str(&format!(
+            "\"{time}\",\"{ALICE}\",\"{IP}\",,\"Bind\",,\"{id}\",{size}\r\n"
+        ));
+    }
+    fixtures::write(&out, MESSAGE_IDS, &utf8_bom(&body));
+    let (case, report) = ingest(dir.path());
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM ual_events WHERE data_completeness = 'partial'"
+        ),
+        2,
+        "only the two raw records"
+    );
+    assert_eq!(count(&case, "SELECT count(*) FROM ual_events"), 2);
+    let f = row(&report, SESSIONS);
+    assert_eq!(
+        (f.records_read, f.records_loaded, f.records_duplicate),
+        (2, 0, 2),
+        "{f:#?}"
+    );
+    let f = row(&report, MESSAGE_IDS);
+    assert_eq!(
+        (f.records_read, f.records_loaded, f.records_duplicate),
+        (3, 0, 3),
+        "{f:#?}"
+    );
+    let sightings = |artifact: &str, id: &str| {
+        count(
+            &case,
+            &format!(
+                "SELECT count(*) FROM record_sources rs JOIN source_files sf USING (file_id)
+                 WHERE rs.table_name = 'ual_events' AND rs.record_key = '{id}'
+                   AND sf.artifact_type = '{artifact}'"
+            ),
+        )
+    };
+    assert_eq!(sightings("inv.mia.sessions", R1), 1);
+    assert_eq!(sightings("inv.mia.sessions", R2), 1);
+    assert_eq!(sightings("inv.mia.message_ids", R1), 2);
+    assert_eq!(sightings("inv.mia.message_ids", R2), 1);
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM mail_items_accessed WHERE record_id IS NULL"
+        ),
+        0
+    );
+}

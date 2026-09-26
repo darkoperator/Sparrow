@@ -250,3 +250,51 @@ fn investigate_txt_uses_the_collection_order() {
         1788336000
     );
 }
+
+#[test]
+fn raw_files_retried_for_their_dates_still_supersede_derived_ones() {
+    // Get-UAL -Output CSV -AuditDataOnly on PowerShell 7 writes CreationTime in the host
+    // culture. A window whose dates are all ambiguous waits for the order the collection
+    // proves; the run's derived Merged copy (which holds a decisive date from another window)
+    // must still be superseded by the windows (spec §6), not parsed before the retried one.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("Output");
+    let header = csv_line(&[
+        "CreationTime",
+        "Id",
+        "Operation",
+        "RecordType",
+        "UserId",
+        "Workload",
+    ]);
+    let record = |time: &str, id: &str| {
+        csv_line(&[time, id, "Update", "2", "alice@contoso.example", "Exchange"])
+    };
+    let r1 = record(
+        "8/9/2026 10:00:00 AM",
+        "e4e4e4e4-0000-4000-8000-000000000004",
+    );
+    let r2 = record(
+        "8/15/2026 10:00:00 AM",
+        "e5e5e5e5-0000-4000-8000-000000000005",
+    );
+    let run = "UnifiedAuditLog/20260910-100000";
+    let ambiguous = format!("{run}/UAL-20260809000000-20260810000000.csv");
+    let decisive = format!("{run}/UAL-20260815000000-20260816000000.csv");
+    let merged = format!("{run}/Merged/UAL-Combined.csv");
+    fixtures::write(&root, &ambiguous, format!("{header}{r1}").as_bytes());
+    fixtures::write(&root, &decisive, format!("{header}{r2}").as_bytes());
+    fixtures::write(&root, &merged, format!("{header}{r1}{r2}").as_bytes());
+    let (case, report) = ingest(dir.path(), None);
+    assert!(!report.has_errors(), "{report:#?}");
+    assert_eq!(row(&report, &ambiguous).status, FileStatus::Parsed);
+    assert_eq!(row(&report, &decisive).status, FileStatus::Parsed);
+    assert_eq!(row(&report, &merged).status, FileStatus::SkippedSuperseded);
+    assert_eq!(
+        count(
+            &case,
+            "SELECT min(epoch(event_time)::BIGINT) FROM ual_events"
+        ),
+        1_786_269_600
+    );
+}

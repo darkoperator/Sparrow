@@ -273,6 +273,13 @@ impl<'a> Tree<'a> {
         Ok(before)
     }
 
+    /// Appends `bytes` to `out_rel`, a path relative to the output directory rather than the
+    /// root, that the manifest does not list (Microsoft-Extractor-Suite's `Output\LogFile.txt`
+    /// written beside `Output/` on macOS/Linux).
+    pub fn write_unlisted(&mut self, out_rel: &str, bytes: &[u8]) -> Result<()> {
+        self.sink.append(out_rel, bytes)
+    }
+
     /// Appends raw bytes (XLSX, zip, MaxMind databases) to the file.
     pub fn write_bytes(&mut self, spec: &FileSpec, bytes: &[u8]) -> Result<()> {
         self.put(spec, bytes)
@@ -553,9 +560,10 @@ fn counterpart_stems(stem: &str) -> Vec<String> {
 }
 
 /// Replays the ingest over `files` (`culture_given`: the ingest passes `--culture`). Files are
-/// processed in Sparrow's order `(derived, is_csv, rel_path)`; with no `--culture`, a file
-/// whose culture dates are all ambiguous is deferred to a second pass and parses only when a
-/// first-pass parsed file proved the order (decisive dates).
+/// processed in Sparrow's order `(derived, is_csv, rel_path)`, raw files first and derived ones
+/// second, each stage with its own retry: with no `--culture`, a file whose culture dates are all
+/// ambiguous is deferred to its stage's retry pass and parses only when a parsed file proved the
+/// order (decisive dates) by then.
 fn replay(files: &[Facts], culture_given: bool) -> BTreeMap<&str, Status> {
     let mut order: Vec<&Facts> = files.iter().collect();
     order.sort_by_key(|f| {
@@ -565,37 +573,40 @@ fn replay(files: &[Facts], culture_given: bool) -> BTreeMap<&str, Status> {
             f.rel.clone(),
         )
     });
+    let (raw, derived): (Vec<&Facts>, Vec<&Facts>) = order.into_iter().partition(|f| !f.derived);
 
     let mut out: BTreeMap<&str, Status> = BTreeMap::new();
     let mut handled = Handled::default();
     let mut parsed: BTreeSet<(String, Option<&'static str>, Option<String>)> = BTreeSet::new();
     let mut proved = false;
-    let mut deferred = Vec::new();
     let first = if culture_given {
         Pass::CultureGiven
     } else {
         Pass::First
     };
-    for f in order {
-        match decide(f, &handled, &parsed, first, proved) {
-            None => {
-                handled.insert_failed(&f.rel);
-                deferred.push(f);
-            }
-            Some(st) => {
-                if st == Status::Named("parsed") && f.date.decisive > 0 {
-                    proved = true;
+    for stage in [raw, derived] {
+        let mut deferred = Vec::new();
+        for f in stage {
+            match decide(f, &handled, &parsed, first, proved) {
+                None => {
+                    handled.insert_failed(&f.rel);
+                    deferred.push(f);
                 }
-                record(f, &st, &mut handled, &mut parsed);
-                out.insert(&f.rel, st);
+                Some(st) => {
+                    if st == Status::Named("parsed") && f.date.decisive > 0 {
+                        proved = true;
+                    }
+                    record(f, &st, &mut handled, &mut parsed);
+                    out.insert(&f.rel, st);
+                }
             }
         }
-    }
-    for f in deferred {
-        let st =
-            decide(f, &handled, &parsed, Pass::Retry, proved).expect("the retry pass never defers");
-        record(f, &st, &mut handled, &mut parsed);
-        out.insert(&f.rel, st);
+        for f in deferred {
+            let st = decide(f, &handled, &parsed, Pass::Retry, proved)
+                .expect("the retry pass never defers");
+            record(f, &st, &mut handled, &mut parsed);
+            out.insert(&f.rel, st);
+        }
     }
     out
 }

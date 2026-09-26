@@ -3,6 +3,7 @@
 //! the placeholder `{cid}` for the collection id, which the manifest leaves unreplaced.
 
 use crate::story::Evidence;
+use crate::world::World;
 use uuid::Uuid;
 
 /// The placeholder for the collection id in per-collection keys.
@@ -143,10 +144,30 @@ pub fn user_licence(upn: &str, sku: &str) -> String {
     format!("{CID}|{}|{}", lower(upn), lower(sku))
 }
 
+/// A mailbox permission grantee as Microsoft-Extractor-Suite's Get-MailboxPermissions exports
+/// it (and `mailbox_permissions.grantee` keys it): `"<DisplayName> (<PrimarySmtpAddress>)"`
+/// for a recipient (a person with a mailbox), else the raw identity (a role group such as
+/// `Discovery Management`).
+pub fn mailbox_grantee(world: &World, grantee: &str) -> String {
+    match world.mailboxes.get(grantee) {
+        Some(m) => format!("{} ({})", m.display_name, m.primary_smtp),
+        None => grantee.to_string(),
+    }
+}
+
+/// A folder permission grantee as Get-MailboxPermissions exports it:
+/// `"<DisplayName> (<PrimarySmtpAddress>)"`, the address empty for a grantee without a mailbox.
+pub fn mailbox_folder_grantee(world: &World, grantee: &str) -> String {
+    match world.mailboxes.get(grantee) {
+        Some(m) => format!("{} ({})", m.display_name, m.primary_smtp),
+        None => format!("{grantee} ()"),
+    }
+}
+
 /// The record key storyline evidence `e` has in `table`, when this module can name it (the
 /// manifest's sightings carry it so `synth check` can find the provenance row); `None` for a
 /// pairing no writer delivers yet. Writer tasks extend it as they deliver new pairings.
-pub fn for_evidence(e: &Evidence, table: &str) -> Option<String> {
+pub fn for_evidence(world: &World, e: &Evidence, table: &str) -> Option<String> {
     match (e, table) {
         (Evidence::Ual(id), "ual_events") => Some(ual(*id)),
         (Evidence::SignIn(id), "signins") => Some(signin(*id)),
@@ -164,6 +185,32 @@ pub fn for_evidence(e: &Evidence, table: &str) -> Option<String> {
             Some(mobile_device(mailbox, device_id))
         }
         (Evidence::TransportRule(name), "transport_rules") => Some(transport_rule(name)),
+        (
+            Evidence::MailboxPermission {
+                mailbox,
+                grantee,
+                right,
+            },
+            "mailbox_permissions",
+        ) => {
+            let folder = world
+                .mailbox_permissions
+                .iter()
+                .find(|p| p.mailbox == *mailbox && p.grantee == *grantee && p.right == *right)
+                .and_then(|p| p.folder.clone());
+            let shown = if right == "folder" {
+                mailbox_folder_grantee(world, grantee)
+            } else {
+                mailbox_grantee(world, grantee)
+            };
+            Some(mailbox_permission(
+                mailbox,
+                right,
+                folder.as_deref(),
+                &shown,
+            ))
+        }
+        (Evidence::AuditConfig, "audit_config") => Some(audit_config()),
         _ => None,
     }
 }

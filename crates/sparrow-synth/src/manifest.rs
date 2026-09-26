@@ -173,11 +173,20 @@ pub enum RuleOutcome {
 /// `message_trace_org`). The portal delivers no user or mailbox list and its message trace
 /// summary has no organization column, so its domains are the primary domain and those of the
 /// interactive sign-in rows of home-tenant users (Sparrow does not derive domains from UAL user ids, which include
-/// guests and external senders).
+/// guests and external senders). Microsoft-Extractor-Suite lists every mailbox, so its domains are
+/// the mailboxes' UPN domains.
 pub fn tenant_expect(world: &World, opts: &GenerateOptions) -> TenantExpect {
     let name = matches!(opts.collector, Collector::Hawk3 | Collector::Hawk4)
         .then(|| world.tenant.name.clone());
     let mut domains = BTreeSet::new();
+    if opts.collector == Collector::Invictus {
+        // Every mailbox is listed (MailboxAuditStatus, MailboxPermissions).
+        for upn in world.mailboxes.keys() {
+            if let Some((_, d)) = upn.rsplit_once('@') {
+                domains.insert(d.to_lowercase());
+            }
+        }
+    }
     if opts.collector == Collector::Portal {
         domains.insert(world.primary_domain().to_lowercase());
         for day in window_days(world) {
@@ -240,7 +249,7 @@ pub fn story_expects(
                         .flatten()
                         .map(|(table, sighting)| Landed {
                             table: table.clone(),
-                            record_key: keys::for_evidence(e, table),
+                            record_key: keys::for_evidence(world, e, table),
                             sighting: sighting.clone(),
                         })
                         .collect(),
