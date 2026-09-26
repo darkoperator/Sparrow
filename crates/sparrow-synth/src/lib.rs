@@ -4,6 +4,7 @@
 //! reserved or synthetic; nothing comes from a real capture.
 
 pub mod baseline;
+pub mod coverage;
 pub mod error;
 pub mod events;
 pub mod names;
@@ -13,6 +14,7 @@ pub mod ps;
 pub mod reserved;
 pub mod rng;
 pub mod scenario;
+pub mod story;
 pub mod ual;
 pub mod world;
 

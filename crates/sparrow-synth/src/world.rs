@@ -6,13 +6,15 @@
 //! Every id is drawn from seeded streams; every value is reserved or synthetic.
 
 use crate::Result;
-use crate::events::{DirAudit, RiskDetection, SignIn, TraceMsg, Ual};
+use crate::baseline;
+use crate::events::{Day, DirAudit, RecordType, RiskDetection, SignIn, TraceMsg, Ual};
 use crate::names::people;
 use crate::profiles::{AuditProfile, LicenceProfile, audit_profile, licence_profile};
 use crate::reserved::{IpAllocator, Net, WELL_KNOWN_GUIDS};
 use crate::rng::{Rng, stream};
 use crate::scenario::Scenario;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::sync::LazyLock;
@@ -190,6 +192,95 @@ impl World {
 
     pub fn primary_domain(&self) -> &str {
         &self.tenant.domains[0]
+    }
+
+    /// The events of UTC day `date`: the baseline and the storylines' events of that date,
+    /// UAL records filtered by `logged`, each vector sorted by `(time, id)`.
+    pub fn day(&self, date: NaiveDate) -> Day {
+        let mut d = baseline::day(self, date);
+        d.ual.retain(|u| self.logged(u));
+        d.ual.extend(
+            self.story
+                .ual
+                .iter()
+                .filter(|u| u.time.date_naive() == date && self.logged(u))
+                .cloned(),
+        );
+        d.signins.extend(
+            self.story
+                .signins
+                .iter()
+                .filter(|s| s.time.date_naive() == date)
+                .cloned(),
+        );
+        d.trace.extend(
+            self.story
+                .trace
+                .iter()
+                .filter(|t| t.received.date_naive() == date)
+                .cloned(),
+        );
+        d.ual.sort_by_key(|u| (u.time, u.id));
+        d.signins.sort_by_key(|s| (s.time, s.id));
+        d.trace.sort_by_key(|t| (t.received, t.trace_id));
+        d
+    }
+
+    /// Every directory audit of the window: the baseline's and the storylines', sorted by
+    /// `(time, id)`.
+    pub fn directory_audits(&self) -> Vec<DirAudit> {
+        let mut v = baseline::directory_audits(self);
+        v.extend(self.story.audits.iter().cloned());
+        v.sort_by(|a, b| (a.time, &a.id).cmp(&(b.time, &b.id)));
+        v
+    }
+
+    /// Every Identity Protection risk detection: the baseline's and the storylines', sorted by
+    /// `(detected, id)`. The world holds them regardless of licence; writers expose them only
+    /// with Entra ID P2.
+    pub fn risk_detections(&self) -> Vec<RiskDetection> {
+        let mut v = baseline::risk(self).0;
+        v.extend(self.story.risk.iter().cloned());
+        v.sort_by(|a, b| (a.detected, &a.id).cmp(&(b.detected, &b.id)));
+        v
+    }
+
+    /// Whether Microsoft 365 recorded UAL record `u` under the tenant's audit settings at its
+    /// time: never while UAL ingestion is off; mailbox-audit records (ExchangeItem,
+    /// ExchangeItemGroup, ExchangeItemAggregated, and the Send / SendAs / SendOnBehalf /
+    /// SearchQueryInitiatedExchange operations) also need organization auditing on, the mailbox
+    /// audited and not bypassed, and the action in its logon type's list.
+    pub fn logged(&self, u: &Ual) -> bool {
+        if !baseline::ual_logged(self, u.time) {
+            return false;
+        }
+        let mailbox_record = matches!(
+            u.record_type,
+            RecordType::ExchangeItem
+                | RecordType::ExchangeItemGroup
+                | RecordType::ExchangeItemAggregated
+        ) || matches!(
+            u.operation.as_str(),
+            "Send" | "SendAs" | "SendOnBehalf" | "SearchQueryInitiatedExchange"
+        );
+        if !mailbox_record {
+            return true;
+        }
+        let owner = u
+            .audit
+            .get("MailboxOwnerUPN")
+            .and_then(Value::as_str)
+            .unwrap_or(&u.user_id);
+        let logon_type = u
+            .audit
+            .get("LogonType")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let action = match u.operation.as_str() {
+            "SearchQueryInitiatedExchange" => "SearchQueryInitiated",
+            op => op,
+        };
+        baseline::mailbox_logged(self, owner, logon_type, action, u.time)
     }
 }
 
@@ -617,7 +708,7 @@ pub struct Email {
     pub attachment: Option<(String, Vec<u8>)>,
 }
 
-/// Events the storylines add on top of the baseline (empty after `World::build`; Task 6 fills
+/// Events the storylines add on top of the baseline (empty after `World::build`; `story::apply` fills
 /// them).
 #[derive(Debug, Clone, Default)]
 pub struct StoryEvents {

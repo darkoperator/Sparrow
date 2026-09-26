@@ -1,0 +1,527 @@
+# Detection coverage matrix for the spec §8.5 seed rule pack (Phase 5 defines the rules'
+# ids, intended logic and test storylines; Phase 6 implements them).
+#
+# Per rule:
+#   logic             what the rule must match (Phase 6 implements exactly this)
+#   tables            evidence tables the rule reads (the first is where a hit lands)
+#   requires          capability ids (data/capabilities.yaml): a tenant where one is
+#                     not_licensed gets `not_applicable`
+#   requires_evidence evidence ids (profile::availability): `not_licensed` / `not_enabled`
+#                     there also gives `not_applicable`
+#   needs_geoip       the rule needs ip_intel ASN / geo (ingest with --geoip-dir)
+#   collectors        collectors that can supply the evidence of a positive (sparrow synth
+#                     coverage flags a listed collector no built-in scenario exercises)
+#   lookalike_collectors  collectors that can supply a look-alike's evidence, when fewer
+#                     (Hawk only sees activity from the IPs and users the analyst searched)
+#   positives         storyline kinds that must trigger the rule
+#   lookalikes        storyline kinds that must not trigger it
+# Rules SPW-HAWK-001..015 cover every Hawk 4.0 investigate condition (research
+# 2026-09-26-phase5-hawk-layouts.md §6, H01-H15) plus the two content-derived ones.
+version: 1
+rules:
+  - id: SPW-HAWK-001
+    title: Admin created, changed or removed another user's inbox rule that forwards, redirects or deletes
+    category: mail
+    severity: high
+    hawk: H02
+    logic: >-
+      ExchangeAdmin New-InboxRule, Set-InboxRule or Remove-InboxRule where the rule's mailbox
+      (parameter Mailbox, else the Identity's mailbox part) differs from the actor (UserId), and
+      ForwardTo, ForwardAsAttachmentTo or RedirectTo is non-empty, DeleteMessage is True (the
+      text "False" is false, unlike Hawk), or MoveToFolder is Deleted Items. Hawk 3
+      admin_audit_events rows with the same cmdlets and parameters count too.
+    tables: [ual_events, admin_audit_events]
+    requires: []
+    requires_evidence: [ual]
+    needs_geoip: false
+    collectors: [hawk3, hawk4, invictus, portal]
+    positives: [admin_inbox_rule]
+    lookalikes: [admin_benign_rule, vendor_filing_rule]
+  - id: SPW-HAWK-002
+    title: FullAccess, SendAs or recipient permission granted (not the SYSTEM discovery grant)
+    category: mail
+    severity: high
+    hawk: H03
+    logic: >-
+      Add-MailboxPermission with AccessRights containing FullAccess or SendAs,
+      Add-RecipientPermission, or Add-ADPermission; excluding UserId "NT AUTHORITY\SYSTEM
+      (Microsoft.Exchange.ServiceHost)" on a DiscoverySearchMailbox for Discovery Management.
+      A mailbox_permissions full_access / send_as row whose grantee is a tenant user created in
+      the window also counts.
+    tables: [ual_events, admin_audit_events, mailbox_permissions]
+    requires: []
+    requires_evidence: []
+    needs_geoip: false
+    collectors: [hawk3, hawk4, invictus, portal]
+    positives: [mailbox_permission_grant]
+    lookalikes: [permission_system_discovery]
+  - id: SPW-HAWK-003
+    title: Mailbox forwarding parameter changed
+    category: mail
+    severity: medium
+    hawk: H04
+    logic: >-
+      Set-Mailbox, Set-MailUser, Set-RemoteMailbox or Enable-RemoteMailbox with any of the
+      parameters ForwardingAddress, ForwardingSmtpAddress, DeliverToMailboxAndForward,
+      ExternalEmailAddress, RedirectTo (any value, including clearing it).
+    tables: [ual_events, admin_audit_events]
+    requires: []
+    requires_evidence: [ual]
+    needs_geoip: false
+    collectors: [hawk3, hawk4, invictus, portal]
+    lookalike_collectors: [invictus, portal]
+    positives: [forwarding_mailbox, internal_forwarding, forwarding_removed]
+    lookalikes: [set_mailbox_other_param]
+  - id: SPW-HAWK-004
+    title: eDiscovery search created, run or exported
+    category: config
+    severity: medium
+    hawk: H01
+    logic: >-
+      RecordType Discovery (24) with Operation in SearchCreated, SearchStarted,
+      SearchExported, SearchExportDownloaded, SearchPreviewed, CaseAdded, HoldCreated (viewing a
+      search, SearchViewed, is not enough; Hawk flags any Discovery record).
+    tables: [ual_events]
+    requires: []
+    requires_evidence: [ual]
+    needs_geoip: false
+    collectors: [hawk3, hawk4, invictus, portal]
+    positives: [ediscovery_search]
+    lookalikes: [ediscovery_view_only]
+  - id: SPW-HAWK-005
+    title: Domain added, verified or federated
+    category: config
+    severity: high
+    hawk: H05
+    logic: >-
+      UAL AzureActiveDirectory Operation in "Add domain to company.", "Verify domain.",
+      "Set domain authentication.", "Set federation settings on domain.", or directory audit
+      activity in Add unverified domain, Verify domain, Set domain authentication, Set
+      federation settings on domain. "Update domain." alone does not count.
+    tables: [ual_events, directory_audits]
+    requires: []
+    requires_evidence: []
+    needs_geoip: false
+    collectors: [hawk4, invictus, portal]
+    positives: [domain_federation]
+    lookalikes: [domain_property_update]
+  - id: SPW-HAWK-006
+    title: OAuth consent granted
+    category: apps
+    severity: medium
+    hawk: H06
+    logic: >-
+      UAL "Consent to application." or "Add delegated permission grant." / "Add
+      OAuth2PermissionGrant.", or directory audit Consent to application / Add delegated
+      permission grant, in the window. A sign-in to an app consented before the window does not
+      count.
+    tables: [ual_events, directory_audits]
+    requires: []
+    requires_evidence: []
+    needs_geoip: false
+    collectors: [hawk3, hawk4, invictus, portal]
+    positives: [oauth_consent, low_risk_consent]
+    lookalikes: [app_signin_existing_consent]
+  - id: SPW-HAWK-007
+    title: Consent grant in a risky category (broad scope, extremely dangerous, high risk)
+    category: apps
+    severity: high
+    hawk: H07
+    logic: >-
+      oauth_grants row where consent_type is AllPrincipals granted in the window, or the
+      permission ends in .All, or is AppRoleAssignment.ReadWrite.All / RoleManagement.ReadWrite.Directory
+      (extremely dangerous), or is one of BitlockerKey.Read.All, Chat.*, Directory.ReadWrite.All,
+      eDiscovery.*, Files.*, MailboxSettings.ReadWrite, Mail.ReadWrite, Mail.Send, Sites.*,
+      User.ReadWrite*, User.Read.All (high risk). Unlike Hawk, User.Read / User.ReadBasic.All
+      alone are not high risk; grants that existed before the window (first-party apps,
+      AllPrincipals Microsoft Office) are context, not hits.
+    tables: [oauth_grants, directory_audits, ual_events]
+    requires: []
+    requires_evidence: []
+    needs_geoip: false
+    collectors: [hawk3, hawk4, invictus]
+    positives: [oauth_consent]
+    lookalikes: [low_risk_consent]
+  - id: SPW-HAWK-008
+    title: Risky or confirmed-compromised user
+    category: identity
+    severity: high
+    hawk: H08, H09
+    logic: >-
+      risky_users row with risk_state confirmedCompromised, or risk_state atRisk and
+      risk_level low, medium or high. Dismissed, remediated or none are not hits.
+    tables: [risky_users]
+    requires: [identity_protection]
+    requires_evidence: []
+    needs_geoip: false
+    collectors: [hawk4, invictus]
+    positives: [aitm_signin, confirmed_compromised]
+    lookalikes: [risk_dismissed]
+  - id: SPW-HAWK-009
+    title: Entra ID Protection risk detection
+    category: identity
+    severity: high
+    hawk: H10, H11
+    logic: >-
+      risk_detections row with risk_state atRisk or confirmedCompromised and risk_level low,
+      medium or high.
+    tables: [risk_detections]
+    requires: [identity_protection]
+    requires_evidence: []
+    needs_geoip: false
+    collectors: [hawk4, invictus]
+    positives: [aitm_signin, confirmed_compromised]
+    lookalikes: [risk_dismissed]
+  - id: SPW-HAWK-010
+    title: User inbox rule deletes, forwards or redirects mail
+    category: mail
+    severity: high
+    hawk: H12
+    logic: >-
+      inbox_rules row with delete_message true, or non-empty forward_to,
+      forward_as_attachment_to or redirect_to; or UAL New-InboxRule / Set-InboxRule /
+      UpdateInboxRules creating such a rule.
+    tables: [inbox_rules, ual_events, admin_audit_events]
+    requires: []
+    requires_evidence: []
+    needs_geoip: false
+    collectors: [hawk3, hawk4, invictus, portal]
+    positives: [forwarding_inbox_rule, admin_inbox_rule]
+    lookalikes: [vendor_filing_rule, inbox_rule_finance]
+  - id: SPW-HAWK-011
+    title: Mailbox forwarding configured
+    category: mail
+    severity: medium
+    hawk: H13
+    logic: >-
+      mailboxes row (as collected) with forwarding_smtp_address or forwarding_address set.
+    tables: [mailboxes]
+    requires: []
+    requires_evidence: []
+    needs_geoip: false
+    collectors: [hawk3, hawk4]
+    positives: [forwarding_mailbox, internal_forwarding]
+    lookalikes: [forwarding_removed]
+  - id: SPW-HAWK-012
+    title: Risky Entra sign-in
+    category: identity
+    severity: high
+    hawk: H14
+    logic: >-
+      signins row with risk_level_during or risk_level_aggregated in low, medium, high
+      (none and hidden are not hits).
+    tables: [signins]
+    requires: [identity_protection]
+    requires_evidence: [signins]
+    needs_geoip: false
+    collectors: [hawk4, invictus]
+    positives: [aitm_signin]
+    lookalikes: [plausible_travel]
+  - id: SPW-HAWK-013
+    title: Mobile device first synced inside the investigation window
+    category: identity
+    severity: medium
+    hawk: H15
+    logic: >-
+      mobile_devices row whose first_sync is inside the collection window
+      (collections.window_start .. window_end).
+    tables: [mobile_devices]
+    requires: []
+    requires_evidence: []
+    needs_geoip: false
+    collectors: [hawk3, hawk4]
+    positives: [new_mobile_device]
+    lookalikes: [old_mobile_device]
+  - id: SPW-HAWK-014
+    title: Message header sender mismatch (P1/P2) or failed / anonymous authentication
+    category: mail
+    severity: medium
+    hawk: null
+    logic: >-
+      email_artifacts row whose From address (inside <>) differs from Return-Path, or whose
+      Authentication-Results show spf/dkim/dmarc fail, or X-MS-Exchange-Organization-AuthAs is
+      Anonymous with an internal From domain; Hawk Message_Header_Findings rows "P1 P2 Match"
+      with "don't Match" count too.
+    tables: [email_artifacts]
+    requires: []
+    requires_evidence: []
+    needs_geoip: false
+    collectors: [hawk4, invictus]
+    positives: [header_spoof]
+    lookalikes: [header_clean]
+  - id: SPW-HAWK-015
+    title: Automatic reply enabled
+    category: mail
+    severity: low
+    hawk: null
+    logic: >-
+      mailboxes auto_reply_state Enabled or Scheduled, or UAL Set-MailboxAutoReplyConfiguration
+      with AutoReplyState Enabled or Scheduled.
+    tables: [mailboxes, ual_events]
+    requires: []
+    requires_evidence: []
+    needs_geoip: false
+    collectors: [hawk4, invictus, portal]
+    positives: [autoreply_enabled]
+    lookalikes: [autoreply_disabled]
+  - id: SPW-MAIL-003
+    title: Inbox rule with finance keywords or a hiding folder
+    category: mail
+    severity: high
+    hawk: null
+    logic: >-
+      Inbox rule (inbox_rules, or UAL New-InboxRule / Set-InboxRule / UpdateInboxRules) whose
+      SubjectContainsWords, BodyContainsWords or SubjectOrBodyContainsWords hit
+      @list:finance_keywords, or whose MoveToFolder is in @list:hiding_folders (RSS Feeds, RSS
+      Subscriptions, Conversation History, Archive, Junk Email, Deleted Items) or is a single
+      character.
+    tables: [inbox_rules, ual_events, admin_audit_events]
+    requires: []
+    requires_evidence: []
+    needs_geoip: false
+    collectors: [hawk3, hawk4, invictus, portal]
+    positives: [inbox_rule_finance]
+    lookalikes: [vendor_filing_rule]
+  - id: SPW-MAIL-004
+    title: External forwarding through the mailbox, an inbox rule or a transport rule
+    category: mail
+    severity: high
+    hawk: null
+    logic: >-
+      A forwarding address outside tenant_domains: mailboxes forwarding_smtp_address /
+      forwarding_address, inbox_rules forward_to / forward_as_attachment_to / redirect_to,
+      transport_rules blind_copy_to / redirect_to / copy_to / add_to_recipients, or the UAL
+      events that set them (Set-Mailbox, New-/Set-InboxRule, New-/Set-TransportRule).
+    tables: [mailboxes, inbox_rules, transport_rules, ual_events]
+    requires: []
+    requires_evidence: []
+    needs_geoip: false
+    collectors: [hawk3, hawk4, invictus, portal]
+    positives: [forwarding_mailbox, forwarding_inbox_rule, forwarding_transport_rule, admin_inbox_rule]
+    lookalikes: [internal_forwarding]
+  - id: SPW-MAIL-005
+    title: MailItemsAccessed bind burst
+    category: mail
+    severity: high
+    hawk: null
+    logic: >-
+      At least 5 MailItemsAccessed records with MailAccessType Bind, or at least 100 accessed
+      items, for one mailbox from one client IP within 30 minutes. Sync records never count.
+    tables: [ual_events, mail_items_accessed]
+    requires: []
+    requires_evidence: [mail_items_accessed]
+    needs_geoip: false
+    collectors: [hawk4, invictus, portal]
+    positives: [mia_burst]
+    lookalikes: [mia_sync]
+  - id: SPW-MAIL-006
+    title: Mail sent from an IP address the user never used before
+    category: mail
+    severity: medium
+    hawk: null
+    logic: >-
+      UAL Send / SendAs / SendOnBehalf whose client_ip appears in no earlier ual_events or
+      signins row of the same user in the case.
+    tables: [ual_events]
+    requires: []
+    requires_evidence: [mail_send]
+    needs_geoip: false
+    collectors: [hawk4, invictus, portal]
+    positives: [send_new_ip]
+    lookalikes: [send_known_ip]
+  - id: SPW-MAIL-007
+    title: Mailbox or SharePoint search for finance keywords
+    category: mail
+    severity: medium
+    hawk: null
+    logic: >-
+      search_queries (or UAL SearchQueryInitiatedExchange / SearchQueryInitiatedSharePoint)
+      whose query_text hits @list:finance_keywords.
+    tables: [search_queries, ual_events]
+    requires: []
+    requires_evidence: [search_queries]
+    needs_geoip: false
+    collectors: [hawk4, invictus, portal]
+    positives: [search_finance]
+    lookalikes: [search_benign]
+  - id: SPW-ID-001
+    title: MFA method registered after a risky sign-in
+    category: identity
+    severity: high
+    hawk: null
+    logic: >-
+      Directory audit "User registered security info" / "Update user" with
+      StrongAuthentication* modified properties (or UAL "Update user." with the same), within 24
+      hours after a sign-in of the same user that is risky (risk level medium/high) or comes
+      from a hosting ASN (ip_intel.is_hosting).
+    tables: [directory_audits, ual_events, signins]
+    requires: []
+    requires_evidence: []
+    needs_geoip: true
+    collectors: [hawk3, hawk4, invictus, portal]
+    positives: [mfa_method_added]
+    lookalikes: [mfa_new_hire]
+  - id: SPW-ID-002
+    title: Sign-in from a hosting-provider ASN
+    category: identity
+    severity: medium
+    hawk: null
+    logic: >-
+      Successful sign-in (signins with error_code 0, or UAL UserLoggedIn) whose IP has
+      ip_intel.is_hosting (rules/lists/hosting_asns.yaml; Microsoft AS8075 is not hosting).
+    tables: [signins, ual_events]
+    requires: []
+    requires_evidence: []
+    needs_geoip: true
+    collectors: [hawk3, hawk4, invictus, portal]
+    positives: [aitm_signin]
+    lookalikes: [microsoft_asn_signin]
+  - id: SPW-ID-003
+    title: Impossible travel
+    category: identity
+    severity: medium
+    hawk: null
+    logic: >-
+      Two successful sign-ins of one user whose locations (ip_intel latitude/longitude) imply a
+      speed above 900 km/h, both at least 500 km from each other.
+    tables: [signins, ual_events]
+    requires: []
+    requires_evidence: []
+    needs_geoip: true
+    collectors: [hawk3, hawk4, invictus, portal]
+    positives: [aitm_signin]
+    lookalikes: [plausible_travel]
+  - id: SPW-ID-004
+    title: Adversary-in-the-middle indicators
+    category: identity
+    severity: high
+    hawk: null
+    logic: >-
+      A session (session_id / AADSessionId) used from an IP or ASN different from the
+      interactive MFA sign-in that created it within 1 hour, or a sign-in / mailbox access
+      whose user agent is in @list:suspicious_user_agents (axios, python-requests, curl,
+      Go-http-client, node-fetch).
+    tables: [signins, ual_events]
+    requires: []
+    requires_evidence: []
+    needs_geoip: false
+    collectors: [hawk3, hawk4, invictus, portal]
+    positives: [aitm_signin]
+    lookalikes: [same_ip_token_use]
+  - id: SPW-ID-010
+    title: Inbox rule created within 60 minutes of a risky or hosting-ASN sign-in
+    category: identity
+    severity: high
+    hawk: null
+    logic: >-
+      UAL New-InboxRule / Set-InboxRule / UpdateInboxRules whose actor had, in the preceding 60
+      minutes, a sign-in with risk_level_during medium/high or from ip_intel.is_hosting
+      (spec §8.2 example).
+    tables: [ual_events, signins]
+    requires: []
+    requires_evidence: []
+    needs_geoip: true
+    collectors: [hawk3, hawk4, invictus, portal]
+    positives: [inbox_rule_finance]
+    lookalikes: [vendor_filing_rule]
+  - id: SPW-APP-001
+    title: Consent to an app with Mail.*, Files.* or offline_access
+    category: apps
+    severity: high
+    hawk: null
+    logic: >-
+      A consent in the window (oauth_grants created in the window, directory audit Consent to
+      application, or UAL "Consent to application.") whose permissions include Mail.*,
+      Files.*, or offline_access together with any Mail.* / Files.* scope.
+    tables: [oauth_grants, directory_audits, ual_events]
+    requires: []
+    requires_evidence: []
+    needs_geoip: false
+    collectors: [hawk3, hawk4, invictus, portal]
+    positives: [oauth_consent]
+    lookalikes: [low_risk_consent]
+  - id: SPW-APP-002
+    title: New credential on an application or service principal
+    category: apps
+    severity: high
+    hawk: null
+    logic: >-
+      Directory audit / UAL "Add service principal credentials" / "Update application –
+      Certificates and secrets management" adding a password credential to a service principal,
+      or adding any credential when the actor had a risky or hosting-ASN sign-in in the
+      preceding 24 hours; app_credentials rows whose start is in the window support the hit.
+    tables: [directory_audits, ual_events, app_credentials]
+    requires: []
+    requires_evidence: []
+    needs_geoip: true
+    collectors: [hawk3, hawk4, invictus, portal]
+    positives: [app_credential_added]
+    lookalikes: [cert_rotation]
+  - id: SPW-FILE-001
+    title: Mass file download
+    category: files
+    severity: medium
+    hawk: null
+    logic: >-
+      At least 30 FileDownloaded / FileSyncDownloadedFull records by one user within 15 minutes.
+    tables: [ual_events, file_events]
+    requires: []
+    requires_evidence: [ual]
+    needs_geoip: false
+    collectors: [hawk3, hawk4, invictus, portal]
+    lookalike_collectors: [invictus, portal]
+    positives: [mass_download]
+    lookalikes: [normal_download]
+  - id: SPW-FILE-002
+    title: Anonymous sharing link created after a compromise indicator
+    category: files
+    severity: high
+    hawk: null
+    logic: >-
+      AnonymousLinkCreated (sharing_events link_type anonymous) by a user who had a risky or
+      hosting-ASN sign-in in the preceding 24 hours.
+    tables: [ual_events, sharing_events, signins]
+    requires: []
+    requires_evidence: [ual]
+    needs_geoip: true
+    collectors: [hawk3, hawk4, invictus, portal]
+    lookalike_collectors: [invictus, portal]
+    positives: [anonymous_link]
+    lookalikes: [anonymous_link_benign]
+  - id: SPW-FILE-003
+    title: OneNote or PDF lure uploaded and shared
+    category: files
+    severity: high
+    hawk: null
+    logic: >-
+      FileUploaded of a .one, .onetoc2, .onepkg or .pdf file (file_events is_onenote or
+      file_ext pdf) followed within 24 hours by a sharing event on the same file (SharingSet,
+      SharingInvitationCreated, CompanyLinkCreated, AnonymousLinkCreated) that reaches an
+      external target or a company-wide link.
+    tables: [ual_events, file_events, sharing_events]
+    requires: []
+    requires_evidence: [ual]
+    needs_geoip: false
+    collectors: [hawk3, hawk4, invictus, portal]
+    lookalike_collectors: [invictus, portal]
+    positives: [lure_share]
+    lookalikes: [internal_docx_share]
+  - id: SPW-CFG-001
+    title: Audit logging tampered with
+    category: config
+    severity: critical
+    hawk: null
+    logic: >-
+      Set-Mailbox -AuditEnabled $false, Set-MailboxAuditBypassAssociation -AuditBypassEnabled
+      $true, Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $false or
+      -AdminAuditLogEnabled $false, Set-OrganizationConfig -AuditDisabled $true; or collected
+      state showing them (audit_config unified_audit_log_ingestion_enabled false or
+      audit_disabled true, mailboxes audit_bypass_enabled true). Changing the audit age limit or
+      adding audited actions is not tampering.
+    tables: [ual_events, audit_config, mailboxes]
+    requires: []
+    requires_evidence: []
+    needs_geoip: false
+    collectors: [hawk3, hawk4, invictus, portal]
+    positives: [audit_tamper]
+    lookalikes: [audit_config_benign]

@@ -21,5 +21,11 @@ baseline:
   messages_per_user_day: 6.0
   work_hours: [8, 18]
   weekend_factor: 0.1
-storylines: []
-lookalikes: []
+storylines:
+  - {kind: aitm_signin, id: s-aitm, actor: 1, at: {day: 15, hour: 10, minute: 5}}
+  - {kind: mfa_method_added, id: s-mfa, actor: 1, at: {after: s-aitm, minutes: 12}}
+  - {kind: oauth_consent, id: s-consent, actor: 1, at: {after: s-aitm, minutes: 45}}
+lookalikes:
+  - {kind: plausible_travel, id: l-travel, actor: 3, at: {day: 6, hour: 7}}
+  - {kind: same_ip_token_use, id: l-sameip, actor: 4, at: {day: 8, hour: 9}}
+  - {kind: low_risk_consent, id: l-poll, actor: 5, at: {day: 11, hour: 14}}

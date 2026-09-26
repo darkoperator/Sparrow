@@ -19,5 +19,18 @@ baseline:
   messages_per_user_day: 6.0
   work_hours: [8, 18]
   weekend_factor: 0.1
-storylines: []
-lookalikes: []
+storylines:
+  - {kind: aitm_signin, id: s-aitm, actor: 1, at: {day: 20, hour: 9, minute: 12}}
+  - {kind: confirmed_compromised, id: s-comp, actor: 1, at: {after: s-aitm, minutes: 600}}
+  - {kind: mfa_method_added, id: s-mfa, actor: 1, at: {after: s-aitm, minutes: 12}}
+  - {kind: oauth_consent, id: s-consent, actor: 1, at: {after: s-aitm, minutes: 45}}
+  - {kind: app_credential_added, id: s-cred, actor: 1, at: {after: s-aitm, minutes: 90}}
+lookalikes:
+  - {kind: risk_dismissed, id: l-dismiss, actor: 2, at: {day: 5, hour: 11}}
+  - {kind: mfa_new_hire, id: l-newhire, actor: 4, at: {day: 3, hour: 9, minute: 30}}
+  - {kind: low_risk_consent, id: l-poll, actor: 5, at: {day: 8, hour: 14}}
+  - {kind: app_signin_existing_consent, id: l-notes, actor: 6, at: {day: 9, hour: 10}}
+  - {kind: cert_rotation, id: l-cert, at: {day: 11, hour: 16}}
+  - {kind: microsoft_asn_signin, id: l-cloudpc, actor: 7, at: {day: 12, hour: 8, minute: 30}}
+  - {kind: plausible_travel, id: l-travel, actor: 8, at: {day: 14, hour: 7}}
+  - {kind: same_ip_token_use, id: l-sameip, actor: 9, at: {day: 15, hour: 9}}

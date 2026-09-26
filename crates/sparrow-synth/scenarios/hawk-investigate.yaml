@@ -20,5 +20,12 @@ baseline:
   messages_per_user_day: 6.0
   work_hours: [8, 18]
   weekend_factor: 0.1
-storylines: []
-lookalikes: []
+storylines:
+  - {kind: domain_federation, id: s-domain, at: {day: 30, hour: 22, minute: 10}}
+  - {kind: new_mobile_device, id: s-mobile, actor: 2, at: {day: 12, hour: 18}}
+  - {kind: oauth_consent, id: s-consent, actor: 3, at: {day: 25, hour: 10}}
+lookalikes:
+  - {kind: domain_property_update, id: l-domain, at: {day: 33, hour: 9}}
+  - {kind: old_mobile_device, id: l-oldmobile, actor: 4, at: {day: 5, hour: 8}}
+  - {kind: low_risk_consent, id: l-poll, actor: 5, at: {day: 7, hour: 13}}
+  - {kind: app_signin_existing_consent, id: l-notes, actor: 6, at: {day: 9, hour: 15}}

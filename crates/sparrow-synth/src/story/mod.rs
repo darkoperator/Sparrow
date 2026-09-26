@@ -1,0 +1,396 @@
+//! The storyline engine: applies a scenario's storylines and look-alikes to the world in time
+//! order. Each one changes the world at its time (a consent grant, an MFA method, a mobile
+//! device...), appends the events Microsoft 365 would have recorded to `world.story`, and returns
+//! its ground truth: every evidence item it produced, including records Microsoft 365 does not
+//! log under the tenant's audit settings (`World::logged`); the manifest decides per tree
+//! whether each was delivered. Which rules a kind must or must not trigger comes from
+//! `rules/coverage.yaml` (`coverage`).
+//!
+//! Every storyline draws from its own stream `story/<id>`, so adding one never changes another.
+
+mod apps;
+mod identity;
+
+use crate::events::{Actor, DirAudit, RiskDetection, SignIn, SignInType, Target, Ual};
+use crate::reserved::{V4_BLOCKS, WELL_KNOWN_GUIDS};
+use crate::rng::{Rng, stream};
+use crate::scenario::{Polarity, StoryKind, StorySpec};
+use crate::ual;
+use crate::world::{Client, Location, User, World};
+use crate::{Error, Result};
+use chrono::{DateTime, Utc};
+use std::net::{IpAddr, Ipv4Addr};
+use uuid::Uuid;
+
+/// Modified properties of a directory change: (name, old value, new value), as JSON text.
+pub(crate) type Modified = Vec<(String, String, String)>;
+
+/// What a storyline produced, independent of any collector.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Evidence {
+    Ual(Uuid),
+    SignIn(Uuid),
+    DirAudit(String),
+    Trace {
+        trace_id: Uuid,
+        recipient: String,
+    },
+    Risk(String),
+    RiskyUser(String),
+    InboxRule {
+        mailbox: String,
+        identity: u64,
+    },
+    Mailbox(String),
+    Grant {
+        client_app_id: Uuid,
+        scope: String,
+        principal: Option<String>,
+    },
+    Credential {
+        app_object_id: Uuid,
+        key_id: Uuid,
+        on_service_principal: bool,
+    },
+    MobileDevice {
+        mailbox: String,
+        device_id: String,
+    },
+    TransportRule(String),
+    MailboxPermission {
+        mailbox: String,
+        grantee: String,
+        right: String,
+    },
+    Email(String),
+    AuditConfig,
+    Mfa(String),
+}
+
+/// The ground truth of one applied storyline or look-alike.
+#[derive(Debug, Clone)]
+pub struct StoryRecord {
+    pub id: String,
+    pub kind: StoryKind,
+    pub polarity: Polarity,
+    /// The UPN of the storyline's user (for admin-performed kinds, the affected user).
+    pub actor: String,
+    pub time: DateTime<Utc>,
+    pub evidence: Vec<Evidence>,
+}
+
+/// One storyline being applied: its spec, resolved time, the affected user and the evidence
+/// collected so far.
+pub(crate) struct Ctx<'a> {
+    pub spec: &'a StorySpec,
+    pub t: DateTime<Utc>,
+    /// The storyline's user (`actor`, default user 1).
+    pub a: User,
+    pub rng: Rng,
+    pub ev: Vec<Evidence>,
+}
+
+/// Applies every storyline and look-alike of `world.scenario` in resolved time order (ties by
+/// id) and returns their ground truth in that order. Call once per world.
+pub fn apply(world: &mut World) -> Result<Vec<StoryRecord>> {
+    let scenario = world.scenario.clone();
+    let mut out = Vec::new();
+    for spec in scenario.story_order()? {
+        let t = scenario.story_time(&spec.id)?;
+        let a = world.user(spec.actor.unwrap_or(1)).clone();
+        let mut ctx = Ctx {
+            spec,
+            t,
+            a,
+            rng: stream(world.seed, &format!("story/{}", spec.id)),
+            ev: Vec::new(),
+        };
+        if !identity::apply_one(world, &mut ctx)? && !apps::apply_one(world, &mut ctx)? {
+            return Err(Error::Scenario(format!(
+                "kind {} not implemented yet",
+                spec.kind.as_str()
+            )));
+        }
+        out.push(StoryRecord {
+            id: spec.id.clone(),
+            kind: spec.kind,
+            polarity: spec.kind.polarity(),
+            actor: ctx.a.upn.clone(),
+            time: t,
+            evidence: ctx.ev,
+        });
+    }
+    Ok(out)
+}
+
+pub(crate) fn well_known(desc: &str) -> Uuid {
+    WELL_KNOWN_GUIDS
+        .iter()
+        .find(|(_, d)| *d == desc)
+        .unwrap_or_else(|| panic!("story: unknown well-known app '{desc}'"))
+        .0
+        .parse()
+        .expect("well-known guid parses")
+}
+
+/// The performer of admin kinds: the first admin.
+pub(crate) fn first_admin(w: &World) -> User {
+    w.admins
+        .first()
+        .expect("a scenario has at least one admin")
+        .clone()
+}
+
+/// A risk level as Graph shows it: the level with Entra ID P2, `hidden` without.
+pub(crate) fn risk_text(w: &World, level: &str) -> String {
+    if w.licence.p2() {
+        level.to_string()
+    } else {
+        "hidden".to_string()
+    }
+}
+
+/// A travel / mobile / cloud look-alike address (RFC 5737 TEST-NET-2).
+pub(crate) fn roaming_ip(rng: &mut Rng) -> IpAddr {
+    let b = V4_BLOCKS[1];
+    IpAddr::V4(Ipv4Addr::new(b[0], b[1], b[2], rng.range(1, 254) as u8))
+}
+
+/// A successful, clean sign-in of `user`: interactive ones satisfy MFA by app notification
+/// (admins by FIDO2 key), non-interactive ones reuse the session's earlier authentication; risk
+/// `none` (`hidden` without P2). Callers adjust the fields a storyline changes.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn signin(
+    w: &World,
+    rng: &mut Rng,
+    user: &User,
+    time: DateTime<Utc>,
+    ip: IpAddr,
+    location: &Location,
+    event_type: SignInType,
+    app: Uuid,
+    resource: Uuid,
+    session: Uuid,
+) -> SignIn {
+    let risk = risk_text(w, "none");
+    let interactive = event_type == SignInType::Interactive;
+    let method = if user.is_admin {
+        "FIDO2 security key"
+    } else {
+        "Mobile app notification"
+    };
+    let (auth_requirement, mfa, auth_methods) = if interactive {
+        (
+            "multiFactorAuthentication",
+            Some((method.to_string(), String::new())),
+            vec!["Password".to_string(), method.to_string()],
+        )
+    } else {
+        (
+            "singleFactorAuthentication",
+            None,
+            vec!["Previously satisfied".to_string()],
+        )
+    };
+    let windows = user.client.os.starts_with("Windows");
+    let client_app = if app == well_known("OfficeHome") {
+        "Browser"
+    } else {
+        "Mobile Apps and Desktop clients"
+    };
+    SignIn {
+        id: rng.uuid(),
+        time,
+        user: user.upn.clone(),
+        user_id: Some(user.object_id),
+        user_display: user.display_name.clone(),
+        app_id: app,
+        app_name: ual::app_name(w, app),
+        resource_id: resource,
+        resource_name: ual::app_name(w, resource),
+        ip,
+        location: location.clone(),
+        user_agent: user.client.user_agent.clone(),
+        client_app: client_app.to_string(),
+        event_type,
+        error_code: 0,
+        failure_reason: "Other.".to_string(),
+        ca_status: if w.licence.p1() && user.is_admin {
+            "success"
+        } else {
+            "notApplied"
+        }
+        .to_string(),
+        risk_during: risk.clone(),
+        risk_aggregated: risk.clone(),
+        risk_state: "none".to_string(),
+        risk_detail: risk,
+        risk_event_types: Vec::new(),
+        auth_requirement: auth_requirement.to_string(),
+        mfa,
+        auth_methods,
+        device: user.client.clone(),
+        device_compliant: windows.then_some(true),
+        device_managed: windows.then_some(true),
+        trust_type: windows.then(|| "Azure AD joined".to_string()),
+        session_id: session,
+        correlation_id: rng.uuid(),
+        unique_token_id: ual::unique_token_id(rng),
+        token_issuer: "AzureAD".to_string(),
+        incoming_token_type: if interactive { "none" } else { "refreshToken" }.to_string(),
+        home_tenant_id: w.org_id(),
+        resource_tenant_id: w.org_id(),
+        asn: location.asn,
+    }
+}
+
+/// A device the tenant does not know (an attacker's machine behind a proxy): the user's OS and
+/// browser as the relayed user agent reports them, no device id, not compliant or managed.
+pub(crate) fn unknown_device(sign_in: &mut SignIn) {
+    sign_in.device = Client {
+        device_id: Uuid::nil(),
+        device_name: String::new(),
+        ..sign_in.device.clone()
+    };
+    sign_in.device_compliant = None;
+    sign_in.device_managed = None;
+    sign_in.trust_type = None;
+}
+
+pub(crate) fn push_ual(w: &mut World, ctx: &mut Ctx, u: Ual) {
+    ctx.ev.push(Evidence::Ual(u.id));
+    w.story.ual.push(u);
+}
+
+/// Records a sign-in; with `logon`, also its UAL `UserLoggedIn` record (`request_type`
+/// `OAuth2:Authorize` for interactive sign-ins, `OAuth2:Token` otherwise).
+pub(crate) fn push_signin(w: &mut World, ctx: &mut Ctx, user: &User, s: SignIn, logon: bool) {
+    if logon {
+        let request_type = if s.event_type == SignInType::Interactive {
+            "OAuth2:Authorize"
+        } else {
+            "OAuth2:Token"
+        };
+        let u = ual::sts_logon(
+            w,
+            &mut ctx.rng,
+            user,
+            s.time,
+            true,
+            s.ip,
+            &s.user_agent,
+            s.app_id,
+            request_type,
+            0,
+        );
+        push_ual(w, ctx, u);
+    }
+    ctx.ev.push(Evidence::SignIn(s.id));
+    w.story.signins.push(s);
+}
+
+pub(crate) fn push_risk(w: &mut World, ctx: &mut Ctx, r: RiskDetection) {
+    ctx.ev.push(Evidence::Risk(r.id.clone()));
+    w.story.risk.push(r);
+}
+
+/// A directory audit target for `user`.
+pub(crate) fn user_target(user: &User, modified: Modified) -> Target {
+    Target {
+        id: user.object_id.to_string(),
+        display_name: user.display_name.clone(),
+        kind: "User".to_string(),
+        upn: Some(user.upn.clone()),
+        modified,
+    }
+}
+
+/// A directory change `activity` initiated by `actor` from `ip`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn dir_audit(
+    rng: &mut Rng,
+    time: DateTime<Utc>,
+    activity: &str,
+    category: &str,
+    operation_type: &str,
+    service: &str,
+    actor: &User,
+    ip: IpAddr,
+    targets: Vec<Target>,
+) -> DirAudit {
+    let correlation_id = rng.uuid();
+    let id = format!(
+        "Directory_{}_{}_{}",
+        rng.uuid(),
+        (0..5)
+            .map(|_| (b'A' + rng.below(26) as u8) as char)
+            .collect::<String>(),
+        rng.range(10_000_000, 99_999_999)
+    );
+    DirAudit {
+        id,
+        time,
+        activity: activity.to_string(),
+        category: category.to_string(),
+        operation_type: operation_type.to_string(),
+        result: "success".to_string(),
+        result_reason: String::new(),
+        logged_by_service: service.to_string(),
+        initiated_by: Actor {
+            upn: Some(actor.upn.clone()),
+            user_id: Some(actor.object_id),
+            ip: Some(ip),
+            app_id: None,
+            app_name: None,
+        },
+        targets,
+        additional_details: Vec::new(),
+        correlation_id,
+    }
+}
+
+pub(crate) fn push_audit(w: &mut World, ctx: &mut Ctx, a: DirAudit) {
+    ctx.ev.push(Evidence::DirAudit(a.id.clone()));
+    w.story.audits.push(a);
+}
+
+/// The UAL `AzureActiveDirectory` record of operation `op` for directory audit `a`, with the
+/// audit's targets and modified properties (the same mapping the baseline uses).
+pub(crate) fn aad_for(w: &World, rng: &mut Rng, a: &DirAudit, op: &str) -> Ual {
+    let actor = a
+        .initiated_by
+        .upn
+        .as_deref()
+        .and_then(|upn| w.user_by_upn(upn));
+    let mut target = Vec::new();
+    for t in &a.targets {
+        target.push((format!("{}_{}", t.kind, t.id), "2".to_string()));
+        target.push((t.id.clone(), "2".to_string()));
+        target.push((t.kind.clone(), "2".to_string()));
+        match &t.upn {
+            Some(upn) => target.push((upn.clone(), "5".to_string())),
+            None => target.push((t.display_name.clone(), "1".to_string())),
+        }
+    }
+    let modified: Modified = a.targets.iter().flat_map(|t| t.modified.clone()).collect();
+    ual::aad(
+        w,
+        rng,
+        actor,
+        a.time,
+        op,
+        &target,
+        &modified,
+        a.initiated_by.ip,
+        &[],
+    )
+}
+
+/// Records directory audit `a` and, when `op` is given, its UAL record.
+pub(crate) fn push_audit_and_ual(w: &mut World, ctx: &mut Ctx, a: DirAudit, op: Option<&str>) {
+    if let Some(op) = op {
+        let u = aad_for(w, &mut ctx.rng, &a, op);
+        push_ual(w, ctx, u);
+    }
+    push_audit(w, ctx, a);
+}
