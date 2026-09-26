@@ -3,7 +3,9 @@
 //! with a ground-truth manifest (spec Addendum B). Every domain, address, GUID and name is
 //! reserved or synthetic; nothing comes from a real capture.
 
+pub mod baseline;
 pub mod error;
+pub mod events;
 pub mod names;
 pub mod options;
 pub mod profiles;
@@ -11,6 +13,7 @@ pub mod ps;
 pub mod reserved;
 pub mod rng;
 pub mod scenario;
+pub mod ual;
 pub mod world;
 
 pub use error::{Error, Result};

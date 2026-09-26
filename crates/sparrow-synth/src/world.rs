@@ -6,6 +6,7 @@
 //! Every id is drawn from seeded streams; every value is reserved or synthetic.
 
 use crate::Result;
+use crate::events::{DirAudit, RiskDetection, SignIn, TraceMsg, Ual};
 use crate::names::people;
 use crate::profiles::{AuditProfile, LicenceProfile, audit_profile, licence_profile};
 use crate::reserved::{IpAllocator, Net, WELL_KNOWN_GUIDS};
@@ -616,9 +617,16 @@ pub struct Email {
     pub attachment: Option<(String, Vec<u8>)>,
 }
 
-/// Header storyline events (Tasks 6-7 add fields).
+/// Events the storylines add on top of the baseline (empty after `World::build`; Task 6 fills
+/// them).
 #[derive(Debug, Clone, Default)]
-pub struct StoryEvents {}
+pub struct StoryEvents {
+    pub ual: Vec<Ual>,
+    pub signins: Vec<SignIn>,
+    pub audits: Vec<DirAudit>,
+    pub trace: Vec<TraceMsg>,
+    pub risk: Vec<RiskDetection>,
+}
 
 #[derive(Debug, Clone)]
 pub struct RiskyUser {

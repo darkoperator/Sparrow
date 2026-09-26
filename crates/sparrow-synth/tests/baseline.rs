@@ -1,0 +1,182 @@
+use chrono::{Duration, NaiveDate};
+use sparrow_synth::baseline::{day, directory_audits};
+use sparrow_synth::scenario::load;
+use sparrow_synth::world::World;
+use std::collections::BTreeSet;
+
+fn w(name: &str) -> World {
+    World::build(&load(name).unwrap(), 42).unwrap()
+}
+
+fn first_monday(w: &World) -> NaiveDate {
+    let mut d = w.window_start().date_naive();
+    while d.format("%a").to_string() != "Mon" {
+        d += Duration::days(1);
+    }
+    d
+}
+
+#[test]
+fn a_day_is_deterministic_and_sorted() {
+    let world = w("bec-aitm");
+    let d = first_monday(&world);
+    let a = day(&world, d);
+    let b = day(&world, d);
+    assert_eq!(format!("{a:?}"), format!("{b:?}"));
+    assert!(!a.ual.is_empty() && !a.signins.is_empty() && !a.trace.is_empty());
+    assert!(
+        a.ual
+            .windows(2)
+            .all(|p| (p[0].time, p[0].id) <= (p[1].time, p[1].id))
+    );
+    assert!(a.ual.iter().all(|u| u.time.date_naive() == d));
+}
+
+#[test]
+fn audit_data_has_the_common_keys_in_order() {
+    let world = w("bec-aitm");
+    let d = day(&world, first_monday(&world));
+    for u in &d.ual {
+        let keys: Vec<&str> = u.audit.keys().map(String::as_str).take(4).collect();
+        assert_eq!(
+            keys,
+            ["CreationTime", "Id", "Operation", "OrganizationId"],
+            "{}",
+            u.operation
+        );
+        assert_eq!(u.audit["Id"], u.id.to_string());
+        assert_eq!(
+            u.audit["CreationTime"],
+            u.time.format("%Y-%m-%dT%H:%M:%S").to_string()
+        );
+        assert_eq!(
+            u.audit["OrganizationId"],
+            world.tenant.tenant_id.to_string()
+        );
+    }
+}
+
+#[test]
+fn one_story_across_sources() {
+    let world = w("bec-aitm");
+    let d = day(&world, first_monday(&world));
+    let sessions: BTreeSet<String> = d.signins.iter().map(|s| s.session_id.to_string()).collect();
+    let msg_ids: BTreeSet<&str> = d
+        .trace
+        .iter()
+        .map(|t| t.internet_message_id.as_str())
+        .collect();
+    let mia: Vec<_> = d
+        .ual
+        .iter()
+        .filter(|u| u.operation == "MailItemsAccessed")
+        .collect();
+    assert!(!mia.is_empty());
+    for u in &mia {
+        let sid = u.audit["AppAccessContext"]["AADSessionId"]
+            .as_str()
+            .unwrap();
+        assert!(sessions.contains(sid), "MIA session {sid} has no sign-in");
+        for f in u.audit["Folders"].as_array().unwrap() {
+            for item in f["FolderItems"].as_array().into_iter().flatten() {
+                assert!(msg_ids.contains(item["InternetMessageId"].as_str().unwrap()));
+            }
+        }
+    }
+    assert!(d.ual.iter().any(|u| u.operation == "Send"));
+}
+
+#[test]
+fn audit_settings_decide_what_is_logged() {
+    let gaps = w("bec-e3-audit-gaps");
+    let d = day(&gaps, first_monday(&gaps));
+    assert!(
+        !d.ual
+            .iter()
+            .any(|u| u.operation == "MailItemsAccessed" || u.operation == "Send")
+    );
+    assert!(d.ual.iter().any(|u| u.operation == "FileAccessed"));
+    let off = w("business-basic");
+    let d = day(&off, first_monday(&off));
+    assert!(
+        !d.ual
+            .iter()
+            .any(|u| matches!(u.record_type.number(), 2 | 3 | 50))
+    );
+    // Without P2 every sign-in risk level reads hidden; with P2 they are visible.
+    assert!(
+        day(&gaps, first_monday(&gaps))
+            .signins
+            .iter()
+            .all(|s| s.risk_during == "hidden")
+    );
+    let e5 = w("bec-aitm");
+    assert!(
+        day(&e5, first_monday(&e5))
+            .signins
+            .iter()
+            .all(|s| s.risk_during != "hidden")
+    );
+}
+
+#[test]
+fn directory_audits_cover_the_window() {
+    let world = w("hawk-investigate");
+    let audits = directory_audits(&world);
+    assert!(!audits.is_empty());
+    assert!(
+        audits
+            .iter()
+            .all(|a| a.time >= world.window_start() && a.time < world.window_end())
+    );
+}
+
+fn day_text(d: &sparrow_synth::events::Day) -> String {
+    let mut text = String::new();
+    for u in &d.ual {
+        text.push_str(&u.audit_data_text());
+        text.push('\n');
+    }
+    for s in &d.signins {
+        text.push_str(&format!("{s:?}\n"));
+    }
+    for t in &d.trace {
+        text.push_str(&format!("{t:?}\n"));
+    }
+    text
+}
+
+#[test]
+fn generated_values_are_reserved() {
+    for name in sparrow_synth::scenario::builtin_names() {
+        let world = w(name);
+        let mut text = day_text(&day(&world, first_monday(&world)));
+        text.push_str(&format!("{:?}", directory_audits(&world)));
+        text.push_str(&format!("{:?}", sparrow_synth::baseline::risk(&world)));
+        let bad = sparrow_synth::reserved::scan_text(&text);
+        assert!(bad.is_empty(), "{name}: {bad:?}");
+    }
+}
+
+#[test]
+fn ual_cut_off_and_mailbox_bypass_are_honoured() {
+    let mut world = w("bec-aitm");
+    let d = first_monday(&world);
+    let noon = d.and_hms_opt(12, 0, 0).unwrap().and_utc();
+    world.audit.ual_disabled_at = Some(noon);
+    assert!(day(&world, d).ual.iter().all(|u| u.time < noon));
+
+    let mut world = w("bec-aitm");
+    let upn = world.user(1).upn.clone();
+    let mb = world.mailboxes.get_mut(&upn).unwrap();
+    mb.bypass = true;
+    mb.bypass_since = None;
+    let dd = day(&world, d);
+    assert!(
+        !dd.ual
+            .iter()
+            .any(|u| matches!(u.record_type.number(), 2 | 3 | 50)
+                && u.audit["MailboxOwnerUPN"] == upn.as_str())
+    );
+    assert!(dd.ual.iter().any(|u| u.record_type.number() == 50));
+}
