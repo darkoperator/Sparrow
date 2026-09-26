@@ -225,7 +225,7 @@ fn mobile_devices_transport_rules_and_remote_domains_load() {
     assert_eq!(
         text(
             &case,
-            "SELECT redirect_to[1] || '|' || json_array_length(conditions) || '|' || epoch(when_changed)::BIGINT FROM transport_rules WHERE record_key = 'external redirect'"
+            "SELECT redirect_to[1] || '|' || json_array_length(conditions) || '|' || epoch(when_changed)::BIGINT FROM transport_rules WHERE record_key = collection_id || '|external redirect'"
         ),
         "x@fabrikam.example|1|1788256800"
     );
@@ -239,7 +239,7 @@ fn mobile_devices_transport_rules_and_remote_domains_load() {
     assert_eq!(
         text(
             &case,
-            "SELECT name || '|' || auto_forward_enabled FROM remote_domains WHERE record_key = '*'"
+            "SELECT name || '|' || auto_forward_enabled FROM remote_domains WHERE record_key = collection_id || '|*'"
         ),
         "Default|true"
     );

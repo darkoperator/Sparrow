@@ -245,6 +245,13 @@ pub fn org_key(collection_id: i64) -> String {
     format!("organization|{collection_id}")
 }
 
+/// Record key of a collection's row of a per-collection tenant-wide table (`transport_rules`,
+/// `remote_domains`): `<collection_id>|<lower name>`, so captures of different tenants in one
+/// case never merge into one row.
+pub fn collection_key(collection_id: i64, name: &str) -> String {
+    format!("{collection_id}|{}", name.to_lowercase())
+}
+
 /// Record key of a collection's `tenant_settings` row.
 pub fn setting_key(collection_id: i64, source: &str, name: &str) -> String {
     format!("{collection_id}|{source}|{}", name.to_lowercase())

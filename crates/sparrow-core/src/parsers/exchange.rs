@@ -9,7 +9,7 @@ use crate::normalize::fields::{Cell, Rec};
 use crate::normalize::net::normalize_upn;
 use crate::parsers::records::RecordFormat;
 use crate::parsers::stage::{
-    TableRows, load_tables, lower, read_state_records, reject, require_any_key,
+    TableRows, collection_key, load_tables, lower, read_state_records, reject, require_any_key,
 };
 
 pub fn register(r: &mut ParserRegistry) {
@@ -263,7 +263,8 @@ impl ArtifactParser for TransportRulesParser {
         let mut rows = TableRows::new(&TRANSPORT_RULES, TRANSPORT_COLS);
         for r in &records {
             let rec = Rec::new(&r.map, format.lossy());
-            let Some(key) = lower(rec.text("Name")) else {
+            let Some(key) = lower(rec.text("Name")).map(|n| collection_key(ctx.collection_id, &n))
+            else {
                 reject(ctx, r, "transport rule has no Name")?;
                 continue;
             };
@@ -311,7 +312,9 @@ impl ArtifactParser for RemoteDomainsParser {
         let mut rows = TableRows::new(&REMOTE_DOMAINS, REMOTE_COLS);
         for r in &records {
             let rec = Rec::new(&r.map, format.lossy());
-            let Some(key) = lower(rec.text("DomainName")) else {
+            let Some(key) =
+                lower(rec.text("DomainName")).map(|d| collection_key(ctx.collection_id, &d))
+            else {
                 reject(ctx, r, "remote domain has no DomainName")?;
                 continue;
             };

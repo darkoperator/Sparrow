@@ -61,8 +61,9 @@ secure score, licences, inbox and transport rules, activity logs, Get-UALGraph, 
 
 After loading, `sparrow ingest` runs the profile step (again at any time with `sparrow profile --case C`):
 - `tenant` / `collections.tenant_key`: tenants are told apart by the tenant id in the evidence (UAL
-  OrganizationId, sign-in resource tenant); one case may hold several. Org-level settings are kept per
-  collection and merged per tenant in `tenant_audit_config` and `tenant_settings_current`.
+  OrganizationId, sign-in resource tenant); one case may hold several. Org-level settings, transport rules
+  and remote domains are kept per collection and merged per tenant in `tenant_audit_config`,
+  `tenant_settings_current`, `transport_rules_current` and `remote_domains_current`.
 - `tenant_domains`: domains that count as internal, from user UPNs and message trace; change them with
   `sparrow tenant domains add|remove|list`.
 - `licenses`: today only Hawk's licence line (low confidence: Hawk matches SKU-name substrings, so "E5" is

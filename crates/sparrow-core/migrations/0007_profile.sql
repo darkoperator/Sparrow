@@ -63,6 +63,25 @@ COMMENT ON COLUMN audit_config.record_key IS 'organization|<collection_id>. Case
 COMMENT ON TABLE tenant_settings IS 'Name/value tenant settings reported by one collection: every AdminAuditLogConfig, OrganizationConfig and TransportConfig property, Microsoft-Extractor-Suite security defaults, and Exchange management role entries. View tenant_settings_current keeps the newest value per tenant.';
 COMMENT ON COLUMN tenant_settings.record_key IS '<collection_id>|<source>|<lower name>.';
 
+-- Final fix wave (review): transport rules and remote domains are tenant-wide state too, so
+-- they are keyed per collection like tenant_settings (two tenants' '*' remote domains no
+-- longer merge into one row). Their ALTERs (tz_assumed) are above, so these UPDATEs are legal
+-- in this transaction. Sightings follow their rows; views transport_rules_current and
+-- remote_domains_current (end of file) merge them per tenant.
+UPDATE record_sources SET record_key = t.collection_id || '|' || t.record_key
+FROM transport_rules t
+WHERE record_sources.table_name = 'transport_rules' AND record_sources.record_key = t.record_key;
+UPDATE transport_rules SET record_key = collection_id || '|' || record_key;
+UPDATE record_sources SET record_key = d.collection_id || '|' || d.record_key
+FROM remote_domains d
+WHERE record_sources.table_name = 'remote_domains' AND record_sources.record_key = d.record_key;
+UPDATE remote_domains SET record_key = collection_id || '|' || record_key;
+
+COMMENT ON TABLE transport_rules IS 'Exchange transport (mail flow) rules reported by one collection. One row per (collection, lower rule name), latest wins within the collection; view transport_rules_current keeps the newest row per tenant and rule name, and state_absent_in_newer lists rules a newer capture of the tenant no longer holds.';
+COMMENT ON COLUMN transport_rules.record_key IS '<collection_id>|<lower rule name>. Cases ingested before schema 7 keep one row per rule name that merged every collection, keyed by the collection that last wrote it.';
+COMMENT ON TABLE remote_domains IS 'Exchange remote domains (Get-RemoteDomain) reported by one collection: automatic forwarding and out-of-office policy per domain. One row per (collection, lower DomainName), latest wins within the collection; view remote_domains_current keeps the newest row per tenant and domain, and state_absent_in_newer lists remote domains a newer capture of the tenant no longer holds.';
+COMMENT ON COLUMN remote_domains.record_key IS '<collection_id>|<lower DomainName>. Cases ingested before schema 7 keep one row per domain that merged every collection, keyed by the collection that last wrote it.';
+
 -- Task 2: capability definitions (data/capabilities.yaml plus --data overrides).
 CREATE TABLE capabilities (
     capability_id VARCHAR NOT NULL, title VARCHAR NOT NULL, baseline BOOLEAN NOT NULL,
@@ -476,6 +495,8 @@ CREATE MACRO sparrow_collection_is_newer(x_collected_at, x_collection_id, y_coll
     CASE WHEN x_collected_at IS NOT NULL AND y_collected_at IS NOT NULL
          THEN x_collected_at > y_collected_at
          ELSE x_collection_id > y_collection_id END;
+CREATE MACRO sparrow_state_match_key(t, k) AS
+    CASE WHEN t IN ('transport_rules', 'remote_domains') THEN substr(k, strpos(k, '|') + 1) ELSE k END;
 CREATE VIEW state_absent_in_newer AS
 WITH files AS (
     SELECT sf.file_id, sf.collection_id, sf.artifact_type, sf.subject, sf.status, sf.sha256,
@@ -483,7 +504,7 @@ WITH files AS (
     FROM source_files sf JOIN collections c ON c.collection_id = sf.collection_id
     WHERE sf.status IN ('parsed', 'duplicate_file') AND sf.artifact_type IS NOT NULL
 ),
-holds AS (
+holds_raw AS (
     SELECT rs.file_id, rs.table_name, rs.record_key FROM record_sources rs
     UNION
     SELECT d.file_id, rs.table_name, rs.record_key
@@ -494,8 +515,16 @@ holds AS (
     JOIN record_sources rs ON rs.file_id = p.file_id
     WHERE d.status = 'duplicate_file'
 ),
+-- record_key is the key records are matched on across captures: transport_rules and
+-- remote_domains rows are keyed <collection_id>|<name>, so their collection prefix is dropped
+-- (the same rule in two captures is the same record); raw_key is the key of the row itself.
+holds AS (
+    SELECT file_id, table_name, sparrow_state_match_key(table_name, record_key) AS record_key,
+           record_key AS raw_key
+    FROM holds_raw
+),
 sightings AS (
-    SELECT h.table_name, h.record_key, f.artifact_type, f.subject, f.tenant_key,
+    SELECT h.table_name, h.record_key, h.raw_key, f.artifact_type, f.subject, f.tenant_key,
            f.collected_at, f.collection_id
     FROM holds h JOIN files f ON f.file_id = h.file_id
     WHERE h.table_name IN ('users', 'role_assignments', 'oauth_grants', 'app_credentials', 'inbox_rules',
@@ -508,9 +537,9 @@ sightings AS (
 -- Several files of one collection sighting the same record tie exactly on both keys; any one of
 -- them is picked (their output columns are identical).
 seen AS (
-    SELECT table_name, record_key, artifact_type, subject, tenant_key, collected_at, collection_id
+    SELECT table_name, record_key, raw_key, artifact_type, subject, tenant_key, collected_at, collection_id
     FROM (
-        SELECT s.table_name, s.record_key, s.artifact_type, s.subject, s.tenant_key,
+        SELECT s.table_name, s.record_key, s.raw_key, s.artifact_type, s.subject, s.tenant_key,
                s.collected_at, s.collection_id,
                (SELECT count(*) FROM sightings o
                 WHERE o.table_name = s.table_name AND o.record_key = s.record_key
@@ -523,26 +552,31 @@ seen AS (
     QUALIFY row_number() OVER (PARTITION BY table_name, record_key, artifact_type, subject, tenant_key
                                ORDER BY beaten_by ASC, collection_id DESC) = 1
 ),
--- The same record_key's overall last sighting across every (artifact_type, subject, tenant_key)
--- variant in `seen`, same ranking.
+-- The same record_key's overall last sighting across every (artifact_type, subject) variant
+-- of the same tenant in `seen`, same ranking. (Per tenant: another tenant's capture holding a
+-- record of the same name - every tenant has a '*' remote domain - says nothing about this one.)
 last_any AS (
-    SELECT table_name, record_key, collected_at AS seen_at, collection_id AS seen_collection_id
+    SELECT table_name, record_key, tenant_key, collected_at AS seen_at, collection_id AS seen_collection_id
     FROM (
-        SELECT sn.table_name, sn.record_key, sn.collected_at, sn.collection_id,
+        SELECT sn.table_name, sn.record_key, sn.tenant_key, sn.collected_at, sn.collection_id,
                (SELECT count(*) FROM seen o
                 WHERE o.table_name = sn.table_name AND o.record_key = sn.record_key
+                  AND o.tenant_key IS NOT DISTINCT FROM sn.tenant_key
                   AND sparrow_collection_is_newer(o.collected_at, o.collection_id, sn.collected_at, sn.collection_id)
                ) AS beaten_by
         FROM seen sn
     )
-    QUALIFY row_number() OVER (PARTITION BY table_name, record_key ORDER BY beaten_by ASC, collection_id DESC) = 1
+    QUALIFY row_number() OVER (PARTITION BY table_name, record_key, tenant_key
+                               ORDER BY beaten_by ASC, collection_id DESC) = 1
 ),
 candidates AS (
-    SELECT s.table_name, s.record_key, s.artifact_type, s.subject, s.collection_id AS last_seen_collection_id,
+    SELECT s.table_name, s.record_key, s.raw_key, s.artifact_type, s.subject, s.tenant_key,
+           s.collection_id AS last_seen_collection_id,
            s.collected_at AS last_seen_at, n.collection_id AS absent_from_collection_id,
            n.collected_at AS absent_from_at
     FROM seen s
     JOIN last_any la ON la.table_name = s.table_name AND la.record_key = s.record_key
+                    AND la.tenant_key IS NOT DISTINCT FROM s.tenant_key
     JOIN files n ON n.artifact_type = s.artifact_type
                 AND lower(n.subject) IS NOT DISTINCT FROM lower(s.subject)
                 AND n.tenant_key IS NOT DISTINCT FROM s.tenant_key
@@ -551,27 +585,79 @@ candidates AS (
         SELECT 1 FROM holds h2
         WHERE h2.file_id = n.file_id AND h2.table_name = s.table_name AND h2.record_key = s.record_key)
 )
-SELECT table_name, record_key, artifact_type, subject, last_seen_collection_id, last_seen_at,
+SELECT table_name, raw_key AS record_key, artifact_type, subject, last_seen_collection_id, last_seen_at,
        absent_from_collection_id, absent_from_at
 FROM (
-    SELECT c.table_name, c.record_key, c.artifact_type, c.subject, c.last_seen_collection_id, c.last_seen_at,
+    SELECT c.table_name, c.record_key, c.raw_key, c.artifact_type, c.subject, c.tenant_key,
+           c.last_seen_collection_id, c.last_seen_at,
            c.absent_from_collection_id, c.absent_from_at,
            (SELECT count(*) FROM candidates o
             WHERE o.table_name = c.table_name AND o.record_key = c.record_key AND o.artifact_type = c.artifact_type
+              AND o.tenant_key IS NOT DISTINCT FROM c.tenant_key
               AND sparrow_collection_is_newer(o.absent_from_at, o.absent_from_collection_id,
                                                c.absent_from_at, c.absent_from_collection_id)
            ) AS beaten_by
     FROM candidates c
 )
-QUALIFY row_number() OVER (PARTITION BY table_name, record_key, artifact_type
+QUALIFY row_number() OVER (PARTITION BY table_name, record_key, artifact_type, tenant_key
                            ORDER BY beaten_by ASC, absent_from_collection_id DESC) = 1;
 
-COMMENT ON VIEW state_absent_in_newer IS 'State rows a newer capture of the same artifact, for the same subject and tenant, no longer holds. Latest-wins (Phase 2b) never deletes, so a row removed between two captures (e.g. an inbox rule) otherwise still reads as current; this view lists it instead. Rule: same artifact_type, same subject (case-insensitively), same tenant_key, a collection exists for that (artifact_type, subject, tenant_key) that sparrow_collection_is_newer than the record''s last-seen collection and whose files do not hold the record. sparrow_collection_is_newer(x, y) is exactly ingest/state.rs update_existing''s rule: compare collected_at when both x and y have one, else compare collection_id - never mixing the two, so an unknown collected_at is not "very old", it simply makes the comparison fall back to collection_id entirely, on both sides. That relation is well-defined for any two collections directly but is not a total order across 3+ with mixed known/unknown collected_at (it can cycle), so "last seen" and "absent from" are each picked by ranking every candidate by how many other candidates in the same comparison beat it (ascending; 0 for an outright winner, tied but never all beaten inside a cycle) with collection_id descending as the deterministic tie-break - never by sorting on one derived key, and never by keeping only an unbeaten row (which a cycle can leave empty). A byte-identical newer file (duplicate_file) counts as holding whatever its parsed twin (same sha256, artifact_type and, case-insensitively, subject) holds, mirroring the ingest dedup check in ingest/mod.rs. A subject not collected at all in the newer capture (no file for it) yields no later file to compare against, so its rows are not listed - coverage gaps are not the same as removal.';
+COMMENT ON VIEW state_absent_in_newer IS 'State rows a newer capture of the same artifact, for the same subject and tenant, no longer holds. Latest-wins (Phase 2b) never deletes, so a row removed between two captures (e.g. an inbox rule) otherwise still reads as current; this view lists it instead. Rule: same artifact_type, same subject (case-insensitively), same tenant_key, a collection exists for that (artifact_type, subject, tenant_key) that sparrow_collection_is_newer than the record''s last-seen collection and whose files do not hold the record. sparrow_collection_is_newer(x, y) is exactly ingest/state.rs update_existing''s rule: compare collected_at when both x and y have one, else compare collection_id - never mixing the two, so an unknown collected_at is not "very old", it simply makes the comparison fall back to collection_id entirely, on both sides. That relation is well-defined for any two collections directly but is not a total order across 3+ with mixed known/unknown collected_at (it can cycle), so "last seen" and "absent from" are each picked by ranking every candidate by how many other candidates in the same comparison beat it (ascending; 0 for an outright winner, tied but never all beaten inside a cycle) with collection_id descending as the deterministic tie-break - never by sorting on one derived key, and never by keeping only an unbeaten row (which a cycle can leave empty). A byte-identical newer file (duplicate_file) counts as holding whatever its parsed twin (same sha256, artifact_type and, case-insensitively, subject) holds, mirroring the ingest dedup check in ingest/mod.rs. A subject not collected at all in the newer capture (no file for it) yields no later file to compare against, so its rows are not listed - coverage gaps are not the same as removal. transport_rules and remote_domains rows are keyed per collection (<collection_id>|<name>); they are matched across captures on the name without that prefix (macro sparrow_state_match_key), so a transport rule or remote domain a newer capture of the tenant no longer holds is listed here, keyed by the row of its last sighting. "Last seen" and "absent from" are ranked within the record''s own tenant: another tenant''s capture never hides or reports a removal.';
 COMMENT ON COLUMN state_absent_in_newer.table_name IS 'Evidence table holding the record (record_sources.table_name); one of the Phase 2b state tables.';
-COMMENT ON COLUMN state_absent_in_newer.record_key IS 'Key of the record in table_name.';
+COMMENT ON COLUMN state_absent_in_newer.record_key IS 'Key of the record in table_name (for transport_rules and remote_domains, the <collection_id>|<name> key of the row its last sighting points at).';
 COMMENT ON COLUMN state_absent_in_newer.artifact_type IS 'source_files.artifact_type the record was last seen in.';
 COMMENT ON COLUMN state_absent_in_newer.subject IS 'source_files.subject (e.g. the mailbox UPN) the record was last seen under, in the casing of its own source file; NULL for a tenant-wide artifact. Matched case-insensitively against later captures.';
 COMMENT ON COLUMN state_absent_in_newer.last_seen_collection_id IS 'collections.collection_id of the sighting collection ranked first (fewest other sightings of the record beating it via sparrow_collection_is_newer, collection_id breaking ties).';
 COMMENT ON COLUMN state_absent_in_newer.last_seen_at IS 'collections.collected_at of last_seen_collection_id; may be NULL.';
 COMMENT ON COLUMN state_absent_in_newer.absent_from_collection_id IS 'collections.collection_id of the capture of the same artifact_type/subject/tenant, newer than last_seen_collection_id per sparrow_collection_is_newer, whose files do not hold the record (the one ranked first among such captures, when several exist).';
 COMMENT ON COLUMN state_absent_in_newer.absent_from_at IS 'collections.collected_at of absent_from_collection_id; may be NULL.';
+
+-- Final fix wave (review): per-tenant current transport rules and remote domains.
+CREATE VIEW transport_rules_current AS
+SELECT coalesce(c.tenant_key, 'collection:' || c.collection_id) AS tenant_key, t.record_key, t.name, t.guid,
+       t.state, t.mode, t.priority, t.created_by, t.last_modified_by, t.when_changed, t.description,
+       t.conditions, t.exceptions, t.actions, t.redirect_to, t.blind_copy_to, t.copy_to,
+       t.add_to_recipients, t.collection_id, c.collected_at
+FROM transport_rules t JOIN collections c ON c.collection_id = t.collection_id
+QUALIFY row_number() OVER (PARTITION BY coalesce(c.tenant_key, 'collection:' || c.collection_id), lower(t.name)
+                           ORDER BY c.collected_at DESC NULLS LAST, c.collection_id DESC) = 1;
+
+COMMENT ON VIEW transport_rules_current IS 'Newest transport_rules row per (tenant, lower(name)): each tenant''s rules as its newest capture of each rule reported them, never another tenant''s. A rule a newer capture no longer holds still appears here from the older capture (latest wins never deletes); state_absent_in_newer lists those.';
+COMMENT ON COLUMN transport_rules_current.tenant_key IS 'tenant.tenant_key (or collection:<id> for a collection with no tenant_key, which should not occur after a profile run).';
+COMMENT ON COLUMN transport_rules_current.record_key IS 'transport_rules.record_key of the winning row (<collection_id>|<lower rule name>).';
+COMMENT ON COLUMN transport_rules_current.name IS 'Rule name.';
+COMMENT ON COLUMN transport_rules_current.guid IS 'Rule Guid.';
+COMMENT ON COLUMN transport_rules_current.state IS 'Enabled or Disabled.';
+COMMENT ON COLUMN transport_rules_current.mode IS 'Enforce, Audit, AuditAndNotify.';
+COMMENT ON COLUMN transport_rules_current.priority IS 'Priority.';
+COMMENT ON COLUMN transport_rules_current.created_by IS 'CreatedBy.';
+COMMENT ON COLUMN transport_rules_current.last_modified_by IS 'LastModifiedBy.';
+COMMENT ON COLUMN transport_rules_current.when_changed IS 'WhenChangedUTC, else WhenChanged.';
+COMMENT ON COLUMN transport_rules_current.description IS 'Exchange''s human-readable rule description.';
+COMMENT ON COLUMN transport_rules_current.conditions IS 'Conditions predicate type names (JSON sources only).';
+COMMENT ON COLUMN transport_rules_current.exceptions IS 'Exceptions predicate type names (JSON sources only).';
+COMMENT ON COLUMN transport_rules_current.actions IS 'Actions type names (JSON sources only).';
+COMMENT ON COLUMN transport_rules_current.redirect_to IS 'RedirectMessageTo recipients - external redirection is an exfiltration signal.';
+COMMENT ON COLUMN transport_rules_current.blind_copy_to IS 'BlindCopyTo recipients.';
+COMMENT ON COLUMN transport_rules_current.copy_to IS 'CopyTo recipients.';
+COMMENT ON COLUMN transport_rules_current.add_to_recipients IS 'AddToRecipients.';
+COMMENT ON COLUMN transport_rules_current.collection_id IS 'Collection whose row won.';
+COMMENT ON COLUMN transport_rules_current.collected_at IS 'collections.collected_at of the winning collection.';
+
+CREATE VIEW remote_domains_current AS
+SELECT coalesce(c.tenant_key, 'collection:' || c.collection_id) AS tenant_key, d.record_key, d.domain_name,
+       d.name, d.auto_forward_enabled, d.allowed_ooo_type, d.when_changed, d.collection_id, c.collected_at
+FROM remote_domains d JOIN collections c ON c.collection_id = d.collection_id
+QUALIFY row_number() OVER (PARTITION BY coalesce(c.tenant_key, 'collection:' || c.collection_id), lower(d.domain_name)
+                           ORDER BY c.collected_at DESC NULLS LAST, c.collection_id DESC) = 1;
+
+COMMENT ON VIEW remote_domains_current IS 'Newest remote_domains row per (tenant, lower(domain_name)): each tenant''s remote domain policy (AutoForwardEnabled on * allows external auto-forwarding) as its newest capture reported it, never another tenant''s. A domain a newer capture no longer holds still appears here from the older capture; state_absent_in_newer lists those.';
+COMMENT ON COLUMN remote_domains_current.tenant_key IS 'tenant.tenant_key (or collection:<id> for a collection with no tenant_key, which should not occur after a profile run).';
+COMMENT ON COLUMN remote_domains_current.record_key IS 'remote_domains.record_key of the winning row (<collection_id>|<lower DomainName>).';
+COMMENT ON COLUMN remote_domains_current.domain_name IS 'DomainName (* for the Default remote domain).';
+COMMENT ON COLUMN remote_domains_current.name IS 'Remote domain name.';
+COMMENT ON COLUMN remote_domains_current.auto_forward_enabled IS 'AutoForwardEnabled - true on * allows external auto-forwarding.';
+COMMENT ON COLUMN remote_domains_current.allowed_ooo_type IS 'AllowedOOFType.';
+COMMENT ON COLUMN remote_domains_current.when_changed IS 'WhenChangedUTC, else WhenChanged.';
+COMMENT ON COLUMN remote_domains_current.collection_id IS 'Collection whose row won.';
+COMMENT ON COLUMN remote_domains_current.collected_at IS 'collections.collected_at of the winning collection.';

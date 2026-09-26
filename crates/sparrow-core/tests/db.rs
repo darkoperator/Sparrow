@@ -481,10 +481,10 @@ fn every_loaded_table_has_a_tz_assumed_column() {
     }
 }
 
-/// A case created by schema 6 (one merged org row) gains per-collection org keys, and its
-/// sightings follow the rows so verify keeps working.
+/// A case created by schema 6 (one merged org row, one row per transport rule / remote domain)
+/// gains per-collection keys, and its sightings follow the rows so verify keeps working.
 #[test]
-fn migration_7_keys_org_state_by_collection() {
+fn migration_7_keys_org_state_transport_rules_and_remote_domains_by_collection() {
     let conn = duckdb::Connection::open_in_memory().unwrap();
     conn.execute_batch(
         "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name VARCHAR NOT NULL,
@@ -506,15 +506,20 @@ fn migration_7_keys_org_state_by_collection() {
          INSERT INTO audit_config (record_key, collection_id, audit_disabled) VALUES ('organization', 3, true);
          INSERT INTO tenant_settings (record_key, collection_id, source, name)
              VALUES ('organization_config|auditdisabled', 3, 'organization_config', 'AuditDisabled');
+         INSERT INTO transport_rules (record_key, collection_id, name) VALUES ('external redirect', 3, 'External redirect');
+         INSERT INTO remote_domains (record_key, collection_id, domain_name) VALUES ('*', 3, '*');
          INSERT INTO record_sources VALUES
              ('audit_config', 'organization', 9, 0, 2, 2, 0, 1, 'h'),
-             ('tenant_settings', 'organization_config|auditdisabled', 9, 0, 2, 2, 0, 1, 'h');",
+             ('tenant_settings', 'organization_config|auditdisabled', 9, 0, 2, 2, 0, 1, 'h'),
+             ('transport_rules', 'external redirect', 9, 0, 2, 2, 0, 1, 'h'),
+             ('remote_domains', '*', 9, 0, 2, 2, 0, 1, 'h');",
     )
     .unwrap();
     migrate(&conn).unwrap();
     let keys: Vec<String> = conn
         .prepare(
             "SELECT record_key FROM audit_config UNION ALL SELECT record_key FROM tenant_settings
+             UNION ALL SELECT record_key FROM transport_rules UNION ALL SELECT record_key FROM remote_domains
              UNION ALL SELECT table_name || '=' || record_key FROM record_sources ORDER BY 1",
         )
         .unwrap()
@@ -525,10 +530,14 @@ fn migration_7_keys_org_state_by_collection() {
     assert_eq!(
         keys,
         vec![
+            "3|*",
+            "3|external redirect",
             "3|organization_config|auditdisabled",
             "audit_config=organization|3",
             "organization|3",
+            "remote_domains=3|*",
             "tenant_settings=3|organization_config|auditdisabled",
+            "transport_rules=3|external redirect",
         ]
     );
 }
