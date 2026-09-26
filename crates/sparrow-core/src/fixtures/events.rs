@@ -208,11 +208,19 @@ fn message_trace(id: &str, recipient: &str) -> Value {
     })
 }
 
+/// The Hawk 4 user-investigation step that wrote alice's `Entra_Sign_In_Log_*` files, appended
+/// to [`HAWK_LOG`] in the events tree's Hawk.log (evidence availability reads it).
+pub const HAWK4_EVENTS_SIGNIN_LOG_LINE: &str = "[2026-09-10 14:31:00Z] - [INFO]   - Initiating collection of sign-in logs for alice@contoso.example from Entra ID\r\n";
+
 /// Hawk 4.x capture: Tenant/ written by PowerShell 7 (UTF-8, ISO dates), the user folder by
 /// Windows PowerShell 5.1 (UTF-8 BOM, `\/Date(ms)\/`), plus analyst portal exports.
 pub fn hawk4_events_tree(base: &Path) -> PathBuf {
     let root = base.join(HAWK4_EVENTS_ROOT);
-    write(&root, "Hawk.log", HAWK_LOG.as_bytes());
+    write(
+        &root,
+        "Hawk.log",
+        format!("{HAWK_LOG}{HAWK4_EVENTS_SIGNIN_LOG_LINE}").as_bytes(),
+    );
     write(
         &root,
         "Tenant/EntraIDAuditLogs.json",

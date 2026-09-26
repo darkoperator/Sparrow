@@ -689,3 +689,115 @@ fn ingest_enriches_ips_from_geoip_dir() {
         .unwrap();
     assert_eq!(country_iso, "NG");
 }
+
+#[test]
+fn invictus_tree_end_to_end_through_the_profile_commands() {
+    use sparrow_core::fixtures::mmdb::{asn, city, write_mmdb};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = sparrow_core::fixtures::invictus::invictus_output_tree(dir.path());
+    let case = dir.path().join("case.duckdb");
+    let geo = tempfile::tempdir().unwrap();
+    let net: std::net::IpAddr = "203.0.113.0".parse().unwrap();
+    std::fs::write(
+        geo.path().join("GeoLite2-City.mmdb"),
+        write_mmdb(
+            "GeoLite2-City",
+            1_790_000_000,
+            &[(net, 24, city("NG", "Nigeria", "Lagos", 6.45, 3.39))],
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        geo.path().join("GeoLite2-ASN.mmdb"),
+        write_mmdb(
+            "GeoLite2-ASN",
+            1_790_100_000,
+            &[(net, 24, asn(14061, "DIGITALOCEAN-ASN"))],
+        ),
+    )
+    .unwrap();
+
+    let ingest = json_out(
+        sparrow()
+            .args(["--json", "ingest"])
+            .arg(&root)
+            .arg("--case")
+            .arg(&case)
+            .arg("--geoip-dir")
+            .arg(geo.path()),
+        0,
+    );
+    assert_eq!(ingest["profile"]["tenants"], 1, "{ingest}");
+
+    let caps = json_out(
+        sparrow()
+            .args(["--json", "capabilities", "--case"])
+            .arg(&case),
+        0,
+    );
+    let tenant = &caps["tenants"][0];
+    assert_eq!(
+        tenant["tenant_key"], "0e0e0e0e-0000-4000-8000-00000000000a",
+        "{caps}"
+    );
+    assert!(
+        tenant["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["id"] == "entra_id_p1" && c["status"] == "licensed"),
+        "{caps}"
+    );
+    assert!(
+        tenant["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["evidence"] == "signins" && e["status"] == "collected"),
+        "{caps}"
+    );
+
+    let summary = json_out(
+        sparrow().args(["--json", "summary", "--case"]).arg(&case),
+        0,
+    );
+    assert_eq!(summary["tenants"].as_array().unwrap().len(), 1, "{summary}");
+
+    let profile = json_out(
+        sparrow()
+            .args(["--json", "profile", "--case"])
+            .arg(&case)
+            .arg("--geoip-dir")
+            .arg(geo.path()),
+        0,
+    );
+    assert_eq!(profile["tenants"], 1, "{profile}");
+
+    let domains = json_out(
+        sparrow()
+            .args(["--json", "tenant", "domains", "list", "--case"])
+            .arg(&case),
+        0,
+    );
+    assert!(
+        domains["domains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["domain"] == "contoso.example"),
+        "{domains}"
+    );
+
+    let schema = json_out(
+        sparrow()
+            .args(["--json", "schema", "--case"])
+            .arg(&case)
+            .arg("timeline"),
+        0,
+    );
+    let tables = schema["tables"].as_array().unwrap();
+    assert_eq!(tables.len(), 1, "{schema}");
+    assert_eq!(tables[0]["table"], "timeline");
+    assert_eq!(tables[0]["kind"], "view");
+}

@@ -57,6 +57,35 @@ warning. Artifacts with no parser yet (users, roles, MFA, Conditional Access, de
 secure score, licences, inbox and transport rules, activity logs, Get-UALGraph, QuickUAL) are reported
 `not_supported`.
 
+## Tenant profile and enrichment
+
+After loading, `sparrow ingest` runs the profile step (again at any time with `sparrow profile --case C`):
+- `tenant` / `collections.tenant_key`: tenants are told apart by the tenant id in the evidence (UAL
+  OrganizationId, sign-in resource tenant); one case may hold several. Org-level settings are kept per
+  collection and merged per tenant in `tenant_audit_config` and `tenant_settings_current`.
+- `tenant_domains`: domains that count as internal, from user UPNs and message trace; change them with
+  `sparrow tenant domains add|remove|list`.
+- `licenses`: today only Hawk's licence line (low confidence: Hawk matches SKU-name substrings, so "E5" is
+  also logged for Office 365 E5, which has no Entra ID P1/P2). Microsoft-Extractor-Suite licence exports
+  are not parsed yet.
+- `capabilities` and `tenant_capabilities`: which Microsoft 365 features the tenant has, from licences,
+  evidence (visible sign-in risk levels, Graph sign-in downloads, UAL records older than 180 days) and
+  baseline assumptions. The facts live in `data/capabilities.yaml`, each with its Microsoft Learn source.
+- `evidence_availability` / `sparrow capabilities`: per evidence source, collected, partial, not
+  licensed, not enabled, beyond retention, available but not collected, or unknown, with the reason and
+  the collector command that would fill the gap. Agents should call `sparrow capabilities --json` first.
+- `ip_intel`: MaxMind GeoLite2 City and ASN (`--geoip-dir DIR` holding the `.mmdb` files; without it
+  there is no geolocation), Microsoft 365 service ranges (bundled snapshot) and hosting-provider ASNs
+  (`rules/lists/hosting_asns.yaml`).
+- `identities` / `identity_aliases`: one identity per actor across UPN, object id, UAL PUID and app id.
+- `operation_catalog`, `timeline` and `auth_events`: every event in one time-ordered view with category,
+  IP country and ASN, and `source_refs` pointing at the original lines.
+- `state_absent_in_newer`: state rows (inbox rules, permissions, ...) that a newer capture no longer has.
+- `sparrow summary`: tenant, licences, coverage, top actors and evidence gaps.
+
+`--data DIR` (or `SPARROW_DATA`) and `--rules DIR` (or `SPARROW_RULES`) override the embedded
+`capabilities.yaml`, `operation_catalog.yaml`, `ms365_ip_ranges.json` and `lists/hosting_asns.yaml`.
+
 ## Build
 
 ```bash
@@ -67,7 +96,12 @@ cargo build --release   # first build compiles DuckDB (several minutes)
 
 ```bash
 sparrow discover /evidence                        # what was found and how each file is classified
-sparrow ingest /evidence --case case.duckdb       # add --culture en-US|en-GB|... if dates are ambiguous
+sparrow ingest /evidence --case case.duckdb       # add --culture en-US|en-GB|... if dates are ambiguous;
+                                                  # --geoip-dir DIR for IP geolocation
+sparrow profile --case case.duckdb                # re-run the profile step (same --data/--rules/--geoip-dir)
+sparrow capabilities --case case.duckdb           # what evidence the case holds, what is missing and why
+sparrow summary --case case.duckdb                # tenant, licences, coverage, top actors, gaps
+sparrow tenant domains list --case case.duckdb    # also add|remove <domain> [--tenant KEY] [--analyst NAME]
 sparrow schema --case case.duckdb                 # tables and column descriptions
 sparrow upgrade --case case.duckdb                # bring a case made by an older sparrow up to date
 sparrow verify ual_events <record-id> --case case.duckdb [--root /moved/Hawk_folder]
