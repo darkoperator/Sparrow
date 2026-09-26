@@ -190,14 +190,10 @@ pub fn for_evidence(world: &World, e: &Evidence, table: &str) -> Option<String> 
                 mailbox,
                 grantee,
                 right,
+                folder,
             },
             "mailbox_permissions",
         ) => {
-            let folder = world
-                .mailbox_permissions
-                .iter()
-                .find(|p| p.mailbox == *mailbox && p.grantee == *grantee && p.right == *right)
-                .and_then(|p| p.folder.clone());
             let shown = if right == "folder" {
                 mailbox_folder_grantee(world, grantee)
             } else {
@@ -212,5 +208,35 @@ pub fn for_evidence(world: &World, e: &Evidence, table: &str) -> Option<String> 
         }
         (Evidence::AuditConfig, "audit_config") => Some(audit_config()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scenario::load;
+
+    #[test]
+    fn folder_grants_of_one_grantee_key_by_folder() {
+        let w = World::build(&load("bec-aitm").unwrap(), 1).unwrap();
+        let (mailbox, grantee) = (w.user(4).upn.clone(), w.user(3).upn.clone());
+        let key = |folder: &str| {
+            let e = Evidence::MailboxPermission {
+                mailbox: mailbox.clone(),
+                grantee: grantee.clone(),
+                right: "folder".into(),
+                folder: Some(folder.into()),
+            };
+            for_evidence(&w, &e, "mailbox_permissions").unwrap()
+        };
+        let shown = mailbox_folder_grantee(&w, &grantee).to_lowercase();
+        assert_eq!(
+            key("calendar"),
+            format!("{}|folder|calendar|{shown}", mailbox.to_lowercase())
+        );
+        assert_eq!(
+            key("inbox"),
+            format!("{}|folder|inbox|{shown}", mailbox.to_lowercase())
+        );
     }
 }

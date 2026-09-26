@@ -548,3 +548,26 @@ fn a_raw_window_retried_for_its_dates_still_supersedes_the_merged_copy() {
         "skipped_superseded"
     );
 }
+
+#[test]
+fn a_raw_file_takes_its_order_from_a_derived_file_when_no_raw_file_proves_it() {
+    let mut sink = MemSink::default();
+    let mut t = Tree::new(&mut sink, "Output", BTreeSet::new(), CulturePolicy::Never);
+    let window = "P/UnifiedAuditLog/20260910-100000/UAL-20260809000000-20260810000000.csv";
+    ambiguous(&mut t, window, "inv.ual.window");
+    let sessions = "P/MailItemsAccessed/20260910-100700/20260910-100700-Sessions.csv";
+    let spec = FileSpec::new(sessions, Some("inv.mia.sessions"), Encoding::Utf8).derived();
+    t.write(&spec, "\"TimeStamp\"\r\n\"8/15/2026 10:05:00 AM\"\r\n")
+        .unwrap();
+    t.date_evidence(
+        sessions,
+        DateEvidence {
+            culture_dates: 1,
+            decisive: 1,
+        },
+    );
+    let out = t.finish().unwrap();
+    assert_eq!(status(&out, window), "parsed");
+    assert_eq!(status(&out, sessions), "parsed");
+    assert_eq!(out.ingest_culture, None);
+}

@@ -563,7 +563,8 @@ fn counterpart_stems(stem: &str) -> Vec<String> {
 /// processed in Sparrow's order `(derived, is_csv, rel_path)`, raw files first and derived ones
 /// second, each stage with its own retry: with no `--culture`, a file whose culture dates are all
 /// ambiguous is deferred to its stage's retry pass and parses only when a parsed file proved the
-/// order (decisive dates) by then.
+/// order (decisive dates) by then. A raw file no raw file could order is retried after the
+/// derived stage instead.
 fn replay(files: &[Facts], culture_given: bool) -> BTreeMap<&str, Status> {
     let mut order: Vec<&Facts> = files.iter().collect();
     order.sort_by_key(|f| {
@@ -584,7 +585,10 @@ fn replay(files: &[Facts], culture_given: bool) -> BTreeMap<&str, Status> {
     } else {
         Pass::First
     };
-    for stage in [raw, derived] {
+    // Raw files no raw file could order wait for the derived files' proof.
+    let mut carried: Vec<&Facts> = Vec::new();
+    for (i, stage) in [raw, derived].into_iter().enumerate() {
+        let last = i == 1;
         let mut deferred = Vec::new();
         for f in stage {
             match decide(f, &handled, &parsed, first, proved) {
@@ -601,7 +605,19 @@ fn replay(files: &[Facts], culture_given: bool) -> BTreeMap<&str, Status> {
                 }
             }
         }
-        for f in deferred {
+        if !last && !proved {
+            carried.append(&mut deferred);
+            continue;
+        }
+        let retry: Vec<&Facts> = if last {
+            std::mem::take(&mut carried)
+                .into_iter()
+                .chain(deferred)
+                .collect()
+        } else {
+            deferred
+        };
+        for f in retry {
             let st = decide(f, &handled, &parsed, Pass::Retry, proved)
                 .expect("the retry pass never defers");
             record(f, &st, &mut handled, &mut parsed);

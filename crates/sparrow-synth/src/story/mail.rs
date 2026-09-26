@@ -447,6 +447,7 @@ fn add_permission(w: &mut World, ctx: &mut Ctx, p: MailboxPermission) {
         mailbox: p.mailbox.clone(),
         grantee: p.grantee.clone(),
         right: p.right.clone(),
+        folder: p.folder.clone(),
     });
     w.mailbox_permissions.push(p);
 }
@@ -558,6 +559,7 @@ fn permission_system_discovery(w: &mut World, ctx: &mut Ctx) -> Result<()> {
         mailbox: discovery,
         grantee: "Discovery Management".to_string(),
         right: "full_access".to_string(),
+        folder: None,
     });
     Ok(())
 }

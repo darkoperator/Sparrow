@@ -64,6 +64,8 @@ pub enum Evidence {
         mailbox: String,
         grantee: String,
         right: String,
+        /// `calendar` / `inbox` for a folder grant.
+        folder: Option<String>,
     },
     Email(String),
     AuditConfig,

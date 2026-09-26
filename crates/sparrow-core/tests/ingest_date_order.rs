@@ -298,3 +298,68 @@ fn raw_files_retried_for_their_dates_still_supersede_derived_ones() {
         1_786_269_600
     );
 }
+
+#[test]
+fn a_raw_file_can_take_its_order_from_a_derived_file() {
+    // Only the derived Get-Sessions export (8/15) proves month-first; the raw window (8/9) is
+    // retried after the derived stage with that order instead of failing.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("Output");
+    let window = "UnifiedAuditLog/20260910-100000/UAL-20260809000000-20260810000000.csv";
+    fixtures::write(
+        &root,
+        window,
+        (csv_line(&[
+            "CreationTime",
+            "Id",
+            "Operation",
+            "RecordType",
+            "UserId",
+            "Workload",
+        ]) + &csv_line(&[
+            "8/9/2026 10:00:00 AM",
+            "e6e6e6e6-0000-4000-8000-000000000006",
+            "Update",
+            "2",
+            "alice@contoso.example",
+            "Exchange",
+        ]))
+            .as_bytes(),
+    );
+    let sessions = "MailItemsAccessed/20260910-100700/20260910-100700-Sessions.csv";
+    fixtures::write(
+        &root,
+        sessions,
+        (csv_line(&[
+            "TimeStamp",
+            "User",
+            "Action",
+            "SessionId",
+            "ClientIP",
+            "MailAccessType",
+            "IsThrottled",
+            "OperationCount",
+        ]) + &csv_line(&[
+            "8/15/2026 10:05:00 AM",
+            "alice@contoso.example",
+            "MailItemsAccessed",
+            "",
+            "2001:db8::10",
+            "Bind",
+            "",
+            "1",
+        ]))
+            .as_bytes(),
+    );
+    let (case, report) = ingest(dir.path(), None);
+    assert!(!report.has_errors(), "{report:#?}");
+    assert_eq!(row(&report, window).status, FileStatus::Parsed);
+    assert_eq!(row(&report, sessions).status, FileStatus::Parsed);
+    assert_eq!(
+        count(
+            &case,
+            "SELECT epoch(event_time)::BIGINT FROM ual_events WHERE operation = 'Update'"
+        ),
+        1_786_269_600
+    );
+}

@@ -141,6 +141,7 @@ fn permission_row(world: &World, mb: &Mailbox) -> (Row, Vec<(String, Evidence)>)
                 mailbox: mb.upn.clone(),
                 grantee: grantee.to_string(),
                 right: right.to_string(),
+                folder: folder.map(str::to_string),
             },
         ));
     };

@@ -578,3 +578,91 @@ fn rows_of_raw_records_from_an_audit_data_only_csv_add_sightings() {
         0
     );
 }
+
+#[test]
+fn partial_raw_records_without_address_or_count_columns_still_match() {
+    // The -AuditDataOnly CSV header comes from the first record: an item update without
+    // ClientIPAddress or OperationCount, so the MailItemsAccessed rows below it lose both.
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("OUT");
+    let first = json!({
+        "CreationTime": "2026-08-20T09:00:00", "Id": "66666666-6666-4666-8666-666666666666",
+        "Operation": "Update", "OrganizationId": "0e0e0e0e-0000-4000-8000-00000000000a",
+        "RecordType": 2, "UserId": ALICE, "Workload": "Exchange", "MailboxOwnerUPN": ALICE
+    });
+    let r1 = mia(
+        R1,
+        2,
+        &[
+            ("<i1@contoso.example>", 1000),
+            ("<i2@contoso.example>", 2000),
+        ],
+    );
+    let mut r2 = mia(R2, 1, &[("<i3@contoso.example>", 3000)]);
+    r2["CreationTime"] = json!("2026-08-20T10:07:00");
+    fixtures::write(&out, UAL, &audit_data_only_ual(&[first, r1, r2]));
+    fixtures::write(
+        &out,
+        SESSIONS,
+        &sessions(&[
+            ("8/20/2026 10:07:00 AM", "1"), // R2
+            ("8/20/2026 10:00:00 AM", "2"), // R1
+        ]),
+    );
+    let mut body = IDS_HEADER.to_string();
+    for (time, id, size) in [
+        ("8/20/2026 10:07:00 AM", "<i3@contoso.example>", ""),
+        ("8/20/2026 10:00:00 AM", "<i1@contoso.example>", "\"1000\""),
+        ("8/20/2026 10:00:00 AM", "<i2@contoso.example>", "\"2000\""),
+    ] {
+        body.push_str(&format!(
+            "\"{time}\",\"{ALICE}\",\"{IP}\",,\"Bind\",,\"{id}\",{size}\r\n"
+        ));
+    }
+    fixtures::write(&out, MESSAGE_IDS, &utf8_bom(&body));
+    let (case, report) = ingest(dir.path());
+    // The raw MailItemsAccessed rows really lack both values.
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM ual_events WHERE operation = 'MailItemsAccessed'
+               AND data_completeness = 'partial' AND client_ip IS NULL
+               AND json_extract(audit_data, '$.OperationCount') IS NULL"
+        ),
+        2
+    );
+    assert_eq!(count(&case, "SELECT count(*) FROM ual_events"), 3);
+    let f = row(&report, SESSIONS);
+    assert_eq!(
+        (f.records_read, f.records_loaded, f.records_duplicate),
+        (2, 0, 2),
+        "{f:#?}"
+    );
+    let f = row(&report, MESSAGE_IDS);
+    assert_eq!(
+        (f.records_read, f.records_loaded, f.records_duplicate),
+        (3, 0, 3),
+        "{f:#?}"
+    );
+    let sightings = |artifact: &str, id: &str| {
+        count(
+            &case,
+            &format!(
+                "SELECT count(*) FROM record_sources rs JOIN source_files sf USING (file_id)
+                 WHERE rs.table_name = 'ual_events' AND rs.record_key = '{id}'
+                   AND sf.artifact_type = '{artifact}'"
+            ),
+        )
+    };
+    assert_eq!(sightings("inv.mia.sessions", R1), 1);
+    assert_eq!(sightings("inv.mia.sessions", R2), 1);
+    assert_eq!(sightings("inv.mia.message_ids", R1), 2);
+    assert_eq!(sightings("inv.mia.message_ids", R2), 1);
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM mail_items_accessed WHERE record_id IS NULL"
+        ),
+        0
+    );
+}

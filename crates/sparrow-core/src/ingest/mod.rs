@@ -249,8 +249,9 @@ fn ingest_collection(
     // Collector flags last: their links look up rows the other files load.
     keyed.sort_by_cached_key(|(f, derived, flag)| (*flag, processing_key(&f.rel, *derived)));
     // Raw files, then derived files and collector flags, each stage with its own retry pass:
-    // a raw file deferred for its ambiguous dates is handled before any derived file, so the
-    // raw records still supersede the derived copies (spec §6).
+    // a raw file deferred for its ambiguous dates is handled before any derived file when the
+    // raw files proved the order, so the raw records still supersede the derived copies
+    // (spec §6); otherwise it waits for the derived files' proof.
     let (raw, rest): (Vec<_>, Vec<_>) = keyed
         .into_iter()
         .partition(|(_, derived, flag)| !derived && !flag);
@@ -258,7 +259,11 @@ fn ingest_collection(
     let mut files = Vec::new();
     // Orders proved by files of this collection parsed in earlier runs count too.
     let mut proved = orders_proved_earlier(case.conn(), collection_id)?;
-    for stage in [raw, rest] {
+    // Raw files the raw stage could not order (no proof yet, no conflict): a derived file may
+    // still prove the order, so they are retried with the derived stage's deferred files.
+    let mut carried: Vec<(&CollectionFile, bool)> = Vec::new();
+    for (i, stage) in [raw, rest].into_iter().enumerate() {
+        let last = i == 1;
         let mut deferred: Vec<(&CollectionFile, bool)> = Vec::new();
         for (f, derived, _) in stage {
             let job = FileJob {
@@ -294,7 +299,19 @@ fn ingest_collection(
             [only] => Some(*only),
             _ => None,
         };
-        for (f, derived) in deferred {
+        if !last && proved.is_empty() {
+            carried.append(&mut deferred);
+            continue;
+        }
+        let retry = if last {
+            std::mem::take(&mut carried)
+                .into_iter()
+                .chain(deferred)
+                .collect()
+        } else {
+            deferred
+        };
+        for (f, derived) in retry {
             let job = FileJob {
                 collection_id,
                 tool: dc.tool,
