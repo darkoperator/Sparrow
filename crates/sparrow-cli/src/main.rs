@@ -720,7 +720,13 @@ struct DomainActionOutput {
     tenant_key: String,
     domain: String,
     action: &'static str,
+    note: &'static str,
 }
+
+/// `tenant domains add|remove` rebuilds tenant_domains at once, but identities.kind is derived
+/// by the profile step.
+const DOMAIN_ACTION_NOTE: &str = "tenant_domains is updated now; identities' external/internal \
+     kind updates on the next `sparrow profile`";
 
 fn print_domain_action(
     json: bool,
@@ -733,9 +739,11 @@ fn print_domain_action(
             tenant_key: tenant_key.to_string(),
             domain: domain.to_string(),
             action,
+            note: DOMAIN_ACTION_NOTE,
         })?;
     } else {
         println!("{tenant_key}  {action} {domain}");
+        println!("note: {DOMAIN_ACTION_NOTE}");
     }
     Ok(ExitCode::SUCCESS)
 }

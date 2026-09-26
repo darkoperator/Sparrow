@@ -438,7 +438,7 @@ fn tenant_domains_add_list_remove() {
         .arg(&case)
         .assert()
         .success();
-    json_out(
+    let added = json_out(
         sparrow()
             .args([
                 "--json",
@@ -450,6 +450,11 @@ fn tenant_domains_add_list_remove() {
             ])
             .arg(&case),
         0,
+    );
+    assert!(
+        added["note"].as_str().is_some_and(|n| n
+            .contains("identities' external/internal kind updates on the next `sparrow profile`")),
+        "{added}"
     );
     let listed = json_out(
         sparrow()
@@ -465,18 +470,23 @@ fn tenant_domains_add_list_remove() {
             .any(|d| d["domain"] == "contoso-legacy.example" && d["source"] == "analyst"),
         "{listed}"
     );
-    json_out(
-        sparrow()
-            .args([
-                "--json",
-                "tenant",
-                "domains",
-                "remove",
-                "contoso-legacy.example",
-                "--case",
-            ])
-            .arg(&case),
-        0,
+    let text = sparrow()
+        .args([
+            "tenant",
+            "domains",
+            "remove",
+            "contoso-legacy.example",
+            "--case",
+        ])
+        .arg(&case)
+        .output()
+        .unwrap();
+    assert!(text.status.success());
+    let text = String::from_utf8_lossy(&text.stdout);
+    assert!(text.contains("remove contoso-legacy.example"), "{text}");
+    assert!(
+        text.contains("note: tenant_domains is updated now; identities' external/internal kind updates on the next `sparrow profile`"),
+        "{text}"
     );
     let listed = json_out(
         sparrow()
