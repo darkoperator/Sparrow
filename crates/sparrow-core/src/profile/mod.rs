@@ -39,6 +39,20 @@ pub struct ProfileReport {
     pub warnings: Vec<String>,
 }
 
+/// Collections the profile has not assigned to a tenant (`collections.tenant_key` NULL): the
+/// profile step failed after an ingest, or never ran after new collections were loaded. Reports
+/// that read the derived tables (`sparrow capabilities`, `sparrow summary`) are stale while any
+/// exist. Sorted by collection id.
+pub fn unprofiled_collections(conn: &duckdb::Connection) -> Result<Vec<i64>> {
+    let mut stmt = conn.prepare(
+        "SELECT collection_id FROM collections WHERE tenant_key IS NULL ORDER BY collection_id",
+    )?;
+    let ids = stmt
+        .query_map([], |r| r.get(0))?
+        .collect::<std::result::Result<Vec<i64>, _>>()?;
+    Ok(ids)
+}
+
 /// Re-derive the profile. Steps, in order (later tasks fill in the commented ones):
 /// 1. data tables: capabilities (Task 2), operation_catalog (Task 9);
 /// 2. tenants, collections.tenant_key, tenant_domains (Task 3);

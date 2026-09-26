@@ -1487,6 +1487,11 @@ pub fn snapshot(conn: &Connection, as_of: DateTime<Utc>) -> Result<usize> {
 #[derive(Debug, Clone, Serialize)]
 pub struct CapabilitiesReport {
     pub as_of: String,
+    /// Some collections have no tenant yet (`stale_collections`): the profile failed after an
+    /// ingest or has not run since; their evidence is missing from every tenant below.
+    pub stale: bool,
+    /// Collections with no `tenant_key` (see `profile::unprofiled_collections`).
+    pub stale_collections: Vec<i64>,
     pub tenants: Vec<TenantReport>,
 }
 
@@ -1534,8 +1539,11 @@ pub fn capabilities_report(case: &Case, as_of: DateTime<Utc>) -> Result<Capabili
             domains,
         });
     }
+    let stale_collections = crate::profile::unprofiled_collections(conn)?;
     Ok(CapabilitiesReport {
         as_of: rfc3339(as_of),
+        stale: !stale_collections.is_empty(),
+        stale_collections,
         tenants: out,
     })
 }

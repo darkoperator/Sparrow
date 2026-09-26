@@ -635,6 +635,67 @@ fn summary_without_a_profile_asks_for_one() {
 }
 
 #[test]
+fn capabilities_and_summary_warn_when_the_profile_is_stale() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = sparrow_core::fixtures::events::hawk4_events_tree(dir.path());
+    let case = dir.path().join("case.duckdb");
+    sparrow()
+        .args(["ingest"])
+        .arg(&root)
+        .arg("--case")
+        .arg(&case)
+        .assert()
+        .success();
+    for cmd in ["capabilities", "summary"] {
+        let out = json_out(sparrow().args(["--json", cmd, "--case"]).arg(&case), 0);
+        assert_eq!(out["stale"], false, "{cmd}: {out}");
+        assert_eq!(
+            out["stale_collections"],
+            serde_json::json!([]),
+            "{cmd}: {out}"
+        );
+    }
+
+    // A collection loaded without a profile run (e.g. the profile failed after the ingest).
+    let id: i64 = {
+        let c = sparrow_core::Case::create_or_open(&case).unwrap();
+        c.conn()
+            .query_row(
+                "INSERT INTO collections (tool, root_path, sparrow_version)
+                 VALUES ('hawk', '/later', 't') RETURNING collection_id",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    for cmd in ["capabilities", "summary"] {
+        let out = json_out(sparrow().args(["--json", cmd, "--case"]).arg(&case), 0);
+        assert_eq!(out["stale"], true, "{cmd}: {out}");
+        assert_eq!(
+            out["stale_collections"],
+            serde_json::json!([id]),
+            "{cmd}: {out}"
+        );
+        assert_eq!(out["tenants"].as_array().unwrap().len(), 1, "{cmd}: {out}");
+
+        let text = sparrow().args([cmd, "--case"]).arg(&case).output().unwrap();
+        assert!(text.status.success(), "{cmd}");
+        let text = String::from_utf8_lossy(&text.stdout);
+        assert!(
+            text.contains(&format!(
+                "profile is stale: 1 collections not profiled; run `sparrow profile --case {}`",
+                case.display()
+            )),
+            "{cmd}: {text}"
+        );
+        assert!(
+            text.contains("tenant "),
+            "{cmd}: data still printed: {text}"
+        );
+    }
+}
+
+#[test]
 fn ingest_enriches_ips_from_geoip_dir() {
     use sparrow_core::fixtures::mmdb::{asn, city, write_mmdb};
 

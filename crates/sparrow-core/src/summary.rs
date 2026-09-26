@@ -45,6 +45,11 @@ fn source_label(source: &str) -> &str {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Summary {
+    /// Some collections have no tenant yet (`stale_collections`): the profile failed after an
+    /// ingest or has not run since; their evidence is missing from every tenant below.
+    pub stale: bool,
+    /// Collections with no `tenant_key` (see `profile::unprofiled_collections`).
+    pub stale_collections: Vec<i64>,
     pub tenants: Vec<TenantSummary>,
     /// Rows per evidence table (every table with a record_key or record_id, plus ip_intel and
     /// identities).
@@ -118,7 +123,10 @@ pub fn summarize(case: &Case) -> Result<Summary> {
         out.push(tenant_summary(conn, &tenant_key, tenant_id, tenant_name)?);
     }
 
+    let stale_collections = crate::profile::unprofiled_collections(conn)?;
     Ok(Summary {
+        stale: !stale_collections.is_empty(),
+        stale_collections,
         tenants: out,
         tables: table_counts(conn)?,
         profile_evaluated_at: profile_evaluated_at(conn)?,

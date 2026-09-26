@@ -367,3 +367,42 @@ fn two_tenants_get_their_own_coverage_and_top_actors() {
     assert_eq!(tenant_b.top_actors[0].actor, "erin@fabrikam.example");
     assert_eq!(tenant_b.top_actors[0].rows, 1);
 }
+
+/// A collection the profile never assigned to a tenant (the profile failed after an ingest, or
+/// has not run since): both reports keep returning their data but say they are stale.
+#[test]
+fn summary_and_capabilities_report_flag_unprofiled_collections() {
+    let (_dir, case) = case_with_hawk4_events();
+    let summary = summarize(&case).unwrap();
+    assert!(!summary.stale);
+    assert!(summary.stale_collections.is_empty());
+    let as_of = chrono::Utc::now();
+    let caps = sparrow_core::profile::availability::capabilities_report(&case, as_of).unwrap();
+    assert!(!caps.stale);
+
+    let id: i64 = case
+        .conn()
+        .query_row(
+            "INSERT INTO collections (tool, root_path, sparrow_version)
+             VALUES ('hawk', '/later', 't') RETURNING collection_id",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let summary = summarize(&case).unwrap();
+    assert!(summary.stale);
+    assert_eq!(summary.stale_collections, vec![id]);
+    assert_eq!(
+        summary.tenants.len(),
+        1,
+        "the profiled data is still reported"
+    );
+    let caps = sparrow_core::profile::availability::capabilities_report(&case, as_of).unwrap();
+    assert!(caps.stale);
+    assert_eq!(caps.stale_collections, vec![id]);
+    assert_eq!(caps.tenants.len(), 1);
+    assert_eq!(
+        sparrow_core::profile::unprofiled_collections(case.conn()).unwrap(),
+        vec![id]
+    );
+}

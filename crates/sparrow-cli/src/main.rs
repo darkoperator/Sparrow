@@ -430,6 +430,17 @@ fn cmd_profile(case_path: &Path, profile_opts: ProfileOptions, json: bool) -> Re
     Ok(ExitCode::SUCCESS)
 }
 
+/// Human output's warning when some collections have no tenant (the profile is stale).
+fn print_stale_warning(stale_collections: &[i64], case_path: &Path) {
+    if !stale_collections.is_empty() {
+        println!(
+            "warning: profile is stale: {} collections not profiled; run `sparrow profile --case {}`",
+            stale_collections.len(),
+            case_path.display()
+        );
+    }
+}
+
 fn cmd_capabilities(case_path: &Path, json: bool) -> Result<ExitCode> {
     let case = Case::open_read_only(case_path)?;
     let report = capabilities_report(&case, chrono::Utc::now())?;
@@ -443,6 +454,7 @@ fn cmd_capabilities(case_path: &Path, json: bool) -> Result<ExitCode> {
         print_json(&report)?;
         return Ok(ExitCode::SUCCESS);
     }
+    print_stale_warning(&report.stale_collections, case_path);
     println!("evaluated at {}", report.as_of);
     for t in &report.tenants {
         println!();
@@ -496,6 +508,7 @@ fn cmd_summary(case_path: &Path, json: bool) -> Result<ExitCode> {
         print_json(&report)?;
         return Ok(ExitCode::SUCCESS);
     }
+    print_stale_warning(&report.stale_collections, case_path);
     if let Some(at) = &report.profile_evaluated_at {
         println!("profile evaluated at {at}");
     }
