@@ -11,5 +11,6 @@ pub mod ps;
 pub mod reserved;
 pub mod rng;
 pub mod scenario;
+pub mod world;
 
 pub use error::{Error, Result};
