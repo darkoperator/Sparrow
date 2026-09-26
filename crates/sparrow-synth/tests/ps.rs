@@ -197,6 +197,26 @@ fn format_list_pads_names_and_wraps_on_51() {
 }
 
 #[test]
+fn format_list_two_blocks_span_independently() {
+    let blocks = vec![
+        row(vec![
+            ("Name", Val::Str("Inbox".into())),
+            ("ItemsInFolder", Val::Int(3)),
+        ]),
+        row(vec![("Name", Val::Str("Drafts".into()))]),
+    ];
+    let mut ev = DateEvidence::default();
+    let fl = format_list(&host(PsEdition::Ps7, Culture::EnUs), &blocks, &mut ev);
+    assert_eq!(
+        fl.text,
+        "\r\n\r\nName          : Inbox\r\nItemsInFolder : 3\r\n\r\nName : Drafts\r\n\r\n\r\n\r\n"
+    );
+    // The second block's own (shorter) name padding is independent of the first's, and its
+    // span starts after the first block's own trailing blank line.
+    assert_eq!(fl.spans, vec![(3, 4), (6, 6)]);
+}
+
+#[test]
 fn encodings() {
     assert_eq!(Encoding::Utf8Bom.encode("a"), vec![0xEF, 0xBB, 0xBF, b'a']);
     assert_eq!(Encoding::Utf16LeBom.encode("a"), vec![0xFF, 0xFE, b'a', 0]);

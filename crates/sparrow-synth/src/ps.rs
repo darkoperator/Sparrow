@@ -289,16 +289,19 @@ fn format_float(host: &Host, f: f64) -> String {
     }
 }
 
+/// `True` / `False`, PowerShell's rendering of a boolean everywhere it appears as text.
+fn ps_bool(b: bool) -> String {
+    if b {
+        "True".to_string()
+    } else {
+        "False".to_string()
+    }
+}
+
 fn raw_scalar_to_ps_string(v: &serde_json::Value) -> String {
     match v {
         serde_json::Value::Null => String::new(),
-        serde_json::Value::Bool(b) => {
-            if *b {
-                "True".to_string()
-            } else {
-                "False".to_string()
-            }
-        }
+        serde_json::Value::Bool(b) => ps_bool(*b),
         serde_json::Value::Number(n) => n.to_string(),
         serde_json::Value::String(s) => s.clone(),
         serde_json::Value::Array(_) | serde_json::Value::Object(_) => raw_to_csv_string(v),
@@ -331,18 +334,18 @@ fn raw_to_fl_string(v: &serde_json::Value) -> String {
     }
 }
 
-/// Cell text for `Export-Csv` (never called for `Val::Null`; the caller handles nulls itself).
-fn csv_text(host: &Host, v: &Val, ev: &mut DateEvidence) -> String {
+/// Scalar rendering shared by `Export-Csv` and `Format-List`: everything but how a nested
+/// `Val::Raw` value prints (`raw`) is identical between the two.
+fn scalar_text(
+    host: &Host,
+    v: &Val,
+    ev: &mut DateEvidence,
+    raw: fn(&serde_json::Value) -> String,
+) -> String {
     match v {
         Val::Null => String::new(),
         Val::Str(s) => s.clone(),
-        Val::Bool(b) => {
-            if *b {
-                "True".to_string()
-            } else {
-                "False".to_string()
-            }
-        }
+        Val::Bool(b) => ps_bool(*b),
         Val::Int(i) => i.to_string(),
         Val::Float(f) => format_float(host, *f),
         Val::Date(d) => {
@@ -350,9 +353,14 @@ fn csv_text(host: &Host, v: &Val, ev: &mut DateEvidence) -> String {
             host.csv_date(d)
         }
         Val::DateText(d) => host.csv_date(d),
-        Val::Raw(v) => raw_to_csv_string(v),
+        Val::Raw(v) => raw(v),
         Val::Placeholder(s) => s.clone(),
     }
+}
+
+/// Cell text for `Export-Csv` (never called for `Val::Null`; the caller handles nulls itself).
+fn csv_text(host: &Host, v: &Val, ev: &mut DateEvidence) -> String {
+    scalar_text(host, v, ev, raw_to_csv_string)
 }
 
 fn quote_csv(s: &str) -> String {
@@ -659,26 +667,7 @@ pub fn convert_to_json(host: &Host, items: &[Row], compress: bool) -> Rendered {
 
 /// Value text for `Format-List` (nulls render empty; nested arrays render as `{a, b, c}`).
 fn fl_text(host: &Host, v: &Val, ev: &mut DateEvidence) -> String {
-    match v {
-        Val::Null => String::new(),
-        Val::Str(s) => s.clone(),
-        Val::Bool(b) => {
-            if *b {
-                "True".to_string()
-            } else {
-                "False".to_string()
-            }
-        }
-        Val::Int(i) => i.to_string(),
-        Val::Float(f) => format_float(host, *f),
-        Val::Date(d) => {
-            note_evidence(host, ev, d);
-            host.csv_date(d)
-        }
-        Val::DateText(d) => host.csv_date(d),
-        Val::Raw(v) => raw_to_fl_string(v),
-        Val::Placeholder(s) => s.clone(),
-    }
+    scalar_text(host, v, ev, raw_to_fl_string)
 }
 
 /// `Format-List`: `Name : Value` with names padded to the longest name in the block; blocks
