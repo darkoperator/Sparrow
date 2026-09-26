@@ -80,7 +80,8 @@ pub struct TableExpect {
     pub rows: u64,
     /// False when `rows` is a lower bound.
     pub exact: bool,
-    /// SHA-256 of the sorted unique record keys joined by `\n` (`{cid}` unreplaced).
+    /// SHA-256 of the sorted unique record keys joined by `\n` (`{cid}` unreplaced); `None`
+    /// for a count-only table (rows without keys).
     pub keys_sha256: Option<String>,
     /// The sorted unique record keys, listed only when there are at most 5000; a key may hold
     /// the placeholder `{cid}` for the collection id.

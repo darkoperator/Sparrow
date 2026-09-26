@@ -13,7 +13,7 @@ use std::net::IpAddr;
 
 /// The `LOCATIONS` entry for storyline addresses no event locates (a documentation-ISP city
 /// that is never a user home).
-const OTHER_LOCATION: usize = 6;
+pub const OTHER_LOCATION: usize = 6;
 
 /// Every address of the world with its location; the first source to name an address wins
 /// (people, then the attacker, then storyline sign-ins and risk detections, then other

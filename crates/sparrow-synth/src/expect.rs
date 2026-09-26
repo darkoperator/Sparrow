@@ -5,7 +5,7 @@
 //! outcome, never computed by Sparrow's code.
 
 use crate::coverage::{RuleDef, rules};
-use crate::events::Ual;
+use crate::events::{RecordType, Ual};
 use crate::manifest::{CapExpect, EvidenceExpect, RuleExpect, RuleOutcome};
 use crate::options::{Collector, GenerateOptions};
 use crate::profiles::Delivery;
@@ -16,14 +16,37 @@ use crate::writers::parsed_by_sparrow;
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
-/// `ual_events` and its child tables: a delivered UAL record counts for each of them.
-const UAL_FAMILY: &[&str] = &[
-    "ual_events",
-    "mail_items_accessed",
-    "file_events",
-    "sharing_events",
-    "search_queries",
-];
+/// The tables a UAL record lands in when a collector delivers it as a UAL record: always
+/// `ual_events`, plus the child table its operation feeds (MailItemsAccessed →
+/// `mail_items_accessed`; SearchQueryInitiated* → `search_queries`; SharePoint / OneDrive file
+/// operations → `file_events`; sharing operations → `sharing_events`).
+pub fn ual_tables(u: &Ual) -> Vec<&'static str> {
+    let mut v = vec!["ual_events"];
+    if u.operation == "MailItemsAccessed" {
+        v.push("mail_items_accessed");
+    } else if u.operation.starts_with("SearchQueryInitiated") {
+        v.push("search_queries");
+    } else if matches!(
+        u.record_type,
+        RecordType::SharePointFileOperation | RecordType::OneDrive
+    ) {
+        v.push("file_events");
+    } else if u.record_type == RecordType::SharePointSharingOperation {
+        v.push("sharing_events");
+    }
+    v
+}
+
+/// The tables UAL record `u` can land in under any collector: `ual_tables`, and
+/// `admin_audit_events` for an Exchange admin cmdlet (Hawk 3 renders those as admin-audit
+/// records).
+fn ual_reach(u: &Ual) -> Vec<&'static str> {
+    let mut v = ual_tables(u);
+    if u.record_type == RecordType::ExchangeAdmin {
+        v.push("admin_audit_events");
+    }
+    v
+}
 
 /// Which licence evidence the tree delivers: Hawk 4 → `Hawk4`; Hawk 3 → `Hawk3`; portal →
 /// `Portal`; Microsoft-Extractor-Suite → `InvictusList` when the tree writes the licence list
@@ -138,6 +161,7 @@ pub fn evidence(
             ),
         );
     } else if invictus
+        && !world.mailboxes.is_empty()
         && world
             .mailboxes
             .values()
@@ -211,12 +235,19 @@ fn collector_name(out: &TreeOutcome) -> &'static str {
 }
 
 /// The tables evidence `e` counts for: the tables it was delivered into, a UAL record's
-/// `ual_events` delivery also counting for the child tables.
-fn delivered_tables(e: &Evidence, out: &TreeOutcome) -> BTreeSet<String> {
+/// `ual_events` delivery standing for every table of `ual_tables` (an admin-audit rendering is
+/// delivered to `admin_audit_events` by the writer itself).
+fn delivered_tables(
+    e: &Evidence,
+    ual: &BTreeMap<Uuid, &Ual>,
+    out: &TreeOutcome,
+) -> BTreeSet<String> {
     let mut set = BTreeSet::new();
     for (table, _) in out.delivered.get(e).into_iter().flatten() {
-        if matches!(e, Evidence::Ual(_)) && table == "ual_events" {
-            set.extend(UAL_FAMILY.iter().map(|t| t.to_string()));
+        if let (Evidence::Ual(id), "ual_events") = (e, table.as_str()) {
+            if let Some(u) = ual.get(id) {
+                set.extend(ual_tables(u).iter().map(|t| t.to_string()));
+            }
         }
         set.insert(table.clone());
     }
@@ -227,11 +258,10 @@ fn delivered_tables(e: &Evidence, out: &TreeOutcome) -> BTreeSet<String> {
 /// look-alike):
 /// 1. a `requires` capability expected `not_licensed` → `not_applicable` (reason names it);
 /// 2. else, when the rule has `requires_evidence` and every UAL evidence item of the storyline
-///    that maps to the rule's tables (`ual_events` and its child tables) was not logged →
-///    `not_applicable` (reason = `World::why_not_logged`);
-/// 3. else, when any evidence item was delivered into one of the rule's tables (UAL evidence
-///    delivered to `ual_events` counts for its child tables `mail_items_accessed`,
-///    `file_events`, `sharing_events`, `search_queries`; a Hawk 3 writer delivers an
+///    that maps to the rule's tables (`ual_tables`, plus `admin_audit_events` for Exchange
+///    admin cmdlets) was not logged → `not_applicable` (reason = `World::why_not_logged`);
+/// 3. else, when any evidence item was delivered into one of the rule's tables (a UAL record
+///    delivered to `ual_events` counts for its `ual_tables`; a Hawk 3 writer delivers an
 ///    admin-audit rendering to `admin_audit_events` itself) → `hit` for a positive kind,
 ///    `no_hit` for a look-alike (`tables` = the rule's tables that received evidence);
 /// 4. else `no_evidence` (the collector cannot supply it; reason names the collector).
@@ -281,13 +311,19 @@ fn outcome(
             rule.tables.clone(),
         );
     }
-    let ual_tables = rule.tables.iter().any(|t| UAL_FAMILY.contains(&t.as_str()));
-    if !rule.requires_evidence.is_empty() && ual_tables {
+    if !rule.requires_evidence.is_empty() {
         let reasons: Vec<Option<&'static str>> = r
             .evidence
             .iter()
             .filter_map(|e| match e {
-                Evidence::Ual(id) => ual.get(id).map(|u| world.why_not_logged(u)),
+                Evidence::Ual(id) => ual
+                    .get(id)
+                    .filter(|u| {
+                        ual_reach(u)
+                            .iter()
+                            .any(|t| rule.tables.iter().any(|r| r == t))
+                    })
+                    .map(|u| world.why_not_logged(u)),
                 _ => None,
             })
             .collect();
@@ -302,7 +338,7 @@ fn outcome(
     let got: BTreeSet<String> = r
         .evidence
         .iter()
-        .flat_map(|e| delivered_tables(e, out))
+        .flat_map(|e| delivered_tables(e, ual, out))
         .collect();
     let hit: Vec<String> = rule
         .tables

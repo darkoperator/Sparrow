@@ -110,7 +110,9 @@ pub struct FileSpec {
     /// Sparrow's registry marks the artifact derived (processed after raw files, superseded by
     /// its raw counterpart).
     pub derived: bool,
-    /// The subject Sparrow takes from the path (a user folder's UPN...).
+    /// The subject Sparrow takes from the path (a user folder's UPN...). Required for
+    /// per-subject artifacts (Hawk user files and the like): without it, byte-identical files of
+    /// different users replay as `duplicate_file`.
     pub subject: Option<String>,
     pub encoding: Encoding,
     /// The writer derived the content from another file of the tree.
@@ -600,7 +602,8 @@ enum Pass {
     Retry,
 }
 
-/// The status of one file (rules 3-9), or `None` to defer it.
+/// The status of one file (rules 3-9, with unrecognized checked after duplicate and superseded
+/// as Sparrow does), or `None` to defer it.
 fn decide(
     f: &Facts,
     handled: &Handled,
@@ -608,15 +611,17 @@ fn decide(
     pass: Pass,
     proved: bool,
 ) -> Option<Status> {
-    let Some(artifact) = f.artifact else {
-        return Some(Status::Named("unrecognized"));
-    };
+    // Sparrow's order: duplicate, superseded, then unrecognized (an unclassified file is never
+    // a duplicate, since only classified files are parsed).
     if f.size > 0 && parsed.contains(&(f.sha256.clone(), f.artifact, f.subject.clone())) {
         return Some(Status::Named("duplicate_file"));
     }
     if handled.superseded(&f.rel, f.derived) {
         return Some(Status::Named("skipped_superseded"));
     }
+    let Some(artifact) = f.artifact else {
+        return Some(Status::Named("unrecognized"));
+    };
     if !parsed_by_sparrow(artifact) {
         return Some(Status::Named("not_supported"));
     }

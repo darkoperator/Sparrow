@@ -388,3 +388,82 @@ fn dir_sink_truncates_files_from_an_earlier_run() {
     assert_eq!(got, "second!");
     assert!(dir.path().join("R/empty").is_dir());
 }
+
+#[test]
+fn counterpart_stems_zero_byte_files_and_utf16_chunks() {
+    let mut sink = MemSink::default();
+    let mut t = Tree::new(&mut sink, "R", BTreeSet::new(), CulturePolicy::Never);
+    let u = |rel: &str, a: &'static str| FileSpec::new(rel, Some(a), Encoding::Utf8);
+    // Simple_X → Xs (Hawk 3 Simple_New_InboxRule pairs with New_InboxRules).
+    t.write(
+        &u("Tenant/New_InboxRules.csv", "hawk.tenant.raw_ual"),
+        "\"a\"\r\n",
+    )
+    .unwrap();
+    t.write(
+        &u("Tenant/Simple_New_InboxRule.csv", "hawk.tenant.simple_ual").derived(),
+        "\"b\"\r\n",
+    )
+    .unwrap();
+    // Converted_Authentication_Logs_U → Raw_Authentication_Logs_U.
+    t.write(
+        &u(
+            "a@t.example/Raw_Authentication_Logs_a.csv",
+            "hawk.user.raw_auth",
+        ),
+        "\"c\"\r\n",
+    )
+    .unwrap();
+    t.write(
+        &u(
+            "a@t.example/Converted_Authentication_Logs_a.csv",
+            "hawk.user.converted_auth",
+        )
+        .derived(),
+        "\"d\"\r\n",
+    )
+    .unwrap();
+    // 0-byte files are parsed, never duplicates of each other.
+    let empty = |rel: &str| u(rel, "hawk.user.inbox_rules").subject("a@t.example".into());
+    t.write(&empty("a@t.example/InboxRules_a.csv"), "").unwrap();
+    t.write(&empty("a@t.example/InboxRules_a2.csv"), "")
+        .unwrap();
+    // UTF-16LE with BOM: the BOM only on the first chunk.
+    let w16 = FileSpec::new("Tenant/Hawk_Help.txt", None, Encoding::Utf16LeBom);
+    assert_eq!(t.write(&w16, "a\r\n").unwrap(), 0);
+    assert_eq!(t.write(&w16, "b\r\n").unwrap(), 1);
+    let out = t.finish().unwrap();
+    assert_eq!(
+        status(&out, "Tenant/Simple_New_InboxRule.csv"),
+        "skipped_superseded"
+    );
+    assert_eq!(
+        status(&out, "a@t.example/Converted_Authentication_Logs_a.csv"),
+        "skipped_superseded"
+    );
+    assert_eq!(status(&out, "a@t.example/InboxRules_a.csv"), "parsed");
+    assert_eq!(status(&out, "a@t.example/InboxRules_a2.csv"), "parsed");
+    let mut want = vec![0xFF, 0xFE];
+    want.extend("a\r\nb\r\n".encode_utf16().flat_map(|c| c.to_le_bytes()));
+    assert_eq!(sink.files["R/Tenant/Hawk_Help.txt"], want);
+}
+
+#[test]
+fn an_unrecognized_csv_twin_is_superseded_first() {
+    let mut sink = MemSink::default();
+    let mut t = Tree::new(&mut sink, "R", BTreeSet::new(), CulturePolicy::Never);
+    t.write(
+        &FileSpec::new("Tenant/X.json", Some("hawk.tenant.raw_ual"), Encoding::Utf8),
+        "[]",
+    )
+    .unwrap();
+    t.write(
+        &FileSpec::new("Tenant/X.csv", None, Encoding::Utf8),
+        "\"a\"\r\n",
+    )
+    .unwrap();
+    assert_eq!(
+        status(&t.finish().unwrap(), "Tenant/X.csv"),
+        "skipped_superseded"
+    );
+}

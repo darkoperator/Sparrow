@@ -44,6 +44,11 @@ fn geo_covers_every_ip_in_the_world() {
         assert!(ips.contains(&u.office_ip) && ips.contains(&u.home_ip));
     }
     assert_eq!(city.len(), asn.len());
+    let other = &sparrow_synth::world::LOCATIONS[sparrow_synth::geo::OTHER_LOCATION];
+    assert!(
+        w.all_people().all(|u| u.home.city != other.city),
+        "OTHER_LOCATION is never a home"
+    );
 }
 
 #[test]
@@ -175,4 +180,30 @@ fn why_not_logged_names_the_setting() {
             .iter()
             .all(|u| w.logged(u) == w.why_not_logged(u).is_none())
     );
+}
+
+#[test]
+fn ual_records_map_to_child_tables_by_operation() {
+    use sparrow_synth::expect::ual_tables;
+    let mut w = World::build(&load("bec-aitm").unwrap(), 1).unwrap();
+    apply(&mut w).unwrap();
+    let tables = |op: &str| {
+        let u = w
+            .story
+            .ual
+            .iter()
+            .find(|u| u.operation == op)
+            .unwrap_or_else(|| panic!("{op}"));
+        ual_tables(u)
+    };
+    assert_eq!(
+        tables("MailItemsAccessed"),
+        vec!["ual_events", "mail_items_accessed"]
+    );
+    assert_eq!(
+        tables("SearchQueryInitiatedExchange"),
+        vec!["ual_events", "search_queries"]
+    );
+    assert_eq!(tables("FileDownloaded"), vec!["ual_events", "file_events"]);
+    assert_eq!(tables("New-InboxRule"), vec!["ual_events"]);
 }
