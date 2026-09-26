@@ -210,3 +210,74 @@ fn check_reports_a_moved_sighting() {
         report.problems
     );
 }
+
+#[test]
+fn check_reports_hash_count_capability_and_unlisted_sighting_problems() {
+    let dir = tempfile::tempdir().unwrap();
+    let m = generate_to_dir(&load("bec-aitm").unwrap(), &opts(12), dir.path()).unwrap();
+    let case = ingest_generated(dir.path(), &m);
+    assert!(check(&m, &case).unwrap().ok);
+    assert!(m.tenant.domains.contains(&"contoso.example".to_string()));
+
+    // Hashed path: no listed keys, one hex digit of the hash flipped.
+    let mut hashed = m.clone();
+    let t = hashed.tables.get_mut("ual_events").unwrap();
+    t.keys.clear();
+    let mut h = t.keys_sha256.clone().unwrap().into_bytes();
+    h[0] = if h[0] == b'0' { b'1' } else { b'0' };
+    t.keys_sha256 = Some(String::from_utf8(h).unwrap());
+    let r = check(&hashed, &case).unwrap();
+    assert!(
+        r.problems
+            .iter()
+            .any(|p| p.starts_with("table ual_events") && p.contains("hash")),
+        "{:#?}",
+        r.problems
+    );
+
+    // Row count: one row more than the keys.
+    let mut counted = m.clone();
+    counted.tables.get_mut("signins").unwrap().rows += 1;
+    let r = check(&counted, &case).unwrap();
+    assert!(
+        r.problems
+            .iter()
+            .any(|p| p.starts_with("table signins") && p.contains("rows, expected")),
+        "{:#?}",
+        r.problems
+    );
+
+    // A listed capability with the wrong status: the mismatch branch, not "missing".
+    let mut cap = m.clone();
+    let c = cap.capabilities.get_mut("ual_standard").unwrap();
+    assert_eq!(c.status, "licensed");
+    c.status = "not_licensed".into();
+    let r = check(&cap, &case).unwrap();
+    assert!(
+        r.problems
+            .iter()
+            .any(|p| p.starts_with("capability ual_standard: licensed/")
+                && p.contains("expected not_licensed")),
+        "{:#?}",
+        r.problems
+    );
+
+    // A sighting in a file the manifest does not list.
+    let mut moved = m.clone();
+    let landed = moved
+        .storylines
+        .iter_mut()
+        .flat_map(|s| s.evidence.iter_mut())
+        .flat_map(|e| e.delivered.iter_mut())
+        .next()
+        .unwrap();
+    landed.sighting.rel_path = "nowhere.csv".into();
+    let r = check(&moved, &case).unwrap();
+    assert!(
+        r.problems
+            .iter()
+            .any(|p| p.contains("nowhere.csv") && p.contains("not in the manifest")),
+        "{:#?}",
+        r.problems
+    );
+}

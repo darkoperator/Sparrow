@@ -373,6 +373,15 @@ impl<'a> Tree<'a> {
                 hex::encode(Sha256::digest(joined.as_bytes()))
             });
             let rows = k.len() as u64 + n;
+            if k.len() > MAX_LISTED_KEYS && k.iter().any(|key| key.contains(crate::keys::CID)) {
+                // Only the hash would be listed, and `synth check` cannot rebuild `{cid}` keys
+                // from the case's keys.
+                return Err(Error::Invalid(format!(
+                    "table {name}: {} keys carry the {} placeholder; at most {MAX_LISTED_KEYS} can be checked",
+                    k.len(),
+                    crate::keys::CID
+                )));
+            }
             let listed = if k.len() <= MAX_LISTED_KEYS {
                 k.into_iter().collect()
             } else {

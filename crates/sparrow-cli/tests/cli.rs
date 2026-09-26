@@ -944,3 +944,23 @@ fn synth_rejects_unknown_scenario_and_collector() {
         .assert()
         .failure();
 }
+
+#[test]
+fn synth_refuses_scale_knobs_until_they_land() {
+    let dir = tempfile::tempdir().unwrap();
+    sparrow()
+        .args([
+            "synth",
+            "--scenario",
+            "bec-aitm",
+            "--collector",
+            "portal",
+            "--ual-rows",
+            "10",
+            "--out",
+        ])
+        .arg(dir.path().join("x"))
+        .assert()
+        .code(1)
+        .stderr(contains("scale knobs"));
+}

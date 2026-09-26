@@ -922,8 +922,9 @@ fn cmd_synth_generate(args: SynthGenArgs, json: bool) -> Result<ExitCode> {
     opts.hawk_mixed_editions = args.hawk_mixed_editions;
     opts.non_windows = args.non_windows;
     opts.invictus_licence_list = !args.no_licence_list;
-    opts.ual_rows = args.ual_rows;
-    opts.signins = args.signins;
+    if args.ual_rows.is_some() || args.signins.is_some() {
+        anyhow::bail!("--ual-rows / --signins are not supported until the scale knobs land");
+    }
     let (manifest, zip) = if args.zip {
         let (m, z) = sparrow_synth::generate::generate_zip(&scenario, &opts, &out)?;
         (m, Some(z))

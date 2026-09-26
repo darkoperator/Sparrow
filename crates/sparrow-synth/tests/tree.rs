@@ -467,3 +467,27 @@ fn an_unrecognized_csv_twin_is_superseded_first() {
         "skipped_superseded"
     );
 }
+
+#[test]
+fn a_large_table_of_cid_keys_is_refused() {
+    let mut sink = MemSink::default();
+    let mut t = Tree::new(&mut sink, "R", BTreeSet::new(), CulturePolicy::Never);
+    let spec = FileSpec::new(
+        "Tenant/TransportRules.csv",
+        Some("hawk.tenant.transport_rules"),
+        Encoding::Utf8,
+    );
+    t.write(&spec, "x\r\n").unwrap();
+    for i in 0..5001 {
+        t.row(
+            "Tenant/TransportRules.csv",
+            "transport_rules",
+            sparrow_synth::keys::transport_rule(&format!("rule {i}")),
+        );
+    }
+    let err = t.finish().unwrap_err().to_string();
+    assert!(
+        err.contains("transport_rules") && err.contains("{cid}"),
+        "{err}"
+    );
+}

@@ -251,6 +251,15 @@ fn check_table(
         }
         return Ok(());
     }
+    let total: i64 = conn
+        .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+        .map_err(db)?;
+    if total as u64 != expect.rows {
+        problems.push(format!(
+            "table {table}: {total} rows, expected {}",
+            expect.rows
+        ));
+    }
     if expect.keys.is_empty() {
         // Only the hash: tables this large never carry the `{cid}` placeholder.
         let hash = expect.keys_sha256.as_deref().unwrap_or_default();
@@ -436,7 +445,13 @@ fn check_sightings(
                     continue;
                 };
                 let Some(file_id) = file_ids.get(&s.rel_path) else {
-                    // Reported by the file check.
+                    // A listed file without its row is reported by the file check.
+                    if !manifest.files.iter().any(|f| f.rel_path == s.rel_path) {
+                        problems.push(format!(
+                            "storyline {}: {} in {} at {at}: file not in the manifest",
+                            story.id, ev.what, landed.table
+                        ));
+                    }
                     continue;
                 };
                 let key = key.replace(crate::keys::CID, &cid);

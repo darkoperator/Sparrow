@@ -171,14 +171,15 @@ pub enum RuleOutcome {
 /// reports (Hawk's folder / log: the tenant name; others none); and the domains Sparrow derives
 /// (`derived_upn`: UPN domains of users, mailboxes and home-tenant sign-ins; plus
 /// `message_trace_org`). The portal delivers no user or mailbox list and its message trace
-/// summary has no organization column, so its domains are those of the interactive sign-in
-/// rows of home-tenant users (Sparrow does not derive domains from UAL user ids, which include
+/// summary has no organization column, so its domains are the primary domain and those of the
+/// interactive sign-in rows of home-tenant users (Sparrow does not derive domains from UAL user ids, which include
 /// guests and external senders).
 pub fn tenant_expect(world: &World, opts: &GenerateOptions) -> TenantExpect {
     let name = matches!(opts.collector, Collector::Hawk3 | Collector::Hawk4)
         .then(|| world.tenant.name.clone());
     let mut domains = BTreeSet::new();
     if opts.collector == Collector::Portal {
+        domains.insert(world.primary_domain().to_lowercase());
         for day in window_days(world) {
             for s in &day.signins {
                 if s.event_type == SignInType::Interactive
