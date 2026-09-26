@@ -2,3 +2,4 @@
 //! case, looked up from bundled or external reference data.
 
 pub mod ip;
+pub mod mmdb_writer;

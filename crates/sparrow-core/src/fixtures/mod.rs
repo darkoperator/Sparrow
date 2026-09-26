@@ -4,7 +4,9 @@ pub mod events;
 pub mod hawk3;
 pub mod hawk4;
 pub mod invictus;
-pub mod mmdb;
+pub mod mmdb {
+    pub use crate::enrich::mmdb_writer::*;
+}
 pub mod portal;
 pub mod state;
 pub mod ual;

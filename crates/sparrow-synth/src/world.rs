@@ -258,15 +258,24 @@ impl World {
     }
 
     /// Whether Microsoft 365 recorded UAL record `u` under the tenant's audit settings at its
-    /// time: never while UAL ingestion is off; mailbox-audit records (ExchangeItem,
-    /// ExchangeItemGroup, ExchangeItemAggregated, and the Send / SendAs / SendOnBehalf /
-    /// SearchQueryInitiatedExchange / SearchQueryInitiatedSharePoint operations) also need
-    /// organization auditing on, the mailbox audited and not bypassed, and the action in its
-    /// logon type's list (SharePoint searches are the owner action
-    /// `SharepointSearchQueryInitiated`, Microsoft Learn audit-get-started step 3).
+    /// time: `why_not_logged` gives no reason.
     pub fn logged(&self, u: &Ual) -> bool {
+        self.why_not_logged(u).is_none()
+    }
+
+    /// Why Microsoft 365 did not record UAL record `u` under the tenant's audit settings at its
+    /// time, or `None` when it did: never while UAL ingestion is off; mailbox-audit records
+    /// (ExchangeItem, ExchangeItemGroup, ExchangeItemAggregated, and the Send / SendAs /
+    /// SendOnBehalf / SearchQueryInitiatedExchange / SearchQueryInitiatedSharePoint operations)
+    /// also need organization auditing on, the mailbox audited and not bypassed, and the action
+    /// in its logon type's list (SharePoint searches are the owner action
+    /// `SharepointSearchQueryInitiated`, Microsoft Learn audit-get-started step 3). The reasons:
+    /// `"unified audit log ingestion disabled"`, `"mailbox auditing disabled for the
+    /// organization"`, `"mailbox audit bypass"`, `"mailbox auditing disabled for the mailbox"`,
+    /// `"action not in the mailbox's audit list"`.
+    pub fn why_not_logged(&self, u: &Ual) -> Option<&'static str> {
         if !baseline::ual_logged(self, u.time) {
-            return false;
+            return Some(baseline::UAL_DISABLED);
         }
         let mailbox_record = matches!(
             u.record_type,
@@ -282,7 +291,7 @@ impl World {
                 | "SearchQueryInitiatedSharePoint"
         );
         if !mailbox_record {
-            return true;
+            return None;
         }
         let owner = u
             .audit
@@ -299,7 +308,7 @@ impl World {
             "SearchQueryInitiatedSharePoint" => "SharepointSearchQueryInitiated",
             op => op,
         };
-        baseline::mailbox_logged(self, owner, logon_type, action, u.time)
+        baseline::mailbox_not_logged(self, owner, logon_type, action, u.time)
     }
 }
 

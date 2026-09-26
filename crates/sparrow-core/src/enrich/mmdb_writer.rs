@@ -1,5 +1,6 @@
-//! A minimal MaxMind DB writer for tests (spec: docs/superpowers/research/maxmind-db-spec.md):
-//! IPv6 tree, 24-bit records, no pointers. IPv4 networks sit at ::a.b.c.d/(96 + prefix).
+//! A minimal MaxMind DB writer, used by tests and by sparrow-synth to write GeoLite2-style
+//! databases for generated trees (spec: docs/superpowers/research/maxmind-db-spec.md): IPv6 tree,
+//! 24-bit records, no pointers. IPv4 networks sit at ::a.b.c.d/(96 + prefix).
 
 use std::net::IpAddr;
 

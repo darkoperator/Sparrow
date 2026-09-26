@@ -1539,10 +1539,14 @@ name = "sparrow-synth"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "hex",
  "regex",
  "serde",
  "serde_json",
  "serde_norway",
+ "sha2",
+ "sparrow-core",
+ "tempfile",
  "thiserror",
  "uuid",
 ]

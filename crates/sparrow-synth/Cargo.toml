@@ -7,9 +7,15 @@ description = "Deterministic synthetic Hawk / Microsoft-Extractor-Suite / portal
 
 [dependencies]
 chrono = { workspace = true, features = ["serde"] }
+hex.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_norway.workspace = true
+sha2.workspace = true
+sparrow-core = { path = "../sparrow-core" }
 thiserror.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

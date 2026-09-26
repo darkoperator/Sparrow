@@ -94,18 +94,31 @@ pub fn mailbox_logged(
     action: &str,
     time: DateTime<Utc>,
 ) -> bool {
+    mailbox_not_logged(w, owner, logon_type, action, time).is_none()
+}
+
+/// Why mailbox auditing does not record `action` on `owner`'s mailbox at `time` (the first
+/// failing condition of `mailbox_logged`), or `None` when it does. A mailbox the tenant does not
+/// have counts as not audited.
+pub fn mailbox_not_logged(
+    w: &World,
+    owner: &str,
+    logon_type: i64,
+    action: &str,
+    time: DateTime<Utc>,
+) -> Option<&'static str> {
     if !ual_logged(w, time) {
-        return false;
+        return Some(UAL_DISABLED);
     }
     let org_off = match w.audit.org_audit_disabled_at {
         Some(t) => time >= t,
         None => w.audit.org_audit_disabled,
     };
     if org_off {
-        return false;
+        return Some("mailbox auditing disabled for the organization");
     }
     let Some(mb) = w.mailboxes.get(owner) else {
-        return false;
+        return Some(MAILBOX_AUDIT_OFF);
     };
     // `audit_disabled_since` (set by a tamper storyline) takes precedence over the flag:
     // records before it are audited.
@@ -114,18 +127,26 @@ pub fn mailbox_logged(
         None => !mb.audit_enabled,
     };
     if audit_off {
-        return false;
+        return Some(MAILBOX_AUDIT_OFF);
     }
     if mb.bypass && mb.bypass_since.is_none_or(|t| time >= t) {
-        return false;
+        return Some("mailbox audit bypass");
     }
     let list = match logon_type {
         0 => &mb.audit_owner,
         1 => &mb.audit_admin,
         _ => &mb.audit_delegate,
     };
-    list.iter().any(|a| a == action)
+    if list.iter().any(|a| a == action) {
+        None
+    } else {
+        Some("action not in the mailbox's audit list")
+    }
 }
+
+/// The reason a record is missing while unified audit log ingestion is off.
+pub const UAL_DISABLED: &str = "unified audit log ingestion disabled";
+const MAILBOX_AUDIT_OFF: &str = "mailbox auditing disabled for the mailbox";
 
 /// A location's UTC offset in whole hours, from its longitude.
 pub fn utc_offset_hours(loc: &Location) -> i64 {

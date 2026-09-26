@@ -42,7 +42,7 @@ pub struct SkuSpec {
 
 /// The `tenant_capabilities` outcome Sparrow must derive for one capability under one
 /// `Delivery`, parsed from an expectation string's `<capability>=<status>/<confidence>` term.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapExpect {
     pub status: String,
     pub confidence: Option<String>,

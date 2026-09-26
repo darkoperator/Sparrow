@@ -209,7 +209,7 @@ fn offset_suffix(minutes: i32) -> String {
 /// Culture dates seen so far, so the manifest can predict whether a file's day/month order is
 /// resolvable. `decisive` counts renderings whose day is unambiguously > 12 in a day/month-order
 /// culture; year-first (ja-JP) and ISO text are never counted.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DateEvidence {
     pub culture_dates: u32,
     pub decisive: u32,
