@@ -8,6 +8,12 @@ const T1: &str = "c9c9c9c9-0000-4000-8000-000000000001";
 const T2: &str = "d8d8d8d8-0000-4000-8000-000000000002";
 
 fn collection(case: &Case, root: &str, name: Option<&str>, at: &str) -> i64 {
+    collection_maybe_at(case, root, name, Some(at))
+}
+
+/// Like `collection`, but `at` may be `None` (a collection whose collected_at is unknown, e.g. a
+/// Hawk capture whose root folder does not carry a `Hawk_<tenant>_<timestamp>` name).
+fn collection_maybe_at(case: &Case, root: &str, name: Option<&str>, at: Option<&str>) -> i64 {
     case.conn()
         .query_row(
             "INSERT INTO collections (tool, root_path, tenant_name_reported, collected_at, sparrow_version)
@@ -254,6 +260,61 @@ fn a_name_only_collection_moves_onto_id_evidence_a_later_collection_of_the_same_
         count(&case, "SELECT count(*) FROM tenant"),
         1,
         "a and b merge into one tenant, not two"
+    );
+}
+
+/// Regression (Task 11 review, fix round 1): `resolve_tenants`'s `names` CTE used to compute
+/// `arg_max(name, collected_at)`, which DuckDB evaluates to NULL for a group whose every row has
+/// a NULL `collected_at` - so a tenant known only from a collection whose root folder does not
+/// carry a `Hawk_<tenant>_<timestamp>` name (collected_at unknown) never got a `tenant_name` at
+/// all, even though its Hawk.log reported one.
+#[test]
+fn a_name_only_collection_with_unknown_collected_at_still_sets_the_tenant_name() {
+    let mut case = Case::in_memory().unwrap();
+    collection_maybe_at(&case, "/x/capture-events", Some("Contoso"), None);
+    refresh(&mut case, &ProfileOptions::default()).unwrap();
+    assert_eq!(
+        text(
+            &case,
+            "SELECT tenant_name FROM tenant WHERE tenant_key = 'name:contoso'"
+        ),
+        "contoso"
+    );
+}
+
+/// The fixed `names` CTE ranks by `collected_at DESC NULLS LAST, collection_id DESC`: a reported
+/// name whose collection has a known `collected_at` always outranks one whose collection has
+/// none, whatever the two collection_ids or the known date happen to be.
+#[test]
+fn a_named_collection_with_a_known_time_beats_one_with_an_unknown_time() {
+    let mut case = Case::in_memory().unwrap();
+    let a = collection_maybe_at(&case, "/x/A", Some("OldName"), None);
+    let b = collection_maybe_at(&case, "/x/B", Some("NewName"), Some("2026-09-02T00:00:00Z"));
+    let (fa, fb) = (file(&case, a), file(&case, b));
+    ual(
+        &case,
+        a,
+        fa,
+        "44444444-4444-4444-8444-444444444441",
+        T1,
+        "alice@contoso.example",
+    );
+    ual(
+        &case,
+        b,
+        fb,
+        "44444444-4444-4444-8444-444444444442",
+        T1,
+        "alice@contoso.example",
+    );
+    refresh(&mut case, &ProfileOptions::default()).unwrap();
+    assert_eq!(
+        text(
+            &case,
+            &format!("SELECT tenant_name FROM tenant WHERE tenant_key = '{T1}'")
+        ),
+        "newname",
+        "the collection with a known collected_at wins over the one with none"
     );
 }
 
