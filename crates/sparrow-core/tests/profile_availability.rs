@@ -610,3 +610,95 @@ fn a_parsed_hawk_log_alone_does_not_mean_licences_were_collected() {
     let rows = evaluate(&mut case);
     assert_eq!(row(&rows, "licenses").status, "collected");
 }
+
+fn set_records_error(case: &Case, f: i64, n: i64) {
+    case.conn()
+        .execute(
+            "UPDATE source_files SET records_error = ? WHERE file_id = ?",
+            params![n, f],
+        )
+        .unwrap();
+}
+
+#[test]
+fn failed_files_with_rows_are_partial() {
+    let mut case = Case::in_memory().unwrap();
+    let c = collection(&case, "invictus", "2026-09-20 00:00:00+00", None);
+    let f = file(
+        &case,
+        c,
+        "UnifiedAuditLog/a.csv",
+        "inv.ual.window",
+        "parsed",
+        None,
+    );
+    set_records_error(&case, f, 3);
+    ual(
+        &case,
+        c,
+        f,
+        "11111111-1111-4111-8111-111111111111",
+        "2026-09-01 10:00:00+00",
+        "New-InboxRule",
+        "alice@contoso.example",
+    );
+    let rows = evaluate(&mut case);
+    let r = row(&rows, "ual");
+    assert_eq!(r.status, "partial", "{r:?}");
+    assert_eq!(r.rows, 1);
+    assert!(
+        r.reason
+            .contains("1 files failed to parse (see the ingest report / parse_errors)"),
+        "{r:?}"
+    );
+    // A full-UAL file with parse errors may have lost MailItemsAccessed records too.
+    let r = row(&rows, "mail_items_accessed");
+    assert_eq!(r.status, "partial", "{r:?}");
+    assert!(r.reason.contains("1 files failed to parse"), "{r:?}");
+}
+
+#[test]
+fn failed_files_without_rows_are_partial_not_ran() {
+    // A file with status error.
+    let mut case = Case::in_memory().unwrap();
+    let c = collection(&case, "invictus", "2026-09-20 00:00:00+00", None);
+    file(
+        &case,
+        c,
+        "Users/20260910-100300/20260910-100300-Users.csv",
+        "inv.users",
+        "error",
+        Some(r#"["unexpected header"]"#),
+    );
+    let rows = evaluate(&mut case);
+    let r = row(&rows, "users");
+    assert_eq!(r.status, "partial", "{r:?}");
+    assert_eq!(r.rows, 0);
+    assert!(
+        r.reason
+            .contains("1 files failed to parse (see the ingest report / parse_errors)"),
+        "{r:?}"
+    );
+    assert!(!r.reason.contains("returned no records"), "{r:?}");
+
+    // A parsed file whose every record failed: 0 rows, still not "ran, nothing found", even
+    // with a run folder and a Hawk log line that would otherwise say so.
+    let mut case = Case::in_memory().unwrap();
+    let c = collection(&case, "invictus", "2026-09-20 00:00:00+00", None);
+    run_folder(&case, c, "MessageTrace/20260910-100000", "MessageTrace", 1);
+    let f = file(
+        &case,
+        c,
+        "MessageTrace/20260910-100000/trace.csv",
+        "inv.message_trace",
+        "parsed",
+        None,
+    );
+    set_records_error(&case, f, 5);
+    let rows = evaluate(&mut case);
+    let r = row(&rows, "message_trace");
+    assert_eq!(r.status, "partial", "{r:?}");
+    assert!(r.reason.contains("1 files failed to parse"), "{r:?}");
+    assert!(!r.reason.contains("returned no records"), "{r:?}");
+    assert!(r.remediation.is_some(), "{r:?}");
+}

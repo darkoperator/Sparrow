@@ -617,6 +617,8 @@ struct FileRow {
     tool: String,
     artifact: String,
     status: String,
+    /// Records of the file that failed to parse (`source_files.records_error`).
+    records_error: i64,
     warnings: Vec<String>,
     rel_path: String,
 }
@@ -628,13 +630,21 @@ impl FileRow {
             .any(|w| w == crate::ingest::EMPTY_FILE_WARNING)
     }
 
-    /// The collector wrote it and Sparrow handled it: parsed (possibly 0 records), a
-    /// duplicate or superseded copy of a handled file, or an empty export.
+    /// The collector wrote it and Sparrow handled it without errors: parsed (possibly 0
+    /// records), a duplicate or superseded copy of a handled file, or an empty export. A file
+    /// with parse errors never shows the collector "ran and found nothing" (see `failed`).
     fn shows_run(&self) -> bool {
-        matches!(
-            self.status.as_str(),
-            "parsed" | "duplicate_file" | "skipped_superseded"
-        ) || (self.status == "not_supported" && self.is_empty_export())
+        !self.failed()
+            && (matches!(
+                self.status.as_str(),
+                "parsed" | "duplicate_file" | "skipped_superseded"
+            ) || (self.status == "not_supported" && self.is_empty_export()))
+    }
+
+    /// Collected but Sparrow failed to parse it, wholly (status `error`) or in part
+    /// (`records_error > 0`): the evidence may hold records the case lacks.
+    fn failed(&self) -> bool {
+        self.status == "error" || self.records_error > 0
     }
 
     /// Collected but not parsed by this Sparrow version (empty exports excluded).
@@ -923,7 +933,7 @@ fn load_tenant_facts(
         let mut stmt = conn.prepare(
             "SELECT c.tenant_key, CAST(c.tool AS VARCHAR), sf.artifact_type,
                     CAST(sf.status AS VARCHAR), CAST(sf.warnings AS VARCHAR), sf.rel_path,
-                    sf.collection_id
+                    sf.collection_id, sf.records_error
              FROM source_files sf JOIN collections c ON c.collection_id = sf.collection_id
              WHERE sf.artifact_type IS NOT NULL AND c.tenant_key IS NOT NULL
              ORDER BY sf.file_id",
@@ -937,10 +947,12 @@ fn load_tenant_facts(
                 r.get::<_, Option<String>>(4)?,
                 r.get::<_, String>(5)?,
                 r.get::<_, i64>(6)?,
+                r.get::<_, i64>(7)?,
             ))
         })?;
         for row in rows {
-            let (key, tool, artifact, status, warnings, rel_path, collection_id) = row?;
+            let (key, tool, artifact, status, warnings, rel_path, collection_id, records_error) =
+                row?;
             let warnings: Vec<String> = warnings
                 .and_then(|w| serde_json::from_str(&w).ok())
                 .unwrap_or_default();
@@ -950,6 +962,7 @@ fn load_tenant_facts(
                     tool,
                     artifact,
                     status,
+                    records_error,
                     warnings,
                     rel_path,
                 });
@@ -1243,8 +1256,25 @@ fn evaluate(
         .filter(|f| any_artifact_matches(def.artifacts, &f.artifact))
         .collect();
     let unparsed = ev_files.iter().filter(|f| f.unparsed()).count();
+    // Files that failed to parse count like unparsed ones; for evidence a full unified audit
+    // log holds, a failed full-UAL file counts too (its lost records may be this evidence).
+    let failed = ev_files.iter().filter(|f| f.failed()).count()
+        + if def.full_ual_covers {
+            tf.files
+                .iter()
+                .filter(|f| {
+                    f.failed()
+                        && FULL_UAL_ARTIFACTS.contains(&f.artifact.as_str())
+                        && !any_artifact_matches(def.artifacts, &f.artifact)
+                })
+                .count()
+        } else {
+            0
+        };
     let unparsed_reason =
         || format!("{unparsed} files collected but not parsed by this Sparrow version");
+    let failed_reason =
+        || format!("{failed} files failed to parse (see the ingest report / parse_errors)");
 
     let (status, reason) = if facts.rows > 0 {
         let mut reasons: Vec<String> = Vec::new();
@@ -1257,9 +1287,12 @@ fn evaluate(
         if unparsed > 0 {
             reasons.push(unparsed_reason());
         }
+        if failed > 0 {
+            reasons.push(failed_reason());
+        }
         let handled: Vec<&&FileRow> = ev_files
             .iter()
-            .filter(|f| f.shows_run() || f.unparsed())
+            .filter(|f| f.shows_run() || f.unparsed() || f.failed())
             .collect();
         let only_hawk = !handled.is_empty() && handled.iter().all(|f| f.tool == "hawk");
         if def.id == "ual" && only_hawk {
@@ -1332,8 +1365,15 @@ fn evaluate(
                 "none of the {known} mailboxes audits {action} (DefaultAuditSet customized or audit bypass)"
             ),
         )
-    } else if unparsed > 0 {
-        ("partial", unparsed_reason())
+    } else if unparsed > 0 || failed > 0 {
+        let mut reasons = Vec::new();
+        if unparsed > 0 {
+            reasons.push(unparsed_reason());
+        }
+        if failed > 0 {
+            reasons.push(failed_reason());
+        }
+        ("partial", reasons.join("; "))
     } else if let Some(how) = collector_ran(def, tf, &ev_files, hawk_re) {
         ("collected", how)
     } else if let (Kind::Event, Some(r), Some(end)) =
