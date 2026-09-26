@@ -286,6 +286,10 @@ struct HawkMeta {
     version: Option<String>,
     tenant: Option<String>,
     start_raw: Option<String>,
+    /// The start came from Hawk 4's `Start Date: ${StartDate}Z` / `Start date set to:
+    /// ${StartDate}Z` prompt answer: PowerShell string interpolation is culture-invariant
+    /// (`MM/dd/yyyy HH:mm:ss`), so it is month-first whatever the host culture.
+    start_invariant: bool,
     end_raw: Option<String>,
     /// The licence tier and the span of the log entry it came from.
     license: Option<(String, Span)>,
@@ -301,10 +305,14 @@ impl HawkMeta {
                 .or_else(|| capture(re_meta_version(), msg))
                 .or_else(|| capture(re_meta_h3_version(), msg));
             m.tenant = m.tenant.or_else(|| capture(re_meta_tenant(), msg));
-            m.start_raw = m
-                .start_raw
-                .or_else(|| capture(re_meta_start(), msg))
-                .or_else(|| capture(re_meta_start_set(), msg));
+            if m.start_raw.is_none() {
+                m.start_raw =
+                    capture(re_meta_start(), msg).or_else(|| capture(re_meta_start_set(), msg));
+                m.start_invariant = m
+                    .start_raw
+                    .as_deref()
+                    .is_some_and(|s| s.ends_with(['Z', 'z']));
+            }
             m.end_raw = m.end_raw.or_else(|| capture(re_meta_end(), msg));
             if m.license.is_none() {
                 if let Some(tier) = capture(re_meta_license(), msg) {
@@ -318,10 +326,12 @@ impl HawkMeta {
         m
     }
 
-    /// Culture-formatted window dates, for day/month order resolution.
+    /// Culture-formatted window dates, for day/month order resolution (not the invariant
+    /// prompt answer).
     fn window(&self) -> impl Iterator<Item = &str> {
         self.start_raw
             .as_deref()
+            .filter(|_| !self.start_invariant)
             .into_iter()
             .chain(self.end_raw.as_deref())
     }
@@ -332,7 +342,15 @@ impl HawkMeta {
                 .and_then(|v| parse_timestamp(v, order).ok())
                 .map(|t| t.rfc3339())
         };
-        let (window_start, window_end) = (parse(&self.start_raw), parse(&self.end_raw));
+        let window_start = if self.start_invariant {
+            self.start_raw
+                .as_deref()
+                .and_then(|v| parse_timestamp(v, Some(DateOrder::MonthFirst)).ok())
+                .map(|t| t.rfc3339())
+        } else {
+            parse(&self.start_raw)
+        };
+        let window_end = parse(&self.end_raw);
         ctx.conn.execute(
             "UPDATE collections SET
                 tool_version = coalesce(?, tool_version),

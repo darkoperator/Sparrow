@@ -575,3 +575,36 @@ fn hawk_log_in_an_unknown_format_is_warned_about() {
         f.warnings
     );
 }
+
+#[test]
+fn hawk4_prompt_start_date_is_culture_invariant() {
+    // Hawk 4 logs the analyst's start date as "Start Date: ${StartDate}Z": PowerShell string
+    // interpolation is invariant (MM/dd/yyyy) whatever the host culture, while the
+    // configuration summary lines use the host culture (here en-GB, day first).
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("Hawk_Contoso_Ltd_20260920_100000");
+    fixtures::write(
+        &root,
+        "Hawk.log",
+        concat!(
+            "[2026-09-20 10:00:00Z] - [INFO]   - Start Date: 07/05/2026 00:00:00Z\r\n",
+            "[2026-09-20 10:00:05Z] - [INFO]   - Start Date  : 05/07/2026 00:00:00\r\n",
+            "[2026-09-20 10:00:05Z] - [INFO]   - End Date    : 18/09/2026 00:00:00\r\n",
+        )
+        .as_bytes(),
+    );
+    let (case, report) = ingest_dir(dir.path());
+    assert!(!report.has_errors(), "{report:#?}");
+    let f = hawk_log_report(&report);
+    assert_eq!(f.status, FileStatus::Parsed, "{f:#?}");
+    let (start, end): (i64, i64) = case
+        .conn()
+        .query_row(
+            "SELECT epoch(window_start)::BIGINT, epoch(window_end)::BIGINT FROM collections",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(start, 1783209600, "2026-07-05T00:00:00Z, not 7 May");
+    assert_eq!(end, 1789689600, "2026-09-18T00:00:00Z");
+}
