@@ -212,6 +212,9 @@ pub fn for_evidence(world: &World, e: &Evidence, table: &str) -> Option<String> 
             .user_by_upn(upn)
             .map(|u| risky_user(u.object_id))
             .or_else(|| Some(lower(upn))),
+        // Hawk's convention: Get-InboxRule's `MailboxOwnerId` is the owner's alias, which Sparrow
+        // keys the rule by. Only the Hawk writers deliver inbox rules today; a collector that
+        // names the owner differently must make this collector-aware.
         (Evidence::InboxRule { mailbox, identity }, "inbox_rules") => {
             let owner = world
                 .user_by_upn(mailbox)

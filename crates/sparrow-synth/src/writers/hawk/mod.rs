@@ -318,10 +318,13 @@ pub(crate) fn register_ual(tree: &mut Tree<'_>, w: &Written, records: &[Ual]) {
     );
 }
 
-/// An `_Investigate_*` file: each object is one `collector_flags` row.
+/// An `_Investigate_*` file: each object is one `collector_flags` row. The count is exact:
+/// every flagged object is a different record (a rule, a device, a grant, a UAL record...), and
+/// no two investigate files share a flag kind and a record, so no flag rows merge; a
+/// byte-identical copy is `duplicate_file` and counts nothing (the tree's replay).
 pub(crate) fn register_flags(tree: &mut Tree<'_>, w: &Written) {
     for part in w.parts() {
-        tree.rows_at_least(&part.rel, "collector_flags", part.spans.len() as u64);
+        tree.rows_counted(&part.rel, "collector_flags", part.spans.len() as u64);
     }
 }
 

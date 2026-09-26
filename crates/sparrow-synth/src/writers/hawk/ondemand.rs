@@ -2,7 +2,7 @@
 //! §1.4): `Search-HawkTenantActivityByIP` for each attacker address found in the logged UAL
 //! records, and `Get-HawkMessageHeader` for each e-mail exported as a `.msg` file.
 
-use super::omft::Formats;
+use super::omft::{Art, Formats};
 use super::{Ctx, expanded_row, r, register_ual, s, text_of};
 use crate::Result;
 use crate::events::Ual;
@@ -61,6 +61,7 @@ fn activity_by_ip(c: &mut Ctx<'_>, tree: &mut Tree<'_>, ip: &str) -> Result<()> 
             tree,
             "All_Events",
             Some(&dir),
+            Art::raw("hawk.ip.events"),
             &rows,
             Formats::CSV_JSON,
             false,
@@ -84,6 +85,7 @@ fn activity_by_ip(c: &mut Ctx<'_>, tree: &mut Tree<'_>, ip: &str) -> Result<()> 
             tree,
             "Success_Events",
             Some(&dir),
+            Art::raw("hawk.ip.events"),
             &srows,
             Formats::CSV_JSON,
             false,
@@ -104,6 +106,7 @@ fn activity_by_ip(c: &mut Ctx<'_>, tree: &mut Tree<'_>, ip: &str) -> Result<()> 
             tree,
             "Unique_Users_Attempted",
             Some(&dir),
+            Art::derived("hawk.ip.unique_users").without_parser(),
             &unique,
             Formats::CSV_JSON,
             false,
@@ -274,6 +277,7 @@ fn message_header(c: &mut Ctx<'_>, tree: &mut Tree<'_>, e: &Email, name: &str) -
         tree,
         "Message_Header_Findings",
         Some(name),
+        Art::not_supported("hawk.message.header"),
         &findings,
         Formats::CSV,
         false,
@@ -283,6 +287,7 @@ fn message_header(c: &mut Ctx<'_>, tree: &mut Tree<'_>, e: &Email, name: &str) -
         tree,
         "Message_Header",
         Some(name),
+        Art::not_supported("hawk.message.header"),
         &output,
         Formats::CSV,
         false,
@@ -296,6 +301,7 @@ fn message_header(c: &mut Ctx<'_>, tree: &mut Tree<'_>, e: &Email, name: &str) -
         tree,
         "Message_Header_RAW",
         Some(name),
+        Art::not_supported("hawk.message.header_raw"),
         &length,
         Formats::TXT,
         false,

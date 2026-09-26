@@ -121,7 +121,9 @@ fn org_audit_off_all_window(w: &World) -> bool {
 ///   settings (a parsed Microsoft-Extractor-Suite MailboxAuditStatus file) → `{not_enabled}`;
 ///   organization auditing off for the whole window and the tree delivers it (Hawk
 ///   `OrgConfig.txt`, MailboxAuditStatus EffectiveAuditState `Disabled`) → `{not_enabled}`.
-/// - `signins`: Hawk 4 rows → `{partial}` (Hawk collects per investigated user); Hawk 4 and
+/// - `signins`: Hawk 4 rows → `{partial}` when the investigated users are only some of the
+///   tenant's users (spec §7: "Hawk per-user collection covering only some users") or the window
+///   starts before P1's retention, else `{collected}`; Hawk 4 and
 ///   Microsoft-Extractor-Suite (without Entra ID P1 the collector ran and Graph refused, which
 ///   Sparrow reads as "ran"), the portal, and any tree with P1 → `{collected}`; except
 ///   Microsoft-Extractor-Suite rows with Entra ID P1 expected licensed
@@ -219,14 +221,23 @@ pub fn evidence(
         .get("entra_id_p1")
         .is_some_and(|c| c.status == "licensed")
         && world.window_start() < world.collected_at() - Duration::days(ENTRA_P1_RETENTION_DAYS);
+    let hawk_some_users =
+        crate::writers::hawk::hawk_users(world).len() < world.all_people().count();
     if opts.collector == Collector::Hawk4 && rows(out, "signins") > 0 {
-        m.insert(
-            "signins".to_string(),
+        let e = if hawk_some_users {
             allowed(
                 &["partial"],
-                "Hawk downloads sign-ins per investigated user (and 14 days at most)",
-            ),
-        );
+                "Hawk collected sign-ins for only some of the tenant's users",
+            )
+        } else if p1_retention_short {
+            allowed(
+                &["partial"],
+                "the window starts before Entra ID P1's 30-day sign-in retention",
+            )
+        } else {
+            allowed(&["collected"], "Hawk collected sign-ins for every user")
+        };
+        m.insert("signins".to_string(), e);
     } else if invictus && rows(out, "signins") > 0 && p1_retention_short {
         m.insert(
             "signins".to_string(),

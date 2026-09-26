@@ -18,20 +18,60 @@ fn green(name: &str, o: &GenerateOptions) -> sparrow_synth::manifest::Manifest {
     m
 }
 
+/// Every built-in scenario but `volume`.
+const MATRIX: &[&str] = &[
+    "audit-tamper",
+    "bec-aitm",
+    "bec-e3-audit-gaps",
+    "bec-o365-no-p1",
+    "business-basic",
+    "hawk-investigate",
+];
+
 #[test]
-fn every_builtin_checks_green_across_editions() {
-    for name in builtin_names().iter().filter(|n| **n != "volume") {
-        for (ps, mixed) in [
-            (PsEdition::Ps7, false),
-            (PsEdition::Ps51, false),
-            (PsEdition::Ps7, true),
-        ] {
-            let mut o = opts(31);
-            o.ps = ps;
-            o.hawk_mixed_editions = mixed;
-            green(name, &o);
-        }
-    }
+fn the_matrix_covers_every_builtin_but_volume() {
+    let builtins: Vec<&str> = builtin_names()
+        .iter()
+        .copied()
+        .filter(|n| *n != "volume")
+        .collect();
+    assert_eq!(builtins, MATRIX);
+}
+
+/// One test per scenario × edition, so the harness runs them in parallel.
+macro_rules! green_matrix {
+    ($($test:ident: $scenario:literal, $ps:expr, $mixed:literal;)+) => {
+        $(
+            #[test]
+            fn $test() {
+                let mut o = opts(31);
+                o.ps = $ps;
+                o.hawk_mixed_editions = $mixed;
+                green($scenario, &o);
+            }
+        )+
+    };
+}
+
+green_matrix! {
+    audit_tamper_ps7: "audit-tamper", PsEdition::Ps7, false;
+    audit_tamper_ps51: "audit-tamper", PsEdition::Ps51, false;
+    audit_tamper_mixed: "audit-tamper", PsEdition::Ps7, true;
+    bec_aitm_ps7: "bec-aitm", PsEdition::Ps7, false;
+    bec_aitm_ps51: "bec-aitm", PsEdition::Ps51, false;
+    bec_aitm_mixed: "bec-aitm", PsEdition::Ps7, true;
+    bec_e3_audit_gaps_ps7: "bec-e3-audit-gaps", PsEdition::Ps7, false;
+    bec_e3_audit_gaps_ps51: "bec-e3-audit-gaps", PsEdition::Ps51, false;
+    bec_e3_audit_gaps_mixed: "bec-e3-audit-gaps", PsEdition::Ps7, true;
+    bec_o365_no_p1_ps7: "bec-o365-no-p1", PsEdition::Ps7, false;
+    bec_o365_no_p1_ps51: "bec-o365-no-p1", PsEdition::Ps51, false;
+    bec_o365_no_p1_mixed: "bec-o365-no-p1", PsEdition::Ps7, true;
+    business_basic_ps7: "business-basic", PsEdition::Ps7, false;
+    business_basic_ps51: "business-basic", PsEdition::Ps51, false;
+    business_basic_mixed: "business-basic", PsEdition::Ps7, true;
+    hawk_investigate_ps7: "hawk-investigate", PsEdition::Ps7, false;
+    hawk_investigate_ps51: "hawk-investigate", PsEdition::Ps51, false;
+    hawk_investigate_mixed: "hawk-investigate", PsEdition::Ps7, true;
 }
 
 #[test]

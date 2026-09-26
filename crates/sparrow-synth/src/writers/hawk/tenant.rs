@@ -1,7 +1,7 @@
 //! `Start-HawkTenantInvestigation` (research hawk layouts §1.2, §3, §5, §6): the session
 //! header, the nineteen tenant collectors in the orchestrator's order, and the summary.
 
-use super::omft::{Formats, Written};
+use super::omft::{Art, Formats, Written};
 use super::{
     Ctx, additional_properties, date, date_text, model, one_of, opt, r, raw_rows, register,
     register_flags, register_ual, s, simple_rows, text_of,
@@ -584,6 +584,7 @@ fn configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         tree,
         "AdminAuditLogConfig",
         None,
+        Art::raw("hawk.tenant.admin_audit_log_config"),
         &rows,
         Formats::TXT,
         false,
@@ -599,9 +600,16 @@ fn configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
     );
     c.log().action("Gathering Organization Configuration");
     let rows = vec![org_config(world)];
-    let w = c
-        .omft
-        .write(tree, "OrgConfig", None, &rows, Formats::TXT, false, false)?;
+    let w = c.omft.write(
+        tree,
+        "OrgConfig",
+        None,
+        Art::raw("hawk.tenant.org_config"),
+        &rows,
+        Formats::TXT,
+        false,
+        false,
+    )?;
     register_settings(tree, &w, &rows, "organization_config");
     register(
         tree,
@@ -620,6 +628,7 @@ fn configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         tree,
         "RemoteDomain",
         None,
+        Art::raw("hawk.tenant.remote_domain"),
         &rows,
         Formats::CSV_JSON,
         false,
@@ -639,6 +648,7 @@ fn configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         tree,
         "TransportRules",
         None,
+        Art::raw("hawk.tenant.transport_rules"),
         &rows,
         Formats::CSV_JSON,
         false,
@@ -657,6 +667,7 @@ fn configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         tree,
         "TransportConfig",
         None,
+        Art::raw("hawk.tenant.transport_config"),
         &rows,
         Formats::CSV_JSON,
         false,
@@ -775,6 +786,7 @@ pub(super) fn write_direct(
     c: &mut Ctx<'_>,
     tree: &mut Tree<'_>,
     name: &str,
+    art: Art,
     rows: &[Row],
     json: bool,
     csv: bool,
@@ -785,7 +797,7 @@ pub(super) fn write_direct(
         let rel = format!("Tenant/{name}.json");
         let r = convert_to_json(&host, rows, false);
         let before = tree.write(
-            &super::omft::spec(&rel, Encoding::out_file_default(host.edition)),
+            &super::omft::spec(&rel, Encoding::out_file_default(host.edition), art, None),
             &format!("{}{}", r.text, host.newline),
         )?;
         out.json = Some(super::omft::Part {
@@ -802,7 +814,7 @@ pub(super) fn write_direct(
         let mut ev = DateEvidence::default();
         let r = export_csv(&host, rows, &mut ev);
         tree.write(
-            &super::omft::spec(&rel, Encoding::export_csv_default(host.edition)),
+            &super::omft::spec(&rel, Encoding::export_csv_default(host.edition), art, None),
             &r.text,
         )?;
         if ev.culture_dates > 0 {
@@ -850,7 +862,15 @@ fn ediscovery_configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> 
         "Found {} Roles with E-Discovery Rights",
         entries.len()
     ));
-    let w = write_direct(c, tree, "EDiscoveryRoles", &entries, true, true)?;
+    let w = write_direct(
+        c,
+        tree,
+        "EDiscoveryRoles",
+        Art::raw("hawk.tenant.ediscovery_roles"),
+        &entries,
+        true,
+        true,
+    )?;
     for part in w.parts() {
         for row in &entries {
             let id = text_of(row, "Identity").unwrap_or_default();
@@ -870,7 +890,15 @@ fn ediscovery_configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> 
         "Found {} Role Assignments for these Roles",
         assignments.len()
     ));
-    let w = write_direct(c, tree, "CustomEDiscoveryRoles", &assignments, true, true)?;
+    let w = write_direct(
+        c,
+        tree,
+        "CustomEDiscoveryRoles",
+        Art::raw("hawk.tenant.ediscovery_roles"),
+        &assignments,
+        true,
+        true,
+    )?;
     register(
         tree,
         &w,
@@ -893,7 +921,8 @@ fn ediscovery_configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> 
 // Unified audit log searches
 
 /// Writes `Simple_<name>` then `<name>` for a search result and returns the Simple rows.
-/// `notice` passes `-Notice` to both calls.
+/// `notice` passes `-Notice` to both calls. The Simple file is derived from the raw one
+/// (research §4); tenant and user folders have their own artifacts.
 pub(super) fn simple_and_raw(
     c: &mut Ctx<'_>,
     tree: &mut Tree<'_>,
@@ -907,10 +936,21 @@ pub(super) fn simple_and_raw(
     let raw = raw_rows(records, nl);
     let label = format!("{}/{simple_prefix}", user.unwrap_or("Tenant"));
     let simple = simple_rows(c.world, &raw, records, &label);
+    let (simple_art, raw_art) = match user {
+        None => (
+            Art::derived("hawk.tenant.simple_ual"),
+            Art::raw("hawk.tenant.raw_ual"),
+        ),
+        Some(_) => (
+            Art::derived("hawk.user.simple_ual"),
+            Art::raw("hawk.user.raw_ual"),
+        ),
+    };
     let w = c.omft.write(
         tree,
         simple_prefix,
         user,
+        simple_art,
         &simple,
         Formats::CSV_JSON,
         false,
@@ -921,6 +961,7 @@ pub(super) fn simple_and_raw(
         tree,
         raw_prefix,
         user,
+        raw_art,
         &raw,
         Formats::CSV_JSON,
         false,
@@ -1078,6 +1119,7 @@ fn admin_rules(c: &mut Ctx<'_>, tree: &mut Tree<'_>, step: &AdminRuleStep) -> Re
                 tree,
                 step.investigate,
                 None,
+                Art::raw("hawk.investigate_file"),
                 &flagged,
                 Formats::CSV_JSON,
                 false,
@@ -1152,6 +1194,7 @@ fn permission_changes(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
                 tree,
                 "_Investigate_Mailbox_Permission_Change",
                 None,
+                Art::raw("hawk.investigate_file"),
                 &flagged,
                 Formats::CSV_JSON,
                 false,
@@ -1283,6 +1326,7 @@ fn domain_activity(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
                 tree,
                 "Domain_Changes_Audit",
                 None,
+                Art::raw("hawk.tenant.raw_ual"),
                 &raw,
                 Formats::CSV,
                 true,
@@ -1294,6 +1338,7 @@ fn domain_activity(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
                 tree,
                 "Domain_Changes_Audit",
                 None,
+                Art::raw("hawk.tenant.raw_ual"),
                 &parsed,
                 Formats::JSON,
                 true,
@@ -1493,6 +1538,7 @@ fn entra_audit_log(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
             tree,
             "EntraIDAuditLogs",
             None,
+            Art::raw("hawk.tenant.entra_audit"),
             &rows,
             Formats::CSV_JSON,
             false,
@@ -1550,6 +1596,9 @@ fn app_audit_log(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
             "Please review these Entra_ID_Application_Audit.csv to ensure any changes are legitimate.",
         );
         let text = |u: &Ual, k: &str| u.audit.get(k).map_or(Val::Null, super::json_val);
+        // A parsed artifact, but without `env_time` Sparrow finds no time and reports the
+        // shape not supported (set below).
+        let app_art = Art::raw("hawk.tenant.entra_app_audit");
         let mut rels = Vec::new();
         let mut timed = false;
         for u in &found {
@@ -1572,6 +1621,7 @@ fn app_audit_log(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
                 tree,
                 "Entra_ID_Application_Audit",
                 None,
+                app_art,
                 &[row],
                 Formats::CSV_JSON,
                 true,
@@ -1641,6 +1691,7 @@ fn exo_admins(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         tree,
         "ExchangeOnlineAdministrators",
         None,
+        Art::raw("hawk.tenant.exo_admins"),
         &rows,
         Formats::CSV_JSON,
         false,
@@ -1731,14 +1782,12 @@ fn grant_rows(world: &World) -> Vec<GrantRow> {
     out
 }
 
-/// Get-HawkTenantConsentGrant (H07): categories in Hawk's order, the last match winning
-/// (`^User\.` makes nearly every tenant `High Risk`).
-fn consent_grants(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
-    let world = c.world;
-    c.log()
-        .action("Initiating collection of OAuth / Application Grants from Microsoft Graph.");
-    let mut grants = grant_rows(world);
-    let set_category = |g: &mut GrantRow, cat: &str| {
+/// Hawk's `ConsentGrantRiskCategory` (H07): `Broad-Scope Grant` for `AllPrincipals` or a
+/// permission containing `all`, then per pattern `Extremely Dangerous`, then per pattern
+/// `High Risk`, each assignment overwriting the last (`^User\.` catches `User.Read`). Returns
+/// Hawk's three counts: grants per category test, a grant counted once per matching pattern.
+fn categorize(grants: &mut [GrantRow]) -> (usize, usize, usize) {
+    fn set(g: &mut GrantRow, cat: &str) {
         if let Some(slot) = g
             .row
             .iter_mut()
@@ -1746,29 +1795,22 @@ fn consent_grants(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         {
             slot.1 = s(cat);
         }
-    };
+    }
     let all = Regex::new("(?i)all").expect("valid regex");
     let mut broad = 0;
     for g in grants.iter_mut() {
         if g.consent_type.as_deref() == Some("AllPrincipals") || all.is_match(&g.permission) {
-            set_category(g, "Broad-Scope Grant");
+            set(g, "Broad-Scope Grant");
             broad += 1;
         }
     }
-    let mut flag = false;
-    if broad > 0 {
-        c.log().notice(format!(
-            "Found {broad} broad-scoped grants ('AllPrincipals' or '*.All')"
-        ));
-        flag = true;
-    }
-    let count = |pats: &[&str], cat: &str, grants: &mut Vec<GrantRow>| {
+    let mut count = |pats: &[&str], cat: &str| {
         let mut n = 0;
         for p in pats {
             let re = Regex::new(&format!("(?i){p}")).expect("valid regex");
             for g in grants.iter_mut() {
                 if re.is_match(&g.permission) {
-                    set_category(g, cat);
+                    set(g, cat);
                     n += 1;
                 }
             }
@@ -1781,13 +1823,7 @@ fn consent_grants(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
             r"^RoleManagement\.ReadWrite\.Directory$",
         ],
         "Extremely Dangerous",
-        &mut grants,
     );
-    if ed > 0 {
-        c.log()
-            .notice(format!("Found {ed} Extremely Dangerous Grant(s)"));
-        flag = true;
-    }
     let hr = count(
         &[
             r"^BitlockerKey\.Read\.All$",
@@ -1802,8 +1838,30 @@ fn consent_grants(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
             r"^User\.",
         ],
         "High Risk",
-        &mut grants,
     );
+    (broad, ed, hr)
+}
+
+/// Get-HawkTenantConsentGrant (H07): categories in Hawk's order, the last match winning
+/// (`^User\.` makes nearly every tenant `High Risk`).
+fn consent_grants(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
+    let world = c.world;
+    c.log()
+        .action("Initiating collection of OAuth / Application Grants from Microsoft Graph.");
+    let mut grants = grant_rows(world);
+    let (broad, ed, hr) = categorize(&mut grants);
+    let mut flag = false;
+    if broad > 0 {
+        c.log().notice(format!(
+            "Found {broad} broad-scoped grants ('AllPrincipals' or '*.All')"
+        ));
+        flag = true;
+    }
+    if ed > 0 {
+        c.log()
+            .notice(format!("Found {ed} Extremely Dangerous Grant(s)"));
+        flag = true;
+    }
     if hr > 0 {
         c.log().notice(format!("Found {hr} High Risk Grant(s)"));
         flag = true;
@@ -1824,6 +1882,7 @@ fn consent_grants(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
             tree,
             "_Investigate_Consent_Grants",
             None,
+            Art::raw("hawk.investigate_file"),
             &flagged,
             Formats::CSV_JSON,
             false,
@@ -1839,6 +1898,7 @@ fn consent_grants(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         tree,
         "Consent_Grants",
         None,
+        Art::raw("hawk.tenant.consent_grants"),
         &rows,
         Formats::CSV_JSON,
         false,
@@ -1937,6 +1997,7 @@ fn risky_users(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         tree,
         "RiskyUsers",
         None,
+        Art::raw("hawk.tenant.risky_users"),
         &rows,
         Formats::CSV_JSON,
         false,
@@ -1965,6 +2026,7 @@ fn risky_users(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
             tree,
             "_Investigate_Compromised_Users",
             None,
+            Art::raw("hawk.investigate_file"),
             &rows,
             Formats::JSON,
             false,
@@ -2017,6 +2079,7 @@ fn risky_users(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
             tree,
             "_Investigate_Risky_Users",
             None,
+            Art::raw("hawk.investigate_file"),
             &rows,
             Formats::CSV_JSON,
             false,
@@ -2140,6 +2203,7 @@ fn risk_detections(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         tree,
         "Risk_Detections",
         None,
+        Art::raw("hawk.tenant.risk_detections"),
         &converted,
         Formats::CSV,
         false,
@@ -2150,6 +2214,7 @@ fn risk_detections(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         tree,
         "Risk_Detections",
         None,
+        Art::raw("hawk.tenant.risk_detections"),
         &original,
         Formats::JSON,
         false,
@@ -2188,6 +2253,7 @@ fn risk_detections(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
             tree,
             "_Investigate_Confirmed_Compromised_Risk_Detection",
             None,
+            Art::raw("hawk.investigate_file"),
             &confirmed,
             Formats::CSV_JSON,
             false,
@@ -2210,6 +2276,7 @@ fn risk_detections(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
             tree,
             "_Investigate_Risk_Detection",
             None,
+            Art::raw("hawk.investigate_file"),
             &rows,
             Formats::CSV_JSON,
             false,
@@ -2274,6 +2341,7 @@ fn entra_admins(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
             tree,
             "EntraIDAdministrators",
             None,
+            Art::raw("hawk.tenant.entra_admins"),
             &rows,
             Formats::CSV_JSON,
             false,
@@ -2364,6 +2432,7 @@ fn credentials(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
                     tree,
                     prefix,
                     None,
+                    Art::raw("hawk.tenant.app_credentials"),
                     std::slice::from_ref(&row),
                     Formats::CSV,
                     true,
@@ -2387,7 +2456,15 @@ fn credentials(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
             }
         }
         if !rows.is_empty() {
-            let w = write_direct(c, tree, prefix, &rows, true, false)?;
+            let w = write_direct(
+                c,
+                tree,
+                prefix,
+                Art::raw("hawk.tenant.app_credentials"),
+                &rows,
+                true,
+                false,
+            )?;
             register(
                 tree,
                 &w,
@@ -2432,6 +2509,7 @@ fn entra_users(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         tree,
         "EntraIDUsers",
         None,
+        Art::raw("hawk.tenant.entra_users"),
         &rows,
         Formats::CSV_JSON,
         false,
@@ -2446,4 +2524,94 @@ fn entra_users(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
     );
     c.log().info("Completed collection of users from Entra ID.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scenario::load;
+
+    #[test]
+    fn licence_tier_follows_test_license_type() {
+        let tier = |scenario: &str| {
+            let w = World::build(&load(scenario).unwrap(), 1).unwrap();
+            licence_tier(&w)
+        };
+        assert_eq!(tier("bec-aitm"), ("E5", 365)); // SPE_E5
+        assert_eq!(tier("hawk-investigate"), ("E5", 365)); // ENTERPRISEPREMIUM
+        assert_eq!(tier("bec-o365-no-p1"), ("E3", 180)); // ENTERPRISEPACK
+        // SPE_E3 is not in Hawk's E3 list.
+        assert_eq!(tier("bec-e3-audit-gaps"), ("Unknown", 90));
+        assert_eq!(tier("business-basic"), ("Unknown", 90));
+    }
+
+    #[test]
+    fn admin_rule_test_flags_delete_message_false_like_hawk() {
+        let row = |k: &str, v: Val| -> Row { vec![r("Operation", s("New-InboxRule")), r(k, v)] };
+        assert!(suspicious_admin_rule(&row(
+            "Param_DeleteMessage",
+            s("False")
+        )));
+        assert!(suspicious_admin_rule(&row(
+            "Param_ForwardTo",
+            s("x@fabrikam.test")
+        )));
+        assert!(suspicious_admin_rule(&row(
+            "Param_MoveToFolder",
+            s("deleted items")
+        )));
+        assert!(!suspicious_admin_rule(&row(
+            "Param_MoveToFolder",
+            s("Vendors")
+        )));
+        assert!(!suspicious_admin_rule(&row("Param_RedirectTo", s(""))));
+        assert!(!suspicious_admin_rule(&row("Param_RedirectTo", Val::Null)));
+    }
+
+    fn grant(permission: &str, consent_type: Option<&str>) -> GrantRow {
+        GrantRow {
+            row: vec![
+                r("Permission", s(permission)),
+                r("ConsentGrantRiskCategory", s("")),
+            ],
+            key: String::new(),
+            evidence: None,
+            consent_type: consent_type.map(str::to_string),
+            permission: permission.to_string(),
+        }
+    }
+
+    #[test]
+    fn consent_categories_last_match_wins_and_counts_per_pattern() {
+        let mut g = vec![
+            grant("User.Read", Some("AllPrincipals")),
+            grant("AppRoleAssignment.ReadWrite.All", None),
+            grant("Calendars.Read", Some("Principal")),
+            grant("Mail.Send", Some("Principal")),
+            grant("offline_access", Some("Principal")),
+        ];
+        let counts = categorize(&mut g);
+        // Broad: the AllPrincipals grant and the permission containing "All".
+        assert_eq!(counts, (2, 1, 2));
+        let cat = |i: usize| text_of(&g[i].row, "ConsentGrantRiskCategory").unwrap_or_default();
+        assert_eq!(cat(0), "High Risk", "^User\\. overwrites Broad-Scope");
+        assert_eq!(cat(1), "Extremely Dangerous");
+        assert_eq!(cat(2), "");
+        assert_eq!(cat(3), "High Risk");
+        assert_eq!(cat(4), "");
+    }
+
+    #[test]
+    fn risk_levels_group_high_medium_low_none() {
+        let groups = level_groups(["low", "none", "High", "low", "medium"].into_iter());
+        assert_eq!(
+            groups,
+            vec![
+                ("High".to_string(), 1),
+                ("medium".to_string(), 1),
+                ("low".to_string(), 2),
+                ("none".to_string(), 1),
+            ]
+        );
+    }
 }

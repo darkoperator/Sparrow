@@ -136,7 +136,7 @@ impl Log {
                 &join(&self.investigate),
             )?;
             let distinct: BTreeSet<&String> = self.investigate.iter().collect();
-            tree.rows_at_least(rel, "collector_flags", distinct.len() as u64);
+            tree.rows_counted(rel, "collector_flags", distinct.len() as u64);
         }
         Ok(())
     }
