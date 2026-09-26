@@ -1,0 +1,15 @@
+[package]
+name = "sparrow-synth"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Deterministic synthetic Hawk / Microsoft-Extractor-Suite / portal-export trees with ground-truth manifests (reserved values only)"
+
+[dependencies]
+chrono.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_norway.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
