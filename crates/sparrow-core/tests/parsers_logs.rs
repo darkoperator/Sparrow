@@ -608,3 +608,33 @@ fn hawk4_prompt_start_date_is_culture_invariant() {
     assert_eq!(start, 1783209600, "2026-07-05T00:00:00Z, not 7 May");
     assert_eq!(end, 1789689600, "2026-09-18T00:00:00Z");
 }
+
+#[test]
+fn hawk4_numeric_end_date_answer_is_not_the_window_end() {
+    // A number-of-days end answer is echoed as "End Date: 3 days."; the date Hawk computed from
+    // it is in the configuration summary's "End Date    :" line.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("Hawk_Contoso_Ltd_20260920_100000");
+    fixtures::write(
+        &root,
+        "Hawk.log",
+        concat!(
+            "[2026-09-20 10:00:00Z] - [INFO]   - Start Date: 07/20/2026 00:00:00Z\r\n",
+            "[2026-09-20 10:00:03Z] - [INFO]   - End Date: 3 days.\r\n",
+            "[2026-09-20 10:00:05Z] - [INFO]   - Start Date  : 7/20/2026 12:00:00 AM\r\n",
+            "[2026-09-20 10:00:05Z] - [INFO]   - End Date    : 9/19/2026 12:00:00 AM\r\n",
+        )
+        .as_bytes(),
+    );
+    let (case, report) = ingest_dir(dir.path());
+    assert!(!report.has_errors(), "{report:#?}");
+    let end: Option<i64> = case
+        .conn()
+        .query_row(
+            "SELECT epoch(window_end)::BIGINT FROM collections",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(end, Some(1789776000), "2026-09-19T00:00:00Z");
+}

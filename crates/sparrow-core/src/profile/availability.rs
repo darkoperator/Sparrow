@@ -689,7 +689,8 @@ struct TenantFacts {
     files: Vec<FileRow>,
     runs: Vec<RunRow>,
     hawk_log: Vec<String>,
-    users: i64,
+    /// The tenant's known users (lower-case UPNs from the `users` table).
+    users: BTreeSet<String>,
 }
 
 struct CapDef {
@@ -1016,15 +1017,15 @@ fn load_tenant_facts(
     // Known users (for "Hawk collected it for n of m users").
     {
         let mut stmt = conn.prepare(
-            "SELECT c.tenant_key, count(DISTINCT lower(u.upn))
+            "SELECT DISTINCT c.tenant_key, lower(u.upn)
              FROM users u JOIN collections c ON c.collection_id = u.collection_id
-             WHERE c.tenant_key IS NOT NULL GROUP BY 1",
+             WHERE c.tenant_key IS NOT NULL AND u.upn IS NOT NULL",
         )?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         for row in rows {
-            let (key, n) = row?;
+            let (key, upn) = row?;
             if let Some(tf) = map.get_mut(&key) {
-                tf.users = n;
+                tf.users.insert(upn);
             }
         }
     }
@@ -1308,10 +1309,13 @@ fn evaluate(
                             && FULL_UAL_ARTIFACTS.contains(&f.artifact.as_str())
                     }));
             let users = hawk_users(re, &tf.hawk_log);
-            if !users.is_empty() && !other_source {
+            // Spec §7: partial when Hawk's per-user collection covers only some users. Without
+            // a user list the coverage is unknown and counts as partial.
+            let covers_all = !tf.users.is_empty() && tf.users.iter().all(|u| users.contains(u));
+            if !users.is_empty() && !other_source && !covers_all {
                 let mut r = format!("Hawk collected it for {} users", users.len());
-                if tf.users > 0 && (users.len() as i64) < tf.users {
-                    r.push_str(&format!(" of {}", tf.users));
+                if !tf.users.is_empty() {
+                    r.push_str(&format!(" of {}", tf.users.len()));
                 }
                 reasons.push(r);
             }

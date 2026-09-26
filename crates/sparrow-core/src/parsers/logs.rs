@@ -275,6 +275,12 @@ fn re_meta_end() -> &'static Regex {
     cached(&R, r"(?i)^End Date\s*:\s*(.+)$")
 }
 
+/// `<n> days.`: Hawk's echo of a number-of-days answer, not a date.
+fn re_days_answer() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    cached(&R, r"(?i)^\d+\s+days\.?$")
+}
+
 fn re_meta_license() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     cached(&R, r"(?i)^M365 License type detected:\s*(\S+)")
@@ -313,7 +319,12 @@ impl HawkMeta {
                     .as_deref()
                     .is_some_and(|s| s.ends_with(['Z', 'z']));
             }
-            m.end_raw = m.end_raw.or_else(|| capture(re_meta_end(), msg));
+            // Hawk 4 echoes a numeric end-date answer as `End Date: <n> days.`
+            // (`Initialize-HawkGlobalObject.ps1`); the date it computes from it is logged by the
+            // configuration summary's `End Date    : <date>` that follows.
+            m.end_raw = m
+                .end_raw
+                .or_else(|| capture(re_meta_end(), msg).filter(|v| !re_days_answer().is_match(v)));
             if m.license.is_none() {
                 if let Some(tier) = capture(re_meta_license(), msg) {
                     m.license = Some((tier, e.span));

@@ -702,3 +702,63 @@ fn failed_files_without_rows_are_partial_not_ran() {
     assert!(!r.reason.contains("returned no records"), "{r:?}");
     assert!(r.remediation.is_some(), "{r:?}");
 }
+
+/// A Hawk capture whose message trace was collected for alice only, with the tenant's user list
+/// `upns`.
+fn hawk_trace_for_alice(upns: &[&str]) -> Vec<AvailabilityRow> {
+    let mut case = Case::in_memory().unwrap();
+    let c = collection(&case, "hawk", "2026-09-20 00:00:00+00", None);
+    let f = file(
+        &case,
+        c,
+        "alice@contoso.example/Message_Trace_alice.json",
+        "hawk.user.message_trace",
+        "parsed",
+        None,
+    );
+    case.conn()
+        .execute(
+            "INSERT INTO message_trace (record_key, collection_id, received, sender, recipient)
+             VALUES ('m1|x', ?, CAST('2026-09-19 10:00:00+00' AS TIMESTAMPTZ), 'alice@contoso.example', 'x@fabrikam.example')",
+            params![c],
+        )
+        .unwrap();
+    case.conn()
+        .execute(
+            "INSERT INTO record_sources VALUES ('message_trace', 'm1|x', ?, 0, 1, 1, 0, 1, 'h')",
+            params![f],
+        )
+        .unwrap();
+    case.conn()
+        .execute(
+            "INSERT INTO collection_log (log_key, collection_id, file_id, record_ordinal, tz_assumed, level, message)
+             VALUES ('k1', ?, 0, 0, false, 'ACTION',
+                     'Initiating collection of Message Trace Data for alice@contoso.example from Exchange Online.')",
+            params![c],
+        )
+        .unwrap();
+    for (i, upn) in upns.iter().enumerate() {
+        case.conn()
+            .execute(
+                "INSERT INTO users (record_key, collection_id, upn) VALUES (?, ?, ?)",
+                params![format!("u{i}"), c, upn],
+            )
+            .unwrap();
+    }
+    evaluate(&mut case)
+}
+
+#[test]
+fn hawk_per_user_collection_is_partial_only_when_it_covers_some_users() {
+    // Spec §7: `partial` e.g. Hawk per-user collection covering only some users.
+    let rows = hawk_trace_for_alice(&["Alice@contoso.example"]);
+    let r = row(&rows, "message_trace");
+    assert_eq!(r.status, "collected", "{r:?}");
+    let rows = hawk_trace_for_alice(&["alice@contoso.example", "bob@contoso.example"]);
+    let r = row(&rows, "message_trace");
+    assert_eq!(r.status, "partial", "{r:?}");
+    assert!(r.reason.contains("for 1 users of 2"), "{r:?}");
+    let rows = hawk_trace_for_alice(&[]);
+    let r = row(&rows, "message_trace");
+    assert_eq!(r.status, "partial", "unknown coverage: {r:?}");
+}
