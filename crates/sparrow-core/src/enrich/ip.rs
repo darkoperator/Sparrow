@@ -50,6 +50,9 @@ pub struct IpIntelReport {
     pub microsoft: u64,
     pub hosting: u64,
     pub private: u64,
+    /// The databases this run read: "<database_type> <build date>" of each MaxMind reader and
+    /// the ms365-endpoints version. Rows whose values were carried over from an earlier run keep
+    /// that run's MaxMind parts in `ip_intel.source_db_version`.
     pub source_db_version: Option<String>,
     pub warnings: Vec<String>,
 }
@@ -90,13 +93,46 @@ struct Carry {
     longitude: Option<f64>,
     asn: Option<i32>,
     asn_org: Option<String>,
+    /// MaxMind parts of the stored row's `source_db_version`: the City and ASN databases the
+    /// carried values came from (e.g. "GeoLite2-City 2026-09-20").
+    city_version: Option<String>,
+    asn_version: Option<String>,
+}
+
+impl Carry {
+    fn has_geo(&self) -> bool {
+        self.country_iso.is_some()
+            || self.country.is_some()
+            || self.city.is_some()
+            || self.latitude.is_some()
+            || self.longitude.is_some()
+    }
+}
+
+/// The City and ASN parts of a stored `source_db_version` ("<database_type> <build date>"
+/// entries joined by "; "; a part is the City one when its database type contains "City", the
+/// ASN one when it contains "ASN", exactly as `open_readers` classifies the files).
+fn maxmind_parts(version: Option<&str>) -> (Option<String>, Option<String>) {
+    let mut city = None;
+    let mut asn = None;
+    for part in version.unwrap_or_default().split("; ") {
+        let db_type = part.split(' ').next().unwrap_or_default();
+        if city.is_none() && db_type.contains("City") {
+            city = Some(part.to_string());
+        } else if asn.is_none() && db_type.contains("ASN") {
+            asn = Some(part.to_string());
+        }
+    }
+    (city, asn)
 }
 
 fn load_carryover(conn: &Connection) -> Result<HashMap<String, Carry>> {
     let mut stmt = conn.prepare(
-        "SELECT ip, country_iso, country, city, latitude, longitude, asn, asn_org FROM ip_intel",
+        "SELECT ip, country_iso, country, city, latitude, longitude, asn, asn_org, source_db_version
+         FROM ip_intel",
     )?;
     let rows = stmt.query_map([], |r| {
+        let (city_version, asn_version) = maxmind_parts(r.get::<_, Option<String>>(8)?.as_deref());
         Ok((
             r.get::<_, String>(0)?,
             Carry {
@@ -107,6 +143,8 @@ fn load_carryover(conn: &Connection) -> Result<HashMap<String, Carry>> {
                 longitude: r.get(5)?,
                 asn: r.get(6)?,
                 asn_org: r.get(7)?,
+                city_version,
+                asn_version,
             },
         ))
     })?;
@@ -241,6 +279,7 @@ struct IpRow {
     is_microsoft: bool,
     microsoft_service_area: Option<String>,
     is_private: bool,
+    source_db_version: String,
 }
 
 /// Re-derive `ip_intel` from every distinct IP address in the event tables.
@@ -274,14 +313,26 @@ pub fn refresh_ip_intel(
             warnings.append(&mut reader_warnings);
             (city, asn)
         }
-        None => {
-            warnings.push(
-                "no --geoip-dir: ip_intel has no geolocation or ASN (MaxMind GeoLite2 City and ASN .mmdb files)"
-                    .to_string(),
-            );
-            (None, None)
-        }
+        None => (None, None),
     };
+    // "<database_type> <build date>" of each reader (e.g. "GeoIP2-City 2026-09-20").
+    let reader_version = |reader: &Option<MmdbReader>| -> Result<Option<String>> {
+        reader
+            .as_ref()
+            .map(|r| {
+                let m = r.metadata();
+                Ok(format!(
+                    "{} {}",
+                    m.database_type,
+                    build_date(m.build_epoch)?
+                ))
+            })
+            .transpose()
+    };
+    let city_version = reader_version(&city_reader)?;
+    let asn_version = reader_version(&asn_reader)?;
+    let ms_version = format!("ms365-endpoints {}", ms.version);
+    let mut carried_geo = 0u64;
 
     let ip_texts = distinct_ip_texts(conn)?;
     let mut rows = Vec::with_capacity(ip_texts.len());
@@ -305,6 +356,16 @@ pub fn refresh_ip_intel(
 
         let (mut country_iso, mut country, mut city, mut latitude, mut longitude) =
             (None, None, None, None, None);
+        let carry = carryover.get(&raw);
+        // Provenance of this row's values: this run's reader, else the database the carried
+        // values came from.
+        let mut row_city_version = city_version.clone();
+        let mut row_asn_version = asn_version.clone();
+        if carry.is_some_and(|c| {
+            (city_reader.is_none() && c.has_geo()) || (asn_reader.is_none() && c.asn.is_some())
+        }) {
+            carried_geo += 1;
+        }
         if let Some(reader) = &city_reader {
             match lookup_city(reader, addr) {
                 Ok(Some(rec)) => {
@@ -317,12 +378,13 @@ pub fn refresh_ip_intel(
                 Ok(None) => {}
                 Err(e) => warnings.push(format!("City lookup for {addr}: {e}")),
             }
-        } else if let Some(c) = carryover.get(&raw) {
+        } else if let Some(c) = carry {
             country_iso = c.country_iso.clone();
             country = c.country.clone();
             city = c.city.clone();
             latitude = c.latitude;
             longitude = c.longitude;
+            row_city_version = c.city_version.clone();
         }
 
         let (mut asn, mut asn_org) = (None, None);
@@ -335,9 +397,10 @@ pub fn refresh_ip_intel(
                 Ok(None) => {}
                 Err(e) => warnings.push(format!("ASN lookup for {addr}: {e}")),
             }
-        } else if let Some(c) = carryover.get(&raw) {
+        } else if let Some(c) = carry {
             asn = c.asn;
             asn_org = c.asn_org.clone();
+            row_asn_version = c.asn_version.clone();
         }
 
         let (is_hosting, hosting_provider) = match asn {
@@ -362,6 +425,23 @@ pub fn refresh_ip_intel(
             is_microsoft,
             microsoft_service_area,
             is_private: is_priv,
+            source_db_version: [row_city_version, row_asn_version, Some(ms_version.clone())]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join("; "),
+        });
+    }
+
+    if geoip_dir.is_none() {
+        warnings.push(if carried_geo > 0 {
+            format!(
+                "no --geoip-dir: kept geolocation/ASN from an earlier run for {carried_geo} \
+                 addresses; new addresses have none"
+            )
+        } else {
+            "no --geoip-dir: ip_intel has no geolocation or ASN (MaxMind GeoLite2 City and ASN .mmdb files)"
+                .to_string()
         });
     }
 
@@ -378,21 +458,14 @@ pub fn refresh_ip_intel(
     let hosting = rows.iter().filter(|r| r.is_hosting == Some(true)).count() as u64;
     let private = rows.iter().filter(|r| r.is_private).count() as u64;
 
-    let mut version_parts = Vec::new();
-    if let Some(reader) = &city_reader {
-        version_parts.push(format!(
-            "GeoLite2-City {}",
-            build_date(reader.metadata().build_epoch)?
-        ));
-    }
-    if let Some(reader) = &asn_reader {
-        version_parts.push(format!(
-            "GeoLite2-ASN {}",
-            build_date(reader.metadata().build_epoch)?
-        ));
-    }
-    version_parts.push(format!("ms365-endpoints {}", ms.version));
-    let source_db_version = Some(version_parts.join("; "));
+    // The databases this run read (rows carrying earlier values keep their own provenance).
+    let source_db_version = Some(
+        [city_version, asn_version, Some(ms_version)]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("; "),
+    );
 
     conn.execute("DELETE FROM ip_intel", [])?;
     {
@@ -412,7 +485,7 @@ pub fn refresh_ip_intel(
                 DbValue::Boolean(r.is_microsoft),
                 opt_text(r.microsoft_service_area),
                 DbValue::Boolean(r.is_private),
-                opt_text(source_db_version.clone()),
+                DbValue::Text(r.source_db_version),
             ]))?;
         }
         app.flush()?;

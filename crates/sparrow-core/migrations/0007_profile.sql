@@ -293,7 +293,7 @@ COMMENT ON COLUMN ip_intel.hosting_provider IS 'Name of the hosting provider fro
 COMMENT ON COLUMN ip_intel.is_microsoft IS 'In the bundled Microsoft 365 endpoints snapshot (service front ends: Microsoft infrastructure, not a trusted client).';
 COMMENT ON COLUMN ip_intel.microsoft_service_area IS 'Microsoft 365 service area (Exchange, SharePoint, Skype, Common) of the matching range, when is_microsoft is true.';
 COMMENT ON COLUMN ip_intel.is_private IS 'RFC 1918, loopback, link-local, CGNAT 100.64.0.0/10, unspecified, IPv6 unique-local/link-local, or an IPv4-mapped IPv6 form of one of those (spec §5.3). Documentation ranges (203.0.113.0/24, 198.51.100.0/24, 2001:db8::/32) are not private.';
-COMMENT ON COLUMN ip_intel.source_db_version IS 'The MaxMind City/ASN database versions (build date) and the ms365-endpoints snapshot version used to derive this row, e.g. "GeoLite2-City 2026-09-20; GeoLite2-ASN 2026-09-22; ms365-endpoints 2026081400".';
+COMMENT ON COLUMN ip_intel.source_db_version IS 'Provenance of this row: each MaxMind database its geolocation / ASN values came from as "<metadata database_type> <build date>", then the ms365-endpoints snapshot version, e.g. "GeoLite2-City 2026-09-20; GeoLite2-ASN 2026-09-22; ms365-endpoints 2026081400". Values carried over from an earlier run (profile run without --geoip-dir, or a directory missing the City or ASN database) keep that earlier run''s database part; a part is absent when no database supplied that kind of value.';
 
 -- Task 8: identities.
 CREATE TYPE identity_kind AS ENUM ('user', 'service_principal', 'app', 'system', 'external');
