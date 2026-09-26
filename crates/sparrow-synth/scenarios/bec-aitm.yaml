@@ -25,6 +25,19 @@ storylines:
   - {kind: mfa_method_added, id: s-mfa, actor: 1, at: {after: s-aitm, minutes: 12}}
   - {kind: oauth_consent, id: s-consent, actor: 1, at: {after: s-aitm, minutes: 45}}
   - {kind: app_credential_added, id: s-cred, actor: 1, at: {after: s-aitm, minutes: 90}}
+  - {kind: inbox_rule_finance, id: s-rule, actor: 1, at: {after: s-aitm, minutes: 25}}
+  - {kind: forwarding_inbox_rule, id: s-fwdrule, actor: 1, at: {after: s-aitm, minutes: 35}}
+  - {kind: forwarding_mailbox, id: s-fwd, actor: 1, at: {after: s-aitm, minutes: 50}}
+  - {kind: mia_burst, id: s-mia, actor: 1, at: {after: s-aitm, minutes: 60}}
+  - {kind: search_finance, id: s-search, actor: 1, at: {after: s-aitm, minutes: 65}}
+  - {kind: send_new_ip, id: s-send, actor: 1, at: {after: s-aitm, minutes: 75}}
+  - {kind: mass_download, id: s-dl, actor: 1, at: {after: s-aitm, minutes: 120}}
+  - {kind: anonymous_link, id: s-anon, actor: 1, at: {after: s-aitm, minutes: 130}}
+  - {kind: lure_share, id: s-lure, actor: 1, at: {after: s-aitm, minutes: 140}}
+  - {kind: autoreply_enabled, id: s-auto, actor: 1, at: {after: s-aitm, minutes: 160}}
+  - {kind: forwarding_transport_rule, id: s-trule, at: {day: 22, hour: 23, minute: 40}}
+  - {kind: mailbox_permission_grant, id: s-perm, actor: 1, target: 2, at: {day: 22, hour: 23, minute: 10}}
+  - {kind: header_spoof, id: s-hdr, target: 1, at: {day: 19, hour: 15}}
 lookalikes:
   - {kind: risk_dismissed, id: l-dismiss, actor: 2, at: {day: 5, hour: 11}}
   - {kind: mfa_new_hire, id: l-newhire, actor: 4, at: {day: 3, hour: 9, minute: 30}}
@@ -34,3 +47,14 @@ lookalikes:
   - {kind: microsoft_asn_signin, id: l-cloudpc, actor: 7, at: {day: 12, hour: 8, minute: 30}}
   - {kind: plausible_travel, id: l-travel, actor: 8, at: {day: 14, hour: 7}}
   - {kind: same_ip_token_use, id: l-sameip, actor: 9, at: {day: 15, hour: 9}}
+  - {kind: vendor_filing_rule, id: l-vendor, actor: 3, at: {day: 12, hour: 10}}
+  - {kind: internal_forwarding, id: l-intfwd, actor: 4, at: {day: 13, hour: 16}}
+  - {kind: mia_sync, id: l-miasync, actor: 5, at: {day: 13, hour: 8, minute: 5}}
+  - {kind: send_known_ip, id: l-sendok, actor: 5, at: {day: 14, hour: 11}}
+  - {kind: search_benign, id: l-search, actor: 6, at: {day: 16, hour: 10, minute: 30}}
+  - {kind: normal_download, id: l-dl, actor: 7, at: {day: 17, hour: 9}}
+  - {kind: anonymous_link_benign, id: l-anonok, actor: 8, at: {day: 18, hour: 14}}
+  - {kind: internal_docx_share, id: l-docx, actor: 9, at: {day: 18, hour: 15}}
+  - {kind: autoreply_disabled, id: l-autooff, actor: 10, at: {day: 6, hour: 17}}
+  - {kind: header_clean, id: l-hdrok, target: 2, at: {day: 10, hour: 9, minute: 15}}
+  - {kind: permission_system_discovery, id: l-sysperm, at: {day: 2, hour: 3}}

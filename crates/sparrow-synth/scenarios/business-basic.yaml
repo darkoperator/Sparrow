@@ -18,5 +18,12 @@ baseline:
   messages_per_user_day: 6.0
   work_hours: [8, 18]
   weekend_factor: 0.1
-storylines: []
-lookalikes: []
+storylines:
+  - {kind: aitm_signin, id: s-aitm, actor: 1, at: {day: 7, hour: 9, minute: 30}}
+  - {kind: inbox_rule_finance, id: s-rule, actor: 1, at: {after: s-aitm, minutes: 25}}
+  - {kind: forwarding_mailbox, id: s-fwd, actor: 1, at: {after: s-aitm, minutes: 50}}
+  # Not logged: organization mailbox auditing is off.
+  - {kind: mia_burst, id: s-mia, actor: 1, at: {after: s-aitm, minutes: 60}}
+lookalikes:
+  - {kind: vendor_filing_rule, id: l-vendor, actor: 3, at: {day: 4, hour: 10}}
+  - {kind: plausible_travel, id: l-travel, actor: 4, at: {day: 5, hour: 7}}

@@ -10,6 +10,7 @@ tenant:
   licence_profile: o365_e5
   audit_profile: default
   host_utc_offset_minutes: 0
+  hawk_users: [2, 3, 4, 6, 7, 8, 9, 10]
 window:
   start: 2026-07-20T00:00:00Z
   days: 45
@@ -24,8 +25,24 @@ storylines:
   - {kind: domain_federation, id: s-domain, at: {day: 30, hour: 22, minute: 10}}
   - {kind: new_mobile_device, id: s-mobile, actor: 2, at: {day: 12, hour: 18}}
   - {kind: oauth_consent, id: s-consent, actor: 3, at: {day: 25, hour: 10}}
+  - {kind: admin_inbox_rule, id: s-admrule, target: 2, at: {day: 18, hour: 21}}
+  - {kind: mailbox_permission_grant, id: s-perm, actor: 5, target: 4, at: {day: 20, hour: 22, minute: 30}}
+  - {kind: forwarding_mailbox, id: s-fwd, actor: 6, at: {day: 22, hour: 12}}
+  - {kind: forwarding_inbox_rule, id: s-fwdrule, actor: 7, at: {day: 23, hour: 12, minute: 30}}
+  - {kind: ediscovery_search, id: s-ediscovery, at: {day: 26, hour: 20}}
+  - {kind: autoreply_enabled, id: s-auto, actor: 8, at: {day: 28, hour: 18}}
+  - {kind: header_spoof, id: s-hdr, target: 9, at: {day: 24, hour: 9}}
 lookalikes:
   - {kind: domain_property_update, id: l-domain, at: {day: 33, hour: 9}}
   - {kind: old_mobile_device, id: l-oldmobile, actor: 4, at: {day: 5, hour: 8}}
   - {kind: low_risk_consent, id: l-poll, actor: 5, at: {day: 7, hour: 13}}
   - {kind: app_signin_existing_consent, id: l-notes, actor: 6, at: {day: 9, hour: 15}}
+  - {kind: admin_benign_rule, id: l-admok, at: {day: 8, hour: 10}}
+  - {kind: internal_forwarding, id: l-intfwd, actor: 2, at: {day: 9, hour: 11}}
+  - {kind: forwarding_removed, id: l-fwdoff, actor: 3, at: {day: 6, hour: 9}}
+  - {kind: set_mailbox_other_param, id: l-setmbx, at: {day: 11, hour: 13}}
+  - {kind: permission_system_discovery, id: l-sysperm, at: {day: 3, hour: 2}}
+  - {kind: ediscovery_view_only, id: l-view, at: {day: 27, hour: 9}}
+  - {kind: autoreply_disabled, id: l-autooff, actor: 10, at: {day: 12, hour: 17}}
+  - {kind: header_clean, id: l-hdrok, target: 10, at: {day: 15, hour: 8}}
+  - {kind: vendor_filing_rule, id: l-vendor, actor: 1, at: {day: 14, hour: 10}}

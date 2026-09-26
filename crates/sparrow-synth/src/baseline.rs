@@ -107,7 +107,13 @@ pub fn mailbox_logged(
     let Some(mb) = w.mailboxes.get(owner) else {
         return false;
     };
-    if !mb.audit_enabled || mb.audit_disabled_since.is_some_and(|t| time >= t) {
+    // `audit_disabled_since` (set by a tamper storyline) takes precedence over the flag:
+    // records before it are audited.
+    let audit_off = match mb.audit_disabled_since {
+        Some(t) => time >= t,
+        None => !mb.audit_enabled,
+    };
+    if audit_off {
         return false;
     }
     if mb.bypass && mb.bypass_since.is_none_or(|t| time >= t) {

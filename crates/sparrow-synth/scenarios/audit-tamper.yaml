@@ -18,5 +18,17 @@ baseline:
   messages_per_user_day: 6.0
   work_hours: [8, 18]
   weekend_factor: 0.1
-storylines: []
-lookalikes: []
+storylines:
+  - {kind: aitm_signin, id: s-aitm, actor: 1, at: {day: 10, hour: 8}}
+  - {kind: inbox_rule_finance, id: s-rule, actor: 1, at: {after: s-aitm, minutes: 20}}
+  - {kind: audit_tamper, id: s-tamper, actor: 1, at: {after: s-aitm, minutes: 60}}
+  # Everything below happens after UAL ingestion is off: none of it is logged.
+  - {kind: mia_burst, id: s-mia, actor: 1, at: {after: s-tamper, minutes: 30}}
+  - {kind: forwarding_mailbox, id: s-fwd, actor: 1, at: {after: s-tamper, minutes: 40}}
+  - {kind: admin_inbox_rule, id: s-admrule, target: 2, at: {after: s-tamper, minutes: 45}}
+  - {kind: ediscovery_search, id: s-ediscovery, at: {after: s-tamper, minutes: 50}}
+  - {kind: mass_download, id: s-dl, actor: 1, at: {after: s-tamper, minutes: 55}}
+  - {kind: anonymous_link, id: s-anon, actor: 1, at: {after: s-tamper, minutes: 60}}
+  - {kind: lure_share, id: s-lure, actor: 1, at: {after: s-tamper, minutes: 65}}
+lookalikes:
+  - {kind: audit_config_benign, id: l-auditok, at: {day: 3, hour: 10}}

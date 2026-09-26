@@ -260,8 +260,10 @@ impl World {
     /// Whether Microsoft 365 recorded UAL record `u` under the tenant's audit settings at its
     /// time: never while UAL ingestion is off; mailbox-audit records (ExchangeItem,
     /// ExchangeItemGroup, ExchangeItemAggregated, and the Send / SendAs / SendOnBehalf /
-    /// SearchQueryInitiatedExchange operations) also need organization auditing on, the mailbox
-    /// audited and not bypassed, and the action in its logon type's list.
+    /// SearchQueryInitiatedExchange / SearchQueryInitiatedSharePoint operations) also need
+    /// organization auditing on, the mailbox audited and not bypassed, and the action in its
+    /// logon type's list (SharePoint searches are the owner action
+    /// `SharepointSearchQueryInitiated`, Microsoft Learn audit-get-started step 3).
     pub fn logged(&self, u: &Ual) -> bool {
         if !baseline::ual_logged(self, u.time) {
             return false;
@@ -273,7 +275,11 @@ impl World {
                 | RecordType::ExchangeItemAggregated
         ) || matches!(
             u.operation.as_str(),
-            "Send" | "SendAs" | "SendOnBehalf" | "SearchQueryInitiatedExchange"
+            "Send"
+                | "SendAs"
+                | "SendOnBehalf"
+                | "SearchQueryInitiatedExchange"
+                | "SearchQueryInitiatedSharePoint"
         );
         if !mailbox_record {
             return true;
@@ -290,6 +296,7 @@ impl World {
             .unwrap_or(0);
         let action = match u.operation.as_str() {
             "SearchQueryInitiatedExchange" => "SearchQueryInitiated",
+            "SearchQueryInitiatedSharePoint" => "SharepointSearchQueryInitiated",
             op => op,
         };
         baseline::mailbox_logged(self, owner, logon_type, action, u.time)
@@ -1158,6 +1165,10 @@ fn owner_actions_for(customized: bool, search_query: bool) -> Vec<String> {
     let mut v: Vec<String> = OWNER_ACTIONS.iter().map(|s| s.to_string()).collect();
     if customized {
         v.retain(|a| a != "MailItemsAccessed" && a != "Send" && a != "AttachmentAccess");
+    } else {
+        // SharePoint search auditing is on by default (Microsoft Learn audit-get-started,
+        // step 3); a list customized before on-by-default auditing lacks it.
+        v.push("SharepointSearchQueryInitiated".to_string());
     }
     if search_query {
         v.push("SearchQueryInitiated".to_string());

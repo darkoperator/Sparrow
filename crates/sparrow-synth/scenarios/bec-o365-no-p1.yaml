@@ -24,7 +24,14 @@ storylines:
   - {kind: aitm_signin, id: s-aitm, actor: 1, at: {day: 12, hour: 13, minute: 40}}
   - {kind: mfa_method_added, id: s-mfa, actor: 1, at: {after: s-aitm, minutes: 12}}
   - {kind: oauth_consent, id: s-consent, actor: 1, at: {after: s-aitm, minutes: 45}}
+  - {kind: inbox_rule_finance, id: s-rule, actor: 1, at: {after: s-aitm, minutes: 25}}
+  - {kind: forwarding_inbox_rule, id: s-fwdrule, actor: 1, at: {after: s-aitm, minutes: 35}}
+  - {kind: mass_download, id: s-dl, actor: 1, at: {after: s-aitm, minutes: 120}}
+  - {kind: lure_share, id: s-lure, actor: 1, at: {after: s-aitm, minutes: 140}}
 lookalikes:
   - {kind: plausible_travel, id: l-travel, actor: 2, at: {day: 4, hour: 7}}
   - {kind: same_ip_token_use, id: l-sameip, actor: 3, at: {day: 6, hour: 9, minute: 30}}
   - {kind: low_risk_consent, id: l-poll, actor: 4, at: {day: 9, hour: 14}}
+  - {kind: vendor_filing_rule, id: l-vendor, actor: 5, at: {day: 10, hour: 10}}
+  - {kind: normal_download, id: l-dl, actor: 6, at: {day: 11, hour: 9}}
+  - {kind: internal_docx_share, id: l-docx, actor: 7, at: {day: 13, hour: 15}}

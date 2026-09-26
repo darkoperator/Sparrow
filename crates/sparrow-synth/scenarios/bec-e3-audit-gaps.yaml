@@ -25,7 +25,16 @@ storylines:
   - {kind: aitm_signin, id: s-aitm, actor: 1, at: {day: 15, hour: 10, minute: 5}}
   - {kind: mfa_method_added, id: s-mfa, actor: 1, at: {after: s-aitm, minutes: 12}}
   - {kind: oauth_consent, id: s-consent, actor: 1, at: {after: s-aitm, minutes: 45}}
+  - {kind: inbox_rule_finance, id: s-rule, actor: 1, at: {after: s-aitm, minutes: 25}}
+  - {kind: forwarding_mailbox, id: s-fwd, actor: 1, at: {after: s-aitm, minutes: 50}}
+  - {kind: mia_burst, id: s-mia, actor: 1, at: {after: s-aitm, minutes: 60}}
+  - {kind: search_finance, id: s-search, actor: 1, at: {after: s-aitm, minutes: 65}}
+  - {kind: send_new_ip, id: s-send, actor: 1, at: {after: s-aitm, minutes: 75}}
 lookalikes:
   - {kind: plausible_travel, id: l-travel, actor: 3, at: {day: 6, hour: 7}}
   - {kind: same_ip_token_use, id: l-sameip, actor: 4, at: {day: 8, hour: 9}}
   - {kind: low_risk_consent, id: l-poll, actor: 5, at: {day: 11, hour: 14}}
+  - {kind: vendor_filing_rule, id: l-vendor, actor: 6, at: {day: 9, hour: 10}}
+  - {kind: mia_sync, id: l-miasync, actor: 7, at: {day: 10, hour: 8, minute: 5}}
+  - {kind: send_known_ip, id: l-sendok, actor: 8, at: {day: 12, hour: 11}}
+  - {kind: search_benign, id: l-search, actor: 9, at: {day: 13, hour: 10, minute: 30}}

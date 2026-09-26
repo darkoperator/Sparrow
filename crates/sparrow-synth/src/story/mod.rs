@@ -9,9 +9,12 @@
 //! Every storyline draws from its own stream `story/<id>`, so adding one never changes another.
 
 mod apps;
+mod config;
+mod files;
 mod identity;
+mod mail;
 
-use crate::events::{Actor, DirAudit, RiskDetection, SignIn, SignInType, Target, Ual};
+use crate::events::{Actor, DirAudit, RiskDetection, SignIn, SignInType, Target, TraceMsg, Ual};
 use crate::reserved::{IpAllocator, Net, WELL_KNOWN_GUIDS};
 use crate::rng::{Rng, stream};
 use crate::scenario::{Polarity, StoryKind, StorySpec};
@@ -129,9 +132,14 @@ pub fn apply(world: &mut World) -> Result<Vec<StoryRecord>> {
             ev: Vec::new(),
             roaming: &mut roaming,
         };
-        if !identity::apply_one(world, &mut ctx)? && !apps::apply_one(world, &mut ctx)? {
+        let handled = identity::apply_one(world, &mut ctx)?
+            || apps::apply_one(world, &mut ctx)?
+            || mail::apply_one(world, &mut ctx)?
+            || files::apply_one(world, &mut ctx)?
+            || config::apply_one(world, &mut ctx)?;
+        if !handled {
             return Err(Error::Scenario(format!(
-                "kind {} not implemented yet",
+                "kind {} has no storyline handler",
                 spec.kind.as_str()
             )));
         }
@@ -281,6 +289,61 @@ pub(crate) fn unknown_device(sign_in: &mut SignIn) {
     sign_in.device_compliant = None;
     sign_in.device_managed = None;
     sign_in.trust_type = None;
+}
+
+/// The target user `g` of kinds that act on a second user (`target`, default `default`).
+pub(crate) fn target(w: &World, ctx: &Ctx, default: u32) -> User {
+    w.user(ctx.spec.target.unwrap_or(default)).clone()
+}
+
+/// The session of the latest adversary-in-the-middle sign-in of `user` at or before `t` (the
+/// proxied sign-in and the replayed token share it), else a new session.
+pub(crate) fn attacker_session(w: &World, ctx: &mut Ctx, user: &User, t: DateTime<Utc>) -> Uuid {
+    let proxy = w.attacker.proxy_ip;
+    w.story
+        .signins
+        .iter()
+        .filter(|s| s.user == user.upn && s.ip == proxy && s.time <= t)
+        .max_by_key(|s| s.time)
+        .map(|s| s.session_id)
+        .unwrap_or_else(|| ctx.rng.uuid())
+}
+
+/// Records an Exchange admin cmdlet run by `actor` (`ExchangeAdmin`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn push_cmdlet(
+    w: &mut World,
+    ctx: &mut Ctx,
+    actor: &User,
+    time: DateTime<Utc>,
+    cmdlet: &str,
+    object_id: &str,
+    params: &[(&str, &str)],
+    ip: IpAddr,
+    session: Uuid,
+) {
+    let u = ual::exchange_admin(
+        w,
+        &mut ctx.rng,
+        actor,
+        time,
+        cmdlet,
+        object_id,
+        params,
+        ip,
+        session,
+    );
+    push_ual(w, ctx, u);
+}
+
+pub(crate) fn push_trace(w: &mut World, ctx: &mut Ctx, t: TraceMsg) {
+    for (recipient, _) in &t.recipients {
+        ctx.ev.push(Evidence::Trace {
+            trace_id: t.trace_id,
+            recipient: recipient.clone(),
+        });
+    }
+    w.story.trace.push(t);
 }
 
 pub(crate) fn push_ual(w: &mut World, ctx: &mut Ctx, u: Ual) {

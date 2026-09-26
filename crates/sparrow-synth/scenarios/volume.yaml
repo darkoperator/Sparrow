@@ -18,5 +18,11 @@ baseline:
   messages_per_user_day: 6.0
   work_hours: [8, 18]
   weekend_factor: 0.1
-storylines: []
-lookalikes: []
+storylines:
+  - {kind: aitm_signin, id: s-aitm, actor: 17, at: {day: 40, hour: 9}}
+  - {kind: inbox_rule_finance, id: s-rule, actor: 17, at: {after: s-aitm, minutes: 25}}
+  - {kind: mia_burst, id: s-mia, actor: 17, at: {after: s-aitm, minutes: 60}}
+  - {kind: mass_download, id: s-dl, actor: 17, at: {after: s-aitm, minutes: 120}}
+lookalikes:
+  - {kind: vendor_filing_rule, id: l-vendor, actor: 50, at: {day: 20, hour: 10}}
+  - {kind: mia_sync, id: l-miasync, actor: 60, at: {day: 21, hour: 8, minute: 5}}
