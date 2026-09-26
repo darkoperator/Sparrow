@@ -154,6 +154,30 @@ pub fn resolve_tenants(conn: &Connection) -> Result<usize> {
     Ok(tenants)
 }
 
+/// One `ProfileReport` warning per collection `resolve_tenants` pass 4 left on its own
+/// `collection:<id>` key because its evidence carried no tenant id and its collector reported no
+/// tenant name: its data is not merged with any other capture of the same tenant.
+pub fn unidentified_collection_warnings(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT collection_id, root_path FROM collections
+         WHERE tenant_key = 'collection:' || collection_id ORDER BY collection_id",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, root) = row?;
+        let folder = std::path::Path::new(&root)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or(root);
+        out.push(format!(
+            "collection {id} ({folder}) carries no tenant id or name; it is profiled as its own \
+             tenant `collection:{id}`"
+        ));
+    }
+    Ok(out)
+}
+
 /// Rebuild `tenant_domains` for `tenant_key` (all tenants when `None`) from the evidence plus
 /// `tenant_domain_overrides`. Returns a warning when overrides exist whose `tenant_key` no
 /// longer names a current tenant, even after the `name:<n>` fallback lookup below (only
@@ -223,7 +247,7 @@ pub fn rebuild_domains(conn: &Connection, tenant_key: Option<&str>) -> Result<Op
                     (SELECT t.tenant_key FROM tenant t WHERE t.tenant_key = o.tenant_key),
                     (SELECT t.tenant_key FROM tenant t
                      WHERE o.tenant_key LIKE 'name:%' AND t.tenant_name = substr(o.tenant_key, 6)
-                     LIMIT 1)
+                     ORDER BY t.tenant_key LIMIT 1)
                 ) AS effective_tenant_key
          FROM tenant_domain_overrides o;
 

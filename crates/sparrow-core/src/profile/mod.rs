@@ -69,6 +69,9 @@ pub fn refresh(case: &mut Case, opts: &ProfileOptions) -> Result<ProfileReport> 
 
     let tx = case.conn_mut().transaction()?;
     report.tenants = tenant::resolve_tenants(&tx)?;
+    report
+        .warnings
+        .extend(tenant::unidentified_collection_warnings(&tx)?);
     if let Some(warning) = tenant::rebuild_domains(&tx, None)? {
         report.warnings.push(warning);
     }

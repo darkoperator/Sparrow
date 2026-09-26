@@ -113,6 +113,19 @@ fn collections_are_grouped_by_tenant_id_and_names_join_their_id() {
     assert_eq!(key(b), T2);
     assert_eq!(key(c), T1, "same name as a collection with an id");
     assert_eq!(key(d), format!("collection:{d}"));
+    let standalone: Vec<&String> = report
+        .warnings
+        .iter()
+        .filter(|w| w.contains("carries no tenant id or name"))
+        .collect();
+    assert_eq!(
+        standalone,
+        vec![&format!(
+            "collection {d} (Output) carries no tenant id or name; it is profiled as its own tenant `collection:{d}`"
+        )],
+        "{:?}",
+        report.warnings
+    );
     assert_eq!(
         text(
             &case,
@@ -515,4 +528,57 @@ fn tenant_audit_config_takes_each_column_from_the_newest_collection_that_provide
         ),
         "New"
     );
+}
+
+/// Two tenants reporting the same name: an override keyed `name:<n>` resolves to the smallest
+/// tenant_key, every run (the remap subquery is ordered).
+#[test]
+fn a_name_override_shared_by_two_tenants_resolves_to_the_smallest_key() {
+    let mut case = Case::in_memory().unwrap();
+    let a = collection(
+        &case,
+        "/x/Hawk_Contoso_20260901_000000",
+        Some("Contoso"),
+        "2026-09-01T00:00:00Z",
+    );
+    let b = collection(
+        &case,
+        "/x/Hawk_Contoso_20260902_000000",
+        Some("Contoso"),
+        "2026-09-02T00:00:00Z",
+    );
+    let (fa, fb) = (file(&case, a), file(&case, b));
+    ual(
+        &case,
+        b,
+        fb,
+        "22222222-2222-4222-8222-222222222222",
+        T2,
+        "erin@contoso.example",
+    );
+    ual(
+        &case,
+        a,
+        fa,
+        "11111111-1111-4111-8111-111111111111",
+        T1,
+        "alice@contoso.example",
+    );
+    case.conn()
+        .execute(
+            "INSERT INTO tenant_domain_overrides (tenant_key, domain, action, actor)
+             VALUES ('name:contoso', 'extra.example', 'add', 'analyst:t')",
+            [],
+        )
+        .unwrap();
+    for _ in 0..3 {
+        refresh(&mut case, &ProfileOptions::default()).unwrap();
+        assert_eq!(
+            text(
+                &case,
+                "SELECT string_agg(tenant_key, ',') FROM tenant_domains WHERE domain = 'extra.example'"
+            ),
+            T1
+        );
+    }
 }
