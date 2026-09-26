@@ -43,7 +43,10 @@ pub fn generate_with_policy(
     sink: &mut dyn Sink,
     policy: CulturePolicy,
 ) -> Result<Manifest> {
-    if !matches!(opts.collector, Collector::Portal | Collector::Invictus) {
+    if !matches!(
+        opts.collector,
+        Collector::Portal | Collector::Invictus | Collector::Hawk4
+    ) {
         return Err(Error::Invalid(format!(
             "collector {} is not implemented yet",
             opts.collector
@@ -59,6 +62,7 @@ pub fn generate_with_policy(
     let mut tree = Tree::new(sink, &root, tracked, policy);
     match opts.collector {
         Collector::Invictus => writers::invictus::write(&world, opts, &mut tree)?,
+        Collector::Hawk4 => writers::hawk::write_v4(&world, opts, &mut tree)?,
         _ => writers::portal::write(&world, opts, &mut tree)?,
     }
     let out = tree.finish()?;

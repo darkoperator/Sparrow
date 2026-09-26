@@ -121,9 +121,10 @@ fn org_audit_off_all_window(w: &World) -> bool {
 ///   settings (a parsed Microsoft-Extractor-Suite MailboxAuditStatus file) → `{not_enabled}`;
 ///   organization auditing off for the whole window and the tree delivers it (Hawk
 ///   `OrgConfig.txt`, MailboxAuditStatus EffectiveAuditState `Disabled`) → `{not_enabled}`.
-/// - `signins`: Hawk 4 and Microsoft-Extractor-Suite (without Entra ID P1 the collector ran and
-///   Graph refused, which Sparrow reads as "ran"), the portal, and any tree with P1 →
-///   `{collected}`; except Microsoft-Extractor-Suite rows with Entra ID P1 expected licensed
+/// - `signins`: Hawk 4 rows → `{partial}` (Hawk collects per investigated user); Hawk 4 and
+///   Microsoft-Extractor-Suite (without Entra ID P1 the collector ran and Graph refused, which
+///   Sparrow reads as "ran"), the portal, and any tree with P1 → `{collected}`; except
+///   Microsoft-Extractor-Suite rows with Entra ID P1 expected licensed
 ///   and a window starting more than P1's 30-day log retention before collection →
 ///   `{partial}` (Graph cannot reach the start of the window; the run stamps date the
 ///   collection).
@@ -218,7 +219,15 @@ pub fn evidence(
         .get("entra_id_p1")
         .is_some_and(|c| c.status == "licensed")
         && world.window_start() < world.collected_at() - Duration::days(ENTRA_P1_RETENTION_DAYS);
-    if invictus && rows(out, "signins") > 0 && p1_retention_short {
+    if opts.collector == Collector::Hawk4 && rows(out, "signins") > 0 {
+        m.insert(
+            "signins".to_string(),
+            allowed(
+                &["partial"],
+                "Hawk downloads sign-ins per investigated user (and 14 days at most)",
+            ),
+        );
+    } else if invictus && rows(out, "signins") > 0 && p1_retention_short {
         m.insert(
             "signins".to_string(),
             allowed(

@@ -53,7 +53,8 @@ pub fn mailbox(upn: &str) -> String {
     lower(upn)
 }
 
-/// `inbox_rules`: "<kind>|<lower mailbox>|<rule_identity>." (`kind` is `inbox` or `sweep`).
+/// `inbox_rules`: "<kind>|<lower mailbox>|<rule_identity>." (`kind` is `inbox` or `sweep`;
+/// Hawk's rules carry the owner's alias as `MailboxOwnerId`).
 pub fn inbox_rule(kind: &str, mailbox: &str, rule_identity: &str) -> String {
     format!("{kind}|{}|{rule_identity}", lower(mailbox))
 }
@@ -207,6 +208,63 @@ pub fn for_evidence(world: &World, e: &Evidence, table: &str) -> Option<String> 
             ))
         }
         (Evidence::AuditConfig, "audit_config") => Some(audit_config()),
+        (Evidence::RiskyUser(upn), "risky_users") => world
+            .user_by_upn(upn)
+            .map(|u| risky_user(u.object_id))
+            .or_else(|| Some(lower(upn))),
+        (Evidence::InboxRule { mailbox, identity }, "inbox_rules") => {
+            let owner = world
+                .user_by_upn(mailbox)
+                .map_or_else(|| mailbox.clone(), |u| u.alias.clone());
+            Some(inbox_rule("inbox", &owner, &identity.to_string()))
+        }
+        (
+            Evidence::Grant {
+                client_app_id,
+                scope,
+                principal,
+            },
+            "oauth_grants",
+        ) => {
+            let grant = world.grants.iter().find(|g| {
+                g.client_app_id == *client_app_id
+                    && g.principal == *principal
+                    && g.scope.split(' ').any(|s| s == scope)
+            })?;
+            let sp = |app: Uuid| {
+                world
+                    .apps
+                    .iter()
+                    .find(|a| a.app_id == app)
+                    .map(|a| a.sp_object_id.to_string())
+            };
+            let principal_id = principal
+                .as_deref()
+                .and_then(|p| world.user_by_upn(p))
+                .map(|u| u.object_id.to_string());
+            Some(oauth_grant(
+                &sp(grant.client_app_id)?,
+                &sp(grant.resource_app_id)?,
+                scope,
+                principal_id.as_deref(),
+            ))
+        }
+        (
+            Evidence::Credential {
+                app_object_id,
+                key_id,
+                on_service_principal,
+            },
+            "app_credentials",
+        ) => {
+            let app = world.apps.iter().find(|a| a.object_id == *app_object_id)?;
+            let owner = if *on_service_principal {
+                app.sp_object_id
+            } else {
+                app.object_id
+            };
+            Some(app_credential(owner, *key_id))
+        }
         _ => None,
     }
 }

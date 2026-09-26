@@ -194,6 +194,8 @@ pub struct Tree<'a> {
     culture: CulturePolicy,
     files: BTreeMap<String, FileState>,
     dirs: BTreeSet<String>,
+    /// Count-only tables whose expected row count is a lower bound.
+    inexact: BTreeSet<&'static str>,
 }
 
 impl<'a> Tree<'a> {
@@ -212,6 +214,7 @@ impl<'a> Tree<'a> {
             culture,
             files: BTreeMap::new(),
             dirs: BTreeSet::new(),
+            inexact: BTreeSet::new(),
         }
     }
 
@@ -299,6 +302,19 @@ impl<'a> Tree<'a> {
     /// File `rel` loads `n` rows into count-only `table`.
     pub fn rows_counted(&mut self, rel: &str, table: &'static str, n: u64) {
         self.written(rel).counted.push((table, n));
+    }
+
+    /// File `rel` (already written) gets deliberate status `status` (see
+    /// `FileSpec::expect_status`).
+    pub fn expect_status(&mut self, rel: &str, status: &'static str) {
+        self.written(rel).spec.expect_status = Some(status);
+    }
+
+    /// File `rel` loads at least `n` rows into count-only `table` (rows whose keys the writer
+    /// cannot predict and that may merge: the table's expectation becomes a lower bound).
+    pub fn rows_at_least(&mut self, rel: &str, table: &'static str, n: u64) {
+        self.written(rel).counted.push((table, n));
+        self.inexact.insert(table);
     }
 
     /// Evidence `e` landed in `table` from lines `lines` (1-based, inclusive) of file `rel`.
@@ -398,7 +414,7 @@ impl<'a> Tree<'a> {
                 name.to_string(),
                 TableExpect {
                     rows,
-                    exact: true,
+                    exact: !self.inexact.contains(name),
                     keys_sha256,
                     keys: listed,
                 },

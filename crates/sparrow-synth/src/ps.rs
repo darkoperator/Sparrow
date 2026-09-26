@@ -116,7 +116,11 @@ impl Host {
             },
             Origin::IsoText(text) => match self.edition {
                 PsEdition::Ps51 => text.clone(),
-                PsEdition::Ps7 => newtonsoft_iso(self, d.utc, DtKind::Utc),
+                // Text without a zone parses to an Unspecified DateTime, written back without one.
+                PsEdition::Ps7 if text.ends_with(['Z', 'z']) => {
+                    newtonsoft_iso(self, d.utc, DtKind::Utc)
+                }
+                PsEdition::Ps7 => newtonsoft_iso(self, d.utc, DtKind::Unspecified),
             },
         }
     }
@@ -270,6 +274,9 @@ pub enum Val {
     Raw(serde_json::Value),
     /// Text PowerShell prints for a nested value in CSV, e.g. `System.Object[]`, `@{a=1; b=2}`.
     Placeholder(String),
+    /// A .NET model object (a Graph SDK type, a typed collection): `Export-Csv` and
+    /// `Format-List` print its type name (the `String`), `ConvertTo-Json` its properties.
+    Model(String, serde_json::Value),
 }
 
 /// The ordered properties of one `PSObject`.
@@ -359,6 +366,7 @@ fn scalar_text(
         Val::DateText(d) => host.csv_date(d),
         Val::Raw(v) => raw(v),
         Val::Placeholder(s) => s.clone(),
+        Val::Model(name, _) => name.clone(),
     }
 }
 
@@ -618,6 +626,7 @@ pub fn json_value(host: &Host, v: &Val) -> serde_json::Value {
         Val::DateText(d) => serde_json::Value::String(host.json_date(d)),
         Val::Raw(v) => v.clone(),
         Val::Placeholder(s) => serde_json::Value::String(s.clone()),
+        Val::Model(_, v) => v.clone(),
     }
 }
 
@@ -691,8 +700,8 @@ fn fl_text(host: &Host, v: &Val, ev: &mut DateEvidence) -> String {
 
 /// `Format-List`: `Name : Value` with names padded to the longest name in the block; blocks
 /// separated by one blank line; the output starts with two blank lines and ends with two
-/// (`Out-File` of `Format-List`); on 5.1 long values wrap at 120 columns onto continuation
-/// lines indented to the value column.
+/// (`Out-File` of `Format-List`); the lines of a multi-line value after the first, and on 5.1
+/// the 120-column wraps of a long value, continue on lines indented to the value column.
 pub fn format_list(host: &Host, blocks: &[Row], ev: &mut DateEvidence) -> Rendered {
     let mut text = String::new();
     text.push_str(host.newline);
@@ -708,28 +717,27 @@ pub fn format_list(host: &Host, blocks: &[Row], ev: &mut DateEvidence) -> Render
         let mut block_lines: Vec<String> = Vec::new();
         for (k, v) in block {
             let value = fl_text(host, v, ev);
-            let prefix = format!("{k:<pad$} : ");
-            if host.edition == PsEdition::Ps51 {
+            let indent = " ".repeat(pad + 3);
+            // A multi-line value continues on lines indented to the value column.
+            for (i, segment) in value.split('\n').enumerate() {
+                let segment = segment.trim_end_matches('\r');
+                let lead = if i == 0 {
+                    format!("{k:<pad$} : ")
+                } else {
+                    indent.clone()
+                };
                 let limit = 120usize.saturating_sub(pad + 3);
-                if limit > 0 && value.chars().count() > limit {
-                    let chars: Vec<char> = value.chars().collect();
-                    let mut idx = 0;
-                    let mut first = true;
-                    while idx < chars.len() {
-                        let end = (idx + limit).min(chars.len());
-                        let chunk: String = chars[idx..end].iter().collect();
-                        if first {
-                            block_lines.push(format!("{prefix}{chunk}"));
-                            first = false;
-                        } else {
-                            block_lines.push(format!("{}{}", " ".repeat(pad + 3), chunk));
-                        }
-                        idx = end;
+                if host.edition == PsEdition::Ps51 && limit > 0 && segment.chars().count() > limit {
+                    let chars: Vec<char> = segment.chars().collect();
+                    for (j, chunk) in chars.chunks(limit).enumerate() {
+                        let chunk: String = chunk.iter().collect();
+                        let l = if j == 0 { &lead } else { &indent };
+                        block_lines.push(format!("{l}{chunk}"));
                     }
-                    continue;
+                } else {
+                    block_lines.push(format!("{lead}{segment}"));
                 }
             }
-            block_lines.push(format!("{prefix}{value}"));
         }
         let start = line;
         let end = line + block_lines.len() as u32 - 1;
