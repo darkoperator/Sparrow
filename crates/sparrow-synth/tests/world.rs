@@ -70,6 +70,13 @@ fn every_state_collection_is_populated() {
     let w = world("bec-aitm", 3);
     assert!(!w.apps.is_empty() && !w.grants.is_empty() && !w.roles.is_empty());
     assert!(!w.ca_policies.is_empty() && !w.devices.is_empty() && !w.groups.is_empty());
+    let mfa_policy = w
+        .ca_policies
+        .iter()
+        .find(|p| p.display_name == "Require MFA for admins")
+        .unwrap();
+    assert_eq!(mfa_policy.include_roles, ["Global Administrator"]);
+    assert!(mfa_policy.include_users.is_empty());
     assert!(!w.mobile_devices.is_empty() && !w.transport_rules.is_empty());
     assert!(!w.remote_domains.is_empty() && w.secure_score.len() == 8 && !w.alerts.is_empty());
     assert!(w.mfa.values().any(|m| !m.is_mfa_registered));
