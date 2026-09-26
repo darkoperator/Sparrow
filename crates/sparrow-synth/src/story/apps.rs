@@ -3,8 +3,8 @@
 //! certificate rotation).
 
 use super::{
-    Ctx, Evidence, Modified, dir_audit, first_admin, push_audit_and_ual, push_signin, signin,
-    well_known,
+    Ctx, Evidence, Modified, app_index, dir_audit, first_admin, push_audit_and_ual, push_signin,
+    signin, unknown_device, well_known,
 };
 use crate::Result;
 use crate::events::{SignInType, Target};
@@ -18,9 +18,9 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
     match ctx.spec.kind {
         StoryKind::OauthConsent => oauth_consent(w, ctx),
         StoryKind::LowRiskConsent => low_risk_consent(w, ctx),
-        StoryKind::AppSigninExistingConsent => app_signin_existing_consent(w, ctx),
-        StoryKind::AppCredentialAdded => app_credential_added(w, ctx),
-        StoryKind::CertRotation => cert_rotation(w, ctx),
+        StoryKind::AppSigninExistingConsent => app_signin_existing_consent(w, ctx)?,
+        StoryKind::AppCredentialAdded => app_credential_added(w, ctx)?,
+        StoryKind::CertRotation => cert_rotation(w, ctx)?,
         _ => return Ok(false),
     }
     Ok(true)
@@ -173,7 +173,7 @@ fn oauth_consent(w: &mut World, ctx: &mut Ctx) {
     );
     let a = ctx.a.clone();
     let session = ctx.rng.uuid();
-    let s = signin(
+    let mut s = signin(
         w,
         &mut ctx.rng,
         &a,
@@ -185,6 +185,7 @@ fn oauth_consent(w: &mut World, ctx: &mut Ctx) {
         well_known("Microsoft Graph"),
         session,
     );
+    unknown_device(&mut s);
     push_signin(w, ctx, &a, s, true);
 }
 
@@ -210,14 +211,9 @@ fn low_risk_consent(w: &mut World, ctx: &mut Ctx) {
 
 /// A sign-in from the office to `Meeting Notes Pro`, which the user consented to before the
 /// window (the grant is added if the world lacks it); no consent event.
-fn app_signin_existing_consent(w: &mut World, ctx: &mut Ctx) {
+fn app_signin_existing_consent(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     let a: User = ctx.a.clone();
-    let app = w
-        .apps
-        .iter()
-        .find(|x| x.display_name == "Meeting Notes Pro")
-        .expect("the world has Meeting Notes Pro")
-        .clone();
+    let app = w.apps[app_index(w, |n| n == "Meeting Notes Pro", "Meeting Notes Pro")?].clone();
     let graph = well_known("Microsoft Graph");
     let granted = app.created + Duration::days(1);
     for scope in ["User.Read", "Calendars.Read"] {
@@ -257,6 +253,7 @@ fn app_signin_existing_consent(w: &mut World, ctx: &mut Ctx) {
         session,
     );
     push_signin(w, ctx, &a, s, true);
+    Ok(())
 }
 
 fn key_description(c: &Credential) -> String {
@@ -272,14 +269,10 @@ fn key_description(c: &Credential) -> String {
 
 /// A password credential added to the `Helpdesk Portal` service principal from the attacker's
 /// replay address.
-fn app_credential_added(w: &mut World, ctx: &mut Ctx) {
+fn app_credential_added(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     let a = ctx.a.clone();
     let t = ctx.t;
-    let i = w
-        .apps
-        .iter()
-        .position(|x| x.display_name == "Helpdesk Portal")
-        .expect("the world has Helpdesk Portal");
+    let i = app_index(w, |n| n == "Helpdesk Portal", "Helpdesk Portal")?;
     let cred = Credential {
         key_id: ctx.rng.uuid(),
         kind: CredKind::Password,
@@ -331,13 +324,15 @@ fn app_credential_added(w: &mut World, ctx: &mut Ctx) {
     // credential one above.
     let u = super::aad_for(w, &mut ctx.rng, &update, "Update service principal.");
     super::push_ual(w, ctx, u);
+    Ok(())
 }
 
-/// An admin, signed in from the office, replaces the payroll app's certificate that expires in
-/// 20 days with a new one on the application object.
-fn cert_rotation(w: &mut World, ctx: &mut Ctx) {
+/// An admin, signed in from the office, rotates the payroll app's certificate: the current one
+/// expires in 20 days (its end date is moved there, so the state and the audit agree), and a new
+/// two-year certificate is added to the application object beside it.
+fn cert_rotation(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     const ACTIVITY: &str = "Update application – Certificates and secrets management ";
-    let admin = first_admin(w);
+    let admin = first_admin(w)?;
     let t = ctx.t;
     let session = ctx.rng.uuid();
     let s = signin(
@@ -354,21 +349,16 @@ fn cert_rotation(w: &mut World, ctx: &mut Ctx) {
     );
     push_signin(w, ctx, &admin, s, true);
 
-    let i = w
-        .apps
-        .iter()
-        .position(|x| x.display_name.ends_with(" Payroll Sync"))
-        .expect("the world has the payroll app");
-    let old_end = t + Duration::days(20);
-    let mut old: Vec<Credential> = w.apps[i]
+    let i = app_index(w, |n| n.ends_with(" Payroll Sync"), "payroll")?;
+    let expiring = t + Duration::days(20);
+    for c in w.apps[i]
         .credentials
-        .iter()
+        .iter_mut()
         .filter(|c| c.kind == CredKind::Certificate && !c.on_service_principal)
-        .cloned()
-        .collect();
-    for c in &mut old {
-        c.end = old_end;
+    {
+        c.end = expiring;
     }
+    let before: Vec<String> = w.apps[i].credentials.iter().map(key_description).collect();
     let new = Credential {
         key_id: ctx.rng.uuid(),
         kind: CredKind::Certificate,
@@ -379,22 +369,19 @@ fn cert_rotation(w: &mut World, ctx: &mut Ctx) {
         added_by: Some(admin.upn.clone()),
         added: t,
     };
-    let app = &mut w.apps[i];
-    app.credentials
-        .retain(|c| !(c.kind == CredKind::Certificate && !c.on_service_principal));
-    app.credentials.push(new.clone());
-    let app = app.clone();
+    w.apps[i].credentials.push(new.clone());
+    let app = w.apps[i].clone();
     ctx.ev.push(Evidence::Credential {
         app_object_id: app.object_id,
         key_id: new.key_id,
         on_service_principal: false,
     });
 
-    let old_text: Vec<String> = old.iter().map(key_description).collect();
+    let after: Vec<String> = app.credentials.iter().map(key_description).collect();
     let modified = vec![(
         "KeyDescription".to_string(),
-        format!("[{}]", old_text.join(",")),
-        format!("[{}]", key_description(&new)),
+        format!("[{}]", before.join(",")),
+        format!("[{}]", after.join(",")),
     )];
     let audit = dir_audit(
         &mut ctx.rng,
@@ -414,4 +401,5 @@ fn cert_rotation(w: &mut World, ctx: &mut Ctx) {
         }],
     );
     push_audit_and_ual(w, ctx, audit, Some(ACTIVITY));
+    Ok(())
 }

@@ -245,6 +245,18 @@ impl World {
         v
     }
 
+    /// Every Identity Protection risky user, by UPN: the baseline's, overridden per user by the
+    /// storylines' (`world.risky_users`). Like the detections, exposed only with Entra ID P2.
+    pub fn risky_users(&self) -> BTreeMap<String, RiskyUser> {
+        let mut m: BTreeMap<String, RiskyUser> = baseline::risk(self)
+            .1
+            .into_iter()
+            .map(|r| (r.upn.clone(), r))
+            .collect();
+        m.extend(self.risky_users.iter().map(|(k, v)| (k.clone(), v.clone())));
+        m
+    }
+
     /// Whether Microsoft 365 recorded UAL record `u` under the tenant's audit settings at its
     /// time: never while UAL ingestion is off; mailbox-audit records (ExchangeItem,
     /// ExchangeItemGroup, ExchangeItemAggregated, and the Send / SendAs / SendOnBehalf /

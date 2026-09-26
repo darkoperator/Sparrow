@@ -186,8 +186,11 @@ fn story_state_changes_match_their_events() {
         .iter()
         .find(|a| a.display_name.ends_with("Payroll Sync"))
         .unwrap();
-    assert_eq!(payroll.credentials.len(), 1);
-    assert_eq!(payroll.credentials[0].start, cert.time);
+    // The expiring certificate (within 30 days of the rotation) and its replacement.
+    assert_eq!(payroll.credentials.len(), 2);
+    assert!(payroll.credentials[0].end > cert.time);
+    assert!(payroll.credentials[0].end <= cert.time + chrono::Duration::days(30));
+    assert_eq!(payroll.credentials[1].start, cert.time);
 
     let (w, recs) = world("hawk-investigate");
     let mobile = recs.iter().find(|r| r.id == "s-mobile").unwrap();
@@ -290,4 +293,74 @@ fn directory_audits_and_risk_merge_baseline_and_story() {
     let risk = w.risk_detections();
     assert!(risk.iter().any(|r| r.event_type == "anomalousToken"));
     assert!(risk.len() > w.story.risk.len(), "baseline detection kept");
+}
+
+#[test]
+fn no_ip_has_two_locations() {
+    for name in [
+        "bec-aitm",
+        "hawk-investigate",
+        "bec-e3-audit-gaps",
+        "bec-o365-no-p1",
+    ] {
+        let (w, _) = world(name);
+        let mut seen: std::collections::BTreeMap<std::net::IpAddr, (String, u32)> =
+            std::collections::BTreeMap::new();
+        for d in 0..w.scenario.window.days {
+            let date = w.window_start().date_naive() + chrono::Duration::days(d.into());
+            for s in w.day(date).signins {
+                let loc = (s.location.city.clone(), s.asn);
+                assert_eq!(s.asn, s.location.asn, "{name} {}", s.ip);
+                let prev = seen.entry(s.ip).or_insert_with(|| loc.clone());
+                assert_eq!(*prev, loc, "{name}: {} seen at two locations", s.ip);
+            }
+        }
+    }
+}
+
+#[test]
+fn risky_users_merge_baseline_and_story() {
+    let (w, _) = world("bec-aitm");
+    let all = w.risky_users();
+    let u2 = &w.user(2).upn;
+    assert_eq!(all.keys().filter(|k| *k == u2).count(), 1);
+    assert_eq!(all[u2].state, "dismissed");
+    assert_eq!(all[&w.user(1).upn].state, "confirmedCompromised");
+}
+
+#[test]
+fn new_hire_registers_a_single_authenticator() {
+    let (w, recs) = world("bec-aitm");
+    let hire = recs.iter().find(|r| r.id == "l-newhire").unwrap();
+    let m = &w.mfa[&hire.actor];
+    assert_eq!(
+        m.methods
+            .iter()
+            .filter(|x| *x == "microsoftAuthenticator")
+            .count(),
+        1
+    );
+    let update = w
+        .story
+        .ual
+        .iter()
+        .find(|u| u.operation == "Update user." && hire.evidence.contains(&Evidence::Ual(u.id)))
+        .unwrap();
+    let prop = &update.audit["ModifiedProperties"][0];
+    assert_eq!(prop["Name"], "StrongAuthenticationPhoneAppDetail");
+    assert_eq!(prop["OldValue"], "[]");
+}
+
+#[test]
+fn consent_signin_uses_an_unknown_device() {
+    let (w, recs) = world("bec-aitm");
+    let c = recs.iter().find(|r| r.id == "s-consent").unwrap();
+    let s = w
+        .story
+        .signins
+        .iter()
+        .find(|s| c.evidence.contains(&Evidence::SignIn(s.id)))
+        .unwrap();
+    assert_eq!(s.ip, w.attacker.replay_ip);
+    assert!(s.device.device_id.is_nil() && s.device_managed.is_none());
 }

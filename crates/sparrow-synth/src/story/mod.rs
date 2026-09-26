@@ -12,14 +12,14 @@ mod apps;
 mod identity;
 
 use crate::events::{Actor, DirAudit, RiskDetection, SignIn, SignInType, Target, Ual};
-use crate::reserved::{V4_BLOCKS, WELL_KNOWN_GUIDS};
+use crate::reserved::{IpAllocator, Net, WELL_KNOWN_GUIDS};
 use crate::rng::{Rng, stream};
 use crate::scenario::{Polarity, StoryKind, StorySpec};
 use crate::ual;
 use crate::world::{Client, Location, User, World};
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::IpAddr;
 use uuid::Uuid;
 
 /// Modified properties of a directory change: (name, old value, new value), as JSON text.
@@ -88,6 +88,28 @@ pub(crate) struct Ctx<'a> {
     pub a: User,
     pub rng: Rng,
     pub ev: Vec<Evidence>,
+    /// Roaming addresses already handed out, shared by every storyline of the world.
+    pub roaming: &'a mut Roaming,
+}
+
+/// Hands out travel / mobile / cloud look-alike addresses, each once per world: RFC 5737
+/// TEST-NET-2 hosts, then RFC 3849 addresses of the roaming role, so no address ever carries two
+/// locations.
+#[derive(Default)]
+pub(crate) struct Roaming {
+    alloc: IpAllocator,
+    used: u32,
+}
+
+impl Roaming {
+    pub fn next(&mut self) -> IpAddr {
+        self.used += 1;
+        if self.used <= 254 {
+            IpAddr::V4(self.alloc.v4(Net::Roaming))
+        } else {
+            IpAddr::V6(self.alloc.v6(Net::Roaming))
+        }
+    }
 }
 
 /// Applies every storyline and look-alike of `world.scenario` in resolved time order (ties by
@@ -95,6 +117,7 @@ pub(crate) struct Ctx<'a> {
 pub fn apply(world: &mut World) -> Result<Vec<StoryRecord>> {
     let scenario = world.scenario.clone();
     let mut out = Vec::new();
+    let mut roaming = Roaming::default();
     for spec in scenario.story_order()? {
         let t = scenario.story_time(&spec.id)?;
         let a = world.user(spec.actor.unwrap_or(1)).clone();
@@ -104,6 +127,7 @@ pub fn apply(world: &mut World) -> Result<Vec<StoryRecord>> {
             a,
             rng: stream(world.seed, &format!("story/{}", spec.id)),
             ev: Vec::new(),
+            roaming: &mut roaming,
         };
         if !identity::apply_one(world, &mut ctx)? && !apps::apply_one(world, &mut ctx)? {
             return Err(Error::Scenario(format!(
@@ -134,11 +158,19 @@ pub(crate) fn well_known(desc: &str) -> Uuid {
 }
 
 /// The performer of admin kinds: the first admin.
-pub(crate) fn first_admin(w: &World) -> User {
+pub(crate) fn first_admin(w: &World) -> Result<User> {
     w.admins
         .first()
-        .expect("a scenario has at least one admin")
-        .clone()
+        .cloned()
+        .ok_or_else(|| Error::Scenario("admin-performed storylines need an admin".into()))
+}
+
+/// The world's app named `name` (index into `w.apps`).
+pub(crate) fn app_index(w: &World, pred: impl Fn(&str) -> bool, what: &str) -> Result<usize> {
+    w.apps
+        .iter()
+        .position(|a| pred(&a.display_name))
+        .ok_or_else(|| Error::Scenario(format!("the tenant has no {what} app")))
 }
 
 /// A risk level as Graph shows it: the level with Entra ID P2, `hidden` without.
@@ -148,12 +180,6 @@ pub(crate) fn risk_text(w: &World, level: &str) -> String {
     } else {
         "hidden".to_string()
     }
-}
-
-/// A travel / mobile / cloud look-alike address (RFC 5737 TEST-NET-2).
-pub(crate) fn roaming_ip(rng: &mut Rng) -> IpAddr {
-    let b = V4_BLOCKS[1];
-    IpAddr::V4(Ipv4Addr::new(b[0], b[1], b[2], rng.range(1, 254) as u8))
 }
 
 /// A successful, clean sign-in of `user`: interactive ones satisfy MFA by app notification

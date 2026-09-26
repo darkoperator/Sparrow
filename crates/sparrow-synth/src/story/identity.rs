@@ -4,15 +4,15 @@
 
 use super::{
     Ctx, Evidence, Modified, dir_audit, first_admin, push_audit, push_audit_and_ual, push_risk,
-    push_signin, push_ual, risk_text, roaming_ip, signin, unknown_device, user_target, well_known,
+    push_signin, push_ual, risk_text, signin, unknown_device, user_target, well_known,
 };
-use crate::Result;
 use crate::events::{RiskDetection, SignInType, Target};
 use crate::scenario::StoryKind;
 use crate::ual;
 use crate::world::{
     LOCATIONS, Location, MICROSOFT_ASN, MfaRegistration, MobileDevice, RiskyUser, User, World,
 };
+use crate::{Error, Result};
 use chrono::{DateTime, Duration, Utc};
 use serde_json::json;
 use std::net::IpAddr;
@@ -21,19 +21,19 @@ use std::net::IpAddr;
 pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
     match ctx.spec.kind {
         StoryKind::AitmSignin => aitm_signin(w, ctx),
-        StoryKind::ConfirmedCompromised => confirmed_compromised(w, ctx),
+        StoryKind::ConfirmedCompromised => confirmed_compromised(w, ctx)?,
         StoryKind::MfaMethodAdded => {
             let ip = w.attacker.replay_ip;
-            register_authenticator(w, ctx, ip);
+            register_authenticator(w, ctx, ip, "Pixel 8");
         }
         StoryKind::MfaNewHire => mfa_new_hire(w, ctx),
-        StoryKind::DomainFederation => domain_federation(w, ctx),
-        StoryKind::DomainPropertyUpdate => domain_property_update(w, ctx),
+        StoryKind::DomainFederation => domain_federation(w, ctx)?,
+        StoryKind::DomainPropertyUpdate => domain_property_update(w, ctx)?,
         StoryKind::NewMobileDevice => new_mobile_device(w, ctx),
         StoryKind::OldMobileDevice => old_mobile_device(w, ctx),
         StoryKind::RiskDismissed => risk_dismissed(w, ctx),
         StoryKind::MicrosoftAsnSignin => microsoft_asn_signin(w, ctx),
-        StoryKind::PlausibleTravel => plausible_travel(w, ctx),
+        StoryKind::PlausibleTravel => plausible_travel(w, ctx)?,
         StoryKind::SameIpTokenUse => same_ip_token_use(w, ctx),
         _ => return Ok(false),
     }
@@ -217,8 +217,8 @@ fn aitm_signin(w: &mut World, ctx: &mut Ctx) {
 }
 
 /// An admin confirms the user compromised in Identity Protection.
-fn confirmed_compromised(w: &mut World, ctx: &mut Ctx) {
-    let admin = first_admin(w);
+fn confirmed_compromised(w: &mut World, ctx: &mut Ctx) -> Result<()> {
+    let admin = first_admin(w)?;
     let a = ctx.a.clone();
     let t = ctx.t;
     let r = risk_detection(
@@ -253,29 +253,39 @@ fn confirmed_compromised(w: &mut World, ctx: &mut Ctx) {
         vec![user_target(&a, Vec::new())],
     );
     push_audit(w, ctx, audit);
+    Ok(())
 }
 
-/// The Authenticator app registered as a second device for the storyline's user, from `ip`:
+/// The Authenticator app on `device_name` registered for the storyline's user, from `ip`:
 /// the security-info registration, the `Update user` of the strong-authentication details (and
-/// its UAL record), and the MFA registration state.
-fn register_authenticator(w: &mut World, ctx: &mut Ctx, ip: IpAddr) {
+/// its UAL record), and the MFA registration state. A user who already has the Authenticator
+/// app (on their own device) gets a second one.
+fn register_authenticator(w: &mut World, ctx: &mut Ctx, ip: IpAddr, device_name: &str) {
     let a = ctx.a.clone();
     let t = ctx.t;
-    let old_device = ctx.rng.uuid();
-    let new_device = ctx.rng.uuid();
-    let old = json!([{
-        "DeviceName": a.client.device_name,
+    let registered_before = w.mfa.get(&a.upn).map_or(0, |m| {
+        m.methods
+            .iter()
+            .filter(|x| *x == "microsoftAuthenticator")
+            .count()
+    });
+    let mut devices: Vec<serde_json::Value> = Vec::new();
+    for _ in 0..registered_before {
+        devices.push(json!({
+            "DeviceName": a.client.device_name,
+            "DeviceToken": "",
+            "Id": ctx.rng.uuid().to_string(),
+            "AuthenticationType": "Notification, OTP",
+        }));
+    }
+    let old = serde_json::Value::Array(devices.clone());
+    devices.push(json!({
+        "DeviceName": device_name,
         "DeviceToken": "",
-        "Id": old_device.to_string(),
-        "AuthenticationType": "Notification, OTP",
-    }]);
-    let mut new = old.clone();
-    new.as_array_mut().expect("array").push(json!({
-        "DeviceName": "Pixel 8",
-        "DeviceToken": "",
-        "Id": new_device.to_string(),
+        "Id": ctx.rng.uuid().to_string(),
         "AuthenticationType": "Notification, OTP",
     }));
+    let new = serde_json::Value::Array(devices);
 
     let registered = dir_audit(
         &mut ctx.rng,
@@ -330,9 +340,16 @@ fn register_authenticator(w: &mut World, ctx: &mut Ctx, ip: IpAddr) {
     ctx.ev.push(Evidence::Mfa(a.upn.clone()));
 }
 
-/// A new starter's first sign-in from the office, then their Authenticator registration.
+/// A new starter with no second factor yet: a password-only sign-in from the office, then the
+/// registration of the Authenticator app on their own phone (their only one).
 fn mfa_new_hire(w: &mut World, ctx: &mut Ctx) {
     let a = ctx.a.clone();
+    if let Some(m) = w.mfa.get_mut(&a.upn) {
+        m.methods.retain(|x| x != "microsoftAuthenticator");
+        m.default_method = None;
+        m.is_mfa_registered = false;
+        m.is_mfa_capable = false;
+    }
     let session = ctx.rng.uuid();
     let mut s = signin(
         w,
@@ -351,7 +368,7 @@ fn mfa_new_hire(w: &mut World, ctx: &mut Ctx) {
     s.mfa = None;
     s.auth_methods = vec!["Password".to_string()];
     push_signin(w, ctx, &a, s, true);
-    register_authenticator(w, ctx, a.office_ip);
+    register_authenticator(w, ctx, a.office_ip, &a.client.device_name);
 }
 
 fn domain_target(domain: &str, modified: Modified) -> Target {
@@ -365,16 +382,24 @@ fn domain_target(domain: &str, modified: Modified) -> Target {
 }
 
 /// An admin session from the attacker's replay address adds, verifies and federates a domain.
-fn domain_federation(w: &mut World, ctx: &mut Ctx) {
-    let admin = first_admin(w);
+fn domain_federation(w: &mut World, ctx: &mut Ctx) -> Result<()> {
+    let admin = first_admin(w)?;
     let ip = w.attacker.replay_ip;
-    let word = w
+    let word: String = w
         .tenant
         .name
         .split_whitespace()
         .next()
-        .unwrap_or("tenant")
+        .unwrap_or_default()
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect::<String>()
         .to_ascii_lowercase();
+    let word = if word.is_empty() {
+        "tenant".to_string()
+    } else {
+        word
+    };
     let domain = format!("{word}-sso.test");
     let steps: [(i64, &str, &str, Modified); 3] = [
         (
@@ -409,11 +434,12 @@ fn domain_federation(w: &mut World, ctx: &mut Ctx) {
         );
         push_audit_and_ual(w, ctx, audit, Some(op));
     }
+    Ok(())
 }
 
 /// An admin marks the primary domain as the default from the office.
-fn domain_property_update(w: &mut World, ctx: &mut Ctx) {
-    let admin = first_admin(w);
+fn domain_property_update(w: &mut World, ctx: &mut Ctx) -> Result<()> {
+    let admin = first_admin(w)?;
     let domain = w.primary_domain().to_string();
     let audit = dir_audit(
         &mut ctx.rng,
@@ -428,12 +454,13 @@ fn domain_property_update(w: &mut World, ctx: &mut Ctx) {
             &domain,
             vec![(
                 "IsDefault".to_string(),
-                "false".to_string(),
-                "true".to_string(),
+                "\"false\"".to_string(),
+                "\"true\"".to_string(),
             )],
         )],
     );
     push_audit_and_ual(w, ctx, audit, Some("Update domain."));
+    Ok(())
 }
 
 /// A new iPhone starts syncing the user's mailbox over ActiveSync.
@@ -530,7 +557,7 @@ fn risk_dismissed(w: &mut World, ctx: &mut Ctx) {
 /// A sign-in from a Cloud PC: a Microsoft address (not a hosting provider) at the user's home.
 fn microsoft_asn_signin(w: &mut World, ctx: &mut Ctx) {
     let a = ctx.a.clone();
-    let ip = roaming_ip(&mut ctx.rng);
+    let ip = ctx.roaming.next();
     let location = Location {
         asn: MICROSOFT_ASN.0,
         asn_org: MICROSOFT_ASN.1.to_string(),
@@ -566,7 +593,7 @@ fn distance_km(a: &Location, b: &Location) -> f64 {
 }
 
 /// A flight: home 14 hours before, then a far city a plane could reach in that time.
-fn plausible_travel(w: &mut World, ctx: &mut Ctx) {
+fn plausible_travel(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     let a = ctx.a.clone();
     let hours = 14.0;
     // User homes and ordinary destinations; the last two cities are attacker infrastructure.
@@ -577,12 +604,13 @@ fn plausible_travel(w: &mut World, ctx: &mut Ctx) {
             let d = distance_km(&a.home, c);
             d >= 500.0 && d / hours < 800.0
         })
-        .max_by(|x, y| {
-            distance_km(&a.home, x)
-                .partial_cmp(&distance_km(&a.home, y))
-                .expect("finite distances")
-        })
-        .expect("a reachable far city")
+        .max_by(|x, y| distance_km(&a.home, x).total_cmp(&distance_km(&a.home, y)))
+        .ok_or_else(|| {
+            Error::Scenario(format!(
+                "{}: no city 500 km or more from {} is reachable in {hours} hours",
+                ctx.spec.id, a.home.city
+            ))
+        })?
         .clone();
     let office_home = well_known("OfficeHome");
     let exchange = well_known("Office 365 Exchange Online");
@@ -602,7 +630,7 @@ fn plausible_travel(w: &mut World, ctx: &mut Ctx) {
     );
     push_signin(w, ctx, &a, before, true);
 
-    let ip = roaming_ip(&mut ctx.rng);
+    let ip = ctx.roaming.next();
     let session = ctx.rng.uuid();
     let after = signin(
         w,
@@ -617,6 +645,7 @@ fn plausible_travel(w: &mut World, ctx: &mut Ctx) {
         session,
     );
     push_signin(w, ctx, &a, after, true);
+    Ok(())
 }
 
 /// An interactive sign-in and the refresh of its token 20 minutes later, same IP and client.
