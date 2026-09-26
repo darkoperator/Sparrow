@@ -65,7 +65,7 @@ pub(super) fn investigate(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
     Ok(())
 }
 
-fn mailbox<'w>(world: &'w World, u: &User) -> Option<&'w Mailbox> {
+pub(super) fn mailbox<'w>(world: &'w World, u: &User) -> Option<&'w Mailbox> {
     world.mailboxes.get(&u.upn)
 }
 
@@ -86,7 +86,7 @@ fn email_addresses(world: &World, u: &User) -> Val {
 
 /// Get-HawkUserConfiguration: Format-List dumps of Get-EXOMailbox, its statistics, its folder
 /// statistics and Get-EXOCasMailbox.
-fn configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
+pub(super) fn configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
     let world = c.world;
     let upn = u.upn.as_str();
     c.log().action(format!(
@@ -274,7 +274,7 @@ fn words(list: &[String]) -> Val {
 
 /// A Get-InboxRule object; Hawk replaces the description's line breaks with spaces and drops
 /// its tabs before writing.
-fn inbox_rule_row(world: &World, u: &User, rule: &InboxRule) -> Row {
+pub(super) fn inbox_rule_row(world: &World, u: &User, rule: &InboxRule) -> Row {
     let folder = |f: &Option<String>| opt(f.as_ref().map(|f| format!("{}:\\{f}", u.alias)));
     let description = rule.description().replace("\r\n", " ").replace('\t', "");
     vec![
@@ -330,7 +330,7 @@ fn inbox_rule_row(world: &World, u: &User, rule: &InboxRule) -> Row {
 
 /// `Get-HawkUserInboxRule`'s investigate test (H12): DeleteMessage, or a forward / redirect
 /// target (typed values: `$false` is not flagged).
-fn suspicious_rule(rule: &InboxRule) -> bool {
+pub(super) fn suspicious_rule(rule: &InboxRule) -> bool {
     rule.delete_message
         || !rule.forward_as_attachment_to.is_empty()
         || !rule.forward_to.is_empty()
@@ -483,7 +483,7 @@ fn inbox_rules(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
 /// Get-HawkUserEmailForwarding (H13): the report row goes to the user folder and, appended,
 /// to `Tenant/User_ForwardingReport`; a mailbox with forwarding also to
 /// `_Investigate_Users_WithForwarding`.
-fn forwarding(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
+pub(super) fn forwarding(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
     let world = c.world;
     let upn = u.upn.as_str();
     c.log().action(format!(
@@ -860,7 +860,7 @@ fn id_types(v: &Value) -> String {
 /// Target as `id:type` lists, CreationTime in the host's short `g` form; the columns
 /// `CreationTime, UserId, Workload, ClientIP, CountryName, KnownMicrosoftIP` first; the rows
 /// sorted by the CreationTime text. Returns (rows, record index per row).
-fn converted(c: &Ctx<'_>, records: &[Ual]) -> (Vec<Row>, Vec<usize>) {
+pub(super) fn converted(c: &Ctx<'_>, records: &[Ual]) -> (Vec<Row>, Vec<usize>) {
     let host = c.omft.host;
     let geo = [
         "CountryName",
@@ -1141,7 +1141,7 @@ fn admin_audit(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
 
 /// Get-HawkUserMessageTrace: `Get-MessageTrace -Sender <address>` with the cmdlet's default
 /// window, the 48 hours before the run (not Hawk's window).
-fn message_trace(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
+pub(super) fn message_trace(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
     let world = c.world;
     let upn = u.upn.as_str();
     c.log().action(format!(
@@ -1340,7 +1340,7 @@ fn gated(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User, step: &Gated) -> Result
 
 /// Get-HawkUserMobileDevice (H15): devices first synced after Hawk's start date are appended
 /// one by one to `_Investigate_MobileDevice`.
-fn mobile_devices(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
+pub(super) fn mobile_devices(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
     let world = c.world;
     let upn = u.upn.as_str();
     c.log().action(format!(

@@ -1,34 +1,87 @@
-//! `Out-LogFile` (research hawk layouts §3): `Hawk.log` lines `[yyyy-MM-dd HH:mm:ssZ] -
-//! [LEVEL] - message` in UTC (INFO padded with three spaces, ERROR with two, PROMPT followed by
-//! two spaces, untagged `-NoDisplay` lines), and `_Investigate.txt`, which receives the
-//! `-Notice` lines (also in Hawk.log) and the `-SilentNotice` `Additional Information: <path>`
-//! lines (only there). Both files are written once at the end with `Out-File`'s default
-//! encoding of the session that created them.
+//! `Out-LogFile` in its two dialects.
+//!
+//! Hawk 4.0 (research hawk layouts §3): `Hawk.log` lines `[yyyy-MM-dd HH:mm:ssZ] - [LEVEL] -
+//! message` in UTC (INFO padded with three spaces, ERROR with two, PROMPT followed by two
+//! spaces, untagged `-NoDisplay` lines), and `_Investigate.txt`, which receives the `-Notice`
+//! lines (also in Hawk.log) and the `-SilentNotice` `Additional Information: <path>` lines (only
+//! there).
+//!
+//! Hawk 3.1 (research §7.1, capture survey §1): every line stamped `[<Get-Date -Format G>]`,
+//! the host culture's long date and time in the host's local time (`[M/d/yyyy h:mm:ss tt]` on
+//! en-US, `[dd/MM/yyyy HH:mm:ss]` on en-GB); `[ACTION]`, `[ERROR]` and `[WARNING]` tags, every
+//! other line untagged; `-Notice` lines are `## INVESTIGATE ##` section lines (in both files);
+//! `-SilentNotice` writes an indented `Additional Information: <path>` line to
+//! `_Investigate.txt` only. The culture timestamps are date evidence of both files.
+//!
+//! Both files are written once at the end with `Out-File`'s default encoding of the session
+//! that created them.
 
 use crate::Result;
-use crate::ps::Encoding;
+use crate::ps::{DateEvidence, DtKind, Encoding, Host, PsDate, note_evidence};
 use crate::rng::Rng;
 use crate::tree::{FileSpec, Tree};
 use chrono::{DateTime, Duration, Utc};
 use std::collections::BTreeSet;
+
+/// Which Hawk wrote the log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dialect {
+    /// Hawk 4.0: UTC ISO stamps, padded level tags.
+    V4,
+    /// Hawk 3.1: stamps in the culture and local time of this host.
+    V3(Host),
+}
+
+/// The level of one `Hawk.log` line (the PSFramework export of Hawk 3 lists them too).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    Action,
+    Info,
+    Error,
+    Warning,
+    Prompt,
+    Plain,
+    Notice,
+}
+
+/// One `Hawk.log` line before rendering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub at: DateTime<Utc>,
+    pub level: Level,
+    pub message: String,
+}
 
 /// The two log files of one Hawk output folder, with the clock that stamps their lines.
 #[derive(Debug, Clone)]
 pub struct Log {
     clock: DateTime<Utc>,
     rng: Rng,
+    dialect: Dialect,
     lines: Vec<String>,
+    entries: Vec<Entry>,
     investigate: Vec<String>,
+    log_dates: DateEvidence,
+    investigate_dates: DateEvidence,
 }
 
 impl Log {
-    /// A log whose first line is stamped `start`; `rng` draws the seconds between lines.
+    /// A Hawk 4 log whose first line is stamped `start`; `rng` draws the seconds between lines.
     pub fn new(start: DateTime<Utc>, rng: Rng) -> Log {
+        Log::with_dialect(start, rng, Dialect::V4)
+    }
+
+    /// A log of `dialect`.
+    pub fn with_dialect(start: DateTime<Utc>, rng: Rng, dialect: Dialect) -> Log {
         Log {
             clock: start,
             rng,
+            dialect,
             lines: Vec::new(),
+            entries: Vec::new(),
             investigate: Vec::new(),
+            log_dates: DateEvidence::default(),
+            investigate_dates: DateEvidence::default(),
         }
     }
 
@@ -49,59 +102,100 @@ impl Log {
         }
     }
 
-    fn stamp(&self) -> String {
-        self.clock.format("[%Y-%m-%d %H:%M:%SZ]").to_string()
+    /// The stamp of a line written now; a Hawk 3 stamp is also noted in `ev`.
+    fn stamp(&self, ev: &mut DateEvidence) -> String {
+        match self.dialect {
+            Dialect::V4 => self.clock.format("[%Y-%m-%d %H:%M:%SZ]").to_string(),
+            Dialect::V3(host) => {
+                note_evidence(&host, ev, &PsDate::dotnet(self.clock, DtKind::Local));
+                format!("[{}]", host.culture_date(self.clock, DtKind::Local))
+            }
+        }
     }
 
-    fn push(&mut self, tag: &str, msg: &str) {
-        let line = format!("{} - {tag}{msg}", self.stamp());
-        self.lines.push(line);
+    /// The tag (with its separator) of `level` in this dialect.
+    fn tag(&self, level: Level) -> &'static str {
+        match (self.dialect, level) {
+            (Dialect::V4, Level::Action) => "[ACTION] - ",
+            (Dialect::V4, Level::Info) => "[INFO]   - ",
+            (Dialect::V4, Level::Error) => "[ERROR]  - ",
+            (Dialect::V4, Level::Warning) => "[WARNING] - ",
+            (Dialect::V4, Level::Prompt) => "[PROMPT] -  ",
+            (Dialect::V4, Level::Notice) => "[INVESTIGATE] - ",
+            (Dialect::V3(_), Level::Action) => "[ACTION] - ",
+            (Dialect::V3(_), Level::Error) => "[ERROR] - ",
+            (Dialect::V3(_), Level::Warning) => "[WARNING] - ",
+            (Dialect::V3(_), Level::Notice) => "## INVESTIGATE ## - ",
+            (_, _) => "",
+        }
+    }
+
+    fn push(&mut self, level: Level, msg: &str) -> String {
+        let mut ev = DateEvidence::default();
+        let line = format!("{} - {}{msg}", self.stamp(&mut ev), self.tag(level));
+        self.log_dates.merge(&ev);
+        self.lines.push(line.clone());
+        self.entries.push(Entry {
+            at: self.clock,
+            level,
+            message: msg.to_string(),
+        });
+        line
     }
 
     /// `-Action`.
     pub fn action(&mut self, msg: impl AsRef<str>) {
-        self.push("[ACTION] - ", msg.as_ref());
+        self.push(Level::Action, msg.as_ref());
     }
 
-    /// `-Information`.
+    /// `-Information` (Hawk 3 has no such switch: an untagged line).
     pub fn info(&mut self, msg: impl AsRef<str>) {
-        self.push("[INFO]   - ", msg.as_ref());
+        self.push(Level::Info, msg.as_ref());
     }
 
     /// `-isError`.
     pub fn error(&mut self, msg: impl AsRef<str>) {
-        self.push("[ERROR]  - ", msg.as_ref());
+        self.push(Level::Error, msg.as_ref());
     }
 
     /// `-isWarning`.
     pub fn warning(&mut self, msg: impl AsRef<str>) {
-        self.push("[WARNING] - ", msg.as_ref());
+        self.push(Level::Warning, msg.as_ref());
     }
 
-    /// `-isPrompt`.
+    /// `-isPrompt` (Hawk 3: an untagged line).
     pub fn prompt(&mut self, msg: impl AsRef<str>) {
-        self.push("[PROMPT] -  ", msg.as_ref());
+        self.push(Level::Prompt, msg.as_ref());
     }
 
     /// No level switch (`-NoDisplay` lines): untagged.
     pub fn plain(&mut self, msg: impl AsRef<str>) {
-        self.push("", msg.as_ref());
+        self.push(Level::Plain, msg.as_ref());
     }
 
     /// `-Notice`: the same line in Hawk.log and `_Investigate.txt`.
     pub fn notice(&mut self, msg: impl AsRef<str>) {
-        let line = format!("{} - [INVESTIGATE] - {}", self.stamp(), msg.as_ref());
-        self.lines.push(line.clone());
+        let line = self.push(Level::Notice, msg.as_ref());
+        if let Dialect::V3(host) = self.dialect {
+            note_evidence(
+                &host,
+                &mut self.investigate_dates,
+                &PsDate::dotnet(self.clock, DtKind::Local),
+            );
+        }
         self.investigate.push(line);
     }
 
     /// `-SilentNotice`: only `_Investigate.txt`.
     pub fn silent_notice(&mut self, path: impl AsRef<str>) {
-        let line = format!(
-            "{} - [INVESTIGATE] - Additional Information: {}",
-            self.stamp(),
-            path.as_ref()
-        );
+        let line = match self.dialect {
+            Dialect::V4 => format!(
+                "{} - [INVESTIGATE] - Additional Information: {}",
+                self.stamp(&mut DateEvidence::default()),
+                path.as_ref()
+            ),
+            Dialect::V3(_) => format!("\tAdditional Information: {}", path.as_ref()),
+        };
         self.investigate.push(line);
     }
 
@@ -110,14 +204,45 @@ impl Log {
         &self.lines
     }
 
+    /// The Hawk.log lines before rendering.
+    pub fn entries(&self) -> &[Entry] {
+        &self.entries
+    }
+
     /// The `_Investigate.txt` lines written so far.
     pub fn investigate_lines(&self) -> &[String] {
         &self.investigate
     }
 
+    /// The `collector_flags` rows `_Investigate.txt` loads: one per distinct entry. A Hawk 4
+    /// entry is a line. A Hawk 3 entry is a stamped line (its stamp and message) or an indented
+    /// line, which takes the stamp of the stamped line above it.
+    fn investigate_flags(&self) -> u64 {
+        match self.dialect {
+            Dialect::V4 => self.investigate.iter().collect::<BTreeSet<_>>().len() as u64,
+            Dialect::V3(_) => {
+                let mut stamp: Option<&str> = None;
+                let mut seen: BTreeSet<(Option<&str>, &str)> = BTreeSet::new();
+                for line in &self.investigate {
+                    match line.strip_prefix('[').and_then(|l| l.split_once("] - ")) {
+                        Some((ts, rest)) => {
+                            stamp = Some(ts);
+                            let msg = rest.split_once("## - ").map_or(rest, |(_, m)| m);
+                            seen.insert((stamp, msg.trim()));
+                        }
+                        None => {
+                            seen.insert((stamp, line.trim()));
+                        }
+                    }
+                }
+                seen.len() as u64
+            }
+        }
+    }
+
     /// Writes `Hawk.log` and, when a notice was logged, `_Investigate.txt` into the root with
     /// `encoding` and `nl` line ends. `_Investigate.txt` loads one `collector_flags` row per
-    /// distinct line.
+    /// distinct entry.
     pub fn write(&self, tree: &mut Tree<'_>, encoding: Encoding, nl: &str) -> Result<()> {
         let join = |lines: &[String]| {
             lines
@@ -129,14 +254,19 @@ impl Log {
             &FileSpec::new("Hawk.log", Some("hawk.log"), encoding),
             &join(&self.lines),
         )?;
+        if self.log_dates.culture_dates > 0 {
+            tree.date_evidence("Hawk.log", self.log_dates);
+        }
         if !self.investigate.is_empty() {
             let rel = "_Investigate.txt";
             tree.write(
                 &FileSpec::new(rel, Some("hawk.investigate_txt"), encoding),
                 &join(&self.investigate),
             )?;
-            let distinct: BTreeSet<&String> = self.investigate.iter().collect();
-            tree.rows_counted(rel, "collector_flags", distinct.len() as u64);
+            tree.rows_counted(rel, "collector_flags", self.investigate_flags());
+            if self.investigate_dates.culture_dates > 0 {
+                tree.date_evidence(rel, self.investigate_dates);
+            }
         }
         Ok(())
     }
@@ -171,5 +301,36 @@ mod tests {
             log.investigate_lines()[1],
             "[2026-09-04 11:00:00Z] - [INVESTIGATE] - Additional Information: C:\\x\\Tenant\\f.csv"
         );
+    }
+
+    #[test]
+    fn hawk3_lines_carry_local_culture_stamps_and_section_notices() {
+        use crate::options::{Culture, PsEdition};
+        let t: DateTime<Utc> = "2026-09-04T13:05:09Z".parse().unwrap();
+        let host = Host::new(PsEdition::Ps51, Culture::EnUs, 120);
+        let mut log = Log::with_dialect(t, stream(1, "t"), Dialect::V3(host));
+        log.plain("*** Version 3.1.0 ***");
+        log.info("a");
+        log.action("b");
+        log.notice("c");
+        log.silent_notice("C:\\x\\Tenant\\f.csv");
+        log.silent_notice("C:\\x\\Tenant\\f.csv");
+        assert_eq!(
+            log.lines(),
+            [
+                "[9/4/2026 3:05:09 PM] - *** Version 3.1.0 ***",
+                "[9/4/2026 3:05:09 PM] - a",
+                "[9/4/2026 3:05:09 PM] - [ACTION] - b",
+                "[9/4/2026 3:05:09 PM] - ## INVESTIGATE ## - c",
+            ]
+        );
+        assert_eq!(
+            log.investigate_lines()[1],
+            "\tAdditional Information: C:\\x\\Tenant\\f.csv"
+        );
+        // The stamped notice and one indented line (the repeat has the same stamp).
+        assert_eq!(log.investigate_flags(), 2);
+        assert_eq!(log.log_dates.culture_dates, 4);
+        assert_eq!(log.log_dates.decisive, 0);
     }
 }

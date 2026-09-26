@@ -1,16 +1,19 @@
 //! `Out-MultipleFileType` (Hawk `internal/functions/Out-MultipleFileType.ps1`; research hawk
-//! layouts §2): collects its pipeline input and writes it as CSV (`Export-Csv -Encoding UTF8`,
-//! header = the first object's properties), TXT (`Format-List * | Out-File`, default
-//! encoding) and JSON (`ConvertTo-Json -Depth 100 | Out-File -Encoding UTF8`: one object gives
-//! a bare object, several an array), in that order, into `<root>\Tenant` or `<root>\<User>`
-//! as `<Prefix>[_<part of User before @>].<ext>`. `-Append` adds CSV rows under the existing
-//! header and another complete JSON document; no input writes no file (`No Data Found`).
-//! `-Notice` logs each written file to `_Investigate.txt`.
+//! layouts §2): collects its pipeline input and writes it as XML (`Export-Clixml` into an `XML`
+//! subfolder; only Hawk 3 callers pass `-xml`), CSV (`Export-Csv -Encoding UTF8`, header = the
+//! first object's properties), TXT (`Format-List * | Out-File`, default encoding) and JSON
+//! (`ConvertTo-Json -Depth 100 | Out-File`: one object gives a bare object, several an array),
+//! in that order, into `<root>\Tenant` or `<root>\<User>` as `<Prefix>[_<part of User before
+//! @>].<ext>`. Hawk 4 writes the JSON with `-Encoding UTF8`, Hawk 3.1 with `Out-File`'s default
+//! encoding (UTF-16LE on 5.1; research §7.1). `-Append` adds CSV rows under the existing header
+//! and another complete JSON document; no input writes no file (`No Data Found`). `-Notice`
+//! logs each written file to `_Investigate.txt`.
 //!
 //! The Tenant folder is `Join-Path <root> "\Tenant"`: with `non_windows` (PowerShell 7 on
 //! macOS/Linux) that is a literal folder named `\Tenant` beside the `Tenant` folder the
 //! collectors create themselves (research §1.1).
 
+use super::clixml;
 use super::log::Log;
 use crate::Result;
 use crate::ps::{
@@ -20,12 +23,13 @@ use crate::tree::{FileSpec, Tree};
 use crate::writers::parsed_by_sparrow;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Which files one call writes (`-csv`, `-json`, `-txt`).
+/// Which files one call writes (`-csv`, `-json`, `-txt`, `-xml`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Formats {
     pub csv: bool,
     pub json: bool,
     pub txt: bool,
+    pub xml: bool,
 }
 
 impl Formats {
@@ -33,22 +37,44 @@ impl Formats {
         csv: true,
         json: true,
         txt: false,
+        xml: false,
     };
     pub const CSV: Formats = Formats {
         csv: true,
         json: false,
         txt: false,
+        xml: false,
     };
     pub const JSON: Formats = Formats {
         csv: false,
         json: true,
         txt: false,
+        xml: false,
     };
     pub const TXT: Formats = Formats {
         csv: false,
         json: false,
         txt: true,
+        xml: false,
     };
+    pub const XML: Formats = Formats {
+        csv: false,
+        json: false,
+        txt: false,
+        xml: true,
+    };
+
+    /// The same formats plus `-xml`.
+    pub const fn and_xml(self) -> Formats {
+        Formats { xml: true, ..self }
+    }
+}
+
+/// Which Hawk the emulation writes for: the JSON encoding differs (see the module docs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HawkVersion {
+    V3,
+    V4,
 }
 
 /// One file a call wrote: its tree path and each object's 1-based line span in the file.
@@ -58,15 +84,17 @@ pub struct Part {
     pub spans: Vec<(u32, u32)>,
 }
 
-/// The files one call wrote.
+/// The files one call wrote. The CliXml copy (never parsed) is not one of the `parts`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Written {
+    pub xml: Option<String>,
     pub csv: Option<Part>,
     pub txt: Option<Part>,
     pub json: Option<Part>,
 }
 
 impl Written {
+    /// The CSV, TXT and JSON files written.
     pub fn parts(&self) -> impl Iterator<Item = &Part> {
         self.csv
             .iter()
@@ -150,6 +178,7 @@ pub fn spec(rel: &str, encoding: Encoding, art: Art, subject: Option<&str>) -> F
 /// The Out-MultipleFileType emulation of one Hawk output folder, with its log.
 #[derive(Debug, Clone)]
 pub struct Omft {
+    pub version: HawkVersion,
     /// The session writing (edition, culture, line ends): tenant and user investigations may
     /// run in different sessions.
     pub host: Host,
@@ -164,8 +193,15 @@ pub struct Omft {
 }
 
 impl Omft {
-    pub fn new(host: Host, log: Log, file_path: String, non_windows: bool) -> Omft {
+    pub fn new(
+        version: HawkVersion,
+        host: Host,
+        log: Log,
+        file_path: String,
+        non_windows: bool,
+    ) -> Omft {
         Omft {
+            version,
             host,
             log,
             file_path,
@@ -190,7 +226,7 @@ impl Omft {
         if self.non_windows {
             format!("{}/{dir}/{file}", self.file_path)
         } else {
-            let dir = dir.trim_start_matches('\\');
+            let dir = dir.trim_start_matches('\\').replace('/', "\\");
             format!("{}\\{dir}\\{file}", self.file_path)
         }
     }
@@ -209,6 +245,14 @@ impl Omft {
                 format!("{u}/{prefix}_{short}.{ext}")
             }
             None => format!("{}/{prefix}.{ext}", self.tenant_dir()),
+        }
+    }
+
+    /// `Out-File`'s encoding of the JSON files.
+    fn json_encoding(&self) -> Encoding {
+        match self.version {
+            HawkVersion::V4 => Encoding::export_csv_utf8(self.host.edition),
+            HawkVersion::V3 => Encoding::out_file_default(self.host.edition),
         }
     }
 
@@ -248,6 +292,26 @@ impl Omft {
         }
         let host = self.host;
         let utf8 = Encoding::export_csv_utf8(host.edition);
+        if formats.xml {
+            // `<dir>\XML\<Prefix>[_<u>].xml`: Sparrow classifies CliXml but has no parser.
+            let rel = self.rel(prefix, user, "xml");
+            let (dir, file) = rel.rsplit_once('/').unwrap_or(("", rel.as_str()));
+            let rel = format!("{dir}/XML/{file}");
+            let text = clixml::render(&host, rows);
+            let spec = spec(
+                &rel,
+                clixml::encoding(host.edition),
+                Art::not_supported("hawk.xml"),
+                user,
+            );
+            let shown = self.shown(&format!("{dir}/XML"), file);
+            self.log.action(format!("Writing Data to {shown}"));
+            tree.write(&spec, &text)?;
+            if notice {
+                self.log.silent_notice(&shown);
+            }
+            out.xml = Some(rel);
+        }
         if formats.csv {
             let rel = self.rel(prefix, user, "csv");
             let mut ev = DateEvidence::default();
@@ -293,16 +357,9 @@ impl Omft {
             let r = convert_to_json(&host, rows, false);
             let text = format!("{}{}", r.text, host.newline);
             *self.json_docs.entry(rel.clone()).or_default() += 1;
-            out.json = Some(self.put(
-                tree,
-                &rel,
-                utf8,
-                &text,
-                r.spans,
-                append,
-                notice,
-                (art, user),
-            )?);
+            let enc = self.json_encoding();
+            out.json =
+                Some(self.put(tree, &rel, enc, &text, r.spans, append, notice, (art, user))?);
         }
         Ok(out)
     }

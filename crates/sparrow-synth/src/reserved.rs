@@ -62,6 +62,11 @@ pub const WELL_KNOWN_GUIDS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Microsoft product URLs that appear verbatim in collector output (namespaces, not hosts a
+/// customer owns): `scan_text` skips them like the well-known GUIDs. The PowerShell
+/// serialization namespace heads every `Export-Clixml` file (Hawk 3's `Tenant/XML/*.xml`).
+pub const WELL_KNOWN_URLS: &[&str] = &["http://schemas.microsoft.com/powershell/2004/04"];
+
 pub fn is_reserved_ip(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
@@ -132,9 +137,16 @@ fn re(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
 }
 
 /// Every non-reserved IPv4 / IPv6 address, e-mail domain and URL host in `text`, as
-/// `"<kind> <value>"`. Dotted quads that follow `/` or a letter/digit are version numbers
-/// (`Chrome/128.0.0.0`) and are ignored.
+/// `"<kind> <value>"`. Dotted quads that follow `/` or a letter/digit (`Chrome/128.0.0.0`) or
+/// a `Version="` attribute are version numbers and are ignored; `WELL_KNOWN_URLS` are skipped.
 pub fn scan_text(text: &str) -> Vec<String> {
+    let mut owned = None;
+    for url in WELL_KNOWN_URLS {
+        if text.contains(url) {
+            owned = Some(owned.as_deref().unwrap_or(text).replace(url, " "));
+        }
+    }
+    let text = owned.as_deref().unwrap_or(text);
     static V4: OnceLock<Regex> = OnceLock::new();
     static V6: OnceLock<Regex> = OnceLock::new();
     static MAIL: OnceLock<Regex> = OnceLock::new();
@@ -146,6 +158,11 @@ pub fn scan_text(text: &str) -> Vec<String> {
     )
     .captures_iter(text)
     {
+        // `Version="1.1.0.1"` (a CliXml header) is a version number, not an address.
+        let before = &text[..c.get(1).map_or(0, |m| m.start())];
+        if before.ends_with("Version=\"") {
+            continue;
+        }
         if let Ok(ip) = c[1].parse::<Ipv4Addr>() {
             if !is_reserved_ip(&IpAddr::V4(ip)) {
                 out.push(format!("ipv4 {ip}"));

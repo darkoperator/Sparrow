@@ -4,6 +4,8 @@
 
 use crate::story::Evidence;
 use crate::world::World;
+use chrono::{DateTime, Utc};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 /// The placeholder for the collection id in per-collection keys.
@@ -145,6 +147,30 @@ pub fn user_licence(upn: &str, sku: &str) -> String {
     format!("{CID}|{}|{}", lower(upn), lower(sku))
 }
 
+/// ObjectModified as Hawk's `Simple_*` admin-audit summary writes it: the part after the last
+/// `/`, then after the last `\`.
+pub fn short_object(object: &str) -> &str {
+    let after_slash = object.rsplit('/').next().unwrap_or(object);
+    after_slash.rsplit('\\').next().unwrap_or(after_slash)
+}
+
+/// `admin_audit_events`: "SHA-256 hex of run time (UTC, seconds), cmdlet, ObjectModified after
+/// its last / and \, and the caller as Hawk's Simple_* summary writes it, all lower-case." The
+/// hashed text is the lines `admin_audit`, the run time `yyyy-MM-ddTHH:mm:ssZ`, the cmdlet, the
+/// short object and the caller, joined with `\n` (a caller never runs `on behalf of` in the
+/// generated worlds, so the summary writes it unchanged). The `#<parameter hash>` suffix of
+/// commands sharing all four is not produced: no two generated commands share them.
+pub fn admin_audit(run: DateTime<Utc>, cmdlet: &str, object: &str, caller: &str) -> String {
+    let parts = [
+        "admin_audit".to_string(),
+        run.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        lower(cmdlet),
+        lower(short_object(object)),
+        lower(caller),
+    ];
+    hex::encode(Sha256::digest(parts.join("\n").as_bytes()))
+}
+
 /// A mailbox permission grantee as Microsoft-Extractor-Suite's Get-MailboxPermissions exports
 /// it (and `mailbox_permissions.grantee` keys it): `"<DisplayName> (<PrimarySmtpAddress>)"`
 /// for a recipient (a person with a mailbox), else the raw identity (a role group such as
@@ -171,6 +197,12 @@ pub fn mailbox_folder_grantee(world: &World, grantee: &str) -> String {
 pub fn for_evidence(world: &World, e: &Evidence, table: &str) -> Option<String> {
     match (e, table) {
         (Evidence::Ual(id), "ual_events") => Some(ual(*id)),
+        // Hawk 3 renders an Exchange admin cmdlet as a Search-AdminAuditLog record.
+        (Evidence::Ual(id), "admin_audit_events") => {
+            let u = world.story.ual.iter().find(|u| u.id == *id)?;
+            let object = u.audit.get("ObjectId").and_then(|v| v.as_str())?;
+            Some(admin_audit(u.time, &u.operation, object, &u.user_id))
+        }
         (Evidence::SignIn(id), "signins") => Some(signin(*id)),
         (Evidence::DirAudit(id), "directory_audits") => Some(dir_audit(id)),
         (

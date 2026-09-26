@@ -10,7 +10,11 @@
 //! (survey capture D). Every file goes through `omft` (Out-MultipleFileType) or, for the
 //! collectors that write directly, through the same encodings; `Hawk.log` and
 //! `_Investigate.txt` are written last.
+//!
+//! Hawk 3.1 (`write_v3`, module `v3`) renders the same world with the 3.x files, shapes and
+//! log dialects (research §7).
 
+pub mod clixml;
 pub mod log;
 pub mod omft;
 pub mod simple;
@@ -18,6 +22,9 @@ pub mod simple;
 mod ondemand;
 mod tenant;
 mod user;
+mod v3;
+
+pub use v3::write_v3;
 
 use crate::Result;
 use crate::events::{Day, Ual};
@@ -29,8 +36,8 @@ use crate::story::Evidence;
 use crate::tree::Tree;
 use crate::world::{User, World};
 use chrono::{DateTime, Duration, Utc};
-use log::Log;
-use omft::{Omft, Written};
+use log::{Dialect, Log};
+use omft::{HawkVersion, Omft, Written};
 use serde_json::{Map, Value};
 use std::cmp::Reverse;
 
@@ -145,31 +152,41 @@ pub(crate) struct Ctx<'w> {
 }
 
 impl<'w> Ctx<'w> {
-    fn new(world: &'w World, opts: &'w GenerateOptions) -> Ctx<'w> {
+    /// The run of Hawk `version`. `hawk_mixed_editions` applies to Hawk 4 only.
+    fn new(world: &'w World, opts: &'w GenerateOptions, version: HawkVersion) -> Ctx<'w> {
         let offset = world.scenario.tenant.host_utc_offset_minutes;
         let host = |edition: PsEdition| {
             let h = Host::new(edition, opts.culture, offset);
             if opts.non_windows { h.unix() } else { h }
         };
-        let (tenant_edition, user_edition) = if opts.hawk_mixed_editions {
-            (PsEdition::Ps7, PsEdition::Ps51)
-        } else {
-            (opts.ps, opts.ps)
-        };
+        let (tenant_edition, user_edition) =
+            if opts.hawk_mixed_editions && version == HawkVersion::V4 {
+                (PsEdition::Ps7, PsEdition::Ps51)
+            } else {
+                (opts.ps, opts.ps)
+            };
         let tenant_host = host(tenant_edition);
         let file_path = if opts.non_windows {
             format!("/Users/Shared/Investigations/{}", root(world))
         } else {
             format!("C:\\Investigations\\{}", root(world))
         };
-        let log = Log::new(world.collected_at(), stream(world.seed, "hawk/log"));
+        let dialect = match version {
+            HawkVersion::V4 => Dialect::V4,
+            HawkVersion::V3 => Dialect::V3(tenant_host),
+        };
+        let log = Log::with_dialect(
+            world.collected_at(),
+            stream(world.seed, "hawk/log"),
+            dialect,
+        );
         let days = crate::writers::window_days(world);
         let mut ual: Vec<Ual> = days.iter().flat_map(|d| d.ual.clone()).collect();
         ual.sort_by_key(|u| (u.time, u.id));
         Ctx {
             world,
             opts,
-            omft: Omft::new(tenant_host, log, file_path, opts.non_windows),
+            omft: Omft::new(version, tenant_host, log, file_path, opts.non_windows),
             tenant_host,
             user_host: host(user_edition),
             days,
@@ -330,7 +347,7 @@ pub(crate) fn register_flags(tree: &mut Tree<'_>, w: &Written) {
 
 /// Writes the Hawk 4.0 output folder of `world` into `tree`.
 pub fn write_v4(world: &World, opts: &GenerateOptions, tree: &mut Tree<'_>) -> Result<()> {
-    let mut c = Ctx::new(world, opts);
+    let mut c = Ctx::new(world, opts, HawkVersion::V4);
     tenant::investigate(&mut c, tree)?;
     user::investigate(&mut c, tree)?;
     ondemand::run(&mut c, tree)?;

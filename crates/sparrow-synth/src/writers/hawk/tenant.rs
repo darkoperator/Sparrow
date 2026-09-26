@@ -1,7 +1,7 @@
 //! `Start-HawkTenantInvestigation` (research hawk layouts §1.2, §3, §5, §6): the session
 //! header, the nineteen tenant collectors in the orchestrator's order, and the summary.
 
-use super::omft::{Art, Formats, Written};
+use super::omft::{Art, Formats, HawkVersion, Written};
 use super::{
     Ctx, additional_properties, date, date_text, model, one_of, opt, r, raw_rows, register,
     register_flags, register_ual, s, simple_rows, text_of,
@@ -217,7 +217,7 @@ pub(super) fn investigate(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
     running(c, "Get-HawkTenantEntraIDAuditLog");
     entra_audit_log(c, tree)?;
     running(c, "Get-HawkTenantEntraIDAppAuditLog");
-    app_audit_log(c, tree)?;
+    app_audit_log(c, tree, "Entra_ID_Application_Audit")?;
     running(c, "Get-HawkTenantEXOAdmin");
     exo_admins(c, tree)?;
     running(c, "Get-HawkTenantConsentGrant");
@@ -269,7 +269,7 @@ fn when(changed: DateTime<Utc>, created: DateTime<Utc>) -> Vec<(String, Val)> {
     ]
 }
 
-fn admin_audit_log_config(world: &World) -> Row {
+pub(super) fn admin_audit_log_config(world: &World) -> Row {
     let a = &world.audit;
     let created = world.tenant.created;
     let name = "Admin Audit Log Settings";
@@ -327,7 +327,7 @@ fn admin_audit_log_config(world: &World) -> Row {
     row
 }
 
-fn org_config(world: &World) -> Row {
+pub(super) fn org_config(world: &World) -> Row {
     let a = &world.audit;
     let created = world.tenant.created;
     let name = world.tenant.initial_domain.clone();
@@ -376,7 +376,7 @@ fn org_config(world: &World) -> Row {
     row
 }
 
-fn remote_domain_row(world: &World, d: &crate::world::RemoteDomain) -> Row {
+pub(super) fn remote_domain_row(world: &World, d: &crate::world::RemoteDomain) -> Row {
     let mut row = vec![
         r("AllowedOOFType", s(d.allowed_ooo_type.clone())),
         r("AutoForwardEnabled", Val::Bool(d.auto_forward_enabled)),
@@ -416,7 +416,7 @@ fn remote_domain_row(world: &World, d: &crate::world::RemoteDomain) -> Row {
     row
 }
 
-fn transport_rule_row(world: &World, t: &crate::world::TransportRule) -> Row {
+pub(super) fn transport_rule_row(world: &World, t: &crate::world::TransportRule) -> Row {
     let list = |v: &[String]| {
         if v.is_empty() {
             Val::Null
@@ -507,7 +507,7 @@ fn transport_rule_row(world: &World, t: &crate::world::TransportRule) -> Row {
     row
 }
 
-fn transport_config(world: &World) -> Row {
+pub(super) fn transport_config(world: &World) -> Row {
     let name = "Transport Settings";
     let mut row = vec![
         r("AddressBookPolicyRoutingEnabled", Val::Bool(false)),
@@ -558,7 +558,7 @@ fn transport_config(world: &World) -> Row {
 }
 
 /// Every property of a Format-List object is one `tenant_settings` row of `source`.
-fn register_settings(tree: &mut Tree<'_>, w: &Written, rows: &[Row], source: &str) {
+pub(super) fn register_settings(tree: &mut Tree<'_>, w: &Written, rows: &[Row], source: &str) {
     for part in w.parts() {
         for row in rows {
             for (k, _) in row {
@@ -680,7 +680,7 @@ fn configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
 }
 
 /// A Get-ManagementRoleEntry object.
-fn role_entry(world: &World, role: &str, cmdlet: &str, params: &[&str]) -> Row {
+pub(super) fn role_entry(world: &World, role: &str, cmdlet: &str, params: &[&str]) -> Row {
     let identity = format!("{role}\\{cmdlet}");
     let dn = format!(
         "CN={cmdlet},CN={role},CN=Roles,CN=RBAC,CN=Configuration,{}",
@@ -722,7 +722,7 @@ fn role_entry(world: &World, role: &str, cmdlet: &str, params: &[&str]) -> Row {
 }
 
 /// A Get-ManagementRoleAssignment object assigning `role` to role group `group`.
-fn role_assignment(world: &World, role: &str, group: &str) -> Row {
+pub(super) fn role_assignment(world: &World, role: &str, group: &str) -> Row {
     let name = format!("{role}-{group}");
     let guid = stream(world.seed, &format!("hawk/roleassignment/{name}")).uuid();
     let mut row = vec![
@@ -1352,7 +1352,7 @@ fn domain_activity(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
     Ok(())
 }
 
-const RBAC_OPERATIONS: [&str; 16] = [
+pub(super) const RBAC_OPERATIONS: [&str; 16] = [
     "New-ManagementRole",
     "Remove-ManagementRole",
     "New-ManagementRoleAssignment",
@@ -1576,7 +1576,7 @@ fn extended(u: &Ual, name: &str) -> Val {
 /// Get-HawkTenantEntraIDAppAuditLog (H06): one appended call per event; the 10 projected
 /// columns carry no time (`env_time` is not an ExtendedProperties entry), which Sparrow
 /// reports as not supported.
-fn app_audit_log(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
+pub(super) fn app_audit_log(c: &mut Ctx<'_>, tree: &mut Tree<'_>, prefix: &str) -> Result<()> {
     c.log().action("Gathering Tenant information");
     c.log()
         .action("Initiating collection of Entra ID application audit events from the UAL.");
@@ -1592,9 +1592,9 @@ fn app_audit_log(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
             .action("No Application related events found in the search time frame.");
     } else {
         c.log().notice("Application Rights Activity found.");
-        c.log().notice(
-            "Please review these Entra_ID_Application_Audit.csv to ensure any changes are legitimate.",
-        );
+        c.log().notice(format!(
+            "Please review these {prefix}.csv to ensure any changes are legitimate.",
+        ));
         let text = |u: &Ual, k: &str| u.audit.get(k).map_or(Val::Null, super::json_val);
         // A parsed artifact, but without `env_time` Sparrow finds no time and reports the
         // shape not supported (set below).
@@ -1619,7 +1619,7 @@ fn app_audit_log(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
             ];
             let w = c.omft.write(
                 tree,
-                "Entra_ID_Application_Audit",
+                prefix,
                 None,
                 app_art,
                 &[row],
@@ -1646,7 +1646,7 @@ fn app_audit_log(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
 }
 
 /// Get-HawkTenantEXOAdmin: one row per role group member.
-fn exo_admins(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
+pub(super) fn exo_admins(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
     let world = c.world;
     c.log()
         .action("Initiating collection of Exchange Online Admins.");
@@ -1709,17 +1709,17 @@ fn exo_admins(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
 }
 
 /// One `Get-AzureADPSPermission` row and what keys and delivers it.
-struct GrantRow {
-    row: Row,
-    key: String,
-    evidence: Option<Evidence>,
+pub(super) struct GrantRow {
+    pub row: Row,
+    pub key: String,
+    pub evidence: Option<Evidence>,
     consent_type: Option<String>,
     permission: String,
 }
 
 /// `Get-AzureADPSPermission`: every delegated grant scope, then every application
 /// permission, with Hawk's `ConsentGrantRiskCategory` column (empty for now).
-fn grant_rows(world: &World) -> Vec<GrantRow> {
+pub(super) fn grant_rows(world: &World) -> Vec<GrantRow> {
     let sp = |app: Uuid| world.apps.iter().find(|a| a.app_id == app);
     let mut out = Vec::new();
     for kind in [GrantKind::Delegated, GrantKind::Application] {
@@ -2364,10 +2364,13 @@ fn entra_admins(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
 
 /// Get-HawkTenantAppAndSPNCredentialDetail: one appended CSV row per credential
 /// (Out-MultipleFileType) and one JSON array per file (`ConvertTo-Json | Out-File`, into the
-/// plain `Tenant` folder). Service principals and applications sorted by display name, key
-/// credentials before password credentials.
-fn credentials(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
+/// plain `Tenant` folder). Hawk 3.1 appends the JSON per credential too, so its files are
+/// concatenated objects (capture survey §2d). Service principals and applications sorted by
+/// display name, key credentials before password credentials.
+pub(super) fn credentials(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
     let world = c.world;
+    let v3 = c.omft.version == HawkVersion::V3;
+    let per_record = if v3 { Formats::CSV_JSON } else { Formats::CSV };
     c.log()
         .action("Initiating collection of application and service principal credentials.");
     c.omft.created("Tenant");
@@ -2434,7 +2437,7 @@ fn credentials(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
                     None,
                     Art::raw("hawk.tenant.app_credentials"),
                     std::slice::from_ref(&row),
-                    Formats::CSV,
+                    per_record,
                     true,
                     false,
                 )?;
@@ -2455,7 +2458,7 @@ fn credentials(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
                 keyed.push((key, ev));
             }
         }
-        if !rows.is_empty() {
+        if !rows.is_empty() && !v3 {
             let w = write_direct(
                 c,
                 tree,

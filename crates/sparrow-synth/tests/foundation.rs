@@ -138,6 +138,15 @@ fn scanner_flags_real_values_and_ignores_versions() {
 }
 
 #[test]
+fn scanner_skips_the_clixml_namespace_and_version() {
+    let clixml =
+        "<Objs Version=\"1.1.0.1\" xmlns=\"http://schemas.microsoft.com/powershell/2004/04\">";
+    assert!(scan_text(clixml).is_empty(), "{:?}", scan_text(clixml));
+    let other = "<a href=\"http://schemas.microsoft.com/other\"> ip=\"1.1.0.1\"";
+    assert_eq!(scan_text(other).len(), 2, "{:?}", scan_text(other));
+}
+
+#[test]
 fn people_are_unique_and_ascii() {
     let mut r = Rng::new(1);
     let ps = people(&mut r, 300);

@@ -12,17 +12,15 @@ use crate::world::World;
 /// The collection root folder a collector writes (relative to the output directory):
 /// portal exports go to `Portal_<tenant folder name>_<collected yyyyMMdd>` (the analyst's
 /// folder; Sparrow recognizes portal files by header, so the name is free);
-/// Microsoft-Extractor-Suite writes `Output` (`invictus::root`); Hawk 4
-/// `Hawk_<tenant folder name>_<yyyyMMdd_HHmmss>` (`hawk::root`). Hawk 3 gets its name from its
-/// writer task; until then it gets the portal's shape.
+/// Microsoft-Extractor-Suite writes `Output` (`invictus::root`); Hawk 3 and 4
+/// `Hawk_<tenant folder name>_<yyyyMMdd_HHmmss>` (`hawk::root`).
 pub fn root_name(world: &World, opts: &GenerateOptions) -> String {
     let folder = &world.tenant.folder_name;
     let collected = world.collected_at();
     match opts.collector {
         Collector::Portal => format!("Portal_{folder}_{}", collected.format("%Y%m%d")),
         Collector::Invictus => invictus::root(world, opts),
-        Collector::Hawk4 => hawk::root(world),
-        other => format!("{other}_{folder}_{}", collected.format("%Y%m%d")),
+        Collector::Hawk3 | Collector::Hawk4 => hawk::root(world),
     }
 }
 

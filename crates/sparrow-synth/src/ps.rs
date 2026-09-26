@@ -235,7 +235,7 @@ impl DateEvidence {
 /// Records one culture-rendered date (a day/month-order culture only; ja-JP is year-first and
 /// records nothing). A date whose day equals its month reads the same in either order and
 /// records nothing either.
-fn note_evidence(host: &Host, ev: &mut DateEvidence, d: &PsDate) {
+pub fn note_evidence(host: &Host, ev: &mut DateEvidence, d: &PsDate) {
     if host.culture == Culture::JaJp {
         return;
     }

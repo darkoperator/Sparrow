@@ -121,7 +121,9 @@ fn org_audit_off_all_window(w: &World) -> bool {
 ///   settings (a parsed Microsoft-Extractor-Suite MailboxAuditStatus file) → `{not_enabled}`;
 ///   organization auditing off for the whole window and the tree delivers it (Hawk
 ///   `OrgConfig.txt`, MailboxAuditStatus EffectiveAuditState `Disabled`) → `{not_enabled}`.
-/// - `signins`: Hawk 4 rows → `{partial}` when the investigated users are only some of the
+/// - `signins`: Hawk 3 (no sign-in collector) → `{available_not_collected}`, the sign-ins
+///   being within Microsoft's retention one day after collection; Hawk 4 rows → `{partial}`
+///   when the investigated users are only some of the
 ///   tenant's users (spec §7: "Hawk per-user collection covering only some users") or the window
 ///   starts before P1's retention, else `{collected}`; Hawk 4 and
 ///   Microsoft-Extractor-Suite (without Entra ID P1 the collector ran and Graph refused, which
@@ -212,7 +214,7 @@ pub fn evidence(
     let signins_collected = matches!(
         opts.collector,
         Collector::Hawk4 | Collector::Invictus | Collector::Portal
-    ) || world.licence.p1();
+    );
     let caps = capabilities(
         world,
         delivery(opts, parsed_by_sparrow("inv.licenses.tenant")),
@@ -250,6 +252,14 @@ pub fn evidence(
         m.insert(
             "signins".to_string(),
             allowed(&["collected"], "the sign-in collector ran"),
+        );
+    } else if opts.collector == Collector::Hawk3 {
+        m.insert(
+            "signins".to_string(),
+            allowed(
+                &["available_not_collected"],
+                "Hawk 3 has no Entra sign-in collector and the window's sign-ins are still kept at evaluation time (collection + 1 day)",
+            ),
         );
     }
 

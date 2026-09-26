@@ -174,8 +174,8 @@ pub enum RuleOutcome {
 /// summary has no organization column, so its domains are the primary domain and those of the
 /// interactive sign-in rows of home-tenant users (Sparrow does not derive domains from UAL user ids, which include
 /// guests and external senders). Microsoft-Extractor-Suite lists every mailbox, so its domains are
-/// the mailboxes' UPN domains; Hawk 4 lists every user (EntraIDUsers), so its domains are the
-/// users' UPN domains.
+/// the mailboxes' UPN domains; Hawk lists every user (EntraIDUsers, AzureADUsers), so its
+/// domains are the users' UPN domains.
 pub fn tenant_expect(world: &World, opts: &GenerateOptions) -> TenantExpect {
     let name = matches!(opts.collector, Collector::Hawk3 | Collector::Hawk4)
         .then(|| world.tenant.name.clone());
@@ -188,8 +188,8 @@ pub fn tenant_expect(world: &World, opts: &GenerateOptions) -> TenantExpect {
             }
         }
     }
-    if opts.collector == Collector::Hawk4 {
-        // EntraIDUsers lists every user.
+    if matches!(opts.collector, Collector::Hawk3 | Collector::Hawk4) {
+        // EntraIDUsers (Hawk 4) / AzureADUsers (Hawk 3) lists every user.
         for u in world.all_people() {
             if let Some((_, d)) = u.upn.rsplit_once('@') {
                 domains.insert(d.to_lowercase());
