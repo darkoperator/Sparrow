@@ -6,12 +6,19 @@
 
 pub use crate::profiles::CapExpect;
 
-use crate::options::GenerateOptions;
+use crate::events::SignInType;
+use crate::keys;
+use crate::options::{Collector, GenerateOptions};
 use crate::ps::DateEvidence;
+use crate::scenario::Polarity;
+use crate::story::{Evidence, StoryRecord};
+use crate::tree::TreeOutcome;
+use crate::world::World;
+use crate::writers::window_days;
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// One generated tree's ground truth.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -127,8 +134,18 @@ pub struct EvidenceRef {
     pub what: String,
     /// Whether Microsoft 365 recorded it (UAL records under the tenant's audit settings).
     pub logged: bool,
-    /// (table, sighting) for every parsed file that carries it.
-    pub delivered: Vec<(String, Sighting)>,
+    /// Every parsed file row that carries it.
+    pub delivered: Vec<Landed>,
+}
+
+/// One place storyline evidence landed: the table, the row's record key there (`keys::
+/// for_evidence`; `None` when no key function covers the pairing yet) and the file lines.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Landed {
+    pub table: String,
+    pub record_key: Option<String>,
+    #[serde(flatten)]
+    pub sighting: Sighting,
 }
 
 /// The outcome one seed rule must have on one storyline.
@@ -148,4 +165,86 @@ pub enum RuleOutcome {
     NoHit,
     NotApplicable,
     NoEvidence,
+}
+
+/// The tenant Sparrow must profile the tree as: the world's tenant id; the name the collector
+/// reports (Hawk's folder / log: the tenant name; others none); and the domains Sparrow derives
+/// (`derived_upn`: UPN domains of users, mailboxes and home-tenant sign-ins; plus
+/// `message_trace_org`). The portal delivers no user or mailbox list and its message trace
+/// summary has no organization column, so its domains are those of the interactive sign-in
+/// rows of home-tenant users (Sparrow does not derive domains from UAL user ids, which include
+/// guests and external senders).
+pub fn tenant_expect(world: &World, opts: &GenerateOptions) -> TenantExpect {
+    let name = matches!(opts.collector, Collector::Hawk3 | Collector::Hawk4)
+        .then(|| world.tenant.name.clone());
+    let mut domains = BTreeSet::new();
+    if opts.collector == Collector::Portal {
+        for day in window_days(world) {
+            for s in &day.signins {
+                if s.event_type == SignInType::Interactive
+                    && s.home_tenant_id == world.tenant.tenant_id
+                {
+                    if let Some((_, d)) = s.user.rsplit_once('@') {
+                        domains.insert(d.to_lowercase());
+                    }
+                }
+            }
+        }
+    }
+    TenantExpect {
+        tenant_id: world.tenant.tenant_id.to_string(),
+        name,
+        domains: domains.into_iter().collect(),
+    }
+}
+
+/// Every storyline and look-alike with its evidence: whether Microsoft 365 logged each item
+/// (`World::logged` for UAL records; everything else is recorded) and where the tree delivered
+/// it.
+pub fn story_expects(
+    world: &World,
+    records: &[StoryRecord],
+    out: &TreeOutcome,
+) -> Vec<StoryExpect> {
+    records
+        .iter()
+        .map(|r| StoryExpect {
+            id: r.id.clone(),
+            kind: r.kind.as_str().to_string(),
+            polarity: match r.polarity {
+                Polarity::Positive => "positive",
+                Polarity::Lookalike => "lookalike",
+            }
+            .to_string(),
+            actor: r.actor.clone(),
+            time: r.time,
+            evidence: r
+                .evidence
+                .iter()
+                .map(|e| EvidenceRef {
+                    what: format!("{e:?}"),
+                    logged: match e {
+                        Evidence::Ual(id) => world
+                            .story
+                            .ual
+                            .iter()
+                            .find(|u| u.id == *id)
+                            .is_none_or(|u| world.logged(u)),
+                        _ => true,
+                    },
+                    delivered: out
+                        .delivered
+                        .get(e)
+                        .into_iter()
+                        .flatten()
+                        .map(|(table, sighting)| Landed {
+                            table: table.clone(),
+                            record_key: keys::for_evidence(e, table),
+                            sighting: sighting.clone(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        })
+        .collect()
 }

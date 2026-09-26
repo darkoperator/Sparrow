@@ -1,6 +1,48 @@
 //! Collector writers (Tasks 9+) share the `tree` machinery. This module also records which
 //! artifacts Sparrow parses today, so a tree can predict `not_supported` for the rest.
 
+pub mod portal;
+
+use crate::events::Day;
+use crate::options::{Collector, GenerateOptions};
+use crate::world::World;
+
+/// The collection root folder a collector writes (relative to the output directory):
+/// portal exports go to `Portal_<tenant folder name>_<collected yyyyMMdd>` (the analyst's
+/// folder; Sparrow recognizes portal files by header, so the name is free). The other
+/// collectors' writer tasks give them their own names; until then they get the same shape.
+pub fn root_name(world: &World, opts: &GenerateOptions) -> String {
+    let folder = &world.tenant.folder_name;
+    let collected = world.collected_at();
+    match opts.collector {
+        Collector::Portal => format!("Portal_{folder}_{}", collected.format("%Y%m%d")),
+        other => format!("{other}_{folder}_{}", collected.format("%Y%m%d")),
+    }
+}
+
+/// The events of every UTC day of the collection window (`World::day`), each restricted to
+/// `[window_start, window_end)`.
+pub fn window_days(world: &World) -> Vec<Day> {
+    let (start, end) = (world.window_start(), world.window_end());
+    let mut out = Vec::new();
+    let mut date = start.date_naive();
+    while let Some(first) = date.and_hms_opt(0, 0, 0).map(|t| t.and_utc()) {
+        if first >= end {
+            break;
+        }
+        let mut d = world.day(date);
+        d.ual.retain(|u| u.time >= start && u.time < end);
+        d.signins.retain(|s| s.time >= start && s.time < end);
+        d.trace.retain(|t| t.received >= start && t.received < end);
+        out.push(d);
+        date = match date.succ_opt() {
+            Some(n) => n,
+            None => break,
+        };
+    }
+    out
+}
+
 /// Every artifact id Sparrow registers a parser for (`sparrow_core::parsers::*::register`,
 /// including `ual::UAL_ARTIFACTS`), sorted. Copied by hand, not read from Sparrow (oracle
 /// independence); parser tasks add the ids they register, keeping the list sorted.

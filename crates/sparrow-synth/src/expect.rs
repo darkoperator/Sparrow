@@ -13,6 +13,7 @@ use crate::story::{Evidence, StoryRecord};
 use crate::tree::TreeOutcome;
 use crate::world::World;
 use crate::writers::parsed_by_sparrow;
+use crate::writers::portal::PURVIEW_EXPORT_CAP;
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
@@ -104,10 +105,12 @@ fn org_audit_off_all_window(w: &World) -> bool {
 
 /// The evidence-availability statuses Sparrow's profile may report, for these ids only (any
 /// other id is not predicted):
-/// - `ual`: UAL rows delivered → Hawk `{partial}` (Hawk searches selected operations only),
-///   otherwise `{collected}`. None delivered because ingestion was off for the whole window →
-///   Hawk (which writes `AdminAuditLogConfig.txt`) `{not_enabled}`, Microsoft-Extractor-Suite
-///   `{collected}` (the run folder is written, nothing found).
+/// - `ual`: UAL rows delivered → Hawk `{partial}` (Hawk searches selected operations only);
+///   portal with at least `PURVIEW_EXPORT_CAP` rows `{partial}` (the first export file holds
+///   exactly the cap, which Sparrow flags as likely truncated); otherwise `{collected}`. None
+///   delivered because ingestion was off for the whole window → Hawk (which writes
+///   `AdminAuditLogConfig.txt`) `{not_enabled}`, Microsoft-Extractor-Suite `{collected}` (the
+///   run folder is written, nothing found).
 /// - `mail_items_accessed`: rows delivered → `{collected, partial}`; none delivered, every
 ///   mailbox's owner list lacks MailItemsAccessed and the collector exports per-mailbox audit
 ///   settings (Microsoft-Extractor-Suite MailboxAuditStatus) → `{not_enabled}`; organization
@@ -131,6 +134,13 @@ pub fn evidence(
     if rows(out, "ual_events") > 0 {
         let e = if hawk {
             allowed(&["partial"], "Hawk searches selected UAL operations only")
+        } else if opts.collector == Collector::Portal
+            && rows(out, "ual_events") >= PURVIEW_EXPORT_CAP as u64
+        {
+            allowed(
+                &["partial"],
+                "a Purview export file holds exactly the 50,000-row export cap",
+            )
         } else {
             allowed(&["collected"], "UAL rows delivered")
         };

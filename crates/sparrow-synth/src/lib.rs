@@ -4,10 +4,12 @@
 //! reserved or synthetic; nothing comes from a real capture.
 
 pub mod baseline;
+pub mod check;
 pub mod coverage;
 pub mod error;
 pub mod events;
 pub mod expect;
+pub mod generate;
 pub mod geo;
 pub mod keys;
 pub mod manifest;
@@ -19,6 +21,8 @@ pub mod reserved;
 pub mod rng;
 pub mod scenario;
 pub mod story;
+#[doc(hidden)]
+pub mod testing;
 pub mod tree;
 pub mod ual;
 pub mod world;

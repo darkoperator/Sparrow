@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use serde::Serialize;
 use sparrow_core::Case;
 use sparrow_core::data::DataDirs;
@@ -16,6 +16,10 @@ use sparrow_core::profile::{ProfileOptions, ProfileReport, refresh};
 use sparrow_core::readers::time::parse_culture;
 use sparrow_core::summary::summarize;
 use sparrow_core::verify::verify_record;
+use sparrow_synth::manifest::Manifest;
+use sparrow_synth::options::{
+    Collector, Culture, GenerateOptions, PsEdition, SigninExport, UalFormat,
+};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -106,6 +110,76 @@ enum Command {
         #[command(subcommand)]
         command: TenantCommand,
     },
+    /// Generate a synthetic collector tree with its ground-truth manifest (reserved values only)
+    #[command(args_conflicts_with_subcommands = true)]
+    Synth {
+        #[command(subcommand)]
+        command: Option<SynthCommand>,
+        #[command(flatten)]
+        generate: SynthGenArgs,
+    },
+}
+
+#[derive(Args)]
+struct SynthGenArgs {
+    /// Built-in scenario name (see `sparrow synth list`) or a scenario YAML file
+    #[arg(long)]
+    scenario: Option<String>,
+    /// Collector to imitate: hawk3, hawk4, invictus or portal
+    #[arg(long)]
+    collector: Option<Collector>,
+    /// PowerShell edition that wrote the files: 5.1 or 7
+    #[arg(long, default_value = "7")]
+    ps: PsEdition,
+    /// Host culture of the collecting machine: en-US, en-GB, de-DE or ja-JP
+    #[arg(long, default_value = "en-US")]
+    culture: Culture,
+    #[arg(long, default_value_t = 1)]
+    seed: u64,
+    /// Output directory (created if missing; must be empty)
+    #[arg(long)]
+    out: Option<PathBuf>,
+    /// Also pack the output directory into <out>.zip
+    #[arg(long)]
+    zip: bool,
+    /// Microsoft-Extractor-Suite Get-UAL output format
+    #[arg(long, default_value = "csv")]
+    ual_format: UalFormat,
+    /// Portal Entra sign-in export file type: csv or xlsx
+    #[arg(long, default_value = "csv")]
+    signin_export: SigninExport,
+    /// Hawk 4: tenant files from PowerShell 7, user files from Windows PowerShell 5.1
+    #[arg(long)]
+    hawk_mixed_editions: bool,
+    /// PowerShell 7 on macOS/Linux (LF line ends, literal backslash names)
+    #[arg(long)]
+    non_windows: bool,
+    /// Microsoft-Extractor-Suite: do not write TenantLicenses.csv / UserLicenses.csv
+    #[arg(long)]
+    no_licence_list: bool,
+    /// Total benign UAL rows (scale testing)
+    #[arg(long)]
+    ual_rows: Option<u64>,
+    /// Total benign sign-ins (scale testing)
+    #[arg(long)]
+    signins: Option<u64>,
+}
+
+#[derive(Subcommand)]
+enum SynthCommand {
+    /// Compare a case ingested from a generated tree with the tree's manifest
+    Check {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        case: PathBuf,
+    },
+    /// Seed-rule coverage of the built-in scenarios (not implemented yet)
+    Coverage,
+    /// Compare generated trees with real captures' structure (not implemented yet)
+    Conformance,
+    /// List the built-in scenarios and the licence and audit profiles
+    List,
 }
 
 #[derive(Subcommand)]
@@ -232,6 +306,15 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Some(Command::Upgrade { case }) => cmd_upgrade(&case, json),
         Some(Command::Schema { case, table }) => cmd_schema(&case, table.as_deref(), json),
         Some(Command::Tenant { command }) => cmd_tenant(command, json),
+        Some(Command::Synth { command, generate }) => match command {
+            None => cmd_synth_generate(generate, json),
+            Some(SynthCommand::Check { manifest, case }) => cmd_synth_check(&manifest, &case, json),
+            Some(SynthCommand::Coverage) => anyhow::bail!("synth coverage is not implemented yet"),
+            Some(SynthCommand::Conformance) => {
+                anyhow::bail!("synth conformance is not implemented yet")
+            }
+            Some(SynthCommand::List) => cmd_synth_list(json),
+        },
     }
 }
 
@@ -805,4 +888,174 @@ fn cmd_tenant(command: TenantCommand, json: bool) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+#[derive(Serialize)]
+struct SynthOutput {
+    /// The collection root, relative to the output directory.
+    root: String,
+    manifest: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    zip: Option<String>,
+    files: usize,
+    /// Expected rows per table.
+    tables: std::collections::BTreeMap<String, u64>,
+}
+
+fn cmd_synth_generate(args: SynthGenArgs, json: bool) -> Result<ExitCode> {
+    let name = args
+        .scenario
+        .context("--scenario is required (see `sparrow synth list`)")?;
+    let collector = args.collector.context("--collector is required")?;
+    let out = args.out.context("--out is required")?;
+    let scenario = sparrow_synth::scenario::load(&name).with_context(|| {
+        format!(
+            "scenario '{name}' is neither a built-in ({}) nor a readable file",
+            sparrow_synth::scenario::builtin_names().join(", ")
+        )
+    })?;
+    let mut opts = GenerateOptions::new(collector, args.seed);
+    opts.ps = args.ps;
+    opts.culture = args.culture;
+    opts.ual_format = args.ual_format;
+    opts.signin_export = args.signin_export;
+    opts.hawk_mixed_editions = args.hawk_mixed_editions;
+    opts.non_windows = args.non_windows;
+    opts.invictus_licence_list = !args.no_licence_list;
+    opts.ual_rows = args.ual_rows;
+    opts.signins = args.signins;
+    let (manifest, zip) = if args.zip {
+        let (m, z) = sparrow_synth::generate::generate_zip(&scenario, &opts, &out)?;
+        (m, Some(z))
+    } else {
+        (
+            sparrow_synth::generate::generate_to_dir(&scenario, &opts, &out)?,
+            None,
+        )
+    };
+    let summary = SynthOutput {
+        root: manifest.root.clone(),
+        manifest: out
+            .join(sparrow_synth::generate::MANIFEST_FILE)
+            .display()
+            .to_string(),
+        zip: zip.map(|z| z.display().to_string()),
+        files: manifest.files.len(),
+        tables: manifest
+            .tables
+            .iter()
+            .map(|(t, e)| (t.clone(), e.rows))
+            .collect(),
+    };
+    if json {
+        print_json(&summary)?;
+    } else {
+        println!("root:     {}", out.join(&summary.root).display());
+        println!("manifest: {}", summary.manifest);
+        if let Some(z) = &summary.zip {
+            println!("zip:      {z}");
+        }
+        println!("files:    {}", summary.files);
+        for (t, n) in &summary.tables {
+            println!("  {t:<24} {n:>9} rows");
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_synth_check(manifest_path: &Path, case_path: &Path, json: bool) -> Result<ExitCode> {
+    let text = std::fs::read_to_string(manifest_path)
+        .with_context(|| format!("reading {}", manifest_path.display()))?;
+    let manifest = Manifest::from_json(&text)
+        .with_context(|| format!("parsing {}", manifest_path.display()))?;
+    if !case_path.is_file() {
+        return Err(sparrow_core::Error::NotFound(format!(
+            "case database {}",
+            case_path.display()
+        ))
+        .into());
+    }
+    let case = Case::open_read_only(case_path)?;
+    let report = sparrow_synth::check::check(&manifest, &case)?;
+    if json {
+        print_json(&report)?;
+    } else {
+        if report.ok {
+            println!(
+                "ok: collection {} matches {}",
+                report.collection_id.unwrap_or_default(),
+                manifest_path.display()
+            );
+        } else {
+            println!("{} problems:", report.problems.len());
+            for p in &report.problems {
+                println!("  {p}");
+            }
+        }
+        println!(
+            "{} rule expectations not checked (detection engine: Phase 6)",
+            report.rules_unchecked
+        );
+    }
+    Ok(if report.ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(2)
+    })
+}
+
+#[derive(Serialize)]
+struct SynthListEntry {
+    id: String,
+    description: String,
+}
+
+#[derive(Serialize)]
+struct SynthList {
+    scenarios: Vec<SynthListEntry>,
+    licence_profiles: Vec<SynthListEntry>,
+    audit_profiles: Vec<SynthListEntry>,
+}
+
+fn cmd_synth_list(json: bool) -> Result<ExitCode> {
+    let mut scenarios = Vec::new();
+    for name in sparrow_synth::scenario::builtin_names() {
+        let s = sparrow_synth::scenario::load(name)?;
+        scenarios.push(SynthListEntry {
+            id: s.name,
+            description: s.description,
+        });
+    }
+    let list = SynthList {
+        scenarios,
+        licence_profiles: sparrow_synth::profiles::licence_profiles()
+            .iter()
+            .map(|p| SynthListEntry {
+                id: p.id.clone(),
+                description: p.title.clone(),
+            })
+            .collect(),
+        audit_profiles: sparrow_synth::profiles::audit_profiles()
+            .iter()
+            .map(|p| SynthListEntry {
+                id: p.id.clone(),
+                description: p.title.clone(),
+            })
+            .collect(),
+    };
+    if json {
+        print_json(&list)?;
+    } else {
+        for (title, entries) in [
+            ("scenarios", &list.scenarios),
+            ("licence profiles", &list.licence_profiles),
+            ("audit profiles", &list.audit_profiles),
+        ] {
+            println!("{title}:");
+            for e in entries {
+                println!("  {:<22} {}", e.id, e.description);
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }

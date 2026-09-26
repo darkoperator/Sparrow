@@ -2,6 +2,7 @@
 //! `COMMENT ON COLUMN <table>.record_key` (quoted in the doc comment). Per-collection keys carry
 //! the placeholder `{cid}` for the collection id, which the manifest leaves unreplaced.
 
+use crate::story::Evidence;
 use uuid::Uuid;
 
 /// The placeholder for the collection id in per-collection keys.
@@ -140,4 +141,29 @@ pub fn licence_tier(tier: &str) -> String {
 /// `user_licenses`: "<collection_id>|<lower upn>|<lower sku>."
 pub fn user_licence(upn: &str, sku: &str) -> String {
     format!("{CID}|{}|{}", lower(upn), lower(sku))
+}
+
+/// The record key storyline evidence `e` has in `table`, when this module can name it (the
+/// manifest's sightings carry it so `synth check` can find the provenance row); `None` for a
+/// pairing no writer delivers yet. Writer tasks extend it as they deliver new pairings.
+pub fn for_evidence(e: &Evidence, table: &str) -> Option<String> {
+    match (e, table) {
+        (Evidence::Ual(id), "ual_events") => Some(ual(*id)),
+        (Evidence::SignIn(id), "signins") => Some(signin(*id)),
+        (Evidence::DirAudit(id), "directory_audits") => Some(dir_audit(id)),
+        (
+            Evidence::Trace {
+                trace_id,
+                recipient,
+            },
+            "message_trace",
+        ) => Some(trace(*trace_id, recipient)),
+        (Evidence::Risk(id), "risk_detections") => Some(risk(id)),
+        (Evidence::Mailbox(upn), "mailboxes") => Some(mailbox(upn)),
+        (Evidence::MobileDevice { mailbox, device_id }, "mobile_devices") => {
+            Some(mobile_device(mailbox, device_id))
+        }
+        (Evidence::TransportRule(name), "transport_rules") => Some(transport_rule(name)),
+        _ => None,
+    }
 }

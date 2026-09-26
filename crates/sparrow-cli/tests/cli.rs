@@ -872,3 +872,75 @@ fn invictus_tree_end_to_end_through_the_profile_commands() {
     assert_eq!(tables[0]["table"], "timeline");
     assert_eq!(tables[0]["kind"], "view");
 }
+
+#[test]
+fn synth_generates_then_checks_a_case() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("tree");
+    let v = json_out(
+        sparrow()
+            .args([
+                "--json",
+                "synth",
+                "--scenario",
+                "bec-aitm",
+                "--collector",
+                "portal",
+                "--seed",
+                "4",
+                "--out",
+            ])
+            .arg(&out),
+        0,
+    );
+    let root = out.join(v["root"].as_str().unwrap());
+    let case = dir.path().join("case.duckdb");
+    sparrow()
+        .args(["ingest"])
+        .arg(&root)
+        .arg("--case")
+        .arg(&case)
+        .arg("--geoip-dir")
+        .arg(out.join("geoip"))
+        .assert()
+        .success();
+    let r = json_out(
+        sparrow()
+            .args(["--json", "synth", "check", "--manifest"])
+            .arg(out.join("manifest.json"))
+            .arg("--case")
+            .arg(&case),
+        0,
+    );
+    assert_eq!(r["ok"], true, "{r}");
+}
+
+#[test]
+fn synth_rejects_unknown_scenario_and_collector() {
+    let dir = tempfile::tempdir().unwrap();
+    sparrow()
+        .args([
+            "synth",
+            "--scenario",
+            "nope",
+            "--collector",
+            "portal",
+            "--out",
+        ])
+        .arg(dir.path().join("x"))
+        .assert()
+        .code(1)
+        .stderr(contains("nope"));
+    sparrow()
+        .args([
+            "synth",
+            "--scenario",
+            "bec-aitm",
+            "--collector",
+            "hawk9",
+            "--out",
+        ])
+        .arg(dir.path().join("y"))
+        .assert()
+        .failure();
+}
