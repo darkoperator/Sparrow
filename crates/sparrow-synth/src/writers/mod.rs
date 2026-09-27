@@ -96,6 +96,7 @@ pub const SPARROW_PARSED: &[&str] = &[
     "hawk.user.sweep_rules",
     "inv.admins",
     "inv.admins.merged",
+    "inv.app_registrations",
     "inv.audit_status",
     "inv.ca",
     "inv.entra_audit",
@@ -110,12 +111,15 @@ pub const SPARROW_PARSED: &[&str] = &[
     "inv.mfa.registration",
     "inv.mia.message_ids",
     "inv.mia.sessions",
+    "inv.oauth",
     "inv.roles.all",
     "inv.roles.pim",
+    "inv.service_principals",
     "inv.signins",
     "inv.signins.merged",
     "inv.ual.merged",
     "inv.ual.window",
+    "inv.user_applications",
     "inv.users",
     "portal.entra_signins",
     "portal.message_trace",
@@ -146,5 +150,9 @@ mod tests {
         assert!(parsed_by_sparrow("inv.ca"));
         assert!(parsed_by_sparrow("inv.mfa.methods"));
         assert!(parsed_by_sparrow("inv.mfa.registration"));
+        assert!(parsed_by_sparrow("inv.oauth"));
+        assert!(parsed_by_sparrow("inv.service_principals"));
+        assert!(parsed_by_sparrow("inv.app_registrations"));
+        assert!(parsed_by_sparrow("inv.user_applications"));
     }
 }

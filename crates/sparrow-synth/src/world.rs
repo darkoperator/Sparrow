@@ -1424,7 +1424,7 @@ fn build_apps(
     let admin_upn = admins.first().map(|a| a.upn.clone());
 
     let payroll_app_id = rng.uuid();
-    let payroll_created = scenario.window.start - Duration::days(200);
+    let payroll_created = scenario.window.start - Duration::days(180);
     apps.push(App {
         app_id: payroll_app_id,
         object_id: rng.uuid(),

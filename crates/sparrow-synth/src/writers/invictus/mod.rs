@@ -11,6 +11,7 @@
 //! Mailbox Permissions, Audit Status (twice), MailItemsAccessed, Mailbox Audit Log, Licenses,
 //! Users, Admins, Roles (AllRoles then PIM).
 
+mod apps;
 mod directory;
 mod entra;
 mod exchange;
@@ -165,6 +166,12 @@ impl<'w> Ctx<'w> {
         Encoding::export_csv_utf8(self.opts.ps)
     }
 
+    /// The triage root (`Triage-<tenant folder>`), a sibling of the project folder under
+    /// `Output` (Start-MESTriage; Task 21 adds QuickUAL files there too).
+    pub fn triage_root(&self) -> String {
+        format!("Triage-{}", self.world.tenant.folder_name)
+    }
+
     pub fn nl(&self) -> &'static str {
         self.host.newline
     }
@@ -184,6 +191,7 @@ pub fn write(world: &World, opts: &GenerateOptions, tree: &mut Tree<'_>) -> Resu
     licences::write(&mut c, tree)?;
     directory::write(&mut c, tree)?;
     mfa_ca::write(&mut c, tree)?;
+    apps::write(&mut c, tree)?;
     let log = std::mem::take(&mut c.log);
     log.write(&c, tree)
 }

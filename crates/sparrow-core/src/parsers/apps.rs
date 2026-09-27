@@ -26,7 +26,7 @@ pub fn oauth_grant_key(rec: &Rec) -> Option<String> {
     Some(format!("{client}|{resource}|{permission}|{principal}"))
 }
 
-fn permission_type(s: Option<String>) -> Option<String> {
+pub fn permission_type(s: Option<String>) -> Option<String> {
     let s = s?.to_ascii_lowercase();
     if s.starts_with("delegated") {
         Some("delegated".into())

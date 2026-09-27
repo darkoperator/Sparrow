@@ -72,9 +72,11 @@ fn invictus_sample_tree_loads_end_to_end() {
         f.warnings.iter().any(|w| w == EMPTY_FILE_WARNING),
         "{EMPTY_USERS}"
     );
-    // OAuthPermissions has no parser yet.
+    // Task 16 added the OAuthPermissions parser: a 0-byte export is parsed as "ran and found
+    // nothing" too.
     let f = row(&report, EMPTY_OAUTH);
-    assert_eq!(f.status, FileStatus::NotSupported, "{EMPTY_OAUTH}");
+    assert_eq!(f.status, FileStatus::Parsed, "{EMPTY_OAUTH}");
+    assert_eq!(f.records_read, 0);
     assert!(
         f.warnings.iter().any(|w| w == EMPTY_FILE_WARNING),
         "{EMPTY_OAUTH}"

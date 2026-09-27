@@ -485,6 +485,28 @@ pub static EVIDENCE: &[EvidenceDef] = &[
         )
     },
     EvidenceDef {
+        id: "applications",
+        title: "Applications and service principals",
+        kind: Kind::State,
+        artifacts: &[
+            "inv.service_principals",
+            "inv.app_registrations",
+            "inv.user_applications",
+        ],
+        invictus_runs: &[
+            ("EntraID", Some("ServicePrincipals")),
+            ("EntraID", Some("AppRegistrations")),
+        ],
+        invictus: Some("Get-OAuthPermissionsGraph"),
+        hawk: Some("Get-HawkTenantAppAndSPNCredentialDetail"),
+        ..source!(
+            "applications x",
+            "CAST(NULL AS TIMESTAMPTZ)",
+            "CAST(NULL AS BIGINT)",
+            "'applications'", "x.record_key"
+        )
+    },
+    EvidenceDef {
         id: "transport_rules",
         title: "Exchange transport rules",
         kind: Kind::State,

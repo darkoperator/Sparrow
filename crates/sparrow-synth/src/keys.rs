@@ -158,6 +158,16 @@ pub fn ca_policy(id: &str) -> String {
     lower(id)
 }
 
+/// `applications`: "Lower-case app id (ServicePrincipals, AppRegistrations)."
+pub fn application(app_id: &str) -> String {
+    lower(app_id)
+}
+
+/// `applications`: a UserApplications row adds `|<lower AssociationType>|<lower AssociatedUser>`.
+pub fn application_association(app_id: &str, association: &str, user: &str) -> String {
+    format!("{}|{}|{}", lower(app_id), lower(association), lower(user))
+}
+
 /// ObjectModified as Hawk's `Simple_*` admin-audit summary writes it: the part after the last
 /// `/`, then after the last `\`.
 pub fn short_object(object: &str) -> &str {

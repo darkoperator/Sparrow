@@ -117,3 +117,38 @@ COMMENT ON COLUMN ca_policies.session_controls IS 'Object with the session setti
 COMMENT ON COLUMN ca_policies.raw IS 'Source record as loaded.';
 COMMENT ON COLUMN ca_policies.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
 COMMENT ON COLUMN ca_policies.tz_assumed IS 'Object {column: true} naming each time column whose value came without a time zone and was stored as if UTC (for example Hawk WhenChanged or AutoReply StartTime, written in the collecting host''s local time). Per column like column_collections: the load that writes a column sets or clears its entry. NULL for rows loaded before schema 7 or loads without a time column.';
+
+-- Task 16: applications and service principals.
+CREATE TABLE applications (
+    record_key VARCHAR NOT NULL, collection_id BIGINT NOT NULL, collected_at TIMESTAMPTZ,
+    app_id VARCHAR, object_id VARCHAR, display_name VARCHAR, description VARCHAR,
+    owner_org_id VARCHAR, created TIMESTAMPTZ, enabled BOOLEAN, publisher VARCHAR,
+    verified_publisher VARCHAR, sign_in_audience VARCHAR, application_type VARCHAR,
+    reply_urls VARCHAR[], has_secrets BOOLEAN, has_certs BOOLEAN,
+    required_api_permission_count INTEGER, association_type VARCHAR, associated_user VARCHAR,
+    raw JSON, column_collections JSON, tz_assumed JSON
+);
+COMMENT ON TABLE applications IS 'Applications, service principals and per-user app associations (Microsoft-Extractor-Suite EntraID ServicePrincipals/AppRegistrations and the triage UserApplications.csv; Hawk credential files do not create rows). Latest wins per record_key.';
+COMMENT ON COLUMN applications.record_key IS 'Lower-case app id (ServicePrincipals, AppRegistrations); UserApplications rows add |<lower AssociationType>|<lower AssociatedUser> so each user–app association is its own row.';
+COMMENT ON COLUMN applications.collection_id IS 'Newest collection that wrote or re-confirmed any of this row''s columns (per-column writers: column_collections).';
+COMMENT ON COLUMN applications.collected_at IS 'collected_at of that collection (NULL when unknown).';
+COMMENT ON COLUMN applications.app_id IS 'Application (AppId), lower-case.';
+COMMENT ON COLUMN applications.object_id IS 'Application (AppRegistrations Id) or service principal (UserApplications ObjectId) object id, lower-case.';
+COMMENT ON COLUMN applications.display_name IS 'AppDisplayName / DisplayName / UserApplications ApplicationName.';
+COMMENT ON COLUMN applications.description IS 'AppDescription (ServicePrincipals).';
+COMMENT ON COLUMN applications.owner_org_id IS 'AppOwnerOrganizationId (the tenant that owns the app).';
+COMMENT ON COLUMN applications.created IS 'Application CreatedDateTime.';
+COMMENT ON COLUMN applications.enabled IS 'AccountEnabled / UserApplications ServicePrincipalEnabled (NULL when the collector wrote N/A).';
+COMMENT ON COLUMN applications.publisher IS 'PublisherName.';
+COMMENT ON COLUMN applications.verified_publisher IS 'Verified publisher display name (ServicePrincipals.csv carries none).';
+COMMENT ON COLUMN applications.sign_in_audience IS 'SignInAudience.';
+COMMENT ON COLUMN applications.application_type IS 'UserApplications ApplicationType: Microsoft Application, Managed Identity, Enterprise Application or Internal Application.';
+COMMENT ON COLUMN applications.reply_urls IS 'Redirect URIs (UserApplications WebRedirectUris + PublicClientRedirectUris), "; "-joined.';
+COMMENT ON COLUMN applications.has_secrets IS 'The app registration has password credentials (UserApplications HasClientSecrets; NULL when the collector wrote N/A).';
+COMMENT ON COLUMN applications.has_certs IS 'The app registration has key credentials (UserApplications HasCertificates; NULL when the collector wrote N/A).';
+COMMENT ON COLUMN applications.required_api_permission_count IS 'UserApplications RequiredApiPermissionCount (NULL when the collector wrote N/A).';
+COMMENT ON COLUMN applications.association_type IS 'UserApplications AssociationType: Owner or Assignment (NULL for the ServicePrincipals / AppRegistrations rows).';
+COMMENT ON COLUMN applications.associated_user IS 'UserApplications AssociatedUser UPN, lower-case.';
+COMMENT ON COLUMN applications.raw IS 'Source record as loaded; records from several files are merged (json_merge_patch).';
+COMMENT ON COLUMN applications.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
+COMMENT ON COLUMN applications.tz_assumed IS 'Object {column: true} naming each time column whose value came without a time zone and was stored as if UTC (for example Hawk WhenChanged or AutoReply StartTime, written in the collecting host''s local time). Per column like column_collections: the load that writes a column sets or clears its entry. NULL for rows loaded before schema 7 or loads without a time column.';

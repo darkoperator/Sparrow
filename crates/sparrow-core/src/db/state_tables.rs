@@ -606,6 +606,30 @@ pub static CA_POLICIES: TableSpec = TableSpec {
     ],
 };
 
+pub static APPLICATIONS: TableSpec = TableSpec {
+    table: "applications",
+    mode: LoadMode::LatestWins,
+    columns: &[
+        col("app_id", V),
+        col("object_id", V),
+        col("display_name", V),
+        col("description", V),
+        col("owner_org_id", V),
+        col("created", T),
+        col("enabled", B),
+        col("publisher", V),
+        col("verified_publisher", V),
+        col("sign_in_audience", V),
+        col("application_type", V),
+        col("reply_urls", L),
+        col("has_secrets", B),
+        col("has_certs", B),
+        col("required_api_permission_count", I),
+        col("association_type", V),
+        col("associated_user", V),
+    ],
+};
+
 pub static ALL: &[&TableSpec] = &[
     &USERS,
     &ROLE_ASSIGNMENTS,
@@ -631,4 +655,5 @@ pub static ALL: &[&TableSpec] = &[
     &USER_LICENSES,
     &MFA_REGISTRATION,
     &CA_POLICIES,
+    &APPLICATIONS,
 ];

@@ -34,6 +34,7 @@ fn fresh_case_has_provenance_tables() {
         vec![
             "admin_audit_events",
             "app_credentials",
+            "applications",
             "audit_config",
             "ca_policies",
             "capabilities",
