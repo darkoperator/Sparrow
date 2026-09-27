@@ -64,11 +64,21 @@ fn invictus_sample_tree_loads_end_to_end() {
     );
     assert_eq!(row(&report, PERMS_2).status, FileStatus::DuplicateFile);
     assert_eq!(row(&report, TRACE_FILE_2).status, FileStatus::DuplicateFile);
-    for rel in [EMPTY_USERS, EMPTY_OAUTH] {
-        let f = row(&report, rel);
-        assert_eq!(f.status, FileStatus::NotSupported, "{rel}");
-        assert!(f.warnings.iter().any(|w| w == EMPTY_FILE_WARNING), "{rel}");
-    }
+    // Task 14 added the Users parser: a 0-byte export is parsed as "ran and found nothing".
+    let f = row(&report, EMPTY_USERS);
+    assert_eq!(f.status, FileStatus::Parsed, "{EMPTY_USERS}");
+    assert_eq!(f.records_read, 0);
+    assert!(
+        f.warnings.iter().any(|w| w == EMPTY_FILE_WARNING),
+        "{EMPTY_USERS}"
+    );
+    // OAuthPermissions has no parser yet.
+    let f = row(&report, EMPTY_OAUTH);
+    assert_eq!(f.status, FileStatus::NotSupported, "{EMPTY_OAUTH}");
+    assert!(
+        f.warnings.iter().any(|w| w == EMPTY_FILE_WARNING),
+        "{EMPTY_OAUTH}"
+    );
     // Every file reconciles.
     for f in report.collections.iter().flat_map(|c| &c.files) {
         assert_eq!(

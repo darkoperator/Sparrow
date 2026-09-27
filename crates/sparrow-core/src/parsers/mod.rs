@@ -20,6 +20,7 @@ pub mod signins;
 pub mod stage;
 pub mod tenant_config;
 pub mod ual;
+pub mod users_roles;
 
 use crate::ingest::parser::ParserRegistry;
 
@@ -42,4 +43,5 @@ pub fn register_builtin(registry: &mut ParserRegistry) {
     admin_audit::register(registry);
     flags::register(registry);
     licenses::register(registry);
+    users_roles::register(registry);
 }

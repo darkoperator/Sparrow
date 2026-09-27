@@ -65,11 +65,13 @@ fn day_first_culture_trees_ingest_without_culture_flag() {
 
 #[test]
 fn all_ambiguous_collection_needs_culture() {
-    // A one-week window before the 13th: no culture date can prove the order.
+    // A one-week window before the 13th whose tenant-created dates (400 days earlier, which
+    // the Admins/AllRoles files now carry) are also all ambiguous: no culture date can prove
+    // the order.
     let mut s = load("business-basic").unwrap();
-    s.window.start = "2026-09-01T00:00:00Z".parse().unwrap();
+    s.window.start = "2025-01-04T00:00:00Z".parse().unwrap();
     s.window.days = 7;
-    s.window.collected_at = "2026-09-09T10:00:00Z".parse().unwrap();
+    s.window.collected_at = "2025-01-12T10:00:00Z".parse().unwrap();
     s.storylines.clear();
     s.lookalikes.clear();
     let mut o = opts(24);

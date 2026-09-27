@@ -8,8 +8,10 @@
 //! collecting host's local time (UTC + `host_utc_offset_minutes`): the first run starts at
 //! `collected_at`, each later one 7-40 seconds after the previous run finished (`Runs`).
 //! The run order is fixed: UnifiedAuditLog, Sign-In logs, Audit logs, MessageTrace (twice),
-//! Mailbox Permissions, Audit Status (twice), MailItemsAccessed, Mailbox Audit Log, Licenses.
+//! Mailbox Permissions, Audit Status (twice), MailItemsAccessed, Mailbox Audit Log, Licenses,
+//! Users, Admins, Roles (AllRoles then PIM).
 
+mod directory;
 mod entra;
 mod exchange;
 mod licences;
@@ -179,6 +181,7 @@ pub fn write(world: &World, opts: &GenerateOptions, tree: &mut Tree<'_>) -> Resu
     exchange::write_mail_items_accessed(&mut c, tree)?;
     ual::write_mailbox_audit_log(&mut c, tree)?;
     licences::write(&mut c, tree)?;
+    directory::write(&mut c, tree)?;
     let log = std::mem::take(&mut c.log);
     log.write(&c, tree)
 }

@@ -13,3 +13,13 @@ COMMENT ON COLUMN licenses.service_plans IS 'Service plan names in the SKU, trim
 COMMENT ON TABLE user_licenses IS 'Licences assigned to users, per collection (Microsoft-Extractor-Suite UserLicenses.csv). Users with no licence (SkuPartNumber None) have no row.';
 COMMENT ON COLUMN user_licenses.source IS 'invictus_user_licenses (Microsoft-Extractor-Suite UserLicenses.csv).';
 COMMENT ON COLUMN user_licenses.service_plans IS 'Service plan names assigned to the user from this SKU; NULL for UserLicenses.csv, which lists SKUs only.';
+
+-- Task 14: users and role assignments from the Microsoft-Extractor-Suite directory cmdlets.
+COMMENT ON TABLE users IS 'Directory users at collection time (Hawk 4 EntraIDUsers, Hawk 3 AzureADUsers, Microsoft-Extractor-Suite Users.csv). One row per record_key; a newer collection replaces the columns it provides (latest wins).';
+COMMENT ON COLUMN users.last_signin IS 'Last sign-in time when the source provides it (Microsoft-Extractor-Suite Users.csv: the later of LastSignInDateTime and LastNonInteractiveSignInDateTime; not collected by Hawk).';
+COMMENT ON COLUMN users.department IS 'Department when the source provides it (Microsoft-Extractor-Suite Users.csv; not collected by Hawk).';
+COMMENT ON COLUMN users.job_title IS 'Job title when the source provides it (Microsoft-Extractor-Suite Users.csv; not collected by Hawk).';
+COMMENT ON TABLE role_assignments IS 'Admin role memberships and Exchange role assignments (Entra directory roles via Hawk and the Microsoft-Extractor-Suite Admins/Roles files, Exchange role groups, eDiscovery and ApplicationImpersonation assignments). Latest wins per record_key.';
+COMMENT ON COLUMN role_assignments.source IS 'entra_directory (Hawk EntraIDAdministrators/AzureADAdministrators and Microsoft-Extractor-Suite Admins/<role>.csv + Roles/AllRoles.csv), exchange_rbac (ExchangeOnlineAdministrators, Impersonation_Rights), exchange_ediscovery (EDiscoveryRoleAssignments, CustomEDiscoveryRoles), entra_pim (Microsoft-Extractor-Suite Roles/PIM-Assignments.csv).';
+COMMENT ON COLUMN role_assignments.assignment_type IS 'active, eligible or permanent (PIM); the Microsoft-Extractor-Suite Admins/AllRoles files are permanent and PIM-Assignments.csv carries PIM Active/PIM Eligible; delegating for Exchange delegating assignments.';
+COMMENT ON COLUMN role_assignments.enabled IS 'Exchange role assignment Enabled, or the Microsoft-Extractor-Suite Admins/AllRoles AccountEnabled.';
