@@ -365,6 +365,39 @@ fn investigate_txt_hawk3_lines_inherit_time_and_tag() {
     );
 }
 
+/// The record_key COMMENT's documented text for `_Investigate.txt` entries is what is hashed.
+#[test]
+fn investigate_txt_keys_follow_the_documented_text() {
+    use sha2::{Digest, Sha256};
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    let path = "C:\\Hawk\\cap\\Tenant\\_Investigate_Impersonation_Rights.csv";
+    fixtures::write(
+        &root,
+        "_Investigate.txt",
+        &fixtures::utf16le_bom(&format!(
+            "[9/24/2026 2:20:00 PM] - ## Impersonation ## - Found accounts\r\n\tAdditional Information: {path}\r\n"
+        )),
+    );
+    let (case, report) = ingest(dir.path(), None);
+    assert!(!report.has_errors(), "{report:#?}");
+    let hash = |t: &str| hex::encode(Sha256::digest(t.as_bytes()));
+    let note = hash("investigate_note\n9/24/2026 2:20:00 PM\nFound accounts");
+    let reference = hash(&format!(
+        "investigate_file_reference\n9/24/2026 2:20:00 PM\nAdditional Information: {path}"
+    ));
+    for key in [note, reference] {
+        assert_eq!(
+            count(
+                &case,
+                &format!("SELECT count(*) FROM collector_flags WHERE record_key = '{key}'")
+            ),
+            1,
+            "{key}"
+        );
+    }
+}
+
 #[test]
 fn ambiguous_investigate_times_are_null_with_warning() {
     let dir = tempfile::tempdir().unwrap();

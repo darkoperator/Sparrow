@@ -279,7 +279,7 @@ fn describe_lists_views_with_their_kind() {
 #[test]
 fn state_table_specs_match_the_schema() {
     let case = Case::in_memory().unwrap();
-    assert_eq!(case.schema_version().unwrap(), 7);
+    assert_eq!(case.schema_version().unwrap(), 8);
     for spec in ALL {
         for common in [
             "record_key",
@@ -540,4 +540,33 @@ fn migration_7_keys_org_state_transport_rules_and_remote_domains_by_collection()
             "transport_rules=3|external redirect",
         ]
     );
+}
+
+/// The admin_audit_events record_key COMMENT's documented text is what is hashed.
+#[test]
+fn admin_audit_key_follows_the_documented_text() {
+    use sha2::{Digest, Sha256};
+    let case = Case::in_memory().unwrap();
+    let c: String = case
+        .conn()
+        .query_row(
+            "SELECT comment FROM duckdb_columns() WHERE table_name = 'admin_audit_events' AND column_name = 'record_key'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        c.contains("\"admin_audit\\n<run>\\n<cmdlet>\\n<object>\\n<caller>\""),
+        "{c}"
+    );
+    let v = serde_json::json!({
+        "CmdletName": "New-InboxRule",
+        "RunDate": "2026-09-04T13:05:09.250+02:00",
+        "ObjectModified": "EURPR01/Tenants/contoso/ann@contoso.example\\Sync",
+        "Caller": "Admin@Contoso.example",
+    });
+    let rec = sparrow_core::normalize::fields::Rec::new(v.as_object().unwrap(), false);
+    let key = sparrow_core::parsers::admin_audit::admin_audit_key(&rec, None).unwrap();
+    let text = "admin_audit\n2026-09-04T11:05:09Z\nnew-inboxrule\nsync\nadmin@contoso.example";
+    assert_eq!(key, hex::encode(Sha256::digest(text.as_bytes())));
 }
