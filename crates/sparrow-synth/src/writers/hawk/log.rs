@@ -9,9 +9,11 @@
 //! Hawk 3.1 (research §7.1, capture survey §1): every line stamped `[<Get-Date -Format G>]`,
 //! the host culture's long date and time in the host's local time (`[M/d/yyyy h:mm:ss tt]` on
 //! en-US, `[dd/MM/yyyy HH:mm:ss]` on en-GB); `[ACTION]`, `[ERROR]` and `[WARNING]` tags, every
-//! other line untagged; `-Notice` lines are `## INVESTIGATE ##` section lines (in both files);
-//! `-SilentNotice` writes an indented `Additional Information: <path>` line to
-//! `_Investigate.txt` only. The culture timestamps are date evidence of both files.
+//! other line untagged; `-Notice` lines are `## <Tag> ##` lines (in both files), the tag naming
+//! the section that logged them (`Log::section`); `-SilentNotice` writes an indented
+//! `Additional Information: <path>` line to `_Investigate.txt` only (research §7.1: "indented
+//! `<Label> <Label>: <Windows path>` lines"). The culture timestamps are date evidence of both
+//! files.
 //!
 //! Both files are written once at the end with `Out-File`'s default encoding of the session
 //! that created them.
@@ -63,6 +65,8 @@ pub struct Log {
     investigate: Vec<String>,
     log_dates: DateEvidence,
     investigate_dates: DateEvidence,
+    /// The Hawk 3 `## <Tag> ##` of notices logged now.
+    section: String,
 }
 
 impl Log {
@@ -82,6 +86,7 @@ impl Log {
             investigate: Vec::new(),
             log_dates: DateEvidence::default(),
             investigate_dates: DateEvidence::default(),
+            section: "Hawk".into(),
         }
     }
 
@@ -113,8 +118,23 @@ impl Log {
         }
     }
 
+    /// Adds the culture date `d` a Hawk 3 message carries to `Hawk.log`'s date evidence.
+    pub fn note_date(&mut self, d: &PsDate) {
+        if let Dialect::V3(host) = self.dialect {
+            note_evidence(&host, &mut self.log_dates, d);
+        }
+    }
+
+    /// Hawk 3: the section tag of the notices logged from now on.
+    pub fn section(&mut self, tag: impl Into<String>) {
+        self.section = tag.into();
+    }
+
     /// The tag (with its separator) of `level` in this dialect.
-    fn tag(&self, level: Level) -> &'static str {
+    fn tag(&self, level: Level) -> String {
+        if let (Dialect::V3(_), Level::Notice) = (self.dialect, level) {
+            return format!("## {} ## - ", self.section);
+        }
         match (self.dialect, level) {
             (Dialect::V4, Level::Action) => "[ACTION] - ",
             (Dialect::V4, Level::Info) => "[INFO]   - ",
@@ -125,9 +145,9 @@ impl Log {
             (Dialect::V3(_), Level::Action) => "[ACTION] - ",
             (Dialect::V3(_), Level::Error) => "[ERROR] - ",
             (Dialect::V3(_), Level::Warning) => "[WARNING] - ",
-            (Dialect::V3(_), Level::Notice) => "## INVESTIGATE ## - ",
             (_, _) => "",
         }
+        .to_string()
     }
 
     fn push(&mut self, level: Level, msg: &str) -> String {
@@ -194,6 +214,9 @@ impl Log {
                 self.stamp(&mut DateEvidence::default()),
                 path.as_ref()
             ),
+            // source-derived (no 3.1 source): research §7.1 gives "indented `<Label> <Label>:
+            // <Windows path>`"; the tab and the label text `Additional Information` (Hawk 4's) are
+            // chosen.
             Dialect::V3(_) => format!("\tAdditional Information: {}", path.as_ref()),
         };
         self.investigate.push(line);
@@ -214,9 +237,14 @@ impl Log {
         &self.investigate
     }
 
-    /// The `collector_flags` rows `_Investigate.txt` loads: one per distinct entry. A Hawk 4
-    /// entry is a line. A Hawk 3 entry is a stamped line (its stamp and message) or an indented
-    /// line, which takes the stamp of the stamped line above it.
+    /// The `collector_flags` rows `_Investigate.txt` loads: one per distinct record key, which
+    /// the COMMENT (migration 8) defines as the hash of "<flag_type>\n<time text or
+    /// empty>\n<message>" per entry: "a line [<time text>] - [TAG] - <message> or [<time
+    /// text>] - ## <Tag> ## - <message> ... starts an entry with that time text and message
+    /// (both trimmed); a line whose trimmed text starts with "Additional Information:" (Hawk 3
+    /// writes it indented) is an entry of its own with that trimmed text as message and the time
+    /// text of the entry above it". A Hawk 4 line is one entry; every Hawk 3 line this log
+    /// writes is a stamped notice or an indented `Additional Information:` line.
     fn investigate_flags(&self) -> u64 {
         match self.dialect {
             Dialect::V4 => self.investigate.iter().collect::<BTreeSet<_>>().len() as u64,
@@ -312,6 +340,7 @@ mod tests {
         log.plain("*** Version 3.1.0 ***");
         log.info("a");
         log.action("b");
+        log.section("Tenant");
         log.notice("c");
         log.silent_notice("C:\\x\\Tenant\\f.csv");
         log.silent_notice("C:\\x\\Tenant\\f.csv");
@@ -321,7 +350,7 @@ mod tests {
                 "[9/4/2026 3:05:09 PM] - *** Version 3.1.0 ***",
                 "[9/4/2026 3:05:09 PM] - a",
                 "[9/4/2026 3:05:09 PM] - [ACTION] - b",
-                "[9/4/2026 3:05:09 PM] - ## INVESTIGATE ## - c",
+                "[9/4/2026 3:05:09 PM] - ## Tenant ## - c",
             ]
         );
         assert_eq!(

@@ -297,7 +297,7 @@ impl Omft {
             let rel = self.rel(prefix, user, "xml");
             let (dir, file) = rel.rsplit_once('/').unwrap_or(("", rel.as_str()));
             let rel = format!("{dir}/XML/{file}");
-            let text = clixml::render(&host, rows);
+            let text = clixml::render(&host, rows, clixml::type_name(prefix));
             let spec = spec(
                 &rel,
                 clixml::encoding(host.edition),

@@ -2,6 +2,7 @@
 //! `COMMENT ON COLUMN <table>.record_key` (quoted in the doc comment). Per-collection keys carry
 //! the placeholder `{cid}` for the collection id, which the manifest leaves unreplaced.
 
+use crate::events::Ual;
 use crate::story::Evidence;
 use crate::world::World;
 use chrono::{DateTime, Utc};
@@ -154,21 +155,62 @@ pub fn short_object(object: &str) -> &str {
     after_slash.rsplit('\\').next().unwrap_or(after_slash)
 }
 
-/// `admin_audit_events`: "SHA-256 hex of run time (UTC, seconds), cmdlet, ObjectModified after
-/// its last / and \, and the caller as Hawk's Simple_* summary writes it, all lower-case." The
-/// hashed text is the lines `admin_audit`, the run time `yyyy-MM-ddTHH:mm:ssZ`, the cmdlet, the
-/// short object and the caller, joined with `\n` (a caller never runs `on behalf of` in the
-/// generated worlds, so the summary writes it unchanged). The `#<parameter hash>` suffix of
-/// commands sharing all four is not produced: no two generated commands share them.
+/// The caller as Hawk's `Simple_*` admin-audit summary writes it (`Get-SimpleAdminAuditLog`):
+/// empty gives `***`; a caller containing `on behalf of` gives `<first word of its 4th
+/// /-segment> on behalf of <its last /-segment>`, trailing quotes trimmed.
+pub fn simple_caller(caller: &str) -> String {
+    let caller = caller.trim();
+    if caller.is_empty() {
+        return "***".into();
+    }
+    if caller.to_lowercase().contains("on behalf of") {
+        let parts: Vec<&str> = caller.split('/').collect();
+        if parts.len() >= 4 {
+            let start = parts[3]
+                .split(' ')
+                .next()
+                .unwrap_or("")
+                .trim_end_matches('"');
+            let end = parts[parts.len() - 1].trim_end_matches('"');
+            return format!("{start} on behalf of {end}");
+        }
+    }
+    caller.to_string()
+}
+
+/// `admin_audit_events`: "SHA-256 hex (lower-case) of the UTF-8 text
+/// "admin_audit\n<run>\n<cmdlet>\n<object>\n<caller>" (lines joined with a single \n, no
+/// trailing newline): <run> is the run time in UTC truncated to the second as
+/// yyyy-MM-ddTHH:mm:ssZ ...; <cmdlet> is CmdletName ... lower-cased; <object> is ObjectModified
+/// after its last / and then after its last \, lower-cased; <caller> is the caller as Hawk's
+/// Simple_* summary writes it ..., lower-cased." (migration 8). The `#<parameter hash>` suffix
+/// of commands sharing a key is not produced: no two generated commands share one.
 pub fn admin_audit(run: DateTime<Utc>, cmdlet: &str, object: &str, caller: &str) -> String {
     let parts = [
         "admin_audit".to_string(),
         run.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         lower(cmdlet),
         lower(short_object(object)),
-        lower(caller),
+        lower(&simple_caller(caller)),
     ];
     hex::encode(Sha256::digest(parts.join("\n").as_bytes()))
+}
+
+/// The ObjectModified of an Exchange admin cmdlet rendered as a Search-AdminAuditLog record:
+/// AuditData's `ObjectId` (empty when absent).
+pub fn admin_object(u: &Ual) -> String {
+    u.audit
+        .get("ObjectId")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// The `admin_audit_events` key of Exchange admin cmdlet `u` rendered as a Search-AdminAuditLog
+/// record (run time, cmdlet, ObjectModified, caller = the account that ran it). The one source
+/// of the key for both the writer and the manifest's sightings.
+pub fn admin_audit_of(u: &Ual) -> String {
+    admin_audit(u.time, &u.operation, &admin_object(u), &u.user_id)
 }
 
 /// A mailbox permission grantee as Microsoft-Extractor-Suite's Get-MailboxPermissions exports
@@ -200,8 +242,7 @@ pub fn for_evidence(world: &World, e: &Evidence, table: &str) -> Option<String> 
         // Hawk 3 renders an Exchange admin cmdlet as a Search-AdminAuditLog record.
         (Evidence::Ual(id), "admin_audit_events") => {
             let u = world.story.ual.iter().find(|u| u.id == *id)?;
-            let object = u.audit.get("ObjectId").and_then(|v| v.as_str())?;
-            Some(admin_audit(u.time, &u.operation, object, &u.user_id))
+            Some(admin_audit_of(u))
         }
         (Evidence::SignIn(id), "signins") => Some(signin(*id)),
         (Evidence::DirAudit(id), "directory_audits") => Some(dir_audit(id)),

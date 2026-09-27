@@ -2,7 +2,7 @@
 //! collectors for each investigated user, then the summary. With `hawk_mixed_editions` the
 //! analyst runs it in a second, Windows PowerShell 5.1 session.
 
-use super::omft::{Art, Formats};
+use super::omft::{Art, Formats, HawkVersion};
 use super::tenant::{non_interactive_header, running, simple_and_raw, summary};
 use super::{
     Ctx, additional_properties, date, date_text, expanded_row, json_val, model, opt, r, raw_row,
@@ -964,10 +964,13 @@ pub(super) fn converted(c: &Ctx<'_>, records: &[Ual]) -> (Vec<Row>, Vec<usize>) 
     rows.into_iter().unzip()
 }
 
-/// Get-HawkUserUALSignInLog: three searches (AccountLogon, AzureActiveDirectory, StsLogon)
-/// concatenated; `Converted_Authentication_Logs` then `Raw_Authentication_Logs`.
-fn ual_signins(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
+/// Get-HawkUserUALSignInLog (Hawk 3.1: Get-HawkUserAuthHistory): three searches
+/// (AccountLogon, AzureActiveDirectory, StsLogon) concatenated; `Converted_Authentication_Logs`
+/// then `Raw_Authentication_Logs`. Hawk 3.1's raw records have no `AuditSearchRequestMetadata`
+/// (capture survey §2e: 10 columns).
+pub(super) fn ual_signins(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
     let upn = u.upn.clone();
+    let metadata = c.omft.version == HawkVersion::V4;
     c.log().action(format!(
         "Initiating collection of Sign-In logs for {upn} from the UAL."
     ));
@@ -991,7 +994,12 @@ fn ual_signins(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
             |x| x.record_type == rt && x.user_id.eq_ignore_ascii_case(&upn),
         );
         let n = found.len();
-        raw.extend(found.iter().enumerate().map(|(i, x)| raw_row(x, i, n, nl)));
+        raw.extend(found.iter().enumerate().map(|(i, x)| {
+            raw_row(x, i, n, nl)
+                .into_iter()
+                .filter(|(k, _)| metadata || k != "AuditSearchRequestMetadata")
+                .collect::<Row>()
+        }));
         records.extend(found);
     }
     if records.is_empty() {

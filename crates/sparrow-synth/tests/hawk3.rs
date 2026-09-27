@@ -143,24 +143,91 @@ fn the_log_uses_the_host_culture_and_the_hawk3_dialect() {
     );
 }
 
+/// `scan_text` of a decoded file; Windows PowerShell 5.1 wraps long Format-List values onto
+/// indented continuation lines, which are joined back first.
+fn scan(rel: &str, bytes: &[u8]) -> Vec<String> {
+    let text = sparrow_core::readers::text::decode(bytes).text;
+    if rel.ends_with(".txt") {
+        let re = regex::Regex::new(r"\r?\n +").unwrap();
+        scan_text(&re.replace_all(&text, ""))
+    } else {
+        scan_text(&text)
+    }
+}
+
 #[test]
 fn trees_are_deterministic_and_clean() {
     let s = load("hawk-investigate").unwrap();
-    let mut o = opts(45);
-    o.ps = PsEdition::Ps51;
-    let (mut a, mut b) = (MemSink::default(), MemSink::default());
-    generate(&s, &o, &mut a).unwrap();
-    generate(&s, &o, &mut b).unwrap();
-    assert_eq!(a.files, b.files);
-    // PowerShell 7 does not wrap Format-List values, so no domain is split across lines.
-    o.ps = PsEdition::Ps7;
-    let mut a = MemSink::default();
-    generate(&s, &o, &mut a).unwrap();
-    for (rel, bytes) in &a.files {
-        if rel.ends_with(".mmdb") {
-            continue;
+    for ps in [PsEdition::Ps51, PsEdition::Ps7] {
+        let mut o = opts(45);
+        o.ps = ps;
+        let (mut a, mut b) = (MemSink::default(), MemSink::default());
+        generate(&s, &o, &mut a).unwrap();
+        generate(&s, &o, &mut b).unwrap();
+        assert_eq!(a.files, b.files);
+        let mut utf16 = 0;
+        for (rel, bytes) in &a.files {
+            if rel.ends_with(".mmdb") {
+                continue;
+            }
+            utf16 += usize::from(bytes.starts_with(&[0xFF, 0xFE]));
+            let found = scan(rel, bytes);
+            assert!(found.is_empty(), "{ps:?} {rel}: {found:?}");
         }
-        let found = scan_text(&sparrow_core::readers::text::decode(bytes).text);
-        assert!(found.is_empty(), "{rel}: {found:?}");
+        assert_eq!(
+            utf16 > 0,
+            ps == PsEdition::Ps51,
+            "{ps:?}: UTF-16LE files scanned"
+        );
     }
+}
+
+/// For the Format-List `_Investigate_New_InboxRules.txt`: (total collector_flags rows, flags
+/// it shares with the summary copy `_Investigate_Simple_New_InboxRule.json`, its flag
+/// sightings). Its zone-less `RunDate` links (and merges) with the summary's flags only when
+/// the host runs on UTC.
+fn investigate_txt_flags(offset: i32) -> (u64, i64, i64) {
+    let mut s = load("hawk-investigate").unwrap();
+    s.tenant.host_utc_offset_minutes = offset;
+    let dir = tempfile::tempdir().unwrap();
+    let m = generate_to_dir(&s, &opts(46), dir.path()).unwrap();
+    let case = ingest_generated(dir.path(), &m);
+    let report = check(&m, &case).unwrap();
+    assert!(report.ok, "offset {offset}: {:#?}", report.problems);
+    let q = |sql: &str| -> i64 { case.conn().query_row(sql, [], |r| r.get(0)).unwrap() };
+    let keys = |file: &str| {
+        format!(
+            "SELECT r.record_key FROM record_sources r JOIN source_files s ON s.file_id = r.file_id
+             WHERE r.table_name = 'collector_flags' AND s.rel_path = 'Tenant/{file}'"
+        )
+    };
+    let txt = keys("_Investigate_New_InboxRules.txt");
+    let json = keys("_Investigate_Simple_New_InboxRule.json");
+    let shared = q(&format!("SELECT count(*) FROM ({txt} INTERSECT {json})"));
+    let sightings = q(&format!("SELECT count(*) FROM ({txt})"));
+    (m.tables["collector_flags"].rows, shared, sightings)
+}
+
+#[test]
+fn format_list_admin_rule_flags_merge_only_on_a_utc_host() {
+    let (utc_total, utc_shared, utc_blocks) = investigate_txt_flags(0);
+    let (local_total, local_shared, local_blocks) = investigate_txt_flags(120);
+    assert!(utc_blocks > 0 && utc_blocks == local_blocks);
+    assert_eq!(
+        utc_shared, utc_blocks,
+        "UTC host: every Format-List flag merges"
+    );
+    assert_eq!(local_shared, 0, "UTC+2 host: no Format-List flag merges");
+    assert_eq!(local_total - utc_total, local_blocks as u64);
+}
+
+#[test]
+fn hawk3_signins_past_retention_are_beyond_retention() {
+    let mut s = load("hawk-investigate").unwrap();
+    s.window.start -= chrono::Duration::days(20);
+    let dir = tempfile::tempdir().unwrap();
+    let m = generate_to_dir(&s, &opts(47), dir.path()).unwrap();
+    assert_eq!(m.evidence["signins"].allowed, ["beyond_retention"]);
+    let report = check(&m, &ingest_generated(dir.path(), &m)).unwrap();
+    assert!(report.ok, "{:#?}", report.problems);
 }

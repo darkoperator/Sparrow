@@ -21,8 +21,7 @@ use super::log::Level;
 use super::omft::{Art, Formats, HawkVersion, Written};
 use super::tenant::{self, running};
 use super::{
-    Ctx, date, expanded_row, one_of, opt, r, raw_row, register, register_flags, register_ual, s,
-    text_of, user,
+    Ctx, date, expanded_row, one_of, opt, r, register, register_flags, register_ual, s, user,
 };
 use crate::Result;
 use crate::events::{RecordType, Ual};
@@ -37,6 +36,7 @@ use chrono::Duration;
 use serde_json::{Value, json};
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
+use std::net::IpAddr;
 
 /// The module version Hawk 3.1 logs (`*** Version 3.1.0 ***`).
 pub const HAWK3_VERSION: &str = "3.1.0";
@@ -53,10 +53,16 @@ pub fn write_v3(world: &World, opts: &GenerateOptions, tree: &mut Tree<'_>) -> R
     psframework_log(&c, tree)
 }
 
-/// The start of the session (no licence detection in 3.x).
+/// The start of the session (no licence detection in 3.x): the version line (research §7.1),
+/// then the folder, tenant and window the analyst set.
+// source-derived (no 3.1 source): every message but the version line; the window is logged as
+// `Start Date : <G>` / `End Date : <G>` in the host culture (Hawk 4's summary wording), so the
+// collection reports its window as Hawk 4 collections do.
 fn header(c: &mut Ctx<'_>) {
     let path = c.omft.file_path.clone();
     let tenant = c.world.tenant.folder_name.clone();
+    let host = c.tenant_host;
+    let (start, end) = (c.world.window_start(), c.world.window_end());
     let log = c.log();
     log.plain(format!("*** Version {HAWK3_VERSION} ***"));
     log.plain("Checking for latest version online");
@@ -65,7 +71,20 @@ fn header(c: &mut Ctx<'_>) {
     log.plain("Latest Version Installed");
     log.plain(format!("Setting Hawk output folder to {path}"));
     log.plain(format!("Investigating tenant {tenant}"));
+    for (label, t) in [("Start Date", start), ("End Date", end)] {
+        let d = PsDate::dotnet(t, DtKind::Unspecified);
+        log.note_date(&d);
+        log.plain(format!("{label} : {}", host.csv_date(&d)));
+    }
     log.tick(5, 30);
+}
+
+/// `Running <cmdlet>.` before a collector, and the `## <Tag> ##` its notices carry.
+// source-derived (no 3.1 source): research §7.1 gives only the `## <Tag> ##` shape (a tag per
+// section; Sparrow's fixture uses `## Impersonation ##`); the tags name each collector's area.
+fn step(c: &mut Ctx<'_>, cmdlet: &str, tag: &str) {
+    running(c, cmdlet);
+    c.log().section(tag);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -73,227 +92,58 @@ fn header(c: &mut Ctx<'_>) {
 
 fn investigate_tenant(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
     c.log().action("Starting Tenant Investigation");
-    running(c, "Get-HawkTenantConfiguration");
-    configuration(c, tree)?;
-    running(c, "Get-HawkTenantEDiscoveryConfiguration");
-    ediscovery_configuration(c, tree)?;
-    running(c, "Get-HawkTenantEXOImpersonation");
+    step(c, "Get-HawkTenantConfiguration", "Tenant Configuration");
+    tenant::configuration(c, tree)?;
+    step(c, "Get-HawkTenantEDiscoveryConfiguration", "EDiscovery");
+    tenant::ediscovery_configuration(c, tree)?;
+    step(c, "Get-HawkTenantEXOImpersonation", "Impersonation");
     impersonation(c, tree)?;
-    running(c, "Get-HawkTenantEDiscoveryLogs");
+    step(c, "Get-HawkTenantEDiscoveryLogs", "EDiscovery Logs");
     ediscovery_logs(c, tree)?;
-    running(c, "Search-HawkTenantEXOAuditLog");
+    step(c, "Search-HawkTenantEXOAuditLog", "Admin Inbox Rules");
     inbox_rule_changes(c, tree)?;
-    running(c, "Get-HawkTenantRBACChanges");
+    step(c, "Get-HawkTenantRBACChanges", "RBAC");
     rbac_changes(c, tree)?;
-    running(c, "Get-HawkTenantMailboxPermissionChanges");
+    step(
+        c,
+        "Get-HawkTenantMailboxPermissionChanges",
+        "Mailbox Permissions",
+    );
     permission_changes(c, tree)?;
-    running(c, "Get-HawkTenantEmailForwardingChanges");
+    step(c, "Get-HawkTenantEmailForwardingChanges", "Forwarding");
     forwarding_changes(c, tree)?;
-    running(c, "Get-HawkTenantAzureAppAuditLog");
+    step(c, "Get-HawkTenantAzureAppAuditLog", "Application Audit");
+    // source-derived (no 3.1 source): the collector's log lines are Hawk 4.0's wording.
     tenant::app_audit_log(c, tree, "Azure_Application_Audit")?;
-    running(c, "Get-HawkTenantEXOAdmins");
+    step(c, "Get-HawkTenantEXOAdmins", "Exchange Admins");
     tenant::exo_admins(c, tree)?;
-    running(c, "Get-HawkTenantConsentGrants");
+    step(c, "Get-HawkTenantConsentGrants", "Consent Grants");
     consent_grants(c, tree)?;
-    running(c, "Get-HawkTenantAzureADAdmins");
+    step(c, "Get-HawkTenantAzureADAdmins", "Azure AD Admins");
     azuread_admins(c, tree)?;
-    running(c, "Get-HawkTenantAppAndSPNCredentialDetails");
+    step(
+        c,
+        "Get-HawkTenantAppAndSPNCredentialDetails",
+        "App Credentials",
+    );
     tenant::credentials(c, tree)?;
-    running(c, "Get-HawkTenantAzureADUsers");
+    step(c, "Get-HawkTenantAzureADUsers", "Azure AD Users");
     azuread_users(c, tree)?;
     c.log().plain("Tenant Investigation complete");
     Ok(())
 }
 
-/// Get-HawkTenantConfiguration: the 4.0 set, each also as CliXml.
-fn configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
-    let world = c.world;
-    c.log().plain("Gathering Tenant Configuration Information");
-    let rows = vec![tenant::admin_audit_log_config(world)];
-    let w = c.omft.write(
-        tree,
-        "AdminAuditLogConfig",
-        None,
-        Art::raw("hawk.tenant.admin_audit_log_config"),
-        &rows,
-        Formats::TXT.and_xml(),
-        false,
-        false,
-    )?;
-    tenant::register_settings(tree, &w, &rows, "admin_audit_log_config");
-    register(
-        tree,
-        &w,
-        "audit_config",
-        |_| Some(keys::audit_config()),
-        |_| Some(Evidence::AuditConfig),
-    );
-    let rows = vec![tenant::org_config(world)];
-    let w = c.omft.write(
-        tree,
-        "OrgConfig",
-        None,
-        Art::raw("hawk.tenant.org_config"),
-        &rows,
-        Formats::TXT.and_xml(),
-        false,
-        false,
-    )?;
-    tenant::register_settings(tree, &w, &rows, "organization_config");
-    register(
-        tree,
-        &w,
-        "audit_config",
-        |_| Some(keys::audit_config()),
-        |_| Some(Evidence::AuditConfig),
-    );
-    let domains = &world.remote_domains;
-    let rows: Vec<Row> = domains
-        .iter()
-        .map(|d| tenant::remote_domain_row(world, d))
-        .collect();
-    let w = c.omft.write(
-        tree,
-        "RemoteDomain",
-        None,
-        Art::raw("hawk.tenant.remote_domain"),
-        &rows,
-        Formats::CSV_JSON.and_xml(),
-        false,
-        false,
-    )?;
-    register(
-        tree,
-        &w,
-        "remote_domains",
-        |i| Some(keys::remote_domain(&domains[i].domain)),
-        |_| None,
-    );
-    let rules = &world.transport_rules;
-    let rows: Vec<Row> = rules
-        .iter()
-        .map(|t| tenant::transport_rule_row(world, t))
-        .collect();
-    let w = c.omft.write(
-        tree,
-        "TransportRules",
-        None,
-        Art::raw("hawk.tenant.transport_rules"),
-        &rows,
-        Formats::CSV_JSON.and_xml(),
-        false,
-        false,
-    )?;
-    register(
-        tree,
-        &w,
-        "transport_rules",
-        |i| Some(keys::transport_rule(&rules[i].name)),
-        |i| Some(Evidence::TransportRule(rules[i].name.clone())),
-    );
-    let rows = vec![tenant::transport_config(world)];
-    let w = c.omft.write(
-        tree,
-        "TransportConfig",
-        None,
-        Art::raw("hawk.tenant.transport_config"),
-        &rows,
-        Formats::CSV_JSON.and_xml(),
-        false,
-        false,
-    )?;
-    tenant::register_settings(tree, &w, &rows, "transport_config");
-    Ok(())
-}
-
-/// Every role entry of `rows` is one `tenant_settings` row (`exchange_role_entry`).
-fn register_role_entries(tree: &mut Tree<'_>, w: &Written, rows: &[Row]) {
-    for part in w.parts() {
-        for row in rows {
-            let id = text_of(row, "Identity").unwrap_or_default();
-            tree.row(
-                &part.rel,
-                "tenant_settings",
-                keys::tenant_setting("exchange_role_entry", &id),
-            );
-        }
-    }
-}
-
-/// Get-HawkTenantEDiscoveryConfiguration: `EDiscoveryRoles` (22-column role entries) and
-/// `EDiscoveryRoleAssignments` (37-column role assignments), through Out-MultipleFileType.
-fn ediscovery_configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
-    let world = c.world;
-    c.log()
-        .plain("Gathering all Exchange Online role entries with eDiscovery cmdlets");
-    let entries = vec![
-        tenant::role_entry(
-            world,
-            "Mailbox Import Export",
-            "Search-Mailbox",
-            &["Identity", "SearchQuery", "TargetMailbox", "TargetFolder"],
-        ),
-        tenant::role_entry(
-            world,
-            "Mailbox Search",
-            "New-MailboxSearch",
-            &[
-                "Name",
-                "SourceMailboxes",
-                "SearchQuery",
-                "StartDate",
-                "EndDate",
-            ],
-        ),
-    ];
-    let w = c.omft.write(
-        tree,
-        "EDiscoveryRoles",
-        None,
-        Art::raw("hawk.tenant.ediscovery_roles"),
-        &entries,
-        Formats::CSV_JSON.and_xml(),
-        false,
-        false,
-    )?;
-    register_role_entries(tree, &w, &entries);
-    let assignments = vec![tenant::role_assignment(
-        world,
-        "Mailbox Search",
-        "Discovery Management",
-    )];
-    let w = c.omft.write(
-        tree,
-        "EDiscoveryRoleAssignments",
-        None,
-        Art::raw("hawk.tenant.ediscovery_role_assignments"),
-        &assignments,
-        Formats::CSV_JSON.and_xml(),
-        false,
-        false,
-    )?;
-    register(
-        tree,
-        &w,
-        "role_assignments",
-        |_| {
-            Some(keys::role(
-                "exchange_ediscovery",
-                "Mailbox Search",
-                "Discovery Management",
-            ))
-        },
-        |_| None,
-    );
-    Ok(())
-}
-
-/// The `ApplicationImpersonation` role groups of the tenant (Exchange Online's defaults).
-const IMPERSONATION_GROUPS: [&str; 2] = ["Hygiene Management", "Organization Management"];
+/// The role group Exchange Online assigns `ApplicationImpersonation` to by default.
+const IMPERSONATION_DEFAULT_GROUP: &str = "Hygiene Management";
 
 /// Get-HawkTenantEXOImpersonation: the role entry and the (non-delegating) assignments of
-/// `ApplicationImpersonation`; more than one assignment is flagged with a byte-identical
-/// `_Investigate_Impersonation_Rights` copy.
+/// `ApplicationImpersonation`. More than the default one assignment is flagged with a
+/// byte-identical `_Investigate_Impersonation_Rights` copy (capture survey §2b: 1-3 records,
+/// the copy in capture A only).
+// source-derived (no 3.1 source): the assignments are the default group plus one per
+// Exchange Administrator of the world (granted impersonation to manage mailboxes), and the
+// threshold is `> 1`, so a tenant with an Exchange Administrator gives capture A's shape
+// (hawk-investigate) and the others capture C's.
 fn impersonation(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
     let world = c.world;
     let role = "ApplicationImpersonation";
@@ -314,12 +164,30 @@ fn impersonation(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         false,
         false,
     )?;
-    register_role_entries(tree, &w, &entries);
-    let rights: Vec<Row> = IMPERSONATION_GROUPS
+    tenant::register_role_entries(tree, &w, &entries);
+    let mut principals = vec![IMPERSONATION_DEFAULT_GROUP.to_string()];
+    let mut rights = vec![tenant::role_assignment(
+        world,
+        role,
+        IMPERSONATION_DEFAULT_GROUP,
+    )];
+    for a in world
+        .roles
         .iter()
-        .map(|g| tenant::role_assignment(world, role, g))
-        .collect();
-    let key = |i: usize| Some(keys::role("exchange_rbac", role, IMPERSONATION_GROUPS[i]));
+        .filter(|a| a.role == "Exchange Administrator")
+    {
+        let mut row = tenant::role_assignment(world, role, &a.principal);
+        for (k, v) in row.iter_mut() {
+            match k.as_str() {
+                "RoleAssigneeType" => *v = s("User"),
+                "EffectiveUserName" => *v = s(a.principal.clone()),
+                _ => {}
+            }
+        }
+        principals.push(a.principal.clone());
+        rights.push(row);
+    }
+    let key = |i: usize| Some(keys::role("exchange_rbac", role, &principals[i]));
     if rights.len() > 1 {
         c.log().notice(format!(
             "Found {} Users/Groups with Impersonation rights",
@@ -338,6 +206,8 @@ fn impersonation(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
             true,
         )?;
         register_flags(tree, &w);
+    } else {
+        c.log().plain("Found default number of Impersonation users");
     }
     let w = c.omft.write(
         tree,
@@ -363,6 +233,7 @@ fn ediscovery_logs(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         c.log().plain("No eDiscovery Logs found");
         return Ok(());
     }
+    // source-derived (no 3.1 source): the notice lines (Hawk 4's wording).
     c.log().notice("eDiscovery Logs have been found.");
     c.log()
         .notice("Please review these eDiscoveryLogs.csv to validate the activity is legitimate.");
@@ -429,10 +300,6 @@ fn audit_text(u: &Ual, key: &str) -> Option<String> {
     u.audit.get(key).and_then(Value::as_str).map(str::to_string)
 }
 
-fn object_modified(u: &Ual) -> String {
-    audit_text(u, "ObjectId").unwrap_or_default()
-}
-
 /// The `[{Name, Value}]` parameters of a cmdlet record.
 fn parameters(u: &Ual) -> Vec<(String, String)> {
     u.audit
@@ -462,7 +329,7 @@ fn admin_row(u: &Ual) -> Row {
         .collect();
     let succeeded = audit_text(u, "ResultStatus").is_none_or(|r| !r.eq_ignore_ascii_case("False"));
     vec![
-        r("ObjectModified", s(object_modified(u))),
+        r("ObjectModified", s(keys::admin_object(u))),
         r("CmdletName", s(u.operation.clone())),
         r("CmdletParameters", Val::Raw(Value::Array(params))),
         r("ModifiedProperties", Val::Raw(json!([]))),
@@ -491,27 +358,6 @@ fn admin_row(u: &Ual) -> Row {
         r("IsValid", Val::Bool(true)),
         r("ObjectState", s("Unchanged")),
     ]
-}
-
-/// `Get-SimpleAdminAuditLog`'s caller: empty gives `***`; `on behalf of` callers are reduced
-/// to `<first word of the 4th /-segment> on behalf of <last /-segment>`.
-fn simple_caller(caller: &str) -> String {
-    if caller.is_empty() {
-        return "***".into();
-    }
-    if caller.to_lowercase().contains("on behalf of") {
-        let parts: Vec<&str> = caller.split('/').collect();
-        if parts.len() >= 4 {
-            let start = parts[3]
-                .split(' ')
-                .next()
-                .unwrap_or("")
-                .trim_end_matches('"');
-            let end = parts[parts.len() - 1].trim_end_matches('"');
-            return format!("{start} on behalf of {end}");
-        }
-    }
-    caller.to_string()
 }
 
 /// `Get-SimpleAdminAuditLog`'s `FullCommand`: the cmdlet then every parameter through its
@@ -554,13 +400,13 @@ fn full_command(u: &Ual) -> String {
 /// The five-column summary of one admin audit record (`RunDate(UTC)` a UTC `DateTime`).
 fn simple_admin_row(u: &Ual) -> Row {
     vec![
-        r("Caller", s(simple_caller(&u.user_id))),
+        r("Caller", s(keys::simple_caller(&u.user_id))),
         r("Cmdlet", s(u.operation.clone())),
         r("FullCommand", s(full_command(u))),
         r("RunDate(UTC)", date(u.time, DtKind::Utc)),
         r(
             "ObjectModified",
-            s(keys::short_object(&object_modified(u)).to_string()),
+            s(keys::short_object(&keys::admin_object(u)).to_string()),
         ),
     ]
 }
@@ -572,15 +418,7 @@ fn register_admin(tree: &mut Tree<'_>, w: &Written, records: &[Ual]) {
         tree,
         w,
         "admin_audit_events",
-        |i| {
-            let u = &records[i];
-            Some(keys::admin_audit(
-                u.time,
-                &u.operation,
-                &object_modified(u),
-                &simple_caller(&u.user_id),
-            ))
-        },
+        |i| Some(keys::admin_audit_of(&records[i])),
         |i| Some(Evidence::Ual(records[i].id)),
     );
 }
@@ -666,6 +504,8 @@ fn inbox_rule_changes(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         if cmdlet != "New-InboxRule" {
             continue;
         }
+        // source-derived (no 3.1 source): research names only the `_Investigate_` files; the
+        // test is Hawk 4's inbox-rule test (a forwarding, redirecting or deleting parameter).
         let flagged: Vec<Ual> = found
             .iter()
             .filter(|u| {
@@ -804,6 +644,8 @@ fn forwarding_changes(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         None,
         &found,
     )?;
+    // source-derived (no 3.1 source): one empty row per change (capture survey §2b / §5 shows
+    // only empty rows), written with `-Notice` like its 4.0 counterpart.
     let rows: Vec<Row> = found
         .iter()
         .map(|_| {
@@ -976,21 +818,21 @@ fn investigate_users(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
     c.log().action("Starting User Investigation");
     let users: Vec<&User> = c.users.clone();
     for u in &users {
-        running(c, "Get-HawkUserConfiguration");
+        step(c, "Get-HawkUserConfiguration", "User Configuration");
         user::configuration(c, tree, u)?;
-        running(c, "Get-HawkUserInboxRule");
+        step(c, "Get-HawkUserInboxRule", "Inbox Rules");
         inbox_rules(c, tree, u)?;
-        running(c, "Get-HawkUserEmailForwarding");
+        step(c, "Get-HawkUserEmailForwarding", "Forwarding");
         user::forwarding(c, tree, u)?;
-        running(c, "Get-HawkUserAuthHistory");
-        auth_history(c, tree, u)?;
-        running(c, "Get-HawkUserMailboxAuditing");
+        step(c, "Get-HawkUserAuthHistory", "Authentication History");
+        user::ual_signins(c, tree, u)?;
+        step(c, "Get-HawkUserMailboxAuditing", "Mailbox Auditing");
         mailbox_auditing(c, tree, u)?;
-        running(c, "Get-HawkUserAdminAudit");
+        step(c, "Get-HawkUserAdminAudit", "Admin Audit");
         admin_audit(c, tree, u)?;
-        running(c, "Get-HawkUserMessageTrace");
+        step(c, "Get-HawkUserMessageTrace", "Message Trace");
         user::message_trace(c, tree, u)?;
-        running(c, "Get-HawkUserMobileDevice");
+        step(c, "Get-HawkUserMobileDevice", "Mobile Devices");
         user::mobile_devices(c, tree, u)?;
     }
     c.log().plain("User Investigation complete");
@@ -1071,66 +913,6 @@ fn inbox_rules(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
         false,
     )?;
     register(tree, &w, "inbox_rules", key, ev);
-    Ok(())
-}
-
-/// Get-HawkUserAuthHistory: the user's sign-in records from the UAL, `Converted_` then
-/// `Raw_Authentication_Logs` (3.x raw records have no `AuditSearchRequestMetadata`).
-fn auth_history(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
-    let upn = u.upn.clone();
-    let nl = c.omft.host.newline;
-    let mut records: Vec<Ual> = Vec::new();
-    let mut raw: Vec<Row> = Vec::new();
-    for rt in [
-        RecordType::AzureActiveDirectoryAccountLogon,
-        RecordType::AzureActiveDirectory,
-        RecordType::AzureActiveDirectoryStsLogon,
-    ] {
-        let found = c.search(
-            &format!(
-                "Search-UnifiedAuditLog -UserIds {upn} -RecordType {}",
-                rt.name()
-            ),
-            |x| x.record_type == rt && x.user_id.eq_ignore_ascii_case(&upn),
-        );
-        let n = found.len();
-        raw.extend(found.iter().enumerate().map(|(i, x)| {
-            raw_row(x, i, n, nl)
-                .into_iter()
-                .filter(|(k, _)| k != "AuditSearchRequestMetadata")
-                .collect::<Row>()
-        }));
-        records.extend(found);
-    }
-    if records.is_empty() {
-        c.log()
-            .plain(format!("No authentication records found for {upn}"));
-        return Ok(());
-    }
-    let (rows, index) = user::converted(c, &records);
-    let w = c.omft.write(
-        tree,
-        "Converted_Authentication_Logs",
-        Some(&upn),
-        Art::derived("hawk.user.converted_auth"),
-        &rows,
-        Formats::CSV_JSON,
-        false,
-        false,
-    )?;
-    let ordered: Vec<Ual> = index.iter().map(|i| records[*i].clone()).collect();
-    register_ual(tree, &w, &ordered);
-    let w = c.omft.write(
-        tree,
-        "Raw_Authentication_Logs",
-        Some(&upn),
-        Art::raw("hawk.user.raw_auth"),
-        &raw,
-        Formats::CSV_JSON,
-        false,
-        false,
-    )?;
-    register_ual(tree, &w, &records);
     Ok(())
 }
 
@@ -1220,8 +1002,10 @@ fn mailbox_auditing(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()
 }
 
 /// What makes two legacy mailbox audit records one `mailbox_audit_legacy` row (the table's
-/// record_key COMMENT): event time (UTC, seconds), operation, mailbox, logon user SID, client
-/// IP, item ids, folder id, session id and operation result.
+/// record_key COMMENT: "event time (UTC, seconds), operation, mailbox, logon user SID, client
+/// IP, item ids, folder id, session id and operation result"): the event second, then
+/// lower-case operation, mailbox GUID, logon SID, normalized client IP, item ids, folder id
+/// and session id. The operation result is left out: every generated record `Succeeded`.
 type MailboxAuditId = (i64, String, String, String, String, String, String, String);
 
 fn logon_type_name(n: i64) -> &'static str {
@@ -1375,7 +1159,8 @@ fn mailbox_audit_row(world: &World, u: &Ual) -> (Row, MailboxAuditId) {
         u.operation.to_lowercase(),
         lower(guid).to_string(),
         lower(text("LogonUserSid")),
-        ip.unwrap_or_default(),
+        ip.map(|a| a.parse::<IpAddr>().map_or(a, |p| p.to_string()))
+            .unwrap_or_default(),
         ids.join(",").to_lowercase(),
         lower(folder_id),
         lower(session),
@@ -1385,11 +1170,13 @@ fn mailbox_audit_row(world: &World, u: &Ual) -> (Row, MailboxAuditId) {
 
 /// Get-HawkUserAdminAudit: the admin audit log's changes to the user's mailbox
 /// (`Search-AdminAuditLog -ObjectIds <mailbox>`): `Simple_User_Changes` and `User_Changes`.
+// source-derived (no 3.1 source): research gives only the schema; "changes made to the
+// user" (`-ObjectIds`, the mailbox or its rules) rather than "commands the user ran".
 fn admin_audit(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
     let upn = u.upn.clone();
     let lower = upn.to_lowercase();
     let found = admin_search(c, &format!("changes made to {upn}"), |x| {
-        let o = object_modified(x).to_lowercase();
+        let o = keys::admin_object(x).to_lowercase();
         o == lower || o.starts_with(&format!("{lower}\\"))
     });
     if found.is_empty() {
@@ -1416,6 +1203,8 @@ fn admin_audit(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
 /// `<yyyy-MM-dd>_logs.csv` in the root: PSFramework's export of every Hawk.log line (13
 /// columns, `Timestamp` host-local `yyyy-MM-dd HH:mm:ss.fff`), UTF-8 with a byte-order mark
 /// whatever the edition (capture survey §1).
+// source-derived (no 3.1 source): research gives the columns and the timestamp format only;
+// the computer, file, line, level mapping, runspace and user values are invented.
 fn psframework_log(c: &Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
     let world = c.world;
     let host = c.tenant_host;
@@ -1518,10 +1307,13 @@ mod tests {
 
     #[test]
     fn simple_caller_reduces_on_behalf_of() {
-        assert_eq!(simple_caller(""), "***");
-        assert_eq!(simple_caller("ann@contoso.example"), "ann@contoso.example");
+        assert_eq!(keys::simple_caller(""), "***");
         assert_eq!(
-            simple_caller("a/b/c/NAMPR01 on behalf of/x/ann"),
+            keys::simple_caller("ann@contoso.example"),
+            "ann@contoso.example"
+        );
+        assert_eq!(
+            keys::simple_caller("a/b/c/NAMPR01 on behalf of/x/ann"),
             "NAMPR01 on behalf of ann"
         );
     }

@@ -572,9 +572,12 @@ pub(super) fn register_settings(tree: &mut Tree<'_>, w: &Written, rows: &[Row], 
     }
 }
 
-/// Get-HawkTenantConfiguration.
-fn configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
+/// Get-HawkTenantConfiguration. Hawk 3.1 also writes each file as CliXml (`-xml`; research
+/// §7.1).
+pub(super) fn configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
     let world = c.world;
+    let xml = c.omft.version == HawkVersion::V3;
+    let with_xml = |f: Formats| if xml { f.and_xml() } else { f };
     let log = c.log();
     log.action("Initiating collection of tenant configuration settings from Exchange Online.");
     log.action("Gathering Tenant Configuration Information");
@@ -586,7 +589,7 @@ fn configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         None,
         Art::raw("hawk.tenant.admin_audit_log_config"),
         &rows,
-        Formats::TXT,
+        with_xml(Formats::TXT),
         false,
         false,
     )?;
@@ -606,7 +609,7 @@ fn configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         None,
         Art::raw("hawk.tenant.org_config"),
         &rows,
-        Formats::TXT,
+        with_xml(Formats::TXT),
         false,
         false,
     )?;
@@ -630,7 +633,7 @@ fn configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         None,
         Art::raw("hawk.tenant.remote_domain"),
         &rows,
-        Formats::CSV_JSON,
+        with_xml(Formats::CSV_JSON),
         false,
         false,
     )?;
@@ -650,7 +653,7 @@ fn configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         None,
         Art::raw("hawk.tenant.transport_rules"),
         &rows,
-        Formats::CSV_JSON,
+        with_xml(Formats::CSV_JSON),
         false,
         false,
     )?;
@@ -669,7 +672,7 @@ fn configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         None,
         Art::raw("hawk.tenant.transport_config"),
         &rows,
-        Formats::CSV_JSON,
+        with_xml(Formats::CSV_JSON),
         false,
         false,
     )?;
@@ -829,16 +832,9 @@ pub(super) fn write_direct(
     Ok(out)
 }
 
-/// Get-HawkTenantEDiscoveryConfiguration: the roles holding New-MailboxSearch or
-/// Search-Mailbox (one entry per role) and their non-delegating assignments.
-fn ediscovery_configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
-    let world = c.world;
-    c.log()
-        .action("Initiating collection of eDiscovery configuration data from Exchange Online.");
-    c.omft.created("Tenant");
-    c.log()
-        .action("Gathering all Exchange Online role entries with eDiscovery cmdlets");
-    let entries = vec![
+/// The role entries holding New-MailboxSearch or Search-Mailbox (one entry per role).
+fn ediscovery_role_entries(world: &World) -> Vec<Row> {
+    vec![
         role_entry(
             world,
             "Mailbox Import Export",
@@ -857,22 +853,13 @@ fn ediscovery_configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> 
                 "EndDate",
             ],
         ),
-    ];
-    c.log().info(format!(
-        "Found {} Roles with E-Discovery Rights",
-        entries.len()
-    ));
-    let w = write_direct(
-        c,
-        tree,
-        "EDiscoveryRoles",
-        Art::raw("hawk.tenant.ediscovery_roles"),
-        &entries,
-        true,
-        true,
-    )?;
+    ]
+}
+
+/// Every role entry of `rows` is one `tenant_settings` row (`exchange_role_entry`).
+pub(super) fn register_role_entries(tree: &mut Tree<'_>, w: &Written, rows: &[Row]) {
     for part in w.parts() {
-        for row in &entries {
+        for row in rows {
             let id = text_of(row, "Identity").unwrap_or_default();
             tree.row(
                 &part.rel,
@@ -881,6 +868,50 @@ fn ediscovery_configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> 
             );
         }
     }
+}
+
+/// Get-HawkTenantEDiscoveryConfiguration: the roles holding New-MailboxSearch or
+/// Search-Mailbox (one entry per role) and their non-delegating assignments. Hawk 4 writes them
+/// directly as `EDiscoveryRoles` and `CustomEDiscoveryRoles`; Hawk 3.1 through
+/// Out-MultipleFileType (with CliXml) as `EDiscoveryRoles` and `EDiscoveryRoleAssignments`
+/// (research §7.2).
+pub(super) fn ediscovery_configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
+    let world = c.world;
+    let v3 = c.omft.version == HawkVersion::V3;
+    let write = |c: &mut Ctx<'_>, tree: &mut Tree<'_>, name: &str, art: Art, rows: &[Row]| {
+        if v3 {
+            c.omft.write(
+                tree,
+                name,
+                None,
+                art,
+                rows,
+                Formats::CSV_JSON.and_xml(),
+                false,
+                false,
+            )
+        } else {
+            write_direct(c, tree, name, art, rows, true, true)
+        }
+    };
+    c.log()
+        .action("Initiating collection of eDiscovery configuration data from Exchange Online.");
+    c.omft.created("Tenant");
+    c.log()
+        .action("Gathering all Exchange Online role entries with eDiscovery cmdlets");
+    let entries = ediscovery_role_entries(world);
+    c.log().info(format!(
+        "Found {} Roles with E-Discovery Rights",
+        entries.len()
+    ));
+    let w = write(
+        c,
+        tree,
+        "EDiscoveryRoles",
+        Art::raw("hawk.tenant.ediscovery_roles"),
+        &entries,
+    )?;
+    register_role_entries(tree, &w, &entries);
     let assignments = vec![role_assignment(
         world,
         "Mailbox Search",
@@ -890,15 +921,18 @@ fn ediscovery_configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> 
         "Found {} Role Assignments for these Roles",
         assignments.len()
     ));
-    let w = write_direct(
-        c,
-        tree,
-        "CustomEDiscoveryRoles",
-        Art::raw("hawk.tenant.ediscovery_roles"),
-        &assignments,
-        true,
-        true,
-    )?;
+    let (name, art) = if v3 {
+        (
+            "EDiscoveryRoleAssignments",
+            Art::raw("hawk.tenant.ediscovery_role_assignments"),
+        )
+    } else {
+        (
+            "CustomEDiscoveryRoles",
+            Art::raw("hawk.tenant.ediscovery_roles"),
+        )
+    };
+    let w = write(c, tree, name, art, &assignments)?;
     register(
         tree,
         &w,
