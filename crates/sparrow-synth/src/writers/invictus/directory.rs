@@ -11,7 +11,7 @@ use crate::keys;
 use crate::ps::{DateEvidence, DtKind, PsDate, Row, Val, csv_imported, export_csv};
 use crate::tree::{FileSpec, Tree};
 use crate::world::{RoleAssignment, User, World};
-use chrono::{DateTime, Duration, NaiveDateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use std::collections::BTreeMap;
 
 fn r(k: &str, v: Val) -> (String, Val) {
@@ -136,15 +136,13 @@ fn role_row(
     role: &str,
     u: &User,
     run_local: NaiveDateTime,
-    offset_minutes: i32,
     last: (Option<DateTime<Utc>>, Option<DateTime<Utc>>),
     role_first: bool,
 ) -> Row {
     let days = match last.0 {
-        Some(t) => {
-            let local = (t + Duration::minutes(offset_minutes.into())).naive_utc();
-            Val::Int((run_local - local).num_days())
-        }
+        // `New-TimeSpan -Start <sign-in> -End (Get-Date)`: local wall-clock now minus the SDK
+        // DateTime's UTC wall clock, whole days truncated toward zero (Get-UsersInfo.ps1:297).
+        Some(t) => Val::Int((run_local - t.naive_utc()).num_days()),
         None => Val::Str("No sign-in data".into()),
     };
     let mut row = vec![
@@ -165,6 +163,26 @@ fn role_row(
         row.insert(2, role);
     }
     row
+}
+
+/// One Get-Roles.ps1 failed-lookup row (Get-Roles.ps1:146-165): the seven data columns are the
+/// literal phrase, UserName comes from the fallback `Get-MgUser`, and Role carries the buggy
+/// `$displayName`.
+fn error_role_row(role_label: &str, u: &User) -> Row {
+    let error = || Val::Str("Error retrieving data".into());
+    vec![
+        r("Role", Val::Str(role_label.to_string())),
+        r("UserName", Val::Str(u.upn.clone())),
+        r("UserId", Val::Str(u.object_id.to_string())),
+        r("DisplayName", Val::Str(u.display_name.clone())),
+        r("Department", error()),
+        r("JobTitle", error()),
+        r("AccountEnabled", error()),
+        r("CreatedDateTime", error()),
+        r("LastInteractiveSignIn", error()),
+        r("LastNonInteractiveSignIn", error()),
+        r("DaysSinceLastSignIn", error()),
+    ]
 }
 
 /// Renders `rows` and records one `role_assignments` key per row.
@@ -230,8 +248,15 @@ fn write_admins(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
     tree.dir(&dir)?;
     c.log
         .add(run.local, "=== Starting Admin Users Collection ===");
+    // The Merged folder is always created; the file exists only when a role file does.
+    let merged_dir = format!("{dir}/Merged");
+    tree.dir(&merged_dir)?;
+    // Get-MgUser requests SignInActivity, which needs Entra ID P1: without it every bulk fetch
+    // throws, the catch only logs a warning, and no per-role file is written.
+    if !c.world.licence.p1() {
+        return Ok(());
+    }
     let by_upn = last_signins(c);
-    let offset = c.world.scenario.tenant.host_utc_offset_minutes;
     let date = run.local.format("%Y%m%d").to_string();
     let mut files: Vec<(String, Vec<Row>)> = Vec::new();
     for role in admin_roles(c.world) {
@@ -243,7 +268,7 @@ fn write_admins(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         let rel = format!("{dir}/{name}");
         let rows: Vec<Row> = members
             .iter()
-            .map(|u| role_row(&role, u, run.local, offset, signins(&by_upn, &u.upn), false))
+            .map(|u| role_row(&role, u, run.local, signins(&by_upn, &u.upn), false))
             .collect();
         let row_keys: Vec<String> = members
             .iter()
@@ -252,9 +277,6 @@ fn write_admins(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         write_roles_csv(c, tree, &rel, "inv.admins", &rows, &row_keys)?;
         files.push((name, rows));
     }
-    // The Merged folder is always created; the file exists only when a role file does.
-    let merged_dir = format!("{dir}/Merged");
-    tree.dir(&merged_dir)?;
     if files.is_empty() {
         return Ok(());
     }
@@ -278,7 +300,8 @@ fn write_admins(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Get-AllRoleActivity: every activated role's active members, written unconditionally.
+/// Get-AllRoleActivity: every activated role's active members, written unconditionally. Without
+/// Entra ID P1 every `Get-MgUser` fails and each member becomes a rejected failure row.
 fn write_all_roles(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
     let run = c.runs.next("Roles", None);
     let dir = c.path(&run.rel);
@@ -286,20 +309,31 @@ fn write_all_roles(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
     c.log
         .add(run.local, "=== Starting All Roles Collection ===");
     let by_upn = last_signins(c);
-    let offset = c.world.scenario.tenant.host_utc_offset_minutes;
+    let p1 = c.world.licence.p1();
     let mut rows = Vec::new();
     let mut row_keys = Vec::new();
     for role in role_names(c.world) {
+        // Get-Roles.ps1's `$displayName` bug: the failed-lookup fallback overwrites the per-role
+        // label with the user's display name, and every later row of the role writes it as Role
+        // (Get-Roles.ps1:134-165; the label is reset per role at :78).
+        let mut role_label = role.clone();
         for u in active_members(c.world, &role) {
-            rows.push(role_row(
-                &role,
-                u,
-                run.local,
-                offset,
-                signins(&by_upn, &u.upn),
-                true,
-            ));
-            row_keys.push(keys::role("entra_directory", &role, &u.upn));
+            if p1 {
+                rows.push(role_row(
+                    &role_label,
+                    u,
+                    run.local,
+                    signins(&by_upn, &u.upn),
+                    true,
+                ));
+                row_keys.push(keys::role("entra_directory", &role, &u.upn));
+            } else {
+                // Get-MgUser with SignInActivity throws; the fallback `Get-MgUser -Select
+                // "DisplayName,UserPrincipalName"` succeeds, so the catch writes a row whose
+                // seven data columns are the phrase.
+                role_label = u.display_name.clone();
+                rows.push(error_role_row(&role_label, u));
+            }
         }
     }
     let rel = format!("{dir}/{}-AllRoles.csv", run.stamp);

@@ -144,7 +144,8 @@ const ADMIN_COLS: &[&str] = &[
     "enabled",
 ];
 
-/// The collector's failed `Get-MgUser` lookup: every data column reads `Error retrieving data`.
+/// The collector's failed `Get-MgUser` lookup: every one of the seven data columns is exactly
+/// `Error retrieving data` (a real user may legitimately have that phrase inside a column).
 fn is_lookup_error(rec: &Rec) -> bool {
     [
         "Department",
@@ -156,10 +157,7 @@ fn is_lookup_error(rec: &Rec) -> bool {
         "DaysSinceLastSignIn",
     ]
     .iter()
-    .any(|k| {
-        rec.text(k)
-            .is_some_and(|v| v.contains("Error retrieving data"))
-    })
+    .all(|k| rec.text(k).as_deref() == Some("Error retrieving data"))
 }
 
 /// Get-AdminUsers per-role files and its Merged re-export, and Get-AllRoleActivity's
