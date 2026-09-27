@@ -1529,6 +1529,7 @@ dependencies = [
  "serde_norway",
  "sha2",
  "sparrow-core",
+ "sparrow-synth",
  "tempfile",
  "thiserror",
  "uuid",

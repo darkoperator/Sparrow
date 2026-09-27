@@ -6,6 +6,7 @@ pub mod directory;
 pub mod directory_audits;
 pub mod exchange;
 pub mod flags;
+pub mod licenses;
 pub mod logs;
 pub mod mail_items_accessed;
 pub mod mailbox;
@@ -40,4 +41,5 @@ pub fn register_builtin(registry: &mut ParserRegistry) {
     tenant_config::register(registry);
     admin_audit::register(registry);
     flags::register(registry);
+    licenses::register(registry);
 }

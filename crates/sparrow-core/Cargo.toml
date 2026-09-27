@@ -28,5 +28,6 @@ test-fixtures = []
 
 [dev-dependencies]
 sparrow-core = { path = ".", features = ["test-fixtures"] }
+sparrow-synth = { path = "../sparrow-synth" }
 rust_xlsxwriter.workspace = true
 tempfile.workspace = true

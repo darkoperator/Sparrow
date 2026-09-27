@@ -98,6 +98,8 @@ pub const SPARROW_PARSED: &[&str] = &[
     "inv.entra_audit",
     "inv.entra_audit.merged",
     "inv.licenses.security_defaults",
+    "inv.licenses.tenant",
+    "inv.licenses.user",
     "inv.logfile",
     "inv.mailbox_permissions",
     "inv.message_trace",
@@ -126,6 +128,7 @@ mod tests {
         assert!(SPARROW_PARSED.windows(2).all(|w| w[0] < w[1]));
         assert!(parsed_by_sparrow("hawk.tenant.raw_ual"));
         assert!(!parsed_by_sparrow("hawk.tenant.help"));
-        assert!(!parsed_by_sparrow("inv.licenses.tenant"));
+        assert!(parsed_by_sparrow("inv.licenses.tenant"));
+        assert!(parsed_by_sparrow("inv.licenses.user"));
     }
 }
