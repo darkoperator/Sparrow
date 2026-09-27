@@ -22,9 +22,6 @@ use uuid::Uuid;
 /// reference-reports-data-retention, as of 2026-09-25).
 const ENTRA_P1_RETENTION_DAYS: i64 = 30;
 
-/// Entra ID sign-in log retention without P1/P2 (same source).
-const ENTRA_FREE_RETENTION_DAYS: i64 = 7;
-
 /// The tables a UAL record lands in when a collector delivers it as a UAL record: always
 /// `ual_events`, plus the child table its operation feeds (MailItemsAccessed →
 /// `mail_items_accessed`; SearchQueryInitiated* → `search_queries`; SharePoint / OneDrive file
@@ -124,9 +121,9 @@ fn org_audit_off_all_window(w: &World) -> bool {
 ///   settings (a parsed Microsoft-Extractor-Suite MailboxAuditStatus file) → `{not_enabled}`;
 ///   organization auditing off for the whole window and the tree delivers it (Hawk
 ///   `OrgConfig.txt`, MailboxAuditStatus EffectiveAuditState `Disabled`) → `{not_enabled}`.
-/// - `signins`: Hawk 3 (no sign-in collector) → `{available_not_collected}` while the window's
-///   end is within the sign-in retention (7 days, 30 with P1 expected licensed) one day after
-///   collection, else `{beyond_retention}`; Hawk 4 rows → `{partial}` when the investigated
+/// - `signins`: Hawk 3 (no sign-in collector, no window in its log) →
+///   `{available_not_collected}` (spec §7: available, not collected; with no window, Sparrow's
+///   window end is `collected_at`); Hawk 4 rows → `{partial}` when the investigated
 ///   users are only some of the tenant's users (spec §7: "Hawk per-user collection covering only some users") or the window
 ///   starts before P1's retention, else `{collected}`; Hawk 4 and
 ///   Microsoft-Extractor-Suite (without Entra ID P1 the collector ran and Graph refused, which
@@ -257,31 +254,13 @@ pub fn evidence(
             allowed(&["collected"], "the sign-in collector ran"),
         );
     } else if opts.collector == Collector::Hawk3 {
-        // Hawk 3 has no Entra sign-in collector: the sign-ins are available but not collected
-        // while Microsoft still keeps the window's end at evaluation time (collection + 1 day),
-        // else beyond retention. Retention: Free 7 days, 30 with Entra ID P1 expected licensed
-        // (data/capabilities.yaml entra_signin_logs, entra_id_p1).
-        let p1 = caps
-            .get("entra_id_p1")
-            .is_some_and(|c| c.status == "licensed");
-        let retention = if p1 {
-            ENTRA_P1_RETENTION_DAYS
-        } else {
-            ENTRA_FREE_RETENTION_DAYS
-        };
-        let as_of = world.collected_at() + Duration::days(1);
-        let e = if world.window_end() < as_of - Duration::days(retention) {
-            allowed(
-                &["beyond_retention"],
-                "Hawk 3 collects no sign-ins and the window ended before the sign-in log retention at evaluation time",
-            )
-        } else {
+        m.insert(
+            "signins".to_string(),
             allowed(
                 &["available_not_collected"],
-                "Hawk 3 collects no sign-ins and the window's end is within the sign-in log retention at evaluation time",
-            )
-        };
-        m.insert("signins".to_string(), e);
+                "Hawk 3 has no sign-in collector and logs no collection window, so Sparrow takes collected_at as the window end, which is within retention at evaluation (collection + 1 day)",
+            ),
+        );
     }
 
     let ip_not_licensed = caps

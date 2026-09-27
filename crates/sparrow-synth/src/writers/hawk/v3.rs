@@ -54,15 +54,12 @@ pub fn write_v3(world: &World, opts: &GenerateOptions, tree: &mut Tree<'_>) -> R
 }
 
 /// The start of the session (no licence detection in 3.x): the version line (research §7.1),
-/// then the folder, tenant and window the analyst set.
-// source-derived (no 3.1 source): every message but the version line; the window is logged as
-// `Start Date : <G>` / `End Date : <G>` in the host culture (Hawk 4's summary wording), so the
-// collection reports its window as Hawk 4 collections do.
+/// then the folder and tenant. Research knows no Hawk 3.1 window line, so none is logged: the
+/// collection reports no window.
+// source-derived (no 3.1 source): every message but the version line.
 fn header(c: &mut Ctx<'_>) {
     let path = c.omft.file_path.clone();
     let tenant = c.world.tenant.folder_name.clone();
-    let host = c.tenant_host;
-    let (start, end) = (c.world.window_start(), c.world.window_end());
     let log = c.log();
     log.plain(format!("*** Version {HAWK3_VERSION} ***"));
     log.plain("Checking for latest version online");
@@ -71,11 +68,6 @@ fn header(c: &mut Ctx<'_>) {
     log.plain("Latest Version Installed");
     log.plain(format!("Setting Hawk output folder to {path}"));
     log.plain(format!("Investigating tenant {tenant}"));
-    for (label, t) in [("Start Date", start), ("End Date", end)] {
-        let d = PsDate::dotnet(t, DtKind::Unspecified);
-        log.note_date(&d);
-        log.plain(format!("{label} : {}", host.csv_date(&d)));
-    }
     log.tick(5, 30);
 }
 

@@ -183,6 +183,7 @@ pub(super) fn summary(c: &mut Ctx<'_>, started: DateTime<Utc>, users: Option<Vec
 }
 
 /// `Out-LogFile "Running <cmdlet>." -Action` before each collector.
+// source-derived (no 3.1 source): Hawk 3 logs this Hawk 4.0 line too.
 pub(super) fn running(c: &mut Ctx<'_>, cmdlet: &str) {
     let log = c.log();
     log.tick(1, 3);
@@ -575,13 +576,15 @@ pub(super) fn register_settings(tree: &mut Tree<'_>, w: &Written, rows: &[Row], 
 /// Get-HawkTenantConfiguration. Hawk 3.1 also writes each file as CliXml (`-xml`; research
 /// §7.1).
 pub(super) fn configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
+    // Progress lines are Hawk 4.0 wording (`*_v4`: not logged by Hawk 3). Hawk 3 keeps the
+    // notices, which feed `_Investigate.txt`; source-derived (no 3.1 source): their wording.
     let world = c.world;
     let xml = c.omft.version == HawkVersion::V3;
     let with_xml = |f: Formats| if xml { f.and_xml() } else { f };
     let log = c.log();
-    log.action("Initiating collection of tenant configuration settings from Exchange Online.");
-    log.action("Gathering Tenant Configuration Information");
-    log.action("Gathering Admin Audit Log");
+    log.action_v4("Initiating collection of tenant configuration settings from Exchange Online.");
+    log.action_v4("Gathering Tenant Configuration Information");
+    log.action_v4("Gathering Admin Audit Log");
     let rows = vec![admin_audit_log_config(world)];
     let w = c.omft.write(
         tree,
@@ -601,7 +604,7 @@ pub(super) fn configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> 
         |_| Some(keys::audit_config()),
         |_| Some(Evidence::AuditConfig),
     );
-    c.log().action("Gathering Organization Configuration");
+    c.log().action_v4("Gathering Organization Configuration");
     let rows = vec![org_config(world)];
     let w = c.omft.write(
         tree,
@@ -621,7 +624,7 @@ pub(super) fn configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> 
         |_| Some(keys::audit_config()),
         |_| Some(Evidence::AuditConfig),
     );
-    c.log().action("Gathering Remote Domains");
+    c.log().action_v4("Gathering Remote Domains");
     let domains = &world.remote_domains;
     let rows: Vec<Row> = domains
         .iter()
@@ -644,7 +647,7 @@ pub(super) fn configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> 
         |i| Some(keys::remote_domain(&domains[i].domain)),
         |_| None,
     );
-    c.log().action("Gathering Transport Rules");
+    c.log().action_v4("Gathering Transport Rules");
     let rules = &world.transport_rules;
     let rows: Vec<Row> = rules.iter().map(|t| transport_rule_row(world, t)).collect();
     let w = c.omft.write(
@@ -664,7 +667,7 @@ pub(super) fn configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> 
         |i| Some(keys::transport_rule(&rules[i].name)),
         |i| Some(Evidence::TransportRule(rules[i].name.clone())),
     );
-    c.log().action("Gathering Transport Configuration");
+    c.log().action_v4("Gathering Transport Configuration");
     let rows = vec![transport_config(world)];
     let w = c.omft.write(
         tree,
@@ -678,7 +681,7 @@ pub(super) fn configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> 
     )?;
     register_settings(tree, &w, &rows, "transport_config");
     c.log()
-        .info("Completed collection of tenant configuration settings from Exchange Online.");
+        .info_v4("Completed collection of tenant configuration settings from Exchange Online.");
     Ok(())
 }
 
@@ -876,6 +879,8 @@ pub(super) fn register_role_entries(tree: &mut Tree<'_>, w: &Written, rows: &[Ro
 /// Out-MultipleFileType (with CliXml) as `EDiscoveryRoles` and `EDiscoveryRoleAssignments`
 /// (research §7.2).
 pub(super) fn ediscovery_configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
+    // Progress lines are Hawk 4.0 wording (`*_v4`: not logged by Hawk 3). Hawk 3 keeps the
+    // notices, which feed `_Investigate.txt`; source-derived (no 3.1 source): their wording.
     let world = c.world;
     let v3 = c.omft.version == HawkVersion::V3;
     let write = |c: &mut Ctx<'_>, tree: &mut Tree<'_>, name: &str, art: Art, rows: &[Row]| {
@@ -895,12 +900,12 @@ pub(super) fn ediscovery_configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> 
         }
     };
     c.log()
-        .action("Initiating collection of eDiscovery configuration data from Exchange Online.");
+        .action_v4("Initiating collection of eDiscovery configuration data from Exchange Online.");
     c.omft.created("Tenant");
     c.log()
-        .action("Gathering all Exchange Online role entries with eDiscovery cmdlets");
+        .action_v4("Gathering all Exchange Online role entries with eDiscovery cmdlets");
     let entries = ediscovery_role_entries(world);
-    c.log().info(format!(
+    c.log().info_v4(format!(
         "Found {} Roles with E-Discovery Rights",
         entries.len()
     ));
@@ -917,7 +922,7 @@ pub(super) fn ediscovery_configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> 
         "Mailbox Search",
         "Discovery Management",
     )];
-    c.log().info(format!(
+    c.log().info_v4(format!(
         "Found {} Role Assignments for these Roles",
         assignments.len()
     ));
@@ -947,7 +952,7 @@ pub(super) fn ediscovery_configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> 
         |_| None,
     );
     c.log()
-        .info("Completed collection of eDiscovery configuration data from Exchange Online.");
+        .info_v4("Completed collection of eDiscovery configuration data from Exchange Online.");
     Ok(())
 }
 
@@ -1611,9 +1616,11 @@ fn extended(u: &Ual, name: &str) -> Val {
 /// columns carry no time (`env_time` is not an ExtendedProperties entry), which Sparrow
 /// reports as not supported.
 pub(super) fn app_audit_log(c: &mut Ctx<'_>, tree: &mut Tree<'_>, prefix: &str) -> Result<()> {
-    c.log().action("Gathering Tenant information");
+    // Progress lines are Hawk 4.0 wording (`*_v4`: not logged by Hawk 3). Hawk 3 keeps the
+    // notices, which feed `_Investigate.txt`; source-derived (no 3.1 source): their wording.
+    c.log().action_v4("Gathering Tenant information");
     c.log()
-        .action("Initiating collection of Entra ID application audit events from the UAL.");
+        .action_v4("Initiating collection of Entra ID application audit events from the UAL.");
     let ops = ["Add OAuth2PermissionGrant.", "Consent to application."];
     let found = c.search(
         "Search-UnifiedAuditLog -RecordType 'AzureActiveDirectory' -Operations 'Add OAuth2PermissionGrant.','Consent to application.' ",
@@ -1621,9 +1628,9 @@ pub(super) fn app_audit_log(c: &mut Ctx<'_>, tree: &mut Tree<'_>, prefix: &str) 
     );
     if found.is_empty() {
         c.log()
-            .info("Get-HawkTenantEntraIDAppAuditLog completed successfully");
+            .info_v4("Get-HawkTenantEntraIDAppAuditLog completed successfully");
         c.log()
-            .action("No Application related events found in the search time frame.");
+            .action_v4("No Application related events found in the search time frame.");
     } else {
         c.log().notice("Application Rights Activity found.");
         c.log().notice(format!(
@@ -1675,15 +1682,17 @@ pub(super) fn app_audit_log(c: &mut Ctx<'_>, tree: &mut Tree<'_>, prefix: &str) 
         }
     }
     c.log()
-        .info("Completed collection of Entra ID application audit events from the UAL.");
+        .info_v4("Completed collection of Entra ID application audit events from the UAL.");
     Ok(())
 }
 
 /// Get-HawkTenantEXOAdmin: one row per role group member.
 pub(super) fn exo_admins(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
+    // Progress lines are Hawk 4.0 wording (`*_v4`: not logged by Hawk 3). Hawk 3 keeps the
+    // notices, which feed `_Investigate.txt`; source-derived (no 3.1 source): their wording.
     let world = c.world;
     c.log()
-        .action("Initiating collection of Exchange Online Admins.");
+        .action_v4("Initiating collection of Exchange Online Admins.");
     let group = format!(
         "TenantAdmins_{}",
         stream(world.seed, "hawk/tenantadmins").digits(8)
@@ -1738,7 +1747,8 @@ pub(super) fn exo_admins(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         |i| Some(keys::role("exchange_rbac", &members[i].0, &members[i].1)),
         |_| None,
     );
-    c.log().info("Completed exporting Exchange Online Admins.");
+    c.log()
+        .info_v4("Completed exporting Exchange Online Admins.");
     Ok(())
 }
 
@@ -2402,15 +2412,17 @@ fn entra_admins(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
 /// concatenated objects (capture survey §2d). Service principals and applications sorted by
 /// display name, key credentials before password credentials.
 pub(super) fn credentials(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
+    // Progress lines are Hawk 4.0 wording (`*_v4`: not logged by Hawk 3). Hawk 3 keeps the
+    // notices, which feed `_Investigate.txt`; source-derived (no 3.1 source): their wording.
     let world = c.world;
     let v3 = c.omft.version == HawkVersion::V3;
     let per_record = if v3 { Formats::CSV_JSON } else { Formats::CSV };
     c.log()
-        .action("Initiating collection of application and service principal credentials.");
+        .action_v4("Initiating collection of application and service principal credentials.");
     c.omft.created("Tenant");
-    c.log().action("Collecting Entra ID Service Principals");
+    c.log().action_v4("Collecting Entra ID Service Principals");
     c.log()
-        .action("Collecting Entra ID Registered Applications");
+        .action_v4("Collecting Entra ID Registered Applications");
     let mut apps: Vec<&crate::world::App> = world.apps.iter().collect();
     apps.sort_by_key(|a| a.display_name.to_lowercase());
     for (label, prefix, on_sp) in [
@@ -2425,7 +2437,7 @@ pub(super) fn credentials(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
             false,
         ),
     ] {
-        c.log().action(label);
+        c.log().action_v4(label);
         let mut rows: Vec<Row> = Vec::new();
         let mut keyed: Vec<(String, Evidence)> = Vec::new();
         for app in &apps {
@@ -2511,7 +2523,7 @@ pub(super) fn credentials(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
             );
         }
     }
-    c.log().info(
+    c.log().info_v4(
         "Completed collection of application and service principal credentials from Microsoft Graph.",
     );
     Ok(())

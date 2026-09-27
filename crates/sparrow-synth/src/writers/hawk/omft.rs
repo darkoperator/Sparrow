@@ -261,6 +261,8 @@ impl Omft {
     /// message file name, and the files' subject); `art` what the files are to Sparrow. No
     /// rows: logs `No Data Found` and writes nothing.
     #[allow(clippy::too_many_arguments)]
+    // source-derived (no 3.1 source): the `Making output directory` / `Writing Data to` /
+    // `No Data Found` lines are Hawk 4.0's wording, logged by Hawk 3 too.
     pub fn write(
         &mut self,
         tree: &mut Tree<'_>,

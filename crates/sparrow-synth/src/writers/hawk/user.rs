@@ -87,9 +87,11 @@ fn email_addresses(world: &World, u: &User) -> Val {
 /// Get-HawkUserConfiguration: Format-List dumps of Get-EXOMailbox, its statistics, its folder
 /// statistics and Get-EXOCasMailbox.
 pub(super) fn configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
+    // Progress lines are Hawk 4.0 wording (`*_v4`: not logged by Hawk 3). Hawk 3 keeps the
+    // notices, which feed `_Investigate.txt`; source-derived (no 3.1 source): their wording.
     let world = c.world;
     let upn = u.upn.as_str();
-    c.log().action(format!(
+    c.log().action_v4(format!(
         "Initiating collection of mailbox configuration for {upn} from Exchange Online."
     ));
     let mb = mailbox(world, u);
@@ -203,7 +205,7 @@ pub(super) fn configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> R
         false,
         false,
     )?;
-    c.log().action("Gathering CAS Mailbox Information");
+    c.log().action_v4("Gathering CAS Mailbox Information");
     let flag = |f: fn(&Mailbox) -> bool| Val::Bool(mb.is_none_or(f));
     let cas = vec![vec![
         r("ExternalDirectoryObjectId", s(u.object_id.to_string())),
@@ -241,7 +243,7 @@ pub(super) fn configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> R
         |_| Some(keys::mailbox(upn)),
         |_| None,
     );
-    c.log().info(format!(
+    c.log().info_v4(format!(
         "Completed collection of mailbox configuration for {upn} from Exchange Online."
     ));
     Ok(())
@@ -484,9 +486,11 @@ fn inbox_rules(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
 /// to `Tenant/User_ForwardingReport`; a mailbox with forwarding also to
 /// `_Investigate_Users_WithForwarding`.
 pub(super) fn forwarding(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
+    // Progress lines are Hawk 4.0 wording (`*_v4`: not logged by Hawk 3). Hawk 3 keeps the
+    // notices, which feed `_Investigate.txt`; source-derived (no 3.1 source): their wording.
     let world = c.world;
     let upn = u.upn.as_str();
-    c.log().action(format!(
+    c.log().action_v4(format!(
         "Initiating collection of email forwarding configuration for {upn} from Exchange Online."
     ));
     let mb = mailbox(world, u);
@@ -516,8 +520,8 @@ pub(super) fn forwarding(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Resu
     let rows = vec![row];
     if smtp.is_none() && address.is_none() {
         c.log()
-            .info("Get-HawkUserEmailForwarding completed successfully");
-        c.log().action("No forwarding configuration found");
+            .info_v4("Get-HawkUserEmailForwarding completed successfully");
+        c.log().action_v4("No forwarding configuration found");
     } else {
         c.log()
             .notice(format!("Found email forwarding configured for {upn}"));
@@ -558,7 +562,7 @@ pub(super) fn forwarding(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Resu
         false,
     )?;
     register(tree, &w, "mailboxes", key, ev);
-    c.log().info(format!(
+    c.log().info_v4(format!(
         "Completed collection of email forwarding configuration for {upn} from Exchange Online."
     ));
     Ok(())
@@ -969,9 +973,11 @@ pub(super) fn converted(c: &Ctx<'_>, records: &[Ual]) -> (Vec<Row>, Vec<usize>) 
 /// then `Raw_Authentication_Logs`. Hawk 3.1's raw records have no `AuditSearchRequestMetadata`
 /// (capture survey §2e: 10 columns).
 pub(super) fn ual_signins(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
+    // Progress lines are Hawk 4.0 wording (`*_v4`: not logged by Hawk 3). Hawk 3 keeps the
+    // notices, which feed `_Investigate.txt`; source-derived (no 3.1 source): their wording.
     let upn = u.upn.clone();
     let metadata = c.omft.version == HawkVersion::V4;
-    c.log().action(format!(
+    c.log().action_v4(format!(
         "Initiating collection of Sign-In logs for {upn} from the UAL."
     ));
     let nl = c.omft.host.newline;
@@ -982,7 +988,7 @@ pub(super) fn ual_signins(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Res
         RecordType::AzureActiveDirectory,
         RecordType::AzureActiveDirectoryStsLogon,
     ] {
-        c.log().action(format!(
+        c.log().action_v4(format!(
             "Searching Unified Audit log for Records of type: {}",
             rt.name()
         ));
@@ -1003,12 +1009,12 @@ pub(super) fn ual_signins(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Res
         records.extend(found);
     }
     if records.is_empty() {
-        c.log().error(
+        c.log().error_v4(
             "No results found when searching UAL for AzureActiveDirectoryAccountLogon events",
         );
     } else {
-        c.log().action("Converting AuditData");
-        c.log().action("Converting to Human Readable");
+        c.log().action_v4("Converting AuditData");
+        c.log().action_v4("Converting to Human Readable");
         let (rows, index) = converted(c, &records);
         let w = c.omft.write(
             tree,
@@ -1034,7 +1040,7 @@ pub(super) fn ual_signins(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Res
         )?;
         register_ual(tree, &w, &records);
     }
-    c.log().info(format!(
+    c.log().info_v4(format!(
         "Completed collection of Sign-In logs for {upn} from the UAL."
     ));
     Ok(())
@@ -1150,14 +1156,16 @@ fn admin_audit(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
 /// Get-HawkUserMessageTrace: `Get-MessageTrace -Sender <address>` with the cmdlet's default
 /// window, the 48 hours before the run (not Hawk's window).
 pub(super) fn message_trace(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
+    // Progress lines are Hawk 4.0 wording (`*_v4`: not logged by Hawk 3). Hawk 3 keeps the
+    // notices, which feed `_Investigate.txt`; source-derived (no 3.1 source): their wording.
     let world = c.world;
     let upn = u.upn.as_str();
-    c.log().action(format!(
+    c.log().action_v4(format!(
         "Initiating collection of Message Trace Data for {upn} from Exchange Online."
     ));
     let sender = mailbox(world, u).map_or(upn.to_string(), |m| m.primary_smtp.clone());
     c.log()
-        .action(format!("Gathering messages sent by: {sender}"));
+        .action_v4(format!("Gathering messages sent by: {sender}"));
     let now = c.log().now();
     let from = now - Duration::hours(48);
     let mut dates: BTreeSet<NaiveDate> = BTreeSet::new();
@@ -1223,7 +1231,7 @@ pub(super) fn message_trace(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> R
         |i| Some(keyed[i].0.clone()),
         |i| Some(keyed[i].1.clone()),
     );
-    c.log().info(format!(
+    c.log().info_v4(format!(
         "Completed collection of Message Trace Data for {upn} from Exchange Online."
     ));
     Ok(())
@@ -1349,13 +1357,15 @@ fn gated(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User, step: &Gated) -> Result
 /// Get-HawkUserMobileDevice (H15): devices first synced after Hawk's start date are appended
 /// one by one to `_Investigate_MobileDevice`.
 pub(super) fn mobile_devices(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
+    // Progress lines are Hawk 4.0 wording (`*_v4`: not logged by Hawk 3). Hawk 3 keeps the
+    // notices, which feed `_Investigate.txt`; source-derived (no 3.1 source): their wording.
     let world = c.world;
     let upn = u.upn.as_str();
-    c.log().action(format!(
+    c.log().action_v4(format!(
         "Initiating collection of mobile devices attached to {upn} inbox from Exchange Online."
     ));
     c.log()
-        .action(format!("Gathering Mobile Devices for: {upn}"));
+        .action_v4(format!("Gathering Mobile Devices for: {upn}"));
     let devices: Vec<&crate::world::MobileDevice> = world
         .mobile_devices
         .iter()
@@ -1363,9 +1373,9 @@ pub(super) fn mobile_devices(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> 
         .collect();
     if devices.is_empty() {
         c.log()
-            .action(format!("No mobile devices found for user: {upn}"));
+            .action_v4(format!("No mobile devices found for user: {upn}"));
     } else {
-        c.log().info(format!("Found {} Devices", devices.len()));
+        c.log().info_v4(format!("Found {} Devices", devices.len()));
         let rows: Vec<Row> = devices
             .iter()
             .map(|d| {
@@ -1449,7 +1459,7 @@ pub(super) fn mobile_devices(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> 
             },
         );
     }
-    c.log().info(format!(
+    c.log().info_v4(format!(
         "Completed collection of mobile devices attached to {upn} inbox from Exchange Online."
     ));
     Ok(())

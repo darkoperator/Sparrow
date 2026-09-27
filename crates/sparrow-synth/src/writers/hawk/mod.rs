@@ -207,6 +207,7 @@ impl<'w> Ctx<'w> {
 
     /// `Get-AllUnifiedAuditLogEntry -UnifiedSearch <command>`: the window's logged records
     /// `keep` selects, in ResultIndex order (newest first), with the search's log lines.
+    // source-derived (no 3.1 source): Hawk 3 also logs these Hawk 4.0 search lines.
     pub fn search(&mut self, command: &str, keep: impl Fn(&Ual) -> bool) -> Vec<Ual> {
         let (start, end) = (self.world.window_start(), self.world.window_end());
         let session = self.local_now().format("%H%M%S").to_string();

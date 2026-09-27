@@ -118,13 +118,6 @@ impl Log {
         }
     }
 
-    /// Adds the culture date `d` a Hawk 3 message carries to `Hawk.log`'s date evidence.
-    pub fn note_date(&mut self, d: &PsDate) {
-        if let Dialect::V3(host) = self.dialect {
-            note_evidence(&host, &mut self.log_dates, d);
-        }
-    }
-
     /// Hawk 3: the section tag of the notices logged from now on.
     pub fn section(&mut self, tag: impl Into<String>) {
         self.section = tag.into();
@@ -186,6 +179,28 @@ impl Log {
     /// `-isPrompt` (Hawk 3: an untagged line).
     pub fn prompt(&mut self, msg: impl AsRef<str>) {
         self.push(Level::Prompt, msg.as_ref());
+    }
+
+    /// `-Action` in Hawk 4.0 wording that research §7 gives no Hawk 3.1 counterpart for: not
+    /// logged by the Hawk 3 dialect (a shared collector's own progress lines).
+    pub fn action_v4(&mut self, msg: impl AsRef<str>) {
+        if self.dialect == Dialect::V4 {
+            self.action(msg);
+        }
+    }
+
+    /// `-Information` in Hawk 4.0 wording (see `action_v4`).
+    pub fn info_v4(&mut self, msg: impl AsRef<str>) {
+        if self.dialect == Dialect::V4 {
+            self.info(msg);
+        }
+    }
+
+    /// `-isError` in Hawk 4.0 wording (see `action_v4`).
+    pub fn error_v4(&mut self, msg: impl AsRef<str>) {
+        if self.dialect == Dialect::V4 {
+            self.error(msg);
+        }
     }
 
     /// No level switch (`-NoDisplay` lines): untagged.

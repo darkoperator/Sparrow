@@ -155,9 +155,10 @@ pub fn short_object(object: &str) -> &str {
     after_slash.rsplit('\\').next().unwrap_or(after_slash)
 }
 
-/// The caller as Hawk's `Simple_*` admin-audit summary writes it (`Get-SimpleAdminAuditLog`):
-/// empty gives `***`; a caller containing `on behalf of` gives `<first word of its 4th
-/// /-segment> on behalf of <its last /-segment>`, trailing quotes trimmed.
+/// `<caller>` of the `admin_audit_events` key (migration 8 COMMENT): "the caller trimmed of
+/// surrounding whitespace ..., then as that Simple_* summary writes it (empty gives ***; a
+/// caller containing "on behalf of" gives <first word of its 4th /-segment> on behalf of <its
+/// last /-segment>, trailing quotes trimmed)" (`Get-SimpleAdminAuditLog.ps1`).
 pub fn simple_caller(caller: &str) -> String {
     let caller = caller.trim();
     if caller.is_empty() {

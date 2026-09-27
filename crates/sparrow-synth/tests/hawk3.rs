@@ -221,13 +221,15 @@ fn format_list_admin_rule_flags_merge_only_on_a_utc_host() {
     assert_eq!(local_total - utc_total, local_blocks as u64);
 }
 
+/// A window ending long before collection is still `available_not_collected`: Hawk 3 logs no
+/// window, so Sparrow can only compare `collected_at` with the retention.
 #[test]
-fn hawk3_signins_past_retention_are_beyond_retention() {
+fn hawk3_signins_are_available_not_collected_without_a_logged_window() {
     let mut s = load("hawk-investigate").unwrap();
     s.window.start -= chrono::Duration::days(20);
     let dir = tempfile::tempdir().unwrap();
     let m = generate_to_dir(&s, &opts(47), dir.path()).unwrap();
-    assert_eq!(m.evidence["signins"].allowed, ["beyond_retention"]);
+    assert_eq!(m.evidence["signins"].allowed, ["available_not_collected"]);
     let report = check(&m, &ingest_generated(dir.path(), &m)).unwrap();
     assert!(report.ok, "{:#?}", report.problems);
 }
