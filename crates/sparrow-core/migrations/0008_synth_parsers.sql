@@ -23,3 +23,97 @@ COMMENT ON TABLE role_assignments IS 'Admin role memberships and Exchange role a
 COMMENT ON COLUMN role_assignments.source IS 'entra_directory (Hawk EntraIDAdministrators/AzureADAdministrators and Microsoft-Extractor-Suite Admins/<role>.csv + Roles/AllRoles.csv), exchange_rbac (ExchangeOnlineAdministrators, Impersonation_Rights), exchange_ediscovery (EDiscoveryRoleAssignments, CustomEDiscoveryRoles), entra_pim (Microsoft-Extractor-Suite Roles/PIM-Assignments.csv).';
 COMMENT ON COLUMN role_assignments.assignment_type IS 'active, eligible or permanent (PIM); the Microsoft-Extractor-Suite Admins/AllRoles files are permanent and PIM-Assignments.csv carries PIM Active/PIM Eligible; delegating for Exchange delegating assignments.';
 COMMENT ON COLUMN role_assignments.enabled IS 'Exchange role assignment Enabled, or the Microsoft-Extractor-Suite Admins/AllRoles AccountEnabled.';
+
+-- Task 15: MFA registration and Conditional Access policies.
+CREATE TABLE mfa_registration (
+    record_key VARCHAR NOT NULL, collection_id BIGINT NOT NULL, collected_at TIMESTAMPTZ,
+    upn VARCHAR, user_id VARCHAR, display_name VARCHAR, user_type VARCHAR, is_admin BOOLEAN,
+    mfa_status VARCHAR, is_mfa_registered BOOLEAN, is_mfa_capable BOOLEAN,
+    is_sspr_registered BOOLEAN, is_sspr_enabled BOOLEAN, is_sspr_capable BOOLEAN,
+    is_passwordless_capable BOOLEAN, methods VARCHAR[], default_method VARCHAR,
+    system_preferred_methods VARCHAR[], method_email BOOLEAN, method_fido2 BOOLEAN,
+    method_authenticator_app BOOLEAN, method_password BOOLEAN, method_phone BOOLEAN,
+    method_software_oath BOOLEAN, method_hello_business BOOLEAN,
+    method_temporary_access_pass BOOLEAN, method_qr_code_pin BOOLEAN, last_updated TIMESTAMPTZ,
+    raw JSON, column_collections JSON, tz_assumed JSON
+);
+CREATE TABLE ca_policies (
+    record_key VARCHAR NOT NULL, collection_id BIGINT NOT NULL, collected_at TIMESTAMPTZ,
+    policy_id VARCHAR, display_name VARCHAR, state VARCHAR, created TIMESTAMPTZ,
+    modified TIMESTAMPTZ, description VARCHAR, include_users VARCHAR[], exclude_users VARCHAR[],
+    include_groups VARCHAR[], exclude_groups VARCHAR[], include_roles VARCHAR[],
+    exclude_roles VARCHAR[], include_applications VARCHAR[], exclude_applications VARCHAR[],
+    client_app_types VARCHAR[], include_platforms VARCHAR[], exclude_platforms VARCHAR[],
+    include_locations VARCHAR[], exclude_locations VARCHAR[], user_risk_levels VARCHAR[],
+    sign_in_risk_levels VARCHAR[], service_principal_risk_levels VARCHAR[],
+    user_actions VARCHAR[], built_in_controls VARCHAR[], grant_operator VARCHAR,
+    device_filter_mode VARCHAR, device_filter_rule VARCHAR, session_controls JSON,
+    raw JSON, column_collections JSON, tz_assumed JSON
+);
+COMMENT ON TABLE mfa_registration IS 'Authentication methods registered per user (Microsoft-Extractor-Suite Get-MFA: AuthenticationMethods.csv per-method flags, UserRegistrationDetails.csv registration and capability flags). One row per user; each file fills its own columns (latest wins per column).';
+COMMENT ON COLUMN mfa_registration.record_key IS 'Lower-case UPN.';
+COMMENT ON COLUMN mfa_registration.collection_id IS 'Newest collection that wrote or re-confirmed any of this row''s columns (per-column writers: column_collections).';
+COMMENT ON COLUMN mfa_registration.collected_at IS 'collected_at of that collection (NULL when unknown).';
+COMMENT ON COLUMN mfa_registration.upn IS 'UserPrincipalName, lower-case.';
+COMMENT ON COLUMN mfa_registration.user_id IS 'Entra object id (UserRegistrationDetails id).';
+COMMENT ON COLUMN mfa_registration.display_name IS 'userDisplayName.';
+COMMENT ON COLUMN mfa_registration.user_type IS 'userType: member or guest.';
+COMMENT ON COLUMN mfa_registration.is_admin IS 'isAdmin: the user holds an admin directory role.';
+COMMENT ON COLUMN mfa_registration.mfa_status IS 'AuthenticationMethods MFAstatus: Enabled when any method other than password / qrCodePin exists, else Disabled.';
+COMMENT ON COLUMN mfa_registration.is_mfa_registered IS 'isMfaRegistered.';
+COMMENT ON COLUMN mfa_registration.is_mfa_capable IS 'isMfaCapable.';
+COMMENT ON COLUMN mfa_registration.is_sspr_registered IS 'isSsprRegistered.';
+COMMENT ON COLUMN mfa_registration.is_sspr_enabled IS 'isSsprEnabled.';
+COMMENT ON COLUMN mfa_registration.is_sspr_capable IS 'isSsprCapable.';
+COMMENT ON COLUMN mfa_registration.is_passwordless_capable IS 'isPasswordlessCapable.';
+COMMENT ON COLUMN mfa_registration.methods IS 'methodsRegistered (Graph names, e.g. microsoftAuthenticatorPush), split on ", ".';
+COMMENT ON COLUMN mfa_registration.default_method IS 'userPreferredMethodForSecondaryAuthentication (push, ...).';
+COMMENT ON COLUMN mfa_registration.system_preferred_methods IS 'systemPreferredAuthenticationMethods, split on ", ".';
+COMMENT ON COLUMN mfa_registration.method_email IS 'AuthenticationMethods email: an email authentication method is registered.';
+COMMENT ON COLUMN mfa_registration.method_fido2 IS 'AuthenticationMethods fido2: a FIDO2 security key is registered.';
+COMMENT ON COLUMN mfa_registration.method_authenticator_app IS 'AuthenticationMethods app: the Microsoft Authenticator app is registered.';
+COMMENT ON COLUMN mfa_registration.method_password IS 'AuthenticationMethods password: a password method exists (every user).';
+COMMENT ON COLUMN mfa_registration.method_phone IS 'AuthenticationMethods phone: a phone method is registered.';
+COMMENT ON COLUMN mfa_registration.method_software_oath IS 'AuthenticationMethods softwareoath: a software OATH token is registered.';
+COMMENT ON COLUMN mfa_registration.method_hello_business IS 'AuthenticationMethods hellobusiness: Windows Hello for Business is registered.';
+COMMENT ON COLUMN mfa_registration.method_temporary_access_pass IS 'AuthenticationMethods temporaryAccessPass: a temporary access pass is registered.';
+COMMENT ON COLUMN mfa_registration.method_qr_code_pin IS 'AuthenticationMethods qrcodepin: a QR-code PIN is registered.';
+COMMENT ON COLUMN mfa_registration.last_updated IS 'lastUpdatedDateTime.';
+COMMENT ON COLUMN mfa_registration.raw IS 'Source record as loaded; records from the two files are merged (json_merge_patch).';
+COMMENT ON COLUMN mfa_registration.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
+COMMENT ON COLUMN mfa_registration.tz_assumed IS 'Object {column: true} naming each time column whose value came without a time zone and was stored as if UTC (for example Hawk WhenChanged or AutoReply StartTime, written in the collecting host''s local time). Per column like column_collections: the load that writes a column sets or clears its entry. NULL for rows loaded before schema 7 or loads without a time column.';
+COMMENT ON TABLE ca_policies IS 'Entra Conditional Access policies at collection time (Microsoft-Extractor-Suite Get-ConditionalAccessPolicies).';
+COMMENT ON COLUMN ca_policies.record_key IS 'Lower-case policy id.';
+COMMENT ON COLUMN ca_policies.collection_id IS 'Newest collection that wrote or re-confirmed any of this row''s columns (per-column writers: column_collections).';
+COMMENT ON COLUMN ca_policies.collected_at IS 'collected_at of that collection (NULL when unknown).';
+COMMENT ON COLUMN ca_policies.policy_id IS 'Policy Id (GUID).';
+COMMENT ON COLUMN ca_policies.display_name IS 'DisplayName.';
+COMMENT ON COLUMN ca_policies.state IS 'State: enabled, disabled or enabledForReportingButNotEnforced.';
+COMMENT ON COLUMN ca_policies.created IS 'CreatedDateTime.';
+COMMENT ON COLUMN ca_policies.modified IS 'ModifiedDateTime (NULL when never modified).';
+COMMENT ON COLUMN ca_policies.description IS 'Description.';
+COMMENT ON COLUMN ca_policies.include_users IS 'Conditions.Users.IncludeUsers, "; "-joined (GUIDs or All/None/GuestsOrExternalUsers).';
+COMMENT ON COLUMN ca_policies.exclude_users IS 'Conditions.Users.ExcludeUsers, "; "-joined.';
+COMMENT ON COLUMN ca_policies.include_groups IS 'Conditions.Users.IncludeGroups, "; "-joined.';
+COMMENT ON COLUMN ca_policies.exclude_groups IS 'Conditions.Users.ExcludeGroups, "; "-joined.';
+COMMENT ON COLUMN ca_policies.include_roles IS 'Conditions.Users.IncludeRoles, "; "-joined.';
+COMMENT ON COLUMN ca_policies.exclude_roles IS 'Conditions.Users.ExcludeRoles, "; "-joined.';
+COMMENT ON COLUMN ca_policies.include_applications IS 'Conditions.Applications.IncludeApplications, "; "-joined.';
+COMMENT ON COLUMN ca_policies.exclude_applications IS 'Conditions.Applications.ExcludeApplications, "; "-joined.';
+COMMENT ON COLUMN ca_policies.client_app_types IS 'Conditions.ClientAppTypes, "; "-joined.';
+COMMENT ON COLUMN ca_policies.include_platforms IS 'Conditions.Platforms.IncludePlatforms, "; "-joined.';
+COMMENT ON COLUMN ca_policies.exclude_platforms IS 'Conditions.Platforms.ExcludePlatforms, "; "-joined.';
+COMMENT ON COLUMN ca_policies.include_locations IS 'Conditions.Locations.IncludeLocations, "; "-joined.';
+COMMENT ON COLUMN ca_policies.exclude_locations IS 'Conditions.Locations.ExcludeLocations, "; "-joined.';
+COMMENT ON COLUMN ca_policies.user_risk_levels IS 'Conditions.UserRiskLevels, "; "-joined.';
+COMMENT ON COLUMN ca_policies.sign_in_risk_levels IS 'Conditions.SignInRiskLevels, "; "-joined.';
+COMMENT ON COLUMN ca_policies.service_principal_risk_levels IS 'Conditions.ServicePrincipalRiskLevels, "; "-joined.';
+COMMENT ON COLUMN ca_policies.user_actions IS 'Conditions.Applications.IncludeUserActions, "; "-joined.';
+COMMENT ON COLUMN ca_policies.built_in_controls IS 'GrantControls.BuiltInControls, "; "-joined (mfa, compliantDevice, block, ...).';
+COMMENT ON COLUMN ca_policies.grant_operator IS 'GrantControls.Operator (OR/AND).';
+COMMENT ON COLUMN ca_policies.device_filter_mode IS 'Conditions.Devices.DeviceFilter.Mode.';
+COMMENT ON COLUMN ca_policies.device_filter_rule IS 'Conditions.Devices.DeviceFilter.Rule.';
+COMMENT ON COLUMN ca_policies.session_controls IS 'Object with the session settings the collector exports: application_enforced_restrictions, cloud_app_security, disable_resilience_defaults, persistent_browser, sign_in_frequency (absent keys = not configured).';
+COMMENT ON COLUMN ca_policies.raw IS 'Source record as loaded.';
+COMMENT ON COLUMN ca_policies.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
+COMMENT ON COLUMN ca_policies.tz_assumed IS 'Object {column: true} naming each time column whose value came without a time zone and was stored as if UTC (for example Hawk WhenChanged or AutoReply StartTime, written in the collecting host''s local time). Per column like column_collections: the load that writes a column sets or clears its entry. NULL for rows loaded before schema 7 or loads without a time column.';

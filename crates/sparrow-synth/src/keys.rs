@@ -148,6 +148,16 @@ pub fn user_licence(upn: &str, sku: &str) -> String {
     format!("{CID}|{}|{}", lower(upn), lower(sku))
 }
 
+/// `mfa_registration`: "Lower-case UPN."
+pub fn mfa(upn: &str) -> String {
+    lower(upn)
+}
+
+/// `ca_policies`: "Lower-case policy id."
+pub fn ca_policy(id: &str) -> String {
+    lower(id)
+}
+
 /// ObjectModified as Hawk's `Simple_*` admin-audit summary writes it: the part after the last
 /// `/`, then after the last `\`.
 pub fn short_object(object: &str) -> &str {

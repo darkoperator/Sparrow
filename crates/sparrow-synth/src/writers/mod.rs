@@ -97,6 +97,7 @@ pub const SPARROW_PARSED: &[&str] = &[
     "inv.admins",
     "inv.admins.merged",
     "inv.audit_status",
+    "inv.ca",
     "inv.entra_audit",
     "inv.entra_audit.merged",
     "inv.licenses.security_defaults",
@@ -105,6 +106,8 @@ pub const SPARROW_PARSED: &[&str] = &[
     "inv.logfile",
     "inv.mailbox_permissions",
     "inv.message_trace",
+    "inv.mfa.methods",
+    "inv.mfa.registration",
     "inv.mia.message_ids",
     "inv.mia.sessions",
     "inv.roles.all",
@@ -140,5 +143,8 @@ mod tests {
         assert!(parsed_by_sparrow("inv.admins.merged"));
         assert!(parsed_by_sparrow("inv.roles.all"));
         assert!(parsed_by_sparrow("inv.roles.pim"));
+        assert!(parsed_by_sparrow("inv.ca"));
+        assert!(parsed_by_sparrow("inv.mfa.methods"));
+        assert!(parsed_by_sparrow("inv.mfa.registration"));
     }
 }

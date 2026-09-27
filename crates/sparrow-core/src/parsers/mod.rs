@@ -14,6 +14,7 @@ pub mod mailbox_audit;
 pub mod mailbox_audit_status;
 pub mod mailbox_permissions;
 pub mod message_trace;
+pub mod mfa_ca;
 pub mod records;
 pub mod risk;
 pub mod signins;
@@ -43,5 +44,6 @@ pub fn register_builtin(registry: &mut ParserRegistry) {
     admin_audit::register(registry);
     flags::register(registry);
     licenses::register(registry);
+    mfa_ca::register(registry);
     users_roles::register(registry);
 }

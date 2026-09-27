@@ -550,6 +550,34 @@ pub static EVIDENCE: &[EvidenceDef] = &[
             "'licenses'", "x.record_key"
         )
     },
+    EvidenceDef {
+        id: "mfa_registration",
+        title: "Entra MFA registration",
+        kind: Kind::State,
+        artifacts: &["inv.mfa.*"],
+        invictus_runs: &[("MFA", None)],
+        invictus: Some("Get-MFA"),
+        ..source!(
+            "mfa_registration x",
+            "CAST(NULL AS TIMESTAMPTZ)",
+            "count(DISTINCT lower(x.upn))",
+            "'mfa_registration'", "x.record_key"
+        )
+    },
+    EvidenceDef {
+        id: "ca_policies",
+        title: "Conditional Access policies",
+        kind: Kind::State,
+        artifacts: &["inv.ca"],
+        invictus_runs: &[("ConditionalAccessPolicies", None)],
+        invictus: Some("Get-ConditionalAccessPolicies"),
+        ..source!(
+            "ca_policies x",
+            "CAST(NULL AS TIMESTAMPTZ)",
+            "CAST(NULL AS BIGINT)",
+            "'ca_policies'", "x.record_key"
+        )
+    },
 ];
 
 /// Full unified audit log exports: evidence marked `full_ual_covers` is in them when present.

@@ -79,17 +79,18 @@ capabilities:
     title: Microsoft Entra ID P1 (30-day log retention, Graph access to sign-ins)
     unlocked_by_service_plans: [AAD_PREMIUM, AAD_PREMIUM_P2]
     retention_days: 30
-    evidence: [signins, directory_audits]
+    evidence: [signins, directory_audits, ca_policies]
     notes: >-
       AAD_PREMIUM is in Microsoft 365 E3/E5/A3/A5/G3/G5/F1/F3, Business Premium, EMS E3/E5 and
       the Entra ID P1/P2 SKUs. Office 365 E3/E5 and Business Basic/Standard include neither P1
       nor P2. Sign-in and audit logs are kept 30 days. Microsoft Graph refuses sign-in log
-      downloads without P1/P2.
+      downloads without P1/P2. Conditional Access also requires Entra ID P1.
     sources:
       - https://learn.microsoft.com/en-us/entra/identity/monitoring-health/reference-reports-data-retention
       - https://learn.microsoft.com/entra/identity/monitoring-health/howto-analyze-activity-logs-with-microsoft-graph
       - https://learn.microsoft.com/en-us/entra/identity/users/licensing-service-plan-reference
-    as_of: 2026-09-25
+      - https://learn.microsoft.com/entra/identity/conditional-access/overview#license-requirements
+    as_of: 2026-09-27
   - id: identity_protection
     title: Microsoft Entra ID Protection (P2)
     unlocked_by_service_plans: [AAD_PREMIUM_P2]

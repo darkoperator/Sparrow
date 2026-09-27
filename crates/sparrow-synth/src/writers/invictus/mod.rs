@@ -16,6 +16,7 @@ mod entra;
 mod exchange;
 mod licences;
 mod log;
+mod mfa_ca;
 mod ual;
 
 use crate::Result;
@@ -182,6 +183,7 @@ pub fn write(world: &World, opts: &GenerateOptions, tree: &mut Tree<'_>) -> Resu
     ual::write_mailbox_audit_log(&mut c, tree)?;
     licences::write(&mut c, tree)?;
     directory::write(&mut c, tree)?;
+    mfa_ca::write(&mut c, tree)?;
     let log = std::mem::take(&mut c.log);
     log.write(&c, tree)
 }
