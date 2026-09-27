@@ -1,8 +1,13 @@
 #[path = "common/synth.rs"]
 mod synth;
 
+use sparrow_core::Case;
+use sparrow_core::fixtures::{self, csv_line};
+use sparrow_core::ingest::parser::ParserRegistry;
+use sparrow_core::ingest::{FileReport, FileStatus, IngestOptions, IngestReport, ingest_path};
 use sparrow_synth::options::PsEdition;
 use sparrow_synth::scenario::load;
+use std::path::Path;
 use synth::*;
 
 #[test]
@@ -84,4 +89,60 @@ fn high_confidence_list_decides_capabilities() {
     assert_eq!(status("audit_premium"), "licensed/high");
     assert_eq!(status("entra_id_p1"), "not_licensed/high");
     assert_eq!(status("mdo_p2"), "licensed/high");
+}
+
+const USER_LICENCES_REL: &str = "Licenses/20260910-100500/20260910-100500-UserLicenses.csv";
+
+fn ingest_hand_written(base: &Path) -> (Case, IngestReport) {
+    let mut case = Case::in_memory().unwrap();
+    let report = ingest_path(
+        &mut case,
+        base,
+        &ParserRegistry::builtin(),
+        &IngestOptions::default(),
+    )
+    .unwrap();
+    (case, report)
+}
+
+fn file_row<'r>(report: &'r IngestReport, rel: &str) -> &'r FileReport {
+    report
+        .collections
+        .iter()
+        .flat_map(|c| &c.files)
+        .find(|f| f.rel_path == rel)
+        .unwrap_or_else(|| panic!("no report row for {rel}"))
+}
+
+/// A `SkuPartNumber` of None or blank is skipped and counted before the UPN is examined, so a
+/// row the collector writes without a licence does not become a parse error when its UPN is
+/// empty too.
+#[test]
+fn a_none_or_blank_sku_is_counted_before_the_upn_is_checked() {
+    let dir = tempfile::tempdir().unwrap();
+    let body = format!(
+        "{}{}{}{}",
+        csv_line(&["DisplayName", "UserPrincipalName", "SkuPartNumber"]),
+        csv_line(&["Alice", "alice@contoso.example", "SPE_E5"]),
+        csv_line(&["Bob", "", "None"]),
+        csv_line(&["Carol", "", ""]),
+    );
+    fixtures::write(&dir.path().join("OUT"), USER_LICENCES_REL, body.as_bytes());
+    let (case, report) = ingest_hand_written(dir.path());
+    let f = file_row(&report, USER_LICENCES_REL);
+    assert_eq!(f.status, FileStatus::Parsed, "{report:#?}");
+    assert_eq!(f.records_error, 0, "{report:#?}");
+    assert_eq!(count(&case, "SELECT count(*) FROM user_licenses"), 1);
+    assert!(
+        f.warnings
+            .iter()
+            .any(|w| w.contains("1 users have no licence (SkuPartNumber None)")),
+        "{:?}",
+        f.warnings
+    );
+    assert!(
+        f.warnings.iter().any(|w| w.contains("1 rows name no SKU")),
+        "{:?}",
+        f.warnings
+    );
 }

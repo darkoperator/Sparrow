@@ -116,10 +116,6 @@ impl ArtifactParser for UserLicensesParser {
         let mut no_sku = 0usize;
         for r in &records {
             let rec = Rec::new(&r.map, format.lossy());
-            let Some(upn) = rec.text("UserPrincipalName") else {
-                reject(ctx, r, "user licence row has no UserPrincipalName")?;
-                continue;
-            };
             let Some(sku) = rec.text("SkuPartNumber") else {
                 no_sku += 1;
                 continue;
@@ -128,6 +124,10 @@ impl ArtifactParser for UserLicensesParser {
                 no_licence += 1;
                 continue;
             }
+            let Some(upn) = rec.text("UserPrincipalName") else {
+                reject(ctx, r, "user licence row has no UserPrincipalName")?;
+                continue;
+            };
             let key = user_key(ctx.collection_id, &upn, &sku);
             let mut c = CellRow::new(USER_COLS);
             c.set("source", Cell::text(Some("invictus_user_licenses".into())))
