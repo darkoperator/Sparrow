@@ -358,58 +358,121 @@ fn owner_row(app: &App, upn: &str) -> Row {
     ]
 }
 
-/// Start-MESTriage's `Get-EntraApplicationsForSpecificUsers`: apps the victims own, written
-/// directly in the triage root `Triage-<tenant folder>/`.
-fn write_user_applications(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
-    let triage = c.runs.next("Triage", None);
-    let dir = c.triage_root();
-    tree.dir(&dir)?;
-    c.log.add(
-        triage.local,
-        "=== Starting Entra Applications Collection ===",
-    );
-    let victims: Vec<&User> = c
-        .world
+/// The victims in the collector's `-UserIds` order (ascending actor index).
+fn ordered_victims(world: &World) -> Vec<&User> {
+    world
         .victims
         .iter()
-        .filter(|n| **n >= 1 && (**n as usize) <= c.world.users.len())
-        .map(|n| c.world.user(*n))
-        .collect();
+        .filter(|n| **n >= 1 && (**n as usize) <= world.users.len())
+        .map(|n| world.user(*n))
+        .collect()
+}
+
+/// Start-MESTriage's `Get-EntraApplicationsForSpecificUsers` Owner rows: the apps the victims
+/// own. The collector creates `$processedAppIds` once before the user loop (TriageFunctions.ps1
+/// :91) and checks it for owned apps (:108; assignments use the `SP_<id>` key at :177), so an
+/// app two victims own gets one Owner row - for the first user in `-UserIds` order. Do not
+/// "fix" this into one row per user.
+fn triage_owner_rows(world: &World) -> Vec<(Row, String)> {
     let mut seen: BTreeSet<String> = BTreeSet::new();
-    let mut rows = Vec::new();
-    let mut keys = Vec::new();
-    for victim in victims {
-        for app in c.world.apps.iter() {
+    let mut out = Vec::new();
+    for victim in ordered_victims(world) {
+        for app in world.apps.iter() {
             if !app.owners.iter().any(|o| o == &victim.upn) {
                 continue;
             }
             if seen.insert(app.object_id.to_string()) {
-                rows.push(owner_row(app, &victim.upn));
-                keys.push(keys::application_association(
-                    &app.app_id.to_string(),
-                    "Owner",
-                    &victim.upn,
+                out.push((
+                    owner_row(app, &victim.upn),
+                    keys::application_association(&app.app_id.to_string(), "Owner", &victim.upn),
                 ));
             }
         }
     }
-    let rel = format!(
-        "{dir}/{}-UserApplications.csv",
-        triage.local.format("%Y%m%d%H%M")
+    out
+}
+
+/// Start-MESTriage's `Get-EntraApplicationsForSpecificUsers`. On Windows the file is
+/// `Output/<triage>/<stamp>-UserApplications.csv` (relative to the collection root). On
+/// non-Windows the collector's `Output\<TriageName>` (Start-MESTriage.ps1:188-193) has no
+/// separator, so it is one literal directory name beside `Output/`, outside the collection:
+/// the file is written unlisted like `Output\LogFile.txt`.
+fn write_user_applications(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
+    let triage = c.runs.next("Triage", None);
+    let dir = c.triage_root();
+    c.log.add(
+        triage.local,
+        "=== Starting Entra Applications Collection ===",
     );
-    write_rows(
-        c,
-        tree,
-        &rel,
-        "inv.user_applications",
-        "applications",
-        &rows,
-        &keys,
+    let name = format!("{}-UserApplications.csv", triage.local.format("%Y%m%d%H%M"));
+    let pairs = triage_owner_rows(c.world);
+    let rows: Vec<Row> = pairs.iter().map(|(row, _)| row.clone()).collect();
+    let keys: Vec<String> = pairs.into_iter().map(|(_, key)| key).collect();
+    let mut ev = DateEvidence::default();
+    let rendered = export_csv(&c.host, &rows, &mut ev);
+    if c.opts.non_windows {
+        let enc = c.utf8();
+        return tree.write_unlisted(
+            &format!("Output\\{dir}/{name}"),
+            &enc.encode(&rendered.text),
+        );
+    }
+    tree.dir(&dir)?;
+    let rel = format!("{dir}/{name}");
+    tree.write(
+        &FileSpec::new(&rel, Some("inv.user_applications"), c.utf8()),
+        &rendered.text,
     )?;
+    if ev.culture_dates > 0 {
+        tree.date_evidence(&rel, ev);
+    }
+    for key in keys {
+        tree.row(&rel, "applications", key);
+    }
     Ok(())
 }
 
 pub(super) fn write(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
     write_oauth_permissions(c, tree)?;
     write_user_applications(c, tree)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scenario::load;
+
+    /// An app two victims own gets one Owner row, for the first in the collector's `-UserIds`
+    /// order (TriageFunctions.ps1:91 creates `$processedAppIds` once, :108 dedups owned apps).
+    #[test]
+    fn an_app_two_victims_own_gets_one_owner_row_for_the_first() {
+        let mut world = World::build(&load("bec-aitm").unwrap(), 1).unwrap();
+        let first = world.user(1).upn.clone();
+        let second = world.user(2).upn.clone();
+        world.victims.insert(1);
+        world.victims.insert(2);
+        let app = world
+            .apps
+            .iter_mut()
+            .find(|a| a.display_name == "Helpdesk Portal")
+            .unwrap();
+        app.owners = vec![second.clone(), first.clone()];
+        let rows = triage_owner_rows(&world);
+        let owner: Vec<&(Row, String)> = rows
+            .iter()
+            .filter(|(row, _)| {
+                row.iter()
+                    .any(|(k, v)| k == "AssociationType" && v == &Val::Str("Owner".into()))
+            })
+            .collect();
+        assert_eq!(owner.len(), 1);
+        assert!(
+            owner[0]
+                .0
+                .iter()
+                .any(|(k, v)| k == "AssociatedUser" && v == &Val::Str(first.clone())),
+            "{:?}",
+            owner[0].0
+        );
+    }
 }

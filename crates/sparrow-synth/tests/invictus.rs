@@ -166,3 +166,33 @@ fn non_windows_log_sits_beside_output_and_the_project_is_the_collection() {
     let report = check(&m, &ingest_generated(dir.path(), &m)).unwrap();
     assert!(report.ok, "{:#?}", report.problems);
 }
+
+#[test]
+fn non_windows_triage_folder_keeps_the_literal_backslash_name() {
+    let mut o = opts(29);
+    o.non_windows = true;
+    let dir = tempfile::tempdir().unwrap();
+    let m = generate_to_dir(&load("bec-aitm").unwrap(), &o, dir.path()).unwrap();
+    assert_eq!(m.root, "Output/Contoso_Example");
+    // The collector's `Output\<TriageName>` has no separator on non-Windows, so it is one
+    // directory literally named `Output\Triage-Contoso_Example` beside `Output/`, outside the
+    // collection; the file is unlisted.
+    assert!(
+        !m.files
+            .iter()
+            .any(|f| f.artifact_id.as_deref() == Some("inv.user_applications")),
+        "the unlisted triage file must not be in the manifest"
+    );
+    let triage = dir.path().join("Output\\Triage-Contoso_Example");
+    assert!(triage.is_dir(), "no literal-backslash triage folder");
+    let names: Vec<String> = std::fs::read_dir(&triage)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        names.iter().any(|n| n.ends_with("-UserApplications.csv")),
+        "{names:?}"
+    );
+    let report = check(&m, &ingest_generated(dir.path(), &m)).unwrap();
+    assert!(report.ok, "{:#?}", report.problems);
+}
