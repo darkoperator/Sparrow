@@ -140,3 +140,17 @@ fn rest_origin_dates_render_by_edition_and_load_the_same_instant() {
     assert!(!loaded.is_empty());
     assert_eq!(loaded, epochs(&ps51));
 }
+
+/// The two MFA files fill one row's disjoint columns: the later UserRegistrationDetails file
+/// must not clear AuthenticationMethods' `mfa_status` or `method_*` flags.
+#[test]
+fn the_two_mfa_files_keep_each_others_columns() {
+    let g = builtin("bec-aitm", PsEdition::Ps7);
+    assert!(
+        count(
+            &g.case,
+            "SELECT count(*) FROM mfa_registration WHERE method_authenticator_app AND mfa_status = 'Enabled' AND is_mfa_registered"
+        ) >= 1
+    );
+    check_green(&g);
+}

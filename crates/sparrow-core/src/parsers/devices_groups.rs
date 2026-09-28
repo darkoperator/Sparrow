@@ -140,45 +140,76 @@ const GROUP_COLS: &[&str] = &[
     "proxy_addresses",
 ];
 
-/// A `groups` row from a Get-Groups or Get-DynamicGroups record.
-fn group_cells(rec: &Rec) -> (Option<String>, Vec<Cell>) {
+/// The columns Get-DynamicGroups' 16-column export supplies (plus derived `is_dynamic`). It
+/// does not export `expiration`, `is_assignable_to_role` or `proxy_addresses`, so those must
+/// not be staged or its later run would clear the Get-Groups values.
+const DYNAMIC_GROUP_COLS: &[&str] = &[
+    "group_id",
+    "display_name",
+    "description",
+    "mail",
+    "mail_enabled",
+    "mail_nickname",
+    "security_enabled",
+    "group_types",
+    "is_dynamic",
+    "membership_rule",
+    "membership_rule_state",
+    "created",
+    "renewed",
+    "visibility",
+    "on_prem_sync",
+    "classification",
+];
+
+/// A `groups` row from a Get-Groups or Get-DynamicGroups record, staging only `columns` (the
+/// columns that file actually supplies; a column it does not have must stay out so its later
+/// row does not clear the other file's value).
+fn group_cells(rec: &Rec, columns: &'static [&'static str]) -> (Option<String>, Vec<Cell>) {
     let group_id = lower(rec.text("GroupId"));
     let group_types = joined_list(rec, "GroupTypes", ',');
     let membership_rule = rec.text("MembershipRule");
     let is_dynamic =
         group_types.iter().any(|t| t == "DynamicMembership") || membership_rule.is_some();
-    let mut c = CellRow::new(GROUP_COLS);
-    c.set("group_id", Cell::text(group_id.clone()))
-        .set("display_name", Cell::text(rec.text("DisplayName")))
-        .set("description", Cell::text(rec.text("Description")))
-        .set("mail", Cell::text(rec.text("Mail")))
-        .set("mail_enabled", Cell::bool(rec.bool("MailEnabled")))
-        .set("mail_nickname", Cell::text(rec.text("MailNickname")))
-        .set("security_enabled", Cell::bool(rec.bool("SecurityEnabled")))
-        .set("group_types", Cell::list(group_types))
-        .set("is_dynamic", Cell::bool(Some(is_dynamic)))
-        .set("membership_rule", Cell::text(membership_rule))
-        .set(
+    let all: Vec<(&str, Cell)> = vec![
+        ("group_id", Cell::text(group_id.clone())),
+        ("display_name", Cell::text(rec.text("DisplayName"))),
+        ("description", Cell::text(rec.text("Description"))),
+        ("mail", Cell::text(rec.text("Mail"))),
+        ("mail_enabled", Cell::bool(rec.bool("MailEnabled"))),
+        ("mail_nickname", Cell::text(rec.text("MailNickname"))),
+        ("security_enabled", Cell::bool(rec.bool("SecurityEnabled"))),
+        ("group_types", Cell::list(group_types)),
+        ("is_dynamic", Cell::bool(Some(is_dynamic))),
+        ("membership_rule", Cell::text(membership_rule)),
+        (
             "membership_rule_state",
             Cell::text(rec.text("MembershipRuleProcessingState")),
-        )
-        .set("created", Cell::time(rec.text("CreatedDateTime")))
-        .set("renewed", Cell::time(rec.text("RenewedDateTime")))
-        .set("expiration", Cell::time(rec.text("ExpirationDateTime")))
-        .set("visibility", Cell::text(rec.text("Visibility")))
-        .set(
+        ),
+        ("created", Cell::time(rec.text("CreatedDateTime"))),
+        ("renewed", Cell::time(rec.text("RenewedDateTime"))),
+        ("expiration", Cell::time(rec.text("ExpirationDateTime"))),
+        ("visibility", Cell::text(rec.text("Visibility"))),
+        (
             "on_prem_sync",
             Cell::bool(rec.bool("OnPremisesSyncEnabled")),
-        )
-        .set(
+        ),
+        (
             "is_assignable_to_role",
             Cell::bool(rec.bool("IsAssignableToRole")),
-        )
-        .set("classification", Cell::text(rec.text("Classification")))
-        .set(
+        ),
+        ("classification", Cell::text(rec.text("Classification"))),
+        (
             "proxy_addresses",
             Cell::list(joined_list(rec, "ProxyAddresses", ';')),
-        );
+        ),
+    ];
+    let mut c = CellRow::new(columns);
+    for (name, cell) in all {
+        if columns.contains(&name) {
+            c.set(name, cell);
+        }
+    }
     (group_id, c.into_cells())
 }
 
@@ -193,7 +224,7 @@ impl ArtifactParser for GroupsParser {
         let mut rows = TableRows::new(&GROUPS, GROUP_COLS);
         for r in &records {
             let rec = Rec::new(&r.map, format.lossy());
-            let (Some(group_id), cells) = group_cells(&rec) else {
+            let (Some(group_id), cells) = group_cells(&rec, GROUP_COLS) else {
                 reject(ctx, r, "group row has no GroupId")?;
                 continue;
             };
@@ -211,10 +242,10 @@ impl ArtifactParser for DynamicGroupsParser {
         let format = RecordFormat::of(ctx.rel_path);
         let records = read_state_records(ctx, format)?;
         require_any_key(&records, &["GroupId", "MembershipRule"], "dynamic group")?;
-        let mut rows = TableRows::new(&GROUPS, GROUP_COLS);
+        let mut rows = TableRows::new(&GROUPS, DYNAMIC_GROUP_COLS);
         for r in &records {
             let rec = Rec::new(&r.map, format.lossy());
-            let (Some(group_id), cells) = group_cells(&rec) else {
+            let (Some(group_id), cells) = group_cells(&rec, DYNAMIC_GROUP_COLS) else {
                 reject(ctx, r, "dynamic group row has no GroupId")?;
                 continue;
             };

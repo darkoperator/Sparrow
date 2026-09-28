@@ -55,3 +55,20 @@ fn applications_from_three_runs_and_the_triage_root() {
         check_green(&g);
     }
 }
+
+/// ServicePrincipals (earlier) supplies `enabled`/`owner_org_id`; AppRegistrations (later)
+/// supplies `object_id`/`created`. The later file must not clear the earlier one's columns.
+#[test]
+fn service_principals_and_app_registrations_keep_each_others_columns() {
+    let g = builtin("bec-aitm", PsEdition::Ps7);
+    assert_eq!(
+        count(
+            &g.case,
+            "SELECT count(*) FROM applications WHERE display_name = 'Helpdesk Portal'
+               AND association_type IS NULL AND enabled AND owner_org_id IS NOT NULL
+               AND object_id IS NOT NULL AND created IS NOT NULL"
+        ),
+        1
+    );
+    check_green(&g);
+}

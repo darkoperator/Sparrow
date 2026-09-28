@@ -234,5 +234,18 @@ fn a_group_role_member_carries_the_null_role_onto_later_rows() {
         ),
         1
     );
+    let warnings: String = g
+        .case
+        .conn()
+        .query_row(
+            "SELECT CAST(warnings AS VARCHAR) FROM source_files WHERE artifact_type = 'inv.roles.all'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        warnings.contains("lost their role name to the collector's Role carry-over"),
+        "{warnings}"
+    );
     check_green(&g);
 }

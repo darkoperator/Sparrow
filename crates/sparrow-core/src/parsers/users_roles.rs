@@ -171,6 +171,7 @@ impl ArtifactParser for AdminRolesParser {
         let records = read_state_records(ctx, format)?;
         require_any_key(&records, &["Role", "UserName"], "admin role")?;
         let mut rows = TableRows::new(&ROLE_ASSIGNMENTS, ADMIN_COLS);
+        let mut lost_role = 0usize;
         for r in &records {
             let rec = Rec::new(&r.map, format.lossy());
             if is_lookup_error(&rec) {
@@ -184,6 +185,7 @@ impl ArtifactParser for AdminRolesParser {
             // A null Role is the collector's carry-over after a failed group lookup
             // (Get-Roles.ps1:146-152): the row still loads, with role_name NULL.
             let role = rec.text("Role");
+            lost_role += usize::from(role.is_none());
             let upn = lower(rec.text("UserName"));
             let id = lower(rec.text("UserId"));
             let name = rec.text("DisplayName");
@@ -202,6 +204,11 @@ impl ArtifactParser for AdminRolesParser {
                 .set("assignment_type", Cell::text(Some("Permanent".into())))
                 .set("enabled", Cell::bool(rec.bool("AccountEnabled")));
             rows.push(r, key, c.into_cells());
+        }
+        if lost_role > 0 {
+            ctx.warn(format!(
+                "{lost_role} rows lost their role name to the collector's Role carry-over"
+            ));
         }
         load_tables(ctx, vec![rows])
     }
