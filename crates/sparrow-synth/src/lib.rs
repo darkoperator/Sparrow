@@ -5,6 +5,7 @@
 
 pub mod baseline;
 pub mod check;
+pub mod conformance;
 pub mod coverage;
 pub mod error;
 pub mod events;

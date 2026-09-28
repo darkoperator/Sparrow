@@ -183,10 +183,104 @@ enum SynthCommand {
         #[arg(long, default_value_t = 1)]
         seed: u64,
     },
-    /// Compare generated trees with real captures' structure (not implemented yet)
-    Conformance,
+    /// Compare generated trees with the recorded real layouts, or a real capture with generated ones
+    Conformance {
+        /// A generated tree to profile and compare with the recorded layouts
+        #[arg(long)]
+        tree: Option<PathBuf>,
+        /// A real capture to profile and compare with generated trees (aggregates only)
+        #[arg(long)]
+        real: Option<PathBuf>,
+        /// Collector: hawk, invictus or portal
+        #[arg(long)]
+        collector: Option<ConformanceCollector>,
+        /// Seed used for the generated trees in --real mode
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+    },
     /// List the built-in scenarios and the licence and audit profiles
     List,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum ConformanceCollector {
+    Hawk,
+    Invictus,
+    Portal,
+}
+
+fn cmd_synth_conformance(
+    tree: Option<PathBuf>,
+    real: Option<PathBuf>,
+    collector: Option<ConformanceCollector>,
+    seed: u64,
+    json: bool,
+) -> Result<ExitCode> {
+    let report = match (tree, real) {
+        (Some(dir), None) => {
+            let c = collector.context("--collector is required with --tree")?;
+            let profile = sparrow_synth::conformance::profile_dir(&dir)?;
+            sparrow_synth::conformance::conform_layouts(&profile, conformance_collector(c))
+        }
+        (None, Some(dir)) => {
+            let c = collector.context("--collector is required with --real")?;
+            let real = sparrow_synth::conformance::profile_dir(&dir)?;
+            let generated = generated_profiles(c, seed)?;
+            sparrow_synth::conformance::conform_real(&real, &generated)
+        }
+        _ => anyhow::bail!("pass exactly one of --tree DIR or --real DIR"),
+    };
+    if json {
+        print_json(&report)?;
+    } else {
+        print!("{}", report.to_text());
+    }
+    Ok(if report.ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(2)
+    })
+}
+
+fn conformance_collector(c: ConformanceCollector) -> Collector {
+    match c {
+        ConformanceCollector::Hawk => Collector::Hawk4,
+        ConformanceCollector::Invictus => Collector::Invictus,
+        ConformanceCollector::Portal => Collector::Portal,
+    }
+}
+
+/// Profile every built-in scenario (except `volume`) for `collector` with both editions and the
+/// three host cultures, so `--real` compares a real capture with the whole generated matrix.
+fn generated_profiles(
+    c: ConformanceCollector,
+    seed: u64,
+) -> Result<Vec<sparrow_synth::conformance::Profile>> {
+    let collectors: &[Collector] = match c {
+        ConformanceCollector::Hawk => &[Collector::Hawk3, Collector::Hawk4],
+        ConformanceCollector::Invictus => &[Collector::Invictus],
+        ConformanceCollector::Portal => &[Collector::Portal],
+    };
+    let mut out = Vec::new();
+    for name in sparrow_synth::scenario::builtin_names()
+        .iter()
+        .filter(|n| **n != "volume")
+    {
+        let scenario = sparrow_synth::scenario::load(name)?;
+        for collector in collectors {
+            for ps in [PsEdition::Ps7, PsEdition::Ps51] {
+                for culture in [Culture::EnUs, Culture::EnGb, Culture::DeDe] {
+                    let dir = tempfile::tempdir()?;
+                    let mut o = GenerateOptions::new(*collector, seed);
+                    o.ps = ps;
+                    o.culture = culture;
+                    sparrow_synth::generate::generate_to_dir(&scenario, &o, dir.path())?;
+                    out.push(sparrow_synth::conformance::profile_dir(dir.path())?);
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 #[derive(Subcommand)]
@@ -317,9 +411,12 @@ fn run(cli: Cli) -> Result<ExitCode> {
             None => cmd_synth_generate(generate, json),
             Some(SynthCommand::Check { manifest, case }) => cmd_synth_check(&manifest, &case, json),
             Some(SynthCommand::Coverage { seed }) => cmd_synth_coverage(seed, json),
-            Some(SynthCommand::Conformance) => {
-                anyhow::bail!("synth conformance is not implemented yet")
-            }
+            Some(SynthCommand::Conformance {
+                tree,
+                real,
+                collector,
+                seed,
+            }) => cmd_synth_conformance(tree, real, collector, seed, json),
             Some(SynthCommand::List) => cmd_synth_list(json),
         },
     }

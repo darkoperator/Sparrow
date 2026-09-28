@@ -1,0 +1,177 @@
+# Real collector layouts, structure only, from docs/superpowers/research/2026-09-24-hawk-capture-survey.md
+# and 2026-09-25-invictus-sample-survey.md (+ 2026-09-26-phase5-invictus-event-layouts.md §0.3
+# corrections). No values. `columns`: the CSV header as seen (any listed variant matches);
+# `json_keys`: keys every JSON record has; `encodings` per PowerShell edition; `dates`: the
+# date forms seen per column. Artifacts with no real sample are absent: they are source-derived
+# and the report lists them as "source-derived, not checked".
+#
+# CSV headers are compared after the reader's normalization (BOM stripped, whitespace runs
+# collapsed, duplicate names suffixed `_2`), so the portal quirks (`Application ID ` trailing
+# space, `Autonomous system  number` double space, a second `Incoming token type`) appear below
+# in normalized form.
+version: 1
+artifacts:
+  # ------------------------------------------------------------------ Invictus sample §4
+  - artifact: inv.ual.window
+    collector: invictus
+    source: invictus sample §4.1 (PS7)
+    formats: [csv]
+    encodings: {"7": [utf-8], "5.1": [utf-8-bom]}
+    columns:
+      - [RecordType, CreationDate, UserIds, Operations, AuditData, ResultIndex, ResultCount, AuditSearchRequestMetadata, Identity, IsValid, ObjectState]
+    dates: {CreationDate: [culture_mdy]}
+    embedded_json: {AuditData: [CreationTime, Id, Operation, OrganizationId, RecordType, UserId, Workload]}
+  - artifact: inv.ual.merged
+    collector: invictus
+    source: invictus sample §4.1
+    formats: [csv]
+    encodings: {"7": [utf-8], "5.1": [utf-8-bom]}
+    columns:
+      - [RecordType, CreationDate, UserIds, Operations, AuditData, ResultIndex, ResultCount, AuditSearchRequestMetadata, Identity, IsValid, ObjectState]
+    dates: {CreationDate: [culture_mdy]}
+  - artifact: inv.signins
+    collector: invictus
+    source: invictus sample §4.2 (Graph beta REST)
+    formats: [json]
+    encodings: {"7": [utf-8], "5.1": [utf-8-bom]}
+    json_keys: [id, createdDateTime, userPrincipalName, ipAddress, isInteractive, signInEventTypes, riskEventTypes_v2, sessionId]
+    dates: {createdDateTime: [iso_z]}
+  - artifact: inv.entra_audit
+    collector: invictus
+    source: invictus sample §4.3 (Graph directoryAudits)
+    formats: [json]
+    encodings: {"7": [utf-8], "5.1": [utf-8-bom]}
+    json_keys: [id, category, correlationId, result, resultReason, activityDisplayName, activityDateTime, loggedByService, operationType, initiatedBy, targetResources, additionalDetails]
+    dates: {activityDateTime: [iso_z]}
+  - artifact: inv.message_trace
+    collector: invictus
+    source: invictus sample §4.4
+    formats: [csv]
+    encodings: {"7": [utf-8], "5.1": [utf-8-bom]}
+    columns:
+      - [MessageTraceId, MessageId, Received, SenderAddress, RecipientAddress, FromIP, ToIP, Subject, Status, Size]
+    dates: {Received: [culture_mdy]}
+  - artifact: inv.mia.sessions
+    collector: invictus
+    source: invictus sample §4.5
+    formats: [csv]
+    encodings: {"7": [utf-8], "5.1": [utf-8-bom]}
+    columns:
+      - [TimeStamp, User, Action, SessionId, ClientIP, MailAccessType, IsThrottled, OperationCount]
+    # PS7 renders the AuditData CreationTime in the host culture, 5.1 keeps the ISO text.
+    dates: {TimeStamp: [culture_mdy, iso_nozone]}
+  - artifact: inv.mia.message_ids
+    collector: invictus
+    source: invictus sample §4.5
+    formats: [csv]
+    encodings: {"7": [utf-8], "5.1": [utf-8-bom]}
+    columns:
+      - [Timestamp, User, IPaddress, SessionID, MailAccessType, FolderPath, InternetMessageId, SizeInBytes]
+    dates: {Timestamp: [culture_mdy, iso_nozone]}
+  - artifact: inv.audit_status
+    collector: invictus
+    source: invictus sample §4.6
+    formats: [csv]
+    encodings: {"7": [utf-8], "5.1": [utf-8-bom]}
+    columns:
+      - [UserPrincipalName, DisplayName, RecipientTypeDetails, AuditEnabled, AuditBypassEnabled, DefaultAuditSet, OwnerAuditActions, OwnerAuditActionsCount, DelegateAuditActions, DelegateAuditActionsCount, AdminAuditActions, AdminAuditActionsCount, EffectiveAuditState]
+  - artifact: inv.mailbox_permissions
+    collector: invictus
+    source: invictus sample §4.7
+    formats: [csv]
+    encodings: {"7": [utf-8], "5.1": [utf-8-bom]}
+    columns:
+      - [UserPrincipalName, DisplayName, RecipientTypeDetails, FullAccessUsers, FullAccessPermissions, SendAsUsers, SendAsPermissions, SendOnBehalfUsers, CalendarUsers, CalendarPermissions, InboxUsers, InboxPermissions, FullAccessCount, SendAsCount, SendOnBehalfCount, CalendarPermissionCount, InboxPermissionCount]
+  - artifact: inv.licenses.security_defaults
+    collector: invictus
+    source: invictus sample §4.8
+    formats: [csv]
+    encodings: {"7": [utf-8], "5.1": [utf-8-bom]}
+    columns:
+      - [SecurityDefaultsEnabled, HasPremiumLicense, RecommendedState, AlignedWithRecommendations, CheckDate]
+    dates: {CheckDate: [local_log]}
+
+  # ------------------------------------------------------------------ Hawk survey §2b–§2e, §3
+  - artifact: hawk.tenant.raw_ual
+    collector: hawk
+    source: hawk survey §2c (Hawk 4 Raw Search-UnifiedAuditLog)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns:
+      - [RecordType, CreationDate, UserIds, Operations, AuditData, ResultIndex, ResultCount, Identity, IsValid, ObjectState]
+      - [RecordType, CreationDate, UserIds, Operations, AuditData, ResultIndex, ResultCount, AuditSearchRequestMetadata, Identity, IsValid, ObjectState]
+    dates: {CreationDate: [culture_mdy, iso_nozone, iso_z, msdate]}
+  - artifact: hawk.user.raw_auth
+    collector: hawk
+    source: hawk survey §2e
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns:
+      - [RecordType, CreationDate, UserIds, Operations, AuditData, ResultIndex, ResultCount, Identity, IsValid, ObjectState]
+      - [RecordType, CreationDate, UserIds, Operations, AuditData, ResultIndex, ResultCount, AuditSearchRequestMetadata, Identity, IsValid, ObjectState]
+    json_keys: [RecordType, CreationDate, UserIds, Operations, AuditData]
+    dates: {CreationDate: [culture_mdy, iso_nozone, iso_z, msdate]}
+  # `hawk.user.raw_ual` spans several real file shapes (ExchangeItem_Logs raw UAL,
+  # Exchange_UAL_Audit expanded, User_Changes admin-audit), so it is not listed here: the
+  # registry artifact id is not one file. Its raw-UAL shape is covered by hawk.user.raw_auth.
+  - artifact: hawk.user.converted_auth
+    collector: hawk
+    source: hawk survey §2e (expanded STS AuditData + geo)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [CreationTime, UserId, Workload, ClientIP, CountryName, KnownMicrosoftIP, Operation, OrganizationId, RecordType, ResultStatus, UserType, Version]
+    dates: {CreationTime: [short_g]}
+  - artifact: hawk.user.message_trace
+    collector: hawk
+    source: hawk survey §2e (Get-MessageTrace)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [Organization, MessageId, Received, SenderAddress, RecipientAddress, Subject, Status, ToIP, FromIP, Size, MessageTraceId, StartDate, EndDate, Index]
+    dates: {Received: [culture_mdy, iso_nozone, iso_z, msdate]}
+  - artifact: hawk.user.inbox_rules
+    collector: hawk
+    source: hawk survey §2e (Get-InboxRule, 74 cols in C / 92 in B)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [Description, Enabled, Identity, InError, ErrorType, Name, Priority, RuleIdentity, SupportedByTask, Legacy, BodyContainsWords, StopProcessingRules, MailboxOwnerId, IsValid, ObjectState]
+  - artifact: hawk.tenant.consent_grants
+    collector: hawk
+    source: hawk survey §2d
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [PermissionType, ClientObjectId, ClientDisplayName, ResourceObjectId, ResourceDisplayName, Permission, ConsentType, PrincipalObjectId, PrincipalDisplayName]
+  - artifact: hawk.tenant.entra_users
+    collector: hawk
+    source: hawk survey §2c (EntraIDUsers)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [UserPrincipalName, DisplayName, Id, AccountEnabled, CreatedDateTime]
+    dates: {CreatedDateTime: [culture_mdy, iso_z, msdate]}
+
+  # ------------------------------------------------------------------ Portal exports (hawk survey §3)
+  - artifact: portal.ual
+    collector: portal
+    source: hawk survey §3 (Purview / audit search export)
+    formats: [csv, xlsx]
+    encodings: {any: [utf-8, utf-8-bom]}
+    line_ends: crlf
+    columns:
+      - [RecordId, CreationDate, RecordType, Operation, UserId, AuditData, AssociatedAdminUnits, AssociatedAdminUnitsNames]
+    dates: {CreationDate: [culture_mdy, iso_z]}
+    embedded_json: {AuditData: [CreationTime, Id, Operation, OrganizationId, RecordType, UserId, Workload]}
+  - artifact: portal.entra_signins
+    collector: portal
+    source: hawk survey §3 (Entra interactive sign-in export)
+    formats: [csv, xlsx]
+    encodings: {any: [utf-8-bom]}
+    line_ends: lf
+    columns_required: ["Date (UTC)", "Request ID", "User agent", "Correlation ID", "User ID", "User", "Username", "IP address", "Location", "Status", "Application ID", "Resource ID", "Autonomous system number", "Incoming token type"]
+    dates: {"Date (UTC)": [iso_z]}
+  - artifact: portal.message_trace
+    collector: portal
+    source: hawk survey §3 (Exchange message trace summary)
+    formats: [csv]
+    encodings: {any: [utf-16le, utf-8]}
+    columns:
+      - [origin_timestamp_utc, sender_address, recipient_status, message_subject, total_bytes, message_id, network_message_id, original_client_ip, directionality, connector_id, delivery_priority]
+    dates: {origin_timestamp_utc: [iso_z]}
