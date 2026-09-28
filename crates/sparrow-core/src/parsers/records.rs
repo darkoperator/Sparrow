@@ -35,6 +35,19 @@ impl RecordFormat {
     pub fn lossy(self) -> bool {
         self != RecordFormat::Json
     }
+
+    /// A `.csv` file whose content is actually JSON: Microsoft-Extractor-Suite
+    /// `Get-Devices -Output JSON` writes `ConvertTo-Json` output into the `.csv` path. Detect
+    /// it by content (the first non-blank character is `[` or `{`), not by extension.
+    pub fn json_content(text: &str) -> bool {
+        matches!(
+            text.trim_start_matches('\u{feff}')
+                .trim_start()
+                .chars()
+                .next(),
+            Some('[' | '{')
+        )
+    }
 }
 
 #[derive(Debug, Clone)]

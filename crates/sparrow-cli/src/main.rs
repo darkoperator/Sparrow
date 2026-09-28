@@ -157,6 +157,9 @@ struct SynthGenArgs {
     /// Microsoft-Extractor-Suite: do not write TenantLicenses.csv / UserLicenses.csv
     #[arg(long)]
     no_licence_list: bool,
+    /// Microsoft-Extractor-Suite Get-Devices: write JSON into the .csv path
+    #[arg(long)]
+    devices_json: bool,
     /// Total benign UAL rows (scale testing)
     #[arg(long)]
     ual_rows: Option<u64>,
@@ -922,6 +925,7 @@ fn cmd_synth_generate(args: SynthGenArgs, json: bool) -> Result<ExitCode> {
     opts.hawk_mixed_editions = args.hawk_mixed_editions;
     opts.non_windows = args.non_windows;
     opts.invictus_licence_list = !args.no_licence_list;
+    opts.invictus_devices_json = args.devices_json;
     if args.ual_rows.is_some() || args.signins.is_some() {
         anyhow::bail!("--ual-rows / --signins are not supported until the scale knobs land");
     }

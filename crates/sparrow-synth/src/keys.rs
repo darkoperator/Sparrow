@@ -168,6 +168,21 @@ pub fn application_association(app_id: &str, association: &str, user: &str) -> S
     format!("{}|{}|{}", lower(app_id), lower(association), lower(user))
 }
 
+/// `devices`: "Lower-case DeviceId."
+pub fn device(device_id: &str) -> String {
+    lower(device_id)
+}
+
+/// `groups`: "Lower-case GroupId."
+pub fn group(group_id: &str) -> String {
+    lower(group_id)
+}
+
+/// `group_members`: "<lower group id>|<lower member id>."
+pub fn group_member(group_id: Uuid, member_id: Uuid) -> String {
+    format!("{group_id}|{member_id}")
+}
+
 /// ObjectModified as Hawk's `Simple_*` admin-audit summary writes it: the part after the last
 /// `/`, then after the last `\`.
 pub fn short_object(object: &str) -> &str {

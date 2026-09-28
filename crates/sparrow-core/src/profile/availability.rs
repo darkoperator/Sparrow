@@ -507,6 +507,34 @@ pub static EVIDENCE: &[EvidenceDef] = &[
         )
     },
     EvidenceDef {
+        id: "devices",
+        title: "Entra devices",
+        kind: Kind::State,
+        artifacts: &["inv.devices"],
+        invictus_runs: &[("Device Information", None)],
+        invictus: Some("Get-Devices"),
+        ..source!(
+            "devices x",
+            "CAST(NULL AS TIMESTAMPTZ)",
+            "CAST(NULL AS BIGINT)",
+            "'devices'", "x.record_key"
+        )
+    },
+    EvidenceDef {
+        id: "groups",
+        title: "Entra groups and members",
+        kind: Kind::State,
+        artifacts: &["inv.groups", "inv.group_members", "inv.dynamic_groups"],
+        invictus_runs: &[("Groups", None)],
+        invictus: Some("Get-Groups; Get-GroupMembers; Get-DynamicGroups"),
+        ..source!(
+            "groups x",
+            "CAST(NULL AS TIMESTAMPTZ)",
+            "CAST(NULL AS BIGINT)",
+            "'groups'", "x.record_key"
+        )
+    },
+    EvidenceDef {
         id: "transport_rules",
         title: "Exchange transport rules",
         kind: Kind::State,

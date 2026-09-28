@@ -81,6 +81,10 @@ pub struct GenerateOptions {
     /// Microsoft-Extractor-Suite: write TenantLicenses.csv / UserLicenses.csv (Get-Licenses,
     /// Get-LicensesByUser); false reproduces the invictus sample (security defaults only).
     pub invictus_licence_list: bool,
+    /// Microsoft-Extractor-Suite Get-Devices `-Output JSON`: the JSON goes into the `.csv`
+    /// path (a bare object for one device, an array otherwise).
+    #[serde(default)]
+    pub invictus_devices_json: bool,
     /// Scale overrides (Task 25): total benign UAL rows / sign-ins, replacing the scenario's.
     pub ual_rows: Option<u64>,
     pub signins: Option<u64>,
@@ -98,6 +102,7 @@ impl GenerateOptions {
             hawk_mixed_editions: false,
             non_windows: false,
             invictus_licence_list: true,
+            invictus_devices_json: false,
             ual_rows: None,
             signins: None,
         }

@@ -2,6 +2,7 @@
 
 pub mod admin_audit;
 pub mod apps;
+pub mod devices_groups;
 pub mod directory;
 pub mod directory_audits;
 pub mod exchange;
@@ -47,5 +48,6 @@ pub fn register_builtin(registry: &mut ParserRegistry) {
     licenses::register(registry);
     mfa_ca::register(registry);
     oauth_apps::register(registry);
+    devices_groups::register(registry);
     users_roles::register(registry);
 }

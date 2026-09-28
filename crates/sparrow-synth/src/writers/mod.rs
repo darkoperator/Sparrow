@@ -99,8 +99,12 @@ pub const SPARROW_PARSED: &[&str] = &[
     "inv.app_registrations",
     "inv.audit_status",
     "inv.ca",
+    "inv.devices",
+    "inv.dynamic_groups",
     "inv.entra_audit",
     "inv.entra_audit.merged",
+    "inv.group_members",
+    "inv.groups",
     "inv.licenses.security_defaults",
     "inv.licenses.tenant",
     "inv.licenses.user",
@@ -154,5 +158,9 @@ mod tests {
         assert!(parsed_by_sparrow("inv.service_principals"));
         assert!(parsed_by_sparrow("inv.app_registrations"));
         assert!(parsed_by_sparrow("inv.user_applications"));
+        assert!(parsed_by_sparrow("inv.devices"));
+        assert!(parsed_by_sparrow("inv.groups"));
+        assert!(parsed_by_sparrow("inv.group_members"));
+        assert!(parsed_by_sparrow("inv.dynamic_groups"));
     }
 }

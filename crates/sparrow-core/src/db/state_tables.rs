@@ -630,6 +630,73 @@ pub static APPLICATIONS: TableSpec = TableSpec {
     ],
 };
 
+pub static DEVICES: TableSpec = TableSpec {
+    table: "devices",
+    mode: LoadMode::LatestWins,
+    columns: &[
+        col("device_id", V),
+        col("object_id", V),
+        col("display_name", V),
+        col("os", V),
+        col("os_version", V),
+        col("trust_type", V),
+        col("is_compliant", B),
+        col("is_managed", B),
+        col("is_rooted", B),
+        col("enabled", B),
+        col("ownership", V),
+        col("enrollment_type", V),
+        col("management_type", V),
+        col("manufacturer", V),
+        col("model", V),
+        col("profile_type", V),
+        col("on_prem_sync", B),
+        col("created", T),
+        col("last_signin", T),
+        col("owners", L),
+        col("users", L),
+    ],
+};
+
+pub static GROUPS: TableSpec = TableSpec {
+    table: "groups",
+    mode: LoadMode::LatestWins,
+    columns: &[
+        col("group_id", V),
+        col("display_name", V),
+        col("description", V),
+        col("mail", V),
+        col("mail_enabled", B),
+        col("mail_nickname", V),
+        col("security_enabled", B),
+        col("group_types", L),
+        col("is_dynamic", B),
+        col("membership_rule", V),
+        col("membership_rule_state", V),
+        col("created", T),
+        col("renewed", T),
+        col("expiration", T),
+        col("visibility", V),
+        col("on_prem_sync", B),
+        col("is_assignable_to_role", B),
+        col("classification", V),
+        col("proxy_addresses", L),
+    ],
+};
+
+pub static GROUP_MEMBERS: TableSpec = TableSpec {
+    table: "group_members",
+    mode: LoadMode::LatestWins,
+    columns: &[
+        col("group_id", V),
+        col("group_name", V),
+        col("member_id", V),
+        col("member_display_name", V),
+        col("member_mail", V),
+        col("member_upn", V),
+    ],
+};
+
 pub static ALL: &[&TableSpec] = &[
     &USERS,
     &ROLE_ASSIGNMENTS,
@@ -656,4 +723,7 @@ pub static ALL: &[&TableSpec] = &[
     &MFA_REGISTRATION,
     &CA_POLICIES,
     &APPLICATIONS,
+    &DEVICES,
+    &GROUPS,
+    &GROUP_MEMBERS,
 ];

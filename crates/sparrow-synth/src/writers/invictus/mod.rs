@@ -12,6 +12,7 @@
 //! Users, Admins, Roles (AllRoles then PIM).
 
 mod apps;
+mod devices_groups;
 mod directory;
 mod entra;
 mod exchange;
@@ -192,6 +193,7 @@ pub fn write(world: &World, opts: &GenerateOptions, tree: &mut Tree<'_>) -> Resu
     directory::write(&mut c, tree)?;
     mfa_ca::write(&mut c, tree)?;
     apps::write(&mut c, tree)?;
+    devices_groups::write(&mut c, tree)?;
     let log = std::mem::take(&mut c.log);
     log.write(&c, tree)
 }

@@ -715,6 +715,9 @@ pub struct Group {
     pub created: DateTime<Utc>,
     pub visibility: Option<String>,
     pub members: Vec<String>,
+    /// A role-assignable group (SecurityEnabled and `isAssignableToRole`); the AllRoles
+    /// group-member follow-up needs one.
+    pub is_assignable_to_role: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1795,6 +1798,7 @@ fn build_groups(seed: u64, tenant: &Tenant, users: &[User]) -> Vec<Group> {
         created,
         visibility: Some("Private".to_string()),
         members: users.iter().map(|u| u.upn.clone()).collect(),
+        is_assignable_to_role: false,
     };
 
     let finance_count = users.len().min(3);
@@ -1812,6 +1816,7 @@ fn build_groups(seed: u64, tenant: &Tenant, users: &[User]) -> Vec<Group> {
             .iter()
             .map(|u| u.upn.clone())
             .collect(),
+        is_assignable_to_role: true,
     };
 
     let dynamic_sales = Group {
@@ -1829,6 +1834,7 @@ fn build_groups(seed: u64, tenant: &Tenant, users: &[User]) -> Vec<Group> {
             .filter(|u| u.department == "Sales")
             .map(|u| u.upn.clone())
             .collect(),
+        is_assignable_to_role: false,
     };
 
     vec![all_staff, finance, dynamic_sales]

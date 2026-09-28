@@ -152,3 +152,95 @@ COMMENT ON COLUMN applications.associated_user IS 'UserApplications AssociatedUs
 COMMENT ON COLUMN applications.raw IS 'Source record as loaded; records from several files are merged (json_merge_patch).';
 COMMENT ON COLUMN applications.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
 COMMENT ON COLUMN applications.tz_assumed IS 'Object {column: true} naming each time column whose value came without a time zone and was stored as if UTC (for example Hawk WhenChanged or AutoReply StartTime, written in the collecting host''s local time). Per column like column_collections: the load that writes a column sets or clears its entry. NULL for rows loaded before schema 7 or loads without a time column.';
+
+-- Task 17: devices and groups.
+CREATE TABLE devices (
+    record_key VARCHAR NOT NULL, collection_id BIGINT NOT NULL, collected_at TIMESTAMPTZ,
+    device_id VARCHAR, object_id VARCHAR, display_name VARCHAR, os VARCHAR, os_version VARCHAR,
+    trust_type VARCHAR, is_compliant BOOLEAN, is_managed BOOLEAN, is_rooted BOOLEAN,
+    enabled BOOLEAN, ownership VARCHAR, enrollment_type VARCHAR, management_type VARCHAR,
+    manufacturer VARCHAR, model VARCHAR, profile_type VARCHAR, on_prem_sync BOOLEAN,
+    created TIMESTAMPTZ, last_signin TIMESTAMPTZ, owners VARCHAR[], users VARCHAR[],
+    raw JSON, column_collections JSON, tz_assumed JSON
+);
+CREATE TABLE groups (
+    record_key VARCHAR NOT NULL, collection_id BIGINT NOT NULL, collected_at TIMESTAMPTZ,
+    group_id VARCHAR, display_name VARCHAR, description VARCHAR, mail VARCHAR,
+    mail_enabled BOOLEAN, mail_nickname VARCHAR, security_enabled BOOLEAN, group_types VARCHAR[],
+    is_dynamic BOOLEAN, membership_rule VARCHAR, membership_rule_state VARCHAR,
+    created TIMESTAMPTZ, renewed TIMESTAMPTZ, expiration TIMESTAMPTZ, visibility VARCHAR,
+    on_prem_sync BOOLEAN, is_assignable_to_role BOOLEAN, classification VARCHAR,
+    proxy_addresses VARCHAR[], raw JSON, column_collections JSON, tz_assumed JSON
+);
+CREATE TABLE group_members (
+    record_key VARCHAR NOT NULL, collection_id BIGINT NOT NULL, collected_at TIMESTAMPTZ,
+    group_id VARCHAR, group_name VARCHAR, member_id VARCHAR, member_display_name VARCHAR,
+    member_mail VARCHAR, member_upn VARCHAR, raw JSON, column_collections JSON, tz_assumed JSON
+);
+COMMENT ON TABLE devices IS 'Entra devices at collection time (Microsoft-Extractor-Suite Get-Devices Devices.csv, or the same objects as JSON in the .csv path).';
+COMMENT ON COLUMN devices.record_key IS 'Lower-case DeviceId.';
+COMMENT ON COLUMN devices.collection_id IS 'Newest collection that wrote or re-confirmed any of this row''s columns (per-column writers: column_collections).';
+COMMENT ON COLUMN devices.collected_at IS 'collected_at of that collection (NULL when unknown).';
+COMMENT ON COLUMN devices.device_id IS 'DeviceId (the device''s Entra device id).';
+COMMENT ON COLUMN devices.object_id IS 'ObjectId (the directory object id), lower-case.';
+COMMENT ON COLUMN devices.display_name IS 'DisplayName.';
+COMMENT ON COLUMN devices.os IS 'OperatingSystem.';
+COMMENT ON COLUMN devices.os_version IS 'OperatingSystemVersion.';
+COMMENT ON COLUMN devices.trust_type IS 'TrustType (AzureAd, Workplace, ServerAd).';
+COMMENT ON COLUMN devices.is_compliant IS 'IsCompliant (NULL when the collector wrote nothing).';
+COMMENT ON COLUMN devices.is_managed IS 'IsManaged.';
+COMMENT ON COLUMN devices.is_rooted IS 'IsRooted.';
+COMMENT ON COLUMN devices.enabled IS 'AccountEnabled.';
+COMMENT ON COLUMN devices.ownership IS 'DeviceOwnership.';
+COMMENT ON COLUMN devices.enrollment_type IS 'EnrollmentType.';
+COMMENT ON COLUMN devices.management_type IS 'ManagementType.';
+COMMENT ON COLUMN devices.manufacturer IS 'Manufacturer.';
+COMMENT ON COLUMN devices.model IS 'Model.';
+COMMENT ON COLUMN devices.profile_type IS 'ProfileType.';
+COMMENT ON COLUMN devices.on_prem_sync IS 'OnPremisesSyncEnabled.';
+COMMENT ON COLUMN devices.created IS 'Registration time when the collector exported it; Microsoft-Extractor-Suite 4.1.0 reads a property v1.0 does not return, so it is usually NULL.';
+COMMENT ON COLUMN devices.last_signin IS 'ApproximateLastSignInDateTime as the collector formats it (yyyy-MM-dd HH:mm:ss, UTC by inference; see tz_assumed).';
+COMMENT ON COLUMN devices.owners IS 'RegisteredOwners (empty without -UserIds).';
+COMMENT ON COLUMN devices.users IS 'RegisteredUsers (empty without -UserIds).';
+COMMENT ON COLUMN devices.raw IS 'Source record as loaded.';
+COMMENT ON COLUMN devices.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
+COMMENT ON COLUMN devices.tz_assumed IS 'Object {column: true} naming each time column whose value came without a time zone and was stored as if UTC (for example Hawk WhenChanged or AutoReply StartTime, written in the collecting host''s local time). Per column like column_collections: the load that writes a column sets or clears its entry. NULL for rows loaded before schema 7 or loads without a time column.';
+COMMENT ON TABLE groups IS 'Entra groups at collection time (Microsoft-Extractor-Suite Get-Groups Groups.csv and Get-DynamicGroups DynamicGroups.csv; the dynamic file fills the same rows).';
+COMMENT ON COLUMN groups.record_key IS 'Lower-case GroupId.';
+COMMENT ON COLUMN groups.collection_id IS 'Newest collection that wrote or re-confirmed any of this row''s columns (per-column writers: column_collections).';
+COMMENT ON COLUMN groups.collected_at IS 'collected_at of that collection (NULL when unknown).';
+COMMENT ON COLUMN groups.group_id IS 'GroupId (the group object id), lower-case.';
+COMMENT ON COLUMN groups.display_name IS 'DisplayName.';
+COMMENT ON COLUMN groups.description IS 'Description.';
+COMMENT ON COLUMN groups.mail IS 'Mail address of a mail-enabled group.';
+COMMENT ON COLUMN groups.mail_enabled IS 'MailEnabled.';
+COMMENT ON COLUMN groups.mail_nickname IS 'MailNickname.';
+COMMENT ON COLUMN groups.security_enabled IS 'SecurityEnabled.';
+COMMENT ON COLUMN groups.group_types IS 'GroupTypes, joined with "," (no space).';
+COMMENT ON COLUMN groups.is_dynamic IS 'GroupTypes contains DynamicMembership or a membership rule is set.';
+COMMENT ON COLUMN groups.membership_rule IS 'MembershipRule.';
+COMMENT ON COLUMN groups.membership_rule_state IS 'MembershipRuleProcessingState (On, Paused).';
+COMMENT ON COLUMN groups.created IS 'CreatedDateTime.';
+COMMENT ON COLUMN groups.renewed IS 'RenewedDateTime.';
+COMMENT ON COLUMN groups.expiration IS 'ExpirationDateTime.';
+COMMENT ON COLUMN groups.visibility IS 'Visibility (Public, Private, HiddenMembership).';
+COMMENT ON COLUMN groups.on_prem_sync IS 'OnPremisesSyncEnabled.';
+COMMENT ON COLUMN groups.is_assignable_to_role IS 'IsAssignableToRole.';
+COMMENT ON COLUMN groups.classification IS 'Classification.';
+COMMENT ON COLUMN groups.proxy_addresses IS 'ProxyAddresses, joined with ";" (no space).';
+COMMENT ON COLUMN groups.raw IS 'Source record as loaded; records from several files are merged (json_merge_patch).';
+COMMENT ON COLUMN groups.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
+COMMENT ON COLUMN groups.tz_assumed IS 'Object {column: true} naming each time column whose value came without a time zone and was stored as if UTC (for example Hawk WhenChanged or AutoReply StartTime, written in the collecting host''s local time). Per column like column_collections: the load that writes a column sets or clears its entry. NULL for rows loaded before schema 7 or loads without a time column.';
+COMMENT ON TABLE group_members IS 'Direct members of Entra groups (Microsoft-Extractor-Suite Get-GroupMembers GroupMembers.csv).';
+COMMENT ON COLUMN group_members.record_key IS '<lower group id>|<lower member id>.';
+COMMENT ON COLUMN group_members.collection_id IS 'Newest collection that wrote or re-confirmed any of this row''s columns (per-column writers: column_collections).';
+COMMENT ON COLUMN group_members.collected_at IS 'collected_at of that collection (NULL when unknown).';
+COMMENT ON COLUMN group_members.group_id IS 'GroupId (the group object id), lower-case.';
+COMMENT ON COLUMN group_members.group_name IS 'GroupName.';
+COMMENT ON COLUMN group_members.member_id IS 'MemberId (the member object id), lower-case.';
+COMMENT ON COLUMN group_members.member_display_name IS 'DisplayName of the member (NULL for member types without one).';
+COMMENT ON COLUMN group_members.member_mail IS 'Email of the member (NULL for member types without one).';
+COMMENT ON COLUMN group_members.member_upn IS 'UserPrincipalName of a user member, lower-case (NULL otherwise).';
+COMMENT ON COLUMN group_members.raw IS 'Source record as loaded.';
+COMMENT ON COLUMN group_members.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
+COMMENT ON COLUMN group_members.tz_assumed IS 'Object {column: true} naming each time column whose value came without a time zone and was stored as if UTC (for example Hawk WhenChanged or AutoReply StartTime, written in the collecting host''s local time). Per column like column_collections: the load that writes a column sets or clears its entry. NULL for rows loaded before schema 7 or loads without a time column.';
