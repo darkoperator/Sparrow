@@ -2,8 +2,9 @@
 # and 2026-09-25-invictus-sample-survey.md (+ 2026-09-26-phase5-invictus-event-layouts.md §0.3
 # corrections). No values. `columns`: the CSV header as seen (any listed variant matches);
 # `json_keys`: keys every JSON record has; `encodings` per PowerShell edition; `dates`: the
-# date forms seen per column. Artifacts with no real sample are absent: they are source-derived
-# and the report lists them as "source-derived, not checked".
+# date forms seen per column (`inferred: true` marks a form inferred, not observed); `file_pattern`
+# distinguishes shapes that share one registry artifact id. Artifacts with no real sample are
+# absent: they are source-derived and the report lists them as "source-derived, not checked".
 #
 # CSV headers are compared after the reader's normalization (BOM stripped, whitespace runs
 # collapsed, duplicate names suffixed `_2`), so the portal quirks (`Application ID ` trailing
@@ -58,8 +59,11 @@ artifacts:
     encodings: {"7": [utf-8], "5.1": [utf-8-bom]}
     columns:
       - [TimeStamp, User, Action, SessionId, ClientIP, MailAccessType, IsThrottled, OperationCount]
-    # PS7 renders the AuditData CreationTime in the host culture, 5.1 keeps the ISO text.
+    # PS7 renders the AuditData CreationTime in the host culture, 5.1 keeps the ISO text. The
+    # survey's only sample is PS7, so the `iso_nozone` form is an inference (event-layouts §0.3),
+    # not an observation.
     dates: {TimeStamp: [culture_mdy, iso_nozone]}
+    inferred: true
   - artifact: inv.mia.message_ids
     collector: invictus
     source: invictus sample §4.5
@@ -67,7 +71,9 @@ artifacts:
     encodings: {"7": [utf-8], "5.1": [utf-8-bom]}
     columns:
       - [Timestamp, User, IPaddress, SessionID, MailAccessType, FolderPath, InternetMessageId, SizeInBytes]
+    # The survey's only sample is PS7; `iso_nozone` for PS 5.1 is an inference (event-layouts §0.3).
     dates: {Timestamp: [culture_mdy, iso_nozone]}
+    inferred: true
   - artifact: inv.audit_status
     collector: invictus
     source: invictus sample §4.6
@@ -175,3 +181,269 @@ artifacts:
     columns:
       - [origin_timestamp_utc, sender_address, recipient_status, message_subject, total_bytes, message_id, network_message_id, original_client_ip, directionality, connector_id, delivery_priority]
     dates: {origin_timestamp_utc: [iso_z]}
+
+  # ------------------------------------------------------------------ Hawk survey §2b–§2e (continued)
+  # Every artifact above extra shapes that share a registry id are separate entries selected by
+  # `file_pattern`; the check accepts a header that any entry for the artifact accepts.
+  - artifact: hawk.tenant.admin_audit
+    collector: hawk
+    source: hawk survey §2b (Hawk 3 New/Set/Remove_InboxRules, RBAC_Changes; 17-col Search-AdminAuditLog)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [ObjectModified, CmdletName, CmdletParameters, ModifiedProperties, Caller, ExternalAccess, Succeeded, Error, RunDate, OriginatingServer, ClientIP, SessionId, AppId, ClientAppId, Identity, IsValid, ObjectState]
+    dates: {RunDate: [culture_mdy, iso_z, iso_offset, iso_nozone, local_log, msdate]}
+  - artifact: hawk.tenant.azuread_users
+    collector: hawk
+    source: hawk survey §2b (Hawk 3 AzureADUsers)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [UserPrincipalname, ObjectID, UserType, DateCreated, UserStateChangedOn, DirSyncEnabled]
+    dates: {DateCreated: [culture_mdy], UserStateChangedOn: [iso_z]}
+  - artifact: hawk.tenant.azuread_admins
+    collector: hawk
+    source: hawk survey §2b (Hawk 3 AzureADAdministrators)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [AdminGroupName, Members]
+  - artifact: hawk.tenant.ediscovery_role_assignments
+    collector: hawk
+    source: hawk survey §2b (Hawk 3 EDiscoveryRoleAssignments / Impersonation_Rights, 37-col role assignment)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [DataObject, User, App, AssignmentMethod, Identity, EffectiveUserName, AssignmentChain, RoleAssigneeType, RoleAssignee, Role, RoleAssignmentDelegationType, RecipientReadScope, ConfigReadScope, RecipientWriteScope, ConfigWriteScope, Enabled, RoleAssigneeName, Id, IsValid, WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC, ObjectState]
+  - artifact: hawk.tenant.impersonation
+    collector: hawk
+    source: hawk survey §2b (Hawk 3 Impersonation_Rights/Roles)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [Identity, Role, RoleAssignee, AssignmentMethod, Enabled, Name, Id, IsValid, WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC, ObjectState]
+  - artifact: hawk.tenant.impersonation
+    collector: hawk
+    source: hawk survey §2b (Impersonation_Roles, 22-col role entry)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    file_pattern: "Impersonation_Roles"
+    columns_required: [Name, Role, Type, Parameters, PSSnapinName, Identity, Id, IsValid, WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC, ObjectState]
+  - artifact: hawk.tenant.forwarding_recipients
+    collector: hawk
+    source: hawk survey §2b (Hawk 3 Forwarding_Recipients)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [UserModified, TargetSMTPAddress]
+  - artifact: hawk.tenant.entra_app_audit
+    collector: hawk
+    source: hawk survey §2b/§2c (Azure_/Entra_ID_Application_Audit)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [Id, Operation, ResultStatus, Workload, ClientIP, UserID, ActorUPN, targetName, env_time, correlationId]
+  - artifact: hawk.tenant.simple_ual
+    collector: hawk
+    source: hawk survey §2b (Hawk 3 Simple_* admin-audit flattening)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    file_pattern: "Simple_(New_InboxRule|Set_InboxRule|Remove_InboxRule|Mailbox_Permissions|Forwarding_Changes|RBAC_Changes)"
+    columns_required: [Caller, Cmdlet, FullCommand, ObjectModified]
+    dates: {"RunDate(UTC)": [iso_z, culture_mdy, msdate]}
+  - artifact: hawk.tenant.simple_ual
+    collector: hawk
+    source: hawk survey §2c (flattened AuditData)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    file_pattern: "Simple_eDiscoveryLogs"
+    columns_required: [CreationTime, Workload, RecordType, Operation, ResultStatus, ClientIP, UserId, Id, OrganizationId, UserType, UserKey, ObjectId, CreationDate]
+  - artifact: hawk.tenant.raw_ual
+    collector: hawk
+    source: hawk survey §2b (Hawk 3 eDiscoveryLogs.csv, 8 cols)
+    formats: [csv]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    file_pattern: "eDiscoveryLogs"
+    columns_required: [CreationTime, Id, Operation, Workload, UserId, Case, CaseID, Cmdlet]
+    dates: {CreationTime: [iso_nozone, culture_mdy]}
+  - artifact: hawk.tenant.raw_ual
+    collector: hawk
+    source: hawk survey §2b (Hawk 3 admin-audit raw UAL shape)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    file_pattern: "(Admin_Inbox_Rules|Mailbox_Permission_Change|Forwarding_Changes|RBAC_Changes|Domain_Changes_Audit)"
+    columns_required: [RecordType, CreationDate, UserIds, Operations, AuditData, ResultIndex, ResultCount, Identity, IsValid, ObjectState]
+  - artifact: hawk.tenant.entra_admins
+    collector: hawk
+    source: hawk survey §2c (EntraIDAdministrators)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [AdminGroupName, Members, MemberType, ObjectId]
+  - artifact: hawk.tenant.entra_audit
+    collector: hawk
+    source: hawk survey §2c (EntraIDAuditLogs)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [ActivityDateTime, ActivityDisplayName, AdditionalDetails, Category, CorrelationId, Id, InitiatedBy, LoggedByService, OperationType, Result, ResultReason, TargetResources, AdditionalProperties]
+    dates: {ActivityDateTime: [culture_mdy, iso_z, msdate]}
+  - artifact: hawk.tenant.risky_users
+    collector: hawk
+    source: hawk survey §2c (RiskyUsers)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [History, Id, IsDeleted, IsProcessing, RiskDetail, RiskLastUpdatedDateTime, RiskLevel, RiskState, UserDisplayName, UserPrincipalName, AdditionalProperties]
+    dates: {RiskLastUpdatedDateTime: [culture_mdy, iso_z, msdate]}
+  - artifact: hawk.tenant.risk_detections
+    collector: hawk
+    source: hawk survey §2c (Risk_Detections)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [Activity, ActivityDateTime, CorrelationId, DetectedDateTime, DetectionTimingType, IPAddress, Id, LastUpdatedDateTime, Location, RequestId, RiskDetail, RiskEventType, RiskLevel, RiskState, Source, TokenIssuerType, UserDisplayName, UserId, UserPrincipalName, AdditionalProperties]
+    dates: {ActivityDateTime: [culture_mdy, iso_z, msdate], DetectedDateTime: [culture_mdy, iso_z, msdate], LastUpdatedDateTime: [culture_mdy, iso_z, msdate]}
+  - artifact: hawk.tenant.app_credentials
+    collector: hawk
+    source: hawk survey §2d (Application/SPNCertsAndSecrets)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [AppName, AppObjectID, KeyID, StartDate, EndDate, KeyType, CredType]
+    dates: {StartDate: [culture_mdy, iso_z, msdate], EndDate: [culture_mdy, iso_z, msdate]}
+  - artifact: hawk.tenant.exo_admins
+    collector: hawk
+    source: hawk survey §2d (ExchangeOnlineAdministrators)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [ExchangeAdminGroup, Members, RecipientType]
+  - artifact: hawk.tenant.remote_domain
+    collector: hawk
+    source: hawk survey §2d (Get-RemoteDomain, version-dependent column count)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [DomainName, IsInternal, Name, Identity, WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC, ObjectState]
+  - artifact: hawk.tenant.transport_config
+    collector: hawk
+    source: hawk survey §2d (Get-TransportConfig, version-dependent column count)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [Name, Identity, WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC, ObjectState]
+  - artifact: hawk.tenant.transport_rules
+    collector: hawk
+    source: hawk survey §2d (Get-TransportRule, version-dependent column count)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [Priority, DlpPolicy, Description, RuleVersion, Conditions, Exceptions, Actions, State, Mode, Name, Identity, WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC, ObjectState]
+  - artifact: hawk.tenant.user_forwarding_report
+    collector: hawk
+    source: hawk survey §2d (User_ForwardingReport)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [DisplayName, UserPrincipalName, PrimarySmtpAddress, ForwardingSmtpAddress, ForwardingAddress, DeliverToMailboxAndForward, WhenChangedUTC]
+    dates: {WhenChangedUTC: [culture_mdy, iso_z, msdate]}
+  - artifact: hawk.tenant.all_inbox_rules
+    collector: hawk
+    source: hawk survey §2b (Hawk 3 Tenant/All_InboxRules, Get-InboxRule)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [Description, Enabled, Identity, InError, ErrorType, Name, Priority, RuleIdentity, SupportedByTask, Legacy, StopProcessingRules, MailboxOwnerId, IsValid, ObjectState]
+  - artifact: hawk.tenant.all_sweep_rules
+    collector: hawk
+    source: hawk survey §2d (Get-SweepRule)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [Name, RuleId, Enabled, SourceFolder, DestinationFolder, Sender, KeepLatest, KeepForDays, SystemCategory, MailboxOwnerId, Identity, IsValid, ObjectState]
+  - artifact: hawk.user.forwarding
+    collector: hawk
+    source: hawk survey §2e (ForwardingReport_<u>)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [DisplayName, UserPrincipalName, PrimarySmtpAddress, ForwardingSmtpAddress, ForwardingAddress, DeliverToMailboxAndForward, WhenChangedUTC]
+    dates: {WhenChangedUTC: [culture_mdy, iso_z, msdate]}
+  - artifact: hawk.user.mailbox_audit_legacy
+    collector: hawk
+    source: hawk survey §2e (Search-MailboxAuditLog, 55 cols)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [Operation, OperationResult, LogonType, ExternalAccess, FolderPathName, FolderName, ClientInfoString, ClientIPAddress, ClientIP, ClientMachineName, ClientProcessName, ClientVersion, InternalLogonType, MailboxOwnerUPN, MailboxOwnerSid, CrossMailboxOperation, LogonUserDisplayName, LogonUserSid, SourceItems, SourceFolders, ItemId, ItemSubject, ItemAttachments, ItemInternetMessageId, DirtyProperties, OriginatingServer, SessionId, OperationProperties, AppId, ClientAppId, MailboxGuid, MailboxResolvedOwnerName, LastAccessed, Identity, IsValid, ObjectState]
+    dates: {LastAccessed: [culture_mdy, msdate, iso_offset]}
+  - artifact: hawk.user.mobile_devices
+    collector: hawk
+    source: hawk survey §2e (Get-MobileDevice, 39 cols)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [FriendlyName, DeviceId, DeviceImei, DeviceOS, DeviceType, FirstSyncTime, UserDisplayName, DeviceAccessState, ClientType, WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC, Name, Identity, IsValid, ObjectState]
+    dates: {FirstSyncTime: [culture_mdy, iso_z, msdate], WhenChangedUTC: [culture_mdy, iso_z, msdate], WhenCreatedUTC: [culture_mdy, iso_z, msdate]}
+  - artifact: hawk.user.entra_signin
+    collector: hawk
+    source: hawk survey §2e (Entra_Sign_In_Log, Graph sign-in)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [AppDisplayName, AppId, ClientAppUsed, ConditionalAccessStatus, CorrelationId, CreatedDateTime, IPAddress, Id, IsInteractive, Location, ResourceDisplayName, ResourceId, RiskLevelAggregated, RiskLevelDuringSignIn, RiskState, Status, UserDisplayName, UserId, UserPrincipalName, AdditionalProperties]
+    dates: {CreatedDateTime: [culture_mdy, iso_z, msdate]}
+  - artifact: hawk.user.sweep_rules
+    collector: hawk
+    source: hawk survey §2e (SweepRules_<u>)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [Name, RuleId, Enabled, SourceFolder, DestinationFolder, Sender, KeepLatest, KeepForDays, SystemCategory, MailboxOwnerId, Identity, IsValid, ObjectState]
+  - artifact: hawk.user.raw_ual
+    collector: hawk
+    source: hawk survey §2e (ExchangeItem(Group)_Logs / User_Changes raw UAL)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    file_pattern: "ExchangeItem(Group)?_Logs"
+    columns_required: [RecordType, CreationDate, UserIds, Operations, AuditData, ResultIndex, ResultCount, Identity, IsValid, ObjectState]
+  - artifact: hawk.user.raw_ual
+    collector: hawk
+    source: hawk survey §2b (Hawk 3 User_Changes admin-audit shape)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    file_pattern: "User_Changes"
+    columns_required: [ObjectModified, CmdletName, CmdletParameters, ModifiedProperties, Caller, ExternalAccess, Succeeded, Error, RunDate, OriginatingServer, ClientIP, SessionId, AppId, ClientAppId, Identity, IsValid, ObjectState]
+  - artifact: hawk.user.raw_ual
+    collector: hawk
+    source: hawk survey §2e (Exchange_UAL_Audit expanded AuditData)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    file_pattern: "Exchange_UAL_Audit"
+    columns_required: [CreationTime, Id, Operation, OrganizationId, RecordType, ResultStatus, UserKey, UserType, Version, Workload, ClientIP, UserId, ClientIPAddress, ClientInfoString, ExternalAccess, InternalLogonType, LogonType, MailboxOwnerUPN, OriginatingServer]
+  - artifact: hawk.user.raw_ual
+    collector: hawk
+    source: hawk survey §2e (MailItemsAccessed / SendActivity / ExchangeSearchQueries / SharePointSearches expanded)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    file_pattern: "(MailItemsAccessed|SendActivity)"
+    columns_required: [CreationTime, Id, Operation, OrganizationId, RecordType, ResultStatus, UserKey, UserType, Version, Workload, ClientIP, UserId, OperationProperties]
+  - artifact: hawk.user.raw_ual
+    collector: hawk
+    source: hawk survey §2e (ExchangeSearchQueries / SharePointSearches expanded)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    file_pattern: "(ExchangeSearchQueries|SharePointSearches)"
+    columns_required: [CreationTime, Id, Operation, OrganizationId, RecordType, ResultStatus, UserKey, UserType, Version, Workload, ClientIP, UserId, QueryText, QuerySource]
+  - artifact: hawk.user.simple_ual
+    collector: hawk
+    source: hawk survey §2b/§2e (Hawk 3 Simple_User_Changes admin-audit flattening)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    file_pattern: "Simple_User_Changes"
+    columns_required: [Caller, Cmdlet, FullCommand, ObjectModified]
+    dates: {"RunDate(UTC)": [iso_z, culture_mdy, msdate]}
+  - artifact: hawk.user.simple_ual
+    collector: hawk
+    source: hawk survey §2e (Hawk 4 flattened AuditData)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    file_pattern: "(ExchangeItem(Group)?_Simple|Simple_(MailItemsAccessed|SendActivity))"
+    columns_required: [CreationTime, Workload, RecordType, Operation, ResultStatus, ClientIP, UserId, Id, OrganizationId, UserType, UserKey, CreationDate]
+  - artifact: hawk.ip.events
+    collector: hawk
+    source: hawk-layouts §1.4 (Search-HawkTenantActivityByIP, expanded AuditData)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [CreationTime, Id, Operation, OrganizationId, RecordType, ResultStatus, UserId, UserKey, UserType, Version, Workload, ClientIP]
+  - artifact: hawk.ip.unique_users
+    collector: hawk
+    source: hawk-layouts §1.4 (Search-HawkTenantActivityByIP unique users)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    columns_required: [CreationTime, Id, Operation, OrganizationId, RecordType, ResultStatus, UserId, UserKey, UserType, Version, Workload, ClientIP]
+  - artifact: hawk.message.header
+    collector: hawk
+    source: hawk-layouts §1.4 (Get-HawkMessageHeader)
+    formats: [csv]
+    encodings: {"5.1": [utf-8-bom], "7": [utf-8]}
+    columns:
+      - [Header, Value]
+      - [Rule, Value, Conclusion, More Information]

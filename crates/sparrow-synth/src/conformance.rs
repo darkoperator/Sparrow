@@ -32,6 +32,12 @@ pub struct LayoutDef {
     pub artifact: String,
     pub collector: String,
     pub source: String,
+    /// Optional file-name pattern distinguishing shapes that share one registry artifact id
+    /// (`hawk.user.raw_ual`, `hawk.tenant.raw_ual`). The profile is per artifact, so the check
+    /// accepts a header when any entry for the artifact accepts it; the pattern is documentation
+    /// and a future per-file routing key.
+    #[serde(default)]
+    pub file_pattern: Option<String>,
     #[serde(default)]
     pub formats: Vec<String>,
     #[serde(default)]
@@ -50,6 +56,10 @@ pub struct LayoutDef {
     /// Date form classes seen per column/key.
     #[serde(default)]
     pub dates: BTreeMap<String, Vec<String>>,
+    /// True when a `dates` entry is an inference (e.g. a PS 5.1 form the survey only saw on PS7),
+    /// not an observation in the tested edition.
+    #[serde(default)]
+    pub inferred: bool,
     /// Documentation only (the profile does not parse embedded JSON).
     #[serde(default)]
     pub embedded_json: BTreeMap<String, Vec<String>>,
@@ -359,39 +369,60 @@ pub fn conform_layouts(profile: &Profile, collector: Collector) -> ConformanceRe
         ..ConformanceReport::default()
     };
     for (artifact, ap) in &profile.artifacts {
-        let Some(def) = layouts()
+        let defs: Vec<&LayoutDef> = layouts()
             .iter()
-            .find(|d| d.artifact == *artifact && d.collector == want)
-        else {
+            .filter(|d| d.artifact == *artifact && d.collector == want)
+            .collect();
+        if defs.is_empty() {
             report.not_checked += 1;
             continue;
-        };
+        }
         report.checked += 1;
-        check_artifact(artifact, ap, def, &mut report.findings);
+        check_artifact(artifact, ap, &defs, &mut report.findings);
     }
     report.ok = report.findings.is_empty();
     report
 }
 
+/// Whether one entry accepts a profile header: an exact `columns` variant, or every
+/// `columns_required` column is present.
+fn header_matches(def: &LayoutDef, header: &[String]) -> bool {
+    if def.columns.iter().any(|c| c == header) {
+        return true;
+    }
+    !def.columns_required.is_empty()
+        && def
+            .columns_required
+            .iter()
+            .all(|r| header.iter().any(|h| h == r))
+}
+
+/// Compare one artifact's profile against every entry `layouts.yaml` has for it. Shapes that
+/// share an artifact id (`hawk.user.raw_ual`) are separate entries; a header counts when any
+/// entry accepts it, and encodings/formats/keys/dates are unioned.
 fn check_artifact(
     artifact: &str,
     ap: &ArtifactProfile,
-    def: &LayoutDef,
+    defs: &[&LayoutDef],
     findings: &mut Vec<String>,
 ) {
-    if !def.formats.is_empty() {
+    let formats: BTreeSet<&str> = defs
+        .iter()
+        .flat_map(|d| d.formats.iter().map(String::as_str))
+        .collect();
+    if !formats.is_empty() {
         for fmt in ap.formats.keys() {
-            if !def.formats.contains(fmt) {
+            if !formats.contains(fmt.as_str()) {
                 findings.push(format!(
                     "{artifact}: format {fmt} is not one of {:?}",
-                    def.formats
+                    formats
                 ));
             }
         }
     }
-    let allowed: BTreeSet<&str> = def
-        .encodings
-        .values()
+    let allowed: BTreeSet<&str> = defs
+        .iter()
+        .flat_map(|d| d.encodings.values())
         .flatten()
         .map(String::as_str)
         .collect();
@@ -405,48 +436,46 @@ fn check_artifact(
             }
         }
     }
-    if let Some(le) = &def.line_ends {
-        for found in ap.line_ends.keys() {
-            if found != le {
-                findings.push(format!("{artifact}: line ends {found}, recorded {le}"));
-            }
-        }
-    }
-    if !def.columns.is_empty() {
-        for header in ap.headers.keys() {
-            if !def.columns.iter().any(|c| c == header) {
-                findings.push(format!(
-                    "{artifact}: header {:?} matches no recorded variant",
-                    header
-                ));
-            }
-        }
-    }
-    if !def.columns_required.is_empty() {
-        for header in ap.headers.keys() {
-            for req in &def.columns_required {
-                if !header.iter().any(|h| h == req) {
-                    findings.push(format!(
-                        "{artifact}: header is missing the recorded column {req:?}"
-                    ));
-                }
-            }
-        }
-    }
-    for key in &def.json_keys {
-        if !ap.keys.contains(key) {
+    let line_ends: BTreeSet<&str> = defs.iter().filter_map(|d| d.line_ends.as_deref()).collect();
+    for found in ap.line_ends.keys() {
+        if !line_ends.is_empty() && !line_ends.contains(found.as_str()) {
             findings.push(format!(
-                "{artifact}: JSON records lack the recorded key {key:?}"
+                "{artifact}: line ends {found}, recorded {:?}",
+                line_ends
             ));
         }
     }
-    for (column, forms) in &def.dates {
-        if let Some(found) = ap.dates.get(column) {
-            for form in found {
-                if !forms.iter().any(|f| f == form) {
-                    findings.push(format!(
-                        "{artifact}: {column} uses the date form {form}, recorded {forms:?}"
-                    ));
+    let column_defs: Vec<&&LayoutDef> = defs
+        .iter()
+        .filter(|d| !d.columns.is_empty() || !d.columns_required.is_empty())
+        .collect();
+    for header in ap.headers.keys() {
+        if !column_defs.is_empty() && !column_defs.iter().any(|d| header_matches(d, header)) {
+            findings.push(format!(
+                "{artifact}: header {:?} matches no recorded variant",
+                header
+            ));
+        }
+    }
+    let key_defs: Vec<&&LayoutDef> = defs.iter().filter(|d| !d.json_keys.is_empty()).collect();
+    if !key_defs.is_empty()
+        && !key_defs
+            .iter()
+            .any(|d| d.json_keys.iter().all(|k| ap.keys.contains(k)))
+    {
+        findings.push(format!(
+            "{artifact}: JSON records lack the recorded keys of every shape"
+        ));
+    }
+    for def in defs {
+        for (column, forms) in &def.dates {
+            if let Some(found) = ap.dates.get(column) {
+                for form in found {
+                    if !forms.iter().any(|f| f == form) {
+                        findings.push(format!(
+                            "{artifact}: {column} uses the date form {form}, recorded {forms:?}"
+                        ));
+                    }
                 }
             }
         }
