@@ -6,6 +6,7 @@ pub mod apps;
 pub mod devices_groups;
 pub mod directory;
 pub mod directory_audits;
+pub mod email;
 pub mod exchange;
 pub mod flags;
 pub mod licenses;
@@ -35,6 +36,7 @@ pub fn register_builtin(registry: &mut ParserRegistry) {
     ual::register(registry);
     directory::register(registry);
     directory_audits::register(registry);
+    email::register(registry);
     apps::register(registry);
     risk::register(registry);
     risk_alerts::register(registry);

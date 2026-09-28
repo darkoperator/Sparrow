@@ -6,7 +6,9 @@ use super::omft::{Art, Formats};
 use super::{Ctx, expanded_row, r, register_ual, s, text_of};
 use crate::Result;
 use crate::events::Ual;
+use crate::keys;
 use crate::ps::{Row, Val};
+use crate::story::Evidence;
 use crate::tree::Tree;
 use crate::world::Email;
 use std::collections::BTreeSet;
@@ -273,26 +275,40 @@ fn message_header(c: &mut Ctx<'_>, tree: &mut Tree<'_>, e: &Email, name: &str) -
             "WARNING - P1 and P2 Header don't Match",
         ));
     }
-    c.omft.write(
+    let findings_w = c.omft.write(
         tree,
         "Message_Header_Findings",
         Some(name),
-        Art::not_supported("hawk.message.header"),
+        Art::raw("hawk.message.header"),
         &findings,
         Formats::CSV,
         false,
         false,
     )?;
-    c.omft.write(
+    let header_w = c.omft.write(
         tree,
         "Message_Header",
         Some(name),
-        Art::not_supported("hawk.message.header"),
+        Art::raw("hawk.message.header"),
         &output,
         Formats::CSV,
         false,
         false,
     )?;
+    let key = keys::email(&e.message_id);
+    if let Some(part) = &findings_w.csv {
+        tree.row(&part.rel, "email_artifacts", key.clone());
+    }
+    if let Some(part) = &header_w.csv {
+        tree.row(&part.rel, "email_artifacts", key);
+        let last = part.spans.last().map_or(1, |(_, end)| *end);
+        tree.deliver(
+            &Evidence::Email(e.message_id.clone()),
+            "email_artifacts",
+            &part.rel,
+            (1, last),
+        );
+    }
     let length = vec![vec![r(
         "Length",
         Val::Int(raw.encode_utf16().count() as i64),

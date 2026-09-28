@@ -434,3 +434,42 @@ COMMENT ON COLUMN timeline.ip_asn_org IS 'ip_intel.asn_org for ip.';
 COMMENT ON COLUMN timeline.user_agent IS 'User agent, when the source table records one.';
 COMMENT ON COLUMN timeline.summary IS 'Short human-readable summary built from the source row''s own fields.';
 COMMENT ON COLUMN timeline.source_refs IS 'record_source_refs.source_refs for (source_table, record_key); empty for a row provenance could not resolve (should not occur for ingested evidence).';
+
+-- Task 22: exported e-mail (.eml) and Hawk message headers.
+CREATE TABLE email_artifacts (
+    record_key VARCHAR NOT NULL, collection_id BIGINT NOT NULL, collected_at TIMESTAMPTZ,
+    source VARCHAR, message_id VARCHAR, subject VARCHAR, from_address VARCHAR,
+    from_display VARCHAR, return_path VARCHAR, to_addresses VARCHAR[], cc_addresses VARCHAR[],
+    sent TIMESTAMPTZ, received_hops JSON, auth_results VARCHAR, spf VARCHAR, dkim VARCHAR,
+    dmarc VARCHAR, auth_as VARCHAR, auth_mechanism VARCHAR, originating_ip VARCHAR,
+    p1_p2_match BOOLEAN, attachment_names VARCHAR[], headers JSON, findings JSON,
+    raw JSON, column_collections JSON, tz_assumed JSON
+);
+COMMENT ON TABLE email_artifacts IS 'Exported e-mail messages: the raw MIME of a Microsoft-Extractor-Suite Get-Email .eml/.txt and Hawk Get-HawkMessageHeader Message_Header[_Findings]_<file>.csv exports. A message''s .eml and its Hawk header export share one row, keyed by the Message-ID (deviation from spec §5.2, which says SHA-256, so an analyst''s two routes to one message merge).';
+COMMENT ON COLUMN email_artifacts.record_key IS 'Lower-case Message-ID without its angle brackets; a message with no Message-ID falls back to the SHA-256 hex of the file.';
+COMMENT ON COLUMN email_artifacts.collection_id IS 'Newest collection that wrote or re-confirmed any of this row''s columns (per-column writers: column_collections).';
+COMMENT ON COLUMN email_artifacts.collected_at IS 'collected_at of that collection (NULL when unknown).';
+COMMENT ON COLUMN email_artifacts.source IS 'eml (Get-Email) or hawk_message_header (Get-HawkMessageHeader); the last writer wins.';
+COMMENT ON COLUMN email_artifacts.message_id IS 'Message-ID with the angle brackets trimmed.';
+COMMENT ON COLUMN email_artifacts.subject IS 'The Subject header for an .eml; for a Hawk header export the <msg file> folder name.';
+COMMENT ON COLUMN email_artifacts.from_address IS 'The address inside <> of the From header.';
+COMMENT ON COLUMN email_artifacts.from_display IS 'The display name of the From header (NULL when it has none).';
+COMMENT ON COLUMN email_artifacts.return_path IS 'The Return-Path address (angle brackets trimmed).';
+COMMENT ON COLUMN email_artifacts.to_addresses IS 'The To header addresses, address-list split (quoted display names with commas stay whole).';
+COMMENT ON COLUMN email_artifacts.cc_addresses IS 'The Cc header addresses.';
+COMMENT ON COLUMN email_artifacts.sent IS 'The Date header (RFC 5322).';
+COMMENT ON COLUMN email_artifacts.received_hops IS 'The Received header values as a JSON array of strings, newest first.';
+COMMENT ON COLUMN email_artifacts.auth_results IS 'The Authentication-Results header.';
+COMMENT ON COLUMN email_artifacts.spf IS 'The spf= result word from Authentication-Results.';
+COMMENT ON COLUMN email_artifacts.dkim IS 'The dkim= result word from Authentication-Results.';
+COMMENT ON COLUMN email_artifacts.dmarc IS 'The dmarc= result word from Authentication-Results.';
+COMMENT ON COLUMN email_artifacts.auth_as IS 'X-MS-Exchange-Organization-AuthAs (Anonymous = from the Internet).';
+COMMENT ON COLUMN email_artifacts.auth_mechanism IS 'X-MS-Exchange-Organization-AuthMechanism (04 = credentials used, 06 = SMTP authentication).';
+COMMENT ON COLUMN email_artifacts.originating_ip IS 'X-Originating-IP without its brackets (the .eml export only).';
+COMMENT ON COLUMN email_artifacts.p1_p2_match IS 'True when the From address (inside <>) equals Return-Path, case-insensitively, trimmed.';
+COMMENT ON COLUMN email_artifacts.attachment_names IS 'Content-Disposition attachment filenames found in the MIME parts (the .eml export only).';
+COMMENT ON COLUMN email_artifacts.headers IS 'Every header as a JSON array of {"header", "value"} objects, in file order.';
+COMMENT ON COLUMN email_artifacts.findings IS 'Hawk findings as a JSON array of {"rule", "value", "conclusion", "more_information"} objects (the Hawk findings file only).';
+COMMENT ON COLUMN email_artifacts.raw IS 'Source record as loaded.';
+COMMENT ON COLUMN email_artifacts.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
+COMMENT ON COLUMN email_artifacts.tz_assumed IS 'Object {column: true} naming each time column whose value came without a time zone and was stored as if UTC (for example Hawk WhenChanged or AutoReply StartTime, written in the collecting host''s local time). Per column like column_collections: the load that writes a column sets or clears its entry. NULL for rows loaded before schema 7 or loads without a time column.';

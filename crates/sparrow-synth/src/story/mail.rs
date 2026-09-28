@@ -756,7 +756,7 @@ fn auto_reply(w: &mut World, ctx: &mut Ctx, ip: IpAddr, state: &str, message: &s
 }
 
 /// Records an inbound message and its trace row.
-fn deliver(w: &mut World, ctx: &mut Ctx, email: Email, envelope_from: &str, from_ip: IpAddr) {
+fn deliver(w: &mut World, ctx: &mut Ctx, email: Email, envelope_from: &str) {
     let size = (email.body.len() as u64) + 4_000;
     let trace = TraceMsg {
         trace_id: ctx.rng.uuid(),
@@ -769,7 +769,7 @@ fn deliver(w: &mut World, ctx: &mut Ctx, email: Email, envelope_from: &str, from
             .map(|r| (r.clone(), "Delivered".to_string()))
             .collect(),
         subject: email.subject.clone(),
-        from_ip: Some(from_ip),
+        from_ip: Some(email.originating_ip),
         to_ip: None,
         size,
         direction: "Incoming".to_string(),
@@ -796,6 +796,7 @@ fn header_spoof(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     let primary = w.primary_domain().to_string();
     let date = t.to_rfc2822();
     let (edge, mbx) = exo_hops(ctx);
+    let ip = w.attacker.send_ip;
     let email = Email {
         message_id: format!("<{}@mail.spoof-mail.test>", ctx.rng.hex(24)),
         subject: "Urgent: wire transfer approval needed today".to_string(),
@@ -820,10 +821,10 @@ fn header_spoof(w: &mut World, ctx: &mut Ctx) -> Result<()> {
              meetings and cannot take calls.\r\n\r\n{}\r\n",
             g.first, admin.display_name
         ),
+        originating_ip: ip,
         attachment: None,
     };
-    let ip = w.attacker.send_ip;
-    deliver(w, ctx, email, "bounce@spoof-mail.test", ip);
+    deliver(w, ctx, email, "bounce@spoof-mail.test");
     Ok(())
 }
 
@@ -834,6 +835,7 @@ fn header_clean(w: &mut World, ctx: &mut Ctx) {
     let date = t.to_rfc2822();
     let (edge, mbx) = exo_hops(ctx);
     let sender = format!("news@{VENDOR_DOMAIN}");
+    let ip = ctx.roaming.next();
     let email = Email {
         message_id: format!("<{}@mail.{VENDOR_DOMAIN}>", ctx.rng.hex(24)),
         subject: "Tailwind Supplies: autumn catalogue".to_string(),
@@ -854,10 +856,10 @@ fn header_clean(w: &mut World, ctx: &mut Ctx) {
         auth_as: "Anonymous".to_string(),
         auth_mechanism: "04".to_string(),
         body: "Our autumn catalogue is out. Browse the new range on our website.\r\n".to_string(),
+        originating_ip: ip,
         attachment: None,
     };
-    let ip = ctx.roaming.next();
-    deliver(w, ctx, email, &sender, ip);
+    deliver(w, ctx, email, &sender);
 }
 
 /// The user files a vendor's mail into a folder, from the office.

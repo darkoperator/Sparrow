@@ -875,6 +875,9 @@ pub struct Email {
     /// `04` | `06`.
     pub auth_mechanism: String,
     pub body: String,
+    /// The sending client's IP (`X-Originating-IP`), the same address the delivery's
+    /// `TraceMsg.from_ip` carries.
+    pub originating_ip: IpAddr,
     pub attachment: Option<(String, Vec<u8>)>,
 }
 

@@ -429,9 +429,9 @@ mod tests {
         assert_eq!(s.subject.as_deref(), Some("ann@contoso.example"));
         assert_eq!(s.expect_status, None);
         let s = spec(
-            "x.msg/Message_Header_x.msg.csv",
+            "x.msg/Message_Header_RAW_x.msg.txt",
             Encoding::Utf8,
-            Art::not_supported("hawk.message.header"),
+            Art::not_supported("hawk.message.header_raw"),
             Some("x.msg"),
         );
         assert_eq!(s.expect_status, Some("not_supported"));
@@ -441,9 +441,9 @@ mod tests {
     #[should_panic(expected = "declared parsed")]
     fn a_parsed_declaration_of_an_unparsed_artifact_panics() {
         spec(
-            "x.msg/Message_Header_x.msg.csv",
+            "x.msg/Message_Header_RAW_x.msg.txt",
             Encoding::Utf8,
-            Art::raw("hawk.message.header"),
+            Art::raw("hawk.message.header_raw"),
             None,
         );
     }

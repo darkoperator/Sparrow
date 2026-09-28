@@ -10,12 +10,13 @@
 //! The run order is fixed: UnifiedAuditLog, Sign-In logs, Audit logs, MessageTrace (twice),
 //! Mailbox Permissions, Audit Status (twice), MailItemsAccessed, Mailbox Audit Log, Licenses,
 //! Users, Admins, Roles (AllRoles then PIM), RiskyEvents (two runs), SecurityAlerts, SecureScore,
-//! Activity Logs, Directory Activity Logs (three runs).
+//! Activity Logs, Directory Activity Logs (three runs), Email Export.
 
 mod activity;
 mod apps;
 mod devices_groups;
 mod directory;
+mod email;
 mod entra;
 mod exchange;
 mod licences;
@@ -199,6 +200,7 @@ pub fn write(world: &World, opts: &GenerateOptions, tree: &mut Tree<'_>) -> Resu
     devices_groups::write(&mut c, tree)?;
     risk_alerts::write(&mut c, tree)?;
     activity::write(&mut c, tree)?;
+    email::write(&mut c, tree)?;
     let log = std::mem::take(&mut c.log);
     log.write(&c, tree)
 }

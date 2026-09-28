@@ -670,6 +670,22 @@ pub static EVIDENCE: &[EvidenceDef] = &[
             "'azure_activity'", "x.record_key"
         )
     },
+    EvidenceDef {
+        id: "email_artifacts",
+        title: "Exported e-mail messages",
+        kind: Kind::State,
+        artifacts: &["inv.email", "hawk.message.header"],
+        invictus_runs: &[("Email Export", None)],
+        hawk_log: Some(r"^Reading message header from file"),
+        invictus: Some("Get-Email -UserIds <upn> -internetMessageId <id>"),
+        hawk: Some("Get-HawkMessageHeader -MSGFile <file>"),
+        ..source!(
+            "email_artifacts x",
+            "CAST(NULL AS TIMESTAMPTZ)",
+            "count(DISTINCT lower(x.from_address))",
+            "'email_artifacts'", "x.record_key"
+        )
+    },
 ];
 
 /// Full unified audit log exports: evidence marked `full_ual_covers` is in them when present.

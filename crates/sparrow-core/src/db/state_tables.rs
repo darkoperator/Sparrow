@@ -406,6 +406,34 @@ pub static AZURE_ACTIVITY: TableSpec = TableSpec {
     ],
 };
 
+pub static EMAIL_ARTIFACTS: TableSpec = TableSpec {
+    table: "email_artifacts",
+    mode: LoadMode::LatestWins,
+    columns: &[
+        col("source", V),
+        col("message_id", V),
+        col("subject", V),
+        col("from_address", V),
+        col("from_display", V),
+        col("return_path", V),
+        col("to_addresses", L),
+        col("cc_addresses", L),
+        col("sent", T),
+        col("received_hops", J),
+        col("auth_results", V),
+        col("spf", V),
+        col("dkim", V),
+        col("dmarc", V),
+        col("auth_as", V),
+        col("auth_mechanism", V),
+        col("originating_ip", V),
+        col("p1_p2_match", B),
+        col("attachment_names", L),
+        col("headers", J),
+        col("findings", J),
+    ],
+};
+
 pub static COLLECTOR_FLAGS: TableSpec = TableSpec {
     table: "collector_flags",
     mode: LoadMode::InsertOnly,
@@ -791,6 +819,7 @@ pub static ALL: &[&TableSpec] = &[
     &SECURITY_ALERTS,
     &SECURE_SCORE,
     &AZURE_ACTIVITY,
+    &EMAIL_ARTIFACTS,
     &COLLECTOR_FLAGS,
     &SIGNINS,
     &DIRECTORY_AUDITS,

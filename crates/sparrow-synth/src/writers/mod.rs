@@ -55,6 +55,7 @@ pub const SPARROW_PARSED: &[&str] = &[
     "hawk.investigate_txt",
     "hawk.ip.events",
     "hawk.log",
+    "hawk.message.header",
     "hawk.psframework_log",
     "hawk.tenant.admin_audit",
     "hawk.tenant.admin_audit_log_config",
@@ -103,6 +104,7 @@ pub const SPARROW_PARSED: &[&str] = &[
     "inv.devices",
     "inv.directory_activity",
     "inv.dynamic_groups",
+    "inv.email",
     "inv.entra_audit",
     "inv.entra_audit.merged",
     "inv.group_members",
@@ -174,5 +176,7 @@ mod tests {
         assert!(parsed_by_sparrow("inv.secure_score"));
         assert!(parsed_by_sparrow("inv.activity"));
         assert!(parsed_by_sparrow("inv.directory_activity"));
+        assert!(parsed_by_sparrow("hawk.message.header"));
+        assert!(parsed_by_sparrow("inv.email"));
     }
 }

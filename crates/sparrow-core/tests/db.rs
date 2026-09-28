@@ -45,6 +45,7 @@ fn fresh_case_has_provenance_tables() {
             "collector_runs",
             "devices",
             "directory_audits",
+            "email_artifacts",
             "evidence_availability",
             "file_events",
             "group_members",

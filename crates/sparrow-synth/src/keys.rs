@@ -56,6 +56,13 @@ pub fn azure_activity(id: &str) -> String {
     lower(id)
 }
 
+/// `email_artifacts`: "Lower-case Message-ID without its angle brackets; a message with no
+/// Message-ID falls back to the SHA-256 hex of the file."
+pub fn email(message_id: &str) -> String {
+    let t = message_id.trim();
+    lower(t.trim_start_matches('<').trim_end_matches('>'))
+}
+
 /// `secure_score`: "<collection_id>|<lower Title>."
 pub fn secure_score(title: &str) -> String {
     format!("{CID}|{}", lower(title))
@@ -305,6 +312,7 @@ pub fn for_evidence(world: &World, e: &Evidence, table: &str) -> Option<String> 
             "message_trace",
         ) => Some(trace(*trace_id, recipient)),
         (Evidence::Risk(id), "risk_detections") => Some(risk(id)),
+        (Evidence::Email(id), "email_artifacts") => Some(email(id)),
         (Evidence::Mailbox(upn), "mailboxes") => Some(mailbox(upn)),
         (Evidence::MobileDevice { mailbox, device_id }, "mobile_devices") => {
             Some(mobile_device(mailbox, device_id))
