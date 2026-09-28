@@ -381,6 +381,31 @@ pub static SECURE_SCORE: TableSpec = TableSpec {
     ],
 };
 
+pub static AZURE_ACTIVITY: TableSpec = TableSpec {
+    table: "azure_activity",
+    mode: LoadMode::FillMissing,
+    columns: &[
+        col("event_data_id", V),
+        col("event_time", T),
+        col("time_tz_assumed", B),
+        col("caller", V),
+        col("operation_name", V),
+        col("category", V),
+        col("level", V),
+        col("status", V),
+        col("sub_status", V),
+        col("resource_id", V),
+        col("resource_group", V),
+        col("resource_provider", V),
+        col("subscription_id", V),
+        col("tenant_id", V),
+        col("ip", V),
+        col("correlation_id", V),
+        col("claims", J),
+        col("properties", J),
+    ],
+};
+
 pub static COLLECTOR_FLAGS: TableSpec = TableSpec {
     table: "collector_flags",
     mode: LoadMode::InsertOnly,
@@ -765,6 +790,7 @@ pub static ALL: &[&TableSpec] = &[
     &RISK_DETECTIONS,
     &SECURITY_ALERTS,
     &SECURE_SCORE,
+    &AZURE_ACTIVITY,
     &COLLECTOR_FLAGS,
     &SIGNINS,
     &DIRECTORY_AUDITS,

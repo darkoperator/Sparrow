@@ -36,6 +36,7 @@ fn fresh_case_has_provenance_tables() {
             "app_credentials",
             "applications",
             "audit_config",
+            "azure_activity",
             "ca_policies",
             "capabilities",
             "collection_log",

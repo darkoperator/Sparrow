@@ -78,6 +78,8 @@ fn timeline_has_one_row_per_event_record() {
         "SELECT count(*) FROM mailbox_audit_legacy",
         "SELECT count(*) FROM admin_audit_events",
         "SELECT count(*) FROM risk_detections",
+        "SELECT count(*) FROM azure_activity",
+        "SELECT count(*) FROM security_alerts",
     ]
     .iter()
     .map(|sql| count(&case, sql))
@@ -90,6 +92,86 @@ fn timeline_has_one_row_per_event_record() {
             "SELECT count(*) FROM timeline WHERE source_refs IS NULL OR len(source_refs) = 0"
         ),
         0
+    );
+}
+
+/// Task 20: the two new timeline branches. `azure_activity` is a config_change with the caller
+/// and client IP; `security_alerts` takes the affected user and IP and falls back to
+/// `created_time` when `event_time` is NULL.
+#[test]
+fn timeline_includes_azure_activity_and_security_alerts() {
+    let (_dir, case) = case_with_events();
+    case.conn()
+        .execute_batch(
+            "INSERT INTO azure_activity (record_key, collection_id, event_data_id, event_time, time_tz_assumed,
+                 caller, operation_name, category, level, status, sub_status, resource_id, resource_group,
+                 resource_provider, subscription_id, tenant_id, ip, correlation_id)
+             VALUES ('evt-1', 1, 'evt-1', '2026-09-01 10:00:00+00', false, 'admin@contoso.example',
+                 'Microsoft.Compute/virtualMachines/start/action', 'Administrative', 'Informational', 'Succeeded', 'OK',
+                 '/subscriptions/x/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm', 'rg',
+                 'Microsoft.Compute', 'sub', 'tenant', '203.0.113.9', 'corr');
+             INSERT INTO security_alerts (record_key, collection_id, alert_id, created_time, title, severity,
+                 affected_users, affected_ips)
+             VALUES ('alert-1', 1, 'alert-1', '2026-09-02 11:00:00+00', 'Test alert', 'informational',
+                 ['alice@contoso.example'], ['203.0.113.9']);",
+        )
+        .unwrap();
+
+    assert_eq!(
+        text(
+            &case,
+            "SELECT CAST(category AS VARCHAR) FROM timeline WHERE source_table = 'azure_activity'"
+        ),
+        "config_change"
+    );
+    assert_eq!(
+        text(
+            &case,
+            "SELECT actor_upn FROM timeline WHERE source_table = 'azure_activity'"
+        ),
+        "admin@contoso.example"
+    );
+    assert_eq!(
+        text(
+            &case,
+            "SELECT ip FROM timeline WHERE source_table = 'azure_activity'"
+        ),
+        "203.0.113.9"
+    );
+    assert_eq!(
+        text(
+            &case,
+            "SELECT operation FROM timeline WHERE source_table = 'azure_activity'"
+        ),
+        "Microsoft.Compute/virtualMachines/start/action"
+    );
+    assert_eq!(
+        text(
+            &case,
+            "SELECT CAST(category AS VARCHAR) FROM timeline WHERE source_table = 'security_alerts'"
+        ),
+        "other"
+    );
+    assert_eq!(
+        text(
+            &case,
+            "SELECT actor_upn FROM timeline WHERE source_table = 'security_alerts'"
+        ),
+        "alice@contoso.example"
+    );
+    assert_eq!(
+        text(
+            &case,
+            "SELECT summary FROM timeline WHERE source_table = 'security_alerts'"
+        ),
+        "informational: Test alert"
+    );
+    assert_eq!(
+        count(
+            &case,
+            "SELECT epoch(event_time)::BIGINT FROM timeline WHERE source_table = 'security_alerts'"
+        ),
+        1788346800 // 2026-09-02T11:00:00Z (event_time NULL -> created_time)
     );
 }
 

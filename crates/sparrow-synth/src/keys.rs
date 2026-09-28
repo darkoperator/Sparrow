@@ -51,6 +51,11 @@ pub fn security_alert(id: &str) -> String {
     lower(id)
 }
 
+/// `azure_activity`: "Lower-case eventDataId."
+pub fn azure_activity(id: &str) -> String {
+    lower(id)
+}
+
 /// `secure_score`: "<collection_id>|<lower Title>."
 pub fn secure_score(title: &str) -> String {
     format!("{CID}|{}", lower(title))

@@ -94,12 +94,14 @@ pub const SPARROW_PARSED: &[&str] = &[
     "hawk.user.raw_ual",
     "hawk.user.simple_ual",
     "hawk.user.sweep_rules",
+    "inv.activity",
     "inv.admins",
     "inv.admins.merged",
     "inv.app_registrations",
     "inv.audit_status",
     "inv.ca",
     "inv.devices",
+    "inv.directory_activity",
     "inv.dynamic_groups",
     "inv.entra_audit",
     "inv.entra_audit.merged",
@@ -170,5 +172,7 @@ mod tests {
         assert!(parsed_by_sparrow("inv.risky_users"));
         assert!(parsed_by_sparrow("inv.security_alerts"));
         assert!(parsed_by_sparrow("inv.secure_score"));
+        assert!(parsed_by_sparrow("inv.activity"));
+        assert!(parsed_by_sparrow("inv.directory_activity"));
     }
 }

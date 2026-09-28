@@ -656,6 +656,20 @@ pub static EVIDENCE: &[EvidenceDef] = &[
             "'secure_score'", "x.record_key"
         )
     },
+    EvidenceDef {
+        id: "azure_activity",
+        title: "Azure activity logs",
+        kind: Kind::Event,
+        artifacts: &["inv.activity", "inv.directory_activity"],
+        invictus_runs: &[("Activity Logs", None), ("Directory Activity Logs", None)],
+        invictus: Some("Get-ActivityLogs; Get-DirectoryActivityLogs"),
+        ..source!(
+            "azure_activity x",
+            "x.event_time",
+            "count(DISTINCT lower(x.caller))",
+            "'azure_activity'", "x.record_key"
+        )
+    },
 ];
 
 /// Full unified audit log exports: evidence marked `full_ual_covers` is in them when present.

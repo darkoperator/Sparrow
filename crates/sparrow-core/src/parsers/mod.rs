@@ -1,5 +1,6 @@
 //! Built-in artifact parsers.
 
+pub mod activity;
 pub mod admin_audit;
 pub mod apps;
 pub mod devices_groups;
@@ -30,6 +31,7 @@ use crate::ingest::parser::ParserRegistry;
 
 pub fn register_builtin(registry: &mut ParserRegistry) {
     logs::register(registry);
+    activity::register(registry);
     ual::register(registry);
     directory::register(registry);
     directory_audits::register(registry);

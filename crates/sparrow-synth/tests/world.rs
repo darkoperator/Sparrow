@@ -79,6 +79,7 @@ fn every_state_collection_is_populated() {
     assert!(mfa_policy.include_users.is_empty());
     assert!(!w.mobile_devices.is_empty() && !w.transport_rules.is_empty());
     assert!(!w.remote_domains.is_empty() && w.secure_score.len() == 8 && !w.alerts.is_empty());
+    assert!(!w.azure.is_empty() && w.azure.iter().all(|e| e.operation.contains('/')));
     assert!(w.mfa.values().any(|m| !m.is_mfa_registered));
     let rule = w.inbox_rules.first().unwrap();
     assert!(rule.description().starts_with("If the message:\r\n\t"));

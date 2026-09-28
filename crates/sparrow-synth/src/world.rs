@@ -90,6 +90,7 @@ pub struct World {
     pub remote_domains: Vec<RemoteDomain>,
     pub secure_score: Vec<SecureScoreControl>,
     pub alerts: Vec<Alert>,
+    pub azure: Vec<AzureEvent>,
     pub risky_users: BTreeMap<String, RiskyUser>,
     pub mailbox_permissions: Vec<MailboxPermission>,
     pub emails: Vec<Email>,
@@ -138,6 +139,7 @@ impl World {
         let remote_domains = build_remote_domains(&tenant);
         let secure_score = build_secure_score();
         let alerts = build_alerts(scenario, seed, &users);
+        let azure = build_azure(scenario, seed, &tenant, &users, &admins);
         let audit_state = build_audit(audit, licence);
         let mailbox_permissions = build_mailbox_permissions(scenario, &tenant, &users, &admins);
         let attacker = build_attacker(&tenant);
@@ -164,6 +166,7 @@ impl World {
             remote_domains,
             secure_score,
             alerts,
+            azure,
             risky_users: BTreeMap::new(),
             mailbox_permissions,
             emails: Vec::new(),
@@ -814,6 +817,33 @@ pub struct Alert {
     pub affected_user: Option<String>,
     pub ip: Option<IpAddr>,
     pub provider: String,
+}
+
+/// One Azure Activity Log `EventData` object (Get-ActivityLogs / Get-DirectoryActivityLogs).
+/// Benign tenant administration only; no seed rule reads it.
+#[derive(Debug, Clone)]
+pub struct AzureEvent {
+    pub event_data_id: Uuid,
+    pub time: DateTime<Utc>,
+    pub caller: String,
+    /// `operationName.value`, e.g. `Microsoft.Compute/virtualMachines/start/action`.
+    pub operation: String,
+    /// `category.value` (always `Administrative`).
+    pub category: String,
+    /// `level` (always `Informational`).
+    pub level: String,
+    /// `status.value` (always `Succeeded`).
+    pub status: String,
+    /// `subStatus.value` (always `OK`).
+    pub sub_status: String,
+    pub resource_id: String,
+    pub resource_group: String,
+    /// `resourceProviderName.value`, e.g. `Microsoft.Compute`.
+    pub provider: String,
+    pub subscription_id: Uuid,
+    pub tenant_id: Uuid,
+    pub ip: IpAddr,
+    pub correlation_id: Uuid,
 }
 
 #[derive(Debug, Clone)]
@@ -2086,6 +2116,123 @@ fn build_alerts(scenario: &Scenario, seed: u64, users: &[User]) -> Vec<Alert> {
         ip: None,
         provider: "Microsoft Defender for Office 365".to_string(),
     }]
+}
+
+/// One Azure Activity Log event of a benign tenant administration storyline. All events fall
+/// inside the collection window, so they need no historical pinning.
+#[allow(clippy::too_many_arguments)]
+fn azure_event(
+    rng: &mut Rng,
+    tenant: &Tenant,
+    subscription_id: Uuid,
+    resource_group: &str,
+    caller: &User,
+    time: DateTime<Utc>,
+    operation: &str,
+    provider: &str,
+    resource_id: &str,
+) -> AzureEvent {
+    AzureEvent {
+        event_data_id: rng.uuid(),
+        time,
+        caller: caller.upn.clone(),
+        operation: operation.to_string(),
+        category: "Administrative".to_string(),
+        level: "Informational".to_string(),
+        status: "Succeeded".to_string(),
+        sub_status: "OK".to_string(),
+        resource_id: resource_id.to_string(),
+        resource_group: resource_group.to_string(),
+        provider: provider.to_string(),
+        subscription_id,
+        tenant_id: tenant.tenant_id,
+        ip: caller.office_ip,
+        correlation_id: rng.uuid(),
+    }
+}
+
+/// The tenant's one Azure subscription: a VM start/deallocate, a storage key listing and a
+/// role-assignment write by the first admin (research event layouts §5). Deterministic on the
+/// `azure` rng stream per seed.
+fn build_azure(
+    scenario: &Scenario,
+    seed: u64,
+    tenant: &Tenant,
+    users: &[User],
+    admins: &[User],
+) -> Vec<AzureEvent> {
+    let (Some(user), Some(admin)) = (users.first(), admins.first()) else {
+        return Vec::new();
+    };
+    let mut rng = stream(seed, "azure");
+    let subscription_id = rng.uuid();
+    let word = tenant
+        .name
+        .split_whitespace()
+        .next()
+        .unwrap_or("tenant")
+        .to_ascii_lowercase();
+    let resource_group = format!("rg-{word}-prod");
+    let base =
+        format!("/subscriptions/{subscription_id}/resourceGroups/{resource_group}/providers");
+    let vm = format!("{base}/Microsoft.Compute/virtualMachines/vm-{word}-01");
+    let storage = format!("{base}/Microsoft.Storage/storageAccounts/st{word}01");
+    let role = format!(
+        "{base}/Microsoft.Authorization/roleAssignments/{}",
+        rng.uuid()
+    );
+    let at = |day: i64, hour: i64, minute: i64| {
+        scenario.window.start
+            + Duration::days(day)
+            + Duration::hours(hour)
+            + Duration::minutes(minute)
+    };
+    vec![
+        azure_event(
+            &mut rng,
+            tenant,
+            subscription_id,
+            &resource_group,
+            user,
+            at(5, 9, 5),
+            "Microsoft.Compute/virtualMachines/start/action",
+            "Microsoft.Compute",
+            &vm,
+        ),
+        azure_event(
+            &mut rng,
+            tenant,
+            subscription_id,
+            &resource_group,
+            user,
+            at(5, 17, 30),
+            "Microsoft.Compute/virtualMachines/deallocate/action",
+            "Microsoft.Compute",
+            &vm,
+        ),
+        azure_event(
+            &mut rng,
+            tenant,
+            subscription_id,
+            &resource_group,
+            admin,
+            at(8, 11, 2),
+            "Microsoft.Storage/storageAccounts/listKeys/action",
+            "Microsoft.Storage",
+            &storage,
+        ),
+        azure_event(
+            &mut rng,
+            tenant,
+            subscription_id,
+            &resource_group,
+            admin,
+            at(8, 11, 7),
+            "Microsoft.Authorization/roleAssignments/write",
+            "Microsoft.Authorization",
+            &role,
+        ),
+    ]
 }
 
 fn build_audit(profile: &AuditProfile, licence: &LicenceProfile) -> AuditState {

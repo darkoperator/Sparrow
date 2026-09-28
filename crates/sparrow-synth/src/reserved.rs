@@ -64,8 +64,13 @@ pub const WELL_KNOWN_GUIDS: &[(&str, &str)] = &[
 
 /// Microsoft product URLs that appear verbatim in collector output (namespaces, not hosts a
 /// customer owns): `scan_text` skips them like the well-known GUIDs. The PowerShell
-/// serialization namespace heads every `Export-Clixml` file (Hawk 3's `Tenant/XML/*.xml`).
-pub const WELL_KNOWN_URLS: &[&str] = &["http://schemas.microsoft.com/powershell/2004/04"];
+/// serialization namespace heads every `Export-Clixml` file (Hawk 3's `Tenant/XML/*.xml`);
+/// `schemas.xmlsoap.org` is the WS-Identity claim-type namespace Azure Activity Log `claims`
+/// keys use.
+pub const WELL_KNOWN_URLS: &[&str] = &[
+    "http://schemas.microsoft.com/powershell/2004/04",
+    "http://schemas.xmlsoap.org/",
+];
 
 pub fn is_reserved_ip(ip: &IpAddr) -> bool {
     match ip {
