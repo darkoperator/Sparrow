@@ -37,6 +37,19 @@ fn detects_every_shape_from_keys() {
         Purview
     );
     assert_eq!(
+        detect_shape(
+            [
+                "id",
+                "createdDateTime",
+                "auditLogRecordType",
+                "operation",
+                "auditData"
+            ],
+            false
+        ),
+        Graph
+    );
+    assert_eq!(
         detect_shape(["CreationTime", "Id", "Operation", "RecordType"], false),
         Record
     );
@@ -76,6 +89,20 @@ fn detects_every_shape_from_keys() {
     );
     assert_eq!(detect_shape(["Operation"], true), Unknown);
     assert_eq!(detect_shape(["auditdata", "creationdate"], false), Raw);
+}
+
+#[test]
+fn graph_shape_keeps_its_outer_record_type_and_time() {
+    let rec = obj(json!({
+        "id": "graph-1",
+        "createdDateTime": "2026-09-01T10:00:05Z",
+        "auditLogRecordType": 1,
+        "auditData": {"Id":"x","CreationTime":"2026-09-01T10:00:00Z"}
+    }));
+    let a = to_audit(UalShape::Graph, &rec, false).unwrap();
+    assert_eq!(a.audit["Id"], "x");
+    assert_eq!(a.outer_record_type.as_deref(), Some("1"));
+    assert_eq!(a.outer_time.as_deref(), Some("2026-09-01T10:00:05Z"));
 }
 
 #[test]

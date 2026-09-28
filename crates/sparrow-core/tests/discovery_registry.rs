@@ -538,6 +538,12 @@ const SAMPLES: &[(Tool, &str, &str, Option<&str>)] = &[
         "inv.quickual.operation",
         Some("MailItemsAccessed"),
     ),
+    (
+        Invictus,
+        "Triage1/Consent to application_.json",
+        "inv.quickual.operation",
+        Some("Consent to application_"),
+    ),
     (Hawk, "2026-09-02_logs.csv", "hawk.psframework_log", None),
     (
         Hawk,

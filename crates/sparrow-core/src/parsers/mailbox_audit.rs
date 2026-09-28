@@ -19,10 +19,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 pub fn register(r: &mut ParserRegistry) {
-    r.register(
-        "hawk.user.mailbox_audit_legacy",
-        Box::new(MailboxAuditParser),
-    );
+    for id in ["hawk.user.mailbox_audit_legacy", "inv.mailbox_audit_legacy"] {
+        r.register(id, Box::new(MailboxAuditParser));
+    }
 }
 
 const COLS: &[&str] = &[

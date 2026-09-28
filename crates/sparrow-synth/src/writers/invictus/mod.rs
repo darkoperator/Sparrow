@@ -19,12 +19,15 @@ mod directory;
 mod email;
 mod entra;
 mod exchange;
+mod legacy_audit;
 mod licences;
 mod log;
 mod mfa_ca;
+mod quickual;
 mod risk_alerts;
 mod rules;
 mod ual;
+mod ual_graph;
 
 use crate::Result;
 use crate::events::Day;
@@ -187,6 +190,7 @@ impl<'w> Ctx<'w> {
 pub fn write(world: &World, opts: &GenerateOptions, tree: &mut Tree<'_>) -> Result<()> {
     let mut c = Ctx::new(world, opts);
     ual::write_get_ual(&mut c, tree)?;
+    ual_graph::write(&mut c, tree)?;
     entra::write_signins(&mut c, tree)?;
     entra::write_audits(&mut c, tree)?;
     exchange::write_message_trace(&mut c, tree)?;
@@ -198,11 +202,13 @@ pub fn write(world: &World, opts: &GenerateOptions, tree: &mut Tree<'_>) -> Resu
     directory::write(&mut c, tree)?;
     mfa_ca::write(&mut c, tree)?;
     apps::write(&mut c, tree)?;
+    quickual::write(&mut c, tree)?;
     devices_groups::write(&mut c, tree)?;
     risk_alerts::write(&mut c, tree)?;
     activity::write(&mut c, tree)?;
     email::write(&mut c, tree)?;
     rules::write(&mut c, tree)?;
+    legacy_audit::write(&mut c, tree)?;
     let log = std::mem::take(&mut c.log);
     log.write(&c, tree)
 }

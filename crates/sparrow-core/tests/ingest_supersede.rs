@@ -282,6 +282,17 @@ fn handled_lookup_is_case_insensitive_and_scoped_to_the_folder() {
 }
 
 #[test]
+fn quickual_combined_is_superseded_by_operation_files_in_the_same_root() {
+    let mut h = Handled::default();
+    h.insert("Triage1/New-InboxRule.json");
+    assert_eq!(
+        h.superseded_by("Triage1/UAL-Operations-Combined.csv", true)
+            .as_deref(),
+        Some("Triage1/New-InboxRule.json")
+    );
+}
+
+#[test]
 fn processing_order_is_raw_then_derived_json_then_csv() {
     let mut v = [
         processing_key("b.csv", true),

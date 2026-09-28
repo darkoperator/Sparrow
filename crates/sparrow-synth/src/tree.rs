@@ -536,6 +536,16 @@ impl Handled {
                 }
             }
         }
+        if stem == "ual-operations-combined" {
+            if let Some(dir) = dir {
+                let prefix = format!("{dir}/");
+                let directly =
+                    |p: &&String| p.strip_prefix(&prefix).is_some_and(|r| !r.contains('/'));
+                if self.ok.iter().any(|p| directly(&p)) {
+                    return true;
+                }
+            }
+        }
         if let Some((parent, "merged")) = dir.and_then(|d| d.rsplit_once('/')) {
             let prefix = format!("{parent}/");
             let directly = |p: &&String| p.strip_prefix(&prefix).is_some_and(|r| !r.contains('/'));

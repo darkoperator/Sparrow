@@ -10,6 +10,9 @@ pub enum UalShape {
     Raw,
     /// Purview audit search export: `RecordId, CreationDate, RecordType, Operation, UserId, AuditData`.
     Purview,
+    /// Microsoft Graph audit-log query wrapper: `id, createdDateTime, auditLogRecordType, ...,
+    /// auditData` (the `auditData` object, or a JSON string in CSV).
+    Graph,
     /// AuditData keys at top level (Hawk 3 `Exchange_UAL_Audit`, Hawk 4 `MailItemsAccessed_*`,
     /// `SendActivity_*`, per-IP event files, Hawk 3 `eDiscoveryLogs`).
     Record,
@@ -53,6 +56,8 @@ pub fn detect_shape<'k>(
         UalShape::AdminAuditSimple
     } else if has("auditdata") && has("recordid") {
         UalShape::Purview
+    } else if has("auditdata") && has("auditlogrecordtype") {
+        UalShape::Graph
     } else if has("auditdata") {
         UalShape::Raw
     } else if has("env_time") && has("id") && has("operation") {
@@ -117,7 +122,7 @@ pub fn to_audit(
         flat_params: Vec::new(),
     };
     match shape {
-        UalShape::Raw | UalShape::Purview => {
+        UalShape::Raw | UalShape::Purview | UalShape::Graph => {
             let audit = match get_ci(record, "AuditData") {
                 None | Some(Value::Null) => return Err("record has no AuditData".into()),
                 Some(Value::Object(m)) => m.clone(),
@@ -131,8 +136,14 @@ pub fn to_audit(
             Ok(AuditInput {
                 audit,
                 completeness: Completeness::Full,
-                outer_record_type: get_ci(record, "RecordType").and_then(value_text),
-                outer_time: get_ci(record, "CreationDate").and_then(value_text),
+                outer_record_type: match shape {
+                    UalShape::Graph => get_ci(record, "auditLogRecordType").and_then(value_text),
+                    _ => get_ci(record, "RecordType").and_then(value_text),
+                },
+                outer_time: match shape {
+                    UalShape::Graph => get_ci(record, "createdDateTime").and_then(value_text),
+                    _ => get_ci(record, "CreationDate").and_then(value_text),
+                },
                 flat_params: Vec::new(),
             })
         }

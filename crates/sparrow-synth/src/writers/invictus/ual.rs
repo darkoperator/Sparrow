@@ -283,8 +283,11 @@ fn render(c: &Ctx<'_>, format: UalFormat, records: &[&Ual]) -> WindowText {
 /// The `mail_items_accessed` rows one MailItemsAccessed record yields from a file: one per
 /// folder item, one per folder that lists none, one for a record without folders; a CSV of
 /// AuditData properties keeps `Folders` only as `System.Object[]`, so one row per record.
-fn mia_children(u: &Ual, format: UalFormat) -> u64 {
-    if format == UalFormat::CsvAuditDataOnly {
+/// `full`: the record will be loaded from the full AuditData at some point (the window format
+/// itself, or a later Get-UALGraph / QuickUAL copy for a victim), so its real child count is
+/// what the table ends up holding even when this window lost `Folders`.
+fn mia_children(u: &Ual, full: bool) -> u64 {
+    if !full {
         return 1;
     }
     let folders = u
@@ -324,6 +327,14 @@ fn write_windows(
     at: &mut chrono::NaiveDateTime,
 ) -> Result<Vec<Written>> {
     let (start, end) = (c.world.window_start(), c.world.window_end());
+    // Get-UALGraph and QuickUAL always write the victims' records from the full AuditData, so a
+    // victim's MailItemsAccessed record is upgraded even when this window is `-AuditDataOnly`.
+    let victim_upns: BTreeSet<String> = c
+        .world
+        .victims
+        .iter()
+        .map(|n| c.world.user(*n).upn.to_lowercase())
+        .collect();
     let mut out = Vec::new();
     for w in windows(start, end, records, max_ms) {
         *at += Duration::seconds(1);
@@ -360,7 +371,9 @@ fn write_windows(
             tree.row(&rel, "ual_events", keys::ual(u.id));
             tree.deliver(&Evidence::Ual(u.id), "ual_events", &rel, *span);
             if u.operation == "MailItemsAccessed" {
-                tree.rows_counted(&rel, "mail_items_accessed", mia_children(u, format));
+                let full = format != UalFormat::CsvAuditDataOnly
+                    || victim_upns.contains(&u.user_id.to_lowercase());
+                tree.rows_counted(&rel, "mail_items_accessed", mia_children(u, full));
             }
         }
         out.push(Written {

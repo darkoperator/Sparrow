@@ -744,7 +744,7 @@ static DEFS: &[ArtifactDef] = &[
         Invictus,
         "ual_events",
         false,
-        r"(?:[^/]+/)?(?:QuickUAL/\d{8}_\d{6}/)?(?P<subject>[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*)\.(?:csv|json)"
+        r"(?:[^/]+/)?(?:QuickUAL/\d{8}_\d{6}/)?(?P<subject>[^/]+)\.(?:csv|json)"
     ),
 ];
 

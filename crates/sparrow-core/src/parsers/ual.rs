@@ -7,7 +7,7 @@ use crate::ingest::bulk::{StagedUal, load_ual_batch};
 use crate::ingest::context::ParseContext;
 use crate::ingest::parser::{ArtifactParser, ParserRegistry};
 use crate::normalize::ual::{event_time_text, normalize_audit};
-use crate::normalize::ual_shape::{AuditInput, UalShape, detect_shape, to_audit};
+use crate::normalize::ual_shape::{AuditInput, Completeness, UalShape, detect_shape, to_audit};
 use crate::parsers::admin_audit::load_admin_audit;
 use crate::parsers::records::{RecordFormat, SourceRecord, read_records};
 use crate::readers::time::DateOrderDetector;
@@ -29,17 +29,39 @@ pub const UAL_ARTIFACTS: &[(&str, bool)] = &[
     // Microsoft-Extractor-Suite Get-UAL: CSV, JSON, JSONL, SOF-ELK and -AuditDataOnly all
     // reach the Raw / Record shapes. The Merged copy is complete (not flattened); the
     // registry marks it derived only so that it is processed last and superseded.
+    ("inv.quickual.combined", true),
+    ("inv.quickual.operation", false),
+    ("inv.ual.graph", false),
     ("inv.ual.window", false),
     ("inv.ual.merged", false),
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UalSource {
+    Standard,
+    Graph,
+    Quickual,
+}
+
 pub struct UalParser {
     derived: bool,
+    source: UalSource,
 }
 
 pub fn register(r: &mut ParserRegistry) {
     for (id, derived) in UAL_ARTIFACTS {
-        r.register(id, Box::new(UalParser { derived: *derived }));
+        let source = match *id {
+            "inv.ual.graph" => UalSource::Graph,
+            "inv.quickual.combined" | "inv.quickual.operation" => UalSource::Quickual,
+            _ => UalSource::Standard,
+        };
+        r.register(
+            id,
+            Box::new(UalParser {
+                derived: *derived,
+                source,
+            }),
+        );
     }
 }
 
@@ -56,6 +78,58 @@ fn preview_keys(map: &Map<String, Value>) -> String {
     s
 }
 
+fn value_text(map: &Map<String, Value>, key: &str) -> Option<String> {
+    crate::normalize::ual_shape::get_ci(map, key).and_then(crate::normalize::ual_shape::value_text)
+}
+
+fn quickual_csv_input(record: &Map<String, Value>) -> Result<AuditInput> {
+    if let Some(raw) = value_text(record, "AuditData_Raw") {
+        let audit = match serde_json::from_str::<Value>(&raw) {
+            Ok(Value::Object(m)) => m,
+            Ok(_) => return Err(Error::Invalid("AuditData_Raw is not a JSON object".into())),
+            Err(e) => {
+                return Err(Error::Invalid(format!(
+                    "AuditData_Raw is not valid JSON: {e}"
+                )));
+            }
+        };
+        return Ok(AuditInput {
+            audit,
+            completeness: Completeness::Full,
+            outer_record_type: value_text(record, "RecordType"),
+            outer_time: value_text(record, "CreationDate"),
+            flat_params: Vec::new(),
+        });
+    }
+    let mut audit = Map::new();
+    for (src, dst) in [
+        ("Operations", "Operation"),
+        ("AuditData_UserId", "UserId"),
+        ("UserIds", "UserId"),
+        ("AuditData_ClientIP", "ClientIP"),
+        ("AuditData_ObjectId", "ObjectId"),
+    ] {
+        if !audit.contains_key(dst) {
+            if let Some(v) = value_text(record, src) {
+                audit.insert(dst.into(), Value::String(v));
+            }
+        }
+    }
+    if let Some(v) = value_text(record, "CreationDate") {
+        audit.insert("CreationTime".into(), Value::String(v));
+    }
+    if let Some(v) = value_text(record, "RecordType") {
+        audit.insert("RecordType".into(), Value::String(v));
+    }
+    Ok(AuditInput {
+        audit,
+        completeness: Completeness::Partial,
+        outer_record_type: value_text(record, "RecordType"),
+        outer_time: value_text(record, "CreationDate"),
+        flat_params: Vec::new(),
+    })
+}
+
 impl ArtifactParser for UalParser {
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
         let is_csv = format_from_path(ctx.rel_path) == FileFormat::Csv;
@@ -64,11 +138,19 @@ impl ArtifactParser for UalParser {
         } else {
             RecordFormat::Json
         };
+        if self.source == UalSource::Graph && !is_csv && ctx.text.text.trim() == "[" {
+            ctx.warn("Get-UALGraph found no results (the file holds only \"[\")");
+            return Ok(());
+        }
         let records = read_records(ctx, format)?;
         let Some(first) = records.first() else {
             return Ok(());
         };
-        let shape = detect_shape(first.map.keys().map(String::as_str), self.derived);
+        let shape = if self.source == UalSource::Quickual && is_csv {
+            UalShape::Raw
+        } else {
+            detect_shape(first.map.keys().map(String::as_str), self.derived)
+        };
         match shape {
             // Hawk 3 writes Search-AdminAuditLog records under UAL-looking names
             // (RBAC_Changes, User_Changes, Simple_*): they belong in admin_audit_events.
@@ -93,7 +175,11 @@ impl ArtifactParser for UalParser {
         let inputs: Vec<(SourceRecord, std::result::Result<AuditInput, String>)> = records
             .into_iter()
             .map(|r| {
-                let input = to_audit(shape, &r.map, lossy);
+                let input = if self.source == UalSource::Quickual && is_csv {
+                    quickual_csv_input(&r.map).map_err(|e| e.to_string())
+                } else {
+                    to_audit(shape, &r.map, lossy)
+                };
                 (r, input)
             })
             .collect();

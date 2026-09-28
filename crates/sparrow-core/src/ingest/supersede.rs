@@ -92,6 +92,13 @@ impl Handled {
                     }
                 }
             }
+            if stem.eq_ignore_ascii_case("UAL-Operations-Combined") {
+                if let Some(dir) = dir {
+                    if let Some(t) = self.any_file_in(dir) {
+                        return Some(t.to_string());
+                    }
+                }
+            }
         }
         if derived {
             if let Some(p) = dir.and_then(merged_parent) {

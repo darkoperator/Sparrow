@@ -113,6 +113,7 @@ pub const SPARROW_PARSED: &[&str] = &[
     "inv.licenses.tenant",
     "inv.licenses.user",
     "inv.logfile",
+    "inv.mailbox_audit_legacy",
     "inv.mailbox_permissions",
     "inv.mailbox_rules",
     "inv.message_trace",
@@ -121,6 +122,8 @@ pub const SPARROW_PARSED: &[&str] = &[
     "inv.mia.message_ids",
     "inv.mia.sessions",
     "inv.oauth",
+    "inv.quickual.combined",
+    "inv.quickual.operation",
     "inv.risk_detections",
     "inv.risky_users",
     "inv.roles.all",
@@ -131,6 +134,7 @@ pub const SPARROW_PARSED: &[&str] = &[
     "inv.signins",
     "inv.signins.merged",
     "inv.transport_rules",
+    "inv.ual.graph",
     "inv.ual.merged",
     "inv.ual.window",
     "inv.user_applications",
@@ -180,7 +184,11 @@ mod tests {
         assert!(parsed_by_sparrow("inv.directory_activity"));
         assert!(parsed_by_sparrow("hawk.message.header"));
         assert!(parsed_by_sparrow("inv.email"));
+        assert!(parsed_by_sparrow("inv.mailbox_audit_legacy"));
         assert!(parsed_by_sparrow("inv.mailbox_rules"));
+        assert!(parsed_by_sparrow("inv.quickual.combined"));
+        assert!(parsed_by_sparrow("inv.quickual.operation"));
         assert!(parsed_by_sparrow("inv.transport_rules"));
+        assert!(parsed_by_sparrow("inv.ual.graph"));
     }
 }
