@@ -41,6 +41,9 @@ pub fn counterpart_stems(stem: &str) -> Vec<String> {
 pub struct Handled {
     by_lower: HashMap<String, String>,
     failed: HashSet<String>,
+    /// Lower-cased relative path → artifact id, recorded for every listed file whether or not
+    /// it parses, for the rules that must know which files are QuickUAL exports.
+    artifacts: HashMap<String, String>,
 }
 
 impl Handled {
@@ -57,6 +60,46 @@ impl Handled {
         if !self.by_lower.contains_key(&lower) {
             self.failed.insert(lower);
         }
+    }
+
+    /// Record a listed file's artifact id (before it is handled).
+    pub fn note_artifact(&mut self, rel: &str, artifact: &'static str) {
+        self.artifacts
+            .insert(rel.to_lowercase(), artifact.to_string());
+    }
+
+    /// The `inv.quickual.operation` file directly in `dir` that makes a combined export
+    /// redundant: `Some` only when at least one exists and none failed. A per-operation JSON and
+    /// its CSV twin are one export, so the CSV's `skipped_superseded` (its JSON parsed) still
+    /// counts; a failed file means the combined export is the only surviving copy of its
+    /// records, so it must be parsed. The smallest parsed path is named, for a stable message.
+    fn quickual_operations_all_parsed(&self, dir: &str) -> Option<&str> {
+        let prefix = format!("{}/", dir.to_lowercase());
+        let ops: Vec<&String> = self
+            .artifacts
+            .iter()
+            .filter(|(k, a)| a.as_str() == "inv.quickual.operation" && directly_in(k, &prefix))
+            .map(|(k, _)| k)
+            .collect();
+        if ops.is_empty() {
+            return None;
+        }
+        let mut named: Option<&String> = None;
+        for k in &ops {
+            let key: &String = k;
+            if self.failed.contains(key) {
+                return None;
+            }
+            if self.by_lower.contains_key(key) && named.is_none_or(|n| key < n) {
+                named = Some(key);
+            }
+        }
+        let named = named.or_else(|| ops.iter().min().copied())?;
+        Some(
+            self.by_lower
+                .get(named)
+                .map_or(named.as_str(), String::as_str),
+        )
     }
 
     fn get(&self, rel: &str) -> Option<&str> {
@@ -92,9 +135,16 @@ impl Handled {
                     }
                 }
             }
-            if stem.eq_ignore_ascii_case("UAL-Operations-Combined") {
+            // The combined export is redundant only when the QuickUAL per-operation files of
+            // its triage root exist and none failed (a JSON/CSV twin counts as the export);
+            // otherwise the combined file is the only copy of some records and must be parsed
+            // (its records dedupe by id).
+            if stem.eq_ignore_ascii_case("UAL-Operations-Combined")
+                && self.artifacts.get(&rel.to_lowercase()).map(String::as_str)
+                    == Some("inv.quickual.combined")
+            {
                 if let Some(dir) = dir {
-                    if let Some(t) = self.any_file_in(dir) {
+                    if let Some(t) = self.quickual_operations_all_parsed(dir) {
                         return Some(t.to_string());
                     }
                 }

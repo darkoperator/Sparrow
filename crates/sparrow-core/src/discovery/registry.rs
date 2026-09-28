@@ -738,13 +738,17 @@ static DEFS: &[ArtifactDef] = &[
         false,
         r"(?:[^/]+/)?Mailbox Permissions/\d{8}-\d{6}(?:-[^/]+)?/[^/]+-MailboxPermissions\.csv"
     ),
-    // Must stay last: QuickUAL per-operation files have free-form names.
+    // Must stay last: QuickUAL per-operation files have free-form names (`Consent to
+    // application_`). It requires the triage-root level QuickUAL writes at (a leading
+    // `Triage-.../` directory, or the standalone `QuickUAL/<ts>/` run folder), so a file at the
+    // collection root is not claimed; the parser's shape check rejects other triage-root files
+    // (an analyst's own CSV/JSON) as not_supported.
     def!(
         "inv.quickual.operation",
         Invictus,
         "ual_events",
         false,
-        r"(?:[^/]+/)?(?:QuickUAL/\d{8}_\d{6}/)?(?P<subject>[^/]+)\.(?:csv|json)"
+        r"(?:[^/]+/|QuickUAL/\d{8}_\d{6}/)(?P<subject>[^/]+)\.(?:csv|json)"
     ),
 ];
 

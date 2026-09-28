@@ -22,6 +22,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde_json::{Map, Value};
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
+use uuid::Uuid;
 
 /// `Search-UnifiedAuditLog -ResultSize` without session paging.
 const RESULT_CAP: usize = 5000;
@@ -317,6 +318,7 @@ struct Written {
 
 /// Writes one Get-UAL run's window files into `dir` (a tree path) and returns them, oldest
 /// first. `records` sorted by time.
+#[allow(clippy::too_many_arguments)]
 fn write_windows(
     c: &mut Ctx<'_>,
     tree: &mut Tree<'_>,
@@ -325,16 +327,9 @@ fn write_windows(
     records: &[&Ual],
     max_ms: i64,
     at: &mut chrono::NaiveDateTime,
+    full_ids: &BTreeSet<Uuid>,
 ) -> Result<Vec<Written>> {
     let (start, end) = (c.world.window_start(), c.world.window_end());
-    // Get-UALGraph and QuickUAL always write the victims' records from the full AuditData, so a
-    // victim's MailItemsAccessed record is upgraded even when this window is `-AuditDataOnly`.
-    let victim_upns: BTreeSet<String> = c
-        .world
-        .victims
-        .iter()
-        .map(|n| c.world.user(*n).upn.to_lowercase())
-        .collect();
     let mut out = Vec::new();
     for w in windows(start, end, records, max_ms) {
         *at += Duration::seconds(1);
@@ -371,8 +366,10 @@ fn write_windows(
             tree.row(&rel, "ual_events", keys::ual(u.id));
             tree.deliver(&Evidence::Ual(u.id), "ual_events", &rel, *span);
             if u.operation == "MailItemsAccessed" {
-                let full = format != UalFormat::CsvAuditDataOnly
-                    || victim_upns.contains(&u.user_id.to_lowercase());
+                // `-AuditDataOnly` loses `Folders`, so the window loads one child per record;
+                // a full copy from Get-UALGraph or QuickUAL later replaces them with the real
+                // children. `full_ids` is exactly the set those writers emit full.
+                let full = format != UalFormat::CsvAuditDataOnly || full_ids.contains(&u.id);
                 tree.rows_counted(&rel, "mail_items_accessed", mia_children(u, full));
             }
         }
@@ -463,7 +460,14 @@ pub(super) fn write_get_ual(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> 
         .add(at, format!("Output Directory: {}", c.shown(&run.rel)));
     let all = window_records(c);
     let records: Vec<&Ual> = all.iter().collect();
-    let files = write_windows(c, tree, &dir, format, &records, DAY_MS, &mut at)?;
+    // The records Get-UALGraph and QuickUAL emit from the full AuditData, so this run can
+    // predict which `-AuditDataOnly` window records a later full copy will upgrade.
+    let full_ids: BTreeSet<Uuid> = super::quickual::full_records(c)
+        .into_iter()
+        .chain(super::ual_graph::full_records(c))
+        .map(|u| u.id)
+        .collect();
+    let files = write_windows(c, tree, &dir, format, &records, DAY_MS, &mut at, &full_ids)?;
     at += Duration::seconds(1);
     c.log
         .add(at, "[INFO] Merging all output files into one file");
@@ -559,7 +563,16 @@ pub(super) fn write_mailbox_audit_log(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> R
         .iter()
         .filter(|u| u.record_type == RecordType::ExchangeItem && users.contains(&u.user_id))
         .collect();
-    write_windows(c, tree, &dir, UalFormat::Csv, &records, DAY_MS, &mut at)?;
+    write_windows(
+        c,
+        tree,
+        &dir,
+        UalFormat::Csv,
+        &records,
+        DAY_MS,
+        &mut at,
+        &BTreeSet::new(),
+    )?;
     c.runs.busy_until(at);
     Ok(())
 }

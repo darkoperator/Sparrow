@@ -120,12 +120,30 @@ fn csv_row(host: &Host, u: &crate::events::Ual, queried: &str) -> Row {
     ]
 }
 
+/// The operations this writer queries (research event layouts §3).
+const FULL_OPERATIONS: [&str; 4] = [
+    "New-InboxRule",
+    "Set-Mailbox",
+    "MailItemsAccessed",
+    "Consent to application.",
+];
+
 fn op_records<'a>(c: &'a Ctx<'_>, op: &str) -> Vec<&'a crate::events::Ual> {
     let victims = victims(c);
     c.days
         .iter()
         .flat_map(|d| &d.ual)
         .filter(|u| victims.contains(&u.user_id.to_lowercase()) && u.operation == op)
+        .collect()
+}
+
+/// The records this writer emits from the full AuditData. `ual::write_get_ual` reads the same
+/// set to predict which `-AuditDataOnly` windows are upgraded.
+pub(super) fn full_records(c: &Ctx<'_>) -> Vec<crate::events::Ual> {
+    FULL_OPERATIONS
+        .iter()
+        .flat_map(|op| op_records(c, op))
+        .cloned()
         .collect()
 }
 
@@ -187,12 +205,7 @@ fn write_csv(
 }
 
 pub(super) fn write(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
-    let ops = [
-        "New-InboxRule",
-        "Set-Mailbox",
-        "MailItemsAccessed",
-        "Consent to application.",
-    ];
+    let ops = FULL_OPERATIONS;
     let dir = c.triage_root();
     if !c.opts.non_windows {
         tree.dir(&dir)?;

@@ -236,36 +236,46 @@ fn ingest_collection(
     }
     let listing = list_collection_files(&dc.root, dc.shallow)?;
     let reg = Registry::builtin();
-    let mut keyed: Vec<(&CollectionFile, bool, bool)> = listing
+    let mut keyed: Vec<(&CollectionFile, bool, bool, Option<&'static str>)> = listing
         .files
         .iter()
         .map(|f| {
             let class = reg.classify(dc.tool, &f.rel);
             let derived = class.as_ref().is_some_and(|c| c.derived);
-            let flag = class.is_some_and(|c| c.artifact_id == "hawk.investigate_file");
-            (f, derived, flag)
+            let flag = class
+                .as_ref()
+                .is_some_and(|c| c.artifact_id == "hawk.investigate_file");
+            let artifact = class.as_ref().map(|c| c.artifact_id);
+            (f, derived, flag, artifact)
         })
         .collect();
     // Collector flags last: their links look up rows the other files load.
-    keyed.sort_by_cached_key(|(f, derived, flag)| (*flag, processing_key(&f.rel, *derived)));
+    keyed.sort_by_cached_key(|(f, derived, flag, _)| (*flag, processing_key(&f.rel, *derived)));
+    let mut handled = Handled::default();
+    // Note every listed file's artifact up front: the supersede rules need to know which files
+    // are QuickUAL per-operation exports even before any of them is handled.
+    for (f, _, _, artifact) in &keyed {
+        if let Some(a) = artifact {
+            handled.note_artifact(&f.rel, a);
+        }
+    }
     // Raw files, then derived files and collector flags, each stage with its own retry pass:
     // a raw file deferred for its ambiguous dates is handled before any derived file when the
     // raw files proved the order, so the raw records still supersede the derived copies
     // (spec §6); otherwise it waits for the derived files' proof.
     let (raw, rest): (Vec<_>, Vec<_>) = keyed
         .into_iter()
-        .partition(|(_, derived, flag)| !derived && !flag);
-    let mut handled = Handled::default();
+        .partition(|(_, derived, flag, _)| !derived && !flag);
     let mut files = Vec::new();
     // Orders proved by files of this collection parsed in earlier runs count too.
     let mut proved = orders_proved_earlier(case.conn(), collection_id)?;
     // Raw files the raw stage could not order (no proof yet, no conflict): a derived file may
     // still prove the order, so they are retried with the derived stage's deferred files.
-    let mut carried: Vec<(&CollectionFile, bool)> = Vec::new();
+    let mut carried: Vec<(&CollectionFile, bool, Option<&'static str>)> = Vec::new();
     for (i, stage) in [raw, rest].into_iter().enumerate() {
         let last = i == 1;
-        let mut deferred: Vec<(&CollectionFile, bool)> = Vec::new();
-        for (f, derived, _) in stage {
+        let mut deferred: Vec<(&CollectionFile, bool, Option<&'static str>)> = Vec::new();
+        for (f, derived, _, artifact) in stage {
             let job = FileJob {
                 collection_id,
                 tool: dc.tool,
@@ -280,7 +290,7 @@ fn ingest_collection(
             match ingest_file(case, &job, parsers, opts)? {
                 Outcome::Deferred => {
                     handled.insert_failed(&f.rel);
-                    deferred.push((f, derived));
+                    deferred.push((f, derived, artifact));
                 }
                 Outcome::Done(report, orders) => {
                     mark_handled(&mut handled, &f.rel, &report);
@@ -311,7 +321,7 @@ fn ingest_collection(
         } else {
             deferred
         };
-        for (f, derived) in retry {
+        for (f, derived, _) in retry {
             let job = FileJob {
                 collection_id,
                 tool: dc.tool,

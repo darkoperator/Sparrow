@@ -491,6 +491,9 @@ impl Status {
 struct Handled {
     ok: BTreeSet<String>,
     failed: BTreeSet<String>,
+    /// Lower-cased relative path → artifact id, for every listed file (whether or not it
+    /// parses), for the rules that must know which files are QuickUAL exports.
+    artifacts: BTreeMap<String, &'static str>,
 }
 
 impl Handled {
@@ -505,6 +508,33 @@ impl Handled {
         if !self.ok.contains(&l) {
             self.failed.insert(l);
         }
+    }
+
+    /// Record a listed file's artifact id, before any file is decided.
+    fn note_artifact(&mut self, rel: &str, artifact: Option<&'static str>) {
+        if let Some(a) = artifact {
+            self.artifacts.insert(rel.to_lowercase(), a);
+        }
+    }
+
+    /// True when a combined export is redundant: at least one `inv.quickual.operation` file sits
+    /// directly in `dir` and none failed. A per-operation JSON and its CSV twin are one export,
+    /// so the CSV's `skipped_superseded` still counts; a failed file means the combined file is
+    /// the only surviving copy of its records, so it is parsed.
+    fn quickual_operations_all_parsed(&self, dir: &str) -> bool {
+        let prefix = format!("{dir}/");
+        let directly = |p: &str| p.strip_prefix(&prefix).is_some_and(|r| !r.contains('/'));
+        let mut found = false;
+        for (lower, artifact) in &self.artifacts {
+            if *artifact != "inv.quickual.operation" || !directly(lower) {
+                continue;
+            }
+            found = true;
+            if self.failed.contains(lower) {
+                return false;
+            }
+        }
+        found
     }
 
     /// Rule 5: a CSV whose same-folder JSON twin was handled; a derived file whose counterpart
@@ -538,10 +568,7 @@ impl Handled {
         }
         if stem == "ual-operations-combined" {
             if let Some(dir) = dir {
-                let prefix = format!("{dir}/");
-                let directly =
-                    |p: &&String| p.strip_prefix(&prefix).is_some_and(|r| !r.contains('/'));
-                if self.ok.iter().any(|p| directly(&p)) {
+                if self.quickual_operations_all_parsed(dir) {
                     return true;
                 }
             }
@@ -594,6 +621,9 @@ fn replay(files: &[Facts], culture_given: bool) -> BTreeMap<&str, Status> {
 
     let mut out: BTreeMap<&str, Status> = BTreeMap::new();
     let mut handled = Handled::default();
+    for f in files {
+        handled.note_artifact(&f.rel, f.artifact);
+    }
     let mut parsed: BTreeSet<(String, Option<&'static str>, Option<String>)> = BTreeSet::new();
     let mut proved = false;
     let first = if culture_given {

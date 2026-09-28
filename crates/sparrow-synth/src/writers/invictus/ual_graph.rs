@@ -23,7 +23,9 @@ fn victims(c: &Ctx<'_>) -> BTreeSet<String> {
         .collect()
 }
 
-fn victim_records(c: &Ctx<'_>) -> Vec<crate::events::Ual> {
+/// The records this writer emits from the full AuditData (the victims' records). `ual::
+/// write_get_ual` reads the same set to predict which `-AuditDataOnly` windows are upgraded.
+pub(super) fn full_records(c: &Ctx<'_>) -> Vec<crate::events::Ual> {
     let victims = victims(c);
     c.days
         .iter()
@@ -199,7 +201,7 @@ fn write_jsonl(
 }
 
 pub(super) fn write(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
-    let records = victim_records(c);
+    let records = full_records(c);
     let rows: Vec<Row> = records.iter().map(graph_row).collect();
 
     let run = c.runs.next("UnifiedAuditLog", None);

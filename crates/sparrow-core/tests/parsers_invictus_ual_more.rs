@@ -83,6 +83,40 @@ fn lone_bracket_graph_json_is_an_empty_export_with_the_expected_warning() {
 }
 
 #[test]
+fn an_unrelated_csv_in_the_triage_root_is_not_supported_and_loads_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("Output");
+    std::fs::create_dir_all(root.join("Triage1")).unwrap();
+    std::fs::write(
+        root.join("Triage1/analyst notes.csv"),
+        "author,note\r\nanalyst,seen\r\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("LogFile.txt"),
+        b"2026-09-10 10:00:00: Starting\r\n",
+    )
+    .unwrap();
+    let mut case = Case::in_memory().unwrap();
+    let report = ingest_path(
+        &mut case,
+        dir.path(),
+        &ParserRegistry::builtin(),
+        &IngestOptions::default(),
+    )
+    .unwrap();
+    let f = report.collections[0]
+        .files
+        .iter()
+        .find(|f| f.rel_path.ends_with("analyst notes.csv"))
+        .unwrap();
+    assert_eq!(f.artifact_id.as_deref(), Some("inv.quickual.operation"));
+    assert_eq!(f.status, FileStatus::NotSupported);
+    assert_eq!((f.records_read, f.records_loaded), (0, 0));
+    assert_eq!(count(&case, "SELECT count(*) FROM ual_events"), 0);
+}
+
+#[test]
 fn invictus_legacy_mailbox_audit_csv_uses_the_existing_parser() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("Output");

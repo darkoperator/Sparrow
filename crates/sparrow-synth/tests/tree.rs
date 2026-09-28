@@ -126,6 +126,60 @@ fn merged_is_superseded_unless_a_sibling_failed() {
     );
 }
 
+/// The QuickUAL combined export is redundant only when every `inv.quickual.operation` file in
+/// its triage root parsed; otherwise it is the only copy of the failed operation's records.
+fn quickual_combined(operations: &[(&str, Option<&'static str>)], unrelated: bool) -> String {
+    let mut sink = MemSink::default();
+    let mut t = Tree::new(&mut sink, "Output", BTreeSet::new(), CulturePolicy::Never);
+    for (rel, status) in operations {
+        let spec = FileSpec::new(rel, Some("inv.quickual.operation"), Encoding::Utf8);
+        t.write(&spec, &format!("{rel}\r\n")).unwrap();
+        if let Some(s) = status {
+            t.expect_status(rel, s);
+        }
+    }
+    if unrelated {
+        let rel = "Triage1/202609101000-UserApplications.csv";
+        let spec = FileSpec::new(rel, Some("inv.user_applications"), Encoding::Utf8);
+        t.write(&spec, &format!("{rel}\r\n")).unwrap();
+    }
+    let rel = "Triage1/UAL-Operations-Combined.csv";
+    let combined = FileSpec::new(rel, Some("inv.quickual.combined"), Encoding::Utf8).derived();
+    t.write(&combined, &format!("{rel}\r\n")).unwrap();
+    let out = t.finish().unwrap();
+    status(&out, rel)
+}
+
+#[test]
+fn quickual_combined_is_superseded_when_every_operation_file_parsed() {
+    let s = quickual_combined(
+        &[
+            ("Triage1/New-InboxRule.json", None),
+            ("Triage1/Set-Mailbox.csv", None),
+        ],
+        false,
+    );
+    assert_eq!(s, "skipped_superseded");
+}
+
+#[test]
+fn quickual_combined_is_parsed_when_an_operation_file_failed() {
+    let s = quickual_combined(
+        &[
+            ("Triage1/New-InboxRule.json", None),
+            ("Triage1/Set-Mailbox.csv", Some("error")),
+        ],
+        false,
+    );
+    assert_eq!(s, "parsed");
+}
+
+#[test]
+fn quickual_combined_is_parsed_when_only_an_unrelated_file_parsed() {
+    let s = quickual_combined(&[], true);
+    assert_eq!(s, "parsed");
+}
+
 #[test]
 fn rows_deliveries_lines_and_boms() {
     let id = Uuid::from_u128(7);

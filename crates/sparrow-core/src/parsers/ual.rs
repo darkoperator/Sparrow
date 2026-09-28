@@ -6,6 +6,7 @@ use crate::discovery::{FileFormat, format_from_path};
 use crate::ingest::bulk::{StagedUal, load_ual_batch};
 use crate::ingest::context::ParseContext;
 use crate::ingest::parser::{ArtifactParser, ParserRegistry};
+use crate::normalize::fields::Rec;
 use crate::normalize::ual::{event_time_text, normalize_audit};
 use crate::normalize::ual_shape::{AuditInput, Completeness, UalShape, detect_shape, to_audit};
 use crate::parsers::admin_audit::load_admin_audit;
@@ -82,6 +83,37 @@ fn value_text(map: &Map<String, Value>, key: &str) -> Option<String> {
     crate::normalize::ual_shape::get_ci(map, key).and_then(crate::normalize::ual_shape::value_text)
 }
 
+/// The 16 columns `Get-QuickUALOperations` writes (research event layouts §3).
+const QUICKUAL_CSV_COLUMNS: &[&str] = &[
+    "RecordType",
+    "CreationDate",
+    "UserIds",
+    "Operations",
+    "ResultIndex",
+    "ResultCount",
+    "AuditSearchRequestMetadata",
+    "Identity",
+    "IsValid",
+    "ObjectState",
+    "OperationQueried",
+    "AuditData_UserId",
+    "AuditData_ClientIP",
+    "AuditData_UserAgent",
+    "AuditData_ObjectId",
+    "AuditData_Raw",
+];
+
+/// Whether a QuickUAL record has the fields the collector writes: JSON records carry
+/// `OperationQueried` and a parsed `AuditData`; CSV rows carry the 16-column header. Anything
+/// else in a triage root (for example an analyst's own `notes.csv`) is not a QuickUAL export.
+fn is_quickual_record(rec: &Rec<'_>, is_csv: bool) -> bool {
+    if is_csv {
+        QUICKUAL_CSV_COLUMNS.iter().all(|c| rec.has(c))
+    } else {
+        rec.has("OperationQueried") && rec.has("AuditData")
+    }
+}
+
 fn quickual_csv_input(record: &Map<String, Value>) -> Result<AuditInput> {
     if let Some(raw) = value_text(record, "AuditData_Raw") {
         let audit = match serde_json::from_str::<Value>(&raw) {
@@ -146,7 +178,17 @@ impl ArtifactParser for UalParser {
         let Some(first) = records.first() else {
             return Ok(());
         };
-        let shape = if self.source == UalSource::Quickual && is_csv {
+        let shape = if self.source == UalSource::Quickual {
+            if !is_quickual_record(&Rec::new(&first.map, false), is_csv) {
+                return Err(Error::UnsupportedShape(format!(
+                    "not a QuickUAL export (missing {})",
+                    if is_csv {
+                        "the 16-column header"
+                    } else {
+                        "OperationQueried/AuditData"
+                    }
+                )));
+            }
             UalShape::Raw
         } else {
             detect_shape(first.map.keys().map(String::as_str), self.derived)

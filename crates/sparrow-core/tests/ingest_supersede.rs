@@ -281,14 +281,65 @@ fn handled_lookup_is_case_insensitive_and_scoped_to_the_folder() {
     assert_eq!(h.superseded_by("noext", true), None);
 }
 
-#[test]
-fn quickual_combined_is_superseded_by_operation_files_in_the_same_root() {
+/// A QuickUAL combined export is made redundant only by the `inv.quickual.operation` files in
+/// its own triage root, and only when every one of them parsed.
+fn quickual_handled(operations: &[(&str, bool)]) -> Handled {
     let mut h = Handled::default();
-    h.insert("Triage1/New-InboxRule.json");
+    h.note_artifact(
+        "Triage1/UAL-Operations-Combined.csv",
+        "inv.quickual.combined",
+    );
+    for (rel, ok) in operations {
+        h.note_artifact(rel, "inv.quickual.operation");
+        if *ok {
+            h.insert(rel);
+        } else {
+            h.insert_failed(rel);
+        }
+    }
+    h
+}
+
+#[test]
+fn quickual_combined_is_superseded_when_every_operation_file_parsed() {
+    let h = quickual_handled(&[
+        ("Triage1/New-InboxRule.json", true),
+        ("Triage1/Set-Mailbox.csv", true),
+    ]);
     assert_eq!(
         h.superseded_by("Triage1/UAL-Operations-Combined.csv", true)
             .as_deref(),
         Some("Triage1/New-InboxRule.json")
+    );
+}
+
+#[test]
+fn quickual_combined_is_parsed_when_an_operation_file_failed() {
+    let h = quickual_handled(&[
+        ("Triage1/New-InboxRule.json", true),
+        ("Triage1/Set-Mailbox.csv", false),
+    ]);
+    assert_eq!(
+        h.superseded_by("Triage1/UAL-Operations-Combined.csv", true),
+        None
+    );
+}
+
+#[test]
+fn quickual_combined_is_parsed_when_only_an_unrelated_file_parsed() {
+    let mut h = Handled::default();
+    h.note_artifact(
+        "Triage1/UAL-Operations-Combined.csv",
+        "inv.quickual.combined",
+    );
+    h.note_artifact(
+        "Triage1/202609101000-UserApplications.csv",
+        "inv.user_applications",
+    );
+    h.insert("Triage1/202609101000-UserApplications.csv");
+    assert_eq!(
+        h.superseded_by("Triage1/UAL-Operations-Combined.csv", true),
+        None
     );
 }
 
