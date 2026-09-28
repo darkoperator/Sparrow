@@ -346,13 +346,13 @@ fn quickual_combined_is_parsed_when_only_an_unrelated_file_parsed() {
 #[test]
 fn processing_order_is_raw_then_derived_json_then_csv() {
     let mut v = [
-        processing_key("b.csv", true),
-        processing_key("a.csv", false),
-        processing_key("z.json", true),
-        processing_key("c.json", false),
+        processing_key("b.csv", true, 0),
+        processing_key("a.csv", false, 0),
+        processing_key("z.json", true, 0),
+        processing_key("c.json", false, 0),
     ];
     v.sort();
-    let order: Vec<&str> = v.iter().map(|k| k.2.as_str()).collect();
+    let order: Vec<&str> = v.iter().map(|k| k.3.as_str()).collect();
     assert_eq!(order, vec!["c.json", "a.csv", "z.json", "b.csv"]);
 }
 

@@ -15,12 +15,12 @@ use crate::readers::text::Span;
 use regex::Regex;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::path::Path;
 use std::sync::OnceLock;
 
 pub fn register(r: &mut ParserRegistry) {
     r.register("inv.email", Box::new(EmailParser));
     r.register("hawk.message.header", Box::new(HawkHeaderParser));
+    r.register("hawk.message.header_findings", Box::new(HawkFindingsParser));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -256,7 +256,7 @@ fn extract_address(entry: &str) -> (Option<String>, Option<String>) {
     (None, (!addr.is_empty()).then_some(addr))
 }
 
-/// Angle brackets trimmed and trimmed; the `email_artifacts` key form.
+/// Angle brackets trimmed; the `message_id` column form (the original case).
 fn clean_message_id(value: &str) -> String {
     value
         .trim()
@@ -264,6 +264,11 @@ fn clean_message_id(value: &str) -> String {
         .trim_end_matches('>')
         .trim()
         .to_string()
+}
+
+/// The `email_artifacts` record key: the lower-case Message-ID without its angle brackets.
+fn message_key(value: &str) -> String {
+    clean_message_id(value).to_lowercase()
 }
 
 /// The `spf`/`dkim`/`dmarc` result word from an `Authentication-Results` header.
@@ -299,10 +304,11 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// `Content-Disposition: attachment; filename=` (and `filename*=` RFC 2231) values.
+/// `Content-Disposition: attachment; filename=` (and `filename*=` RFC 2231) values. MIME
+/// part headers are unfolded first (RFC 5322 folding), so a folded parameter still reads.
 fn attachment_names(text: &str) -> Vec<String> {
     let mut out = Vec::new();
-    for line in text.lines() {
+    for line in unfold_lines(text) {
         let bare = line.trim();
         let lower = bare.to_ascii_lowercase();
         if !lower.starts_with("content-disposition:") || !lower.contains("attachment") {
@@ -319,6 +325,23 @@ fn attachment_names(text: &str) -> Vec<String> {
             let v = v.split(';').next().unwrap_or(v).trim();
             out.push(v.to_string());
         }
+    }
+    out
+}
+
+/// Join every folded line (one starting with WSP) to the line above, over the whole text
+/// (MIME part headers can follow the body, so no blank-line stop).
+fn unfold_lines(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines() {
+        if line.starts_with([' ', '\t']) {
+            if let Some(last) = out.last_mut() {
+                last.push(' ');
+                last.push_str(line.trim());
+                continue;
+            }
+        }
+        out.push(line.trim_end().to_string());
     }
     out
 }
@@ -393,7 +416,10 @@ impl ArtifactParser for EmailParser {
         }
         let set = HeaderSet::new(&headers);
         let message_id = set.get("Message-ID").map(clean_message_id);
-        let key = message_id.clone().unwrap_or_else(|| sha256_hex(ctx.raw));
+        let key = message_id
+            .as_deref()
+            .map(message_key)
+            .unwrap_or_else(|| sha256_hex(ctx.raw));
         let from = set.get("From").map(decode_encoded_words);
         let (from_display, from_address) =
             from.as_deref().map(extract_address).unwrap_or((None, None));
@@ -506,6 +532,11 @@ const HAWK_HEADER_COLS: &[&str] = &[
 
 const HAWK_FINDINGS_COLS: &[&str] = &["source", "message_id", "subject", "p1_p2_match", "findings"];
 
+/// The findings file merging into an already-ingested header row stages no `p1_p2_match`: the
+/// header parser computes it from the From/Return-Path headers (Hawk's own conclusion is
+/// affected by its bracket comparison bug).
+const HAWK_FINDINGS_MERGE_COLS: &[&str] = &["source", "message_id", "subject", "findings"];
+
 /// The `Header, Value` rows of a Hawk `Message_Header_<f>.csv` as unfolded headers.
 fn csv_headers(text: &str) -> Vec<Header> {
     let table = read_csv(text);
@@ -524,81 +555,56 @@ fn csv_headers(text: &str) -> Vec<Header> {
         .collect()
 }
 
-/// The Message-ID in the sibling `Message_Header_<f>.csv` of a findings file in the same
-/// folder, reading the file from the collection root when it exists.
-fn sibling_message_id(ctx: &ParseContext<'_>) -> Option<String> {
+/// The (`record_key`, original-case `message_id`) of the `email_artifacts` row loaded from the
+/// sibling `Message_Header_<f>.csv` of THIS collection, when that header file was ingested
+/// before this findings file. Resolved from the DB (`record_sources`), never by reading another
+/// file.
+fn sibling_header_row(ctx: &ParseContext<'_>) -> Option<(String, String)> {
     let (dir, file) = ctx.rel_path.rsplit_once('/')?;
     let header_file = file.replacen("Message_Header_Findings_", "Message_Header_", 1);
     if header_file == file {
         return None;
     }
-    let root: String = ctx
-        .conn
+    let sibling = format!("{dir}/{header_file}");
+    ctx.conn
         .query_row(
-            "SELECT root_path FROM collections WHERE collection_id = ?",
-            [ctx.collection_id],
-            |r| r.get(0),
+            "SELECT ea.record_key, ea.message_id
+             FROM email_artifacts ea
+             JOIN record_sources rs ON rs.table_name = 'email_artifacts' AND rs.record_key = ea.record_key
+             JOIN source_files sf ON sf.file_id = rs.file_id
+             WHERE ea.collection_id = ? AND sf.collection_id = ? AND sf.rel_path = ?
+               AND ea.message_id IS NOT NULL
+             ORDER BY rs.file_id LIMIT 1",
+            duckdb::params![ctx.collection_id, ctx.collection_id, sibling],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
         )
-        .ok()?;
-    let path = Path::new(&root).join(dir).join(header_file);
-    let bytes = std::fs::read(path).ok()?;
-    let text = crate::readers::text::decode(&bytes).text;
-    let headers = csv_headers(&text);
-    let set = HeaderSet::new(&headers);
-    set.get("Message-ID").map(clean_message_id)
+        .ok()
 }
 
-/// `Message_Header_<f>.csv` (one `email_artifacts` row) and `Message_Header_Findings_<f>.csv`
-/// (the findings of the row with the same folder).
+/// The header file name a findings file expects, for the missing-sibling warning.
+fn sibling_name(ctx: &ParseContext<'_>) -> Option<String> {
+    let (_, file) = ctx.rel_path.rsplit_once('/')?;
+    let header_file = file.replacen("Message_Header_Findings_", "Message_Header_", 1);
+    (header_file != file).then_some(header_file)
+}
+
+/// `Message_Header_<f>.csv`: one `email_artifacts` row built from all `Header, Value` rows.
 pub struct HawkHeaderParser;
 
 impl ArtifactParser for HawkHeaderParser {
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
         let text = ctx.text.text.as_str();
         let subject = ctx.subject.unwrap_or_default().to_string();
-        let is_findings = ctx
-            .rel_path
-            .rsplit_once('/')
-            .is_some_and(|(_, f)| f.starts_with("Message_Header_Findings_"));
-        if is_findings {
-            let findings = parse_findings(text);
-            let sibling = sibling_message_id(ctx);
-            let key = sibling
-                .clone()
-                .unwrap_or_else(|| format!("hawk|{}", subject.to_lowercase()));
-            let p1_p2 = findings_p1_p2(&findings);
-            let mut c = CellRow::new(HAWK_FINDINGS_COLS);
-            c.set("source", Cell::text(Some("hawk_message_header".into())))
-                .set("message_id", Cell::text(sibling))
-                .set("subject", Cell::text(Some(subject)))
-                .set("p1_p2_match", Cell::bool(p1_p2))
-                .set(
-                    "findings",
-                    Cell::json((!findings.is_empty()).then(|| Value::Array(findings.clone()))),
-                );
-            let mut rows = TableRows::new(&EMAIL_ARTIFACTS, HAWK_FINDINGS_COLS);
-            rows.push_draft(RowDraft {
-                ordinal: 0,
-                span: Span {
-                    start: 0,
-                    end: text.len(),
-                },
-                record_key: key,
-                cells: c.into_cells(),
-                raw: Some(json!({"findings": findings})),
-                sheet_row: None,
-            });
-            return load_tables(ctx, vec![rows]);
-        }
-
-        // The header file: one record built from all `Header, Value` rows.
         let headers = csv_headers(text);
         if headers.is_empty() {
             return Ok(());
         }
         let set = HeaderSet::new(&headers);
         let message_id = set.get("Message-ID").map(clean_message_id);
-        let key = message_id.clone().unwrap_or_else(|| sha256_hex(ctx.raw));
+        let key = message_id
+            .as_deref()
+            .map(message_key)
+            .unwrap_or_else(|| sha256_hex(ctx.raw));
         let from = set.get("From").map(decode_encoded_words);
         let (from_display, from_address) =
             from.as_deref().map(extract_address).unwrap_or((None, None));
@@ -657,6 +663,60 @@ impl ArtifactParser for HawkHeaderParser {
             record_key: key,
             cells: c.into_cells(),
             raw: Some(json!({"headers": headers_json(&headers)})),
+            sheet_row: None,
+        });
+        load_tables(ctx, vec![rows])
+    }
+}
+
+/// `Message_Header_Findings_<f>.csv`: the findings (and `p1_p2_match`) of the `email_artifacts`
+/// row with the same subject folder, keyed by the Message-ID of the sibling header file's
+/// ingested row. `priority` (registry) makes the ingest parse the header file first.
+pub struct HawkFindingsParser;
+
+impl ArtifactParser for HawkFindingsParser {
+    fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
+        let text = ctx.text.text.as_str();
+        let subject = ctx.subject.unwrap_or_default().to_string();
+        let findings = parse_findings(text);
+        let (key, message_id, sibling_found) = match sibling_header_row(ctx) {
+            Some((key, message_id)) => (key, Some(message_id), true),
+            None => {
+                let missing =
+                    sibling_name(ctx).unwrap_or_else(|| "Message_Header_<file>.csv".into());
+                ctx.warn(format!(
+                    "no ingested {missing} in this folder; keying the findings as hawk|{}",
+                    subject.to_lowercase()
+                ));
+                (format!("hawk|{}", subject.to_lowercase()), None, false)
+            }
+        };
+        let cols = if sibling_found {
+            HAWK_FINDINGS_MERGE_COLS
+        } else {
+            HAWK_FINDINGS_COLS
+        };
+        let mut c = CellRow::new(cols);
+        c.set("source", Cell::text(Some("hawk_message_header".into())))
+            .set("message_id", Cell::text(message_id))
+            .set("subject", Cell::text(Some(subject)))
+            .set(
+                "findings",
+                Cell::json((!findings.is_empty()).then(|| Value::Array(findings.clone()))),
+            );
+        if !sibling_found {
+            c.set("p1_p2_match", Cell::bool(findings_p1_p2(&findings)));
+        }
+        let mut rows = TableRows::new(&EMAIL_ARTIFACTS, cols);
+        rows.push_draft(RowDraft {
+            ordinal: 0,
+            span: Span {
+                start: 0,
+                end: text.len(),
+            },
+            record_key: key,
+            cells: c.into_cells(),
+            raw: Some(json!({"findings": findings})),
             sheet_row: None,
         });
         load_tables(ctx, vec![rows])
@@ -724,12 +784,19 @@ mod tests {
         assert_eq!(auth_result(auth, "dmarc").as_deref(), Some("fail"));
         let mime = "Content-Type: multipart/mixed; boundary=\"x\"\r\nContent-Disposition: attachment; filename=\"report.pdf\"\r\n";
         assert_eq!(attachment_names(mime), vec!["report.pdf".to_string()]);
+        // A folded Content-Disposition parameter still reads (RFC 5322 unfolding).
+        let folded = "Content-Disposition: attachment;\r\n filename=\"quarterly report.pdf\"\r\n";
+        assert_eq!(
+            attachment_names(folded),
+            vec!["quarterly report.pdf".to_string()]
+        );
         let rfc2231 = "Content-Disposition: attachment; filename*=utf-8''r%C3%A9sum%C3%A9.pdf\r\n";
         assert_eq!(attachment_names(rfc2231), vec!["résumé.pdf".to_string()]);
     }
 
     #[test]
-    fn message_id_key_trims_brackets() {
+    fn message_id_keeps_case_but_key_lower_cases() {
         assert_eq!(clean_message_id(" <AbC@x.test> "), "AbC@x.test");
+        assert_eq!(message_key(" <AbC@x.test> "), "abc@x.test");
     }
 }

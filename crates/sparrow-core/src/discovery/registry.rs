@@ -19,6 +19,10 @@ pub struct ArtifactDef {
     pub tool: Tool,
     pub target: &'static str,
     pub derived: bool,
+    /// Files with a higher priority are ingested after the other files of their
+    /// (raw/derived, JSON/CSV) stage, so a summary that reads an earlier file's ingested row
+    /// (Hawk's `Message_Header_Findings_*`) resolves it from the DB. 0 for ordinary files.
+    pub priority: i16,
     pub pattern: &'static str,
 }
 
@@ -27,6 +31,7 @@ pub struct Classification {
     pub artifact_id: &'static str,
     pub target: &'static str,
     pub derived: bool,
+    pub priority: i16,
     pub subject: Option<String>,
 }
 
@@ -67,6 +72,21 @@ macro_rules! def {
             tool: Tool::$tool,
             target: $target,
             derived: $derived,
+            priority: 0,
+            pattern: $pat,
+        }
+    };
+}
+
+/// A definition the ingest orders after its `priority: 0` siblings (see [`ArtifactDef::priority`]).
+macro_rules! def_after {
+    ($id:literal, $tool:ident, $target:literal, $derived:literal, $pat:literal) => {
+        ArtifactDef {
+            id: $id,
+            tool: Tool::$tool,
+            target: $target,
+            derived: $derived,
+            priority: 1,
             pattern: $pat,
         }
     };
@@ -415,12 +435,21 @@ static DEFS: &[ArtifactDef] = &[
         false,
         r"(?P<subject>[^/]+)/Message_Header_RAW_[^/]+\.txt"
     ),
+    // The findings file reads the sibling `Message_Header_<f>.csv`'s ingested row, so the
+    // ingest parses it after its header file (`priority: 1`).
+    def_after!(
+        "hawk.message.header_findings",
+        Hawk,
+        "email_artifacts",
+        false,
+        r"(?P<subject>[^/]+)/Message_Header_Findings_[^/]+\.csv"
+    ),
     def!(
         "hawk.message.header",
         Hawk,
         "email_artifacts",
         false,
-        r"(?P<subject>[^/]+)/Message_Header(?:_Findings)?_[^/]+\.csv"
+        r"(?P<subject>[^/]+)/Message_Header_[^/]+\.csv"
     ),
     def!(
         "hawk.xml",
@@ -823,6 +852,7 @@ fn portal_by_headers(headers: &HashSet<String>, xlsx: bool) -> Option<Classifica
             artifact_id: d.id,
             target: d.target,
             derived: false,
+            priority: 0,
             subject: None,
         })
 }
@@ -902,6 +932,7 @@ impl Registry {
                     artifact_id: d.id,
                     target: d.target,
                     derived: d.derived,
+                    priority: d.priority,
                     subject: c.name("subject").map(|m| m.as_str().to_string()),
                 })
             })

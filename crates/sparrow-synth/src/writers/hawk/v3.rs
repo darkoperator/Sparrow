@@ -655,6 +655,7 @@ fn forwarding_changes(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
             id: "hawk.tenant.forwarding_recipients",
             derived: true,
             not_supported: true,
+            priority: 0,
         },
         &rows,
         Formats::CSV_JSON,

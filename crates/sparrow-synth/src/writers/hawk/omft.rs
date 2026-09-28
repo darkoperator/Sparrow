@@ -115,6 +115,10 @@ pub struct Art {
     pub id: &'static str,
     pub derived: bool,
     pub not_supported: bool,
+    /// The ingest orders a file with a higher priority after the other files of its
+    /// (raw/derived, JSON/CSV) stage; a summary that reads another file's ingested row (Hawk's
+    /// `Message_Header_Findings_*`) declares 1.
+    pub priority: i16,
 }
 
 impl Art {
@@ -124,6 +128,7 @@ impl Art {
             id,
             derived: false,
             not_supported: false,
+            priority: 0,
         }
     }
 
@@ -133,6 +138,7 @@ impl Art {
             id,
             derived: true,
             not_supported: false,
+            priority: 0,
         }
     }
 
@@ -142,6 +148,7 @@ impl Art {
             id,
             derived: false,
             not_supported: true,
+            priority: 0,
         }
     }
 
@@ -149,6 +156,15 @@ impl Art {
     pub const fn without_parser(self) -> Art {
         Art {
             not_supported: true,
+            ..self
+        }
+    }
+
+    /// The file reads another file's ingested row: the ingest parses it after the ordinary
+    /// files of its stage (registry `priority: 1`).
+    pub const fn after(self) -> Art {
+        Art {
+            priority: 1,
             ..self
         }
     }
@@ -168,6 +184,7 @@ pub fn spec(rel: &str, encoding: Encoding, art: Art, subject: Option<&str>) -> F
     );
     let mut s = FileSpec::new(rel, Some(art.id), encoding);
     s.derived = art.derived;
+    s.priority = art.priority;
     s.subject = subject.map(str::to_string);
     if art.not_supported {
         s.expect_status = Some("not_supported");

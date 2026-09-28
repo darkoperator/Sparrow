@@ -256,8 +256,14 @@ const SAMPLES: &[(Tool, &str, &str, Option<&str>)] = &[
     ),
     (
         Hawk,
-        "invoice.msg/Message_Header_Findings_invoice.msg.csv",
+        "invoice.msg/Message_Header_invoice.msg.csv",
         "hawk.message.header",
+        Some("invoice.msg"),
+    ),
+    (
+        Hawk,
+        "invoice.msg/Message_Header_Findings_invoice.msg.csv",
+        "hawk.message.header_findings",
         Some("invoice.msg"),
     ),
     (Hawk, "Tenant/XML/Something.xml", "hawk.xml", None),

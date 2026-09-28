@@ -191,11 +191,14 @@ fn merged_parent(dir: &str) -> Option<&str> {
     last.eq_ignore_ascii_case("merged").then_some(parent)
 }
 
-/// Sort key for processing a collection: raw before derived, JSON before CSV, then path.
-pub fn processing_key(rel: &str, derived: bool) -> (bool, bool, String) {
+/// Sort key for processing a collection: raw before derived, JSON before CSV, then a file
+/// whose artifact reads another file's ingested row (`priority`, e.g. Hawk's
+/// `Message_Header_Findings_*`) after the ordinary files, then path.
+pub fn processing_key(rel: &str, derived: bool, priority: i16) -> (bool, bool, i16, String) {
     (
         derived,
         rel.to_ascii_lowercase().ends_with(".csv"),
+        priority,
         rel.to_string(),
     )
 }

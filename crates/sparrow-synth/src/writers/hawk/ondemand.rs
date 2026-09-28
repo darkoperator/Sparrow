@@ -279,7 +279,7 @@ fn message_header(c: &mut Ctx<'_>, tree: &mut Tree<'_>, e: &Email, name: &str) -
         tree,
         "Message_Header_Findings",
         Some(name),
-        Art::raw("hawk.message.header"),
+        Art::raw("hawk.message.header_findings").after(),
         &findings,
         Formats::CSV,
         false,

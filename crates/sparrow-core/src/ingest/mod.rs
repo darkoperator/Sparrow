@@ -236,7 +236,7 @@ fn ingest_collection(
     }
     let listing = list_collection_files(&dc.root, dc.shallow)?;
     let reg = Registry::builtin();
-    let mut keyed: Vec<(&CollectionFile, bool, bool, Option<&'static str>)> = listing
+    let mut keyed: Vec<(&CollectionFile, bool, bool, Option<&'static str>, i16)> = listing
         .files
         .iter()
         .map(|f| {
@@ -246,15 +246,18 @@ fn ingest_collection(
                 .as_ref()
                 .is_some_and(|c| c.artifact_id == "hawk.investigate_file");
             let artifact = class.as_ref().map(|c| c.artifact_id);
-            (f, derived, flag, artifact)
+            let priority = class.as_ref().map_or(0, |c| c.priority);
+            (f, derived, flag, artifact, priority)
         })
         .collect();
     // Collector flags last: their links look up rows the other files load.
-    keyed.sort_by_cached_key(|(f, derived, flag, _)| (*flag, processing_key(&f.rel, *derived)));
+    keyed.sort_by_cached_key(|(f, derived, flag, _, priority)| {
+        (*flag, processing_key(&f.rel, *derived, *priority))
+    });
     let mut handled = Handled::default();
     // Note every listed file's artifact up front: the supersede rules need to know which files
     // are QuickUAL per-operation exports even before any of them is handled.
-    for (f, _, _, artifact) in &keyed {
+    for (f, _, _, artifact, _) in &keyed {
         if let Some(a) = artifact {
             handled.note_artifact(&f.rel, a);
         }
@@ -265,7 +268,7 @@ fn ingest_collection(
     // (spec §6); otherwise it waits for the derived files' proof.
     let (raw, rest): (Vec<_>, Vec<_>) = keyed
         .into_iter()
-        .partition(|(_, derived, flag, _)| !derived && !flag);
+        .partition(|(_, derived, flag, _, _)| !derived && !flag);
     let mut files = Vec::new();
     // Orders proved by files of this collection parsed in earlier runs count too.
     let mut proved = orders_proved_earlier(case.conn(), collection_id)?;
@@ -275,7 +278,7 @@ fn ingest_collection(
     for (i, stage) in [raw, rest].into_iter().enumerate() {
         let last = i == 1;
         let mut deferred: Vec<(&CollectionFile, bool, Option<&'static str>)> = Vec::new();
-        for (f, derived, _, artifact) in stage {
+        for (f, derived, _, artifact, _) in stage {
             let job = FileJob {
                 collection_id,
                 tool: dc.tool,

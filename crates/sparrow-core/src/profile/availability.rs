@@ -674,7 +674,11 @@ pub static EVIDENCE: &[EvidenceDef] = &[
         id: "email_artifacts",
         title: "Exported e-mail messages",
         kind: Kind::State,
-        artifacts: &["inv.email", "hawk.message.header"],
+        artifacts: &[
+            "inv.email",
+            "hawk.message.header",
+            "hawk.message.header_findings",
+        ],
         invictus_runs: &[("Email Export", None)],
         hawk_log: Some(r"^Reading message header from file"),
         invictus: Some("Get-Email -UserIds <upn> -internetMessageId <id>"),

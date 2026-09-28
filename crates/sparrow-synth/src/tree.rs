@@ -110,6 +110,9 @@ pub struct FileSpec {
     /// Sparrow's registry marks the artifact derived (processed after raw files, superseded by
     /// its raw counterpart).
     pub derived: bool,
+    /// The ingest parses a higher-priority file after the other files of its stage; a summary
+    /// that reads another file's ingested row declares 1.
+    pub priority: i16,
     /// The subject Sparrow takes from the path (a user folder's UPN...). Required for
     /// per-subject artifacts (Hawk user files and the like): without it, byte-identical files of
     /// different users replay as `duplicate_file`.
@@ -128,6 +131,7 @@ impl FileSpec {
             rel: rel.to_string(),
             artifact,
             derived: false,
+            priority: 0,
             subject: None,
             encoding,
             source_derived: false,
@@ -137,6 +141,13 @@ impl FileSpec {
 
     pub fn derived(mut self) -> FileSpec {
         self.derived = true;
+        self
+    }
+
+    /// The file reads another file's ingested row: parsed after the ordinary files of its
+    /// stage (`priority: 1`, matching the registry).
+    pub fn after(mut self) -> FileSpec {
+        self.priority = 1;
         self
     }
 
@@ -446,6 +457,7 @@ struct Facts {
     rel: String,
     artifact: Option<&'static str>,
     derived: bool,
+    priority: i16,
     subject: Option<String>,
     size: u64,
     sha256: String,
@@ -459,6 +471,7 @@ impl Facts {
             rel: st.spec.rel.clone(),
             artifact: st.spec.artifact,
             derived: st.spec.derived,
+            priority: st.spec.priority,
             subject: st.spec.subject.clone(),
             size: st.bytes,
             sha256: hex::encode(st.sha.clone().finalize()),
@@ -614,6 +627,7 @@ fn replay(files: &[Facts], culture_given: bool) -> BTreeMap<&str, Status> {
         (
             f.derived,
             f.rel.to_lowercase().ends_with(".csv"),
+            f.priority,
             f.rel.clone(),
         )
     });

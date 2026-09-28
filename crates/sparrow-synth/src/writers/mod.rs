@@ -56,6 +56,7 @@ pub const SPARROW_PARSED: &[&str] = &[
     "hawk.ip.events",
     "hawk.log",
     "hawk.message.header",
+    "hawk.message.header_findings",
     "hawk.psframework_log",
     "hawk.tenant.admin_audit",
     "hawk.tenant.admin_audit_log_config",
@@ -183,6 +184,7 @@ mod tests {
         assert!(parsed_by_sparrow("inv.activity"));
         assert!(parsed_by_sparrow("inv.directory_activity"));
         assert!(parsed_by_sparrow("hawk.message.header"));
+        assert!(parsed_by_sparrow("hawk.message.header_findings"));
         assert!(parsed_by_sparrow("inv.email"));
         assert!(parsed_by_sparrow("inv.mailbox_audit_legacy"));
         assert!(parsed_by_sparrow("inv.mailbox_rules"));
