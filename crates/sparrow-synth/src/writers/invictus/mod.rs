@@ -10,7 +10,7 @@
 //! The run order is fixed: UnifiedAuditLog, Sign-In logs, Audit logs, MessageTrace (twice),
 //! Mailbox Permissions, Audit Status (twice), MailItemsAccessed, Mailbox Audit Log, Licenses,
 //! Users, Admins, Roles (AllRoles then PIM), RiskyEvents (two runs), SecurityAlerts, SecureScore,
-//! Activity Logs, Directory Activity Logs (three runs), Email Export.
+//! Activity Logs, Directory Activity Logs (three runs), Email Export, Rules.
 
 mod activity;
 mod apps;
@@ -23,6 +23,7 @@ mod licences;
 mod log;
 mod mfa_ca;
 mod risk_alerts;
+mod rules;
 mod ual;
 
 use crate::Result;
@@ -201,6 +202,7 @@ pub fn write(world: &World, opts: &GenerateOptions, tree: &mut Tree<'_>) -> Resu
     risk_alerts::write(&mut c, tree)?;
     activity::write(&mut c, tree)?;
     email::write(&mut c, tree)?;
+    rules::write(&mut c, tree)?;
     let log = std::mem::take(&mut c.log);
     log.write(&c, tree)
 }

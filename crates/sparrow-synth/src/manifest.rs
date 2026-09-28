@@ -258,7 +258,7 @@ pub fn story_expects(
                         .flatten()
                         .map(|(table, sighting)| Landed {
                             table: table.clone(),
-                            record_key: keys::for_evidence(world, e, table),
+                            record_key: keys::for_evidence(world, e, table, &sighting.rel_path),
                             sighting: sighting.clone(),
                         })
                         .collect(),

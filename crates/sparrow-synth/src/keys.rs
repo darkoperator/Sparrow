@@ -292,9 +292,10 @@ pub fn mailbox_folder_grantee(world: &World, grantee: &str) -> String {
 }
 
 /// The record key storyline evidence `e` has in `table`, when this module can name it (the
-/// manifest's sightings carry it so `synth check` can find the provenance row); `None` for a
+/// manifest's sightings carry it so `synth check` can find the provenance row); `rel_path`
+/// lets collector-specific writers choose the exact key shape they delivered. `None` for a
 /// pairing no writer delivers yet. Writer tasks extend it as they deliver new pairings.
-pub fn for_evidence(world: &World, e: &Evidence, table: &str) -> Option<String> {
+pub fn for_evidence(world: &World, e: &Evidence, table: &str, rel_path: &str) -> Option<String> {
     match (e, table) {
         (Evidence::Ual(id), "ual_events") => Some(ual(*id)),
         // Hawk 3 renders an Exchange admin cmdlet as a Search-AdminAuditLog record.
@@ -344,14 +345,24 @@ pub fn for_evidence(world: &World, e: &Evidence, table: &str) -> Option<String> 
             .user_by_upn(upn)
             .map(|u| risky_user(u.object_id))
             .or_else(|| Some(lower(upn))),
-        // Hawk's convention: Get-InboxRule's `MailboxOwnerId` is the owner's alias, which Sparrow
-        // keys the rule by. Only the Hawk writers deliver inbox rules today; a collector that
-        // names the owner differently must make this collector-aware.
-        (Evidence::InboxRule { mailbox, identity }, "inbox_rules") => {
-            let owner = world
-                .user_by_upn(mailbox)
-                .map_or_else(|| mailbox.clone(), |u| u.alias.clone());
-            Some(inbox_rule("inbox", &owner, &identity.to_string()))
+        (
+            Evidence::InboxRule {
+                mailbox,
+                identity,
+                graph_id,
+            },
+            "inbox_rules",
+        ) => {
+            if rel_path.contains("MailboxRulesGraph") {
+                Some(inbox_rule("inbox", mailbox, graph_id))
+            } else if rel_path.contains("MailboxRules") {
+                Some(inbox_rule("inbox", mailbox, identity))
+            } else {
+                let owner = world
+                    .user_by_upn(mailbox)
+                    .map_or_else(|| mailbox.clone(), |u| u.alias.clone());
+                Some(inbox_rule("inbox", &owner, identity))
+            }
         }
         (
             Evidence::Grant {
@@ -420,7 +431,7 @@ mod tests {
                 right: "folder".into(),
                 folder: Some(folder.into()),
             };
-            for_evidence(&w, &e, "mailbox_permissions").unwrap()
+            for_evidence(&w, &e, "mailbox_permissions", "").unwrap()
         };
         let shown = mailbox_folder_grantee(&w, &grantee).to_lowercase();
         assert_eq!(
@@ -430,6 +441,48 @@ mod tests {
         assert_eq!(
             key("inbox"),
             format!("{}|folder|inbox|{shown}", mailbox.to_lowercase())
+        );
+    }
+
+    #[test]
+    fn inbox_rule_keys_follow_the_delivery_path() {
+        let w = World::build(&load("bec-aitm").unwrap(), 1).unwrap();
+        let mailbox = w.user(1).upn.clone();
+        let alias = w.user(1).alias.clone();
+        let e = Evidence::InboxRule {
+            mailbox: mailbox.clone(),
+            identity: "1234".into(),
+            graph_id: "graph-1234".into(),
+        };
+        assert_eq!(
+            for_evidence(
+                &w,
+                &e,
+                "inbox_rules",
+                "alice@contoso.example/InboxRules_alice.json"
+            )
+            .unwrap(),
+            format!("inbox|{alias}|1234")
+        );
+        assert_eq!(
+            for_evidence(
+                &w,
+                &e,
+                "inbox_rules",
+                "Output/t/Rules/20260910-100000/20260910-100000-MailboxRules.csv",
+            )
+            .unwrap(),
+            format!("inbox|{}|1234", mailbox.to_lowercase())
+        );
+        assert_eq!(
+            for_evidence(
+                &w,
+                &e,
+                "inbox_rules",
+                "Output/t/Rules/20260910-100100/20260910-100100-MailboxRulesGraph.csv",
+            )
+            .unwrap(),
+            format!("inbox|{}|graph-1234", mailbox.to_lowercase())
         );
     }
 }

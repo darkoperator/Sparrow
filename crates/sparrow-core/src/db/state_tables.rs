@@ -168,6 +168,7 @@ pub static INBOX_RULES: TableSpec = TableSpec {
         col("has_attachment", B),
         col("source_folder", V),
         col("description", V),
+        col("source", V),
     ],
 };
 

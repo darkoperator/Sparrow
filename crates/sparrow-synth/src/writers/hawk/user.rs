@@ -391,7 +391,8 @@ fn inbox_rules(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
         let ev = |i: usize| {
             Some(Evidence::InboxRule {
                 mailbox: rules[i].mailbox.clone(),
-                identity: rules[i].identity,
+                identity: rules[i].identity.to_string(),
+                graph_id: rules[i].graph_id.clone(),
             })
         };
         let w = c.omft.write(

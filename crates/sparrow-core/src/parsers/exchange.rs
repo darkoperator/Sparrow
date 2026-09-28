@@ -81,6 +81,7 @@ const INBOX_COLS: &[&str] = &[
     "subject_or_body_contains",
     "has_attachment",
     "description",
+    "source",
 ];
 const SWEEP_COLS: &[&str] = &[
     "kind",
@@ -92,6 +93,7 @@ const SWEEP_COLS: &[&str] = &[
     "move_to_folder",
     "source_folder",
     "from_addresses",
+    "source",
 ];
 
 pub struct RulesParser {
@@ -142,6 +144,7 @@ impl ArtifactParser for RulesParser {
                     Cell::text(rec.text("DestinationFolder")),
                     Cell::text(rec.text("SourceFolder")),
                     Cell::list(rec.list("Sender")),
+                    Cell::text(Some("hawk".into())),
                 ]);
             } else {
                 cells.extend([
@@ -162,6 +165,7 @@ impl ArtifactParser for RulesParser {
                     Cell::list(rec.list("SubjectOrBodyContainsWords")),
                     Cell::bool(rec.bool("HasAttachment")),
                     Cell::text(rec.text("Description")),
+                    Cell::text(Some("hawk".into())),
                 ]);
             }
             rows.push(r, key, cells);

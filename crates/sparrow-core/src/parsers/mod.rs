@@ -16,6 +16,7 @@ pub mod mailbox;
 pub mod mailbox_audit;
 pub mod mailbox_audit_status;
 pub mod mailbox_permissions;
+pub mod mailbox_rules;
 pub mod message_trace;
 pub mod mfa_ca;
 pub mod oauth_apps;
@@ -47,6 +48,7 @@ pub fn register_builtin(registry: &mut ParserRegistry) {
     mailbox_audit::register(registry);
     mailbox_audit_status::register(registry);
     mailbox_permissions::register(registry);
+    mailbox_rules::register(registry);
     message_trace::register(registry);
     tenant_config::register(registry);
     admin_audit::register(registry);

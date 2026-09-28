@@ -96,16 +96,16 @@ fn inbox_rules_load_with_forwarding_and_conditions() {
     assert_eq!(
         text(
             &case,
-            "SELECT forward_to[1] || '|' || delete_message || '|' || len(subject_or_body_contains) || '|' || mailbox_upn || '|' || priority FROM inbox_rules WHERE record_key = 'inbox|alice|1111'"
+            "SELECT forward_to[1] || '|' || delete_message || '|' || len(subject_or_body_contains) || '|' || mailbox_upn || '|' || priority || '|' || source FROM inbox_rules WHERE record_key = 'inbox|alice|1111'"
         ),
-        "\"x\" [SMTP:x@fabrikam.example]|true|2|alice@contoso.example|1"
+        "\"x\" [SMTP:x@fabrikam.example]|true|2|alice@contoso.example|1|hawk"
     );
     assert_eq!(
         text(
             &case,
-            "SELECT move_to_folder || '|' || from_addresses[1] FROM inbox_rules WHERE record_key = 'inbox|alice|2222'"
+            "SELECT move_to_folder || '|' || from_addresses[1] || '|' || source FROM inbox_rules WHERE record_key = 'inbox|alice|2222'"
         ),
-        "RSS Feeds|\"News\" [SMTP:news@fabrikam.example]"
+        "RSS Feeds|\"News\" [SMTP:news@fabrikam.example]|hawk"
     );
     assert_eq!(
         count(

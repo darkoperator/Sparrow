@@ -208,7 +208,8 @@ fn new_rule(ctx: &mut Ctx, mailbox: &str, name: &str, t: DateTime<Utc>) -> Inbox
 fn add_rule(w: &mut World, ctx: &mut Ctx, rule: InboxRule) {
     ctx.ev.push(Evidence::InboxRule {
         mailbox: rule.mailbox.clone(),
-        identity: rule.identity,
+        identity: rule.identity.to_string(),
+        graph_id: rule.graph_id.clone(),
     });
     w.inbox_rules.push(rule);
 }

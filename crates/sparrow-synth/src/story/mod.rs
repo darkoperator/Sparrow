@@ -42,7 +42,8 @@ pub enum Evidence {
     RiskyUser(String),
     InboxRule {
         mailbox: String,
-        identity: u64,
+        identity: String,
+        graph_id: String,
     },
     Mailbox(String),
     Grant {

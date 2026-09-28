@@ -114,6 +114,7 @@ pub const SPARROW_PARSED: &[&str] = &[
     "inv.licenses.user",
     "inv.logfile",
     "inv.mailbox_permissions",
+    "inv.mailbox_rules",
     "inv.message_trace",
     "inv.mfa.methods",
     "inv.mfa.registration",
@@ -129,6 +130,7 @@ pub const SPARROW_PARSED: &[&str] = &[
     "inv.service_principals",
     "inv.signins",
     "inv.signins.merged",
+    "inv.transport_rules",
     "inv.ual.merged",
     "inv.ual.window",
     "inv.user_applications",
@@ -178,5 +180,7 @@ mod tests {
         assert!(parsed_by_sparrow("inv.directory_activity"));
         assert!(parsed_by_sparrow("hawk.message.header"));
         assert!(parsed_by_sparrow("inv.email"));
+        assert!(parsed_by_sparrow("inv.mailbox_rules"));
+        assert!(parsed_by_sparrow("inv.transport_rules"));
     }
 }
