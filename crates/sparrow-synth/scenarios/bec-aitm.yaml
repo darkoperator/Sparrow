@@ -8,7 +8,10 @@ tenant:
   licence_profile: m365_e5
   audit_profile: search_audited
   host_utc_offset_minutes: 120
-  hawk_users: [1, 2]
+  # Every user: Hawk only collects per-user files for the users the analyst investigates,
+  # and the built-in coverage report needs every positive and look-alike storyline exercised
+  # through Hawk 3 and Hawk 4 too.
+  hawk_users: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
   # The Finance group is a direct member of the activated User Administrator role, so
   # AllRoles reproduces the collector's group-member Role carry-over (Task 17 follow-up).
   role_group_member: true
@@ -49,6 +52,9 @@ lookalikes:
   - {kind: cert_rotation, id: l-cert, at: {day: 11, hour: 16}}
   - {kind: microsoft_asn_signin, id: l-cloudpc, actor: 7, at: {day: 12, hour: 8, minute: 30}}
   - {kind: plausible_travel, id: l-travel, actor: 8, at: {day: 14, hour: 7}}
+  # A second plausible-travel look-alike inside the last 14 days of the window, so Hawk's
+  # 14-day Get-HawkUserEntraIDSignInLog range still collects it (Task 23 ruling 1).
+  - {kind: plausible_travel, id: l-travel-recent, actor: 2, at: {day: 35, hour: 7}}
   - {kind: same_ip_token_use, id: l-sameip, actor: 9, at: {day: 15, hour: 9}}
   - {kind: vendor_filing_rule, id: l-vendor, actor: 3, at: {day: 12, hour: 10}}
   - {kind: internal_forwarding, id: l-intfwd, actor: 4, at: {day: 13, hour: 16}}

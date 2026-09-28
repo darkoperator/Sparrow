@@ -177,8 +177,12 @@ enum SynthCommand {
         #[arg(long)]
         case: PathBuf,
     },
-    /// Seed-rule coverage of the built-in scenarios (not implemented yet)
-    Coverage,
+    /// Seed-rule coverage of the built-in scenarios (exit 2 when a rule has a gap)
+    Coverage {
+        /// Seed used for every generated tree
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+    },
     /// Compare generated trees with real captures' structure (not implemented yet)
     Conformance,
     /// List the built-in scenarios and the licence and audit profiles
@@ -312,7 +316,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Some(Command::Synth { command, generate }) => match command {
             None => cmd_synth_generate(generate, json),
             Some(SynthCommand::Check { manifest, case }) => cmd_synth_check(&manifest, &case, json),
-            Some(SynthCommand::Coverage) => anyhow::bail!("synth coverage is not implemented yet"),
+            Some(SynthCommand::Coverage { seed }) => cmd_synth_coverage(seed, json),
             Some(SynthCommand::Conformance) => {
                 anyhow::bail!("synth conformance is not implemented yet")
             }
@@ -966,6 +970,20 @@ fn cmd_synth_generate(args: SynthGenArgs, json: bool) -> Result<ExitCode> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_synth_coverage(seed: u64, json: bool) -> Result<ExitCode> {
+    let report = sparrow_synth::coverage::report(seed)?;
+    if json {
+        print_json(&report)?;
+    } else {
+        print!("{}", report.to_text());
+    }
+    Ok(if report.ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(2)
+    })
 }
 
 fn cmd_synth_check(manifest_path: &Path, case_path: &Path, json: bool) -> Result<ExitCode> {

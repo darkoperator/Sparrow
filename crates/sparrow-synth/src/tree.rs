@@ -67,6 +67,43 @@ impl Sink for DirSink {
     }
 }
 
+/// Commits no bytes: it hashes each file's bytes and counts its lines, for callers that only
+/// need the manifest (the coverage report). Memory stays bounded by the file count, not size.
+#[derive(Default)]
+pub struct NullSink {
+    /// Per `/`-separated file path: its running SHA-256 and line count.
+    pub files: BTreeMap<String, NullFile>,
+}
+
+/// One file's evidence in a [`NullSink`].
+#[derive(Default)]
+pub struct NullFile {
+    pub sha256: Sha256,
+    pub bytes: u64,
+    pub lines: u64,
+}
+
+impl NullFile {
+    /// The lower-case hex SHA-256 of every byte appended so far.
+    pub fn hex(&self) -> String {
+        hex::encode(self.sha256.clone().finalize())
+    }
+}
+
+impl Sink for NullSink {
+    fn dir(&mut self, _rel: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn append(&mut self, rel: &str, bytes: &[u8]) -> Result<()> {
+        let f = self.files.entry(rel.to_string()).or_default();
+        f.sha256.update(bytes);
+        f.bytes += bytes.len() as u64;
+        f.lines += bytes.iter().filter(|b| **b == b'\n').count() as u64;
+        Ok(())
+    }
+}
+
 /// Keeps files in memory (tests, `sparrow synth` dry runs).
 #[derive(Debug, Default)]
 pub struct MemSink {

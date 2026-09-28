@@ -416,8 +416,10 @@ rules:
     logic: >-
       UAL New-InboxRule / Set-InboxRule / UpdateInboxRules whose actor had, in the preceding 60
       minutes, a sign-in with risk_level_during medium/high or from ip_intel.is_hosting
-      (spec §8.2 example).
-    tables: [ual_events, signins]
+      (spec §8.2 example). Hawk 3.1 records New-InboxRule / Set-InboxRule in
+      Search-AdminAuditLog (admin_audit_events, CmdletName + Caller + RunDate) instead of the
+      UAL; Phase 6 implements both sources.
+    tables: [ual_events, signins, admin_audit_events]
     requires: []
     requires_evidence: []
     needs_geoip: true
@@ -468,7 +470,8 @@ rules:
     requires: []
     requires_evidence: [ual]
     needs_geoip: false
-    collectors: [hawk3, hawk4, invictus, portal]
+    # Hawk 3.1 exports no SharePoint/OneDrive UAL (survey; hawk-layouts §7).
+    collectors: [hawk4, invictus, portal]
     lookalike_collectors: [invictus, portal]
     positives: [mass_download]
     lookalikes: [normal_download]
@@ -484,7 +487,8 @@ rules:
     requires: []
     requires_evidence: [ual]
     needs_geoip: true
-    collectors: [hawk3, hawk4, invictus, portal]
+    # Hawk 3.1 exports no SharePoint/OneDrive UAL (survey; hawk-layouts §7).
+    collectors: [hawk4, invictus, portal]
     lookalike_collectors: [invictus, portal]
     positives: [anonymous_link]
     lookalikes: [anonymous_link_benign]
@@ -502,7 +506,8 @@ rules:
     requires: []
     requires_evidence: [ual]
     needs_geoip: false
-    collectors: [hawk3, hawk4, invictus, portal]
+    # Hawk 3.1 exports no SharePoint/OneDrive UAL (survey; hawk-layouts §7).
+    collectors: [hawk4, invictus, portal]
     lookalike_collectors: [invictus, portal]
     positives: [lure_share]
     lookalikes: [internal_docx_share]
