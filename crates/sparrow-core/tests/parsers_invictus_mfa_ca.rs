@@ -74,3 +74,69 @@ fn without_p1_there_are_no_ca_policies_and_no_registration_details() {
     );
     check_green(&g);
 }
+
+/// The `lastUpdatedDateTime` cells of the UserRegistrationDetails file, in row order.
+fn registration_last_updated(g: &Generated) -> Vec<String> {
+    let f = g
+        .manifest
+        .files
+        .iter()
+        .find(|f| f.artifact_id.as_deref() == Some("inv.mfa.registration"))
+        .expect("registration file");
+    let path = g.dir.path().join(&g.manifest.root).join(&f.rel_path);
+    let text = std::fs::read_to_string(&path).unwrap();
+    let mut lines = text.lines();
+    let header = lines.next().unwrap();
+    let index = header
+        .split(',')
+        .position(|h| h.trim_matches('"') == "lastUpdatedDateTime")
+        .expect("lastUpdatedDateTime column");
+    lines
+        .map(|line| {
+            line.split(',')
+                .nth(index)
+                .unwrap()
+                .trim_matches('"')
+                .to_string()
+        })
+        .collect()
+}
+
+/// A REST `Invoke-MgGraphRequest` date stays ISO on PS 5.1 and renders culture on PS7; both
+/// editions load the same instant (the reports API's lastUpdatedDateTime).
+#[test]
+fn rest_origin_dates_render_by_edition_and_load_the_same_instant() {
+    let ps7 = builtin("bec-aitm", PsEdition::Ps7);
+    let ps51 = builtin("bec-aitm", PsEdition::Ps51);
+    let iso = registration_last_updated(&ps51);
+    let culture = registration_last_updated(&ps7);
+    assert_eq!(iso.len(), 13);
+    assert_eq!(culture.len(), 13);
+    assert!(
+        iso.iter().all(|v| v.contains('T') && v.ends_with('Z')),
+        "{iso:?}"
+    );
+    assert!(
+        culture
+            .iter()
+            .all(|v| !v.contains('T') && !v.ends_with('Z')),
+        "{culture:?}"
+    );
+    let epochs = |g: &Generated| -> Vec<i64> {
+        let mut stmt = g
+            .case
+            .conn()
+            .prepare(
+                "SELECT epoch(last_updated)::BIGINT FROM mfa_registration
+                 WHERE last_updated IS NOT NULL ORDER BY 1",
+            )
+            .unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<std::result::Result<Vec<i64>, _>>()
+            .unwrap()
+    };
+    let loaded = epochs(&ps7);
+    assert!(!loaded.is_empty());
+    assert_eq!(loaded, epochs(&ps51));
+}

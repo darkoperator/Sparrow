@@ -10,7 +10,7 @@ use crate::keys;
 use crate::ps::{DateEvidence, DtKind, PsDate, Row, Val, export_csv};
 use crate::tree::{FileSpec, Tree};
 use crate::world::{CaPolicy, MfaRegistration, User, World};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, Timelike, Utc};
 
 fn r(k: &str, v: Val) -> (String, Val) {
     (k.to_string(), v)
@@ -94,10 +94,7 @@ fn registration_row(world: &World, u: &User) -> Row {
             Val::Bool(reg.is_some_and(|m| m.is_mfa_capable)),
         ),
         r("isPasswordlessCapable", Val::Bool(passwordless)),
-        r(
-            "lastUpdatedDateTime",
-            last_updated.map_or(Val::Null, |t| Val::Date(PsDate::dotnet(t, DtKind::Utc))),
-        ),
+        r("lastUpdatedDateTime", rest_date(last_updated)),
         r("methodsRegistered", Val::Str(graph.join(", "))),
         r(
             "isSystemPreferredAuthenticationMethodEnabled",
@@ -118,6 +115,14 @@ fn registration_row(world: &World, u: &User) -> Row {
 
 fn dt(v: Option<DateTime<Utc>>) -> Val {
     v.map_or(Val::Null, |t| Val::Date(PsDate::dotnet(t, DtKind::Utc)))
+}
+
+/// A REST `Invoke-MgGraphRequest` timestamp: kept ISO text on PS 5.1, culture on PS7.
+fn rest_date(v: Option<DateTime<Utc>>) -> Val {
+    v.map_or(Val::Null, |t| {
+        let digits = if t.nanosecond() == 0 { 0 } else { 7 };
+        Val::Date(PsDate::iso(t, digits))
+    })
 }
 
 fn list(v: &[String]) -> Val {
