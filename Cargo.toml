@@ -32,3 +32,10 @@ thiserror = "2"
 uuid = { version = "1", features = ["v5"] }
 walkdir = "2"
 zip = { version = "=7.2.0", default-features = false }
+
+# Dependencies (including the bundled DuckDB C++, built by libduckdb-sys' build script via the
+# `cc` crate, which reads the profile's OPT_LEVEL) are optimized even in dev/test builds: the
+# whole workspace is DuckDB-heavy, and an unoptimized bundled DuckDB dominates the test suite's
+# wall time while adding nothing debuggable. Our own crates stay at opt-level 0.
+[profile.dev.package."*"]
+opt-level = 2

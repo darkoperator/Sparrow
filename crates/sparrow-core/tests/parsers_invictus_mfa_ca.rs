@@ -83,7 +83,7 @@ fn registration_last_updated(g: &Generated) -> Vec<String> {
         .iter()
         .find(|f| f.artifact_id.as_deref() == Some("inv.mfa.registration"))
         .expect("registration file");
-    let path = g.dir.path().join(&g.manifest.root).join(&f.rel_path);
+    let path = g.dir.join(&g.manifest.root).join(&f.rel_path);
     let text = std::fs::read_to_string(&path).unwrap();
     let mut lines = text.lines();
     let header = lines.next().unwrap();

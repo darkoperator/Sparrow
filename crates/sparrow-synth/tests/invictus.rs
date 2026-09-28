@@ -80,11 +80,8 @@ fn all_ambiguous_collection_needs_culture() {
     let mut sink = MemSink::default();
     let failing = generate_with_policy(&s, &o, &mut sink, CulturePolicy::Never).unwrap();
     assert!(failing.files.iter().any(|f| f.status == "error"));
-    let mut sink = MemSink::default();
-    let auto = generate(&s, &o, &mut sink).unwrap();
-    assert_eq!(auto.ingest_culture.as_deref(), Some("en-GB"));
-    // Ingesting with that culture (what `ingest_generated` passes) loads every file and
-    // `check` is green: the collection really is only unusable without `--culture`.
+    // Ingesting with the culture (what `ingest_generated` passes) loads every file and `check`
+    // is green: the collection really is only unusable without `--culture`.
     let dir = tempfile::tempdir().unwrap();
     let m = generate_to_dir(&s, &o, dir.path()).unwrap();
     assert_eq!(m.ingest_culture.as_deref(), Some("en-GB"));
