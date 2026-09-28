@@ -72,6 +72,12 @@ pub struct Scenario {
     pub lookalikes: Vec<StorySpec>,
     #[serde(default)]
     pub scale: ScaleSpec,
+    /// Test-only: align the world's historical state dates to day 1 of their month, so a
+    /// day/month-order culture can never read any of them as decisive. No built-in scenario sets
+    /// it; it exists so the all-ambiguous culture test controls its own dates instead of the
+    /// world's historical offsets being nudged whenever a writer adds a dated file.
+    #[serde(default)]
+    pub pin_ambiguous_dates: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -13,7 +13,7 @@ use crate::profiles::{AuditProfile, LicenceProfile, audit_profile, licence_profi
 use crate::reserved::{IpAllocator, Net, WELL_KNOWN_GUIDS};
 use crate::rng::{Rng, stream};
 use crate::scenario::Scenario;
-use chrono::{DateTime, Duration, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
@@ -127,7 +127,7 @@ impl World {
         let mailbox_permissions = build_mailbox_permissions(scenario, &tenant, &users, &admins);
         let attacker = build_attacker(&tenant);
 
-        Ok(World {
+        let mut world = World {
             scenario: scenario.clone(),
             seed,
             tenant,
@@ -157,7 +157,92 @@ impl World {
             audit_profile: audit,
             attacker,
             victims,
-        })
+        };
+        if scenario.pin_ambiguous_dates {
+            world.pin_historical_dates();
+        }
+        Ok(world)
+    }
+
+    /// Test-only (`Scenario::pin_ambiguous_dates`): move every historical state date to day 1 of
+    /// its month, so a day/month-order culture can never read one as decisive. The window's
+    /// events are generated from `window` on demand and are untouched.
+    fn pin_historical_dates(&mut self) {
+        fn pin(t: &mut DateTime<Utc>) {
+            *t -= Duration::days((t.day() - 1) as i64);
+        }
+        fn pin_opt(t: &mut Option<DateTime<Utc>>) {
+            if let Some(v) = t {
+                pin(v);
+            }
+        }
+        pin(&mut self.tenant.created);
+        for u in self.users.iter_mut().chain(self.admins.iter_mut()) {
+            pin(&mut u.created);
+            pin(&mut u.last_password_change);
+        }
+        for m in self.mailboxes.values_mut() {
+            pin(&mut m.when_changed);
+            pin_opt(&mut m.bypass_since);
+            pin_opt(&mut m.audit_disabled_since);
+            pin(&mut m.auto_reply.start);
+            pin(&mut m.auto_reply.end);
+        }
+        for r in &mut self.inbox_rules {
+            pin(&mut r.created);
+        }
+        for a in &mut self.apps {
+            pin(&mut a.created);
+            for c in &mut a.credentials {
+                pin(&mut c.start);
+                pin(&mut c.end);
+                pin(&mut c.added);
+            }
+        }
+        for g in &mut self.grants {
+            pin(&mut g.created);
+        }
+        for r in &mut self.roles {
+            pin_opt(&mut r.start);
+            pin_opt(&mut r.end);
+        }
+        for m in self.mfa.values_mut() {
+            pin(&mut m.last_updated);
+        }
+        for p in &mut self.ca_policies {
+            pin(&mut p.created);
+            pin_opt(&mut p.modified);
+        }
+        for d in &mut self.devices {
+            pin(&mut d.registered);
+            pin(&mut d.last_signin);
+        }
+        for g in &mut self.groups {
+            pin(&mut g.created);
+        }
+        for d in &mut self.mobile_devices {
+            pin(&mut d.first_sync);
+            pin(&mut d.last_sync);
+            pin(&mut d.when_created);
+        }
+        for r in &mut self.transport_rules {
+            pin(&mut r.when_changed);
+        }
+        for r in &mut self.remote_domains {
+            pin(&mut r.when_changed);
+        }
+        for a in &mut self.alerts {
+            pin(&mut a.created);
+            pin(&mut a.event);
+        }
+        for e in &mut self.emails {
+            pin(&mut e.date);
+        }
+        for r in self.risky_users.values_mut() {
+            pin(&mut r.updated);
+        }
+        pin_opt(&mut self.audit.ual_disabled_at);
+        pin_opt(&mut self.audit.org_audit_disabled_at);
     }
 
     /// The `n`-th ordinary user (1-based).
@@ -1424,7 +1509,7 @@ fn build_apps(
     let admin_upn = admins.first().map(|a| a.upn.clone());
 
     let payroll_app_id = rng.uuid();
-    let payroll_created = scenario.window.start - Duration::days(180);
+    let payroll_created = scenario.window.start - Duration::days(200);
     apps.push(App {
         app_id: payroll_app_id,
         object_id: rng.uuid(),

@@ -65,13 +65,14 @@ fn day_first_culture_trees_ingest_without_culture_flag() {
 
 #[test]
 fn all_ambiguous_collection_needs_culture() {
-    // A one-week window before the 13th whose state dates are also all ambiguous: the
-    // tenant-created dates (400 days earlier), the app-registration dates (180/150/90 days
-    // earlier) and the window events all land on day <= 12, so no date can prove the order.
+    // A one-week window before the 13th, with `pin_ambiguous_dates` moving every historical
+    // state date to day 1: no culture date in the collection can prove the order, whatever
+    // dated files the writers add later.
     let mut s = load("business-basic").unwrap();
-    s.window.start = "2025-01-04T00:00:00Z".parse().unwrap();
+    s.window.start = "2026-09-01T00:00:00Z".parse().unwrap();
     s.window.days = 7;
-    s.window.collected_at = "2025-01-12T10:00:00Z".parse().unwrap();
+    s.window.collected_at = "2026-09-09T10:00:00Z".parse().unwrap();
+    s.pin_ambiguous_dates = true;
     s.storylines.clear();
     s.lookalikes.clear();
     let mut o = opts(24);
