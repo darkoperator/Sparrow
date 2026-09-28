@@ -628,6 +628,34 @@ pub static EVIDENCE: &[EvidenceDef] = &[
             "'ca_policies'", "x.record_key"
         )
     },
+    EvidenceDef {
+        id: "security_alerts",
+        title: "Microsoft Defender security alerts",
+        kind: Kind::Event,
+        artifacts: &["inv.security_alerts"],
+        invictus_runs: &[("SecurityAlerts", None)],
+        invictus: Some("Get-SecurityAlerts"),
+        ..source!(
+            "security_alerts x",
+            "x.created_time",
+            "CAST(NULL AS BIGINT)",
+            "'security_alerts'", "x.record_key"
+        )
+    },
+    EvidenceDef {
+        id: "secure_score",
+        title: "Microsoft Secure Score",
+        kind: Kind::State,
+        artifacts: &["inv.secure_score"],
+        invictus_runs: &[("SecureScore", None)],
+        invictus: Some("Get-SecureScore"),
+        ..source!(
+            "secure_score x",
+            "CAST(NULL AS TIMESTAMPTZ)",
+            "CAST(NULL AS BIGINT)",
+            "'secure_score'", "x.record_key"
+        )
+    },
 ];
 
 /// Full unified audit log exports: evidence marked `full_ual_covers` is in them when present.

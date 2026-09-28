@@ -46,6 +46,16 @@ pub fn risky_user(object_id: Uuid) -> String {
     object_id.to_string()
 }
 
+/// `security_alerts`: "Lower-case alert Id."
+pub fn security_alert(id: &str) -> String {
+    lower(id)
+}
+
+/// `secure_score`: "<collection_id>|<lower Title>."
+pub fn secure_score(title: &str) -> String {
+    format!("{CID}|{}", lower(title))
+}
+
 /// `users`: "Entra object id (lower-case), else the lower-cased UPN."
 pub fn user(object_id: Uuid) -> String {
     object_id.to_string()

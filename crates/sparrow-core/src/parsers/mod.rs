@@ -19,6 +19,7 @@ pub mod mfa_ca;
 pub mod oauth_apps;
 pub mod records;
 pub mod risk;
+pub mod risk_alerts;
 pub mod signins;
 pub mod stage;
 pub mod tenant_config;
@@ -34,6 +35,7 @@ pub fn register_builtin(registry: &mut ParserRegistry) {
     directory_audits::register(registry);
     apps::register(registry);
     risk::register(registry);
+    risk_alerts::register(registry);
     signins::register(registry);
     exchange::register(registry);
     mail_items_accessed::register(registry);

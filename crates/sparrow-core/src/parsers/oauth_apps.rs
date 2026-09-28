@@ -44,7 +44,6 @@ const GRANT_COLS: &[&str] = &[
     "consent_type",
     "principal_id",
     "principal_name",
-    "risk_category",
     "publisher",
     "verified_publisher",
     "created",

@@ -70,6 +70,8 @@ fn fresh_case_has_provenance_tables() {
             "role_assignments",
             "schema_migrations",
             "search_queries",
+            "secure_score",
+            "security_alerts",
             "sharing_events",
             "signins",
             "source_files",

@@ -20,7 +20,7 @@ pub fn register(r: &mut ParserRegistry) {
     );
 }
 
-fn upn(rec: &Rec) -> Option<String> {
+pub(crate) fn upn(rec: &Rec) -> Option<String> {
     rec.text("UserPrincipalName")
         .and_then(|u| normalize_upn(&u))
 }
@@ -35,7 +35,7 @@ pub fn risk_detection_key(rec: &Rec) -> Option<String> {
     lower(rec.text("Id"))
 }
 
-const RISKY_USER_COLS: &[&str] = &[
+pub(crate) const RISKY_USER_COLS: &[&str] = &[
     "user_id",
     "upn",
     "display_name",
@@ -49,6 +49,25 @@ const RISKY_USER_COLS: &[&str] = &[
 
 pub struct RiskyUsersParser;
 
+/// The `risky_users` cells for one record: Hawk risk objects and Microsoft-Extractor-Suite
+/// RiskyUsers.csv carry the same properties, so both parsers stage the same columns.
+pub(crate) fn risky_user_cells(rec: &Rec) -> (Option<String>, Vec<Cell>) {
+    (
+        risky_user_key(rec),
+        vec![
+            Cell::text(lower(rec.text("Id"))),
+            Cell::text(upn(rec)),
+            Cell::text(rec.text("UserDisplayName")),
+            Cell::text(rec.text("RiskLevel")),
+            Cell::text(rec.text("RiskState")),
+            Cell::text(rec.text("RiskDetail")),
+            Cell::time(rec.text("RiskLastUpdatedDateTime")),
+            Cell::bool(rec.bool("IsDeleted")),
+            Cell::bool(rec.bool("IsProcessing")),
+        ],
+    )
+}
+
 impl ArtifactParser for RiskyUsersParser {
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
         let format = RecordFormat::of(ctx.rel_path);
@@ -56,25 +75,12 @@ impl ArtifactParser for RiskyUsersParser {
         let mut rows = TableRows::new(&RISKY_USERS, RISKY_USER_COLS);
         for r in &records {
             let rec = Rec::new(&r.map, format.lossy());
-            let Some(key) = risky_user_key(&rec) else {
+            let (key, cells) = risky_user_cells(&rec);
+            let Some(key) = key else {
                 reject(ctx, r, "risky user has neither Id nor UserPrincipalName")?;
                 continue;
             };
-            rows.push(
-                r,
-                key,
-                vec![
-                    Cell::text(lower(rec.text("Id"))),
-                    Cell::text(upn(&rec)),
-                    Cell::text(rec.text("UserDisplayName")),
-                    Cell::text(rec.text("RiskLevel")),
-                    Cell::text(rec.text("RiskState")),
-                    Cell::text(rec.text("RiskDetail")),
-                    Cell::time(rec.text("RiskLastUpdatedDateTime")),
-                    Cell::bool(rec.bool("IsDeleted")),
-                    Cell::bool(rec.bool("IsProcessing")),
-                ],
-            );
+            rows.push(r, key, cells);
         }
         load_tables(ctx, vec![rows])
     }
@@ -97,7 +103,7 @@ pub fn graph_location(rec: &Rec) -> Option<Value> {
 }
 
 /// AdditionalInfo parsed from its embedded JSON, else the flattened `AdditionalInfo_*` columns.
-fn additional_info(rec: &Rec) -> Option<Value> {
+pub(crate) fn additional_info(rec: &Rec) -> Option<Value> {
     if let Some(v) = rec.json("AdditionalInfo") {
         return Some(v);
     }
@@ -113,7 +119,7 @@ fn additional_info(rec: &Rec) -> Option<Value> {
     (!flat.is_empty()).then_some(Value::Object(flat))
 }
 
-const DETECTION_COLS: &[&str] = &[
+pub(crate) const DETECTION_COLS: &[&str] = &[
     "detection_id",
     "detected_time",
     "activity_time",
@@ -138,6 +144,40 @@ const DETECTION_COLS: &[&str] = &[
 
 pub struct RiskDetectionsParser;
 
+/// The `risk_detections` cells for one record; `location` is the already-built location struct
+/// (the Hawk parser reads the Graph `Location` object, the Microsoft-Extractor-Suite parser the
+/// City/State/CountryOrRegion columns).
+pub(crate) fn risk_detection_cells(
+    rec: &Rec,
+    location: Option<Value>,
+) -> (Option<String>, Vec<Cell>) {
+    (
+        risk_detection_key(rec),
+        vec![
+            Cell::text(rec.text("Id")),
+            Cell::time(rec.text("DetectedDateTime")),
+            Cell::time(rec.text("ActivityDateTime")),
+            Cell::time(rec.text("LastUpdatedDateTime")),
+            Cell::text(rec.text("Activity")),
+            Cell::text(rec.text("RiskEventType")),
+            Cell::text(rec.text("RiskLevel")),
+            Cell::text(rec.text("RiskState")),
+            Cell::text(rec.text("RiskDetail")),
+            Cell::text(rec.text("DetectionTimingType")),
+            Cell::text(rec.text("Source")),
+            Cell::text(rec.text("TokenIssuerType")),
+            Cell::text(rec.text("IPAddress").and_then(|s| normalize_ip(&s))),
+            Cell::text(upn(rec)),
+            Cell::text(lower(rec.text("UserId"))),
+            Cell::text(rec.text("UserDisplayName")),
+            Cell::text(rec.text("CorrelationId")),
+            Cell::text(rec.text("RequestId")),
+            Cell::json(location),
+            Cell::json(additional_info(rec)),
+        ],
+    )
+}
+
 impl ArtifactParser for RiskDetectionsParser {
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
         let format = RecordFormat::of(ctx.rel_path);
@@ -145,36 +185,13 @@ impl ArtifactParser for RiskDetectionsParser {
         let mut rows = TableRows::new(&RISK_DETECTIONS, DETECTION_COLS);
         for r in &records {
             let rec = Rec::new(&r.map, format.lossy());
-            let Some(key) = risk_detection_key(&rec) else {
+            let location = graph_location(&rec);
+            let (key, cells) = risk_detection_cells(&rec, location);
+            let Some(key) = key else {
                 reject(ctx, r, "risk detection has no Id")?;
                 continue;
             };
-            rows.push(
-                r,
-                key,
-                vec![
-                    Cell::text(rec.text("Id")),
-                    Cell::time(rec.text("DetectedDateTime")),
-                    Cell::time(rec.text("ActivityDateTime")),
-                    Cell::time(rec.text("LastUpdatedDateTime")),
-                    Cell::text(rec.text("Activity")),
-                    Cell::text(rec.text("RiskEventType")),
-                    Cell::text(rec.text("RiskLevel")),
-                    Cell::text(rec.text("RiskState")),
-                    Cell::text(rec.text("RiskDetail")),
-                    Cell::text(rec.text("DetectionTimingType")),
-                    Cell::text(rec.text("Source")),
-                    Cell::text(rec.text("TokenIssuerType")),
-                    Cell::text(rec.text("IPAddress").and_then(|s| normalize_ip(&s))),
-                    Cell::text(upn(&rec)),
-                    Cell::text(lower(rec.text("UserId"))),
-                    Cell::text(rec.text("UserDisplayName")),
-                    Cell::text(rec.text("CorrelationId")),
-                    Cell::text(rec.text("RequestId")),
-                    Cell::json(graph_location(&rec)),
-                    Cell::json(additional_info(&rec)),
-                ],
-            );
+            rows.push(r, key, cells);
         }
         load_tables(ctx, vec![rows])
     }

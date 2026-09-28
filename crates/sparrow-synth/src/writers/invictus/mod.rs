@@ -9,7 +9,7 @@
 //! `collected_at`, each later one 7-40 seconds after the previous run finished (`Runs`).
 //! The run order is fixed: UnifiedAuditLog, Sign-In logs, Audit logs, MessageTrace (twice),
 //! Mailbox Permissions, Audit Status (twice), MailItemsAccessed, Mailbox Audit Log, Licenses,
-//! Users, Admins, Roles (AllRoles then PIM).
+//! Users, Admins, Roles (AllRoles then PIM), RiskyEvents (two runs), SecurityAlerts, SecureScore.
 
 mod apps;
 mod devices_groups;
@@ -19,6 +19,7 @@ mod exchange;
 mod licences;
 mod log;
 mod mfa_ca;
+mod risk_alerts;
 mod ual;
 
 use crate::Result;
@@ -194,6 +195,7 @@ pub fn write(world: &World, opts: &GenerateOptions, tree: &mut Tree<'_>) -> Resu
     mfa_ca::write(&mut c, tree)?;
     apps::write(&mut c, tree)?;
     devices_groups::write(&mut c, tree)?;
+    risk_alerts::write(&mut c, tree)?;
     let log = std::mem::take(&mut c.log);
     log.write(&c, tree)
 }

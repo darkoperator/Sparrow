@@ -61,6 +61,7 @@ const L: &str = "VARCHAR[]";
 const J: &str = "JSON";
 const I: &str = "INTEGER";
 const BI: &str = "BIGINT";
+const D: &str = "DOUBLE";
 const M: &str = "MAP(VARCHAR, VARCHAR)";
 
 pub static USERS: TableSpec = TableSpec {
@@ -326,6 +327,57 @@ pub static RISK_DETECTIONS: TableSpec = TableSpec {
         col("request_id", V),
         col("location", LOCATION_TYPE),
         col("additional_info", J),
+    ],
+};
+
+pub static SECURITY_ALERTS: TableSpec = TableSpec {
+    table: "security_alerts",
+    mode: LoadMode::FillMissing,
+    columns: &[
+        col("alert_id", V),
+        col("created_time", T),
+        col("event_time", T),
+        col("last_modified", T),
+        col("closed_time", T),
+        col("title", V),
+        col("category", V),
+        col("severity", V),
+        col("status", V),
+        col("description", V),
+        col("detection_source", V),
+        col("affected_users", L),
+        col("affected_ips", L),
+        col("affected_hosts", L),
+        col("azure_tenant_id", V),
+        col("confidence", I),
+        col("provider", V),
+        col("vendor", V),
+        col("incident_ids", L),
+        col("comments", V),
+        col("tags", L),
+    ],
+};
+
+pub static SECURE_SCORE: TableSpec = TableSpec {
+    table: "secure_score",
+    mode: LoadMode::LatestWins,
+    columns: &[
+        col("title", V),
+        col("category", V),
+        col("service", V),
+        col("status", V),
+        col("current_score", D),
+        col("max_score", D),
+        col("state", V),
+        col("action_type", V),
+        col("action_url", V),
+        col("implementation_cost", V),
+        col("user_impact", V),
+        col("tier", V),
+        col("rank", I),
+        col("deprecated", B),
+        col("threats", L),
+        col("last_modified", T),
     ],
 };
 
@@ -711,6 +763,8 @@ pub static ALL: &[&TableSpec] = &[
     &MOBILE_DEVICES,
     &RISKY_USERS,
     &RISK_DETECTIONS,
+    &SECURITY_ALERTS,
+    &SECURE_SCORE,
     &COLLECTOR_FLAGS,
     &SIGNINS,
     &DIRECTORY_AUDITS,

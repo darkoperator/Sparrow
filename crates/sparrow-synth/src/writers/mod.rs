@@ -116,8 +116,12 @@ pub const SPARROW_PARSED: &[&str] = &[
     "inv.mia.message_ids",
     "inv.mia.sessions",
     "inv.oauth",
+    "inv.risk_detections",
+    "inv.risky_users",
     "inv.roles.all",
     "inv.roles.pim",
+    "inv.secure_score",
+    "inv.security_alerts",
     "inv.service_principals",
     "inv.signins",
     "inv.signins.merged",
@@ -162,5 +166,9 @@ mod tests {
         assert!(parsed_by_sparrow("inv.groups"));
         assert!(parsed_by_sparrow("inv.group_members"));
         assert!(parsed_by_sparrow("inv.dynamic_groups"));
+        assert!(parsed_by_sparrow("inv.risk_detections"));
+        assert!(parsed_by_sparrow("inv.risky_users"));
+        assert!(parsed_by_sparrow("inv.security_alerts"));
+        assert!(parsed_by_sparrow("inv.secure_score"));
     }
 }

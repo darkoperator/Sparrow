@@ -244,3 +244,74 @@ COMMENT ON COLUMN group_members.member_upn IS 'UserPrincipalName of a user membe
 COMMENT ON COLUMN group_members.raw IS 'Source record as loaded.';
 COMMENT ON COLUMN group_members.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
 COMMENT ON COLUMN group_members.tz_assumed IS 'Object {column: true} naming each time column whose value came without a time zone and was stored as if UTC (for example Hawk WhenChanged or AutoReply StartTime, written in the collecting host''s local time). Per column like column_collections: the load that writes a column sets or clears its entry. NULL for rows loaded before schema 7 or loads without a time column.';
+
+-- Task 18: risky users, risk detections, security alerts and secure score.
+CREATE TABLE security_alerts (
+    record_key VARCHAR NOT NULL, collection_id BIGINT NOT NULL, collected_at TIMESTAMPTZ,
+    alert_id VARCHAR, created_time TIMESTAMPTZ, event_time TIMESTAMPTZ,
+    last_modified TIMESTAMPTZ, closed_time TIMESTAMPTZ, title VARCHAR, category VARCHAR,
+    severity VARCHAR, status VARCHAR, description VARCHAR, detection_source VARCHAR,
+    affected_users VARCHAR[], affected_ips VARCHAR[], affected_hosts VARCHAR[],
+    azure_tenant_id VARCHAR, confidence INTEGER, provider VARCHAR, vendor VARCHAR,
+    incident_ids VARCHAR[], comments VARCHAR, tags VARCHAR[], raw JSON, column_collections JSON,
+    tz_assumed JSON
+);
+CREATE TABLE secure_score (
+    record_key VARCHAR NOT NULL, collection_id BIGINT NOT NULL, collected_at TIMESTAMPTZ,
+    title VARCHAR, category VARCHAR, service VARCHAR, status VARCHAR, current_score DOUBLE,
+    max_score DOUBLE, state VARCHAR, action_type VARCHAR, action_url VARCHAR,
+    implementation_cost VARCHAR, user_impact VARCHAR, tier VARCHAR, rank INTEGER,
+    deprecated BOOLEAN, threats VARCHAR[], last_modified TIMESTAMPTZ, raw JSON,
+    column_collections JSON, tz_assumed JSON
+);
+COMMENT ON TABLE security_alerts IS 'Microsoft Defender security alerts (Microsoft-Extractor-Suite Get-SecurityAlerts SecurityAlerts.csv, legacy Get-MgSecurityAlert rendering). An event table (fill missing): the first copy of an alert wins and later copies only fill values still NULL.';
+COMMENT ON COLUMN security_alerts.record_key IS 'Lower-case alert Id.';
+COMMENT ON COLUMN security_alerts.collection_id IS 'Collection that first delivered the row (fill missing: later copies never overwrite).';
+COMMENT ON COLUMN security_alerts.collected_at IS 'collected_at of that collection (NULL when unknown).';
+COMMENT ON COLUMN security_alerts.alert_id IS 'Id (Graph alert id), lower-case.';
+COMMENT ON COLUMN security_alerts.created_time IS 'CreatedDateTime.';
+COMMENT ON COLUMN security_alerts.event_time IS 'EventDateTime (v1 legacy alerts; NULL for the v2 model).';
+COMMENT ON COLUMN security_alerts.last_modified IS 'LastModifiedDateTime (v1 legacy alerts; NULL for the v2 model).';
+COMMENT ON COLUMN security_alerts.closed_time IS 'ClosedDateTime (v1 legacy alerts; NULL for the v2 model).';
+COMMENT ON COLUMN security_alerts.title IS 'Title.';
+COMMENT ON COLUMN security_alerts.category IS 'Category.';
+COMMENT ON COLUMN security_alerts.severity IS 'Severity: high, medium, low, informational or unknown.';
+COMMENT ON COLUMN security_alerts.status IS 'Status: newAlert, inProgress, resolved or unknown (new, inProgress, resolved on v2).';
+COMMENT ON COLUMN security_alerts.description IS 'Description.';
+COMMENT ON COLUMN security_alerts.detection_source IS 'DetectionSource.';
+COMMENT ON COLUMN security_alerts.affected_users IS 'UPN parts of the AffectedUser entries ("<upn>/<ip>" joined with "; "), NULL when empty.';
+COMMENT ON COLUMN security_alerts.affected_ips IS 'IP parts of the AffectedUser entries, the literal null dropped, NULL when empty.';
+COMMENT ON COLUMN security_alerts.affected_hosts IS 'Host parts of the AffectedHost entries ("<host>/<ip>" joined with "; "), NULL when empty.';
+COMMENT ON COLUMN security_alerts.azure_tenant_id IS 'AzureTenantId (v1 legacy alerts; NULL for the v2 model, which uses tenantId).';
+COMMENT ON COLUMN security_alerts.confidence IS 'Confidence (v1 legacy alerts; NULL for the v2 model).';
+COMMENT ON COLUMN security_alerts.provider IS 'Provider from VendorInformation (v1 legacy alerts).';
+COMMENT ON COLUMN security_alerts.vendor IS 'Vendor from VendorInformation (v1 legacy alerts).';
+COMMENT ON COLUMN security_alerts.incident_ids IS 'IncidentIds joined with ", ", NULL when empty.';
+COMMENT ON COLUMN security_alerts.comments IS 'Comments joined with "; " (legacy comments are plain strings, so each item is its text).';
+COMMENT ON COLUMN security_alerts.tags IS 'Tags joined with ", ", NULL when empty.';
+COMMENT ON COLUMN security_alerts.raw IS 'Source record as loaded.';
+COMMENT ON COLUMN security_alerts.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
+COMMENT ON COLUMN security_alerts.tz_assumed IS 'Object {column: true} naming each time column whose value came without a time zone and was stored as if UTC (for example Hawk WhenChanged or AutoReply StartTime, written in the collecting host''s local time). Per column like column_collections: the load that writes a column sets or clears its entry. NULL for rows loaded before schema 7 or loads without a time column.';
+COMMENT ON TABLE secure_score IS 'Microsoft Secure Score control profiles (Microsoft-Extractor-Suite Get-SecureScore SecureScore.csv, one row per control profile joined to its score).';
+COMMENT ON COLUMN secure_score.record_key IS '<collection_id>|<lower Title> (the export carries no control id, so the collection-scoped title keys the row).';
+COMMENT ON COLUMN secure_score.collection_id IS 'Newest collection that wrote or re-confirmed any of this row''s columns (per-column writers: column_collections).';
+COMMENT ON COLUMN secure_score.collected_at IS 'collected_at of that collection (NULL when unknown).';
+COMMENT ON COLUMN secure_score.title IS 'Title.';
+COMMENT ON COLUMN secure_score.category IS 'ControlCategory.';
+COMMENT ON COLUMN secure_score.service IS 'Service.';
+COMMENT ON COLUMN secure_score.status IS 'Status derived by the collector: Not applicable, Not applicable (overridden: <state>), Meets standard, Partial or At risk.';
+COMMENT ON COLUMN secure_score.current_score IS 'CurrentScore; the collector''s culture-formatted double, parsed strictly ("2,5" -> 2.5).';
+COMMENT ON COLUMN secure_score.max_score IS 'MaxScore; a culture-formatted double like current_score.';
+COMMENT ON COLUMN secure_score.state IS 'The last ControlStateUpdates State, else Default.';
+COMMENT ON COLUMN secure_score.action_type IS 'ActionType: Config, Review or Behavior.';
+COMMENT ON COLUMN secure_score.action_url IS 'ActionUrl.';
+COMMENT ON COLUMN secure_score.implementation_cost IS 'ImplementationCost: Low, Moderate or High.';
+COMMENT ON COLUMN secure_score.user_impact IS 'UserImpact: Low, Moderate or High.';
+COMMENT ON COLUMN secure_score.tier IS 'Tier.';
+COMMENT ON COLUMN secure_score.rank IS 'Rank.';
+COMMENT ON COLUMN secure_score.deprecated IS 'Deprecated.';
+COMMENT ON COLUMN secure_score.threats IS 'Threats joined with "; ", NULL when empty.';
+COMMENT ON COLUMN secure_score.last_modified IS 'LastModifiedDateTime.';
+COMMENT ON COLUMN secure_score.raw IS 'Source record as loaded.';
+COMMENT ON COLUMN secure_score.column_collections IS 'Object {column: collection_id} naming the collection that last wrote each column. Per-column latest wins: a load writes a column only when its collection is not older than the one recorded for it, so column values do not depend on ingest order. Columns no load has written (or loaded only as NULL where NULL keeps the stored value) are absent.';
+COMMENT ON COLUMN secure_score.tz_assumed IS 'Object {column: true} naming each time column whose value came without a time zone and was stored as if UTC (for example Hawk WhenChanged or AutoReply StartTime, written in the collecting host''s local time). Per column like column_collections: the load that writes a column sets or clears its entry. NULL for rows loaded before schema 7 or loads without a time column.';
