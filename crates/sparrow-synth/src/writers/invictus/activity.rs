@@ -192,17 +192,21 @@ fn write_form(
     Ok(())
 }
 
-/// The three Get-DirectoryActivityLogs renderings, each its own run folder and its own seeded
-/// hashtable key order.
+/// The three Get-DirectoryActivityLogs renderings, each its own run folder. All three are
+/// cmdlet calls in one PowerShell session, so they share one key order per tree: .NET string
+/// hashing on PS 5.1 is deterministic and PS7's per-process randomization is stable within a
+/// session. A single seeded order models both. On PS7 the `.JSON` (UTF-8, no BOM) and the
+/// `.jsonl` (UTF-8, no BOM, the same `ConvertTo-Json` array) are byte-identical, so the ingest
+/// marks the later one `duplicate_file`; on PS 5.1 `.JSON` is Windows-1252 and `.jsonl` UTF-8
+/// with a BOM, so both parse.
 fn write_directory_activity_logs(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
-    let mut rng = stream(c.world.seed, "invictus/directory_activity_keys");
-    let base: Vec<Row> = c.world.azure.iter().map(|e| event_row(c, e)).collect();
-    let keys = keys_of(c);
     let mut order: Vec<usize> = (0..ARM_KEYS.len()).collect();
+    stream(c.world.seed, "invictus/directory_activity_keys").shuffle(&mut order);
+    let base: Vec<Row> = c.world.azure.iter().map(|e| event_row(c, e)).collect();
+    let rows: Vec<Row> = base.iter().map(|r| reorder(r, &order)).collect();
+    let keys = keys_of(c);
 
     // CSV: Export-Csv -Encoding UTF8.
-    rng.shuffle(&mut order);
-    let rows: Vec<Row> = base.iter().map(|r| reorder(r, &order)).collect();
     let run = c.runs.next("Directory Activity Logs", None);
     let dir = c.path(&run.rel);
     tree.dir(&dir)?;
@@ -214,8 +218,6 @@ fn write_directory_activity_logs(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result
     write_form(c, tree, &rel, c.utf8(), &rows, &keys)?;
 
     // JSON: Set-Content with no -Encoding (PS7 UTF-8, 5.1 Windows-1252).
-    rng.shuffle(&mut order);
-    let rows: Vec<Row> = base.iter().map(|r| reorder(r, &order)).collect();
     let run = c.runs.next("Directory Activity Logs", None);
     let dir = c.path(&run.rel);
     tree.dir(&dir)?;
@@ -235,8 +237,6 @@ fn write_directory_activity_logs(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result
     }
 
     // jsonl: Out-File -Encoding UTF8 of a pretty array (not JSON lines).
-    rng.shuffle(&mut order);
-    let rows: Vec<Row> = base.iter().map(|r| reorder(r, &order)).collect();
     let run = c.runs.next("Directory Activity Logs", None);
     let dir = c.path(&run.rel);
     tree.dir(&dir)?;
