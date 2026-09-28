@@ -39,6 +39,11 @@ pub struct RuleDef {
     /// file leaves it out.
     #[serde(default)]
     pub lookalike_collectors: Vec<Collector>,
+    /// The evidence halves a storyline must reach for a `hit`/`no_hit` to count. Each inner list
+    /// is one required half; reaching any table in it satisfies that half. When the file leaves
+    /// it out the rule has one group equal to `tables` (the pre-existing behaviour).
+    #[serde(default)]
+    pub evidence_all_of: Vec<Vec<String>>,
     pub positives: Vec<StoryKind>,
     pub lookalikes: Vec<StoryKind>,
 }
@@ -75,8 +80,21 @@ fn load() -> Vec<RuleDef> {
         if r.lookalike_collectors.is_empty() {
             r.lookalike_collectors = r.collectors.clone();
         }
+        if r.evidence_all_of.is_empty() {
+            r.evidence_all_of = vec![r.tables.clone()];
+        }
     }
     rules
+}
+
+/// Whether `delivered` (the evidence tables a storyline reached, i.e. a manifest rule's
+/// `tables`) satisfies every evidence group of a correlated rule: each group needs at least one
+/// of its tables delivered. A rule with no `evidence_all_of` has one group equal to its
+/// `tables`, so this is true whenever any of the rule's tables was reached.
+pub fn evidence_all_of_satisfied(groups: &[Vec<String>], delivered: &[String]) -> bool {
+    groups
+        .iter()
+        .all(|group| group.iter().any(|t| delivered.iter().any(|d| d == t)))
 }
 
 /// Every seed rule, in file order.
@@ -183,6 +201,8 @@ struct Observed {
     outcome: RuleOutcome,
     exercise: Exercise,
     has_geoip: bool,
+    /// The rule's tables the storyline's evidence reached (the manifest rule's `tables`).
+    tables: Vec<String>,
 }
 
 /// Generate every built-in scenario (except `volume`) for every collector into a [`NullSink`]
@@ -206,6 +226,7 @@ pub fn report(seed: u64) -> Result<CoverageReport> {
                     .push(Observed {
                         outcome: r.outcome,
                         has_geoip,
+                        tables: r.tables.clone(),
                         exercise: Exercise {
                             scenario: name.to_string(),
                             collector: *collector,
@@ -233,17 +254,30 @@ pub fn report(seed: u64) -> Result<CoverageReport> {
         let mut collectors_no_hit = BTreeSet::new();
         let mut geoip_hits = 0usize;
         for o in entries {
+            let full = evidence_all_of_satisfied(&rule.evidence_all_of, &o.tables);
             match o.outcome {
-                RuleOutcome::Hit => {
+                RuleOutcome::Hit if full => {
                     collectors_hit.insert(o.exercise.collector);
                     if o.has_geoip {
                         geoip_hits += 1;
                     }
                     hits.push(o.exercise);
                 }
-                RuleOutcome::NoHit => {
+                RuleOutcome::NoHit if full => {
                     collectors_no_hit.insert(o.exercise.collector);
                     no_hits.push(o.exercise);
+                }
+                // A correlated rule whose storyline reached only some of its evidence halves is
+                // not a hit/no_hit through that collector: report it as no evidence instead.
+                RuleOutcome::Hit | RuleOutcome::NoHit => {
+                    let mut e = o.exercise;
+                    e.reason = format!(
+                        "{}; reached only part of {}'s correlated evidence (delivered: {})",
+                        e.reason,
+                        rule.id,
+                        o.tables.join(", ")
+                    );
+                    no_evidence.push(e);
                 }
                 RuleOutcome::NotApplicable => not_applicable.push(o.exercise),
                 RuleOutcome::NoEvidence => no_evidence.push(o.exercise),

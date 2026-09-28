@@ -13,6 +13,11 @@
 #                     coverage flags a listed collector no built-in scenario exercises)
 #   lookalike_collectors  collectors that can supply a look-alike's evidence, when fewer
 #                     (Hawk only sees activity from the IPs and users the analyst searched)
+#   evidence_all_of   evidence halves a storyline must reach for a hit/no_hit to count: an
+#                     optional list of groups, each a list of tables; any table in a group
+#                     satisfies that group. Absent means one group equal to `tables`. Set it for
+#                     rules whose logic correlates two kinds of evidence (Phase 6 checks the
+#                     timing/actor correlation itself; this only checks the evidence is present).
 #   positives         storyline kinds that must trigger the rule
 #   lookalikes        storyline kinds that must not trigger it
 # Rules SPW-HAWK-001..015 cover every Hawk 4.0 investigate condition (research
@@ -358,7 +363,10 @@ rules:
     requires: []
     requires_evidence: []
     needs_geoip: true
-    collectors: [hawk3, hawk4, invictus, portal]
+    # Hawk 3.1 exports no Entra sign-in log and no Entra ID audit log (survey; hawk-layouts
+    # §7.2), so it cannot supply the risky-sign-in half of the correlation.
+    evidence_all_of: [[directory_audits, ual_events], [signins, ual_events]]
+    collectors: [hawk4, invictus, portal]
     positives: [mfa_method_added]
     lookalikes: [mfa_new_hire]
   - id: SPW-ID-002
@@ -423,6 +431,8 @@ rules:
     requires: []
     requires_evidence: []
     needs_geoip: true
+    # The inbox-rule half and the preceding risky / hosting-ASN sign-in.
+    evidence_all_of: [[ual_events, admin_audit_events], [signins, ual_events]]
     collectors: [hawk3, hawk4, invictus, portal]
     positives: [inbox_rule_finance]
     lookalikes: [vendor_filing_rule]
@@ -487,6 +497,8 @@ rules:
     requires: []
     requires_evidence: [ual]
     needs_geoip: true
+    # The sharing event and the preceding risky / hosting-ASN sign-in.
+    evidence_all_of: [[ual_events, sharing_events], [signins, ual_events]]
     # Hawk 3.1 exports no SharePoint/OneDrive UAL (survey; hawk-layouts §7).
     collectors: [hawk4, invictus, portal]
     lookalike_collectors: [invictus, portal]
@@ -506,6 +518,8 @@ rules:
     requires: []
     requires_evidence: [ual]
     needs_geoip: false
+    # The upload half and the sharing half of the lure.
+    evidence_all_of: [[ual_events, file_events], [ual_events, sharing_events]]
     # Hawk 3.1 exports no SharePoint/OneDrive UAL (survey; hawk-layouts §7).
     collectors: [hawk4, invictus, portal]
     lookalike_collectors: [invictus, portal]

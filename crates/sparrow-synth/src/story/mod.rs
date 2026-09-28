@@ -14,7 +14,9 @@ mod files;
 mod identity;
 mod mail;
 
-use crate::events::{Actor, DirAudit, RiskDetection, SignIn, SignInType, Target, TraceMsg, Ual};
+use crate::events::{
+    Actor, DirAudit, RecordType, RiskDetection, SignIn, SignInType, Target, TraceMsg, Ual,
+};
 use crate::reserved::{IpAllocator, Net, WELL_KNOWN_GUIDS};
 use crate::rng::{Rng, stream};
 use crate::scenario::{Polarity, StoryKind, StorySpec};
@@ -352,6 +354,41 @@ pub(crate) fn push_trace(w: &mut World, ctx: &mut Ctx, t: TraceMsg) {
 pub(crate) fn push_ual(w: &mut World, ctx: &mut Ctx, u: Ual) {
     ctx.ev.push(Evidence::Ual(u.id));
     w.story.ual.push(u);
+}
+
+/// Adds to `ctx` the evidence of the most recent attacker-proxy sign-in of `user` before `t`:
+/// the sign-in and its UAL `UserLoggedIn` record, without recording a new sign-in. A correlated
+/// rule's positive storyline carries the preceding risky sign-in it pairs with (SPW-ID-010); the
+/// timing/actor correlation itself is Phase 6.
+pub(crate) fn push_correlated_signin(w: &World, ctx: &mut Ctx, user: &User, t: DateTime<Utc>) {
+    // The baseline sign-ins of the day are deterministic and are what the writers will emit, so
+    // pulling the day's sign-ins here gives evidence ids that a delivery can match.
+    let day = w.day(t.date_naive());
+    let preceding = |s: &SignIn| s.user == user.upn && s.time <= t;
+    // Prefer the attacker's proxy sign-in (the risky half of a positive); fall back to any
+    // preceding sign-in so a look-alike's benign rule still carries a sign-in to correlate with.
+    let Some(s) = day
+        .signins
+        .iter()
+        .filter(|s| preceding(s) && s.ip == w.attacker.proxy_ip)
+        .max_by_key(|s| s.time)
+        .or_else(|| {
+            day.signins
+                .iter()
+                .filter(|s| preceding(s))
+                .max_by_key(|s| s.time)
+        })
+    else {
+        return;
+    };
+    ctx.ev.push(Evidence::SignIn(s.id));
+    if let Some(u) = day.ual.iter().find(|u| {
+        u.user_id.eq_ignore_ascii_case(&user.upn)
+            && u.time == s.time
+            && u.record_type == RecordType::AzureActiveDirectoryStsLogon
+    }) {
+        ctx.ev.push(Evidence::Ual(u.id));
+    }
 }
 
 /// Records a sign-in; with `logon`, also its UAL `UserLoggedIn` record (`request_type`

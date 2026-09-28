@@ -3,7 +3,8 @@
 //! finance searches, an automatic reply, a spoofed message, and their look-alikes.
 
 use super::{
-    Ctx, Evidence, attacker_session, first_admin, push_cmdlet, push_trace, push_ual, target,
+    Ctx, Evidence, attacker_session, first_admin, push_cmdlet, push_correlated_signin, push_trace,
+    push_ual, target,
 };
 use crate::events::TraceMsg;
 use crate::scenario::StoryKind;
@@ -226,6 +227,8 @@ fn inbox_rule_finance(w: &mut World, ctx: &mut Ctx) {
     let t = ctx.t;
     let ip = w.attacker.replay_ip;
     let session = attacker_session(w, ctx, &a, t);
+    // The correlated preceding risky sign-in SPW-ID-010 pairs the rule with.
+    push_correlated_signin(w, ctx, &a, t);
     push_cmdlet(
         w,
         ctx,
@@ -884,6 +887,8 @@ fn vendor_filing_rule(w: &mut World, ctx: &mut Ctx) {
     let a = ctx.a.clone();
     let t = ctx.t;
     let from = format!("billing@{VENDOR_DOMAIN}");
+    // The benign sign-in the correlated rule must see and not pair with the rule.
+    push_correlated_signin(w, ctx, &a, t);
     let session = ctx.rng.uuid();
     push_cmdlet(
         w,

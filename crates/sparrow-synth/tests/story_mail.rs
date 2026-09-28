@@ -52,11 +52,13 @@ fn finance_rule_state_and_event_agree() {
         .find(|x| &x.mailbox == upn && x.name == ".")
         .unwrap();
     assert_eq!(rule.move_to_folder.as_deref(), Some("RSS Feeds"));
+    // The story record also carries the preceding risky sign-in's UAL row (SPW-ID-010), so pick
+    // the cmdlet out explicitly.
     let ev = w
         .story
         .ual
         .iter()
-        .find(|u| ual_ids(r).contains(&u.id))
+        .find(|u| ual_ids(r).contains(&u.id) && u.operation == "New-InboxRule")
         .unwrap();
     assert_eq!(ev.operation, "New-InboxRule");
     assert_eq!(
