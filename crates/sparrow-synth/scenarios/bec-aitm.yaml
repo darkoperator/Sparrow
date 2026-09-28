@@ -9,6 +9,9 @@ tenant:
   audit_profile: search_audited
   host_utc_offset_minutes: 120
   hawk_users: [1, 2]
+  # The Finance group is a direct member of the activated User Administrator role, so
+  # AllRoles reproduces the collector's group-member Role carry-over (Task 17 follow-up).
+  role_group_member: true
 window:
   start: 2026-08-01T00:00:00Z
   days: 40

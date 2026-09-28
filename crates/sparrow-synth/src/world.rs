@@ -80,6 +80,7 @@ pub struct World {
     pub apps: Vec<App>,
     pub grants: Vec<Grant>,
     pub roles: Vec<RoleAssignment>,
+    pub role_groups: Vec<RoleGroupMember>,
     pub mfa: BTreeMap<String, MfaRegistration>,
     pub ca_policies: Vec<CaPolicy>,
     pub devices: Vec<Device>,
@@ -118,6 +119,20 @@ impl World {
         let ca_policies = build_ca(seed, &tenant);
         let devices = build_devices(scenario, seed, &users);
         let groups = build_groups(seed, &tenant, &users);
+        let role_groups = if scenario.tenant.role_group_member {
+            groups
+                .iter()
+                .find(|g| g.is_assignable_to_role)
+                .map(|g| {
+                    vec![RoleGroupMember {
+                        role: "User Administrator".to_string(),
+                        group_id: g.id,
+                    }]
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let mobile_devices = build_mobile_devices(scenario, seed, &users);
         let transport_rules = build_transport_rules(scenario, seed, &admins);
         let remote_domains = build_remote_domains(&tenant);
@@ -139,6 +154,7 @@ impl World {
             apps,
             grants,
             roles,
+            role_groups,
             mfa,
             ca_policies,
             devices,
@@ -654,6 +670,14 @@ pub struct RoleAssignment {
     pub kind: String,
     pub start: Option<DateTime<Utc>>,
     pub end: Option<DateTime<Utc>>,
+}
+
+/// A group that is a direct member of a directory role (Get-Roles.ps1's group-member case:
+/// `Get-MgUser` on a group id fails, and the fallback nulls the carried `$displayName`).
+#[derive(Debug, Clone)]
+pub struct RoleGroupMember {
+    pub role: String,
+    pub group_id: Uuid,
 }
 
 #[derive(Debug, Clone)]

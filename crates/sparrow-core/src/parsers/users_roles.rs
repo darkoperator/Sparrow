@@ -181,17 +181,20 @@ impl ArtifactParser for AdminRolesParser {
                 )?;
                 continue;
             }
-            let Some(role) = rec.text("Role") else {
-                reject(ctx, r, "admin role record has no Role")?;
-                continue;
-            };
+            // A null Role is the collector's carry-over after a failed group lookup
+            // (Get-Roles.ps1:146-152): the row still loads, with role_name NULL.
+            let role = rec.text("Role");
             let upn = lower(rec.text("UserName"));
             let id = lower(rec.text("UserId"));
             let name = rec.text("DisplayName");
-            let key = role_key("entra_directory", &role, &principal_key(&upn, &id, &name));
+            let key = role_key(
+                "entra_directory",
+                role.as_deref().unwrap_or(""),
+                &principal_key(&upn, &id, &name),
+            );
             let mut c = CellRow::new(ADMIN_COLS);
             c.set("source", Cell::text(Some("entra_directory".into())))
-                .set("role_name", Cell::text(Some(role)))
+                .set("role_name", Cell::text(role))
                 .set("principal_upn", Cell::text(upn))
                 .set("principal_id", Cell::text(id))
                 .set("principal_name", Cell::text(name))

@@ -95,6 +95,11 @@ pub struct TenantSpec {
     pub host_utc_offset_minutes: i32,
     #[serde(default)]
     pub hawk_users: Vec<u32>,
+    /// Test-only: add the role-assignable Finance group as a direct member of the activated
+    /// "User Administrator" directory role, reproducing the AllRoles group-member carry-over.
+    /// Only `bec-aitm` sets it.
+    #[serde(default)]
+    pub role_group_member: bool,
 }
 
 fn one() -> u32 {

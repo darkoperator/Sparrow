@@ -131,9 +131,10 @@ fn user_row(u: &User, last: (Option<DateTime<Utc>>, Option<DateTime<Utc>>)) -> R
     ]
 }
 
-/// One Admins / AllRoles row. `role_first` is AllRoles' column order (`Role` before `UserName`).
+/// One Admins / AllRoles row. `role_first` is AllRoles' column order (`Role` before `UserName`);
+/// `role` is None for the row that inherits the collector's null `$displayName`.
 fn role_row(
-    role: &str,
+    role: Option<&str>,
     u: &User,
     run_local: NaiveDateTime,
     last: (Option<DateTime<Utc>>, Option<DateTime<Utc>>),
@@ -146,7 +147,7 @@ fn role_row(
         None => Val::Str("No sign-in data".into()),
     };
     let mut row = vec![
-        r("Role", Val::Str(role.to_string())),
+        r("Role", role.map_or(Val::Null, |s| Val::Str(s.to_string()))),
         r("UserName", Val::Str(u.upn.clone())),
         r("UserId", Val::Str(u.object_id.to_string())),
         r("DisplayName", Val::Str(u.display_name.clone())),
@@ -166,15 +167,21 @@ fn role_row(
 }
 
 /// One Get-Roles.ps1 failed-lookup row (Get-Roles.ps1:146-165): the seven data columns are the
-/// literal phrase, UserName comes from the fallback `Get-MgUser`, and Role carries the buggy
-/// `$displayName`.
-fn error_role_row(role_label: &str, u: &User) -> Row {
+/// literal phrase, and `role`/`user_name`/`display_name` are the fallback's values - the user's
+/// own display name for a user, null for a group id.
+fn error_role_row(
+    role: Option<&str>,
+    user_name: Option<&str>,
+    user_id: &str,
+    display_name: Option<&str>,
+) -> Row {
+    let text = |v: Option<&str>| v.map_or(Val::Null, |s| Val::Str(s.to_string()));
     let error = || Val::Str("Error retrieving data".into());
     vec![
-        r("Role", Val::Str(role_label.to_string())),
-        r("UserName", Val::Str(u.upn.clone())),
-        r("UserId", Val::Str(u.object_id.to_string())),
-        r("DisplayName", Val::Str(u.display_name.clone())),
+        r("Role", text(role)),
+        r("UserName", text(user_name)),
+        r("UserId", Val::Str(user_id.to_string())),
+        r("DisplayName", text(display_name)),
         r("Department", error()),
         r("JobTitle", error()),
         r("AccountEnabled", error()),
@@ -268,7 +275,7 @@ fn write_admins(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         let rel = format!("{dir}/{name}");
         let rows: Vec<Row> = members
             .iter()
-            .map(|u| role_row(&role, u, run.local, signins(&by_upn, &u.upn), false))
+            .map(|u| role_row(Some(&role), u, run.local, signins(&by_upn, &u.upn), false))
             .collect();
         let row_keys: Vec<String> = members
             .iter()
@@ -313,26 +320,41 @@ fn write_all_roles(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
     let mut rows = Vec::new();
     let mut row_keys = Vec::new();
     for role in role_names(c.world) {
-        // Get-Roles.ps1's `$displayName` bug: the failed-lookup fallback overwrites the per-role
-        // label with the user's display name, and every later row of the role writes it as Role
-        // (Get-Roles.ps1:134-165; the label is reset per role at :78).
-        let mut role_label = role.clone();
+        // Get-Roles.ps1's `$displayName` carry-over: the label starts as the role name
+        // (:78), a failed lookup sets it to `$basicInfo.DisplayName` (`$null` for a group id,
+        // :146-152), and every later row of the role writes it as Role.
+        let mut role_label: Option<String> = Some(role.clone());
+        // Group members come first; Get-AdminUsers resolves members in bulk, so its per-role
+        // files have no group row.
+        for m in c.world.role_groups.iter().filter(|m| m.role == role) {
+            rows.push(error_role_row(None, None, &m.group_id.to_string(), None));
+            role_label = None;
+        }
         for u in active_members(c.world, &role) {
             if p1 {
                 rows.push(role_row(
-                    &role_label,
+                    role_label.as_deref(),
                     u,
                     run.local,
                     signins(&by_upn, &u.upn),
                     true,
                 ));
-                row_keys.push(keys::role("entra_directory", &role, &u.upn));
+                row_keys.push(keys::role(
+                    "entra_directory",
+                    role_label.as_deref().unwrap_or(""),
+                    &u.upn,
+                ));
             } else {
                 // Get-MgUser with SignInActivity throws; the fallback `Get-MgUser -Select
                 // "DisplayName,UserPrincipalName"` succeeds, so the catch writes a row whose
                 // seven data columns are the phrase.
-                role_label = u.display_name.clone();
-                rows.push(error_role_row(&role_label, u));
+                role_label = Some(u.display_name.clone());
+                rows.push(error_role_row(
+                    role_label.as_deref(),
+                    Some(&u.upn),
+                    &u.object_id.to_string(),
+                    Some(&u.display_name),
+                ));
             }
         }
     }

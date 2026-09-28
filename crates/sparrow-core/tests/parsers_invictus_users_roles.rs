@@ -207,3 +207,32 @@ fn allroles_lookup_error_rows_need_all_seven_columns() {
         1
     );
 }
+
+#[test]
+fn a_group_role_member_carries_the_null_role_onto_later_rows() {
+    let g = builtin("bec-aitm", PsEdition::Ps7);
+    // The role-assignable Finance group is a direct member of User Administrator; Get-MgUser on
+    // a group id fails with -ErrorAction SilentlyContinue returning $null (Get-Roles.ps1:146-152),
+    // so its error row is rejected and the following user row of that role inherits the null Role.
+    assert!(
+        count(
+            &g.case,
+            "SELECT records_error FROM source_files WHERE artifact_type = 'inv.roles.all'"
+        ) >= 1
+    );
+    assert_eq!(
+        count(
+            &g.case,
+            "SELECT count(*) FROM role_assignments WHERE source = 'entra_directory' AND role_name IS NULL"
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            &g.case,
+            "SELECT count(*) FROM role_assignments WHERE record_key LIKE 'entra_directory||%'"
+        ),
+        1
+    );
+    check_green(&g);
+}
