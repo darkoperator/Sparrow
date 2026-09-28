@@ -379,8 +379,20 @@ fn forwarding_inbox_rule(w: &mut World, ctx: &mut Ctx) {
     let t = ctx.t;
     let ip = w.attacker.replay_ip;
     let fwd = w.attacker.forward_address.clone();
+    // A second, internal recipient: user 2 when it is not the actor, whose mailbox display name
+    // is "Last, First", so the EXO export carries a quoted display name with a comma
+    // (`"Last, First" [SMTP:...]`).
+    let internal = w
+        .users
+        .iter()
+        .find(|u| u.n == 2 && !u.upn.eq_ignore_ascii_case(&a.upn))
+        .or_else(|| w.users.iter().find(|u| !u.upn.eq_ignore_ascii_case(&a.upn)))
+        .expect("a tenant has another user")
+        .upn
+        .clone();
     let session = attacker_session(w, ctx, &a, t);
     let from = "billing@vendor-invoices.example";
+    let recipients = format!("{fwd};{internal}");
     push_cmdlet(
         w,
         ctx,
@@ -388,13 +400,17 @@ fn forwarding_inbox_rule(w: &mut World, ctx: &mut Ctx) {
         t,
         "New-InboxRule",
         &rule_object(&a.upn, "AP"),
-        &[("Name", "AP"), ("From", from), ("ForwardTo", fwd.as_str())],
+        &[
+            ("Name", "AP"),
+            ("From", from),
+            ("ForwardTo", recipients.as_str()),
+        ],
         ip,
         session,
     );
     let mut rule = new_rule(ctx, &a.upn, "AP", t);
     rule.from = vec![from.to_string()];
-    rule.forward_to = vec![fwd];
+    rule.forward_to = vec![fwd, internal];
     add_rule(w, ctx, rule);
 }
 

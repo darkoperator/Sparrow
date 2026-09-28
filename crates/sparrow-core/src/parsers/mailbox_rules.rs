@@ -67,6 +67,48 @@ fn split_joined(value: Option<String>, sep: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Split an EXO-joined list on `, ` only outside double-quoted display names. Exchange renders
+/// a recipient as `"Last, First" [SMTP:addr]` and doubles a quote inside the name
+/// (`"Doe ""Q"" Smith" [SMTP:addr]`), so a comma between the quotes belongs to the name, not
+/// to the list separator.
+fn split_exo_list(value: Option<String>) -> Vec<String> {
+    let Some(s) = value else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => {
+                if chars.peek() == Some(&'"') {
+                    // A doubled quote is an escaped quote inside the name, not a delimiter.
+                    current.push('"');
+                    current.push('"');
+                    chars.next();
+                } else {
+                    in_quotes = !in_quotes;
+                    current.push('"');
+                }
+            }
+            ',' if !in_quotes => {
+                let item = current.trim();
+                if !item.is_empty() {
+                    out.push(item.to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    let item = current.trim();
+    if !item.is_empty() {
+        out.push(item.to_string());
+    }
+    out
+}
+
 fn smtp_entry_text(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
     match lower.find("[smtp:") {
@@ -83,7 +125,7 @@ fn smtp_entry_text(text: &str) -> String {
 }
 
 fn exo_recipients(value: Option<String>) -> Vec<String> {
-    split_joined(value, ", ")
+    split_exo_list(value)
         .into_iter()
         .map(|s| smtp_entry_text(&s))
         .collect()

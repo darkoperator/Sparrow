@@ -1369,9 +1369,18 @@ fn build_mailboxes(
                 "Owner".to_string(),
             ]
         };
+        // The recipient object's display name for user 2 is "Last, First": Exchange renders an
+        // EXO recipient as `"<display>" [SMTP:<addr>]`, so a rule that forwards to this user
+        // exercises the parser's split of a list on commas outside quoted display names. The
+        // directory user's own display name stays "First Last" (Graph's userDisplayName).
+        let display_name = if user.n == 2 {
+            format!("{}, {}", user.last, user.first)
+        } else {
+            user.display_name.clone()
+        };
         let mailbox = Mailbox {
             upn: user.upn.clone(),
-            display_name: user.display_name.clone(),
+            display_name,
             primary_smtp: user.upn.clone(),
             guid: user.mailbox_guid,
             recipient_type: "UserMailbox".to_string(),

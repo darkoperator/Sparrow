@@ -5,6 +5,7 @@ use super::Ctx;
 use crate::Result;
 use crate::keys;
 use crate::ps::{DateEvidence, DtKind, PsDate, Rendered, Row, Val, export_csv};
+use crate::rng::stream;
 use crate::story::Evidence;
 use crate::tree::{FileSpec, Tree};
 use crate::world::{InboxRule, TransportRule, World};
@@ -116,15 +117,22 @@ fn graph_bool(value: bool) -> Val {
     if value { Val::Bool(true) } else { Val::Null }
 }
 
-fn graph_folder(rule: &InboxRule) -> Val {
-    if rule.move_to_folder.is_some() {
-        Val::Str(format!("FolderID: {}", rule.graph_id))
-    } else {
-        Val::Null
-    }
+/// The Graph `MoveToFolder` value: a folder id stable per `(mailbox, folder)`, so two rules that
+/// move to the same folder report the same id (the id is not the rule's, unlike EXO's).
+fn graph_folder(world: &World, rule: &InboxRule) -> Val {
+    let Some(folder) = &rule.move_to_folder else {
+        return Val::Null;
+    };
+    let label = format!(
+        "invictus/graph_folder/{}/{}",
+        rule.mailbox.to_lowercase(),
+        folder.to_lowercase()
+    );
+    let id = stream(world.seed, &label).uuid();
+    Val::Str(format!("FolderID: {id}"))
 }
 
-fn graph_row(rule: &InboxRule) -> Row {
+fn graph_row(world: &World, rule: &InboxRule) -> Row {
     vec![
         r("UserPrincipalName", Val::Str(rule.mailbox.clone())),
         r("RuleName", Val::Str(rule.name.clone())),
@@ -138,7 +146,7 @@ fn graph_row(rule: &InboxRule) -> Row {
         ),
         r("Delete", graph_bool(rule.delete_message)),
         r("PermanentDelete", graph_bool(rule.soft_delete)),
-        r("MoveToFolder", graph_folder(rule)),
+        r("MoveToFolder", graph_folder(world, rule)),
         r("StopProcessingRules", graph_bool(rule.stop_processing)),
         r("MarkAsRead", graph_bool(rule.mark_as_read)),
         r("From", graph_join(&rule.from)),
@@ -188,7 +196,7 @@ fn write_mailbox_rules(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         "=== Starting Mailbox Rules Collection (Graph API) ===",
     );
     if !rules.is_empty() {
-        let rows: Vec<Row> = rules.iter().map(graph_row).collect();
+        let rows: Vec<Row> = rules.iter().map(|r| graph_row(c.world, r)).collect();
         let rel = format!("{dir}/{}-MailboxRulesGraph.csv", run.stamp);
         let rendered = write_rows(c, tree, &rel, "inv.mailbox_rules", &rows)?;
         for (rule, span) in rules.iter().zip(&rendered.spans) {
@@ -247,4 +255,42 @@ fn write_transport_rules(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
 pub(super) fn write(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
     write_mailbox_rules(c, tree)?;
     write_transport_rules(c, tree)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scenario::load;
+
+    fn folder_of(w: &World, rule: &InboxRule) -> Val {
+        graph_row(w, rule)
+            .into_iter()
+            .find(|(k, _)| k == "MoveToFolder")
+            .map(|(_, v)| v)
+            .unwrap()
+    }
+
+    #[test]
+    fn graph_folder_id_is_stable_per_mailbox_and_folder() {
+        let w = World::build(&load("bec-aitm").unwrap(), 1).unwrap();
+        let original = w
+            .inbox_rules
+            .iter()
+            .find(|r| r.move_to_folder.is_some())
+            .expect("a baseline rule moves to a folder")
+            .clone();
+        // A different rule on the same mailbox, moving to the same folder, reports the same id.
+        let mut other = original.clone();
+        other.identity += 1;
+        other.graph_id = format!("{}-other", original.graph_id);
+        assert_eq!(folder_of(&w, &original), folder_of(&w, &other));
+        // A different folder is a different id.
+        let mut elsewhere = original.clone();
+        elsewhere.move_to_folder = Some("Archive".to_string());
+        assert_ne!(folder_of(&w, &original), folder_of(&w, &elsewhere));
+        // A rule without a folder has no id.
+        let mut no_folder = original.clone();
+        no_folder.move_to_folder = None;
+        assert_eq!(folder_of(&w, &no_folder), Val::Null);
+    }
 }
