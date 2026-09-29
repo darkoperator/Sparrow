@@ -50,6 +50,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "synth_parsers",
         sql: include_str!("../../migrations/0008_synth_parsers.sql"),
     },
+    Migration {
+        version: 9,
+        name: "detection",
+        sql: include_str!("../../migrations/0009_detection.sql"),
+    },
 ];
 
 pub fn latest_version() -> u32 {

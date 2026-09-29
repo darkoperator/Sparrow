@@ -62,6 +62,9 @@ enum Command {
         /// Folder with MaxMind GeoLite2 City / ASN .mmdb files for IP enrichment
         #[arg(long)]
         geoip_dir: Option<PathBuf>,
+        /// Skip the detection run that follows the profile step
+        #[arg(long)]
+        no_detect: bool,
     },
     /// Re-derive the tenant profile, capabilities, IP enrichment and identities of a case
     Profile {
@@ -73,6 +76,9 @@ enum Command {
         rules: Vec<PathBuf>,
         #[arg(long)]
         geoip_dir: Option<PathBuf>,
+        /// Skip the detection run that follows the profile step
+        #[arg(long)]
+        no_detect: bool,
     },
     /// Evidence availability: what the case holds, what is missing and why (first call for agents)
     Capabilities {
@@ -377,6 +383,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             data,
             rules,
             geoip_dir,
+            no_detect,
         }) => cmd_ingest(
             &path,
             &case,
@@ -387,6 +394,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 geoip_dir,
                 as_of: None,
             },
+            no_detect,
             json,
         ),
         Some(Command::Profile {
@@ -394,6 +402,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             data,
             rules,
             geoip_dir,
+            no_detect,
         }) => cmd_profile(
             &case,
             ProfileOptions {
@@ -401,6 +410,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 geoip_dir,
                 as_of: None,
             },
+            no_detect,
             json,
         ),
         Some(Command::Capabilities { case }) => cmd_capabilities(&case, json),
@@ -519,6 +529,7 @@ fn cmd_ingest(
     culture: Option<&str>,
     max_file_size: u64,
     profile_opts: ProfileOptions,
+    no_detect: bool,
     json: bool,
 ) -> Result<ExitCode> {
     let date_order = culture
@@ -552,10 +563,12 @@ fn cmd_ingest(
             "evidence loaded; the profile step failed: {e:#} (fix and run `sparrow profile --case ...`)"
         )
     })?;
+    let detect = run_detection(&mut case, &profile_opts, no_detect);
     if json {
         print_json(&IngestOutput {
             report: &report,
             profile: &profile,
+            detect: detect.as_ref(),
         })?;
     } else {
         for c in &report.collections {
@@ -580,6 +593,7 @@ fn cmd_ingest(
             }
         }
         print_profile_summary(&profile);
+        print_detect_summary(detect.as_ref());
     }
     Ok(if report.has_errors() {
         ExitCode::from(2)
@@ -593,6 +607,78 @@ struct IngestOutput<'a> {
     #[serde(flatten)]
     report: &'a sparrow_core::ingest::IngestReport,
     profile: &'a ProfileReport,
+    detect: Option<&'a DetectOutcome>,
+}
+
+/// The detection step after a profile: the report, or the error as a message. A detection
+/// failure is a warning; it never fails the ingest or the profile.
+#[derive(Serialize)]
+struct DetectOutcome {
+    #[serde(flatten)]
+    report: Option<sparrow_core::detect::DetectReport>,
+    error: Option<String>,
+}
+
+fn run_detection(
+    case: &mut Case,
+    profile_opts: &ProfileOptions,
+    no_detect: bool,
+) -> Option<DetectOutcome> {
+    if no_detect {
+        return None;
+    }
+    let result = sparrow_core::detect::run::run_with_dirs(
+        case,
+        &profile_opts.dirs,
+        &sparrow_core::detect::DetectOptions {
+            now: profile_opts.as_of,
+            ..Default::default()
+        },
+    );
+    Some(match result {
+        Ok(report) => DetectOutcome {
+            report: Some(report),
+            error: None,
+        },
+        Err(e) => DetectOutcome {
+            report: None,
+            error: Some(format!("{e:#}")),
+        },
+    })
+}
+
+fn print_detect_summary(detect: Option<&DetectOutcome>) {
+    let Some(d) = detect else { return };
+    match (&d.report, &d.error) {
+        (Some(r), _) => {
+            let count = |s: &str| r.rules.iter().filter(|x| x.status == s).count();
+            println!(
+                "detection: run {}, {} rule runs ({} not applicable, {} errors), {} new findings, {} updated, {} evidence rows",
+                r.run_id,
+                r.rules.len(),
+                count("not_applicable"),
+                count("error"),
+                r.findings_new,
+                r.findings_updated,
+                r.evidence_added
+            );
+            for w in &r.warnings {
+                println!("  warning: {w}");
+            }
+            for x in r.rules.iter().filter(|x| x.status == "error") {
+                println!(
+                    "  warning: rule {} failed for tenant {}: {}",
+                    x.rule_id,
+                    x.tenant_key,
+                    x.reason.as_deref().unwrap_or("?")
+                );
+            }
+        }
+        (None, Some(e)) => {
+            println!("warning: detection failed: {e} (run `sparrow profile --case ...` again)")
+        }
+        (None, None) => {}
+    }
 }
 
 fn print_profile_summary(profile: &ProfileReport) {
@@ -605,7 +691,12 @@ fn print_profile_summary(profile: &ProfileReport) {
     }
 }
 
-fn cmd_profile(case_path: &Path, profile_opts: ProfileOptions, json: bool) -> Result<ExitCode> {
+fn cmd_profile(
+    case_path: &Path,
+    profile_opts: ProfileOptions,
+    no_detect: bool,
+    json: bool,
+) -> Result<ExitCode> {
     if !case_path.is_file() {
         return Err(sparrow_core::Error::NotFound(format!(
             "case database {}",
@@ -616,10 +707,21 @@ fn cmd_profile(case_path: &Path, profile_opts: ProfileOptions, json: bool) -> Re
     let mut case = Case::create_or_open(case_path)
         .with_context(|| format!("opening {}", case_path.display()))?;
     let profile = refresh(&mut case, &profile_opts)?;
+    let detect = run_detection(&mut case, &profile_opts, no_detect);
     if json {
-        print_json(&profile)?;
+        #[derive(Serialize)]
+        struct ProfileOutput<'a> {
+            #[serde(flatten)]
+            profile: &'a ProfileReport,
+            detect: Option<&'a DetectOutcome>,
+        }
+        print_json(&ProfileOutput {
+            profile: &profile,
+            detect: detect.as_ref(),
+        })?;
     } else {
         print_profile_summary(&profile);
+        print_detect_summary(detect.as_ref());
     }
     Ok(ExitCode::SUCCESS)
 }

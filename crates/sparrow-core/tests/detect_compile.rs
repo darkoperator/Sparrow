@@ -787,7 +787,7 @@ fn run_inline_tests(rule: &Rule, set: &RuleSet) {
 #[test]
 fn shipped_rule_samples_pass_their_inline_tests() {
     let set = load_rules(&DataDirs::default()).unwrap();
-    for id in ["SPW-HAWK-011", "SPW-ID-010"] {
+    for id in ["SPW-HAWK-011", "SPW-ID-010", "SPW-MAIL-005"] {
         let r = set.rules.iter().find(|r| r.rule.id == id).unwrap();
         run_inline_tests(&r.rule, &set);
     }
@@ -1026,4 +1026,39 @@ fn sql_rule_source_table_must_be_a_static_literal() {
             .to_string()
             .contains("string literal")
     );
+}
+
+#[test]
+fn mia_item_volume_alone_is_a_burst() {
+    let set = load_rules(&DataDirs::default()).unwrap();
+    let rule = &set
+        .rules
+        .iter()
+        .find(|r| r.rule.id == "SPW-MAIL-005")
+        .unwrap()
+        .rule;
+    for (items, want) in [(99, 0), (100, 1)] {
+        let mut case = Case::in_memory().unwrap();
+        insert_ual(
+            &case,
+            T1,
+            json!({"record_id": R1, "operation": "MailItemsAccessed", "user_upn": "v@x.example",
+                   "client_ip": "203.0.113.9", "event_time": "2026-03-01T10:00:00Z"}),
+        );
+        for i in 0..items {
+            insert_row(
+                &case,
+                "mail_items_accessed",
+                T1,
+                json!({"record_id": R1, "item_ordinal": i, "access_type": "bind"}),
+            );
+        }
+        let schema = CaseSchema::of(case.conn()).unwrap();
+        let c = compile_with_meta(rule, &set.lists, &set.list_meta, &schema).unwrap();
+        assert_eq!(
+            run(&mut case, &c, T1, &BTreeMap::new()).unwrap().len(),
+            want,
+            "{items} items"
+        );
+    }
 }

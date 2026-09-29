@@ -3,8 +3,13 @@
 
 pub mod compile;
 pub mod coverage;
+pub mod findings;
 pub mod lint;
 pub mod load;
 pub mod rule;
 pub mod rule_conn;
+pub mod run;
 mod scope;
+
+pub use findings::fingerprint;
+pub use run::{DetectOptions, DetectReport, RuleRunReport};

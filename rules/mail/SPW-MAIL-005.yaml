@@ -1,0 +1,334 @@
+# SPW-MAIL-005 — MailItemsAccessed bind burst. Logic source: coverage.yaml ("at least 5
+# MailItemsAccessed records with MailAccessType Bind, or at least 100 accessed items, for one
+# mailbox from one client IP within 30 minutes. Sync records never count."). A sliding 30 minute
+# window per (mailbox, client IP) over the Bind records; the hits are every Bind record of a
+# qualifying window. The `sql:` form is needed because the second clause sums accessed items,
+# which the `threshold:` block (a row count) cannot express.
+id: SPW-MAIL-005
+title: MailItemsAccessed bind burst
+version: 1
+status: stable
+severity: high
+confidence: medium
+mitre: [T1114.002]
+tags: [bec, mail-access]
+requires: []
+requires_evidence: [mail_items_accessed]
+sql: |
+  WITH bind AS (
+    SELECT u.record_id, u.event_time, coalesce(u.mailbox_upn, u.user_upn) AS mailbox,
+           u.client_ip AS ip, count(*) AS items
+    FROM ual_events u JOIN mail_items_accessed m ON m.record_id = u.record_id
+    WHERE m.access_type = 'bind'
+    GROUP BY u.record_id, u.event_time, coalesce(u.mailbox_upn, u.user_upn), u.client_ip
+  ),
+  windowed AS (
+    SELECT *, count(*) OVER win AS records, sum(items) OVER win AS total_items
+    FROM bind
+    WINDOW win AS (PARTITION BY mailbox, ip ORDER BY epoch_ms(event_time)
+                   RANGE BETWEEN 1800000 PRECEDING AND CURRENT ROW)
+  ),
+  burst AS (SELECT * FROM windowed WHERE records >= 5 OR total_items >= 100)
+  SELECT lower(CAST(b.record_id AS VARCHAR)) AS record_key, 'ual_events' AS source_table,
+         b.event_time, b.mailbox AS actor_upn, b.ip AS ip
+  FROM bind b
+  WHERE EXISTS (
+    SELECT 1 FROM burst q
+    WHERE q.mailbox IS NOT DISTINCT FROM b.mailbox AND q.ip IS NOT DISTINCT FROM b.ip
+      AND epoch_ms(b.event_time) <= epoch_ms(q.event_time)
+      AND epoch_ms(b.event_time) >= epoch_ms(q.event_time) - 1800000
+  )
+group_by: [actor_upn, ip]
+analyst_guidance: |
+  A burst of MailItemsAccessed Bind records from one address is what a token thief reading a
+  mailbox through Graph or EWS looks like. Compare the client IP and app id with the user's
+  normal sign-ins, check which folders were read, and look for a preceding risky sign-in or a new
+  app consent.
+false_positives:
+  - A migration or backup tool reading a mailbox through a service account.
+  - A user's own device after a long offline period (mostly Sync, which never counts).
+references:
+  - https://learn.microsoft.com/en-us/purview/audit-mailitemsaccessed
+author: Sparrow
+tests:
+  - name: five bind records in ten minutes from one address
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-b00000000000"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:00:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-b00000000000"
+        access_type: bind
+        internet_message_id: "<b0@contoso.example>"
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-b00000000001"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:02:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-b00000000001"
+        access_type: bind
+        internet_message_id: "<b1@contoso.example>"
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-b00000000002"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:04:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-b00000000002"
+        access_type: bind
+        internet_message_id: "<b2@contoso.example>"
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-b00000000003"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:06:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-b00000000003"
+        access_type: bind
+        internet_message_id: "<b3@contoso.example>"
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-b00000000004"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:08:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-b00000000004"
+        access_type: bind
+        internet_message_id: "<b4@contoso.example>"
+    expect_hits: 5
+  - name: four bind records are below the threshold
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-c00000000000"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:00:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-c00000000000"
+        access_type: bind
+        internet_message_id: "<c0@contoso.example>"
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-c00000000001"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:02:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-c00000000001"
+        access_type: bind
+        internet_message_id: "<c1@contoso.example>"
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-c00000000002"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:04:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-c00000000002"
+        access_type: bind
+        internet_message_id: "<c2@contoso.example>"
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-c00000000003"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:06:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-c00000000003"
+        access_type: bind
+        internet_message_id: "<c3@contoso.example>"
+    expect_hits: 0
+  - name: twelve sync records never count
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-500000000000"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 198.51.100.4
+        event_time: "2026-03-01T10:00:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-500000000000"
+        access_type: sync
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-500000000001"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 198.51.100.4
+        event_time: "2026-03-01T10:02:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-500000000001"
+        access_type: sync
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-500000000002"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 198.51.100.4
+        event_time: "2026-03-01T10:04:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-500000000002"
+        access_type: sync
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-500000000003"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 198.51.100.4
+        event_time: "2026-03-01T10:06:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-500000000003"
+        access_type: sync
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-500000000004"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 198.51.100.4
+        event_time: "2026-03-01T10:08:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-500000000004"
+        access_type: sync
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-500000000005"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 198.51.100.4
+        event_time: "2026-03-01T10:10:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-500000000005"
+        access_type: sync
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-500000000006"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 198.51.100.4
+        event_time: "2026-03-01T10:12:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-500000000006"
+        access_type: sync
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-500000000007"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 198.51.100.4
+        event_time: "2026-03-01T10:14:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-500000000007"
+        access_type: sync
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-500000000008"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 198.51.100.4
+        event_time: "2026-03-01T10:16:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-500000000008"
+        access_type: sync
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-500000000009"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 198.51.100.4
+        event_time: "2026-03-01T10:18:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-500000000009"
+        access_type: sync
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-500000000010"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 198.51.100.4
+        event_time: "2026-03-01T10:20:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-500000000010"
+        access_type: sync
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-500000000011"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 198.51.100.4
+        event_time: "2026-03-01T10:22:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-500000000011"
+        access_type: sync
+    expect_hits: 0
+  - name: five bind records spread over an hour never share a thirty minute window
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-d00000000000"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:00:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-d00000000000"
+        access_type: bind
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-d00000000001"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:15:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-d00000000001"
+        access_type: bind
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-d00000000002"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:30:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-d00000000002"
+        access_type: bind
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-d00000000003"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:45:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-d00000000003"
+        access_type: bind
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-d00000000004"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:59:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-d00000000004"
+        access_type: bind
+    expect_hits: 0
