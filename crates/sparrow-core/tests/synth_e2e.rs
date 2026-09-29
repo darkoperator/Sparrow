@@ -144,7 +144,16 @@ fn checked(name: &str, opts: &GenerateOptions) {
     );
 }
 
+/// Fast representative of the every-scenario matrix below: bec-aitm for each collector.
 #[test]
+fn bec_aitm_checks_green_for_every_collector() {
+    for c in Collector::ALL {
+        checked("bec-aitm", &GenerateOptions::new(*c, 1));
+    }
+}
+
+#[test]
+#[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn every_builtin_scenario_and_collector_checks_green() {
     for name in builtin_names().iter().filter(|n| **n != "volume") {
         for c in Collector::ALL {
@@ -166,6 +175,7 @@ fn every_builtin_scenario_and_collector_checks_green() {
 /// Every storyline record (of every collector) re-verifies against the generated file it was
 /// written into: the record lines/sighting in `record_sources` and the raw record bytes.
 #[test]
+#[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn storyline_records_verify_against_the_original_files() {
     for c in Collector::ALL {
         let g = builtin("bec-aitm", &GenerateOptions::new(*c, 1));
@@ -348,6 +358,7 @@ fn json_column(g: &Generated, artifact: &str, key: &str) -> Vec<String> {
 /// Some directory users' `displayName` is "Last, First" (world users 2 and 5). Every collector's
 /// CSV export must quote the comma, and every parser must load the exact name.
 #[test]
+#[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn comma_display_names_load_exactly_per_collector() {
     let world = sparrow_synth::world::World::build(&load("bec-aitm").unwrap(), 1).unwrap();
     let expected: Vec<String> = [2u32, 5]
@@ -464,6 +475,7 @@ fn ingest_many(trees: &[&Generated], geoip: Option<&Path>, as_of: DateTime<Utc>)
 /// the two manifests' key sets, in either ingest order, and the portal UAL file's duplicate count
 /// is the overlap predicted from those sets.
 #[test]
+#[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn portal_exports_beside_a_hawk_capture_deduplicate_by_id() {
     let hawk = builtin("bec-aitm", &GenerateOptions::new(Collector::Hawk4, 1));
     let portal = builtin("bec-aitm", &GenerateOptions::new(Collector::Portal, 1));
@@ -1073,6 +1085,7 @@ fn older_only_columns_survive_in_either_order() {
 /// lists, every row carries `source_refs`, and one storyline user's UPN, object id and PUID
 /// converge on one identity.
 #[test]
+#[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn profile_timeline_and_identities_cover_the_window() {
     const EVENT_TABLES: [&str; 9] = [
         "ual_events",

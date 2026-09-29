@@ -106,6 +106,16 @@ After loading, `sparrow ingest` runs the profile step (again at any time with `s
 cargo build --release   # first build compiles DuckDB (several minutes)
 ```
 
+## Testing
+
+```bash
+cargo test --workspace                    # the default job: every test except the heavy ones
+cargo test --workspace -- --ignored       # the heavy job: every-scenario x every-collector matrices, volume and perf checks
+```
+
+Heavy tests carry `#[ignore = "heavy: run with cargo test --workspace -- --ignored"]`; each matrix keeps one
+fast representative (bec-aitm for every collector) in the default job. Run both before merging.
+
 ## Use
 
 ```bash

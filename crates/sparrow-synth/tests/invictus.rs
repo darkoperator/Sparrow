@@ -18,7 +18,18 @@ fn green(name: &str, o: &GenerateOptions) -> sparrow_synth::manifest::Manifest {
     m
 }
 
+/// Fast representative of the every-scenario matrix below: bec-aitm on both PowerShell editions.
 #[test]
+fn bec_aitm_checks_green_on_ps7_and_ps51() {
+    for ps in [PsEdition::Ps7, PsEdition::Ps51] {
+        let mut o = opts(21);
+        o.ps = ps;
+        green("bec-aitm", &o);
+    }
+}
+
+#[test]
+#[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn every_builtin_checks_green_on_ps7_and_ps51() {
     for name in builtin_names().iter().filter(|n| **n != "volume") {
         for ps in [PsEdition::Ps7, PsEdition::Ps51] {
@@ -29,24 +40,36 @@ fn every_builtin_checks_green_on_ps7_and_ps51() {
     }
 }
 
+fn ual_format_checks_green(f: UalFormat) {
+    let mut o = opts(22);
+    o.ual_format = f;
+    let m = green("bec-aitm", &o);
+    assert!(
+        m.files
+            .iter()
+            .any(|x| x.artifact_id.as_deref() == Some("inv.ual.window") && x.status == "parsed"),
+        "{f:?}"
+    );
+    assert!(
+        m.files
+            .iter()
+            .any(|x| x.artifact_id.as_deref() == Some("inv.ual.merged")
+                && x.status == "skipped_superseded"),
+        "{f:?}"
+    );
+}
+
+/// Fast representative of the every-format matrix below: the first Get-UAL format.
 #[test]
+fn first_get_ual_format_checks_green() {
+    ual_format_checks_green(UalFormat::ALL[0]);
+}
+
+#[test]
+#[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn every_get_ual_format_checks_green() {
     for f in UalFormat::ALL {
-        let mut o = opts(22);
-        o.ual_format = *f;
-        let m = green("bec-aitm", &o);
-        assert!(
-            m.files.iter().any(|x| x.artifact_id.as_deref() == Some("inv.ual.window")
-                && x.status == "parsed"),
-            "{f:?}"
-        );
-        assert!(
-            m.files
-                .iter()
-                .any(|x| x.artifact_id.as_deref() == Some("inv.ual.merged")
-                    && x.status == "skipped_superseded"),
-            "{f:?}"
-        );
+        ual_format_checks_green(*f);
     }
 }
 
@@ -117,6 +140,7 @@ fn empty_exports_read_as_ran_and_found_nothing() {
 }
 
 #[test]
+#[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn same_second_sign_in_pages_share_a_file() {
     let mut sink = MemSink::default();
     let mut s = load("volume").unwrap();

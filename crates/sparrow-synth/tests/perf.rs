@@ -11,6 +11,7 @@ use sparrow_synth::testing::ingest_generated;
 use std::path::{Path, PathBuf};
 
 #[test]
+#[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn scale_knobs_add_exact_filler_and_stay_checkable() {
     let dir = tempfile::tempdir().unwrap();
     let mut o = GenerateOptions::new(Collector::Invictus, 2);
@@ -100,6 +101,7 @@ fn tree_digest(dir: &Path) -> String {
 /// alert/risk fields and service-principal creation dates). The value after F7 was
 /// `02d2ce9d5f67b1e628540af5c6fbcb6755068556ad036b9c9a7048e32b7c9bb7`.
 #[test]
+#[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
     let dir = tempfile::tempdir().unwrap();
     let mut o = GenerateOptions::new(Collector::Invictus, 7);

@@ -13,6 +13,7 @@ use synth::*;
 /// Sessions and MessageIDs rows land exactly as before: every row either sights a raw record
 /// or becomes one parent-less row, and the manifest (independent of Sparrow) agrees.
 #[test]
+#[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn mia_exports_match_raw_records_at_volume() {
     let mut s = load("volume").unwrap();
     s.scale.ual_rows = 40_000;
@@ -35,6 +36,7 @@ fn mia_exports_match_raw_records_at_volume() {
 
 /// The grouped availability pass returns the same rows as the per-evidence queries did.
 #[test]
+#[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn availability_is_unchanged_by_the_grouped_pass() {
     for name in ["bec-aitm", "bec-e3-audit-gaps", "audit-tamper"] {
         let g = builtin(name, PsEdition::Ps7);

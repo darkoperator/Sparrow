@@ -15,9 +15,25 @@ fn r#gen(
     (dir, m)
 }
 
+/// Fast representative of the every-scenario matrix below: bec-aitm for every collector and
+/// edition.
+#[test]
+fn bec_aitm_conforms_to_the_recorded_layouts() {
+    for c in Collector::ALL {
+        for ps in [PsEdition::Ps7, PsEdition::Ps51] {
+            let (dir, _) = r#gen("bec-aitm", *c, ps);
+            let p = profile_dir(dir.path()).unwrap();
+            let r = conform_layouts(&p, *c);
+            assert!(r.ok, "bec-aitm {c:?} {ps:?}:\n{}", r.to_text());
+            assert!(r.checked > 0, "bec-aitm {c:?} {ps:?}: nothing checked");
+        }
+    }
+}
+
 /// Every built-in scenario (except `volume`) for every collector and edition must match the
 /// recorded layouts.
 #[test]
+#[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn generated_trees_conform_to_the_recorded_layouts() {
     for name in builtin_names().iter().filter(|n| **n != "volume") {
         for c in Collector::ALL {

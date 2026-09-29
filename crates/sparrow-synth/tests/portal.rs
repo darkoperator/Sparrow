@@ -29,19 +29,30 @@ fn another_seed_changes_the_tree() {
     assert_ne!(a.files, b.files);
 }
 
+fn reserved_values_only(name: &str) {
+    let mut sink = MemSink::default();
+    generate(&load(name).unwrap(), &opts(7), &mut sink).unwrap();
+    for (rel, bytes) in &sink.files {
+        if rel.ends_with(".mmdb") || rel.ends_with(".xlsx") {
+            continue;
+        }
+        let text = sparrow_core::readers::text::decode(bytes).text;
+        let found = scan_text(&text);
+        assert!(found.is_empty(), "{name} {rel}: {found:?}");
+    }
+}
+
+/// Fast representative of the every-scenario scan below.
 #[test]
+fn bec_aitm_tree_contains_only_reserved_values() {
+    reserved_values_only("bec-aitm");
+}
+
+#[test]
+#[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn generated_trees_contain_only_reserved_values() {
     for name in builtin_names() {
-        let mut sink = MemSink::default();
-        generate(&load(name).unwrap(), &opts(7), &mut sink).unwrap();
-        for (rel, bytes) in &sink.files {
-            if rel.ends_with(".mmdb") || rel.ends_with(".xlsx") {
-                continue;
-            }
-            let text = sparrow_core::readers::text::decode(bytes).text;
-            let found = scan_text(&text);
-            assert!(found.is_empty(), "{name} {rel}: {found:?}");
-        }
+        reserved_values_only(name);
     }
 }
 

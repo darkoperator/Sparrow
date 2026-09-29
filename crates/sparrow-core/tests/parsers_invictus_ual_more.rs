@@ -9,6 +9,7 @@ use sparrow_synth::options::PsEdition;
 use synth::*;
 
 #[test]
+#[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn graph_quickual_and_legacy_audit_load() {
     for ps in [PsEdition::Ps7, PsEdition::Ps51] {
         let g = builtin("bec-aitm", ps);

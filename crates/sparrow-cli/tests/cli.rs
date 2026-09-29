@@ -920,6 +920,7 @@ fn synth_generates_then_checks_a_case() {
 /// them. A stand-in real tree is a generated Hawk tree with a generated portal export beside
 /// it; before the fix every portal artifact was "seen in the real tree, never generated".
 #[test]
+#[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn conformance_real_hawk_compares_portal_exports_beside_the_capture() {
     use sparrow_synth::options::{Collector, GenerateOptions, PsEdition};
     let dir = tempfile::tempdir().unwrap();
