@@ -134,6 +134,11 @@ fn tree_digest(dir: &Path) -> String {
 /// property lists the real captures hold, so every Exchange record's bytes change. The value
 /// after the F3 fix was
 /// `8c46a8aba1ed0cafd2abfa66b73fc2d9e8451d5ad475264b8158e0620afb47aa`.
+///
+/// Re-recorded by the architect after merging the parallel fidelity lanes (F4a + fixes, F9 part 1,
+/// F3 fix, F4b) onto one branch: each lane had recorded its own value against its own parent, so
+/// the combined tree has a new value. The last single-lane value on this branch was
+/// `92660857d6e02546fe0494fea809d7336e4c5b0bbace901eff9d46cb4175b979`.
 #[test]
 #[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
@@ -144,7 +149,7 @@ fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
     generate_to_dir(&load("volume").unwrap(), &o, dir.path()).unwrap();
     assert_eq!(
         tree_digest(dir.path()),
-        "92660857d6e02546fe0494fea809d7336e4c5b0bbace901eff9d46cb4175b979"
+        "bb718ce5f01b8d2f146118974230936e48c00034eade65025baca2727787f276"
     );
 }
 
