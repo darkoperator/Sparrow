@@ -8,42 +8,49 @@ use sparrow_core::ingest::{FileStatus, IngestOptions, ingest_path};
 use sparrow_synth::options::PsEdition;
 use synth::*;
 
+fn graph_quickual_and_legacy_audit_load_on(ps: PsEdition) {
+    let g = builtin("bec-aitm", ps);
+    let status = |suffix: &str| {
+        g.manifest
+            .files
+            .iter()
+            .find(|f| f.rel_path.ends_with(suffix))
+            .unwrap()
+            .status
+            .clone()
+    };
+    assert_eq!(status("-victims-UnifiedAuditLog.json"), "parsed");
+    assert_eq!(status("-victims-UnifiedAuditLog.csv"), "parsed");
+    assert_eq!(status("-empty-UnifiedAuditLog.json"), "parsed");
+    assert_eq!(status("New-InboxRule.json"), "parsed");
+    assert_eq!(status("UAL-Operations-Combined.csv"), "skipped_superseded");
+    // Every Get-UALGraph / QuickUAL record is also in the Get-UAL windows: no new rows, extra sightings.
+    assert_eq!(
+        count(
+            &g.case,
+            "SELECT count(*) FROM ual_events WHERE data_completeness = 'partial'"
+        ),
+        0
+    );
+    assert!(
+        count(
+            &g.case,
+            "SELECT count(*) FROM record_sources rs JOIN source_files sf USING (file_id) WHERE sf.artifact_type = 'inv.ual.graph'"
+        ) > 0
+    );
+    assert!(count(&g.case, "SELECT count(*) FROM mailbox_audit_legacy") > 0);
+    check_green(&g);
+}
+
+#[test]
+fn graph_quickual_and_legacy_audit_load() {
+    graph_quickual_and_legacy_audit_load_on(PsEdition::Ps7);
+}
+
 #[test]
 #[ignore = "heavy: run with cargo test --workspace -- --ignored"]
-fn graph_quickual_and_legacy_audit_load() {
-    for ps in [PsEdition::Ps7, PsEdition::Ps51] {
-        let g = builtin("bec-aitm", ps);
-        let status = |suffix: &str| {
-            g.manifest
-                .files
-                .iter()
-                .find(|f| f.rel_path.ends_with(suffix))
-                .unwrap()
-                .status
-                .clone()
-        };
-        assert_eq!(status("-victims-UnifiedAuditLog.json"), "parsed");
-        assert_eq!(status("-victims-UnifiedAuditLog.csv"), "parsed");
-        assert_eq!(status("-empty-UnifiedAuditLog.json"), "parsed");
-        assert_eq!(status("New-InboxRule.json"), "parsed");
-        assert_eq!(status("UAL-Operations-Combined.csv"), "skipped_superseded");
-        // Every Get-UALGraph / QuickUAL record is also in the Get-UAL windows: no new rows, extra sightings.
-        assert_eq!(
-            count(
-                &g.case,
-                "SELECT count(*) FROM ual_events WHERE data_completeness = 'partial'"
-            ),
-            0
-        );
-        assert!(
-            count(
-                &g.case,
-                "SELECT count(*) FROM record_sources rs JOIN source_files sf USING (file_id) WHERE sf.artifact_type = 'inv.ual.graph'"
-            ) > 0
-        );
-        assert!(count(&g.case, "SELECT count(*) FROM mailbox_audit_legacy") > 0);
-        check_green(&g);
-    }
+fn graph_quickual_and_legacy_audit_load_on_powershell_5_1() {
+    graph_quickual_and_legacy_audit_load_on(PsEdition::Ps51);
 }
 
 #[test]

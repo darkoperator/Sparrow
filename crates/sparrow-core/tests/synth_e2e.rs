@@ -174,48 +174,60 @@ fn every_builtin_scenario_and_collector_checks_green() {
 
 /// Every storyline record (of every collector) re-verifies against the generated file it was
 /// written into: the record lines/sighting in `record_sources` and the raw record bytes.
+fn verify_storyline_records(c: Collector, opts: &GenerateOptions) {
+    let g = builtin("bec-aitm", opts);
+    let case = ingest_generated(&g.dir, &g.manifest);
+    // Resolve each distinct delivered record once (one record can have many sightings).
+    let mut records: std::collections::BTreeSet<(String, String)> =
+        std::collections::BTreeSet::new();
+    for s in &g.manifest.storylines {
+        for e in &s.evidence {
+            for landed in &e.delivered {
+                let sighting = &landed.sighting;
+                let key: String = case
+                    .conn()
+                    .query_row(
+                        "SELECT rs.record_key FROM record_sources rs
+                         JOIN source_files sf USING (file_id)
+                         WHERE rs.table_name = ? AND sf.rel_path = ?
+                           AND rs.line_start = ? AND rs.line_end = ?",
+                        duckdb::params![
+                            landed.table,
+                            sighting.rel_path,
+                            sighting.line_start as i64,
+                            sighting.line_end as i64
+                        ],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                records.insert((landed.table.clone(), key));
+            }
+        }
+    }
+    for (table, key) in &records {
+        let v = verify_record(&case, table, key, None).unwrap();
+        assert!(v.ok, "{c:?} {table} {key}: {v:?}");
+    }
+    assert!(
+        records.len() > 10,
+        "{c:?}: only {} storyline records verified",
+        records.len()
+    );
+}
+
+/// Default-job representative: Hawk 4.0 on PowerShell 7.
+#[test]
+fn storyline_records_verify_against_the_original_files_for_hawk4() {
+    let mut o = GenerateOptions::new(Collector::Hawk4, 1);
+    o.ps = PsEdition::Ps7;
+    verify_storyline_records(Collector::Hawk4, &o);
+}
+
 #[test]
 #[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn storyline_records_verify_against_the_original_files() {
     for c in Collector::ALL {
-        let g = builtin("bec-aitm", &GenerateOptions::new(*c, 1));
-        let case = ingest_generated(&g.dir, &g.manifest);
-        // Resolve each distinct delivered record once (one record can have many sightings).
-        let mut records: std::collections::BTreeSet<(String, String)> =
-            std::collections::BTreeSet::new();
-        for s in &g.manifest.storylines {
-            for e in &s.evidence {
-                for landed in &e.delivered {
-                    let sighting = &landed.sighting;
-                    let key: String = case
-                        .conn()
-                        .query_row(
-                            "SELECT rs.record_key FROM record_sources rs
-                             JOIN source_files sf USING (file_id)
-                             WHERE rs.table_name = ? AND sf.rel_path = ?
-                               AND rs.line_start = ? AND rs.line_end = ?",
-                            duckdb::params![
-                                landed.table,
-                                sighting.rel_path,
-                                sighting.line_start as i64,
-                                sighting.line_end as i64
-                            ],
-                            |r| r.get(0),
-                        )
-                        .unwrap();
-                    records.insert((landed.table.clone(), key));
-                }
-            }
-        }
-        for (table, key) in &records {
-            let v = verify_record(&case, table, key, None).unwrap();
-            assert!(v.ok, "{c:?} {table} {key}: {v:?}");
-        }
-        assert!(
-            records.len() > 10,
-            "{c:?}: only {} storyline records verified",
-            records.len()
-        );
+        verify_storyline_records(*c, &GenerateOptions::new(*c, 1));
     }
 }
 
