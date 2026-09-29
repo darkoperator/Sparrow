@@ -6,6 +6,7 @@ mod synth;
 
 use sparrow_synth::options::{Culture, PsEdition};
 use sparrow_synth::scenario::load;
+use sparrow_synth::world::World;
 use synth::*;
 
 #[test]
@@ -74,4 +75,51 @@ fn alerts_and_secure_score_load_in_every_culture() {
         let r = sparrow_synth::check::check(&m, &case).unwrap();
         assert!(r.ok, "{culture:?}: {:#?}", r.problems);
     }
+}
+
+/// The SecurityAlerts detail fields are world values, not blanks: LastModifiedDateTime,
+/// ClosedDateTime, AzureTenantId (the world tenant id), Confidence, Vendor and SubProvider
+/// (SubProvider has no column, so the parser keeps it in `raw`). Risk detections carry the
+/// world's TokenIssuerType instead of a hard-coded string.
+#[test]
+fn alert_and_risk_detail_fields_load() {
+    let world = World::build(&load("bec-aitm").unwrap(), 17).unwrap();
+    let alert = &world.alerts[0];
+    let g = builtin("bec-aitm", PsEdition::Ps7);
+    assert_eq!(
+        count(
+            &g.case,
+            "SELECT count(*) FROM security_alerts
+             WHERE last_modified IS NOT NULL AND closed_time IS NOT NULL
+               AND azure_tenant_id IS NOT NULL AND confidence IS NOT NULL AND vendor IS NOT NULL"
+        ),
+        1
+    );
+    assert_eq!(
+        text(
+            &g.case,
+            "SELECT epoch(last_modified)::BIGINT || '|' || epoch(closed_time)::BIGINT || '|' ||
+                    azure_tenant_id || '|' || confidence || '|' || vendor || '|' ||
+                    (raw->>'SubProvider')
+             FROM security_alerts"
+        ),
+        format!(
+            "{}|{}|{}|{}|{}|{}",
+            alert.last_modified.timestamp(),
+            alert.closed_time.timestamp(),
+            alert.azure_tenant_id,
+            alert.confidence,
+            alert.vendor,
+            alert.sub_provider
+        )
+    );
+    assert_eq!(
+        count(
+            &g.case,
+            "SELECT count(*) FROM risk_detections WHERE token_issuer_type = 'AzureAD'"
+        ),
+        count(&g.case, "SELECT count(*) FROM risk_detections")
+    );
+    assert!(count(&g.case, "SELECT count(*) FROM risk_detections") > 0);
+    check_green(&g);
 }

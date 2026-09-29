@@ -2175,7 +2175,7 @@ fn risk_detection_row(d: &crate::events::RiskDetection) -> Row {
         r("RiskLevel", s(d.level.clone())),
         r("RiskState", s(d.state.clone())),
         r("Source", s(d.source.clone())),
-        r("TokenIssuerType", s("AzureAD")),
+        r("TokenIssuerType", s(d.token_issuer_type.clone())),
         r("UserDisplayName", s(d.user_display.clone())),
         r("UserId", s(d.user_id.to_string())),
         r("UserPrincipalName", s(d.user.clone())),

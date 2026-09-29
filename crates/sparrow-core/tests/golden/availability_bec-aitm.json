@@ -217,8 +217,8 @@
     "evidence": "applications",
     "title": "Applications and service principals",
     "status": "collected",
-    "reason": "9 rows",
-    "rows": 9
+    "reason": "11 rows",
+    "rows": 11
   },
   {
     "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",

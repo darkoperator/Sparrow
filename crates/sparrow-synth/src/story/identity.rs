@@ -89,6 +89,7 @@ fn risk_detection(
         detail: detail.to_string(),
         timing: timing.to_string(),
         source: "IdentityProtection".to_string(),
+        token_issuer_type: "AzureAD".to_string(),
         detected,
         activity_time,
         updated: detected,

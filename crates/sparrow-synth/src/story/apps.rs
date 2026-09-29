@@ -46,10 +46,12 @@ fn new_app(
         sign_in_audience: "AzureADMultipleOrgs".to_string(),
         reply_urls: vec![reply_url.to_string()],
         created,
+        sp_created: created + Duration::days(1),
         first_party: false,
         tags: Vec::new(),
         credentials: Vec::new(),
         owners: Vec::new(),
+        assignees: Vec::new(),
     }
 }
 

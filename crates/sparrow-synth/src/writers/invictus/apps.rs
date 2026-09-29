@@ -107,7 +107,10 @@ fn delegated_row(world: &World, g: &Grant, client: &App, resource: &App, scope: 
         r("PublisherName", Val::Str(publisher_name(client))),
         r("ReplyUrls", Val::Str(client.reply_urls.join(", "))),
         r("ExpiryTime", Val::Null),
-        r("CreatedDateTime", Val::Null),
+        r(
+            "CreatedDateTime",
+            Val::Date(PsDate::dotnet(client.sp_created, DtKind::Utc)),
+        ),
         r(
             "AppOwnerOrganizationId",
             Val::Str(client.owner_tenant.to_string()),
@@ -170,7 +173,10 @@ fn application_row(g: &Grant, client: &App, resource: &App, scope: &str) -> Gran
             "CreationTimestamp",
             Val::Date(PsDate::dotnet(g.created, DtKind::Utc)),
         ),
-        r("CreatedDateTime", Val::Null),
+        r(
+            "CreatedDateTime",
+            Val::Date(PsDate::dotnet(client.sp_created, DtKind::Utc)),
+        ),
         r(
             "AppOwnerOrganizationId",
             Val::Str(client.owner_tenant.to_string()),
@@ -358,6 +364,50 @@ fn owner_row(app: &App, upn: &str) -> Row {
     ]
 }
 
+/// The collector's Assignment `ApplicationType` (Get-EntraApplicationsForSpecificUsers): the
+/// first matching type, not the Owner rows' `" & "` join.
+fn assignment_application_type(app: &App) -> String {
+    if MS_TENANTS.contains(&app.owner_tenant.to_string().as_str()) {
+        "Microsoft Application".to_string()
+    } else if app
+        .tags
+        .iter()
+        .any(|t| t == "WindowsAzureActiveDirectoryIntegratedApp")
+    {
+        "Enterprise Application".to_string()
+    } else {
+        "Internal Application".to_string()
+    }
+}
+
+/// One triage UserApplications.csv Assignment row.
+fn assignment_row(app: &App, upn: &str) -> Row {
+    vec![
+        r("AssociationType", Val::Str("Assignment".into())),
+        r("AssociatedUser", Val::Str(upn.to_string())),
+        r("ApplicationName", Val::Str(app.display_name.clone())),
+        r("ApplicationId", Val::Str(app.app_id.to_string())),
+        r("ObjectId", Val::Str(app.object_id.to_string())),
+        r("PublisherName", Val::Str(publisher_name(app))),
+        r(
+            "ApplicationType",
+            Val::Str(assignment_application_type(app)),
+        ),
+        r(
+            "CreatedDateTime",
+            Val::Date(PsDate::dotnet(app.created, DtKind::Utc)),
+        ),
+        r("ServicePrincipalEnabled", Val::Bool(true)),
+        r("HasClientSecrets", Val::Bool(has_secret(app))),
+        r("HasCertificates", Val::Bool(has_cert(app))),
+        r("RequiredApiPermissionCount", Val::Int(0)),
+        r("SignInAudience", Val::Str(app.sign_in_audience.clone())),
+        r("Homepage", Val::Str(String::new())),
+        r("WebRedirectUris", Val::Str(app.reply_urls.join("; "))),
+        r("PublicClientRedirectUris", Val::Str(String::new())),
+    ]
+}
+
 /// The victims in the collector's `-UserIds` order (ascending actor index).
 fn ordered_victims(world: &World) -> Vec<&User> {
     world
@@ -368,23 +418,38 @@ fn ordered_victims(world: &World) -> Vec<&User> {
         .collect()
 }
 
-/// Start-MESTriage's `Get-EntraApplicationsForSpecificUsers` Owner rows: the apps the victims
-/// own. The collector creates `$processedAppIds` once before the user loop (TriageFunctions.ps1
-/// :91) and checks it for owned apps (:108; assignments use the `SP_<id>` key at :177), so an
-/// app two victims own gets one Owner row - for the first user in `-UserIds` order. Do not
-/// "fix" this into one row per user.
-fn triage_owner_rows(world: &World) -> Vec<(Row, String)> {
-    let mut seen: BTreeSet<String> = BTreeSet::new();
+/// Start-MESTriage's `Get-EntraApplicationsForSpecificUsers` rows: the apps the victims own
+/// (Owner) and the tenant apps they are assigned (Assignment). The collector creates
+/// `$processedAppIds` once before the user loop (TriageFunctions.ps1:91) and checks it for
+/// owned apps (:108) and assignments (`SP_<spId>`, :177), so an app two victims own or a
+/// service principal two victims are assigned to gets one row - for the first user in
+/// `-UserIds` order. Do not "fix" this into one row per user.
+fn triage_rows(world: &World) -> Vec<(Row, String)> {
+    let mut seen_apps: BTreeSet<String> = BTreeSet::new();
+    let mut seen_sps: BTreeSet<String> = BTreeSet::new();
     let mut out = Vec::new();
     for victim in ordered_victims(world) {
         for app in world.apps.iter() {
-            if !app.owners.iter().any(|o| o == &victim.upn) {
-                continue;
-            }
-            if seen.insert(app.object_id.to_string()) {
+            if app.owners.iter().any(|o| o == &victim.upn)
+                && seen_apps.insert(app.object_id.to_string())
+            {
                 out.push((
                     owner_row(app, &victim.upn),
                     keys::application_association(&app.app_id.to_string(), "Owner", &victim.upn),
+                ));
+            }
+        }
+        for app in world.apps.iter() {
+            if app.assignees.iter().any(|a| a == &victim.upn)
+                && seen_sps.insert(app.sp_object_id.to_string())
+            {
+                out.push((
+                    assignment_row(app, &victim.upn),
+                    keys::application_association(
+                        &app.app_id.to_string(),
+                        "Assignment",
+                        &victim.upn,
+                    ),
                 ));
             }
         }
@@ -405,7 +470,7 @@ fn write_user_applications(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         "=== Starting Entra Applications Collection ===",
     );
     let name = format!("{}-UserApplications.csv", triage.local.format("%Y%m%d%H%M"));
-    let pairs = triage_owner_rows(c.world);
+    let pairs = triage_rows(c.world);
     let rows: Vec<Row> = pairs.iter().map(|(row, _)| row.clone()).collect();
     let keys: Vec<String> = pairs.into_iter().map(|(_, key)| key).collect();
     let mut ev = DateEvidence::default();
@@ -457,7 +522,7 @@ mod tests {
             .find(|a| a.display_name == "Helpdesk Portal")
             .unwrap();
         app.owners = vec![second.clone(), first.clone()];
-        let rows = triage_owner_rows(&world);
+        let rows = triage_rows(&world);
         let owner: Vec<&(Row, String)> = rows
             .iter()
             .filter(|(row, _)| {
@@ -473,6 +538,42 @@ mod tests {
                 .any(|(k, v)| k == "AssociatedUser" && v == &Val::Str(first.clone())),
             "{:?}",
             owner[0].0
+        );
+    }
+
+    /// An app assigned to two victims gets one Assignment row, for the first in `-UserIds`
+    /// order: the collector keys assignments by `SP_<spId>` in the same `$processedAppIds` map
+    /// (TriageFunctions.ps1:177).
+    #[test]
+    fn an_assignment_to_two_victims_gets_one_row_for_the_first() {
+        let mut world = World::build(&load("bec-aitm").unwrap(), 1).unwrap();
+        let first = world.user(1).upn.clone();
+        let third = world.user(3).upn.clone();
+        world.victims.clear();
+        world.victims.insert(1);
+        world.victims.insert(3);
+        let app = world
+            .apps
+            .iter_mut()
+            .find(|a| a.display_name == "Helpdesk Portal")
+            .unwrap();
+        app.assignees = vec![third.clone(), first.clone()];
+        let rows = triage_rows(&world);
+        let assignment: Vec<&(Row, String)> = rows
+            .iter()
+            .filter(|(row, _)| {
+                row.iter()
+                    .any(|(k, v)| k == "AssociationType" && v == &Val::Str("Assignment".into()))
+            })
+            .collect();
+        assert_eq!(assignment.len(), 1);
+        assert!(
+            assignment[0]
+                .0
+                .iter()
+                .any(|(k, v)| k == "AssociatedUser" && v == &Val::Str(first.clone())),
+            "{:?}",
+            assignment[0].0
         );
     }
 }

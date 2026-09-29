@@ -95,6 +95,10 @@ fn tree_digest(dir: &Path) -> String {
 /// volume tree's bytes change. The parent commit's value was
 /// `16764b6baf9619b698b7ac0c03889906b6d46c4cd079ada6ddc42aa661f99827`; re-running this same test
 /// at the parent plus the F7 change gives the value below.
+///
+/// Re-recorded again for Task F6: UserApplications now carries Assignment rows (plus the new
+/// alert/risk fields and service-principal creation dates). The value after F7 was
+/// `02d2ce9d5f67b1e628540af5c6fbcb6755068556ad036b9c9a7048e32b7c9bb7`.
 #[test]
 fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
     let dir = tempfile::tempdir().unwrap();
@@ -104,7 +108,7 @@ fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
     generate_to_dir(&load("volume").unwrap(), &o, dir.path()).unwrap();
     assert_eq!(
         tree_digest(dir.path()),
-        "02d2ce9d5f67b1e628540af5c6fbcb6755068556ad036b9c9a7048e32b7c9bb7"
+        "0b121ea0ed6234f4c23375c009d0671c3c08712a224c338e4436cd378320a34c"
     );
 }
 

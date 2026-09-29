@@ -150,7 +150,7 @@ impl World {
         let transport_rules = build_transport_rules(scenario, seed, &admins);
         let remote_domains = build_remote_domains(&tenant);
         let secure_score = build_secure_score();
-        let alerts = build_alerts(scenario, seed, &users);
+        let alerts = build_alerts(scenario, seed, &tenant, &users);
         let azure = build_azure(scenario, seed, &tenant, &users, &admins);
         let audit_state = build_audit(audit, licence);
         let mailbox_permissions = build_mailbox_permissions(scenario, &tenant, &users, &admins);
@@ -301,6 +301,7 @@ impl World {
         }
         for a in &mut self.apps {
             pin(&mut a.created);
+            pin(&mut a.sp_created);
             for c in &mut a.credentials {
                 pin(&mut c.start);
                 pin(&mut c.end);
@@ -342,6 +343,8 @@ impl World {
         for a in &mut self.alerts {
             pin(&mut a.created);
             pin(&mut a.event);
+            pin(&mut a.last_modified);
+            pin(&mut a.closed_time);
         }
         for e in &mut self.emails {
             pin(&mut e.date);
@@ -730,10 +733,17 @@ pub struct App {
     pub sign_in_audience: String,
     pub reply_urls: Vec<String>,
     pub created: DateTime<Utc>,
+    /// The service principal's `createdDateTime` (Graph answers it only through the SP's REST
+    /// `AdditionalProperties`; the app registration's `created` is the application object's).
+    pub sp_created: DateTime<Utc>,
     pub first_party: bool,
     pub tags: Vec<String>,
     pub credentials: Vec<Credential>,
     pub owners: Vec<String>,
+    /// UPNs with an app-role assignment to this service principal (a few users on the tenant
+    /// apps). The collector emits one Assignment row per service principal, attributed to the
+    /// first assigned user in its `-UserIds` order (TriageFunctions.ps1:91,177).
+    pub assignees: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -903,6 +913,15 @@ pub struct Alert {
     pub status: String,
     pub created: DateTime<Utc>,
     pub event: DateTime<Utc>,
+    pub last_modified: DateTime<Utc>,
+    pub closed_time: DateTime<Utc>,
+    pub azure_tenant_id: Uuid,
+    /// Graph's v1 `Confidence` (0..=100).
+    pub confidence: i64,
+    /// `VendorInformation.Vendor`.
+    pub vendor: String,
+    /// `VendorInformation.SubProvider` (no `security_alerts` column; kept in `raw`).
+    pub sub_provider: String,
     pub affected_user: Option<String>,
     pub ip: Option<IpAddr>,
     pub provider: String,
@@ -1645,10 +1664,12 @@ fn first_party_app(rng: &mut Rng, tenant: &Tenant, ms_tenant: Uuid, name: &str) 
         sign_in_audience: "AzureADMultipleOrgs".to_string(),
         reply_urls: Vec::new(),
         created: tenant.created,
+        sp_created: tenant.created + Duration::days(1),
         first_party: true,
         tags: Vec::new(),
         credentials: Vec::new(),
         owners: Vec::new(),
+        assignees: Vec::new(),
     }
 }
 
@@ -1686,6 +1707,7 @@ fn build_apps(
         sign_in_audience: "AzureADMyOrg".to_string(),
         reply_urls: vec![format!("https://{}/auth/callback", tenant.domains[0])],
         created: payroll_created,
+        sp_created: payroll_created + Duration::days(1),
         first_party: false,
         tags: Vec::new(),
         credentials: vec![Credential {
@@ -1699,6 +1721,11 @@ fn build_apps(
             added: payroll_created,
         }],
         owners: Vec::new(),
+        // Payroll Sync is assigned to user 2; Helpdesk Portal to users 1 and 3.
+        assignees: users
+            .get(1)
+            .map(|u| vec![u.upn.clone()])
+            .unwrap_or_default(),
     });
 
     let helpdesk_app_id = rng.uuid();
@@ -1714,6 +1741,7 @@ fn build_apps(
         sign_in_audience: "AzureADMyOrg".to_string(),
         reply_urls: vec![format!("https://helpdesk.{}/callback", tenant.domains[0])],
         created: helpdesk_created,
+        sp_created: helpdesk_created + Duration::days(1),
         first_party: false,
         tags: Vec::new(),
         credentials: vec![Credential {
@@ -1730,6 +1758,11 @@ fn build_apps(
             .first()
             .map(|u| vec![u.upn.clone()])
             .unwrap_or_default(),
+        assignees: [users.first(), users.get(2)]
+            .into_iter()
+            .flatten()
+            .map(|u| u.upn.clone())
+            .collect(),
     });
 
     let notes_app_id = rng.uuid();
@@ -1745,10 +1778,12 @@ fn build_apps(
         sign_in_audience: "AzureADMultipleOrgs".to_string(),
         reply_urls: vec![MEETING_NOTES_REPLY_URL.to_string()],
         created: notes_created,
+        sp_created: notes_created + Duration::days(1),
         first_party: false,
         tags: Vec::new(),
         credentials: Vec::new(),
         owners: Vec::new(),
+        assignees: Vec::new(),
     });
 
     let grants = vec![
@@ -2208,7 +2243,7 @@ fn build_secure_score() -> Vec<SecureScoreControl> {
     ]
 }
 
-fn build_alerts(scenario: &Scenario, seed: u64, users: &[User]) -> Vec<Alert> {
+fn build_alerts(scenario: &Scenario, seed: u64, tenant: &Tenant, users: &[User]) -> Vec<Alert> {
     let mut rng = stream(seed, "alerts");
     let user2 = &users[1];
     let created = scenario.window.start + Duration::days(3) + Duration::hours(10);
@@ -2220,6 +2255,12 @@ fn build_alerts(scenario: &Scenario, seed: u64, users: &[User]) -> Vec<Alert> {
         status: "resolved".to_string(),
         created,
         event: created,
+        last_modified: created + Duration::hours(1),
+        closed_time: created + Duration::hours(2),
+        azure_tenant_id: tenant.tenant_id,
+        confidence: 60,
+        vendor: "Microsoft".to_string(),
+        sub_provider: "Microsoft Defender for Office 365".to_string(),
         affected_user: Some(user2.upn.clone()),
         ip: None,
         provider: "Microsoft Defender for Office 365".to_string(),

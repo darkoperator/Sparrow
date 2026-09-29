@@ -251,6 +251,8 @@ pub struct RiskDetection {
     pub detail: String,
     pub timing: String,
     pub source: String,
+    /// `TokenIssuerType` (`AzureAD` for Entra ID Protection detections).
+    pub token_issuer_type: String,
     pub detected: DateTime<Utc>,
     pub activity_time: DateTime<Utc>,
     pub updated: DateTime<Utc>,

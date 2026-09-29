@@ -1125,6 +1125,7 @@ pub fn risk(w: &World) -> (Vec<RiskDetection>, Vec<RiskyUser>) {
         detail: "adminDismissedAllRiskForUser".to_string(),
         timing: "realtime".to_string(),
         source: "IdentityProtection".to_string(),
+        token_issuer_type: "AzureAD".to_string(),
         detected,
         activity_time,
         updated,
