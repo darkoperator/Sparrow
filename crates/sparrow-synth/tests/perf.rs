@@ -119,6 +119,12 @@ fn tree_digest(dir: &Path) -> String {
 /// hold, so every UAL row of the volume tree changes. The parent commit's value was
 /// `0b121ea0ed6234f4c23375c009d0671c3c08712a224c338e4436cd378320a34c`; re-running this same
 /// test at the parent plus the F4 change gives the value below.
+///
+/// Re-recorded again for the F4a fix: those three properties are typed the way the captures
+/// hold them, so the StsLogon rows changed again. The F4 commit's value was
+/// `86fa2f934156c174e520f5cc979e1b3c6c6a30e49b548fa57995f9082f07e921`; the value below is
+/// the F4a change on its own, with its two random values drawn from a stream of the record's
+/// own so that the world behind them is untouched.
 #[test]
 #[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {

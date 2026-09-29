@@ -413,6 +413,9 @@ pub(crate) fn push_signin(w: &mut World, ctx: &mut Ctx, user: &User, s: SignIn, 
             s.app_id,
             request_type,
             0,
+            // A credential prompt: the user had to prove themselves (an MFA challenge), or the
+            // sign-in failed and they typed a password that did not work.
+            s.mfa.is_some() || s.error_code != 0,
         );
         push_ual(w, ctx, u);
     }

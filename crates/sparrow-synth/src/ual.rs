@@ -50,6 +50,14 @@ pub fn server_name(rng: &mut Rng) -> String {
 
 const REGIONS: &[&str] = &["namprd04", "namprd12", "eurprd07", "apcprd06"];
 
+/// The inferred `UserAuthenticationMethod` codes of a sign-in that went through a credential
+/// prompt (see `sts_logon`): the property is undocumented, so these are this generator's own
+/// codes, not values read from a capture.
+const USER_AUTH_METHOD_CODES: &[i64] = &[1, 2, 3];
+
+/// The share of prompted sign-ins the captures record the "Stay signed in?" flag on (about 2%).
+const KEEP_ME_SIGNED_IN_SHARE: f64 = 0.02;
+
 /// An Exchange Online Internet message id with the reserved `outlook.example` domain:
 /// `<{32 hex}@{server}.{region}.prod.outlook.example>`.
 pub fn internet_message_id(rng: &mut Rng) -> String {
@@ -464,6 +472,9 @@ fn user_actor(user: &User) -> Value {
 
 /// An Entra ID sign-in as the UAL records it (`UserLoggedIn` / `UserLoginFailed`).
 #[allow(clippy::too_many_arguments)]
+/// `credential_prompt`: the sign-in had to collect something from the user at a credential
+/// prompt (a failed password logon or an MFA challenge), which is when the record carries a
+/// `UserAuthenticationMethod` code and may carry the "Stay signed in?" flag.
 pub fn sts_logon(
     w: &World,
     rng: &mut Rng,
@@ -475,6 +486,7 @@ pub fn sts_logon(
     app_id: Uuid,
     request_type: &str,
     error: i64,
+    credential_prompt: bool,
 ) -> Ual {
     let tenant = w.org_id().to_string();
     let mut u = head(
@@ -526,10 +538,6 @@ pub fn sts_logon(
     );
     put(&mut u, "InterSystemsId", json!(rng.uuid().to_string()));
     put(&mut u, "IntraSystemId", json!(rng.uuid().to_string()));
-    // The sign-in session properties the Management Activity API records for an StsLogon
-    // (they reach the files through `Converted_Authentication_Logs`, which expands the
-    // AuditData properties; survey §2e).
-    put(&mut u, "KeepMeSignedIn", json!(false));
     if !ok {
         put(&mut u, "LogonError", json!(logon_error(error)));
     }
@@ -541,9 +549,36 @@ pub fn sts_logon(
         json!([{"ID": app_id.to_string(), "Type": 0}]),
     );
     put(&mut u, "TargetContextId", json!(tenant));
-    put(&mut u, "UserAuthenticationMethod", json!("Password"));
-    // The postal code the geo lookup found: the synthetic world models locations without one,
-    // so it stays empty (a real capture carries it only when the lookup resolved one).
+    // The sign-in session properties the Management Activity API records for an StsLogon (they
+    // reach the files through `Converted_Authentication_Logs`, which expands the AuditData
+    // properties; survey §2e), typed the way the captures hold them:
+    // - `UserAuthenticationMethod` is a number on a record whose sign-in had a credential
+    //   prompt and empty on the rest (a session that was still valid, or an app-only token
+    //   grant, prompts for nothing). The codes are inferred: the property is not documented on
+    //   Microsoft Learn and no value was read from a capture, so they are this generator's own
+    //   small set.
+    // - `KeepMeSignedIn` is a boolean only where the "Stay signed in?" prompt was shown, which
+    //   the captures record for about 2% of the records, and empty otherwise.
+    // - `ZipCode` is the postal code the geo lookup resolved; the captures hold it empty (and
+    //   older ones do not have it at all), and the synthetic world has no postal codes.
+    if credential_prompt {
+        // A stream of its own, keyed by the record: drawing from `rng` would move every value
+        // the rest of the record (and the world behind it) uses.
+        let mut p = stream(w.seed, &format!("stslogon/{}", u.id));
+        put(
+            &mut u,
+            "UserAuthenticationMethod",
+            json!(*p.pick(USER_AUTH_METHOD_CODES)),
+        );
+        if p.chance(KEEP_ME_SIGNED_IN_SHARE) {
+            put(&mut u, "KeepMeSignedIn", json!(true));
+        } else {
+            put(&mut u, "KeepMeSignedIn", json!(""));
+        }
+    } else {
+        put(&mut u, "UserAuthenticationMethod", json!(""));
+        put(&mut u, "KeepMeSignedIn", json!(""));
+    }
     put(&mut u, "ZipCode", json!(""));
     u
 }

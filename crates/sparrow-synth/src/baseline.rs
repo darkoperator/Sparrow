@@ -599,6 +599,9 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
                         "Login:login"
                     },
                     s.error_code,
+                    // A credential prompt: a failed password logon, or a successful sign-in
+                    // that had to satisfy an MFA challenge.
+                    !ok || s.mfa.is_some(),
                 ));
             }
         }

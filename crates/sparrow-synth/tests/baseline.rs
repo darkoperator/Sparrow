@@ -1,4 +1,5 @@
 use chrono::{Duration, NaiveDate};
+use serde_json::Value;
 use sparrow_synth::baseline::{day, directory_audits};
 use sparrow_synth::scenario::load;
 use sparrow_synth::world::World;
@@ -14,6 +15,16 @@ fn first_monday(w: &World) -> NaiveDate {
         d += Duration::days(1);
     }
     d
+}
+
+/// The window's sign-in records (`AzureActiveDirectoryStsLogon`).
+fn sts_records(w: &World) -> Vec<sparrow_synth::events::Ual> {
+    let start = w.window_start().date_naive();
+    let n = (w.collected_at().date_naive() - start).num_days();
+    (0..=n)
+        .flat_map(|i| day(w, start + Duration::days(i)).ual)
+        .filter(|u| u.record_type.number() == 15)
+        .collect()
 }
 
 #[test]
@@ -223,4 +234,66 @@ fn the_baseline_never_enables_an_out_of_office() {
     }
     // Not vacuous: the benign event really is emitted across the built-in scenarios.
     assert!(total > 0, "no baseline out-of-office change at all");
+}
+
+/// Task F4a fix: the sign-in session properties of an `AzureActiveDirectoryStsLogon` record are
+/// typed the way the real captures hold them. `UserAuthenticationMethod` is an integer only on
+/// the records that went through a credential prompt and empty on the rest, `KeepMeSignedIn` is
+/// a boolean on a small share of them and empty otherwise, and `ZipCode` is always empty.
+#[test]
+fn sts_logon_session_properties_are_typed_like_the_real_records() {
+    // The credential-prompt codes are inferred, not documented (see `ual::sts_logon`).
+    const CODES: [i64; 3] = [1, 2, 3];
+    let mut prompted = 0;
+    let mut silent = 0;
+    let mut kept = 0;
+    for name in ["bec-aitm", "volume"] {
+        let world = w(name);
+        let mut seen = 0;
+        for u in sts_records(&world) {
+            seen += 1;
+            // The property is always present, so the column is always in the files.
+            for k in ["UserAuthenticationMethod", "KeepMeSignedIn", "ZipCode"] {
+                assert!(u.audit.get(k).is_some(), "{name}: {k} is missing");
+            }
+            assert_eq!(u.audit["ZipCode"], "");
+            match u.audit["UserAuthenticationMethod"].as_i64() {
+                Some(code) => {
+                    assert!(CODES.contains(&code), "{name}: code {code}");
+                    prompted += 1;
+                }
+                None => {
+                    assert_eq!(u.audit["UserAuthenticationMethod"], "");
+                    silent += 1;
+                }
+            }
+            match &u.audit["KeepMeSignedIn"] {
+                Value::Bool(_) => kept += 1,
+                Value::String(s) => assert!(s.is_empty(), "{name}: {s}"),
+                other => panic!("{name}: {other}"),
+            }
+        }
+        assert!(seen > 20, "{name}: only {seen} sign-in records");
+    }
+    assert!(
+        prompted > 0 && silent > 0,
+        "{prompted} prompted, {silent} silent"
+    );
+    // A code only where the world says the user had to prove themselves, so it stays a
+    // minority of the records. The real captures' 30-50% is measured over a population that
+    // also holds app-only token grants, which this generator never writes to the UAL.
+    let share = prompted as f64 / (prompted + silent) as f64;
+    assert!(
+        share < 0.5,
+        "{prompted} of {} records carry a code ({share})",
+        prompted + silent
+    );
+    // The "Stay signed in?" flag is recorded on about 2% of the prompted records.
+    let share = kept as f64 / (prompted + silent) as f64;
+    assert!(kept > 0, "no record keeps the flag");
+    assert!(
+        share < 0.05,
+        "{kept} of {} records keep the flag ({share})",
+        prompted + silent
+    );
 }
