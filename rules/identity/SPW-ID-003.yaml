@@ -1,0 +1,310 @@
+# SPW-ID-003 — impossible travel. Logic source: coverage.yaml ("Two successful sign-ins of one
+# user whose locations (ip_intel latitude/longitude) imply a speed above 900 km/h, both at least
+# 500 km from each other").
+#
+# How it is decided:
+# - Events: successful sign-ins (signins error_code 0) and UAL UserLoggedIn of one user (case
+#   insensitive), located through ip_intel (latitude and longitude both known).
+# - Consecutive: per user in time order (ties by table and record key), each event is compared
+#   with the event just before it, and only when the address changed. Duplicates of one sign-in
+#   (a signins row and its UAL record) are the same address, so they never form a pair.
+# - Distance: great circle (haversine, Earth radius 6371 km) between the two ip_intel points.
+# - Thresholds: distance >= 500 km AND implied speed > 900 km/h. 900 km/h is a commercial jet's
+#   cruise speed; nobody travels faster between two sign-ins. 500 km keeps GeoIP city-level error
+#   (tens to a few hundred km) and neighbouring-metro egress from counting.
+# - Time floor: the gap is taken as at least 60 seconds, so two sign-ins in the same second from
+#   far apart are a very high speed, never a division by zero.
+# - Skipped on purpose: Microsoft addresses (ip_intel.is_microsoft): Exchange Online, a Cloud PC
+#   or a Microsoft relay geolocate to a datacentre unrelated to the user. Addresses with no
+#   location are ignored, not treated as far.
+# - Known false positives: VPNs and mobile-carrier egress (the address geolocates to the
+#   carrier's gateway, often a different region), and split-tunnel VPN where two paths are live.
+#   The rule cannot tell these apart; the analyst guidance says how to.
+# - Both events of a flagged pair are hits (the earlier one is the departure).
+# `sql:` because the pair needs a window over the user's sign-ins joined to ip_intel.
+id: SPW-ID-003
+title: Impossible travel
+version: 1
+status: stable
+severity: medium
+confidence: low
+mitre: [T1078.004]
+tags: [bec, sign-in, travel]
+requires: []
+requires_evidence: []
+needs_geoip: true
+sql: |
+  WITH ev AS (
+    SELECT s.record_key, 'signins' AS src, s.event_time AS t, lower(s.user_upn) AS usr,
+           s.user_upn AS actor, s.ip AS ip, i.latitude AS lat, i.longitude AS lon
+    FROM signins s JOIN ip_intel i ON i.ip = s.ip
+    WHERE s.error_code = 0 AND s.user_upn IS NOT NULL AND s.event_time IS NOT NULL
+      AND i.latitude IS NOT NULL AND i.longitude IS NOT NULL AND NOT coalesce(i.is_microsoft, false)
+    UNION ALL
+    SELECT lower(CAST(u.record_id AS VARCHAR)), 'ual_events', u.event_time, lower(u.user_upn),
+           u.user_upn, u.client_ip, i.latitude, i.longitude
+    FROM ual_events u JOIN ip_intel i ON i.ip = u.client_ip
+    WHERE lower(u.operation) = 'userloggedin' AND u.user_upn IS NOT NULL
+      AND i.latitude IS NOT NULL AND i.longitude IS NOT NULL AND NOT coalesce(i.is_microsoft, false)
+  ),
+  seq AS (
+    SELECT *,
+           lag(record_key) OVER w AS p_key, lag(src) OVER w AS p_src, lag(t) OVER w AS p_t,
+           lag(actor) OVER w AS p_actor, lag(ip) OVER w AS p_ip,
+           lag(lat) OVER w AS p_lat, lag(lon) OVER w AS p_lon
+    FROM ev
+    WINDOW w AS (PARTITION BY usr ORDER BY epoch_ms(t), src, record_key)
+  ),
+  pairs AS (
+    SELECT *,
+           2 * 6371 * asin(sqrt(least(1.0,
+               sin(radians(lat - p_lat) / 2) * sin(radians(lat - p_lat) / 2)
+               + cos(radians(p_lat)) * cos(radians(lat))
+                 * sin(radians(lon - p_lon) / 2) * sin(radians(lon - p_lon) / 2)))) AS km,
+           greatest((epoch_ms(t) - epoch_ms(p_t)) / 1000.0, 60.0) / 3600.0 AS hours
+    FROM seq
+    WHERE p_key IS NOT NULL AND p_ip <> ip
+  ),
+  flagged AS (SELECT * FROM pairs WHERE km >= 500 AND km / hours > 900),
+  hits AS (
+    SELECT record_key, src, t, actor, ip, round(km) AS km, round(km / hours) AS kmh FROM flagged
+    UNION ALL
+    SELECT p_key, p_src, p_t, p_actor, p_ip, round(km), round(km / hours) FROM flagged
+  )
+  SELECT h.record_key,
+         CASE WHEN h.src = 'signins' THEN 'signins' ELSE 'ual_events' END AS source_table,
+         min(h.t) AS event_time, min(h.actor) AS actor_upn, min(h.ip) AS ip,
+         json_object('distance_km', max(h.km), 'speed_kmh', max(h.kmh)) AS context
+  FROM hits h
+  GROUP BY h.record_key, h.src
+group_by: [actor_upn]
+analyst_guidance: |
+  Two successful sign-ins of one user, from places too far apart to have travelled between
+  (over 900 km/h and at least 500 km). The context gives the distance and the implied speed.
+  First rule out the common false positives: a VPN or a mobile carrier whose egress sits in
+  another region, and a user signing in from a phone and a laptop on different networks. What
+  usually separates an attacker is the rest of the session: an unfamiliar device or user agent,
+  a hosting-provider address, a risk detection, or a mailbox logon from the far address.
+false_positives:
+  - VPN or mobile-carrier egress geolocating far from the user.
+  - Two devices of one user on different networks (home broadband and a phone on cellular).
+references:
+  - https://learn.microsoft.com/en-us/entra/id-protection/concept-identity-protection-risks
+  - https://learn.microsoft.com/en-us/purview/audit-log-activities
+author: Sparrow
+tests:
+  - name: Paris then Johannesburg forty minutes later
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        latitude: 48.85
+        longitude: 2.35
+      - table: ip_intel
+        ip: 203.0.113.2
+        latitude: -26.2
+        longitude: 28.0
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-03-01T09:00:00Z"
+        error_code: 0
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.2
+        event_time: "2026-03-01T09:40:00Z"
+        error_code: 0
+    expect_hits: 2
+  - name: the same trip taking fourteen hours is a flight
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        latitude: 48.85
+        longitude: 2.35
+      - table: ip_intel
+        ip: 203.0.113.2
+        latitude: -26.2
+        longitude: 28.0
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-03-01T09:00:00Z"
+        error_code: 0
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.2
+        event_time: "2026-03-01T23:00:00Z"
+        error_code: 0
+    expect_hits: 0
+  - name: UserLoggedIn records count too, and a signins row and its UAL twin form no pair
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        latitude: 48.85
+        longitude: 2.35
+      - table: ip_intel
+        ip: 203.0.113.2
+        latitude: -26.2
+        longitude: 28.0
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-03-01T09:00:00Z"
+        error_code: 0
+      - table: ual_events
+        operation: UserLoggedIn
+        user_upn: Alice@contoso.example
+        client_ip: 198.51.100.1
+        event_time: "2026-03-01T09:00:01Z"
+      - table: ual_events
+        operation: UserLoggedIn
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.2
+        event_time: "2026-03-01T09:30:00Z"
+    expect_hits: 2
+  - name: Paris to Berlin in ten minutes is above 900 km/h
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        latitude: 48.85
+        longitude: 2.35
+      - table: ip_intel
+        ip: 198.51.100.2
+        latitude: 52.52
+        longitude: 13.4
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-03-01T09:00:00Z"
+        error_code: 0
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.2
+        event_time: "2026-03-01T09:10:00Z"
+        error_code: 0
+    expect_hits: 2
+  - name: Paris to Berlin in two hours is 440 km/h
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        latitude: 48.85
+        longitude: 2.35
+      - table: ip_intel
+        ip: 198.51.100.2
+        latitude: 52.52
+        longitude: 13.4
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-03-01T09:00:00Z"
+        error_code: 0
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.2
+        event_time: "2026-03-01T11:00:00Z"
+        error_code: 0
+    expect_hits: 0
+  - name: Paris to Brussels is too close to count however fast
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        latitude: 48.85
+        longitude: 2.35
+      - table: ip_intel
+        ip: 198.51.100.3
+        latitude: 50.85
+        longitude: 4.35
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-03-01T09:00:00Z"
+        error_code: 0
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.3
+        event_time: "2026-03-01T09:05:00Z"
+        error_code: 0
+    expect_hits: 0
+  - name: two users are never paired
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        latitude: 48.85
+        longitude: 2.35
+      - table: ip_intel
+        ip: 203.0.113.2
+        latitude: -26.2
+        longitude: 28.0
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-03-01T09:00:00Z"
+        error_code: 0
+      - table: signins
+        user_upn: bob@contoso.example
+        ip: 203.0.113.2
+        event_time: "2026-03-01T09:10:00Z"
+        error_code: 0
+    expect_hits: 0
+  - name: a failed sign-in is not a location
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        latitude: 48.85
+        longitude: 2.35
+      - table: ip_intel
+        ip: 203.0.113.2
+        latitude: -26.2
+        longitude: 28.0
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-03-01T09:00:00Z"
+        error_code: 0
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.2
+        event_time: "2026-03-01T09:10:00Z"
+        error_code: 50126
+    expect_hits: 0
+  - name: a Microsoft address geolocates to a datacentre and is skipped
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        latitude: 48.85
+        longitude: 2.35
+      - table: ip_intel
+        ip: 203.0.113.9
+        latitude: 47.6
+        longitude: -122.3
+        asn: 8075
+        is_microsoft: true
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-03-01T09:00:00Z"
+        error_code: 0
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.9
+        event_time: "2026-03-01T09:10:00Z"
+        error_code: 0
+    expect_hits: 0
+  - name: an address without a location is ignored
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        latitude: 48.85
+        longitude: 2.35
+      - table: ip_intel
+        ip: 203.0.113.2
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-03-01T09:00:00Z"
+        error_code: 0
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.2
+        event_time: "2026-03-01T09:10:00Z"
+        error_code: 0
+    expect_hits: 0

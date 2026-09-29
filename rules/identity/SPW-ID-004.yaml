@@ -1,0 +1,279 @@
+# SPW-ID-004 — adversary-in-the-middle indicators. Logic source: coverage.yaml ("A session
+# (session_id / AADSessionId) used from an IP or ASN different from the interactive MFA sign-in
+# that created it within 1 hour, or a sign-in / mailbox access whose user agent is in
+# @list:suspicious_user_agents").
+# Two indicators, both `sql:` (a session join, and a list matched inside the text):
+# - session_moved: a signins row or UAL record carrying a session id that was created by an
+#   interactive sign-in that satisfied MFA (auth_requirement starting "multifactor", or
+#   mfa_result "MFA successfully completed"), used at a different IP address within one hour after
+#   it. A different ASN implies a different address, so the address test covers both. Only the
+#   later use is the hit, never the creating sign-in.
+# - suspicious_user_agent: a signins row, or a UAL UserLoggedIn / MailboxLogin / MailItemsAccessed
+#   record, whose user agent contains an entry of @list:suspicious_user_agents (substring, case
+#   insensitive: `axios/1.7.7` matches `axios`).
+# A record that matches both is one hit; the context lists the indicators.
+id: SPW-ID-004
+title: Adversary-in-the-middle indicators
+version: 1
+status: stable
+severity: high
+confidence: medium
+mitre: [T1557, T1550.004]
+tags: [bec, aitm, sign-in]
+requires: []
+requires_evidence: []
+sql: |
+  WITH creators AS (
+    SELECT s.record_key, s.session_id, s.event_time AS t, s.ip
+    FROM signins s
+    WHERE s.session_id IS NOT NULL AND s.session_id <> '' AND s.error_code = 0
+      AND coalesce(s.is_interactive, false)
+      AND (lower(coalesce(s.auth_requirement, '')) LIKE 'multifactor%'
+           OR lower(coalesce(s.mfa_result, '')) LIKE '%mfa successfully completed%')
+  ),
+  uses AS (
+    SELECT s.record_key, 'signins' AS src, s.event_time AS t, s.user_upn AS actor, s.ip, s.session_id
+    FROM signins s
+    WHERE s.session_id IS NOT NULL AND s.session_id <> ''
+    UNION ALL
+    SELECT lower(CAST(u.record_id AS VARCHAR)), 'ual_events', u.event_time, u.user_upn, u.client_ip,
+           u.session_id
+    FROM ual_events u
+    WHERE u.session_id IS NOT NULL AND u.session_id <> ''
+  ),
+  moved AS (
+    SELECT x.record_key, x.src, x.t, x.actor, x.ip, 'session_moved' AS indicator
+    FROM uses x JOIN creators c ON c.session_id = x.session_id
+    WHERE x.record_key <> c.record_key AND x.ip IS NOT NULL AND x.ip <> '' AND c.ip IS NOT NULL
+      AND x.ip <> c.ip AND x.t IS NOT NULL AND c.t IS NOT NULL
+      AND epoch_ms(x.t) > epoch_ms(c.t) AND epoch_ms(x.t) <= epoch_ms(c.t) + 3600000
+  ),
+  agents AS (
+    SELECT s.record_key, 'signins' AS src, s.event_time AS t, s.user_upn AS actor, s.ip,
+           'suspicious_user_agent' AS indicator
+    FROM signins s
+    WHERE len(list_filter(@list:suspicious_user_agents,
+                          a -> a <> '' AND strpos(lower(coalesce(s.user_agent, '')), lower(a)) > 0)) > 0
+    UNION ALL
+    SELECT lower(CAST(u.record_id AS VARCHAR)), 'ual_events', u.event_time, u.user_upn, u.client_ip,
+           'suspicious_user_agent'
+    FROM ual_events u
+    WHERE lower(u.operation) IN ('userloggedin', 'mailboxlogin', 'mailitemsaccessed')
+      AND len(list_filter(@list:suspicious_user_agents,
+                          a -> a <> '' AND strpos(lower(coalesce(u.user_agent, '')), lower(a)) > 0)) > 0
+  ),
+  found AS (SELECT * FROM moved UNION ALL SELECT * FROM agents)
+  SELECT f.record_key,
+         CASE WHEN f.src = 'signins' THEN 'signins' ELSE 'ual_events' END AS source_table,
+         min(f.t) AS event_time, min(f.actor) AS actor_upn, min(f.ip) AS ip,
+         json_object('indicators', string_agg(DISTINCT f.indicator, ', ' ORDER BY f.indicator)) AS context
+  FROM found f
+  GROUP BY f.record_key, f.src
+group_by: [actor_upn]
+analyst_guidance: |
+  Two tells of a stolen session. A session that an interactive MFA sign-in created and that is
+  then used from another address within the hour is a token that left the user's device (a
+  reverse proxy replayed it); a scripted user agent (axios, python-requests, curl) on a sign-in
+  or mailbox logon is the replay tool itself. Read the two addresses, whether the second one is
+  a hosting provider, the risk detections, and what the session did next (mailbox logon, rules).
+false_positives:
+  - A user whose phone moves from Wi-Fi to cellular inside one hour on a long-lived session.
+  - Legitimate automation or a monitoring tool that uses a scripted client (okhttp, curl).
+references:
+  - https://learn.microsoft.com/en-us/entra/id-protection/concept-identity-protection-risks
+  - https://learn.microsoft.com/en-us/purview/audit-log-activities
+author: Sparrow
+tests:
+  - name: MFA session replayed from another address three minutes later
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.1
+        is_interactive: true
+        error_code: 0
+        auth_requirement: multiFactorAuthentication
+        session_id: s-1
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.2
+        is_interactive: false
+        session_id: s-1
+        event_time: "2026-03-01T09:03:00Z"
+    expect_hits: 1
+  - name: the portal spelling of MFA and a UAL record carrying the session
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.1
+        is_interactive: true
+        error_code: 0
+        auth_requirement: Multifactor authentication
+        mfa_result: MFA successfully completed
+        session_id: s-1
+        event_time: "2026-03-01T09:00:00Z"
+      - table: ual_events
+        operation: MailboxLogin
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.2
+        session_id: s-1
+        event_time: "2026-03-01T09:40:00Z"
+    expect_hits: 1
+  - name: the same address later is ordinary token use
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        is_interactive: true
+        error_code: 0
+        auth_requirement: multiFactorAuthentication
+        session_id: s-1
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        is_interactive: false
+        session_id: s-1
+        event_time: "2026-03-01T09:20:00Z"
+    expect_hits: 0
+  - name: another address after more than an hour
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        is_interactive: true
+        error_code: 0
+        auth_requirement: multiFactorAuthentication
+        session_id: s-1
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.2
+        is_interactive: false
+        session_id: s-1
+        event_time: "2026-03-01T10:01:00Z"
+    expect_hits: 0
+  - name: another address in a different session
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        is_interactive: true
+        error_code: 0
+        auth_requirement: multiFactorAuthentication
+        session_id: s-1
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.2
+        is_interactive: false
+        session_id: s-2
+        event_time: "2026-03-01T09:03:00Z"
+    expect_hits: 0
+  - name: the creating sign-in did not satisfy MFA
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        is_interactive: true
+        error_code: 0
+        auth_requirement: singleFactorAuthentication
+        session_id: s-1
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.2
+        is_interactive: false
+        session_id: s-1
+        event_time: "2026-03-01T09:03:00Z"
+    expect_hits: 0
+  - name: a non-interactive sign-in never creates a session
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        is_interactive: false
+        error_code: 0
+        auth_requirement: multiFactorAuthentication
+        session_id: s-1
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.2
+        is_interactive: false
+        session_id: s-1
+        event_time: "2026-03-01T09:03:00Z"
+    expect_hits: 0
+  - name: the use precedes the sign-in that created the session
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        is_interactive: true
+        error_code: 0
+        auth_requirement: multiFactorAuthentication
+        session_id: s-1
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.2
+        is_interactive: false
+        session_id: s-1
+        event_time: "2026-03-01T08:55:00Z"
+    expect_hits: 0
+  - name: a scripted user agent on a sign-in
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.2
+        user_agent: axios/1.7.7
+    expect_hits: 1
+  - name: a scripted user agent on a mailbox logon, whatever its case
+    records:
+      - table: ual_events
+        operation: MailboxLogin
+        user_upn: alice@contoso.example
+        user_agent: Python-Requests/2.31.0
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        user_agent: curl/8.4.0
+      - table: ual_events
+        operation: UserLoggedIn
+        user_upn: alice@contoso.example
+        user_agent: Go-http-client/2.0
+    expect_hits: 3
+  - name: a record matching both indicators is one hit
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.1
+        is_interactive: true
+        error_code: 0
+        auth_requirement: multiFactorAuthentication
+        session_id: s-1
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.2
+        is_interactive: false
+        session_id: s-1
+        user_agent: axios/1.7.7
+        event_time: "2026-03-01T09:03:00Z"
+    expect_hits: 1
+  - name: ordinary browsers and a scripted agent on an unrelated operation
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/605.1.15"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        user_agent: curl/8.4.0
+      - table: ual_events
+        operation: UserLoggedIn
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.1
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0 Safari/537.36"
+    expect_hits: 0

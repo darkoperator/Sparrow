@@ -1,0 +1,125 @@
+# SPW-ID-002 — sign-in from a hosting-provider ASN. Logic source: coverage.yaml ("Successful
+# sign-in (signins with error_code 0, or UAL UserLoggedIn) whose IP has ip_intel.is_hosting
+# (rules/lists/hosting_asns.yaml; Microsoft AS8075 is not hosting)"). `is_hosting` is set by the
+# profile step from the hosting ASN list, so the rule reads only that flag; Microsoft's ASN is not
+# on the list. `sql:` because the hit joins the event to `ip_intel`. `needs_geoip`: without an
+# ASN database no address is ever hosting, so the runner reports not_applicable instead of an
+# empty result.
+id: SPW-ID-002
+title: Sign-in from a hosting-provider ASN
+version: 1
+status: stable
+severity: medium
+confidence: medium
+mitre: [T1078.004, T1090]
+tags: [bec, sign-in, hosting]
+requires: []
+requires_evidence: []
+needs_geoip: true
+sql: |
+  SELECT s.record_key, 'signins' AS source_table, s.event_time, s.user_upn AS actor_upn,
+         s.ip AS ip,
+         json_object('asn', i.asn, 'asn_org', i.asn_org, 'hosting_provider', i.hosting_provider) AS context
+  FROM signins s JOIN ip_intel i ON i.ip = s.ip
+  WHERE s.error_code = 0 AND coalesce(i.is_hosting, false)
+  UNION ALL
+  SELECT lower(CAST(u.record_id AS VARCHAR)), 'ual_events', u.event_time, u.user_upn, u.client_ip,
+         json_object('asn', i.asn, 'asn_org', i.asn_org, 'hosting_provider', i.hosting_provider)
+  FROM ual_events u JOIN ip_intel i ON i.ip = u.client_ip
+  WHERE lower(u.operation) = 'userloggedin' AND coalesce(i.is_hosting, false)
+group_by: [actor_upn]
+analyst_guidance: |
+  Employees sign in from homes, offices and mobile networks; a sign-in from a data-centre or
+  VPS provider is what an adversary-in-the-middle proxy or a token-replay script looks like.
+  Compare the address with the user's usual ones, check whether the sign-in satisfied MFA, and
+  look for a risk detection or a mailbox logon from the same address.
+false_positives:
+  - A user on a commercial VPN or a cloud-hosted desktop (VPN egress is often a hosting ASN).
+  - A remote worker on a corporate proxy hosted at a cloud provider.
+references:
+  - https://learn.microsoft.com/en-us/entra/identity/monitoring-health/reference-sign-ins-error-codes
+  - https://learn.microsoft.com/en-us/purview/audit-log-activities
+author: Sparrow
+tests:
+  - name: successful sign-in from a hosting address
+    records:
+      - table: ip_intel
+        ip: 203.0.113.1
+        asn: 14061
+        is_hosting: true
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.1
+        error_code: 0
+    expect_hits: 1
+  - name: UserLoggedIn from a hosting address
+    records:
+      - table: ip_intel
+        ip: 203.0.113.1
+        asn: 14061
+        is_hosting: true
+      - table: ual_events
+        operation: UserLoggedIn
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.1
+    expect_hits: 1
+  - name: a Microsoft address is not hosting
+    records:
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 8075
+        asn_org: Microsoft Corporation
+        is_hosting: false
+        is_microsoft: true
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.9
+        error_code: 0
+      - table: ual_events
+        operation: UserLoggedIn
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.9
+    expect_hits: 0
+  - name: a residential address
+    records:
+      - table: ip_intel
+        ip: 198.51.100.5
+        asn: 7922
+        is_hosting: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.5
+        error_code: 0
+    expect_hits: 0
+  - name: a failed sign-in from a hosting address is not a successful one
+    records:
+      - table: ip_intel
+        ip: 203.0.113.1
+        asn: 14061
+        is_hosting: true
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.1
+        error_code: 50126
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.1
+    expect_hits: 0
+  - name: another operation from a hosting address is not a sign-in
+    records:
+      - table: ip_intel
+        ip: 203.0.113.1
+        asn: 14061
+        is_hosting: true
+      - table: ual_events
+        operation: MailboxLogin
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.1
+    expect_hits: 0
+  - name: an address with no ip_intel row
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.77
+        error_code: 0
+    expect_hits: 0

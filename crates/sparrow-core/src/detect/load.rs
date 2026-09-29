@@ -301,6 +301,12 @@ fn collect_list_refs(value: &serde_json::Value, out: &mut BTreeSet<String>) {
             if let Some(name) = s.strip_prefix("@list:") {
                 out.insert(name.to_string());
             }
+            // A `sql:` rule names its lists inside the query text.
+            if s.contains("@list:") {
+                for m in sql_list_token().captures_iter(s) {
+                    out.insert(m[1].to_string());
+                }
+            }
         }
         serde_json::Value::Array(items) => {
             for item in items {
@@ -314,4 +320,11 @@ fn collect_list_refs(value: &serde_json::Value, out: &mut BTreeSet<String>) {
         }
         _ => {}
     }
+}
+
+fn sql_list_token() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(r"@list:([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)").unwrap()
+    })
 }

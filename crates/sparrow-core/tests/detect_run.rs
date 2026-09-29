@@ -208,6 +208,74 @@ fn hits_become_findings_with_trigger_evidence() {
 }
 
 #[test]
+fn needs_geoip_without_geo_data_is_not_applicable() {
+    let mut case = Case::in_memory().unwrap();
+    let (has, bare, ips_absent, mixed) = ("has-geo", "no-geo", "no-ips", "mixed");
+    for t in [has, bare, ips_absent, mixed] {
+        tenant(&case, t);
+    }
+    let signin = |t: &str, ip: &str| {
+        insert_row(
+            &case,
+            "signins",
+            t,
+            json!({"user_upn": "a@x.example", "ip": ip}),
+        );
+    };
+    let intel = |ip: &str, extra: serde_json::Value| {
+        let mut v = json!({"ip": ip, "is_microsoft": false, "is_private": false});
+        v.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        insert_row(&case, "ip_intel", "unused", v);
+    };
+    // ip_intel is shared: one row per distinct IP of the case. Each tenant is judged by its own IPs.
+    signin(has, "203.0.113.1");
+    intel(
+        "203.0.113.1",
+        json!({"asn": 14061, "latitude": 48.9, "longitude": 2.4}),
+    );
+    signin(bare, "203.0.113.2");
+    intel("203.0.113.2", json!({}));
+    // A tenant whose only sign-in has an ASN but no location, and one with a private address.
+    signin(mixed, "10.0.0.1");
+    intel("10.0.0.1", json!({"is_private": true}));
+    signin(mixed, "203.0.113.3");
+    intel("203.0.113.3", json!({"asn": 64500}));
+    let geo = rule_from(
+        "SPW-T-001",
+        "needs_geoip: true\nsource: signins\nmatch:\n  user_upn: {eq: a@x.example}",
+    );
+    let plain = rule_from(
+        "SPW-T-002",
+        "source: signins\nmatch:\n  user_upn: {eq: a@x.example}",
+    );
+    let set = set_of(vec![geo, plain]);
+    let report = run(&mut case, &set, &opts(2)).unwrap();
+    let find = |rule: &str, t: &str| {
+        report
+            .rules
+            .iter()
+            .find(|r| r.rule_id == rule && r.tenant_key == t)
+            .unwrap()
+    };
+    assert_eq!(find("SPW-T-001", has).status, "ran");
+    assert_eq!(
+        find("SPW-T-001", mixed).status,
+        "ran",
+        "an ASN alone is geo data"
+    );
+    for t in [bare, ips_absent] {
+        let r = find("SPW-T-001", t);
+        assert_eq!(r.status, "not_applicable", "{t}");
+        assert_eq!(r.reason.as_deref(), Some("no GeoIP data"), "{t}");
+    }
+    // A rule that does not need GeoIP is unaffected.
+    assert_eq!(find("SPW-T-002", bare).status, "ran");
+    assert_eq!(find("SPW-T-002", ips_absent).status, "ran");
+}
+
+#[test]
 fn unmet_requirement_is_not_applicable_not_empty() {
     let mut case = Case::in_memory().unwrap();
     tenant(&case, T1);

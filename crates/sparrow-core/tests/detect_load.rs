@@ -108,6 +108,31 @@ fn editing_hiding_folders_changes_the_rule_hash() {
 }
 
 #[test]
+fn a_list_named_inside_sql_text_is_part_of_the_rule_hash() {
+    let text = "id: SPW-T-001\ntitle: t\nversion: 1\nstatus: experimental\nseverity: low\n\
+                analyst_guidance: g\nsql: \"SELECT 1 FROM ual_events u WHERE u.user_agent IN (SELECT unnest(@list:hiding_folders))\"\n\
+                tests:\n  - {name: a, records: [], expect_hits: 1}\n  - {name: b, records: [], expect_hits: 0}\n";
+    let rule: sparrow_core::detect::rule::Rule = serde_norway::from_str(text).unwrap();
+    let set = load_rules(&DataDirs::default()).unwrap();
+    let hash = |lists: &std::collections::BTreeMap<String, Vec<String>>| {
+        sparrow_core::detect::load::rule_sha256(&rule, lists, &set.list_meta)
+    };
+    let mut edited = set.lists.clone();
+    edited.get_mut("hiding_folders").unwrap().push("Zzz".into());
+    assert_ne!(hash(&set.lists), hash(&edited));
+    let mut other = set.lists.clone();
+    other
+        .get_mut("finance_keywords")
+        .unwrap()
+        .push("zzz".into());
+    assert_eq!(
+        hash(&set.lists),
+        hash(&other),
+        "an unreferenced list is not part of the hash"
+    );
+}
+
+#[test]
 fn rule_schema_names_every_rule_field() {
     let text = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -127,6 +152,7 @@ fn rule_schema_names_every_rule_field() {
         "tags",
         "requires",
         "requires_evidence",
+        "needs_geoip",
         "source",
         "match",
         "sources",

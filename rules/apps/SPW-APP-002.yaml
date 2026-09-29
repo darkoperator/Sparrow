@@ -1,0 +1,222 @@
+# SPW-APP-002 — new credential on an application or service principal. Logic source: coverage.yaml
+# ("Directory audit / UAL "Add service principal credentials" / "Update application –
+# Certificates and secrets management" adding a password credential to a service principal, or
+# adding any credential when the actor had a risky or hosting-ASN sign-in in the preceding 24
+# hours; app_credentials rows whose start is in the window support the hit").
+# What is decided:
+# - A credential is added when the KeyDescription change lists more `KeyIdentifier=` entries
+#   after than before; it is a password when `KeyType=Password` occurs more often after than
+#   before. Directory audits carry `modified_properties` as `[{property, old, new}]`, the UAL
+#   carries `ModifiedProperties` as `[{Name, OldValue, NewValue}]`.
+# - Condition A: the activity is "Add service principal credentials" and a password was added.
+#   A certificate on a service principal, or a credential on an application, needs condition B.
+# - Condition B: any credential added by an actor that, in the 24 hours up to the change, had a
+#   sign-in with risk_level_during medium/high, or a sign-in (signins or UAL UserLoggedIn) from a
+#   hosting address (`ip_intel.is_hosting`). Hence `needs_geoip`.
+# - The `app_credentials` rows are not emitted as hits: a credential whose start is in the window
+#   says nothing about who added it, and a routine rotation would flag on state alone. They are
+#   the analyst's cross-check for the key id in the context.
+# Activities are matched case-insensitively by prefix/infix (the UAL spells them with a trailing
+# dot, the directory audit with a trailing space).
+id: SPW-APP-002
+title: New credential on an application or service principal
+version: 1
+status: stable
+severity: high
+confidence: medium
+mitre: [T1098.001]
+tags: [bec, apps, persistence]
+requires: []
+requires_evidence: []
+needs_geoip: true
+sql: |
+  WITH audits AS (
+    SELECT d.record_key, 'directory_audits' AS src, d.event_time AS t, d.initiated_by_upn AS actor,
+           d.initiated_by_ip AS ip, lower(coalesce(d.activity, '')) AS act,
+           array_to_string(list_transform(
+             from_json(d.modified_properties, '[{"old":"VARCHAR","new":"VARCHAR"}]'),
+             e -> coalesce(e."old", '')), ' ') AS old_txt,
+           array_to_string(list_transform(
+             from_json(d.modified_properties, '[{"old":"VARCHAR","new":"VARCHAR"}]'),
+             e -> coalesce(e."new", '')), ' ') AS new_txt
+    FROM directory_audits d
+    WHERE lower(d.activity) LIKE 'add service principal credentials%'
+       OR lower(d.activity) LIKE 'update application%certificates and secrets management%'
+    UNION ALL
+    SELECT lower(CAST(u.record_id AS VARCHAR)), 'ual_events', u.event_time, u.user_upn, u.client_ip,
+           lower(coalesce(u.operation, '')),
+           array_to_string(list_transform(
+             from_json(json_extract(u.audit_data, '$.ModifiedProperties'),
+                       '[{"OldValue":"VARCHAR","NewValue":"VARCHAR"}]'),
+             e -> coalesce(e.OldValue, '')), ' '),
+           array_to_string(list_transform(
+             from_json(json_extract(u.audit_data, '$.ModifiedProperties'),
+                       '[{"OldValue":"VARCHAR","NewValue":"VARCHAR"}]'),
+             e -> coalesce(e.NewValue, '')), ' ')
+    FROM ual_events u
+    WHERE lower(u.operation) LIKE 'add service principal credentials%'
+       OR lower(u.operation) LIKE 'update application%certificates and secrets management%'
+  ),
+  added AS (
+    SELECT a.*,
+           len(regexp_extract_all(a.new_txt, 'KeyIdentifier=')) > len(regexp_extract_all(a.old_txt, 'KeyIdentifier=')) AS any_added,
+           len(regexp_extract_all(a.new_txt, 'KeyType=Password')) > len(regexp_extract_all(a.old_txt, 'KeyType=Password')) AS password_added
+    FROM audits a
+  )
+  SELECT a.record_key,
+         CASE WHEN a.src = 'directory_audits' THEN 'directory_audits' ELSE 'ual_events' END AS source_table,
+         a.t AS event_time, a.actor AS actor_upn, a.ip AS ip,
+         json_object('activity', a.act, 'password_added', a.password_added) AS context
+  FROM added a
+  WHERE a.any_added
+    AND ((a.password_added AND a.act LIKE 'add service principal credentials%')
+         OR (a.actor IS NOT NULL AND (
+               EXISTS (
+                 SELECT 1 FROM signins s
+                 WHERE lower(s.user_upn) = lower(a.actor)
+                   AND epoch_ms(s.event_time) <= epoch_ms(a.t)
+                   AND epoch_ms(s.event_time) >= epoch_ms(a.t) - 86400000
+                   AND (lower(s.risk_level_during) IN ('medium', 'high')
+                        OR EXISTS (SELECT 1 FROM ip_intel i WHERE i.ip = s.ip AND i.is_hosting)))
+               OR EXISTS (
+                 SELECT 1 FROM ual_events l
+                 WHERE lower(l.operation) = 'userloggedin' AND lower(l.user_upn) = lower(a.actor)
+                   AND epoch_ms(l.event_time) <= epoch_ms(a.t)
+                   AND epoch_ms(l.event_time) >= epoch_ms(a.t) - 86400000
+                   AND EXISTS (SELECT 1 FROM ip_intel i WHERE i.ip = l.client_ip AND i.is_hosting)))))
+group_by: [actor_upn]
+analyst_guidance: |
+  A new secret or certificate on an app registration or service principal lets whoever holds it
+  sign in as that application, long after the user's own session is reset. A password added to a
+  service principal is the clearest case; any credential added by an account that just signed in
+  from a risky or hosting address is treated the same. Read who added it and from where, which
+  application it is and what permissions it holds, and compare the key id with `app_credentials`.
+false_positives:
+  - Planned certificate or secret rotation by an application owner.
+  - A deployment pipeline that registers a credential when it creates an application.
+references:
+  - https://learn.microsoft.com/en-us/entra/identity/monitoring-health/reference-audit-activities
+  - https://learn.microsoft.com/en-us/purview/audit-log-activities
+author: Sparrow
+tests:
+  - name: password added to a service principal (directory audit)
+    records:
+      - table: directory_audits
+        activity: Add service principal credentials
+        initiated_by_upn: alice@contoso.example
+        initiated_by_ip: 203.0.113.2
+        event_time: "2026-03-01T10:00:00Z"
+        modified_properties: '[{"target":"App","property":"KeyDescription","old":"[]","new":"[\"[KeyIdentifier=k1,KeyType=Password,KeyUsage=Verify,DisplayName=sync]\"]"}]'
+    expect_hits: 1
+  - name: password added to a service principal (UAL)
+    records:
+      - table: ual_events
+        operation: "Add service principal credentials."
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.2
+        audit_data: '{"ModifiedProperties":[{"Name":"KeyDescription","OldValue":"[]","NewValue":"[\"[KeyIdentifier=k1,KeyType=Password,KeyUsage=Verify,DisplayName=sync]\"]"}]}'
+    expect_hits: 1
+  - name: a certificate added by an admin with no risky sign-in (a rotation)
+    records:
+      - table: directory_audits
+        activity: "Update application – Certificates and secrets management "
+        initiated_by_upn: admin@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        modified_properties: '[{"target":"App","property":"KeyDescription","old":"[\"[KeyIdentifier=k1,KeyType=AsymmetricX509Cert]\"]","new":"[\"[KeyIdentifier=k1,KeyType=AsymmetricX509Cert]\",\"[KeyIdentifier=k2,KeyType=AsymmetricX509Cert]\"]"}]'
+      - table: signins
+        user_upn: admin@contoso.example
+        event_time: "2026-03-01T09:00:00Z"
+        risk_level_during: none
+    expect_hits: 0
+  - name: the same certificate added after a high-risk sign-in the same morning
+    records:
+      - table: directory_audits
+        activity: "Update application – Certificates and secrets management "
+        initiated_by_upn: admin@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        modified_properties: '[{"target":"App","property":"KeyDescription","old":"[\"[KeyIdentifier=k1,KeyType=AsymmetricX509Cert]\"]","new":"[\"[KeyIdentifier=k1,KeyType=AsymmetricX509Cert]\",\"[KeyIdentifier=k2,KeyType=AsymmetricX509Cert]\"]"}]'
+      - table: signins
+        user_upn: admin@contoso.example
+        event_time: "2026-03-01T09:00:00Z"
+        risk_level_during: high
+    expect_hits: 1
+  - name: a credential added after a sign-in from a hosting address (UAL logon)
+    records:
+      - table: ip_intel
+        ip: 203.0.113.2
+        asn: 14061
+        is_hosting: true
+      - table: ual_events
+        operation: UserLoggedIn
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.2
+        event_time: "2026-03-01T08:00:00Z"
+      - table: ual_events
+        operation: "Update application – Certificates and secrets management ."
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        audit_data: '{"ModifiedProperties":[{"Name":"KeyDescription","OldValue":"[]","NewValue":"[\"[KeyIdentifier=k1,KeyType=AsymmetricX509Cert]\"]"}]}'
+    expect_hits: 1
+  - name: the risky sign-in was more than 24 hours earlier
+    records:
+      - table: directory_audits
+        activity: "Update application – Certificates and secrets management "
+        initiated_by_upn: admin@contoso.example
+        event_time: "2026-03-02T10:00:00Z"
+        modified_properties: '[{"target":"App","property":"KeyDescription","old":"[]","new":"[\"[KeyIdentifier=k1,KeyType=AsymmetricX509Cert]\"]"}]'
+      - table: signins
+        user_upn: admin@contoso.example
+        event_time: "2026-03-01T09:00:00Z"
+        risk_level_during: high
+    expect_hits: 0
+  - name: another user had the risky sign-in
+    records:
+      - table: directory_audits
+        activity: "Update application – Certificates and secrets management "
+        initiated_by_upn: admin@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        modified_properties: '[{"target":"App","property":"KeyDescription","old":"[]","new":"[\"[KeyIdentifier=k1,KeyType=AsymmetricX509Cert]\"]"}]'
+      - table: signins
+        user_upn: bob@contoso.example
+        event_time: "2026-03-01T09:00:00Z"
+        risk_level_during: high
+    expect_hits: 0
+  - name: a certificate on a service principal with no risky sign-in
+    records:
+      - table: directory_audits
+        activity: Add service principal credentials
+        initiated_by_upn: admin@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        modified_properties: '[{"target":"App","property":"KeyDescription","old":"[]","new":"[\"[KeyIdentifier=k1,KeyType=AsymmetricX509Cert]\"]"}]'
+    expect_hits: 0
+  - name: a password that was already there is not a new password
+    records:
+      - table: directory_audits
+        activity: Add service principal credentials
+        initiated_by_upn: admin@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        modified_properties: '[{"target":"App","property":"KeyDescription","old":"[\"[KeyIdentifier=k1,KeyType=Password]\"]","new":"[\"[KeyIdentifier=k1,KeyType=Password]\"]"}]'
+    expect_hits: 0
+  - name: a credential removed
+    records:
+      - table: directory_audits
+        activity: Add service principal credentials
+        initiated_by_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        modified_properties: '[{"target":"App","property":"KeyDescription","old":"[\"[KeyIdentifier=k1,KeyType=Password]\"]","new":"[]"}]'
+    expect_hits: 0
+  - name: an unrelated activity with a password key
+    records:
+      - table: directory_audits
+        activity: Update service principal
+        initiated_by_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        modified_properties: '[{"target":"App","property":"KeyDescription","old":"[]","new":"[\"[KeyIdentifier=k1,KeyType=Password]\"]"}]'
+    expect_hits: 0
+  - name: a collected credential starting in the window is not a hit by itself
+    records:
+      - table: app_credentials
+        app_name: Helpdesk Portal
+        cred_type: password
+        start_time: "2026-03-01T10:00:00Z"
+    expect_hits: 0

@@ -16,6 +16,10 @@
     "tags": { "type": "array", "items": { "type": "string" } },
     "requires": { "type": "array", "items": { "type": "string" }, "description": "Capability ids." },
     "requires_evidence": { "type": "array", "items": { "type": "string" } },
+    "needs_geoip": {
+      "type": "boolean",
+      "description": "The rule reads ip_intel ASN / location. A tenant none of whose event IPs has an ASN, a country or a latitude gets not_applicable (\"no GeoIP data\")."
+    },
     "source": { "type": "string", "description": "Hit table of a single-source match rule." },
     "match": { "$ref": "#/$defs/cond" },
     "sources": {

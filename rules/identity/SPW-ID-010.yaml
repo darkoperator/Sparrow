@@ -12,6 +12,7 @@ mitre: [T1564.008, T1114.003]
 tags: [bec, inbox-rule, correlation]
 requires: []
 requires_evidence: []
+needs_geoip: true
 sql: |
   WITH rule_events AS (
     SELECT lower(CAST(u.record_id AS VARCHAR)) AS record_key, true AS is_ual,

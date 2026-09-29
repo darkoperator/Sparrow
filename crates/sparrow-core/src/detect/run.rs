@@ -112,6 +112,25 @@ fn status_map(case: &Case, sql: &str) -> Result<BTreeMap<(String, String), Strin
     Ok(rows.collect::<std::result::Result<_, _>>()?)
 }
 
+/// The tenants with GeoIP data: at least one IP in the tenant's sign-ins, UAL, directory audits
+/// or admin audit log has an `ip_intel` row with an ASN, a country or a latitude. `ip_intel` is
+/// shared by the whole case, so each tenant is judged by its own IPs; a tenant whose IPs are all
+/// private or unresolved (ingested without `--geoip-dir`, or not in the databases) has none.
+fn tenants_with_geoip(case: &Case) -> Result<BTreeSet<String>> {
+    let mut st = case.conn().prepare(
+        "SELECT DISTINCT c.tenant_key \
+         FROM (SELECT collection_id, ip FROM signins \
+               UNION ALL SELECT collection_id, client_ip FROM ual_events \
+               UNION ALL SELECT collection_id, initiated_by_ip FROM directory_audits \
+               UNION ALL SELECT collection_id, client_ip FROM admin_audit_events) e \
+         JOIN collections c ON c.collection_id = e.collection_id \
+         JOIN ip_intel i ON i.ip = e.ip \
+         WHERE i.asn IS NOT NULL OR i.country_iso IS NOT NULL OR i.latitude IS NOT NULL",
+    )?;
+    let rows = st.query_map([], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<std::result::Result<_, _>>()?)
+}
+
 /// Run the rules of `set` over every tenant of the case and merge the hits into the findings.
 pub fn run(case: &mut Case, set: &RuleSet, opts: &DetectOptions) -> Result<DetectReport> {
     case.ensure_usable()?;
@@ -146,6 +165,11 @@ pub fn run(case: &mut Case, set: &RuleSet, opts: &DetectOptions) -> Result<Detec
         "SELECT tenant_key, evidence, CAST(status AS VARCHAR) FROM evidence_availability",
     )?;
     let indicators = list_indicators(case.conn(), None)?;
+    let geo_tenants = if rules.iter().any(|r| r.rule.needs_geoip) {
+        tenants_with_geoip(case)?
+    } else {
+        BTreeSet::new()
+    };
 
     // 2. The plan.
     let mut compiled: Vec<Compiled> = Vec::new();
@@ -179,7 +203,9 @@ pub fn run(case: &mut Case, set: &RuleSet, opts: &DetectOptions) -> Result<Detec
                     _ => None,
                 }
             });
-            let plan = if let Some(c) = not_licensed {
+            let plan = if r.needs_geoip && !geo_tenants.contains(tenant) {
+                Plan::NotApplicable("no GeoIP data".to_string())
+            } else if let Some(c) = not_licensed {
                 Plan::NotApplicable(format!("capability {c} is not_licensed"))
             } else if let Some((e, s)) = missing_evidence {
                 Plan::NotApplicable(format!("evidence {e} is {s}"))

@@ -1,0 +1,148 @@
+# SPW-MAIL-006 — mail sent from an IP address the user never used before. Logic source:
+# coverage.yaml ("UAL Send / SendAs / SendOnBehalf whose client_ip appears in no earlier
+# ual_events or signins row of the same user in the case").
+# "Earlier" is strictly earlier in time, so the first send from an address is the hit and later
+# sends from it are not. The first send from an address the case has never seen the user on is a
+# hit even when it is also the first event of the user in the case: the rule only knows the case.
+# `sql:` because the history is a correlated lookup over two tables.
+id: SPW-MAIL-006
+title: Mail sent from an IP address the user never used before
+version: 1
+status: stable
+severity: medium
+confidence: low
+mitre: [T1114, T1534]
+tags: [bec, mail-send]
+requires: []
+requires_evidence: [mail_send]
+sql: |
+  SELECT lower(CAST(u.record_id AS VARCHAR)) AS record_key, 'ual_events' AS source_table,
+         u.event_time, u.user_upn AS actor_upn, u.client_ip AS ip
+  FROM ual_events u
+  WHERE lower(u.operation) IN ('send', 'sendas', 'sendonbehalf')
+    AND u.client_ip IS NOT NULL AND u.client_ip <> '' AND u.user_upn IS NOT NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM ual_events p
+      WHERE lower(p.user_upn) = lower(u.user_upn) AND p.client_ip = u.client_ip
+        AND p.record_id <> u.record_id AND epoch_ms(p.event_time) < epoch_ms(u.event_time))
+    AND NOT EXISTS (
+      SELECT 1 FROM signins s
+      WHERE lower(s.user_upn) = lower(u.user_upn) AND s.ip = u.client_ip
+        AND epoch_ms(s.event_time) < epoch_ms(u.event_time))
+group_by: [actor_upn]
+analyst_guidance: |
+  A message sent from an address the user has not been seen on before, within this case. It
+  means little on its own (a new network, a new phone); it matters when the address is a hosting
+  provider or the address of the sign-in the session is suspected of, or when the send follows a
+  new inbox rule or an MFA change. Check the recipients and subject through the message trace.
+false_positives:
+  - A user on a new network (travel, a new home connection, a mobile carrier).
+  - The first send of the collection window from any user's usual address (the case has no earlier history).
+references:
+  - https://learn.microsoft.com/en-us/purview/audit-mailboxes
+  - https://learn.microsoft.com/en-us/purview/audit-log-activities
+author: Sparrow
+tests:
+  - name: a send from an address the user was never seen on
+    records:
+      - table: ual_events
+        operation: MailboxLogin
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.1
+        event_time: "2026-03-01T08:00:00Z"
+      - table: ual_events
+        operation: Send
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 1
+  - name: SendAs and SendOnBehalf count
+    records:
+      - table: ual_events
+        operation: SendAs
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:00:00Z"
+      - table: ual_events
+        operation: SendOnBehalf
+        user_upn: bob@contoso.example
+        client_ip: 203.0.113.10
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 2
+  - name: only the first send from a new address is a hit
+    records:
+      - table: ual_events
+        operation: Send
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:00:00Z"
+      - table: ual_events
+        operation: Send
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:05:00Z"
+    expect_hits: 1
+  - name: the address was used earlier in the UAL
+    records:
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: Alice@contoso.example
+        client_ip: 198.51.100.1
+        event_time: "2026-03-01T08:00:00Z"
+      - table: ual_events
+        operation: Send
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.1
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 0
+  - name: the address was used earlier in a sign-in
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-03-01T08:00:00Z"
+      - table: ual_events
+        operation: Send
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.1
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 0
+  - name: another user's use of the address does not count
+    records:
+      - table: signins
+        user_upn: bob@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-03-01T08:00:00Z"
+      - table: ual_events
+        operation: Send
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.1
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 1
+  - name: a use of the address only after the send does not count as earlier
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-03-01T12:00:00Z"
+      - table: ual_events
+        operation: Send
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.1
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 1
+  - name: another operation from a new address is not a send
+    records:
+      - table: ual_events
+        operation: MailboxLogin
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 0
+  - name: a send without a client address
+    records:
+      - table: ual_events
+        operation: Send
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 0

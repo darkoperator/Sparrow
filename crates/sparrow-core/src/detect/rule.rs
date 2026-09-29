@@ -27,6 +27,10 @@ pub struct Rule {
     /// Evidence ids (from `evidence_availability`) that must be present.
     #[serde(default)]
     pub requires_evidence: Vec<String>,
+    /// The rule reads `ip_intel` ASN / location. The runner records `not_applicable` ("no GeoIP
+    /// data") for a tenant none of whose event IPs has an ASN, a country or a location.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub needs_geoip: bool,
     #[serde(flatten)]
     pub body: RuleBody,
     #[serde(default)]
@@ -41,6 +45,10 @@ pub struct Rule {
     #[serde(default)]
     pub author: Option<String>,
     pub tests: Vec<RuleTest>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

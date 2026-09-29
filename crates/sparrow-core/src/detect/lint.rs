@@ -135,6 +135,16 @@ fn cross_check(set: &RuleSet, schema: &CaseSchema, cov: &CoverageMatrix, out: &m
                 ),
             ));
         }
+        if r.needs_geoip != def.needs_geoip {
+            out.push(issue(
+                &r.id,
+                LintSeverity::Error,
+                format!(
+                    "needs_geoip {} differs from coverage {}",
+                    r.needs_geoip, def.needs_geoip
+                ),
+            ));
+        }
         match hit_table(r) {
             Some(t) => {
                 if !def.tables.iter().any(|x| x == t) {
