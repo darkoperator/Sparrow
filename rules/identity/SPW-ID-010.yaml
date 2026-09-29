@@ -1,0 +1,119 @@
+# SPW-ID-010 — inbox rule created shortly after a risky or hosting-ASN sign-in (spec §8.2 example).
+# Logic source: coverage.yaml. Hawk 3.1 records New-InboxRule / Set-InboxRule in
+# Search-AdminAuditLog (admin_audit_events), so both sources are covered.
+id: SPW-ID-010
+title: Inbox rule created within 60 minutes of a risky or hosting-ASN sign-in
+version: 1
+status: stable
+severity: high
+confidence: medium
+mitre: [T1564.008, T1114.003]
+tags: [bec, inbox-rule, correlation]
+requires: []
+requires_evidence: []
+sql: |
+  WITH rule_events AS (
+    SELECT lower(CAST(u.record_id AS VARCHAR)) AS record_key, 'ual_events' AS source_table,
+           u.event_time, u.user_upn AS actor_upn, u.client_ip AS ip
+    FROM ual_events u JOIN collections c ON c.collection_id = u.collection_id
+    WHERE c.tenant_key = $tenant
+      AND lower(u.operation) IN ('new-inboxrule', 'set-inboxrule', 'updateinboxrules')
+    UNION ALL
+    SELECT a.record_key, 'admin_audit_events', a.run_time, a.caller, a.client_ip
+    FROM admin_audit_events a JOIN collections c ON c.collection_id = a.collection_id
+    WHERE c.tenant_key = $tenant
+      AND lower(a.cmdlet) IN ('new-inboxrule', 'set-inboxrule')
+  ),
+  risky_signins AS (
+    SELECT lower(s.user_upn) AS upn, s.event_time
+    FROM signins s JOIN collections c ON c.collection_id = s.collection_id
+    WHERE c.tenant_key = $tenant
+      AND (lower(s.risk_level_during) IN ('medium', 'high')
+           OR EXISTS (SELECT 1 FROM ip_intel i WHERE i.ip = s.ip AND i.is_hosting))
+    UNION ALL
+    SELECT lower(u.user_upn), u.event_time
+    FROM ual_events u JOIN collections c ON c.collection_id = u.collection_id
+    WHERE c.tenant_key = $tenant AND lower(u.operation) = 'userloggedin'
+      AND EXISTS (SELECT 1 FROM ip_intel i WHERE i.ip = u.client_ip AND i.is_hosting)
+  )
+  SELECT r.record_key, r.source_table, r.event_time, r.actor_upn, r.ip
+  FROM rule_events r
+  WHERE EXISTS (
+    SELECT 1 FROM risky_signins s
+    WHERE s.upn = lower(r.actor_upn)
+      AND epoch(s.event_time) <= epoch(r.event_time)
+      AND epoch(s.event_time) >= epoch(r.event_time) - 3600
+  )
+group_by: [actor_upn]
+analyst_guidance: |
+  An inbox rule created soon after a risky or hosting-provider sign-in is the classic BEC
+  persistence step. Read the rule's conditions and actions (forward, delete, move to a hiding
+  folder), compare the sign-in IP with the IP that created the rule, and check what mail the
+  rule touched.
+false_positives:
+  - A user on a VPN or a cloud-hosted desktop who legitimately creates a rule.
+  - Risk detections that Entra ID later dismisses as safe.
+references:
+  - https://learn.microsoft.com/en-us/purview/audit-log-activities
+author: Sparrow
+tests:
+  - name: rule created 20 minutes after a high-risk sign-in
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        risk_level_during: high
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:20:00Z"
+    expect_hits: 1
+  - name: rule created 20 minutes after a sign-in from a hosting IP (admin audit log)
+    records:
+      - table: ip_intel
+        ip: 203.0.113.50
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        ip: 203.0.113.50
+      - table: admin_audit_events
+        cmdlet: Set-InboxRule
+        caller: alice@contoso.example
+        run_time: "2026-03-01T10:20:00Z"
+    expect_hits: 1
+  - name: the risky sign-in was more than 60 minutes earlier
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        risk_level_during: high
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T11:30:00Z"
+    expect_hits: 0
+  - name: another user had the risky sign-in
+    records:
+      - table: signins
+        user_upn: bob@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        risk_level_during: high
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:20:00Z"
+    expect_hits: 0
+  - name: benign sign-in before the rule
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        risk_level_during: none
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:20:00Z"
+    expect_hits: 0

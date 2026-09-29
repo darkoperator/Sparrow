@@ -15,58 +15,18 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
-const COVERAGE_YAML: &str = include_str!("../../../rules/coverage.yaml");
-
-/// One seed rule.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RuleDef {
-    pub id: String,
-    pub title: String,
-    pub category: String,
-    pub severity: String,
-    /// The Hawk investigate condition(s) the rule covers (`H02`, `H08, H09`), if any.
-    pub hawk: Option<String>,
-    pub logic: String,
-    pub tables: Vec<String>,
-    /// Capability ids (`data/capabilities.yaml`).
-    pub requires: Vec<String>,
-    /// Evidence ids (`profile::availability`).
-    pub requires_evidence: Vec<String>,
-    pub needs_geoip: bool,
-    pub collectors: Vec<Collector>,
-    /// Collectors that can supply a look-alike's evidence; the same as `collectors` when the
-    /// file leaves it out.
-    #[serde(default)]
-    pub lookalike_collectors: Vec<Collector>,
-    /// The evidence halves a storyline must reach for a `hit`/`no_hit` to count. Each inner list
-    /// is one required half; reaching any table in it satisfies that half. When the file leaves
-    /// it out the rule has one group equal to `tables` (the pre-existing behaviour).
-    #[serde(default)]
-    pub evidence_all_of: Vec<Vec<String>>,
-    pub positives: Vec<StoryKind>,
-    pub lookalikes: Vec<StoryKind>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CoverageFile {
-    version: u32,
-    rules: Vec<RuleDef>,
-}
+/// One seed rule, with the typed collector and storyline enums of this crate. The serde model
+/// lives in `sparrow_core::detect::coverage` (lint cross-checks the same file).
+pub type RuleDef = sparrow_core::detect::coverage::RuleDef<Collector, StoryKind>;
+pub use sparrow_core::detect::coverage::CoverageMatrix;
 
 fn load() -> Vec<RuleDef> {
-    let file: CoverageFile = serde_norway::from_str(COVERAGE_YAML)
-        .unwrap_or_else(|e| panic!("rules/coverage.yaml: {e}"));
-    assert_eq!(file.version, 1, "rules/coverage.yaml: unknown version");
-    let mut seen = BTreeSet::new();
+    let file = CoverageMatrix::<Collector, StoryKind>::from_yaml(
+        sparrow_core::detect::coverage::BUILTIN_COVERAGE_YAML,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     let mut rules = file.rules;
     for r in &mut rules {
-        assert!(
-            seen.insert(r.id.clone()),
-            "rules/coverage.yaml: duplicate rule id {}",
-            r.id
-        );
         assert!(
             !r.positives.is_empty() && !r.lookalikes.is_empty(),
             "rules/coverage.yaml: {} needs positives and lookalikes",
