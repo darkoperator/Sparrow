@@ -4,6 +4,7 @@
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
 use duckdb::{Connection, params};
+use serde::{Serialize, Serializer};
 use sha2::{Digest, Sha256};
 
 /// Who makes a change: `analyst:<name>`.
@@ -26,7 +27,8 @@ impl Actor {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum IndicatorType {
     Ip,
     Upn,
@@ -74,7 +76,8 @@ impl IndicatorType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Verdict {
     Malicious,
     Suspicious,
@@ -98,16 +101,22 @@ impl Verdict {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Indicator {
     pub indicator_id: String,
     pub tenant_key: Option<String>,
+    #[serde(rename = "type")]
     pub ty: IndicatorType,
     pub value: String,
     pub verdict: Verdict,
     pub note: Option<String>,
     pub added_by: String,
+    #[serde(serialize_with = "rfc3339")]
     pub added_at: DateTime<Utc>,
+}
+
+fn rfc3339<S: Serializer>(t: &DateTime<Utc>, s: S) -> std::result::Result<S::Ok, S::Error> {
+    s.serialize_str(&t.to_rfc3339_opts(chrono::SecondsFormat::Micros, true))
 }
 
 fn indicator_id(tenant_key: Option<&str>, ty: IndicatorType, value: &str) -> String {

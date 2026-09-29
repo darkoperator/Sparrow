@@ -111,6 +111,33 @@ enum Command {
         case: PathBuf,
         table: Option<String>,
     },
+    /// Run the detection rules over a case and merge the hits into its findings
+    Detect {
+        #[arg(long)]
+        case: PathBuf,
+        /// Run only this rule id (repeatable)
+        #[arg(long = "rule")]
+        rule: Vec<String>,
+        /// Run only rules with this tag (repeatable)
+        #[arg(long = "tag")]
+        tag: Vec<String>,
+        /// Directory overriding the embedded data files; default $SPARROW_DATA
+        #[arg(long)]
+        data: Option<PathBuf>,
+        /// Rule directory (repeatable); replaces embedded rules/lists by id; default $SPARROW_RULES
+        #[arg(long)]
+        rules: Vec<PathBuf>,
+    },
+    /// Lint, test and list the detection rules
+    Rules {
+        #[command(subcommand)]
+        command: RulesCommand,
+    },
+    /// Case indicators (ip, upn, ...) that rules read through @list:case_iocs.<type>
+    Ioc {
+        #[command(subcommand)]
+        command: IocCommand,
+    },
     /// Tenant settings kept by the analyst
     Tenant {
         #[command(subcommand)]
@@ -302,6 +329,81 @@ fn generated_profiles(
 }
 
 #[derive(Subcommand)]
+enum RulesCommand {
+    /// Check every rule (columns, lists, regexes, tests) and the coverage matrix; exit 1 on an error
+    Lint {
+        #[arg(long)]
+        data: Option<PathBuf>,
+        #[arg(long)]
+        rules: Vec<PathBuf>,
+    },
+    /// Run the inline tests of the rules; exit 1 when one fails
+    Test {
+        /// Only this rule id
+        #[arg(long = "rule")]
+        rule: Option<String>,
+        #[arg(long)]
+        data: Option<PathBuf>,
+        #[arg(long)]
+        rules: Vec<PathBuf>,
+    },
+    /// List the rules (id, title, severity, status, requires)
+    List {
+        /// Only rules requiring this capability
+        #[arg(long)]
+        requires: Option<String>,
+        /// Only rules with this tag
+        #[arg(long)]
+        tag: Option<String>,
+        #[arg(long)]
+        data: Option<PathBuf>,
+        #[arg(long)]
+        rules: Vec<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum IocCommand {
+    /// Add (or update) an indicator
+    Add {
+        #[arg(long)]
+        case: PathBuf,
+        /// ip, upn, app_id, domain, user_agent, rule_name, email, url or hash
+        #[arg(long = "type")]
+        ty: String,
+        #[arg(long)]
+        value: String,
+        /// malicious, suspicious or benign
+        #[arg(long)]
+        verdict: String,
+        #[arg(long)]
+        note: Option<String>,
+        /// Tenant the indicator applies to; default every tenant of the case
+        #[arg(long)]
+        tenant: Option<String>,
+        /// Who is asking; required (or $SPARROW_ANALYST)
+        #[arg(long)]
+        analyst: Option<String>,
+    },
+    /// List the indicators of the case
+    List {
+        #[arg(long)]
+        case: PathBuf,
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// Remove an indicator by id
+    Remove {
+        #[arg(long)]
+        case: PathBuf,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        analyst: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum TenantCommand {
     /// Domains that count as internal to the tenant
     Domains {
@@ -428,6 +530,21 @@ fn run(cli: Cli) -> Result<ExitCode> {
         }) => cmd_verify(&table, &record_key, &case, root.as_deref(), json),
         Some(Command::Upgrade { case }) => cmd_upgrade(&case, json),
         Some(Command::Schema { case, table }) => cmd_schema(&case, table.as_deref(), json),
+        Some(Command::Detect {
+            case,
+            rule,
+            tag,
+            data,
+            rules,
+        }) => cmd_detect(
+            &case,
+            rule,
+            tag,
+            DataDirs::with_env_fallback(data, rules),
+            json,
+        ),
+        Some(Command::Rules { command }) => cmd_rules(command, json),
+        Some(Command::Ioc { command }) => cmd_ioc(command, json),
         Some(Command::Tenant { command }) => cmd_tenant(command, json),
         Some(Command::Synth { command, generate }) => match command {
             None => cmd_synth_generate(generate, json),
@@ -1289,6 +1406,263 @@ fn cmd_synth_list(json: bool) -> Result<ExitCode> {
             println!("{title}:");
             for e in entries {
                 println!("  {:<22} {}", e.id, e.description);
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+// ---------------------------------------------------------------------------------------------
+// detect, rules, ioc
+
+fn cmd_detect(
+    case_path: &Path,
+    rule_ids: Vec<String>,
+    tags: Vec<String>,
+    dirs: DataDirs,
+    json: bool,
+) -> Result<ExitCode> {
+    let mut case = open_case_for_write(case_path)?;
+    let report = sparrow_core::detect::run::run_with_dirs(
+        &mut case,
+        &dirs,
+        &sparrow_core::detect::DetectOptions {
+            rule_ids,
+            tags,
+            now: None,
+        },
+    )?;
+    if json {
+        print_json(&report)?;
+    } else {
+        print_detect_summary(Some(&DetectOutcome {
+            report: Some(report.clone()),
+            error: None,
+        }));
+        for r in &report.rules {
+            println!(
+                "  {:<14} {:<16} {:<15} {} hits{}",
+                r.rule_id,
+                r.tenant_key,
+                r.status,
+                r.hits,
+                r.reason
+                    .as_deref()
+                    .map(|x| format!("  ({x})"))
+                    .unwrap_or_default()
+            );
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_rules(command: RulesCommand, json: bool) -> Result<ExitCode> {
+    use sparrow_core::detect::compile::CaseSchema;
+    use sparrow_core::detect::coverage::CoverageMatrix;
+    use sparrow_core::detect::lint::{LintSeverity, lint};
+    use sparrow_core::detect::load::load_rules;
+    match command {
+        RulesCommand::Lint { data, rules } => {
+            let set = load_rules(&DataDirs::with_env_fallback(data, rules))?;
+            let case = Case::in_memory()?;
+            let schema = CaseSchema::of(case.conn())?;
+            let coverage = CoverageMatrix::builtin()?;
+            let issues = lint(&set, &schema, Some(&coverage));
+            let errors = issues
+                .iter()
+                .filter(|i| i.severity == LintSeverity::Error)
+                .count();
+            let name = |s: LintSeverity| match s {
+                LintSeverity::Error => "error",
+                LintSeverity::Warning => "warning",
+            };
+            if json {
+                print_json(&serde_json::json!({
+                    "rules": set.rules.len(),
+                    "errors": errors,
+                    "warnings": set.warnings,
+                    "issues": issues.iter().map(|i| serde_json::json!({
+                        "rule_id": i.rule_id, "severity": name(i.severity), "message": i.message,
+                    })).collect::<Vec<_>>(),
+                }))?;
+            } else {
+                for w in &set.warnings {
+                    println!("warning: {w}");
+                }
+                for i in &issues {
+                    println!("{}: {}: {}", name(i.severity), i.rule_id, i.message);
+                }
+                println!(
+                    "{} rules, {} errors, {} issues",
+                    set.rules.len(),
+                    errors,
+                    issues.len()
+                );
+            }
+            Ok(if errors > 0 {
+                ExitCode::from(1)
+            } else {
+                ExitCode::SUCCESS
+            })
+        }
+        RulesCommand::Test { rule, data, rules } => {
+            let set = load_rules(&DataDirs::with_env_fallback(data, rules))?;
+            let results = sparrow_core::detect::test::run_inline_tests(&set, rule.as_deref())?;
+            let failed = results.iter().filter(|r| !r.ok).count();
+            if json {
+                print_json(&serde_json::json!({ "failed": failed, "results": results }))?;
+            } else {
+                for r in &results {
+                    println!(
+                        "{} {} \"{}\": expected {} hits, got {}{}",
+                        if r.ok { "ok  " } else { "FAIL" },
+                        r.rule_id,
+                        r.name,
+                        r.expected,
+                        r.got,
+                        r.error
+                            .as_deref()
+                            .map(|e| format!(" ({e})"))
+                            .unwrap_or_default()
+                    );
+                }
+                println!("{} tests, {} failed", results.len(), failed);
+            }
+            Ok(if failed > 0 {
+                ExitCode::from(1)
+            } else {
+                ExitCode::SUCCESS
+            })
+        }
+        RulesCommand::List {
+            requires,
+            tag,
+            data,
+            rules,
+        } => {
+            let set = load_rules(&DataDirs::with_env_fallback(data, rules))?;
+            let selected: Vec<_> = set
+                .rules
+                .iter()
+                .map(|r| &r.rule)
+                .filter(|r| requires.as_ref().is_none_or(|c| r.requires.contains(c)))
+                .filter(|r| tag.as_ref().is_none_or(|t| r.tags.contains(t)))
+                .collect();
+            let text = |v: serde_json::Value| v.as_str().unwrap_or("").to_string();
+            if json {
+                print_json(&serde_json::json!({
+                    "rules": selected.iter().map(|r| serde_json::json!({
+                        "id": r.id, "title": r.title, "severity": r.severity, "status": r.status,
+                        "requires": r.requires, "requires_evidence": r.requires_evidence,
+                        "tags": r.tags, "version": r.version,
+                    })).collect::<Vec<_>>(),
+                }))?;
+            } else {
+                for r in &selected {
+                    println!(
+                        "{:<14} {:<9} {:<12} {}{}",
+                        r.id,
+                        text(serde_json::to_value(r.severity)?),
+                        text(serde_json::to_value(r.status)?),
+                        r.title,
+                        if r.requires.is_empty() {
+                            String::new()
+                        } else {
+                            format!("  [requires {}]", r.requires.join(", "))
+                        }
+                    );
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+/// `--analyst` or $SPARROW_ANALYST, validated as an [`Actor`] (unlike the tenant commands there
+/// is no anonymous fallback: an indicator changes what rules find).
+fn required_actor(explicit: Option<String>) -> Result<sparrow_core::case::indicators::Actor> {
+    let name = explicit
+        .or_else(|| std::env::var("SPARROW_ANALYST").ok())
+        .unwrap_or_default();
+    sparrow_core::case::indicators::Actor::analyst(&name).map_err(|_| {
+        anyhow::anyhow!("an analyst is required: pass --analyst NAME or set SPARROW_ANALYST")
+    })
+}
+
+fn cmd_ioc(command: IocCommand, json: bool) -> Result<ExitCode> {
+    use sparrow_core::case::indicators::{
+        IndicatorType, Verdict, add_indicator, list_indicators, remove_indicator,
+    };
+    match command {
+        IocCommand::Add {
+            case,
+            ty,
+            value,
+            verdict,
+            note,
+            tenant,
+            analyst,
+        } => {
+            let actor = required_actor(analyst)?;
+            let ty = IndicatorType::parse(&ty)?;
+            let verdict = Verdict::parse(&verdict)?;
+            let c = open_case_for_write(&case)?;
+            let id = add_indicator(
+                c.conn(),
+                &actor,
+                tenant.as_deref(),
+                ty,
+                &value,
+                verdict,
+                note.as_deref(),
+            )?;
+            if json {
+                print_json(&serde_json::json!({
+                    "indicator_id": id, "type": ty, "value": value.trim(), "verdict": verdict,
+                    "tenant_key": tenant, "added_by": actor.as_str(),
+                }))?;
+            } else {
+                println!(
+                    "{id}  {} {}  {}",
+                    ty.as_str(),
+                    value.trim(),
+                    verdict.as_str()
+                );
+            }
+        }
+        IocCommand::List { case, tenant } => {
+            let c = Case::open_read_only(&case)?;
+            let items = list_indicators(c.conn(), tenant.as_deref())?;
+            if json {
+                print_json(&serde_json::json!({ "indicators": items }))?;
+            } else {
+                for i in &items {
+                    println!(
+                        "{}  {:<10} {:<10} {}  by {}{}",
+                        i.indicator_id,
+                        i.ty.as_str(),
+                        i.verdict.as_str(),
+                        i.value,
+                        i.added_by,
+                        i.note
+                            .as_deref()
+                            .map(|n| format!("  ({n})"))
+                            .unwrap_or_default()
+                    );
+                }
+                println!("{} indicators", items.len());
+            }
+        }
+        IocCommand::Remove { case, id, analyst } => {
+            let actor = required_actor(analyst)?;
+            let c = open_case_for_write(&case)?;
+            let removed = remove_indicator(c.conn(), &actor, &id)?;
+            if json {
+                print_json(&serde_json::json!({ "indicator_id": id, "removed": removed }))?;
+            } else if removed {
+                println!("removed {id}");
+            } else {
+                println!("no indicator {id}");
             }
         }
     }

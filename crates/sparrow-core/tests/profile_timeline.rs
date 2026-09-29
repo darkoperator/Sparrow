@@ -399,3 +399,105 @@ fn directory_audits_target_resolves_hawk_and_extractor_suite_casing() {
         .unwrap();
     assert_eq!(inv_target.as_deref(), Some(INV_BOB));
 }
+
+/// Task 4: the timeline counts the findings that cite each record.
+#[test]
+fn timeline_counts_findings_per_record() {
+    let (_dir, mut case) = case_with_events();
+    refresh(&mut case, &ProfileOptions::default()).unwrap();
+    let (ual_key, signin_key): (String, String) = (
+        text(
+            &case,
+            "SELECT CAST(record_id AS VARCHAR) FROM ual_events ORDER BY record_id LIMIT 1",
+        ),
+        text(
+            &case,
+            "SELECT record_key FROM signins ORDER BY record_key LIMIT 1",
+        ),
+    );
+    // Before any finding every row has count 0 and no ids.
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM timeline WHERE finding_count <> 0 OR len(finding_ids) <> 0"
+        ),
+        0
+    );
+    for (id, src, key) in [
+        ("f1", "ual_events", &ual_key),
+        ("f2", "ual_events", &ual_key),
+        ("f2", "signins", &signin_key),
+    ] {
+        case.conn()
+            .execute(
+                "INSERT INTO finding_evidence (finding_id, source_table, record_key, role, added_run_id) \
+                 VALUES (?, ?, ?, 'trigger', 1)",
+                duckdb::params![id, src, key],
+            )
+            .unwrap();
+    }
+    // A repeated (finding, record) pair counts once.
+    case.conn()
+        .execute(
+            "INSERT INTO finding_evidence (finding_id, source_table, record_key, role, added_run_id) \
+             VALUES ('f1', 'ual_events', ?, 'trigger', 2)",
+            duckdb::params![ual_key],
+        )
+        .unwrap();
+    let row = |src: &str, key: &str| -> (i32, String) {
+        case.conn()
+            .query_row(
+                "SELECT finding_count, array_to_string(finding_ids, ',') FROM timeline WHERE source_table = ? AND record_key = ?",
+                duckdb::params![src, key],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+    };
+    assert_eq!(row("ual_events", &ual_key), (2, "f1,f2".to_string()));
+    assert_eq!(row("signins", &signin_key), (1, "f2".to_string()));
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM timeline WHERE finding_count > 0"
+        ),
+        2
+    );
+    // The row count is unchanged by the join.
+    assert_eq!(
+        count(&case, "SELECT count(*) FROM timeline"),
+        count(&case, "SELECT count(*) FROM (SELECT * FROM timeline)")
+    );
+}
+
+/// The Task 4 view is 0008's definition plus the finding join, and its comments are re-issued.
+#[test]
+fn timeline_view_is_the_phase_5_definition_plus_findings() {
+    let view = |sql: &str, from: &str| -> String {
+        let start = sql.rfind(from).unwrap();
+        let end = start + sql[start..].find(";\n").unwrap();
+        sql[start..end].to_string()
+    };
+    let m8 = include_str!("../migrations/0008_synth_parsers.sql");
+    let m9 = include_str!("../migrations/0009_detection.sql");
+    let old = view(m8, "CREATE OR REPLACE VIEW timeline AS");
+    let new = view(m9, "CREATE OR REPLACE VIEW timeline AS");
+    let stripped = new
+        .replace(
+            ",\n       coalesce(f.finding_count, 0) AS finding_count, coalesce(f.finding_ids, CAST([] AS VARCHAR[])) AS finding_ids",
+            "",
+        )
+        .replace(
+            "\nLEFT JOIN (SELECT source_table, record_key, CAST(count(DISTINCT finding_id) AS INTEGER) AS finding_count, list(DISTINCT finding_id ORDER BY finding_id) AS finding_ids FROM finding_evidence GROUP BY source_table, record_key) f\n       ON f.source_table = ev.source_table AND f.record_key = ev.record_key",
+            "",
+        );
+    assert_eq!(stripped, old);
+    assert_ne!(new, old);
+    // Every comment 0008 issued for the view is issued again.
+    for line in m8
+        .lines()
+        .filter(|l| l.starts_with("COMMENT ON COLUMN timeline."))
+    {
+        let target = line.split(" IS ").next().unwrap();
+        assert!(m9.contains(target), "{target} not re-issued");
+    }
+}

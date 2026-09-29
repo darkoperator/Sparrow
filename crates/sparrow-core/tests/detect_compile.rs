@@ -766,30 +766,16 @@ fn builtin_rules_lint_clean() {
     assert!(set.rules.iter().any(|r| r.rule.id == "SPW-ID-010"));
 }
 
-/// Runs a rule file's inline `tests:` (records carry a `table` key) against the compiled rule.
-fn run_inline_tests(rule: &Rule, set: &RuleSet) {
-    let schema = CaseSchema::of(Case::in_memory().unwrap().conn()).unwrap();
-    let c = compile_with_meta(rule, &set.lists, &set.list_meta, &schema)
-        .unwrap_or_else(|e| panic!("{e}"));
-    for t in &rule.tests {
-        let mut case = Case::in_memory().unwrap();
-        for rec in &t.records {
-            let mut rec = rec.clone();
-            let table = rec.remove("table").unwrap().as_str().unwrap().to_string();
-            insert_row(&case, &table, T1, serde_json::Value::Object(rec));
-        }
-        let got =
-            run(&mut case, &c, T1, &BTreeMap::new()).unwrap_or_else(|e| panic!("{}: {e}", t.name));
-        assert_eq!(got.len() as u32, t.expect_hits, "{}: {}", rule.id, t.name);
-    }
-}
-
 #[test]
 fn shipped_rule_samples_pass_their_inline_tests() {
     let set = load_rules(&DataDirs::default()).unwrap();
+    let results = sparrow_core::detect::test::run_inline_tests(&set, None).unwrap();
+    assert!(results.len() >= 9, "{results:#?}");
+    for r in &results {
+        assert!(r.ok, "{r:#?}");
+    }
     for id in ["SPW-HAWK-011", "SPW-ID-010", "SPW-MAIL-005"] {
-        let r = set.rules.iter().find(|r| r.rule.id == id).unwrap();
-        run_inline_tests(&r.rule, &set);
+        assert!(results.iter().any(|r| r.rule_id == id), "{id}");
     }
 }
 

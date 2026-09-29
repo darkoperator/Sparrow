@@ -10,6 +10,7 @@ pub mod rule;
 pub mod rule_conn;
 pub mod run;
 mod scope;
+pub mod test;
 
 pub use findings::fingerprint;
 pub use run::{DetectOptions, DetectReport, RuleRunReport};

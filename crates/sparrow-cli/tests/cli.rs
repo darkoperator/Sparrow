@@ -1000,3 +1000,352 @@ fn synth_coverage_reports_every_rule() {
     assert_eq!(v["rules"].as_array().unwrap().len(), 31);
     assert_eq!(v["ok"], true);
 }
+
+fn write_rule(dir: &std::path::Path, id: &str, requires: &str) {
+    let text = format!(
+        "id: {id}\ntitle: custom {id}\nversion: 1\nstatus: experimental\nseverity: low\nrequires: [{requires}]\nsource: mailboxes\nmatch:\n  forwarding_smtp_address: {{exists: true}}\nanalyst_guidance: g\ntests:\n  - name: hit\n    records:\n      - table: mailboxes\n        upn: a@x.example\n        forwarding_smtp_address: e@example.net\n    expect_hits: 1\n  - name: no hit\n    records:\n      - table: mailboxes\n        upn: a@x.example\n    expect_hits: 0\n"
+    );
+    std::fs::create_dir_all(dir.join("custom")).unwrap();
+    std::fs::write(dir.join("custom").join(format!("{id}.yaml")), text).unwrap();
+}
+
+#[test]
+fn rules_lint_passes_on_builtins() {
+    let v = json_out(sparrow().args(["--json", "rules", "lint"]), 0);
+    let issues = v["issues"].as_array().unwrap();
+    assert!(
+        issues.iter().all(|i| i["severity"] != "error"),
+        "{issues:#?}"
+    );
+    // A broken custom rule fails lint with exit 1.
+    let dir = tempfile::tempdir().unwrap();
+    write_rule(dir.path(), "SPW-CUS-001", "");
+    let broken = std::fs::read_to_string(dir.path().join("custom/SPW-CUS-001.yaml"))
+        .unwrap()
+        .replace(
+            "forwarding_smtp_address: {exists: true}",
+            "no_such_column: {exists: true}",
+        );
+    std::fs::write(dir.path().join("custom/SPW-CUS-001.yaml"), broken).unwrap();
+    let v = json_out(
+        sparrow()
+            .args(["--json", "rules", "lint", "--rules"])
+            .arg(dir.path()),
+        1,
+    );
+    assert!(
+        v["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["severity"] == "error"
+                && i["message"].as_str().unwrap().contains("no_such_column"))
+    );
+}
+
+#[test]
+fn rules_test_runs_every_inline_test() {
+    let v = json_out(sparrow().args(["--json", "rules", "test"]), 0);
+    let results = v["results"].as_array().unwrap();
+    assert!(results.len() >= 9, "{results:#?}");
+    assert!(results.iter().all(|r| r["ok"] == true), "{results:#?}");
+    for id in ["SPW-HAWK-011", "SPW-ID-010", "SPW-MAIL-005"] {
+        assert!(results.iter().any(|r| r["rule_id"] == id), "{id}");
+    }
+    let one = json_out(
+        sparrow().args(["--json", "rules", "test", "--rule", "SPW-HAWK-011"]),
+        0,
+    );
+    assert_eq!(one["results"].as_array().unwrap().len(), 2);
+    // A failing inline test exits 1.
+    let dir = tempfile::tempdir().unwrap();
+    write_rule(dir.path(), "SPW-CUS-002", "");
+    let text = std::fs::read_to_string(dir.path().join("custom/SPW-CUS-002.yaml"))
+        .unwrap()
+        .replace("expect_hits: 1", "expect_hits: 3");
+    std::fs::write(dir.path().join("custom/SPW-CUS-002.yaml"), text).unwrap();
+    let v = json_out(
+        sparrow()
+            .args([
+                "--json",
+                "rules",
+                "test",
+                "--rule",
+                "SPW-CUS-002",
+                "--rules",
+            ])
+            .arg(dir.path()),
+        1,
+    );
+    let r = &v["results"][0];
+    assert_eq!(
+        (r["expected"].as_u64(), r["got"].as_u64(), r["ok"].as_bool()),
+        (Some(3), Some(1), Some(false))
+    );
+    sparrow()
+        .args(["rules", "test", "--rule", "SPW-NOPE-999"])
+        .assert()
+        .code(1);
+}
+
+#[test]
+fn rules_list_filters_by_requires() {
+    let dir = tempfile::tempdir().unwrap();
+    write_rule(dir.path(), "SPW-CUS-003", "identity_protection");
+    write_rule(dir.path(), "SPW-CUS-004", "");
+    let v = json_out(
+        sparrow()
+            .args([
+                "--json",
+                "rules",
+                "list",
+                "--requires",
+                "identity_protection",
+                "--rules",
+            ])
+            .arg(dir.path()),
+        0,
+    );
+    let ids: Vec<&str> = v["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["SPW-CUS-003"]);
+    let all = json_out(
+        sparrow()
+            .args(["--json", "rules", "list", "--rules"])
+            .arg(dir.path()),
+        0,
+    );
+    let ids: Vec<&str> = all["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"SPW-HAWK-011") && ids.contains(&"SPW-CUS-004"));
+    let first = &all["rules"][0];
+    for key in ["id", "title", "severity", "status", "requires"] {
+        assert!(first.get(key).is_some(), "{key}");
+    }
+    let tagged = json_out(
+        sparrow().args(["--json", "rules", "list", "--tag", "forwarding"]),
+        0,
+    );
+    assert!(tagged["rules"].as_array().unwrap().iter().all(|r| {
+        r["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t == "forwarding")
+    }));
+}
+
+#[test]
+fn detect_reports_per_rule_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = sparrow_core::fixtures::hawk_tree(dir.path());
+    let case = dir.path().join("case.duckdb");
+    json_out(
+        sparrow()
+            .args(["--json", "ingest"])
+            .arg(&root)
+            .arg("--case")
+            .arg(&case)
+            .arg("--no-detect"),
+        0,
+    );
+    let v = json_out(sparrow().args(["--json", "detect", "--case"]).arg(&case), 0);
+    let rules = v["rules"].as_array().unwrap();
+    assert!(!rules.is_empty(), "{v}");
+    for r in rules {
+        for key in ["rule_id", "tenant_key", "status", "hits", "duration_ms"] {
+            assert!(r.get(key).is_some(), "{key} in {r}");
+        }
+        assert!(["ran", "not_applicable", "error"].contains(&r["status"].as_str().unwrap()));
+    }
+    assert_eq!(v["run_id"], 1);
+    let one = json_out(
+        sparrow()
+            .args(["--json", "detect", "--rule", "SPW-HAWK-011", "--case"])
+            .arg(&case),
+        0,
+    );
+    assert!(
+        one["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["rule_id"] == "SPW-HAWK-011")
+    );
+    assert_eq!(one["run_id"], 2);
+    // Human output names the counts.
+    sparrow()
+        .args(["detect", "--tag", "bec", "--case"])
+        .arg(&case)
+        .assert()
+        .success()
+        .stdout(contains("run 3"));
+}
+
+#[test]
+fn ioc_add_requires_an_analyst() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = sparrow_core::fixtures::hawk_tree(dir.path());
+    let case = dir.path().join("case.duckdb");
+    json_out(
+        sparrow()
+            .args(["--json", "ingest"])
+            .arg(&root)
+            .arg("--case")
+            .arg(&case)
+            .arg("--no-detect"),
+        0,
+    );
+    let add = |analyst: Option<&str>| {
+        let mut c = sparrow();
+        c.env_remove("SPARROW_ANALYST")
+            .args([
+                "--json",
+                "ioc",
+                "add",
+                "--type",
+                "ip",
+                "--value",
+                "203.0.113.7",
+                "--verdict",
+                "malicious",
+                "--case",
+            ])
+            .arg(&case);
+        if let Some(a) = analyst {
+            c.args(["--analyst", a]);
+        }
+        c
+    };
+    let v = json_out(&mut add(None), 1);
+    assert!(v["error"].as_str().unwrap().contains("analyst"), "{v}");
+    // The environment variable works as well.
+    let v = json_out(add(None).env("SPARROW_ANALYST", "sam"), 0);
+    let id = v["indicator_id"].as_str().unwrap().to_string();
+    assert_eq!(id.len(), 16);
+    assert!(
+        json_out(&mut add(Some("   ")), 1)["error"]
+            .as_str()
+            .unwrap()
+            .contains("analyst")
+    );
+    let list = json_out(
+        sparrow()
+            .args(["--json", "ioc", "list", "--case"])
+            .arg(&case),
+        0,
+    );
+    let items = list["indicators"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        (
+            items[0]["type"].as_str(),
+            items[0]["verdict"].as_str(),
+            items[0]["added_by"].as_str()
+        ),
+        (Some("ip"), Some("malicious"), Some("analyst:sam"))
+    );
+    // Remove needs an analyst too.
+    let rm = |analyst: Option<&str>| {
+        let mut c = sparrow();
+        c.env_remove("SPARROW_ANALYST")
+            .args(["--json", "ioc", "remove", "--id", &id, "--case"])
+            .arg(&case);
+        if let Some(a) = analyst {
+            c.args(["--analyst", a]);
+        }
+        c
+    };
+    json_out(&mut rm(None), 1);
+    let v = json_out(&mut rm(Some("sam")), 0);
+    assert_eq!(v["removed"], true);
+    assert_eq!(
+        json_out(
+            sparrow()
+                .args(["--json", "ioc", "list", "--case"])
+                .arg(&case),
+            0
+        )["indicators"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    // Unknown types and verdicts are usage errors.
+    json_out(
+        sparrow()
+            .args([
+                "--json",
+                "ioc",
+                "add",
+                "--type",
+                "nope",
+                "--value",
+                "x",
+                "--verdict",
+                "malicious",
+                "--analyst",
+                "sam",
+                "--case",
+            ])
+            .arg(&case),
+        1,
+    );
+}
+
+#[test]
+fn ingest_no_detect_skips_detection() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = sparrow_core::fixtures::hawk_tree(dir.path());
+    let skipped = dir.path().join("skipped.duckdb");
+    let v = json_out(
+        sparrow()
+            .args(["--json", "ingest"])
+            .arg(&root)
+            .arg("--case")
+            .arg(&skipped)
+            .arg("--no-detect"),
+        0,
+    );
+    assert!(v["detect"].is_null(), "{v}");
+    let ran = dir.path().join("ran.duckdb");
+    let v = json_out(
+        sparrow()
+            .args(["--json", "ingest"])
+            .arg(&root)
+            .arg("--case")
+            .arg(&ran),
+        0,
+    );
+    assert!(
+        v["detect"]["rules"]
+            .as_array()
+            .is_some_and(|r| !r.is_empty()),
+        "{v}"
+    );
+    // `profile --no-detect` skips it as well; a plain `profile` runs it (run 2 on the ingested case).
+    let v = json_out(
+        sparrow()
+            .args(["--json", "profile", "--no-detect", "--case"])
+            .arg(&ran),
+        0,
+    );
+    assert!(v["detect"].is_null());
+    let v = json_out(sparrow().args(["--json", "profile", "--case"]).arg(&ran), 0);
+    assert_eq!(v["detect"]["run_id"], 2);
+    // Human output carries the detection summary.
+    sparrow()
+        .args(["profile", "--case"])
+        .arg(&ran)
+        .assert()
+        .success()
+        .stdout(contains("detection: run 3"));
+}
