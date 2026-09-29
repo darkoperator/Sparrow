@@ -22,7 +22,11 @@ artifacts:
     encodings: {"7": [utf-8], "5.1": [utf-8-bom]}
     columns:
       - [RecordType, CreationDate, UserIds, Operations, AuditData, ResultIndex, ResultCount, AuditSearchRequestMetadata, Identity, IsValid, ObjectState]
-    dates: {CreationDate: [culture_mdy]}
+    dates:
+      CreationDate:
+        any: [culture_mdy]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
     embedded_json: {AuditData: [CreationTime, Id, Operation, OrganizationId, RecordType, UserId, Workload]}
   - artifact: inv.ual.merged
     collector: invictus
@@ -31,7 +35,11 @@ artifacts:
     encodings: {"7": [utf-8], "5.1": [utf-8-bom]}
     columns:
       - [RecordType, CreationDate, UserIds, Operations, AuditData, ResultIndex, ResultCount, AuditSearchRequestMetadata, Identity, IsValid, ObjectState]
-    dates: {CreationDate: [culture_mdy]}
+    dates:
+      CreationDate:
+        any: [culture_mdy]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
   - artifact: inv.signins
     collector: invictus
     source: invictus sample §4.2 (Graph beta REST)
@@ -53,7 +61,11 @@ artifacts:
     encodings: {"7": [utf-8], "5.1": [utf-8-bom]}
     columns:
       - [MessageTraceId, MessageId, Received, SenderAddress, RecipientAddress, FromIP, ToIP, Subject, Status, Size]
-    dates: {Received: [culture_mdy]}
+    dates:
+      Received:
+        any: [culture_mdy]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
   - artifact: inv.mia.sessions
     collector: invictus
     source: invictus sample §4.5
@@ -64,7 +76,11 @@ artifacts:
     # PS7 renders the AuditData CreationTime in the host culture, 5.1 keeps the ISO text. The
     # survey's only sample is PS7, so the `iso_nozone` form is an inference (event-layouts §0.3),
     # not an observation.
-    dates: {TimeStamp: [culture_mdy, iso_nozone]}
+    dates:
+      TimeStamp:
+        any: [culture_mdy, iso_nozone]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
     inferred: true
   - artifact: inv.mia.message_ids
     collector: invictus
@@ -74,7 +90,11 @@ artifacts:
     columns:
       - [Timestamp, User, IPaddress, SessionID, MailAccessType, FolderPath, InternetMessageId, SizeInBytes]
     # The survey's only sample is PS7; `iso_nozone` for PS 5.1 is an inference (event-layouts §0.3).
-    dates: {Timestamp: [culture_mdy, iso_nozone]}
+    dates:
+      Timestamp:
+        any: [culture_mdy, iso_nozone]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
     inferred: true
   - artifact: inv.audit_status
     collector: invictus
@@ -108,7 +128,14 @@ artifacts:
     columns:
       - [RecordType, CreationDate, UserIds, Operations, AuditData, ResultIndex, ResultCount, Identity, IsValid, ObjectState]
       - [RecordType, CreationDate, UserIds, Operations, AuditData, ResultIndex, ResultCount, AuditSearchRequestMetadata, Identity, IsValid, ObjectState]
-    dates: {CreationDate: [culture_mdy, iso_nozone, iso_z, msdate]}
+    # Both `iso_nozone` and `iso_z` are observed: the `CreationDate` DateTime's Kind follows
+    # the Exchange Online module build (capture B zone-less, C/D tenant `Z`; survey:122,
+    # research hawk layouts :199, :446). The generator picks one per tree.
+    dates:
+      CreationDate:
+        any: [culture_mdy, iso_nozone, iso_z, msdate]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
   - artifact: hawk.user.raw_auth
     collector: hawk
     source: hawk survey §2e
@@ -118,7 +145,18 @@ artifacts:
       - [RecordType, CreationDate, UserIds, Operations, AuditData, ResultIndex, ResultCount, Identity, IsValid, ObjectState]
       - [RecordType, CreationDate, UserIds, Operations, AuditData, ResultIndex, ResultCount, AuditSearchRequestMetadata, Identity, IsValid, ObjectState]
     json_keys: [RecordType, CreationDate, UserIds, Operations, AuditData]
-    dates: {CreationDate: [culture_mdy, iso_nozone, iso_z, msdate]}
+    # `CreationDate` is the `[DateTime]` `Search-UnifiedAuditLog` returns, exported unchanged
+    # (`Out-MultipleFileType.ps1:196-202`). Its .NET Kind follows the Exchange Online module
+    # build, so the survey saw BOTH renderings: zone-less ISO on PS7 in capture B and `…Z` on
+    # the tenant files of C/D (survey 2026-09-24-hawk-capture-survey.md:122; research
+    # 2026-09-26-phase5-hawk-layouts.md:174, :199, :446 — D was an earlier 4.0 build). The
+    # generator picks one per tree, so both forms are recorded. CSV (`Export-Csv`) is always the
+    # host culture, hence the per-culture keys.
+    dates:
+      CreationDate:
+        any: [culture_mdy, iso_nozone, iso_z, msdate]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
   # `hawk.user.raw_ual` spans several real file shapes (ExchangeItem_Logs raw UAL,
   # Exchange_UAL_Audit expanded, User_Changes admin-audit), so it is not listed here: the
   # registry artifact id is not one file. Its raw-UAL shape is covered by hawk.user.raw_auth.
@@ -135,7 +173,11 @@ artifacts:
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
     columns_required: [Organization, MessageId, Received, SenderAddress, RecipientAddress, Subject, Status, ToIP, FromIP, Size, MessageTraceId, StartDate, EndDate, Index]
-    dates: {Received: [culture_mdy, iso_nozone, iso_z, msdate]}
+    dates:
+      Received:
+        any: [culture_mdy, iso_nozone, iso_z, msdate]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
   - artifact: hawk.user.inbox_rules
     collector: hawk
     source: hawk survey §2e (Get-InboxRule, 74 cols in C / 92 in B)
@@ -154,7 +196,11 @@ artifacts:
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
     columns_required: [UserPrincipalName, DisplayName, Id, AccountEnabled, CreatedDateTime]
-    dates: {CreatedDateTime: [culture_mdy, iso_z, msdate]}
+    dates:
+      CreatedDateTime:
+        any: [culture_mdy, iso_z, msdate]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
 
   # ------------------------------------------------------------------ Portal exports (hawk survey §3)
   - artifact: portal.ual
@@ -165,7 +211,11 @@ artifacts:
     line_ends: crlf
     columns:
       - [RecordId, CreationDate, RecordType, Operation, UserId, AuditData, AssociatedAdminUnits, AssociatedAdminUnitsNames]
-    dates: {CreationDate: [culture_mdy, iso_z]}
+    dates:
+      CreationDate:
+        any: [culture_mdy, iso_z]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
     embedded_json: {AuditData: [CreationTime, Id, Operation, OrganizationId, RecordType, UserId, Workload]}
   - artifact: portal.entra_signins
     collector: portal
@@ -193,14 +243,29 @@ artifacts:
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
     columns_required: [ObjectModified, CmdletName, CmdletParameters, ModifiedProperties, Caller, ExternalAccess, Succeeded, Error, RunDate, OriginatingServer, ClientIP, SessionId, AppId, ClientAppId, Identity, IsValid, ObjectState]
-    dates: {RunDate: [culture_mdy, iso_z, iso_offset, iso_nozone, local_log, msdate]}
+    # `RunDate` is a host-local `[DateTime]`, so `Export-Csv` renders it in the host culture
+    # (en-GB day-first, de-DE dotted) and `ConvertTo-Json` by .NET kind (research hawk layouts
+    # §2.1). The real captures' msdate/culture_mdy forms are Task F3's, not a culture form.
+    dates:
+      RunDate:
+        any: [culture_mdy, iso_z, iso_offset, iso_nozone, local_log, msdate]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
   - artifact: hawk.tenant.azuread_users
     collector: hawk
     source: hawk survey §2b (Hawk 3 AzureADUsers)
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
     columns_required: [UserPrincipalname, ObjectID, UserType, DateCreated, UserStateChangedOn, DirSyncEnabled]
-    dates: {DateCreated: [culture_mdy], UserStateChangedOn: [iso_z]}
+    dates:
+      DateCreated:
+        any: [culture_mdy]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
+      UserStateChangedOn:
+        any: [iso_z]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
   - artifact: hawk.tenant.azuread_admins
     collector: hawk
     source: hawk survey §2b (Hawk 3 AzureADAdministrators)
@@ -250,7 +315,11 @@ artifacts:
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
     file_pattern: "Simple_(New_InboxRule|Set_InboxRule|Remove_InboxRule|Mailbox_Permissions|Forwarding_Changes|RBAC_Changes)"
     columns_required: [Caller, Cmdlet, FullCommand, ObjectModified]
-    dates: {"RunDate(UTC)": [iso_z, culture_mdy, msdate]}
+    dates:
+      "RunDate(UTC)":
+        any: [iso_z, culture_mdy, msdate]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
   - artifact: hawk.tenant.simple_ual
     collector: hawk
     source: hawk survey §2c (flattened AuditData; the CSV header is the first record's keys,
@@ -266,7 +335,11 @@ artifacts:
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
     file_pattern: "eDiscoveryLogs"
     columns_required: [CreationTime, Id, Operation, Workload, UserId, Case, CaseID, Cmdlet]
-    dates: {CreationTime: [iso_nozone, culture_mdy]}
+    dates:
+      CreationTime:
+        any: [iso_nozone, culture_mdy]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
   - artifact: hawk.tenant.raw_ual
     collector: hawk
     source: hawk survey §2b (Hawk 3 admin-audit raw UAL shape)
@@ -286,28 +359,56 @@ artifacts:
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
     columns_required: [ActivityDateTime, ActivityDisplayName, AdditionalDetails, Category, CorrelationId, Id, InitiatedBy, LoggedByService, OperationType, Result, ResultReason, TargetResources, AdditionalProperties]
-    dates: {ActivityDateTime: [culture_mdy, iso_z, msdate]}
+    dates:
+      ActivityDateTime:
+        any: [culture_mdy, iso_z, msdate]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
   - artifact: hawk.tenant.risky_users
     collector: hawk
     source: hawk survey §2c (RiskyUsers)
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
     columns_required: [History, Id, IsDeleted, IsProcessing, RiskDetail, RiskLastUpdatedDateTime, RiskLevel, RiskState, UserDisplayName, UserPrincipalName, AdditionalProperties]
-    dates: {RiskLastUpdatedDateTime: [culture_mdy, iso_z, msdate]}
+    dates:
+      RiskLastUpdatedDateTime:
+        any: [culture_mdy, iso_z, msdate]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
   - artifact: hawk.tenant.risk_detections
     collector: hawk
     source: hawk survey §2c (Risk_Detections)
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
     columns_required: [Activity, ActivityDateTime, CorrelationId, DetectedDateTime, DetectionTimingType, IPAddress, Id, LastUpdatedDateTime, Location, RequestId, RiskDetail, RiskEventType, RiskLevel, RiskState, Source, TokenIssuerType, UserDisplayName, UserId, UserPrincipalName, AdditionalProperties]
-    dates: {ActivityDateTime: [culture_mdy, iso_z, msdate], DetectedDateTime: [culture_mdy, iso_z, msdate], LastUpdatedDateTime: [culture_mdy, iso_z, msdate]}
+    dates:
+      ActivityDateTime:
+        any: [culture_mdy, iso_z, msdate]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
+      DetectedDateTime:
+        any: [culture_mdy, iso_z, msdate]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
+      LastUpdatedDateTime:
+        any: [culture_mdy, iso_z, msdate]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
   - artifact: hawk.tenant.app_credentials
     collector: hawk
     source: hawk survey §2d (Application/SPNCertsAndSecrets)
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
     columns_required: [AppName, AppObjectID, KeyID, StartDate, EndDate, KeyType, CredType]
-    dates: {StartDate: [culture_mdy, iso_z, msdate], EndDate: [culture_mdy, iso_z, msdate]}
+    dates:
+      StartDate:
+        any: [culture_mdy, iso_z, msdate]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
+      EndDate:
+        any: [culture_mdy, iso_z, msdate]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
   - artifact: hawk.tenant.exo_admins
     collector: hawk
     source: hawk survey §2d (ExchangeOnlineAdministrators)
@@ -346,7 +447,11 @@ artifacts:
     # complete documents (research hawk-layouts §2).
     json_shape: [bare, concatenated]
     columns_required: [DisplayName, UserPrincipalName, PrimarySmtpAddress, ForwardingSmtpAddress, ForwardingAddress, DeliverToMailboxAndForward, WhenChangedUTC]
-    dates: {WhenChangedUTC: [culture_mdy, iso_z, msdate]}
+    dates:
+      WhenChangedUTC:
+        any: [culture_mdy, iso_z, msdate]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
   - artifact: hawk.tenant.all_inbox_rules
     collector: hawk
     source: hawk survey §2b (Hawk 3 Tenant/All_InboxRules, Get-InboxRule)
@@ -368,28 +473,52 @@ artifacts:
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
     columns_required: [DisplayName, UserPrincipalName, PrimarySmtpAddress, ForwardingSmtpAddress, ForwardingAddress, DeliverToMailboxAndForward, WhenChangedUTC]
-    dates: {WhenChangedUTC: [culture_mdy, iso_z, msdate]}
+    dates:
+      WhenChangedUTC:
+        any: [culture_mdy, iso_z, msdate]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
   - artifact: hawk.user.mailbox_audit_legacy
     collector: hawk
     source: hawk survey §2e (Search-MailboxAuditLog, 55 cols)
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
     columns_required: [Operation, OperationResult, LogonType, ExternalAccess, FolderPathName, FolderName, ClientInfoString, ClientIPAddress, ClientIP, ClientMachineName, ClientProcessName, ClientVersion, InternalLogonType, MailboxOwnerUPN, MailboxOwnerSid, CrossMailboxOperation, LogonUserDisplayName, LogonUserSid, SourceItems, SourceFolders, ItemId, ItemSubject, ItemAttachments, ItemInternetMessageId, DirtyProperties, OriginatingServer, SessionId, OperationProperties, AppId, ClientAppId, MailboxGuid, MailboxResolvedOwnerName, LastAccessed, Identity, IsValid, ObjectState]
-    dates: {LastAccessed: [culture_mdy, msdate, iso_offset]}
+    dates:
+      LastAccessed:
+        any: [culture_mdy, msdate, iso_offset]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
   - artifact: hawk.user.mobile_devices
     collector: hawk
     source: hawk survey §2e (Get-MobileDevice, 39 cols)
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
     columns_required: [FriendlyName, DeviceId, DeviceImei, DeviceOS, DeviceType, FirstSyncTime, UserDisplayName, DeviceAccessState, ClientType, WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC, Name, Identity, IsValid, ObjectState]
-    dates: {FirstSyncTime: [culture_mdy, iso_z, msdate], WhenChangedUTC: [culture_mdy, iso_z, msdate], WhenCreatedUTC: [culture_mdy, iso_z, msdate]}
+    dates:
+      FirstSyncTime:
+        any: [culture_mdy, iso_z, msdate]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
+      WhenChangedUTC:
+        any: [culture_mdy, iso_z, msdate]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
+      WhenCreatedUTC:
+        any: [culture_mdy, iso_z, msdate]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
   - artifact: hawk.user.entra_signin
     collector: hawk
     source: hawk survey §2e (Entra_Sign_In_Log, Graph sign-in)
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
     columns_required: [AppDisplayName, AppId, ClientAppUsed, ConditionalAccessStatus, CorrelationId, CreatedDateTime, IPAddress, Id, IsInteractive, Location, ResourceDisplayName, ResourceId, RiskLevelAggregated, RiskLevelDuringSignIn, RiskState, Status, UserDisplayName, UserId, UserPrincipalName, AdditionalProperties]
-    dates: {CreatedDateTime: [culture_mdy, iso_z, msdate]}
+    dates:
+      CreatedDateTime:
+        any: [culture_mdy, iso_z, msdate]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
   - artifact: hawk.user.sweep_rules
     collector: hawk
     source: hawk survey §2e (SweepRules_<u>)
@@ -438,7 +567,11 @@ artifacts:
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
     file_pattern: "Simple_User_Changes"
     columns_required: [Caller, Cmdlet, FullCommand, ObjectModified]
-    dates: {"RunDate(UTC)": [iso_z, culture_mdy, msdate]}
+    dates:
+      "RunDate(UTC)":
+        any: [iso_z, culture_mdy, msdate]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
   - artifact: hawk.user.simple_ual
     collector: hawk
     source: hawk survey §2e (Hawk 4 flattened AuditData; the CSV header is the first record's
@@ -447,6 +580,19 @@ artifacts:
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
     file_pattern: "(ExchangeItem(Group)?_Simple|Simple_(MailItemsAccessed|SendActivity))"
     columns_required: [CreationTime, Workload, RecordType, Operation, UserId, Id, OrganizationId, UserType, UserKey, Version, CreationDate]
+    # A `Parameters` value that the audit service sent as ISO-8601 becomes a `[DateTime]` on
+    # PS7 (`ConvertFrom-Json`) and `ConvertTo-FlatObject` keeps it typed, so it renders in the
+    # host culture through `Export-Csv` (research hawk layouts §4.2/§4.3). The real captures
+    # hold `Param_StartTime`/`Param_EndTime` of a mailbox search (survey:123).
+    dates:
+      Param_StartTime:
+        any: [culture_mdy, iso_nozone]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
+      Param_EndTime:
+        any: [culture_mdy, iso_nozone]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
   - artifact: hawk.ip.events
     collector: hawk
     source: hawk-layouts §1.4 (Search-HawkTenantActivityByIP, expanded AuditData)

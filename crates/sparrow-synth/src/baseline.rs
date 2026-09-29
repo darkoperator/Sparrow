@@ -176,6 +176,11 @@ pub fn work_window(w: &World, user: &User, date: NaiveDate) -> (DateTime<Utc>, D
 }
 
 /// A whole-second time in `[a, b)` (`a` when the range is empty).
+/// An AuditData parameter value as the audit service emits it: ISO-8601 in UTC.
+fn iso(t: DateTime<Utc>) -> String {
+    t.format("%Y-%m-%dT%H:%M:%S").to_string()
+}
+
 fn rand_time(rng: &mut Rng, a: DateTime<Utc>, b: DateTime<Utc>) -> DateTime<Utc> {
     let span = (b - a).num_seconds();
     if span <= 0 {
@@ -760,6 +765,37 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
                     &[
                         ("Identity", &target.upn),
                         ("RetainDeletedItemsFor", "30.00:00:00"),
+                    ],
+                    ip,
+                    session,
+                ));
+            }
+        }
+
+        // A mailbox owner searches their own mailbox for a retention dispute, which logs an
+        // `ExchangeAdmin` `New-MailboxSearch` carrying the search window as `StartTime` /
+        // `EndTime` (survey:2e / 2026-09-24-hawk-capture-survey.md:123 records the two
+        // `Param_` columns of the real captures). The values are ISO-8601 as the audit service
+        // emits them, so `Get-SimpleUnifiedAuditLog` types them as dates and they follow the
+        // host culture. The user is the actor, so the record lands in their own
+        // `User_Changes` / `Simple_User_Changes` (`Get-HawkUserAdminAudit.ps1:60`).
+        if !user.is_admin && !is_weekend(date) && urng.chance(0.12) {
+            let t = rand_time(&mut urng, plan.login, plan.end);
+            if ual_logged(w, t) && w.audit.admin_audit_log_enabled {
+                let start = t - Duration::days(30);
+                let end = t;
+                ual_out.push(ual::exchange_admin(
+                    w,
+                    &mut urng,
+                    user,
+                    t,
+                    "New-MailboxSearch",
+                    &user.upn,
+                    &[
+                        ("Name", "Retention review"),
+                        ("SourceMailboxes", &user.upn),
+                        ("StartTime", &iso(start)),
+                        ("EndTime", &iso(end)),
                     ],
                     ip,
                     session,

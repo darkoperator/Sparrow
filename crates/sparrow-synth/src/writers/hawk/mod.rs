@@ -147,6 +147,15 @@ pub(crate) struct Ctx<'w> {
     pub days: Vec<Day>,
     /// Every logged UAL record of the window, oldest first.
     pub ual: Vec<Ual>,
+    /// The .NET `DateTimeKind` of every raw UAL `CreationDate` in this tree.
+    ///
+    /// `Search-UnifiedAuditLog` hands back a `[DateTime]` whose Kind depends on the Exchange
+    /// Online module build: the survey saw zone-less ISO in capture B and `Z` in the tenant
+    /// files of C/D (research 2026-09-26-phase5-hawk-layouts.md:199, :446 — D was an earlier
+    /// 4.0 build), and PowerShell 7's `ConvertTo-Json` renders the two as `…` and `…Z`
+    /// (research :174). It is a run-to-run variation, so it is one choice per generated tree,
+    /// taken from the seed, and never mixed inside a file.
+    pub ual_creation_kind: DtKind,
     /// The investigated users, in the order the analyst named them.
     pub users: Vec<&'w User>,
 }
@@ -191,6 +200,11 @@ impl<'w> Ctx<'w> {
             user_host: host(user_edition),
             days,
             ual,
+            ual_creation_kind: if stream(world.seed, "hawk/ualcreationkind").next_u64() % 2 == 0 {
+                DtKind::Utc
+            } else {
+                DtKind::Unspecified
+            },
             users: hawk_users(world),
         }
     }
@@ -246,11 +260,11 @@ pub(crate) fn one_of(a: &str, list: &[&str]) -> bool {
 }
 
 /// A `Search-UnifiedAuditLog` result object (current EXO module), `AuditData` the embedded
-/// JSON text in CSV and JSON alike.
-pub(crate) fn raw_row(u: &Ual, index: usize, count: usize, nl: &str) -> Row {
+/// JSON text in CSV and JSON alike. `creation` is the tree's `Ctx::ual_creation_kind`.
+pub(crate) fn raw_row(u: &Ual, index: usize, count: usize, nl: &str, creation: DtKind) -> Row {
     vec![
         r("RecordType", s(u.record_type.name())),
-        r("CreationDate", date_text(u.time, DtKind::Unspecified)),
+        r("CreationDate", date_text(u.time, creation)),
         r("UserIds", s(u.user_id.clone())),
         r("Operations", s(u.operation.clone())),
         r("AuditData", s(u.audit_data_text())),
@@ -267,12 +281,12 @@ pub(crate) fn raw_row(u: &Ual, index: usize, count: usize, nl: &str) -> Row {
 }
 
 /// The raw rows of a search result (ResultIndex order).
-pub(crate) fn raw_rows(records: &[Ual], nl: &str) -> Vec<Row> {
+pub(crate) fn raw_rows(records: &[Ual], nl: &str, creation: DtKind) -> Vec<Row> {
     let n = records.len();
     records
         .iter()
         .enumerate()
-        .map(|(i, u)| raw_row(u, i, n, nl))
+        .map(|(i, u)| raw_row(u, i, n, nl, creation))
         .collect()
 }
 

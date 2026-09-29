@@ -203,6 +203,10 @@ enum SynthCommand {
         /// Seed used for the generated trees in --real mode
         #[arg(long, default_value_t = 1)]
         seed: u64,
+        /// Host culture of the generated tree being compared (--tree mode): picks the
+        /// per-culture date forms the layouts record for that culture
+        #[arg(long)]
+        culture: Option<Culture>,
     },
     /// List the built-in scenarios and the licence and audit profiles
     List,
@@ -220,13 +224,14 @@ fn cmd_synth_conformance(
     real: Option<PathBuf>,
     collector: Option<ConformanceCollector>,
     seed: u64,
+    culture: Option<Culture>,
     json: bool,
 ) -> Result<ExitCode> {
     let report = match (tree, real) {
         (Some(dir), None) => {
             let c = collector.context("--collector is required with --tree")?;
             let profile = sparrow_synth::conformance::profile_dir(&dir)?;
-            sparrow_synth::conformance::conform_layouts(&profile, conformance_collector(c))
+            sparrow_synth::conformance::conform_layouts(&profile, conformance_collector(c), culture)
         }
         (None, Some(dir)) => {
             let c = collector.context("--collector is required with --real")?;
@@ -433,7 +438,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 real,
                 collector,
                 seed,
-            }) => cmd_synth_conformance(tree, real, collector, seed, json),
+                culture,
+            }) => cmd_synth_conformance(tree, real, collector, seed, culture, json),
             Some(SynthCommand::List) => cmd_synth_list(json),
         },
     }

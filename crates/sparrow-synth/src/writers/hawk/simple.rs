@@ -179,8 +179,14 @@ fn flat_object(obj: &Map<String, Value>, prefix: &str) -> Flat {
                     .collect();
                 flat.set("ParameterString".into(), Val::Str(joined.join(" | ")));
                 for (n, v) in &pairs {
+                    // `ConvertFrom-Json` turns an ISO-8601 string into a `[DateTime]` and
+                    // `ConvertTo-FlatObject` keeps it typed
+                    // (`Get-SimpleUnifiedAuditLog.ps1`, research hawk layouts §4.2), so the
+                    // value follows the host culture in `Export-Csv` (PS7 only; 5.1 keeps the
+                    // text). A parameter that is a date, not a string, once flattened.
                     let val = match v {
                         Value::Null => Val::Null,
+                        Value::String(s) if iso_time(s).is_some() => json_scalar(v),
                         other => Val::Str(ps_text(other)),
                     };
                     flat.set(format!("Param_{n}"), val);
@@ -385,6 +391,35 @@ mod tests {
         assert_eq!(value(&r, "Tags"), &Val::Str("two".into()));
         assert!(!keys(&r).contains(&"Empty"));
         assert_eq!(value(&r, "Nothing"), &Val::Str("".into()));
+    }
+
+    #[test]
+    fn an_iso_parameter_value_is_kept_typed_like_ps7_convertfrom_json() {
+        let audit = json!({
+            "Id": "x", "Operation": "New-MailboxSearch", "RecordType": 1,
+            "Parameters": [
+                {"Name": "StartTime", "Value": "2026-08-07T00:00:00"},
+                {"Name": "EndTime", "Value": "2026-09-06T12:30:00"},
+                {"Name": "Name", "Value": "Retention review"},
+            ],
+        });
+        let r = flatten(&Vec::new(), audit.as_object().unwrap(), 1);
+        // `ConvertFrom-Json` types the ISO strings as DateTime and the flattener keeps them, so
+        // they are dates rather than the strings every other parameter is.
+        assert!(matches!(value(&r, "Param_StartTime"), Val::DateText(_)));
+        assert!(matches!(value(&r, "Param_EndTime"), Val::DateText(_)));
+        assert_eq!(
+            value(&r, "Param_Name"),
+            &Val::Str("Retention review".into())
+        );
+        // The textual twins keep the raw text.
+        assert_eq!(
+            value(&r, "ParameterString"),
+            &Val::Str(
+                "StartTime=2026-08-07T00:00:00 | EndTime=2026-09-06T12:30:00 | Name=Retention review"
+                    .into()
+            )
+        );
     }
 
     #[test]

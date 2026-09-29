@@ -1,48 +1,70 @@
 use sparrow_synth::conformance::{conform_layouts, conform_real, profile_dir};
 use sparrow_synth::generate::generate_to_dir;
-use sparrow_synth::options::{Collector, GenerateOptions, PsEdition};
+use sparrow_synth::options::{Collector, Culture, GenerateOptions, PsEdition};
 use sparrow_synth::scenario::{builtin_names, load};
+use std::collections::{BTreeMap, BTreeSet};
 
 fn r#gen(
     name: &str,
     c: Collector,
     ps: PsEdition,
 ) -> (tempfile::TempDir, sparrow_synth::manifest::Manifest) {
+    r#gen_culture(name, c, ps, Culture::EnUs)
+}
+
+fn r#gen_culture(
+    name: &str,
+    c: Collector,
+    ps: PsEdition,
+    culture: Culture,
+) -> (tempfile::TempDir, sparrow_synth::manifest::Manifest) {
     let dir = tempfile::tempdir().unwrap();
     let mut o = GenerateOptions::new(c, 5);
     o.ps = ps;
+    o.culture = culture;
     let m = generate_to_dir(&load(name).unwrap(), &o, dir.path()).unwrap();
     (dir, m)
 }
 
 /// Fast representative of the every-scenario matrix below: bec-aitm for every collector and
-/// edition.
+/// edition on en-US, plus the day-first cultures on PS7.
 #[test]
 fn bec_aitm_conforms_to_the_recorded_layouts() {
     for c in Collector::ALL {
-        for ps in [PsEdition::Ps7, PsEdition::Ps51] {
-            let (dir, _) = r#gen("bec-aitm", *c, ps);
+        for (ps, culture) in [
+            (PsEdition::Ps7, Culture::EnUs),
+            (PsEdition::Ps51, Culture::EnUs),
+            (PsEdition::Ps7, Culture::EnGb),
+            (PsEdition::Ps7, Culture::DeDe),
+        ] {
+            let (dir, _) = r#gen_culture("bec-aitm", *c, ps, culture);
             let p = profile_dir(dir.path()).unwrap();
-            let r = conform_layouts(&p, *c);
-            assert!(r.ok, "bec-aitm {c:?} {ps:?}:\n{}", r.to_text());
-            assert!(r.checked > 0, "bec-aitm {c:?} {ps:?}: nothing checked");
+            let r = conform_layouts(&p, *c, Some(culture));
+            assert!(r.ok, "bec-aitm {c:?} {ps:?} {culture:?}:\n{}", r.to_text());
+            assert!(r.checked > 0, "bec-aitm {c:?} {ps:?} {culture:?}: nothing checked");
         }
     }
 }
 
-/// Every built-in scenario (except `volume`) for every collector and edition must match the
-/// recorded layouts.
+/// Every built-in scenario (except `volume`) for every collector, edition and the three host
+/// cultures must match the recorded layouts. A culture picks the per-culture date forms the
+/// layouts record for it (en-GB/de-DE render a CSV date day-first).
 #[test]
 #[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn generated_trees_conform_to_the_recorded_layouts() {
     for name in builtin_names().iter().filter(|n| **n != "volume") {
         for c in Collector::ALL {
             for ps in [PsEdition::Ps7, PsEdition::Ps51] {
-                let (dir, _) = r#gen(name, *c, ps);
-                let p = profile_dir(dir.path()).unwrap();
-                let r = conform_layouts(&p, *c);
-                assert!(r.ok, "{name} {c:?} {ps:?}:\n{}", r.to_text());
-                assert!(r.checked > 0, "{name} {c:?} {ps:?}: nothing checked");
+                for culture in [Culture::EnUs, Culture::EnGb, Culture::DeDe] {
+                    let (dir, _) = r#gen_culture(name, *c, ps, culture);
+                    let p = profile_dir(dir.path()).unwrap();
+                    let r = conform_layouts(&p, *c, Some(culture));
+                    assert!(r.ok, "{name} {c:?} {ps:?} {culture:?}:\n{}", r.to_text());
+                    assert!(
+                        r.checked > 0,
+                        "{name} {c:?} {ps:?} {culture:?}: nothing checked"
+                    );
+                }
             }
         }
     }
@@ -68,6 +90,89 @@ fn hawk3_all_inbox_rules_is_a_single_json_document() {
 }
 
 /// The world now holds a partner remote domain and 3+ eDiscovery role assignments, so the
+/// The raw UAL `CreationDate` DateTime's .NET Kind follows the Exchange Online module build, so
+/// the survey saw both a zone-less ISO rendering (capture B) and `…Z` (the C/D tenant files).
+/// The generator picks one per tree from the seed: two seeds give both forms, and no single tree
+/// ever mixes them inside one file.
+#[test]
+fn ual_creation_date_kind_is_one_choice_per_tree() {
+    // The raw UAL / Simple / investigate file families that carry the column.
+    const PREFIXES: &[&str] = &[
+        "Raw_Authentication_Logs",
+        "Simple_",
+        "eDiscoveryLogs",
+        "_Investigate_",
+        "ExchangeItem_Logs",
+        "User_Changes",
+        "Exchange_UAL_Audit",
+    ];
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for seed in 1..=8u64 {
+        let dir = tempfile::tempdir().unwrap();
+        let o = GenerateOptions::new(Collector::Hawk4, seed);
+        generate_to_dir(&load("bec-aitm").unwrap(), &o, dir.path()).unwrap();
+        let per_file = creation_date_forms(dir.path());
+        assert!(!per_file.is_empty(), "seed {seed}: no raw UAL JSON found");
+        for (file, forms) in &per_file {
+            if !PREFIXES.iter().any(|p| file.starts_with(p)) {
+                continue;
+            }
+            // One form per file: the choice is per tree, never mixed inside a document.
+            let set: BTreeSet<&str> = forms.iter().map(String::as_str).collect();
+            assert!(set.len() <= 1, "seed {seed} {file} mixes {set:?}");
+            for f in set {
+                assert!(
+                    matches!(f, "iso_z" | "iso_nozone" | "culture_mdy"),
+                    "seed {seed} {file}: unexpected CreationDate form {f}"
+                );
+                seen.insert(f.to_string());
+            }
+        }
+    }
+    assert!(
+        seen.contains("iso_z"),
+        "no seed produced the Z form: {seen:?}"
+    );
+    assert!(
+        seen.contains("iso_nozone"),
+        "no seed produced the zone-less form: {seen:?}"
+    );
+}
+
+/// Every generated JSON file's `CreationDate` date form, keyed by file name.
+fn creation_date_forms(path: &std::path::Path) -> BTreeMap<String, BTreeSet<String>> {
+    use sparrow_synth::conformance::classify_date;
+    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "json") {
+                let text = String::from_utf8_lossy(&std::fs::read(&p).unwrap()).to_string();
+                let mut forms = BTreeSet::new();
+                let mut rest = text.as_str();
+                while let Some(i) = rest.find("\"CreationDate\": \"") {
+                    let after = &rest[i + "\"CreationDate\": \"".len()..];
+                    let value = after.split('"').next().unwrap_or("");
+                    if let Some(f) = classify_date(value) {
+                        forms.insert(f.to_string());
+                    }
+                    rest = after;
+                }
+                if !forms.is_empty() {
+                    out.insert(p.file_name().unwrap().to_string_lossy().to_string(), forms);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// generated trees produce arrays for both (the real captures' shape).
 #[test]
 fn generated_remote_domain_and_ediscovery_role_assignments_are_arrays() {

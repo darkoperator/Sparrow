@@ -100,6 +100,13 @@ fn tree_digest(dir: &Path) -> String {
 /// Re-recorded again for Task F6: UserApplications now carries Assignment rows (plus the new
 /// alert/risk fields and service-principal creation dates). The value after F7 was
 /// `02d2ce9d5f67b1e628540af5c6fbcb6755068556ad036b9c9a7048e32b7c9bb7`.
+///
+/// Re-recorded again for Task F8: a user now runs an occasional `New-MailboxSearch`, so the
+/// volume tree gains `ExchangeAdmin` rows and the bytes change. The value after F6 was
+/// `0b121ea0ed6234f4c23375c009d0671c3c08712a224c338e4436cd378320a34c`. The streaming ==
+/// non-streaming equivalence was established at `a900fb1`; re-recording here follows the F6/F7
+/// precedent above, because the pre-streaming reference commit `0477080` predates the F4/F6/F7
+/// world changes and can no longer serve as the byte reference.
 #[test]
 #[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
@@ -110,7 +117,7 @@ fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
     generate_to_dir(&load("volume").unwrap(), &o, dir.path()).unwrap();
     assert_eq!(
         tree_digest(dir.path()),
-        "0b121ea0ed6234f4c23375c009d0671c3c08712a224c338e4436cd378320a34c"
+        "0ce824fc22d5b1de43c5a05de2ba072c39993db7872de9dbc681076f2a7ae9ac"
     );
 }
 

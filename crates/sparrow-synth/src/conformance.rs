@@ -6,7 +6,7 @@
 //! contain `@` or look like an IP) are masked to `<masked>`, and reports print only artifact
 //! ids, masked names, encodings, date forms and counts — never a path, a file name or a value.
 
-use crate::options::Collector;
+use crate::options::{Collector, Culture};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use sparrow_core::discovery::{
@@ -64,9 +64,11 @@ pub struct LayoutDef {
     /// is enforced.
     #[serde(default)]
     pub json_shape_expected: Vec<String>,
-    /// Date form classes seen per column/key.
+    /// Date form classes seen per column/key. A column's value is either the forms observed in
+    /// every culture, or a per-culture map (`any:` plus `en-gb:` / `de-de:` … keys) so a
+    /// culture-specific rendering is only allowed on the culture that produces it.
     #[serde(default)]
-    pub dates: BTreeMap<String, Vec<String>>,
+    pub dates: BTreeMap<String, DateForms>,
     /// True when a `dates` entry is an inference (e.g. a PS 5.1 form the survey only saw on PS7),
     /// not an observation in the tested edition.
     #[serde(default)]
@@ -81,6 +83,48 @@ pub struct LayoutDef {
 struct LayoutsFile {
     version: u32,
     artifacts: Vec<LayoutDef>,
+}
+
+/// One column's recorded date forms. `Plain` applies to every host culture; `PerCulture` keys the
+/// extra forms by culture (`any` is the fallback).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum DateForms {
+    Plain(Vec<String>),
+    PerCulture(BTreeMap<String, Vec<String>>),
+}
+
+impl DateForms {
+    /// The forms allowed on `culture`: the `any` entry plus that culture's own.
+    fn for_culture(&self, culture: Option<crate::options::Culture>) -> BTreeSet<&str> {
+        match self {
+            DateForms::Plain(v) => v.iter().map(String::as_str).collect(),
+            DateForms::PerCulture(m) => {
+                let key = culture.map(culture_key).unwrap_or("any");
+                let mut out: BTreeSet<&str> = m
+                    .get("any")
+                    .into_iter()
+                    .flatten()
+                    .map(String::as_str)
+                    .collect();
+                if key != "any" {
+                    out.extend(m.get(key).into_iter().flatten().map(String::as_str));
+                }
+                out
+            }
+        }
+    }
+}
+
+/// The `layouts.yaml` key for a host culture.
+fn culture_key(c: crate::options::Culture) -> &'static str {
+    use crate::options::Culture::{DeDe, EnGb, EnUs, JaJp};
+    match c {
+        EnUs => "en-us",
+        EnGb => "en-gb",
+        DeDe => "de-de",
+        JaJp => "ja-jp",
+    }
 }
 
 fn layouts() -> &'static [LayoutDef] {
@@ -423,6 +467,12 @@ pub fn classify_date(s: &str) -> Option<&'static str> {
     }
     let upper = t.to_ascii_uppercase();
     let am_pm = upper.ends_with("AM") || upper.ends_with("PM");
+    // de-DE's `dd.MM.yyyy HH:mm:ss` is day-first with dots, so it is its own class: a
+    // dotted 24-hour rendering never comes from an en-US/en-GB `Export-Csv` DateTime.
+    let dotted = t.contains('.') && !t.contains('/');
+    if dotted && t.matches(':').count() >= 2 && am_pm {
+        return Some("culture_dmy_de");
+    }
     let has_slash_or_dot = t.contains('/') || t.contains('.');
     if has_slash_or_dot {
         let colons = t.matches(':').count();
@@ -434,7 +484,11 @@ pub fn classify_date(s: &str) -> Option<&'static str> {
             });
         }
         if colons >= 2 {
-            return Some("culture_dmy");
+            return Some(if dotted {
+                "culture_dmy_de"
+            } else {
+                "culture_dmy"
+            });
         }
         if colons == 1 {
             return Some("short_g");
@@ -444,7 +498,13 @@ pub fn classify_date(s: &str) -> Option<&'static str> {
 }
 
 /// Compare one generated tree's profile with the recorded layouts for `collector`.
-pub fn conform_layouts(profile: &Profile, collector: Collector) -> ConformanceReport {
+/// `culture` is the host culture the tree was generated with; it selects the per-culture date
+/// forms. `None` accepts every recorded culture's forms (the union).
+pub fn conform_layouts(
+    profile: &Profile,
+    collector: Collector,
+    culture: Option<Culture>,
+) -> ConformanceReport {
     let want = collector_str(collector);
     let mut report = ConformanceReport {
         ok: true,
@@ -460,7 +520,7 @@ pub fn conform_layouts(profile: &Profile, collector: Collector) -> ConformanceRe
             continue;
         }
         report.checked += 1;
-        check_artifact(artifact, ap, &defs, &mut report.findings);
+        check_artifact(artifact, ap, &defs, culture, &mut report.findings);
     }
     report.ok = report.findings.is_empty();
     report
@@ -486,6 +546,7 @@ fn check_artifact(
     artifact: &str,
     ap: &ArtifactProfile,
     defs: &[&LayoutDef],
+    culture: Option<Culture>,
     findings: &mut Vec<String>,
 ) {
     let formats: BTreeSet<&str> = defs
@@ -579,11 +640,13 @@ fn check_artifact(
     }
     for def in defs {
         for (column, forms) in &def.dates {
+            let allowed = forms.for_culture(culture);
             if let Some(found) = ap.dates.get(column) {
                 for form in found {
-                    if !forms.iter().any(|f| f == form) {
+                    if !allowed.iter().any(|f| f == form) {
                         findings.push(format!(
-                            "{artifact}: {column} uses the date form {form}, recorded {forms:?}"
+                            "{artifact}: {column} uses the date form {form}, recorded {:?}",
+                            allowed
                         ));
                     }
                 }
@@ -683,7 +746,7 @@ mod tests {
     #[test]
     fn conform_layouts_rejects_a_json_shape_the_source_does_not_allow() {
         let p = profile_with_shape("hawk.tenant.remote_domain", "concatenated");
-        let r = conform_layouts(&p, Collector::Hawk4);
+        let r = conform_layouts(&p, Collector::Hawk4, None);
         assert!(!r.ok, "{}", r.to_text());
         assert!(
             r.findings.iter().any(|f| f.contains("concatenated")),
@@ -698,9 +761,9 @@ mod tests {
     #[test]
     fn conform_layouts_requires_the_array_when_the_count_implies_it() {
         let p = profile_with_shape("hawk.tenant.remote_domain", "array");
-        assert!(conform_layouts(&p, Collector::Hawk4).ok);
+        assert!(conform_layouts(&p, Collector::Hawk4, None).ok);
         let p = profile_with_shape("hawk.tenant.remote_domain", "bare");
-        let r = conform_layouts(&p, Collector::Hawk4);
+        let r = conform_layouts(&p, Collector::Hawk4, None);
         assert!(!r.ok, "{}", r.to_text());
         assert!(
             r.findings.iter().any(|f| f.contains("bare")),
@@ -738,6 +801,21 @@ mod tests {
         let mut p = ArtifactProfile::default();
         p.observe_json(text);
         p
+    }
+
+    /// de-DE renders a CSV `DateTime` day-first with dots (`dd.MM.yyyy HH:mm:ss`), which is its
+    /// own class; an en-GB day-first rendering is slash-separated.
+    #[test]
+    fn the_german_dotted_date_form_is_its_own_class() {
+        assert_eq!(classify_date("06.09.2026 12:00:00"), Some("culture_dmy_de"));
+        assert_eq!(
+            classify_date("06.09.2026 12:00:00 PM"),
+            Some("culture_dmy_de")
+        );
+        assert_eq!(classify_date("06/09/2026 12:00:00"), Some("culture_dmy"));
+        assert_eq!(classify_date("9/6/2026 12:00:00 PM"), Some("culture_mdy"));
+        // A `1.2.3`-style version is not a date in either culture.
+        assert_eq!(classify_date("1.2.3"), None);
     }
 
     /// Free-text columns whose values merely contain a slash/dot and one colon must not be

@@ -1002,7 +1002,7 @@ pub(super) fn ual_signins(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Res
         );
         let n = found.len();
         raw.extend(found.iter().enumerate().map(|(i, x)| {
-            raw_row(x, i, n, nl)
+            raw_row(x, i, n, nl, c.ual_creation_kind)
                 .into_iter()
                 .filter(|(k, _)| metadata || k != "AuditSearchRequestMetadata")
                 .collect::<Row>()
@@ -1314,7 +1314,7 @@ fn gated(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User, step: &Gated) -> Result
         } else {
             c.omft.created(&upn);
             let nl = c.omft.host.newline;
-            let raw = super::raw_rows(&found, nl);
+            let raw = super::raw_rows(&found, nl, c.ual_creation_kind);
             let label = format!("{upn}/Simple_{}_{upn}", step.prefix);
             let simple = simple_rows(world, &raw, &found, &label);
             let expanded: Vec<Row> = found.iter().map(expanded_row).collect();

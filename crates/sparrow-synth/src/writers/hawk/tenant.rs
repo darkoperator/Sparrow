@@ -971,7 +971,7 @@ pub(super) fn simple_and_raw(
     notice: bool,
 ) -> Result<Vec<Row>> {
     let nl = c.omft.host.newline;
-    let raw = raw_rows(records, nl);
+    let raw = raw_rows(records, nl, c.ual_creation_kind);
     let label = format!("{}/{simple_prefix}", user.unwrap_or("Tenant"));
     let simple = simple_rows(c.world, &raw, records, &label);
     let (simple_art, raw_art) = match user {
@@ -1359,7 +1359,7 @@ fn domain_activity(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         let n = found.len();
         for (i, u) in found.iter().enumerate() {
             let one = std::slice::from_ref(u);
-            let raw = vec![super::raw_row(u, i, n, nl)];
+            let raw = vec![super::raw_row(u, i, n, nl, c.ual_creation_kind)];
             let w = c.omft.write(
                 tree,
                 "Domain_Changes_Audit",
