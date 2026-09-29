@@ -1,8 +1,52 @@
-use sparrow_synth::conformance::{conform_layouts, conform_real, profile_dir};
+use sparrow_synth::conformance::{
+    conform_layouts, conform_real, profile_dir, recorded_culture_forms,
+};
 use sparrow_synth::generate::generate_to_dir;
 use sparrow_synth::options::{Collector, Culture, GenerateOptions, PsEdition};
 use sparrow_synth::scenario::{builtin_names, load};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// Every per-culture date form the layouts record must really be produced by the generator:
+/// a per-culture key is a claim that the writer renders that column in the host culture, so a
+/// column the writer emits as fixed service text (a literal ISO string) must carry none. This
+/// catches a layouts entry that grants a form no tree ever shows.
+#[test]
+fn no_dead_culture_forms_are_recorded() {
+    let claims = recorded_culture_forms();
+    assert!(!claims.is_empty(), "no per-culture forms recorded at all");
+    // (artifact, column, culture) -> the forms the generated matrix actually shows.
+    let mut seen: BTreeMap<(String, String, String), BTreeSet<String>> = BTreeMap::new();
+    for name in builtin_names().iter().filter(|n| **n != "volume") {
+        for c in Collector::ALL {
+            for ps in [PsEdition::Ps7, PsEdition::Ps51] {
+                for culture in [Culture::EnUs, Culture::EnGb, Culture::DeDe] {
+                    let dir = tempfile::tempdir().unwrap();
+                    let mut o = GenerateOptions::new(*c, 5);
+                    o.ps = ps;
+                    o.culture = culture;
+                    generate_to_dir(&load(name).unwrap(), &o, dir.path()).unwrap();
+                    for (art, ap) in &profile_dir(dir.path()).unwrap().artifacts {
+                        for (col, forms) in &ap.dates {
+                            seen.entry((art.clone(), col.clone(), format!("{culture:?}")))
+                                .or_default()
+                                .extend(forms.iter().cloned());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let dead: Vec<String> = claims
+        .iter()
+        .filter(|(art, col, culture, form)| {
+            !seen
+                .get(&(art.clone(), col.clone(), format!("{culture:?}")))
+                .is_some_and(|fs| fs.contains(form))
+        })
+        .map(|(art, col, culture, form)| format!("{art} {col} {culture:?} {form}"))
+        .collect();
+    assert!(dead.is_empty(), "recorded but never generated: {dead:#?}");
+}
 
 fn r#gen(
     name: &str,

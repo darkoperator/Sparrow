@@ -274,6 +274,46 @@ fn allowed_json_shapes(artifact: &str) -> BTreeSet<&'static str> {
         .collect()
 }
 
+/// Every per-culture date form `layouts.yaml` records, as (artifact, column, culture, form).
+///
+/// A per-culture form is a claim that the writer renders that column in the host culture, so
+/// a generated tree must actually show it; `no_dead_culture_forms_are_recorded` proves that
+/// over the whole matrix. Only columns whose value is a `host.culture_date` / `Export-Csv`
+/// typed date may carry one.
+pub fn recorded_culture_forms() -> Vec<(String, String, Culture, String)> {
+    let mut out = Vec::new();
+    for d in layouts() {
+        for (column, forms) in &d.dates {
+            if let DateForms::PerCulture(by) = forms {
+                for (culture, list) in by {
+                    if culture == "any" {
+                        continue;
+                    }
+                    let Some(c) = culture_from_key(culture) else {
+                        continue;
+                    };
+                    for form in list {
+                        out.push((d.artifact.clone(), column.clone(), c, form.clone()));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The `layouts.yaml` culture key -> [`Culture`].
+fn culture_from_key(key: &str) -> Option<Culture> {
+    use crate::options::Culture::{DeDe, EnGb, EnUs, JaJp};
+    match key {
+        "en-us" => Some(EnUs),
+        "en-gb" => Some(EnGb),
+        "de-de" => Some(DeDe),
+        "ja-jp" => Some(JaJp),
+        _ => None,
+    }
+}
+
 /// Profile every collection found under `path` (structure only).
 pub fn profile_dir(path: &Path) -> Result<Profile> {
     let mut profile = Profile::default();

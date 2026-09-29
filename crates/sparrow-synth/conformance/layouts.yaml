@@ -212,10 +212,10 @@ artifacts:
     columns:
       - [RecordId, CreationDate, RecordType, Operation, UserId, AuditData, AssociatedAdminUnits, AssociatedAdminUnitsNames]
     dates:
+      # A fixed ISO-8601 service string (`iso7`, writers/portal.rs:177), so the host culture
+      # does not apply: no per-culture keys. `culture_mdy` is capture A's rendering.
       CreationDate:
         any: [culture_mdy, iso_z]
-        en-gb: [culture_dmy]
-        de-de: [culture_dmy_de]
     embedded_json: {AuditData: [CreationTime, Id, Operation, OrganizationId, RecordType, UserId, Workload]}
   - artifact: portal.entra_signins
     collector: portal
@@ -264,8 +264,6 @@ artifacts:
         de-de: [culture_dmy_de]
       UserStateChangedOn:
         any: [iso_z]
-        en-gb: [culture_dmy]
-        de-de: [culture_dmy_de]
   - artifact: hawk.tenant.azuread_admins
     collector: hawk
     source: hawk survey §2b (Hawk 3 AzureADAdministrators)
