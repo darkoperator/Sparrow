@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 /// Lists live under `lists/`; rules are `SPW-*.yaml` anywhere else. `coverage.yaml` and the
 /// editor schema are therefore skipped.
-fn embedded(p: &Path) -> bool {
+fn embedded(root: &Path, p: &Path) -> bool {
     if p.extension().and_then(|e| e.to_str()) != Some("yaml") {
         return false;
     }
@@ -20,15 +20,22 @@ fn embedded(p: &Path) -> bool {
         .file_name()
         .and_then(|n| n.to_str())
         .is_some_and(|n| n.starts_with("SPW-"));
-    lists || rule
+    // Built-in rules live only in the category folders (not schema/, not a stray draft folder).
+    let category = p
+        .strip_prefix(root)
+        .ok()
+        .and_then(|r| r.components().next())
+        .and_then(|c| c.as_os_str().to_str())
+        .is_some_and(|c| ["mail", "identity", "apps", "files", "config", "hawk"].contains(&c));
+    lists || (rule && category)
 }
 
-fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
+fn collect(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
     for e in fs::read_dir(dir).unwrap() {
         let p = e.unwrap().path();
         if p.is_dir() {
-            collect(&p, out);
-        } else if embedded(&p) {
+            collect(root, &p, out);
+        } else if embedded(root, &p) {
             out.push(p);
         }
     }
@@ -38,7 +45,7 @@ fn main() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../rules");
     println!("cargo:rerun-if-changed={}", root.display());
     let mut files = Vec::new();
-    collect(&root, &mut files);
+    collect(&root, &root, &mut files);
     files.sort();
     let (mut rules, mut lists) = (String::new(), String::new());
     for p in &files {

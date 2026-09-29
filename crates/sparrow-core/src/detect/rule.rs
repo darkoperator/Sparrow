@@ -87,13 +87,84 @@ pub struct SourceMatch {
 }
 
 /// `all` / `any` / `not`, or one `field: {op: value}` leaf (a single-key map).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Deserialization is strict: a leaf has exactly one field and one operator, `all` / `any` / `not`
+/// stand alone, and every other shape is an error naming the path (`match.all[2].f: ...`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Cond {
     All { all: Vec<Cond> },
     Any { any: Vec<Cond> },
     Not { not: Box<Cond> },
     Leaf(BTreeMap<String, BTreeMap<Op, serde_json::Value>>),
+}
+
+impl<'de> Deserialize<'de> for Cond {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let v = serde_json::Value::deserialize(d)?;
+        Cond::from_json(&v, "match").map_err(serde::de::Error::custom)
+    }
+}
+
+impl Cond {
+    /// Parse a condition from a JSON value; `path` prefixes every error (`match`, `match.all[2]`).
+    pub fn from_json(v: &serde_json::Value, path: &str) -> Result<Cond, String> {
+        let Some(map) = v.as_object() else {
+            return Err(format!("{path}: a condition must be a map"));
+        };
+        let combinator = ["all", "any", "not"]
+            .into_iter()
+            .find(|k| map.contains_key(*k));
+        if let Some(key) = combinator {
+            if map.len() != 1 {
+                return Err(format!(
+                    "{path}: all/any/not cannot be combined with other keys"
+                ));
+            }
+            let inner = &map[key];
+            if key == "not" {
+                let c = Cond::from_json(inner, &format!("{path}.not"))?;
+                return Ok(Cond::Not { not: Box::new(c) });
+            }
+            let Some(items) = inner.as_array() else {
+                return Err(format!("{path}.{key}: expected a list of conditions"));
+            };
+            let conds = items
+                .iter()
+                .enumerate()
+                .map(|(i, c)| Cond::from_json(c, &format!("{path}.{key}[{i}]")))
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok(if key == "all" {
+                Cond::All { all: conds }
+            } else {
+                Cond::Any { any: conds }
+            });
+        }
+        if map.len() != 1 {
+            return Err(format!(
+                "{path}: a leaf has exactly one field, found {}",
+                map.len()
+            ));
+        }
+        let (field, ops) = map.iter().next().expect("one entry");
+        let fpath = format!("{path}.{field}");
+        let Some(ops) = ops.as_object() else {
+            return Err(format!("{fpath}: expected an {{operator: value}} map"));
+        };
+        if ops.len() != 1 {
+            return Err(format!(
+                "{fpath}: a leaf has exactly one operator, found {}",
+                ops.len()
+            ));
+        }
+        let (name, value) = ops.iter().next().expect("one entry");
+        let op: Op = serde_json::from_value(serde_json::Value::String(name.clone()))
+            .map_err(|_| format!("{fpath}: unknown operator {name:?}"))?;
+        Ok(Cond::Leaf(BTreeMap::from([(
+            field.clone(),
+            BTreeMap::from([(op, value.clone())]),
+        )])))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
