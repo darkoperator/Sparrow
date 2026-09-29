@@ -179,6 +179,29 @@ pub fn work_window(w: &World, user: &User, date: NaiveDate) -> (DateTime<Utc>, D
     }
 }
 
+/// The day of the window on which the tenant's role assignments are created: the `i`-th
+/// weekday of the window, for the `i`-th built-in role assignment.
+///
+/// A real tenant creates each assignment once - the cmdlet fails on a duplicate - so each
+/// identity gets exactly one day, a pure function of its index. That keeps it independent of
+/// the order the days are generated in (and of any cross-day state), and a 90-day window
+/// yields one record per built-in role assignment, inside the survey's 1-35 records per file
+/// (2026-09-24-hawk-capture-survey.md:59).
+fn role_assignment_day(w: &World, i: usize) -> NaiveDate {
+    let start = w.window_start().date_naive();
+    let mut d = start;
+    let mut seen = 0usize;
+    loop {
+        if !is_weekend(d) {
+            if seen == i {
+                return d;
+            }
+            seen += 1;
+        }
+        d += Duration::days(1);
+    }
+}
+
 /// A whole-second time in `[a, b)` (`a` when the range is empty).
 fn rand_time(rng: &mut Rng, a: DateTime<Utc>, b: DateTime<Utc>) -> DateTime<Utc> {
     let span = (b - a).num_seconds();
@@ -777,42 +800,6 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
             }
         }
 
-        // A tenant admin assigns one of the built-in eDiscovery roles. This is the RBAC cmdlet
-        // the real Hawk 3.1 captures record in `Tenant/RBAC_Changes`
-        // (`Get-HawkTenantRbacChange.ps1:51-68` lists the 16 RBAC cmdlets; survey:59 records
-        // `New-ManagementRoleAssignment` there), and the 17-column Search-AdminAuditLog file is
-        // the only 17-column shape the `hawk.tenant.raw_ual` artifact ever carries. One
-        // assignment per built-in role assignment in the world, so the cmdlet, the
-        // `EDiscoveryRoleAssignments` state and the RBAC log always agree. Neither rule
-        // SPW-ID-010 nor SPW-HAWK-001 reads RBAC cmdlets, so this is detection-neutral.
-        if user.is_admin
-            && !is_weekend(date)
-            && urng.chance(0.1)
-            && !w.exchange_role_assignments.is_empty()
-        {
-            let t = rand_time(&mut urng, plan.login, plan.end);
-            if ual_logged(w, t) && w.audit.admin_audit_log_enabled {
-                let assign = urng.pick(&w.exchange_role_assignments);
-                let identity = format!("{}-{}", assign.role, assign.group);
-                ual_out.push(ual::exchange_admin(
-                    w,
-                    &mut urng,
-                    user,
-                    t,
-                    "New-ManagementRoleAssignment",
-                    &identity,
-                    &[
-                        ("Name", identity.as_str()),
-                        ("Role", assign.role.as_str()),
-                        ("RoleGroup", assign.group.as_str()),
-                        ("AssignmentMethod", "Direct"),
-                    ],
-                    ip,
-                    session,
-                ));
-            }
-        }
-
         // A user switches their out-of-office off after leave. OWA sends the whole
         // configuration, so the record carries the old window as `StartTime`/`EndTime`
         // (survey:123 records those two `Param_` columns of the real captures). The state is
@@ -840,6 +827,52 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
                         ("ExternalAudience", "None"),
                     ],
                     ip,
+                    session,
+                ));
+            }
+        }
+    }
+
+    // A tenant admin creates the built-in eDiscovery role assignments, one per identity on
+    // its own day. A real tenant cannot create the same assignment twice - the cmdlet fails on
+    // a duplicate - so each identity is created at most once per tree; the day is a pure
+    // function of the identity's index, so this holds whatever order the days are generated
+    // in and needs no cross-day state. This is the RBAC cmdlet the real Hawk 3.1 captures
+    // record in `Tenant/RBAC_Changes` (`Get-HawkTenantRbacChange.ps1:51-68` lists the 16 RBAC
+    // cmdlets, :96-99 writes them; survey:59 records `New-ManagementRoleAssignment` there),
+    // and that 17-column Search-AdminAuditLog file is the only 17-column shape the
+    // `hawk.tenant.raw_ual` artifact ever carries. One record per built-in role assignment
+    // keeps the cmdlet, the `EDiscoveryRoleAssignments` state and the RBAC log in agreement,
+    // and lands inside the survey's 1-35 records per file. Neither SPW-ID-010 nor
+    // SPW-HAWK-001 reads RBAC cmdlets, so this is detection-neutral.
+    if !w.exchange_role_assignments.is_empty()
+        && !is_weekend(date)
+        && w.audit.admin_audit_log_enabled
+        && let Some(admin) = w.admins.first()
+    {
+        for (i, assign) in w.exchange_role_assignments.iter().enumerate() {
+            if role_assignment_day(w, i) != date {
+                continue;
+            }
+            let mut rng = stream(w.seed, &format!("rbac/{}/{i}", assign.group));
+            let t = day_start(date) + Duration::hours(9) + Duration::minutes(rng.below(180) as i64);
+            let session = rng.uuid();
+            if ual_logged(w, t) {
+                let identity = format!("{}-{}", assign.role, assign.group);
+                ual_out.push(ual::exchange_admin(
+                    w,
+                    &mut rng,
+                    admin,
+                    t,
+                    "New-ManagementRoleAssignment",
+                    &identity,
+                    &[
+                        ("Name", identity.as_str()),
+                        ("Role", assign.role.as_str()),
+                        ("RoleGroup", assign.group.as_str()),
+                        ("AssignmentMethod", "Direct"),
+                    ],
+                    admin.office_ip,
                     session,
                 ));
             }

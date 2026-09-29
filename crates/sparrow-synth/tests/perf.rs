@@ -123,6 +123,11 @@ fn tree_digest(dir: &Path) -> String {
 /// Re-recorded again for Task F9: the internal mail now holds one subject with a non-ASCII
 /// character ("Re: Café supplies"), so the UAL and message-trace rows of the volume tree change
 /// with it.
+///
+/// Re-recorded again for the F3 fix: each role assignment is now created once on its own
+/// day instead of re-issued at random, so the volume tree's `ExchangeAdmin` rows differ. The
+/// value after the F3 commit was
+/// `34ecc6540381e3acc3d0bdacf5ff461587d1f60e331d950f2e02d20a104fe815`.
 #[test]
 #[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
@@ -133,7 +138,7 @@ fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
     generate_to_dir(&load("volume").unwrap(), &o, dir.path()).unwrap();
     assert_eq!(
         tree_digest(dir.path()),
-        "34ecc6540381e3acc3d0bdacf5ff461587d1f60e331d950f2e02d20a104fe815"
+        "8c46a8aba1ed0cafd2abfa66b73fc2d9e8451d5ad475264b8158e0620afb47aa"
     );
 }
 

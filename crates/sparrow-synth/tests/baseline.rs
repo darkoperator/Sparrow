@@ -337,3 +337,43 @@ fn sts_logon_session_properties_are_typed_like_the_real_records() {
         kept_yes + kept_no
     );
 }
+
+/// A real tenant cannot create the same role assignment twice: the cmdlet fails on a
+/// duplicate, so a tree must not log the same identity twice. Each of the world's built-in
+/// role assignments is created at most once per tree.
+#[test]
+fn each_role_assignment_is_created_at_most_once() {
+    for name in sparrow_synth::scenario::builtin_names()
+        .iter()
+        .filter(|n| **n != "volume")
+    {
+        for seed in [1u64, 7, 42] {
+            let world = World::build(&load(name).unwrap(), seed).unwrap();
+            let mut d = world.window_start().date_naive();
+            let mut seen: BTreeMap<String, NaiveDate> = BTreeMap::new();
+            let mut total = 0usize;
+            while d < world.window_end().date_naive() {
+                for u in &day(&world, d).ual {
+                    if u.operation != "New-ManagementRoleAssignment" {
+                        continue;
+                    }
+                    total += 1;
+                    let identity = u.audit["ObjectId"].as_str().unwrap_or_default().to_string();
+                    assert!(
+                        seen.insert(identity.clone(), d).is_none(),
+                        "{name} seed {seed}: {identity} created twice ({:?} and {d})",
+                        seen.get(&identity)
+                    );
+                }
+                d += Duration::days(1);
+            }
+            // Not vacuous: the event really is emitted, and never more than once per identity.
+            assert!(total > 0, "{name} seed {seed}: no role assignment at all");
+            assert!(
+                total <= world.exchange_role_assignments.len(),
+                "{name} seed {seed}: {total} records for {} assignments",
+                world.exchange_role_assignments.len()
+            );
+        }
+    }
+}
