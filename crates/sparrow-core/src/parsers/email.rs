@@ -555,37 +555,105 @@ fn csv_headers(text: &str) -> Vec<Header> {
         .collect()
 }
 
-/// The (`record_key`, original-case `message_id`) of the `email_artifacts` row loaded from the
-/// sibling `Message_Header_<f>.csv` of THIS collection, when that header file was ingested
-/// before this findings file. Resolved from the DB (`record_sources`), never by reading another
-/// file.
-fn sibling_header_row(ctx: &ParseContext<'_>) -> Option<(String, String)> {
-    let (dir, file) = ctx.rel_path.rsplit_once('/')?;
-    let header_file = file.replacen("Message_Header_Findings_", "Message_Header_", 1);
-    if header_file == file {
-        return None;
-    }
-    let sibling = format!("{dir}/{header_file}");
-    ctx.conn
-        .query_row(
-            "SELECT ea.record_key, ea.message_id
-             FROM email_artifacts ea
-             JOIN record_sources rs ON rs.table_name = 'email_artifacts' AND rs.record_key = ea.record_key
-             JOIN source_files sf ON sf.file_id = rs.file_id
-             WHERE ea.collection_id = ? AND sf.collection_id = ? AND sf.rel_path = ?
-               AND ea.message_id IS NOT NULL
-             ORDER BY rs.file_id LIMIT 1",
-            duckdb::params![ctx.collection_id, ctx.collection_id, sibling],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-        )
-        .ok()
+/// How a findings file's sibling header was resolved from the database.
+enum SiblingHeader {
+    /// The key and original-case Message-ID of the sibling header's `email_artifacts` row.
+    Found {
+        key: String,
+        message_id: Option<String>,
+    },
+    /// Why the sibling could not be resolved; the findings file falls back to `hawk|<subject>`.
+    Unresolved(String),
 }
 
-/// The header file name a findings file expects, for the missing-sibling warning.
-fn sibling_name(ctx: &ParseContext<'_>) -> Option<String> {
-    let (_, file) = ctx.rel_path.rsplit_once('/')?;
+/// A `source_files` row's `(file_id, status, sha256, artifact_type, subject)`.
+type SiblingFileRow = (i64, String, String, Option<String>, Option<String>);
+
+/// The sibling `Message_Header_<f>.csv` of a findings file: its path and its file name.
+fn sibling_parts(ctx: &ParseContext<'_>) -> Option<(String, String)> {
+    let (dir, file) = ctx.rel_path.rsplit_once('/')?;
     let header_file = file.replacen("Message_Header_Findings_", "Message_Header_", 1);
-    (header_file != file).then_some(header_file)
+    (header_file != file).then(|| (format!("{dir}/{header_file}"), header_file))
+}
+
+/// The (`record_key`, original-case `message_id`) of the `email_artifacts` row loaded from the
+/// sibling `Message_Header_<f>.csv` of THIS collection. Resolved from `source_files` /
+/// `record_sources`, never by reading another file. The collection's current version of the
+/// sibling wins (the row its latest ingest left); a `duplicate_file` version follows the parsed
+/// copy it duplicates, so a byte-identical header in a second collection still resolves.
+fn sibling_header_row(ctx: &ParseContext<'_>) -> SiblingHeader {
+    let Some((sibling, file)) = sibling_parts(ctx) else {
+        return SiblingHeader::Unresolved(
+            "the findings file is not named Message_Header_Findings_<file>.csv".into(),
+        );
+    };
+    let current: Option<SiblingFileRow> = ctx
+        .conn
+        .query_row(
+            "SELECT file_id, status, sha256, artifact_type, subject
+             FROM source_files
+             WHERE collection_id = ? AND rel_path = ?
+             ORDER BY file_id DESC LIMIT 1",
+            duckdb::params![ctx.collection_id, sibling],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .ok();
+    let Some((file_id, status, sha, artifact, subject)) = current else {
+        return SiblingHeader::Unresolved(format!("no ingested {file} in this folder"));
+    };
+    let file_id = if status == "duplicate_file" {
+        let twin: Option<i64> = ctx
+            .conn
+            .query_row(
+                "SELECT file_id FROM source_files
+                 WHERE sha256 = ? AND status = 'parsed'
+                   AND artifact_type IS NOT DISTINCT FROM ?
+                   AND lower(coalesce(subject, '')) = lower(coalesce(?, ''))
+                 ORDER BY file_id LIMIT 1",
+                duckdb::params![sha, artifact, subject],
+                |r| r.get(0),
+            )
+            .ok();
+        match twin {
+            Some(id) => id,
+            None => {
+                return SiblingHeader::Unresolved(format!(
+                    "the ingested {file} is a duplicate with no parsed copy"
+                ));
+            }
+        }
+    } else if status == "parsed" {
+        file_id
+    } else {
+        return SiblingHeader::Unresolved(format!(
+            "the ingested {file} was not parsed (status {status})"
+        ));
+    };
+    let key: Option<String> = ctx
+        .conn
+        .query_row(
+            "SELECT record_key FROM record_sources
+             WHERE table_name = 'email_artifacts' AND file_id = ?
+             ORDER BY record_ordinal LIMIT 1",
+            duckdb::params![file_id],
+            |r| r.get(0),
+        )
+        .ok();
+    let Some(key) = key else {
+        return SiblingHeader::Unresolved(format!(
+            "the ingested {file} loaded no email_artifacts row"
+        ));
+    };
+    let message_id: Option<String> = ctx
+        .conn
+        .query_row(
+            "SELECT message_id FROM email_artifacts WHERE record_key = ? LIMIT 1",
+            duckdb::params![key],
+            |r| r.get(0),
+        )
+        .ok()
+        .flatten();
+    SiblingHeader::Found { key, message_id }
 }
 
 /// `Message_Header_<f>.csv`: one `email_artifacts` row built from all `Header, Value` rows.
@@ -680,12 +748,10 @@ impl ArtifactParser for HawkFindingsParser {
         let subject = ctx.subject.unwrap_or_default().to_string();
         let findings = parse_findings(text);
         let (key, message_id, sibling_found) = match sibling_header_row(ctx) {
-            Some((key, message_id)) => (key, Some(message_id), true),
-            None => {
-                let missing =
-                    sibling_name(ctx).unwrap_or_else(|| "Message_Header_<file>.csv".into());
+            SiblingHeader::Found { key, message_id } => (key, message_id, true),
+            SiblingHeader::Unresolved(why) => {
                 ctx.warn(format!(
-                    "no ingested {missing} in this folder; keying the findings as hawk|{}",
+                    "{why}; keying the findings as hawk|{}",
                     subject.to_lowercase()
                 ));
                 (format!("hawk|{}", subject.to_lowercase()), None, false)

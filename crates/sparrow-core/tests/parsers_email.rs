@@ -242,3 +242,250 @@ fn header_parses_before_findings_whatever_the_names_sort_as() {
         );
     }
 }
+
+/// A Hawk root under `parent` named `name`, with `Tenant/OrgConfig.txt` and `files`.
+fn write_hawk_root(parent: &Path, name: &str, files: &[(&str, String)]) -> std::path::PathBuf {
+    let root = parent.join(name);
+    fixtures::write(&root, "Tenant/OrgConfig.txt", b"AuditDisabled : False\r\n");
+    for (rel, body) in files {
+        fixtures::write(&root, rel, body.as_bytes());
+    }
+    root
+}
+
+fn ingest_dir(case: &mut Case, dir: &Path) {
+    let report = ingest_path(
+        case,
+        dir,
+        &ParserRegistry::builtin(),
+        &IngestOptions::default(),
+    )
+    .unwrap();
+    assert!(!report.has_errors(), "{report:#?}");
+}
+
+/// The standard findings plus one marker rule, to tell two findings files apart.
+fn findings_csv_marker(marker: &str) -> String {
+    [
+        csv_line(&["Rule", "Value", "Conclusion", "More Information"]),
+        csv_line(&["P1 P2 Match", "a; b", "P1 and P2 Header match", ""]),
+        csv_line(&[marker, "x", "y", "z"]),
+    ]
+    .concat()
+}
+
+/// Both files changed: the new findings must follow the current (new) header, not the oldest
+/// version of the sibling header.
+#[test]
+fn re_ingest_of_changed_header_and_findings_uses_the_new_message_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = write_hawk_root(
+        dir.path(),
+        "Hawk_Test_20260101_000000",
+        &[
+            (
+                "invoice.msg/Message_Header_invoice.msg.csv",
+                header_csv("<first@contoso.example>"),
+            ),
+            (
+                "invoice.msg/Message_Header_Findings_invoice.msg.csv",
+                findings_csv_marker("marker-first"),
+            ),
+        ],
+    );
+    let mut case = Case::in_memory().unwrap();
+    ingest_dir(&mut case, dir.path());
+    assert_eq!(count(&case, "SELECT count(*) FROM email_artifacts"), 1);
+
+    fixtures::write(
+        &root,
+        "invoice.msg/Message_Header_invoice.msg.csv",
+        header_csv("<second@contoso.example>").as_bytes(),
+    );
+    fixtures::write(
+        &root,
+        "invoice.msg/Message_Header_Findings_invoice.msg.csv",
+        findings_csv_marker("marker-second").as_bytes(),
+    );
+    ingest_dir(&mut case, dir.path());
+
+    assert_eq!(
+        text(
+            &case,
+            "SELECT record_key FROM email_artifacts WHERE CAST(findings AS VARCHAR) LIKE '%marker-second%'"
+        ),
+        "second@contoso.example"
+    );
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM email_artifacts WHERE record_key = 'first@contoso.example' AND CAST(findings AS VARCHAR) LIKE '%marker-second%'"
+        ),
+        0
+    );
+}
+
+/// A byte-identical header in a second collection is `duplicate_file` with no `record_sources`
+/// row: the findings must still key by the parsed twin's Message-ID, not fall back.
+#[test]
+fn byte_identical_header_in_a_second_collection_keeps_findings_keyed_by_message_id() {
+    let dir = tempfile::tempdir().unwrap();
+    write_hawk_root(
+        dir.path(),
+        "Hawk_Old_20260101_000000",
+        &[
+            (
+                "invoice.msg/Message_Header_invoice.msg.csv",
+                header_csv("<shared@contoso.example>"),
+            ),
+            (
+                "invoice.msg/Message_Header_Findings_invoice.msg.csv",
+                findings_csv(),
+            ),
+        ],
+    );
+    let newer = write_hawk_root(
+        dir.path(),
+        "Hawk_New_20260201_000000",
+        &[
+            (
+                "invoice.msg/Message_Header_invoice.msg.csv",
+                header_csv("<shared@contoso.example>"),
+            ),
+            (
+                "invoice.msg/Message_Header_Findings_invoice.msg.csv",
+                findings_csv_marker("marker-new"),
+            ),
+        ],
+    );
+    let mut case = Case::in_memory().unwrap();
+    ingest_dir(
+        &mut case,
+        dir.path().join("Hawk_Old_20260101_000000").as_path(),
+    );
+    ingest_dir(&mut case, &newer);
+
+    assert_eq!(count(&case, "SELECT count(*) FROM email_artifacts"), 1);
+    assert_eq!(
+        text(&case, "SELECT record_key FROM email_artifacts"),
+        "shared@contoso.example"
+    );
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM email_artifacts WHERE record_key LIKE 'hawk|%'"
+        ),
+        0
+    );
+}
+
+/// Re-ingesting the older collection after a newer one owns the merged row must still find its
+/// own (parsed) header rather than testing `email_artifacts.collection_id`.
+#[test]
+fn re_ingesting_an_older_collection_finds_its_header_after_a_newer_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let older = write_hawk_root(
+        dir.path(),
+        "Hawk_Old_20260101_000000",
+        &[
+            (
+                "invoice.msg/Message_Header_invoice.msg.csv",
+                header_csv("<shared@contoso.example>"),
+            ),
+            (
+                "invoice.msg/Message_Header_Findings_invoice.msg.csv",
+                findings_csv(),
+            ),
+        ],
+    );
+    let newer = write_hawk_root(
+        dir.path(),
+        "Hawk_New_20260201_000000",
+        &[
+            (
+                "invoice.msg/Message_Header_invoice.msg.csv",
+                header_csv("<shared@contoso.example>"),
+            ),
+            (
+                "invoice.msg/Message_Header_Findings_invoice.msg.csv",
+                findings_csv_marker("marker-new"),
+            ),
+        ],
+    );
+    let mut case = Case::in_memory().unwrap();
+    ingest_dir(&mut case, &older);
+    ingest_dir(&mut case, &newer);
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM email_artifacts WHERE record_key LIKE 'hawk|%'"
+        ),
+        0
+    );
+
+    // The older collection's findings change; re-ingest the older collection after the newer.
+    fixtures::write(
+        &older,
+        "invoice.msg/Message_Header_Findings_invoice.msg.csv",
+        findings_csv_marker("marker-old-2").as_bytes(),
+    );
+    ingest_dir(&mut case, &older);
+    assert_eq!(count(&case, "SELECT count(*) FROM email_artifacts"), 1);
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM email_artifacts WHERE record_key LIKE 'hawk|%'"
+        ),
+        0
+    );
+    // The older header, both older findings versions and the newer findings all cite the row.
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM record_sources WHERE record_key = 'shared@contoso.example'"
+        ),
+        4
+    );
+}
+
+/// A sibling header that failed to ingest falls back to `hawk|<subject>` with a warning that
+/// names the failure.
+#[test]
+fn findings_fall_back_when_the_sibling_header_failed() {
+    let dir = tempfile::tempdir().unwrap();
+    write_hawk_root(
+        dir.path(),
+        "Hawk_Test_20260101_000000",
+        &[
+            (
+                "invoice.msg/Message_Header_invoice.msg.csv",
+                header_csv("<abc@contoso.example>") + &"x".repeat(4096),
+            ),
+            (
+                "invoice.msg/Message_Header_Findings_invoice.msg.csv",
+                findings_csv(),
+            ),
+        ],
+    );
+    let mut case = Case::in_memory().unwrap();
+    let report = ingest_path(
+        &mut case,
+        dir.path(),
+        &ParserRegistry::builtin(),
+        &IngestOptions {
+            date_order: None,
+            max_file_bytes: 1024,
+        },
+    )
+    .unwrap();
+    assert!(report.has_errors(), "{report:#?}");
+    assert_eq!(
+        text(&case, "SELECT record_key FROM email_artifacts"),
+        "hawk|invoice.msg"
+    );
+    let warnings = text(
+        &case,
+        "SELECT CAST(warnings AS VARCHAR) FROM source_files WHERE artifact_type = 'hawk.message.header_findings'",
+    );
+    assert!(warnings.contains("was not parsed"), "{warnings}");
+}
