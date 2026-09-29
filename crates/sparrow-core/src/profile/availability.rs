@@ -857,8 +857,25 @@ pub fn compute(conn: &Connection, as_of: DateTime<Utc>) -> Result<Vec<Availabili
         .collect();
 
     let mut evidence_facts: Vec<HashMap<String, Facts>> = Vec::with_capacity(EVIDENCE.len());
+    // The four UAL-backed evidence sources (ual, mail_items_accessed, mail_send,
+    // search_queries) are computed in one grouped scan instead of one `facts_sql` each; their
+    // truncation flags come from one `record_sources` join.
+    let mut ual_facts = load_ual_evidence_facts(conn)?;
+    let ual_trunc = load_ual_evidence_truncated(conn)?;
     for def in EVIDENCE {
-        evidence_facts.push(load_facts(conn, def)?);
+        if let Some(pre) = ual_facts.remove(def.id) {
+            let mut m = pre;
+            if let Some(tr) = ual_trunc.get(def.id) {
+                for (tenant, truncated) in tr {
+                    if let Some(f) = m.get_mut(tenant) {
+                        f.truncated = *truncated;
+                    }
+                }
+            }
+            evidence_facts.push(m);
+        } else {
+            evidence_facts.push(load_facts(conn, def)?);
+        }
     }
 
     let mut out = Vec::new();
@@ -894,6 +911,167 @@ fn load_cap_defs(conn: &Connection) -> Result<Vec<CapDef>> {
         })
     })?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+/// The four evidence sources whose rows live in `ual_events` (plus the parent-less
+/// `mail_items_accessed` rows), computed in one grouped pass per tenant.
+const UAL_BACKED: &[&str] = &["ual", "mail_items_accessed", "mail_send", "search_queries"];
+
+fn empty_ual_facts() -> HashMap<String, HashMap<String, Facts>> {
+    UAL_BACKED
+        .iter()
+        .map(|id| ((*id).to_string(), HashMap::new()))
+        .collect()
+}
+
+/// `facts_sql` of the four UAL-backed evidence sources, as one grouped scan: `(rows, min, max,
+/// distinct users)` per (evidence, tenant). `ual` is the `ual_events` rows; `mail_items_accessed`
+/// adds the parent-less `mail_items_accessed` rows; `mail_send`/`search_queries` are the
+/// operation subsets.
+fn load_ual_evidence_facts(conn: &Connection) -> Result<HashMap<String, HashMap<String, Facts>>> {
+    let mut out = empty_ual_facts();
+    let mut stmt = conn.prepare(
+        "WITH ev AS (
+             SELECT c.tenant_key, e.event_time AS t, e.user_upn AS u, e.operation AS op,
+                    'ual_events' AS tn
+             FROM ual_events e JOIN collections c ON c.collection_id = e.collection_id
+             WHERE c.tenant_key IS NOT NULL
+             UNION ALL
+             SELECT c.tenant_key, m.event_time, m.user_upn, 'MailItemsAccessed', 'mail_items_accessed'
+             FROM mail_items_accessed m JOIN collections c ON c.collection_id = m.collection_id
+             WHERE m.record_id IS NULL AND c.tenant_key IS NOT NULL
+         )
+         SELECT tenant_key,
+           count(*) FILTER (WHERE tn = 'ual_events'),
+           epoch_ms(min(t) FILTER (WHERE tn = 'ual_events')),
+           epoch_ms(max(t) FILTER (WHERE tn = 'ual_events')),
+           count(DISTINCT lower(u)) FILTER (WHERE tn = 'ual_events'),
+           count(*) FILTER (WHERE op = 'MailItemsAccessed'),
+           epoch_ms(min(t) FILTER (WHERE op = 'MailItemsAccessed')),
+           epoch_ms(max(t) FILTER (WHERE op = 'MailItemsAccessed')),
+           count(DISTINCT lower(u)) FILTER (WHERE op = 'MailItemsAccessed'),
+           count(*) FILTER (WHERE op IN ('Send', 'SendAs', 'SendOnBehalf')),
+           epoch_ms(min(t) FILTER (WHERE op IN ('Send', 'SendAs', 'SendOnBehalf'))),
+           epoch_ms(max(t) FILTER (WHERE op IN ('Send', 'SendAs', 'SendOnBehalf'))),
+           count(DISTINCT lower(u)) FILTER (WHERE op IN ('Send', 'SendAs', 'SendOnBehalf')),
+           count(*) FILTER (WHERE op IN ('SearchQueryInitiatedExchange', 'SearchQueryInitiatedSharePoint')),
+           epoch_ms(min(t) FILTER (WHERE op IN ('SearchQueryInitiatedExchange', 'SearchQueryInitiatedSharePoint'))),
+           epoch_ms(max(t) FILTER (WHERE op IN ('SearchQueryInitiatedExchange', 'SearchQueryInitiatedSharePoint'))),
+           count(DISTINCT lower(u)) FILTER (WHERE op IN ('SearchQueryInitiatedExchange', 'SearchQueryInitiatedSharePoint'))
+         FROM ev GROUP BY tenant_key",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            Facts {
+                rows: r.get(1)?,
+                min_ms: r.get(2)?,
+                max_ms: r.get(3)?,
+                users: r.get(4)?,
+                truncated: false,
+            },
+            Facts {
+                rows: r.get(5)?,
+                min_ms: r.get(6)?,
+                max_ms: r.get(7)?,
+                users: r.get(8)?,
+                truncated: false,
+            },
+            Facts {
+                rows: r.get(9)?,
+                min_ms: r.get(10)?,
+                max_ms: r.get(11)?,
+                users: r.get(12)?,
+                truncated: false,
+            },
+            Facts {
+                rows: r.get(13)?,
+                min_ms: r.get(14)?,
+                max_ms: r.get(15)?,
+                users: r.get(16)?,
+                truncated: false,
+            },
+        ))
+    })?;
+    for row in rows {
+        let (tenant, ual, mia, send, search) = row?;
+        for (id, f) in [
+            ("ual", ual),
+            ("mail_items_accessed", mia),
+            ("mail_send", send),
+            ("search_queries", search),
+        ] {
+            // A def with no rows has no `facts_sql` row (and so no `users_covered`, which
+            // `Facts::default()` keeps NULL): keep it absent.
+            if f.rows > 0 {
+                if let Some(m) = out.get_mut(id) {
+                    m.insert(tenant.clone(), f);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// One `record_sources` join deciding, per (evidence, tenant), whether any sighted row came
+/// from a file carrying a truncation warning (the four `truncated_sql` queries folded in).
+fn load_ual_evidence_truncated(
+    conn: &Connection,
+) -> Result<HashMap<String, HashMap<String, bool>>> {
+    let mut out: HashMap<String, HashMap<String, bool>> = UAL_BACKED
+        .iter()
+        .map(|id| ((*id).to_string(), HashMap::new()))
+        .collect();
+    let mut stmt = conn.prepare(
+        "SELECT ev.tenant_key,
+           coalesce(bool_or(CAST(sf.warnings AS VARCHAR) LIKE '%known export cap%')
+                    FILTER (WHERE ev.tn = 'ual_events'), false),
+           coalesce(bool_or(CAST(sf.warnings AS VARCHAR) LIKE '%known export cap%')
+                    FILTER (WHERE (ev.tn = 'ual_events' AND ev.op = 'MailItemsAccessed')
+                               OR ev.tn = 'mail_items_accessed'), false),
+           coalesce(bool_or(CAST(sf.warnings AS VARCHAR) LIKE '%known export cap%')
+                    FILTER (WHERE ev.tn = 'ual_events'
+                              AND ev.op IN ('Send', 'SendAs', 'SendOnBehalf')), false),
+           coalesce(bool_or(CAST(sf.warnings AS VARCHAR) LIKE '%known export cap%')
+                    FILTER (WHERE ev.tn = 'ual_events'
+                              AND ev.op IN ('SearchQueryInitiatedExchange', 'SearchQueryInitiatedSharePoint')), false)
+         FROM (
+             SELECT c.tenant_key, e.operation AS op, 'ual_events' AS tn,
+                    CAST(e.record_id AS VARCHAR) AS k
+             FROM ual_events e JOIN collections c ON c.collection_id = e.collection_id
+             WHERE c.tenant_key IS NOT NULL
+             UNION ALL
+             SELECT c.tenant_key, 'MailItemsAccessed', 'mail_items_accessed', m.item_key
+             FROM mail_items_accessed m JOIN collections c ON c.collection_id = m.collection_id
+             WHERE m.record_id IS NULL AND c.tenant_key IS NOT NULL
+         ) ev
+         JOIN record_sources rs ON rs.table_name = ev.tn AND rs.record_key = ev.k
+         JOIN source_files sf ON sf.file_id = rs.file_id
+         GROUP BY ev.tenant_key",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, bool>(1)?,
+            r.get::<_, bool>(2)?,
+            r.get::<_, bool>(3)?,
+            r.get::<_, bool>(4)?,
+        ))
+    })?;
+    for row in rows {
+        let (tenant, ual, mia, send, search) = row?;
+        for (id, t) in [
+            ("ual", ual),
+            ("mail_items_accessed", mia),
+            ("mail_send", send),
+            ("search_queries", search),
+        ] {
+            if let Some(m) = out.get_mut(id) {
+                m.insert(tenant.clone(), t);
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn load_facts(conn: &Connection, def: &EvidenceDef) -> Result<HashMap<String, Facts>> {

@@ -15,9 +15,11 @@ use crate::normalize::ual::{SPARROW_UAL_NAMESPACE, normalize_audit};
 use crate::normalize::ual_shape::{AuditInput, Completeness};
 use crate::parsers::records::RecordFormat;
 use crate::parsers::records::SourceRecord;
-use crate::parsers::stage::{file_date_order, read_state_records, reject, require_any_key};
+use crate::parsers::stage::{
+    file_date_order, read_state_records, reject, reject_at, require_any_key,
+};
 use crate::readers::time::{DateOrder, parse_timestamp};
-use duckdb::{OptionalExt, params, params_from_iter};
+use duckdb::params;
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use uuid::Uuid;
@@ -87,101 +89,6 @@ fn times_order(
     file_date_order(ctx, times.iter().map(String::as_str))
 }
 
-/// A raw MailItemsAccessed record of the row's user, time and address. Raw records loaded
-/// `partial` count too (Get-UAL `-AuditDataOnly` CSV keeps only the first record's columns, so
-/// a partial record may lack the address); records a Sessions row stood in for do not.
-const RAW_MATCH: &str = "e.operation = 'MailItemsAccessed'
-    AND json_extract_string(e.audit_data, '$.SparrowDerivedFrom') IS NULL
-    AND e.user_upn = ? AND e.event_time = CAST(? AS TIMESTAMPTZ)
-    AND (e.client_ip IS NOT DISTINCT FROM ? OR (e.data_completeness = 'partial' AND e.client_ip IS NULL))";
-
-/// Raw MailItemsAccessed records a Sessions row may stand for, not yet used by this file
-/// (complete records first; a partial record without OperationCount matches any count).
-fn raw_session_match(
-    ctx: &ParseContext<'_>,
-    a: &Access,
-    count: Option<i64>,
-    used: &HashSet<String>,
-) -> Result<Option<String>> {
-    let mut stmt = ctx.conn.prepare_cached(&format!(
-        "SELECT CAST(e.record_id AS VARCHAR) FROM ual_events e WHERE {RAW_MATCH}
-           AND (coalesce(TRY_CAST(json_extract_string(e.audit_data, '$.OperationCount') AS BIGINT), -1) = ?
-                OR (e.data_completeness = 'partial'
-                    AND json_extract(e.audit_data, '$.OperationCount') IS NULL))
-         ORDER BY e.data_completeness = 'full' DESC, 1"
-    ))?;
-    let ids = stmt
-        .query_map(params![a.user, a.rfc3339, a.ip, count.unwrap_or(-1)], |r| {
-            r.get::<_, String>(0)
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    Ok(ids.into_iter().find(|id| !used.contains(id)))
-}
-
-/// The raw record holding the item a MessageIDs row names: by message id, else by access
-/// type (a Bind item without a message id; a Sync of the row's folder; with the type
-/// unknown, an item of the row's folder without a message id); else a partial raw record of
-/// the row's access whose items were not kept.
-fn raw_item_match(
-    ctx: &ParseContext<'_>,
-    a: &Access,
-    access_type: Option<&str>,
-    message_id: Option<&str>,
-    folder: Option<&str>,
-) -> Result<Option<String>> {
-    // The item condition, and whether it binds a value (a message id or folder path).
-    let (item, value): (&str, Option<Option<&str>>) = match (message_id, access_type) {
-        (Some(m), _) => ("m.internet_message_id = ?", Some(Some(m))),
-        (None, Some("bind")) => (
-            "m.internet_message_id IS NULL AND m.access_type = 'bind'",
-            None,
-        ),
-        (None, Some(_)) => (
-            "m.internet_message_id IS NULL AND m.access_type = 'sync' AND m.folder_path IS NOT DISTINCT FROM ?",
-            Some(folder),
-        ),
-        (None, None) => (
-            "m.internet_message_id IS NULL AND m.folder_path IS NOT DISTINCT FROM ?",
-            Some(folder),
-        ),
-    };
-    let mut values: Vec<Option<&str>> = vec![
-        Some(a.user.as_str()),
-        Some(a.rfc3339.as_str()),
-        a.ip.as_deref(),
-    ];
-    values.extend(value);
-    let found = ctx
-        .conn
-        .prepare_cached(&format!(
-            "SELECT CAST(e.record_id AS VARCHAR) FROM mail_items_accessed m
-             JOIN ual_events e ON e.record_id = m.record_id
-             WHERE {RAW_MATCH} AND {item} ORDER BY 1 LIMIT 1"
-        ))?
-        .query_row(params_from_iter(values), |r| r.get::<_, String>(0))
-        .optional()?;
-    if found.is_some() {
-        return Ok(found);
-    }
-    // A partial raw record whose file did not keep its items (`Folders` exported as
-    // `System.Object[]`) still holds the row's access; the first by id when several match.
-    let found = ctx
-        .conn
-        .prepare_cached(&format!(
-            "SELECT CAST(e.record_id AS VARCHAR) FROM ual_events e
-             WHERE {RAW_MATCH} AND e.data_completeness = 'partial'
-               AND NOT EXISTS (SELECT 1 FROM mail_items_accessed m WHERE m.record_id = e.record_id
-                                 AND (m.internet_message_id IS NOT NULL OR m.folder_path IS NOT NULL))
-             ORDER BY 1 LIMIT 1"
-        ))?
-        .query_row(
-            params![a.user.as_str(), a.rfc3339.as_str(), a.ip.as_deref()],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()?;
-    Ok(found)
-}
-
 /// AuditData standing in for a Sessions row whose raw record was not loaded. The row's own
 /// values only, so the same row from another run gets the same content-derived id.
 fn session_audit(a: &Access, count: Option<i64>, throttled: Option<bool>) -> Map<String, Value> {
@@ -208,34 +115,113 @@ fn session_audit(a: &Access, count: Option<i64>, throttled: Option<bool>) -> Map
 
 const SESSION_TIME: &[&str] = &["TimeStamp", "Timestamp"];
 
+/// One parsed Sessions row, staged for the set-based match.
+struct SessionInput {
+    ordinal: u64,
+    span: crate::readers::text::Span,
+    access: Access,
+    count: Option<i64>,
+    throttled: Option<bool>,
+}
+
+/// Stage the parsed Sessions rows so the candidates can be joined in one query. `op_count` is
+/// the row's OperationCount, or -1 when the column is absent.
+fn stage_sessions(conn: &duckdb::Connection, rows: &[SessionInput]) -> Result<()> {
+    conn.execute_batch(
+        "CREATE OR REPLACE TEMP TABLE mia_sessions_stage (
+             ordinal BIGINT, user_name VARCHAR, event_rfc VARCHAR, ip VARCHAR, op_count BIGINT);",
+    )?;
+    let mut app = conn.appender("mia_sessions_stage")?;
+    for r in rows {
+        app.append_row(params![
+            r.ordinal as i64,
+            r.access.user,
+            r.access.rfc3339,
+            r.access.ip,
+            r.count.unwrap_or(-1)
+        ])?;
+    }
+    app.flush()?;
+    Ok(())
+}
+
 pub struct SessionsParser;
 
 impl ArtifactParser for SessionsParser {
+    /// Per-row rules being replaced (spec §6; must stay identical):
+    /// 1. Parse the row's timestamp/user/ip/session/access type; a row without either a
+    ///    timestamp or a User is a parse error.
+    /// 2. Raw candidates are the non-derived `MailItemsAccessed` `ual_events` of the row's
+    ///    user and exact event time whose client IP is the row's (or NULL on a `partial`
+    ///    record), and whose `OperationCount` equals the row's (or is NULL on a `partial`
+    ///    record); with the row's count absent, a -1 sentinel means records with no count.
+    ///    Ordered by `(data_completeness = 'full') DESC, CAST(record_id AS VARCHAR)`.
+    /// 3. Each row claims the first candidate not already claimed by an earlier row of the
+    ///    SAME file (the `used` set) and adds a `ual_events` sighting; a row with none loads
+    ///    as a `partial` MailItemsAccessed record built from its own values (content-derived
+    ///    id, so a repeated run dedups).
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
         let records = read_state_records(ctx, RecordFormat::Csv)?;
         require_any_key(&records, &["OperationCount"], "MailItemsAccessed sessions")?;
         let order = times_order(ctx, &records, SESSION_TIME)?;
-        let mut used: HashSet<String> = HashSet::new();
-        let mut staged = Vec::new();
+        let mut parsed: Vec<SessionInput> = Vec::new();
         for r in &records {
             let rec = Rec::new(&r.map, true);
-            let a = match access(&rec, SESSION_TIME, &["ClientIP"], &["SessionId"], order) {
-                Ok(a) => a,
-                Err(m) => {
-                    reject(ctx, r, &m)?;
-                    continue;
-                }
-            };
-            let count = rec.int("OperationCount");
-            if let Some(id) = raw_session_match(ctx, &a, count, &used)? {
-                ctx.record_source("ual_events", &id, r.ordinal, r.span)?;
-                ctx.stats.read += 1;
+            match access(&rec, SESSION_TIME, &["ClientIP"], &["SessionId"], order) {
+                Ok(a) => parsed.push(SessionInput {
+                    ordinal: r.ordinal,
+                    span: r.span,
+                    access: a,
+                    count: rec.int("OperationCount"),
+                    throttled: rec.bool("IsThrottled"),
+                }),
+                Err(m) => reject(ctx, r, &m)?,
+            }
+        }
+        ctx.stats.read += parsed.len() as u64;
+        stage_sessions(ctx.conn, &parsed)?;
+        // All (row, candidate) pairs in the per-row order, in one join.
+        let mut stmt = ctx.conn.prepare(
+            "SELECT r.ordinal, CAST(e.record_id AS VARCHAR) AS rec
+             FROM mia_sessions_stage r
+             JOIN ual_events e
+               ON e.operation = 'MailItemsAccessed'
+              AND json_extract_string(e.audit_data, '$.SparrowDerivedFrom') IS NULL
+              AND e.user_upn = r.user_name
+              AND e.event_time = CAST(r.event_rfc AS TIMESTAMPTZ)
+              AND (e.client_ip IS NOT DISTINCT FROM r.ip
+                   OR (e.data_completeness = 'partial' AND e.client_ip IS NULL))
+              AND (coalesce(TRY_CAST(json_extract_string(e.audit_data, '$.OperationCount') AS BIGINT), -1) = r.op_count
+                   OR (e.data_completeness = 'partial'
+                       AND json_extract(e.audit_data, '$.OperationCount') IS NULL))
+             ORDER BY r.ordinal, (e.data_completeness = 'full') DESC, CAST(e.record_id AS VARCHAR)",
+        )?;
+        let pairs = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let by_ordinal: std::collections::HashMap<u64, &SessionInput> =
+            parsed.iter().map(|r| (r.ordinal, r)).collect();
+        let mut used: HashSet<String> = HashSet::new();
+        let mut matched: HashSet<u64> = HashSet::new();
+        for (ord, rec) in pairs {
+            let ord = ord as u64;
+            if matched.contains(&ord) || used.contains(&rec) {
+                continue;
+            }
+            if let Some(row) = by_ordinal.get(&ord) {
+                ctx.record_source("ual_events", &rec, row.ordinal, row.span)?;
                 ctx.stats.duplicate += 1;
-                used.insert(id);
+                used.insert(rec);
+                matched.insert(ord);
+            }
+        }
+        let mut staged = Vec::new();
+        for row in &parsed {
+            if matched.contains(&row.ordinal) {
                 continue;
             }
             let input = AuditInput {
-                audit: session_audit(&a, count, rec.bool("IsThrottled")),
+                audit: session_audit(&row.access, row.count, row.throttled),
                 completeness: Completeness::Partial,
                 outer_record_type: None,
                 outer_time: None,
@@ -243,18 +229,17 @@ impl ArtifactParser for SessionsParser {
             };
             match normalize_audit(&input, None) {
                 Ok(rec) => {
-                    let (pos, raw_sha256) = ctx.sighting(r.span);
+                    let (pos, raw_sha256) = ctx.sighting(row.span);
                     staged.push(StagedUal {
-                        ordinal: r.ordinal,
+                        ordinal: row.ordinal,
                         pos,
                         raw_sha256,
                         rec,
                     });
                 }
-                Err(m) => reject(ctx, r, &m)?,
+                Err(m) => reject_at(ctx, row.ordinal, row.span, None, &m)?,
             }
         }
-        ctx.stats.read += staged.len() as u64;
         let out = load_ual_batch(ctx.conn, ctx.collection_id, ctx.file_id, &staged)?;
         ctx.stats.loaded += out.inserted + out.upgraded;
         ctx.stats.duplicate += out.duplicate();
@@ -276,6 +261,39 @@ impl ArtifactParser for SessionsParser {
 
 const ID_TIME: &[&str] = &["Timestamp", "TimeStamp"];
 
+/// One parsed MessageIDs row, staged for the set-based match.
+struct MessageIdInput {
+    ordinal: u64,
+    span: crate::readers::text::Span,
+    access: Access,
+    message_id: Option<String>,
+    access_type: Option<&'static str>,
+    folder: Option<String>,
+    size: Option<i64>,
+}
+
+fn stage_ids(conn: &duckdb::Connection, rows: &[MessageIdInput]) -> Result<()> {
+    conn.execute_batch(
+        "CREATE OR REPLACE TEMP TABLE mia_ids_stage (
+             ordinal BIGINT, user_name VARCHAR, event_rfc VARCHAR, ip VARCHAR,
+             message_id VARCHAR, access_type VARCHAR, folder VARCHAR);",
+    )?;
+    let mut app = conn.appender("mia_ids_stage")?;
+    for r in rows {
+        app.append_row(params![
+            r.ordinal as i64,
+            r.access.user,
+            r.access.rfc3339,
+            r.access.ip,
+            r.message_id,
+            r.access_type,
+            r.folder
+        ])?;
+    }
+    app.flush()?;
+    Ok(())
+}
+
 /// Key of a parent-less MessageIDs row: UUIDv5 of its normalized values.
 fn item_key(a: &Access, message_id: Option<&str>, folder: Option<&str>) -> String {
     let basis = format!(
@@ -296,6 +314,18 @@ fn item_key(a: &Access, message_id: Option<&str>, folder: Option<&str>) -> Strin
 pub struct MessageIdsParser;
 
 impl ArtifactParser for MessageIdsParser {
+    /// Per-row rules being replaced (spec §6; must stay identical):
+    /// 1. Parse the row; a Sync row's `InternetMessageId` is the literal
+    ///    `N/A (Sync - entire folder)` and its access type is Sync.
+    /// 2. The first candidate is the lowest-id `ual_events` record of the row's user and exact
+    ///    event time (matching RAW_MATCH: not derived, client IP equal or NULL on a `partial`
+    ///    record) joined to a `mail_items_accessed` item: by message id; else a Bind item
+    ///    without a message id; else a Sync item of the row's folder; else any item of the
+    ///    row's folder without a message id.
+    /// 3. Else a partial raw record whose file kept no item (no message id or folder): the
+    ///    lowest-id. There is no `used` set: identical rows sight the same record.
+    /// 4. Else the row becomes a parent-less `mail_items_accessed` row keyed by its values
+    ///    (an existing key adds only a sighting).
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
         let records = read_state_records(ctx, RecordFormat::Csv)?;
         require_any_key(
@@ -304,7 +334,7 @@ impl ArtifactParser for MessageIdsParser {
             "MailItemsAccessed message ids",
         )?;
         let order = times_order(ctx, &records, ID_TIME)?;
-        let mut matched = 0u64;
+        let mut parsed: Vec<MessageIdInput> = Vec::new();
         for r in &records {
             let rec = Rec::new(&r.map, true);
             let a = match access(
@@ -329,27 +359,86 @@ impl ArtifactParser for MessageIdsParser {
                     .is_some_and(|m| m.to_ascii_lowercase().starts_with("n/a (sync"))
                     .then_some("sync")
             });
-            let folder = rec.text("FolderPath");
-            ctx.stats.read += 1;
-            if let Some(id) = raw_item_match(
-                ctx,
-                &a,
+            parsed.push(MessageIdInput {
+                ordinal: r.ordinal,
+                span: r.span,
+                access: a,
+                message_id,
                 access_type,
-                message_id.as_deref(),
-                folder.as_deref(),
-            )? {
-                ctx.record_source("ual_events", &id, r.ordinal, r.span)?;
+                folder: rec.text("FolderPath"),
+                size: rec.int("SizeInBytes"),
+            });
+        }
+        ctx.stats.read += parsed.len() as u64;
+        stage_ids(ctx.conn, &parsed)?;
+        // Item matches: lowest record id per row.
+        let mut stmt = ctx.conn.prepare(
+            "SELECT r.ordinal, min(CAST(e.record_id AS VARCHAR)) AS rec
+             FROM mia_ids_stage r
+             JOIN ual_events e
+               ON e.operation = 'MailItemsAccessed'
+              AND json_extract_string(e.audit_data, '$.SparrowDerivedFrom') IS NULL
+              AND e.user_upn = r.user_name
+              AND e.event_time = CAST(r.event_rfc AS TIMESTAMPTZ)
+              AND (e.client_ip IS NOT DISTINCT FROM r.ip
+                   OR (e.data_completeness = 'partial' AND e.client_ip IS NULL))
+             JOIN mail_items_accessed m ON m.record_id = e.record_id
+             WHERE (r.message_id IS NOT NULL AND m.internet_message_id = r.message_id)
+                OR (r.message_id IS NULL AND r.access_type = 'bind'
+                    AND m.internet_message_id IS NULL AND m.access_type = 'bind')
+                OR (r.message_id IS NULL AND r.access_type = 'sync'
+                    AND m.internet_message_id IS NULL AND m.access_type = 'sync'
+                    AND m.folder_path IS NOT DISTINCT FROM r.folder)
+                OR (r.message_id IS NULL AND r.access_type IS NULL
+                    AND m.internet_message_id IS NULL AND m.folder_path IS NOT DISTINCT FROM r.folder)
+             GROUP BY r.ordinal",
+        )?;
+        let mut matched: std::collections::HashMap<u64, String> = stmt
+            .query_map([], |r| {
+                Ok((r.get::<_, i64>(0)? as u64, r.get::<_, String>(1)?))
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+        // Fallback: a partial raw record whose file kept no item, lowest record id per row.
+        let mut stmt = ctx.conn.prepare(
+            "SELECT r.ordinal, min(CAST(e.record_id AS VARCHAR)) AS rec
+             FROM mia_ids_stage r
+             JOIN ual_events e
+               ON e.operation = 'MailItemsAccessed'
+              AND json_extract_string(e.audit_data, '$.SparrowDerivedFrom') IS NULL
+              AND e.user_upn = r.user_name
+              AND e.event_time = CAST(r.event_rfc AS TIMESTAMPTZ)
+              AND (e.client_ip IS NOT DISTINCT FROM r.ip
+                   OR (e.data_completeness = 'partial' AND e.client_ip IS NULL))
+             WHERE e.data_completeness = 'partial'
+               AND NOT EXISTS (SELECT 1 FROM mail_items_accessed m WHERE m.record_id = e.record_id
+                                 AND (m.internet_message_id IS NOT NULL OR m.folder_path IS NOT NULL))
+             GROUP BY r.ordinal",
+        )?;
+        for row in stmt.query_map([], |r| {
+            Ok((r.get::<_, i64>(0)? as u64, r.get::<_, String>(1)?))
+        })? {
+            let (ord, rec) = row?;
+            matched.entry(ord).or_insert(rec);
+        }
+        let mut matched_count = 0u64;
+        for row in &parsed {
+            if let Some(rec) = matched.get(&row.ordinal) {
+                ctx.record_source("ual_events", rec, row.ordinal, row.span)?;
                 ctx.stats.duplicate += 1;
-                matched += 1;
+                matched_count += 1;
                 continue;
             }
-            let key = item_key(&a, message_id.as_deref(), folder.as_deref());
+            let key = item_key(
+                &row.access,
+                row.message_id.as_deref(),
+                row.folder.as_deref(),
+            );
             let exists: bool = ctx.conn.query_row(
                 "SELECT count(*) > 0 FROM mail_items_accessed WHERE item_key = ?",
                 params![key],
                 |r| r.get(0),
             )?;
-            ctx.record_source("mail_items_accessed", &key, r.ordinal, r.span)?;
+            ctx.record_source("mail_items_accessed", &key, row.ordinal, row.span)?;
             if exists {
                 ctx.stats.duplicate += 1;
                 continue;
@@ -361,23 +450,23 @@ impl ArtifactParser for MessageIdsParser {
                  VALUES (NULL, 0, ?, CAST(? AS mail_access_type), ?, ?, ?, ?, CAST(? AS TIMESTAMPTZ), ?, ?, ?, ?)",
                 params![
                     ctx.collection_id,
-                    a.access_type,
-                    folder,
-                    message_id,
-                    rec.int("SizeInBytes"),
+                    row.access.access_type,
+                    row.folder,
+                    row.message_id,
+                    row.size,
                     key,
-                    a.rfc3339,
-                    a.tz_assumed,
-                    a.user,
-                    a.ip,
-                    a.session
+                    row.access.rfc3339,
+                    row.access.tz_assumed,
+                    row.access.user,
+                    row.access.ip,
+                    row.access.session
                 ],
             )?;
             ctx.stats.loaded += 1;
         }
-        if matched > 0 {
+        if matched_count > 0 {
             ctx.warn(format!(
-                "{matched} rows match items of raw MailItemsAccessed records loaded from the unified audit log; each adds a sighting to its record"
+                "{matched_count} rows match items of raw MailItemsAccessed records loaded from the unified audit log; each adds a sighting to its record"
             ));
         }
         Ok(())

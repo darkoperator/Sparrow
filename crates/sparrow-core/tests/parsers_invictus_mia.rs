@@ -666,3 +666,144 @@ fn partial_raw_records_without_address_or_count_columns_still_match() {
         0
     );
 }
+
+/// Two identical Sessions rows (same user/time/ip/OperationCount) and two raw records: the
+/// per-row `used` set gives each row a different record.
+#[test]
+fn two_identical_sessions_rows_claim_two_raw_records() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("OUT");
+    fixtures::write(
+        &out,
+        UAL,
+        &raw_ual_of(&[
+            mia(R1, 1, &[("<i1@contoso.example>", 1000)]),
+            mia(R2, 1, &[("<i2@contoso.example>", 2000)]),
+        ]),
+    );
+    fixtures::write(
+        &out,
+        SESSIONS,
+        &sessions(&[
+            ("8/20/2026 10:00:00 AM", "1"),
+            ("8/20/2026 10:00:00 AM", "1"),
+        ]),
+    );
+    let (case, report) = ingest(dir.path());
+    let f = row(&report, SESSIONS);
+    assert_eq!(
+        (f.records_read, f.records_loaded, f.records_duplicate),
+        (2, 0, 2),
+        "{f:#?}"
+    );
+    let sightings = |id: &str| {
+        count(
+            &case,
+            &format!(
+                "SELECT count(*) FROM record_sources rs JOIN source_files sf USING (file_id)
+                 WHERE rs.table_name = 'ual_events' AND rs.record_key = '{id}'
+                   AND sf.artifact_type = 'inv.mia.sessions'"
+            ),
+        )
+    };
+    // R1 ("4444...") sorts before R2 ("5555...").
+    assert_eq!(sightings(R1), 1);
+    assert_eq!(sightings(R2), 1);
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM mail_items_accessed WHERE record_id IS NULL"
+        ),
+        0
+    );
+}
+
+/// Two identical MessageIDs rows have no `used` set: both sight the same raw record.
+#[test]
+fn two_identical_message_ids_rows_sight_the_same_raw_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("OUT");
+    fixtures::write(
+        &out,
+        UAL,
+        &raw_ual_of(&[mia(R1, 1, &[("<i1@contoso.example>", 1000)])]),
+    );
+    let body = format!(
+        "{IDS_HEADER}\"8/20/2026 10:00:00 AM\",\"{ALICE}\",\"{IP}\",,\"Bind\",,\"<i1@contoso.example>\",\"1000\"\r\n\"8/20/2026 10:00:00 AM\",\"{ALICE}\",\"{IP}\",,\"Bind\",,\"<i1@contoso.example>\",\"1000\"\r\n"
+    );
+    fixtures::write(&out, MESSAGE_IDS, &utf8_bom(&body));
+    let (case, report) = ingest(dir.path());
+    let f = row(&report, MESSAGE_IDS);
+    assert_eq!(
+        (f.records_read, f.records_loaded, f.records_duplicate),
+        (2, 0, 2),
+        "{f:#?}"
+    );
+    assert_eq!(
+        count(
+            &case,
+            &format!(
+                "SELECT count(*) FROM record_sources rs JOIN source_files sf USING (file_id)
+                 WHERE rs.table_name = 'ual_events' AND rs.record_key = '{R1}'
+                   AND sf.artifact_type = 'inv.mia.message_ids'"
+            )
+        ),
+        2
+    );
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM mail_items_accessed WHERE record_id IS NULL"
+        ),
+        0
+    );
+}
+
+/// A Bind row with no message id or folder has no raw item to match: a parent-less row.
+#[test]
+fn a_message_ids_row_with_no_item_or_folder_becomes_parent_less() {
+    let dir = tempfile::tempdir().unwrap();
+    let body =
+        format!("{IDS_HEADER}\"8/20/2026 10:05:00 AM\",\"{ALICE}\",\"{IP}\",,\"Bind\",,,\r\n");
+    fixtures::write(&dir.path().join("OUT"), MESSAGE_IDS, &utf8_bom(&body));
+    let (case, report) = ingest(dir.path());
+    let f = row(&report, MESSAGE_IDS);
+    assert_eq!(
+        (f.records_read, f.records_loaded, f.records_duplicate),
+        (1, 1, 0),
+        "{f:#?}"
+    );
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM mail_items_accessed WHERE record_id IS NULL
+               AND internet_message_id IS NULL AND folder_path IS NULL"
+        ),
+        1
+    );
+}
+
+/// A Sessions row with no SessionId loads as a partial record with a NULL session.
+#[test]
+fn a_sessions_row_with_no_session_id_loads_partial() {
+    let dir = tempfile::tempdir().unwrap();
+    let body = format!(
+        "{SESSIONS_HEADER}\"8/20/2026 10:05:00 AM\",\"{ALICE}\",\"MailItemsAccessed\",,\"{IP}\",\"Bind\",,\"1\"\r\n"
+    );
+    fixtures::write(&dir.path().join("OUT"), SESSIONS, &utf8_bom(&body));
+    let (case, report) = ingest(dir.path());
+    let f = row(&report, SESSIONS);
+    assert_eq!(
+        (f.records_read, f.records_loaded, f.records_duplicate),
+        (1, 1, 0),
+        "{f:#?}"
+    );
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM ual_events WHERE operation = 'MailItemsAccessed'
+               AND json_extract_string(audit_data, '$.SessionId') IS NULL"
+        ),
+        1
+    );
+}
