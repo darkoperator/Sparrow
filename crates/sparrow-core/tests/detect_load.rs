@@ -68,6 +68,46 @@ fn editing_a_referenced_list_changes_the_rule_hash() {
 }
 
 #[test]
+fn editing_hiding_folders_changes_the_rule_hash() {
+    // SPW-MAIL-003 references @list:hiding_folders (and finance_keywords), so editing either list
+    // is a rule change: the hash moves. A rule that does not reference the list is unaffected.
+    let set = load_rules(&DataDirs::default()).unwrap();
+    let mail003 = set
+        .rules
+        .iter()
+        .find(|r| r.rule.id == "SPW-MAIL-003")
+        .expect("SPW-MAIL-003 is built in");
+    let hash = |lists: &std::collections::BTreeMap<String, Vec<String>>| {
+        sparrow_core::detect::load::rule_sha256(&mail003.rule, lists, &set.list_meta)
+    };
+    assert_eq!(hash(&set.lists), mail003.sha256);
+
+    let mut edited = set.lists.clone();
+    edited.get_mut("hiding_folders").unwrap().push("Zzz".into());
+    assert_ne!(hash(&set.lists), hash(&edited), "hiding_folders edit");
+
+    let mut edited = set.lists.clone();
+    edited
+        .get_mut("finance_keywords")
+        .unwrap()
+        .push("zzz".into());
+    assert_ne!(hash(&set.lists), hash(&edited), "finance_keywords edit");
+
+    // SPW-HAWK-003 references no list.
+    let hawk003 = set
+        .rules
+        .iter()
+        .find(|r| r.rule.id == "SPW-HAWK-003")
+        .expect("SPW-HAWK-003 is built in");
+    let mut edited = set.lists.clone();
+    edited.get_mut("hiding_folders").unwrap().push("Zzz".into());
+    assert_eq!(
+        hawk003.sha256,
+        sparrow_core::detect::load::rule_sha256(&hawk003.rule, &edited, &set.list_meta)
+    );
+}
+
+#[test]
 fn rule_schema_names_every_rule_field() {
     let text = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),

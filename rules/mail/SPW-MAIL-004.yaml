@@ -1,0 +1,251 @@
+# SPW-MAIL-004 — external forwarding. Logic source: coverage.yaml ("A forwarding address outside
+# tenant_domains: mailboxes forwarding_smtp_address / forwarding_address, inbox_rules forward_to /
+# forward_as_attachment_to / redirect_to, transport_rules blind_copy_to / redirect_to / copy_to /
+# add_to_recipients, or the UAL events that set them (Set-Mailbox, New-/Set-InboxRule,
+# New-/Set-TransportRule)"). The coverage tables do not list admin_audit_events (lint requires a
+# `sql:` rule to emit only coverage tables), so Hawk 3.1's Search-AdminAuditLog rows are not read;
+# a Hawk 3 tenant is covered through the collected mailboxes, inbox_rules and transport_rules.
+# `sql:` because the addresses are compared with the tenant's own domains (`tenant_domains`).
+# An address is a domain after `@`; the domain is read out of every address in the value, so the
+# `;`-separated lists of a cmdlet parameter, the array elements of a collected rule and Exchange's
+# `"Last, First" [SMTP:user@domain]` spelling all work. A value with no `@` (a display name, a
+# distinguished name, an empty string that clears forwarding) names no external domain and does not
+# match. A tenant with no known domain treats every address as external: `tenant_domains` is filled
+# by the profile that runs before detection.
+id: SPW-MAIL-004
+title: External forwarding through the mailbox, an inbox rule or a transport rule
+version: 1
+status: stable
+severity: high
+confidence: medium
+mitre: [T1114.003]
+tags: [bec, forwarding, exfiltration]
+requires: []
+requires_evidence: []
+sql: |
+  WITH dom AS (
+    SELECT DISTINCT lower(rtrim(trim(d.domain), '.')) AS domain
+    FROM tenant_domains d
+    WHERE d.tenant_key = $tenant
+  ),
+  cmds AS (
+    SELECT lower(CAST(u.record_id AS VARCHAR)) AS record_key, 'ual_events' AS src, u.event_time AS t,
+           u.user_upn AS actor, u.client_ip AS ip, u.parameters AS prm
+    FROM ual_events u
+    WHERE lower(u.operation) IN ('set-mailbox', 'new-inboxrule', 'set-inboxrule',
+                                 'new-transportrule', 'set-transportrule')
+  ),
+  cmd_addrs AS (
+    SELECT c.record_key, c.src, c.t, c.actor, c.ip,
+           string_agg(x.e.value, ';') AS addrs
+    FROM cmds c, unnest(map_entries(c.prm)) AS x(e)
+    WHERE lower(x.e.key) IN ('forwardingsmtpaddress', 'forwardingaddress', 'forwardto',
+                             'forwardasattachmentto', 'redirectto', 'blindcopyto',
+                             'redirectmessageto', 'copyto', 'addtorecipients')
+    GROUP BY c.record_key, c.src, c.t, c.actor, c.ip
+  ),
+  cand AS (
+    SELECT m.record_key, 'mailboxes' AS src, m.collected_at AS t, m.upn AS actor,
+           CAST(NULL AS VARCHAR) AS ip,
+           concat_ws(';', m.forwarding_smtp_address, m.forwarding_address) AS addrs
+    FROM mailboxes m
+    UNION ALL
+    SELECT r.record_key, 'inbox_rules', r.collected_at, r.mailbox_upn, CAST(NULL AS VARCHAR),
+           concat_ws(';', array_to_string(r.forward_to, ';'),
+                     array_to_string(r.forward_as_attachment_to, ';'),
+                     array_to_string(r.redirect_to, ';'))
+    FROM inbox_rules r
+    UNION ALL
+    SELECT t.record_key, 'transport_rules', t.collected_at, CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR),
+           concat_ws(';', array_to_string(t.blind_copy_to, ';'), array_to_string(t.redirect_to, ';'),
+                     array_to_string(t.copy_to, ';'), array_to_string(t.add_to_recipients, ';'))
+    FROM transport_rules t
+    UNION ALL
+    SELECT record_key, src, t, actor, ip, addrs FROM cmd_addrs
+  ),
+  found AS (
+    SELECT c.record_key, c.src, c.t, c.actor, c.ip, c.addrs,
+           unnest(regexp_extract_all(lower(c.addrs), '@([a-z0-9.-]+)', 1)) AS domain
+    FROM cand c
+  )
+  SELECT f.record_key,
+         CASE WHEN f.src = 'mailboxes' THEN 'mailboxes'
+              WHEN f.src = 'inbox_rules' THEN 'inbox_rules'
+              WHEN f.src = 'transport_rules' THEN 'transport_rules'
+              ELSE 'ual_events' END AS source_table,
+         f.t AS event_time, f.actor AS actor_upn, f.ip AS ip,
+         json_object('external_domains', string_agg(DISTINCT rtrim(f.domain, '.'), ', ')) AS context
+  FROM found f
+  WHERE rtrim(f.domain, '.') <> ''
+    AND rtrim(f.domain, '.') NOT IN (SELECT domain FROM dom)
+  GROUP BY f.record_key, f.src, f.t, f.actor, f.ip
+group_by: [actor_upn]
+analyst_guidance: |
+  Mail is being sent on to an address outside the tenant through a mailbox setting, an inbox rule
+  or a transport rule. That is the usual way a BEC actor keeps reading a victim's mail after the
+  session ends. Read the destination, who set it and from where, and what mail matched (a rule's
+  conditions, a transport rule's scope). A forward that exists in collected state was in force at
+  collection; the log shows who created it.
+false_positives:
+  - Forwarding to a partner, a personal address of a leaver, or a sister company's tenant.
+  - A journaling or archiving transport rule that copies mail to a compliance vendor.
+references:
+  - https://learn.microsoft.com/en-us/powershell/module/exchange/set-mailbox
+  - https://learn.microsoft.com/en-us/powershell/module/exchange/new-inboxrule
+  - https://learn.microsoft.com/en-us/powershell/module/exchange/new-transportrule
+  - https://learn.microsoft.com/en-us/purview/audit-log-activities
+author: Sparrow
+tests:
+  - name: mailbox forwards to an external address
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: contoso.example
+      - table: mailboxes
+        upn: alice@contoso.example
+        forwarding_smtp_address: "smtp:x@example.net"
+    expect_hits: 1
+  - name: mailbox forwards to an internal address
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: contoso.example
+      - table: mailboxes
+        upn: alice@contoso.example
+        forwarding_smtp_address: "smtp:bob@contoso.example"
+        forwarding_address: bob@Contoso.example
+    expect_hits: 0
+  - name: mailbox forwarding address is a display name, not an address
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: contoso.example
+      - table: mailboxes
+        upn: alice@contoso.example
+        forwarding_address: Bob Jones
+    expect_hits: 0
+  - name: inbox rule forwards to an external and an internal recipient
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: contoso.example
+      - table: inbox_rules
+        mailbox_upn: alice@contoso.example
+        forward_to: [x@example.net, bob@contoso.example]
+    expect_hits: 1
+  - name: inbox rule redirects to an external address in Exchange's display form
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: contoso.example
+      - table: inbox_rules
+        mailbox_upn: alice@contoso.example
+        redirect_to: ['"Jones, Bob" [SMTP:bob@example.net]']
+    expect_hits: 1
+  - name: inbox rule forwards only inside the tenant
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: contoso.example
+      - table: inbox_rules
+        mailbox_upn: alice@contoso.example
+        forward_to: ['"Jones, Bob" [SMTP:bob@contoso.example]']
+        forward_as_attachment_to: [carol@contoso.example]
+    expect_hits: 0
+  - name: transport rule blind-copies mail to an external address
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: contoso.example
+      - table: transport_rules
+        name: Journal copy
+        blind_copy_to: [x@example.net]
+    expect_hits: 1
+  - name: transport rule adds an internal recipient
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: contoso.example
+      - table: transport_rules
+        name: Compliance
+        add_to_recipients: [compliance@contoso.example]
+    expect_hits: 0
+  - name: Set-Mailbox sets an external forwarding address
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: contoso.example
+      - table: ual_events
+        operation: Set-Mailbox
+        user_upn: alice@contoso.example
+        parameters: {Identity: alice@contoso.example, ForwardingSmtpAddress: "smtp:x@example.net"}
+    expect_hits: 1
+  - name: New-InboxRule forwards to an external address
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: contoso.example
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        parameters: {Name: AP, ForwardTo: "x@example.net;bob@contoso.example"}
+    expect_hits: 1
+  - name: Set-InboxRule redirects to an external address
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: contoso.example
+      - table: ual_events
+        operation: Set-InboxRule
+        user_upn: admin@contoso.example
+        parameters: {Identity: 'bob@contoso.example\Sync', RedirectTo: x@example.net}
+    expect_hits: 1
+  - name: New-TransportRule blind-copies to an external address
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: contoso.example
+      - table: ual_events
+        operation: New-TransportRule
+        user_upn: admin@contoso.example
+        parameters: {Name: Journal copy, SentToScope: NotInOrganization, BlindCopyTo: x@example.net}
+    expect_hits: 1
+  - name: Set-Mailbox forwards to an internal address
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: contoso.example
+      - table: ual_events
+        operation: Set-Mailbox
+        user_upn: alice@contoso.example
+        parameters: {Identity: alice@contoso.example, ForwardingSmtpAddress: "smtp:bob@contoso.example"}
+    expect_hits: 0
+  - name: clearing a forwarding address names no external domain
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: contoso.example
+      - table: ual_events
+        operation: Set-Mailbox
+        user_upn: alice@contoso.example
+        parameters: {Identity: alice@contoso.example, ForwardingSmtpAddress: ""}
+    expect_hits: 0
+  - name: an external address in a parameter that is not a forwarding target
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: contoso.example
+      - table: ual_events
+        operation: Set-Mailbox
+        user_upn: alice@contoso.example
+        parameters: {Identity: alice@contoso.example, EmailAddresses: "smtp:alice@example.net"}
+    expect_hits: 0
+  - name: another tenant's domain list does not make an address internal
+    records:
+      - table: tenant_domains
+        tenant_key: other
+        domain: example.net
+      - table: mailboxes
+        upn: alice@contoso.example
+        forwarding_smtp_address: "smtp:x@example.net"
+    expect_hits: 1

@@ -1,0 +1,273 @@
+# SPW-HAWK-002 — Hawk H03 parity. Logic source: coverage.yaml ("Add-MailboxPermission with
+# AccessRights containing FullAccess or SendAs, Add-RecipientPermission, or Add-ADPermission;
+# excluding UserId "NT AUTHORITY\SYSTEM (Microsoft.Exchange.ServiceHost)" on a
+# DiscoverySearchMailbox for Discovery Management. A mailbox_permissions full_access / send_as row
+# whose grantee is a tenant user created in the window also counts"). Hawk 3.1 records the same
+# cmdlets in Search-AdminAuditLog (admin_audit_events).
+# `sql:` because the rule reads three sources with different shapes and the window of the
+# collected-permission arm is the collection window (`collections`). Read literally, only
+# Add-MailboxPermission is qualified by its AccessRights: Add-RecipientPermission and
+# Add-ADPermission are permission grants whatever they carry. The Exchange service's own grant is
+# excluded only when all three parts hold (actor, a DiscoverySearchMailbox, Discovery Management),
+# so a person granting Discovery Management, or the service granting anything else, still matches.
+# The parameter map is unnested once per command and pivoted by lower-cased key, so parameter
+# names match case-insensitively as they do in `match:` rules.
+id: SPW-HAWK-002
+title: FullAccess, SendAs or recipient permission granted (not the SYSTEM discovery grant)
+version: 1
+status: stable
+severity: high
+confidence: medium
+mitre: [T1098.002]
+tags: [bec, permissions, persistence]
+requires: []
+requires_evidence: []
+sql: |
+  WITH cmds AS (
+    SELECT lower(CAST(u.record_id AS VARCHAR)) AS record_key, true AS is_ual, u.event_time AS t,
+           u.user_upn AS actor, u.client_ip AS ip, lower(u.operation) AS cmdlet,
+           u.object_id AS obj, u.parameters AS prm
+    FROM ual_events u
+    WHERE lower(u.operation) IN ('add-mailboxpermission', 'add-recipientpermission', 'add-adpermission')
+    UNION ALL
+    SELECT a.record_key, false, a.run_time, a.caller, a.client_ip, lower(a.cmdlet),
+           a.object_modified, a.parameters
+    FROM admin_audit_events a
+    WHERE lower(a.cmdlet) IN ('add-mailboxpermission', 'add-recipientpermission', 'add-adpermission')
+  ),
+  kv AS (
+    SELECT c.record_key, c.is_ual, lower(x.e.key) AS k, x.e.value AS v
+    FROM cmds c, unnest(map_entries(c.prm)) AS x(e)
+  ),
+  p AS (
+    SELECT record_key, is_ual,
+           max(v) FILTER (WHERE k = 'accessrights') AS access_rights,
+           max(v) FILTER (WHERE k = 'user') AS grantee,
+           max(v) FILTER (WHERE k = 'identity') AS identity
+    FROM kv
+    GROUP BY record_key, is_ual
+  ),
+  grants AS (
+    SELECT c.record_key, c.is_ual, c.t, c.actor, c.ip, c.cmdlet, p.access_rights, p.grantee,
+           coalesce(nullif(trim(p.identity), ''), c.obj) AS target
+    FROM cmds c LEFT JOIN p ON p.record_key = c.record_key AND p.is_ual = c.is_ual
+  )
+  SELECT g.record_key,
+         CASE WHEN g.is_ual THEN 'ual_events' ELSE 'admin_audit_events' END AS source_table,
+         g.t AS event_time, g.actor AS actor_upn, g.ip AS ip,
+         json_object('cmdlet', g.cmdlet, 'mailbox', g.target, 'grantee', g.grantee,
+                     'access_rights', g.access_rights) AS context
+  FROM grants g
+  WHERE (   (g.cmdlet = 'add-mailboxpermission'
+             AND (strpos(lower(coalesce(g.access_rights, '')), 'fullaccess') > 0
+                  OR strpos(lower(coalesce(g.access_rights, '')), 'sendas') > 0))
+         OR g.cmdlet IN ('add-recipientpermission', 'add-adpermission'))
+    AND NOT (lower(trim(coalesce(g.actor, ''))) = 'nt authority\system (microsoft.exchange.servicehost)'
+             AND strpos(lower(coalesce(g.target, '')), 'discoverysearchmailbox') > 0
+             AND lower(trim(coalesce(g.grantee, ''))) = 'discovery management')
+  UNION ALL
+  SELECT m.record_key, 'mailbox_permissions' AS source_table,
+         coalesce(m.collected_at, c.window_end) AS event_time, m.mailbox_upn AS actor_upn,
+         CAST(NULL AS VARCHAR) AS ip,
+         json_object('grantee', coalesce(nullif(m.grantee_upn, ''), m.grantee),
+                     'permission', CAST(m.permission AS VARCHAR)) AS context
+  FROM mailbox_permissions m JOIN collections c ON c.collection_id = m.collection_id
+  WHERE m.permission IN ('full_access', 'send_as')
+    AND NOT coalesce(m.deny, false)
+    AND c.window_start IS NOT NULL
+    AND EXISTS (
+      SELECT 1 FROM users u
+      WHERE lower(u.upn) = lower(coalesce(nullif(m.grantee_upn, ''), m.grantee))
+        AND u.created >= c.window_start
+        AND (c.window_end IS NULL OR u.created <= c.window_end))
+group_by: [actor_upn]
+analyst_guidance: |
+  Someone was given the right to read, or send as, another person's mailbox. FullAccess and
+  SendAs on a mailbox the grantee has no business with is a common way to keep access after the
+  original account is reset. Check who granted it and from which address, whether the grantee is
+  a new account, and what the grantee did with the access afterwards. A collected permission for a
+  user created inside the collection window is shown even when the grant itself is not in the log.
+false_positives:
+  - An administrator giving a delegate access to a shared or executive mailbox.
+  - A migration or backup service account granted FullAccess across mailboxes.
+references:
+  - https://learn.microsoft.com/en-us/powershell/module/exchange/add-mailboxpermission
+  - https://learn.microsoft.com/en-us/powershell/module/exchange/add-recipientpermission
+  - https://learn.microsoft.com/en-us/powershell/module/exchange/add-adpermission
+  - https://learn.microsoft.com/en-us/purview/audit-log-activities
+author: Sparrow
+tests:
+  - name: FullAccess granted on another mailbox
+    records:
+      - table: ual_events
+        operation: Add-MailboxPermission
+        user_upn: admin@contoso.example
+        object_id: bob@contoso.example
+        parameters: {Identity: bob@contoso.example, User: alice@contoso.example, AccessRights: FullAccess, InheritanceType: All}
+    expect_hits: 1
+  - name: SendAs listed among several rights
+    records:
+      - table: ual_events
+        operation: Add-MailboxPermission
+        user_upn: admin@contoso.example
+        parameters: {Identity: bob@contoso.example, User: alice@contoso.example, AccessRights: "ReadPermission, SendAs"}
+    expect_hits: 1
+  - name: Add-RecipientPermission is a grant whatever it carries
+    records:
+      - table: ual_events
+        operation: Add-RecipientPermission
+        user_upn: admin@contoso.example
+        parameters: {Identity: bob@contoso.example, Trustee: alice@contoso.example, AccessRights: SendAs}
+    expect_hits: 1
+  - name: Add-RecipientPermission without logged parameters
+    records:
+      - table: ual_events
+        operation: Add-RecipientPermission
+        user_upn: admin@contoso.example
+    expect_hits: 1
+  - name: Add-ADPermission
+    records:
+      - table: ual_events
+        operation: Add-ADPermission
+        user_upn: admin@contoso.example
+        parameters: {Identity: bob@contoso.example, User: alice@contoso.example, ExtendedRights: Send-As}
+    expect_hits: 1
+  - name: FullAccess granted in the Hawk 3 admin audit log
+    records:
+      - table: admin_audit_events
+        cmdlet: Add-MailboxPermission
+        caller: admin@contoso.example
+        run_time: "2026-03-01T10:00:00Z"
+        parameters: {Identity: bob@contoso.example, User: alice@contoso.example, AccessRights: FullAccess}
+    expect_hits: 1
+  - name: the Exchange service's own grant on the discovery mailbox
+    records:
+      - table: ual_events
+        operation: Add-MailboxPermission
+        user_upn: 'NT AUTHORITY\SYSTEM (Microsoft.Exchange.ServiceHost)'
+        object_id: 'DiscoverySearchMailbox{D919BA05-46A6-415F-80AD-7E09334BB852}@contoso.example'
+        parameters: {Identity: 'DiscoverySearchMailbox{D919BA05-46A6-415F-80AD-7E09334BB852}@contoso.example', User: Discovery Management, AccessRights: FullAccess}
+    expect_hits: 0
+  - name: the same system grant in the admin audit log
+    records:
+      - table: admin_audit_events
+        cmdlet: Add-MailboxPermission
+        caller: 'NT AUTHORITY\SYSTEM (Microsoft.Exchange.ServiceHost)'
+        run_time: "2026-03-01T10:00:00Z"
+        object_modified: 'DiscoverySearchMailbox{D919BA05-46A6-415F-80AD-7E09334BB852}'
+        parameters: {Identity: 'DiscoverySearchMailbox{D919BA05-46A6-415F-80AD-7E09334BB852}', User: Discovery Management, AccessRights: FullAccess}
+    expect_hits: 0
+  - name: the service granting on an ordinary mailbox still matches
+    records:
+      - table: ual_events
+        operation: Add-MailboxPermission
+        user_upn: 'NT AUTHORITY\SYSTEM (Microsoft.Exchange.ServiceHost)'
+        parameters: {Identity: bob@contoso.example, User: Discovery Management, AccessRights: FullAccess}
+    expect_hits: 1
+  - name: a person granting Discovery Management on the discovery mailbox still matches
+    records:
+      - table: ual_events
+        operation: Add-MailboxPermission
+        user_upn: admin@contoso.example
+        parameters: {Identity: 'DiscoverySearchMailbox{D919BA05-46A6-415F-80AD-7E09334BB852}@contoso.example', User: Discovery Management, AccessRights: FullAccess}
+    expect_hits: 1
+  - name: ReadPermission alone is not FullAccess or SendAs
+    records:
+      - table: ual_events
+        operation: Add-MailboxPermission
+        user_upn: admin@contoso.example
+        parameters: {Identity: bob@contoso.example, User: alice@contoso.example, AccessRights: ReadPermission}
+    expect_hits: 0
+  - name: removing a permission is not granting one
+    records:
+      - table: ual_events
+        operation: Remove-MailboxPermission
+        user_upn: admin@contoso.example
+        parameters: {Identity: bob@contoso.example, User: alice@contoso.example, AccessRights: FullAccess}
+    expect_hits: 0
+  - name: collected FullAccess for a user created inside the collection window
+    records:
+      - table: collections
+        collection_id: 902
+        tenant_key: test
+        window_start: "2026-03-01T00:00:00Z"
+        window_end: "2026-03-31T00:00:00Z"
+      - table: users
+        collection_id: 902
+        upn: newhire@contoso.example
+        created: "2026-03-10T08:00:00Z"
+      - table: mailbox_permissions
+        collection_id: 902
+        mailbox_upn: bob@contoso.example
+        grantee_upn: newhire@contoso.example
+        permission: full_access
+    expect_hits: 1
+  - name: collected SendAs for a user created inside the collection window
+    records:
+      - table: collections
+        collection_id: 902
+        tenant_key: test
+        window_start: "2026-03-01T00:00:00Z"
+        window_end: "2026-03-31T00:00:00Z"
+      - table: users
+        collection_id: 902
+        upn: newhire@contoso.example
+        created: "2026-03-10T08:00:00Z"
+      - table: mailbox_permissions
+        collection_id: 902
+        mailbox_upn: bob@contoso.example
+        grantee_upn: NewHire@contoso.example
+        permission: send_as
+    expect_hits: 1
+  - name: collected FullAccess for a user created before the window
+    records:
+      - table: collections
+        collection_id: 902
+        tenant_key: test
+        window_start: "2026-03-01T00:00:00Z"
+        window_end: "2026-03-31T00:00:00Z"
+      - table: users
+        collection_id: 902
+        upn: veteran@contoso.example
+        created: "2024-01-05T08:00:00Z"
+      - table: mailbox_permissions
+        collection_id: 902
+        mailbox_upn: bob@contoso.example
+        grantee_upn: veteran@contoso.example
+        permission: full_access
+    expect_hits: 0
+  - name: a collected deny entry is not a grant
+    records:
+      - table: collections
+        collection_id: 902
+        tenant_key: test
+        window_start: "2026-03-01T00:00:00Z"
+        window_end: "2026-03-31T00:00:00Z"
+      - table: users
+        collection_id: 902
+        upn: newhire@contoso.example
+        created: "2026-03-10T08:00:00Z"
+      - table: mailbox_permissions
+        collection_id: 902
+        mailbox_upn: bob@contoso.example
+        grantee_upn: newhire@contoso.example
+        permission: full_access
+        deny: true
+    expect_hits: 0
+  - name: a collected folder permission is not FullAccess or SendAs
+    records:
+      - table: collections
+        collection_id: 902
+        tenant_key: test
+        window_start: "2026-03-01T00:00:00Z"
+        window_end: "2026-03-31T00:00:00Z"
+      - table: users
+        collection_id: 902
+        upn: newhire@contoso.example
+        created: "2026-03-10T08:00:00Z"
+      - table: mailbox_permissions
+        collection_id: 902
+        mailbox_upn: bob@contoso.example
+        grantee_upn: newhire@contoso.example
+        permission: folder
+    expect_hits: 0

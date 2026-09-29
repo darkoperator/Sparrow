@@ -1,0 +1,119 @@
+# SPW-HAWK-003 — Hawk H04 parity. Logic source: coverage.yaml ("Set-Mailbox, Set-MailUser,
+# Set-RemoteMailbox or Enable-RemoteMailbox with any of the parameters ForwardingAddress,
+# ForwardingSmtpAddress, DeliverToMailboxAndForward, ExternalEmailAddress, RedirectTo (any value,
+# including clearing it)"). Hawk 3.1 records the same cmdlets in Search-AdminAuditLog
+# (admin_audit_events), so both sources are covered.
+# "Any value, including clearing it" means the parameter is present, even as the empty string.
+# `exists` treats an empty value as absent, so presence is tested with `regex: ""`, which matches
+# every non-NULL value (a missing key is NULL and never matches).
+id: SPW-HAWK-003
+title: Mailbox forwarding parameter changed
+version: 1
+status: stable
+severity: medium
+confidence: medium
+mitre: [T1114.003]
+tags: [bec, forwarding]
+requires: []
+requires_evidence: [ual]
+sources:
+  - source: ual_events
+    match:
+      all:
+        - operation: {in: [Set-Mailbox, Set-MailUser, Set-RemoteMailbox, Enable-RemoteMailbox]}
+        - any:
+            - parameters.ForwardingAddress: {regex: ""}
+            - parameters.ForwardingSmtpAddress: {regex: ""}
+            - parameters.DeliverToMailboxAndForward: {regex: ""}
+            - parameters.ExternalEmailAddress: {regex: ""}
+            - parameters.RedirectTo: {regex: ""}
+  - source: admin_audit_events
+    match:
+      all:
+        - cmdlet: {in: [Set-Mailbox, Set-MailUser, Set-RemoteMailbox, Enable-RemoteMailbox]}
+        - any:
+            - parameters.ForwardingAddress: {regex: ""}
+            - parameters.ForwardingSmtpAddress: {regex: ""}
+            - parameters.DeliverToMailboxAndForward: {regex: ""}
+            - parameters.ExternalEmailAddress: {regex: ""}
+            - parameters.RedirectTo: {regex: ""}
+group_by: [actor_upn]
+analyst_guidance: |
+  Someone changed where a mailbox's mail goes. Read the new value: an address outside the tenant,
+  or one the mailbox owner does not know, is the classic BEC exfiltration step. A cleared value
+  is still a change (an attacker removing evidence, or an admin remediating), so check the
+  neighbouring events and who ran the cmdlet and from which address.
+false_positives:
+  - An administrator setting up or removing forwarding for a leaver or a shared mailbox.
+  - Migration or hybrid tooling that sets ExternalEmailAddress on mail users.
+references:
+  - https://learn.microsoft.com/en-us/powershell/module/exchange/set-mailbox
+  - https://learn.microsoft.com/en-us/powershell/module/exchange/set-mailuser
+  - https://learn.microsoft.com/en-us/purview/audit-log-activities
+author: Sparrow
+tests:
+  - name: Set-Mailbox sets a forwarding address
+    records:
+      - table: ual_events
+        operation: Set-Mailbox
+        user_upn: alice@contoso.example
+        parameters: {Identity: alice@contoso.example, ForwardingSmtpAddress: "smtp:x@example.net"}
+    expect_hits: 1
+  - name: clearing the forwarding address still counts
+    records:
+      - table: ual_events
+        operation: Set-Mailbox
+        user_upn: alice@contoso.example
+        parameters: {Identity: alice@contoso.example, ForwardingSmtpAddress: ""}
+    expect_hits: 1
+  - name: DeliverToMailboxAndForward alone counts
+    records:
+      - table: ual_events
+        operation: Set-Mailbox
+        user_upn: alice@contoso.example
+        parameters: {Identity: alice@contoso.example, DeliverToMailboxAndForward: "False"}
+    expect_hits: 1
+  - name: Set-MailUser ExternalEmailAddress counts
+    records:
+      - table: ual_events
+        operation: Set-MailUser
+        user_upn: alice@contoso.example
+        parameters: {Identity: bob@contoso.example, ExternalEmailAddress: "SMTP:b@example.net"}
+    expect_hits: 1
+  - name: the same cmdlet in the Hawk 3 admin audit log
+    records:
+      - table: admin_audit_events
+        cmdlet: Set-Mailbox
+        caller: alice@contoso.example
+        run_time: "2026-03-01T10:00:00Z"
+        parameters: {Identity: alice@contoso.example, ForwardingAddress: bob@contoso.example}
+    expect_hits: 1
+  - name: Set-Mailbox with an unrelated parameter is not a forwarding change
+    records:
+      - table: ual_events
+        operation: Set-Mailbox
+        user_upn: alice@contoso.example
+        parameters: {Identity: alice@contoso.example, AuditOwner: SearchQueryInitiated}
+    expect_hits: 0
+  - name: Set-Mailbox in the admin audit log without a forwarding parameter
+    records:
+      - table: admin_audit_events
+        cmdlet: Set-Mailbox
+        caller: alice@contoso.example
+        run_time: "2026-03-01T10:00:00Z"
+        parameters: {Identity: alice@contoso.example, AuditOwner: SearchQueryInitiated}
+    expect_hits: 0
+  - name: another cmdlet carrying the parameter name is not one of the four
+    records:
+      - table: ual_events
+        operation: Get-Mailbox
+        user_upn: alice@contoso.example
+        parameters: {ForwardingSmtpAddress: "smtp:x@example.net"}
+    expect_hits: 0
+  - name: an admin audit row without parameters does not match
+    records:
+      - table: admin_audit_events
+        cmdlet: Set-Mailbox
+        caller: alice@contoso.example
+        run_time: "2026-03-01T10:00:00Z"
+    expect_hits: 0

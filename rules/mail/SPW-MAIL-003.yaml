@@ -1,0 +1,162 @@
+# SPW-MAIL-003 — inbox rule with finance keywords or a hiding folder. Logic source: coverage.yaml
+# ("Inbox rule (inbox_rules, or UAL New-InboxRule / Set-InboxRule / UpdateInboxRules) whose
+# SubjectContainsWords, BodyContainsWords or SubjectOrBodyContainsWords hit @list:finance_keywords,
+# or whose MoveToFolder is in @list:hiding_folders or is a single character"). Hawk 3.1 records
+# New-InboxRule and Set-InboxRule in Search-AdminAuditLog (admin_audit_events), so that source is
+# covered too. The keyword lists are matched as substrings (`contains_any`), the folder list as
+# whole names (`in`); both are written as `match:` (not `sql:`) so that editing either list changes
+# the rule's hash (`rule_sha256` only sees `@list:` values of the rule text).
+id: SPW-MAIL-003
+title: Inbox rule with finance keywords or a hiding folder
+version: 1
+status: stable
+severity: high
+confidence: medium
+mitre: [T1564.008, T1114.003]
+tags: [bec, inbox-rule]
+requires: []
+requires_evidence: []
+sources:
+  - source: inbox_rules
+    match:
+      any:
+        - subject_contains: {contains_any: "@list:finance_keywords"}
+        - body_contains: {contains_any: "@list:finance_keywords"}
+        - subject_or_body_contains: {contains_any: "@list:finance_keywords"}
+        - move_to_folder: {in: "@list:hiding_folders"}
+        - move_to_folder: {regex: "^.$"}
+  - source: ual_events
+    match:
+      all:
+        - operation: {in: [New-InboxRule, Set-InboxRule, UpdateInboxRules]}
+        - any:
+            - parameters.SubjectContainsWords: {contains_any: "@list:finance_keywords"}
+            - parameters.BodyContainsWords: {contains_any: "@list:finance_keywords"}
+            - parameters.SubjectOrBodyContainsWords: {contains_any: "@list:finance_keywords"}
+            - parameters.MoveToFolder: {in: "@list:hiding_folders"}
+            - parameters.MoveToFolder: {regex: "^.$"}
+  - source: admin_audit_events
+    match:
+      all:
+        - cmdlet: {in: [New-InboxRule, Set-InboxRule]}
+        - any:
+            - parameters.SubjectContainsWords: {contains_any: "@list:finance_keywords"}
+            - parameters.BodyContainsWords: {contains_any: "@list:finance_keywords"}
+            - parameters.SubjectOrBodyContainsWords: {contains_any: "@list:finance_keywords"}
+            - parameters.MoveToFolder: {in: "@list:hiding_folders"}
+            - parameters.MoveToFolder: {regex: "^.$"}
+group_by: [actor_upn]
+analyst_guidance: |
+  BEC actors watch for finance mail and hide it from the victim: a rule keyed on words such as
+  invoice or payment, or one that moves mail into a folder nobody reads (RSS Feeds, Conversation
+  History, Archive, Junk Email, Deleted Items, or a one-character folder name). Read the rule's
+  conditions and action, who created it and from where, and whether the mail it caught was later
+  read or forwarded.
+false_positives:
+  - A finance user's own rule that files invoices into Archive.
+  - A rule that moves newsletters into Junk Email or Deleted Items.
+references:
+  - https://learn.microsoft.com/en-us/powershell/module/exchange/new-inboxrule
+  - https://learn.microsoft.com/en-us/powershell/module/exchange/set-inboxrule
+  - https://learn.microsoft.com/en-us/purview/audit-log-activities
+author: Sparrow
+tests:
+  - name: collected rule moves finance-keyword mail into RSS Feeds
+    records:
+      - table: inbox_rules
+        mailbox_upn: alice@contoso.example
+        subject_or_body_contains: [invoice, payment, wire]
+        move_to_folder: RSS Feeds
+    expect_hits: 1
+  - name: collected rule keyed on a subject word
+    records:
+      - table: inbox_rules
+        mailbox_upn: alice@contoso.example
+        subject_contains: [Payment reminder]
+    expect_hits: 1
+  - name: collected rule keyed on a body word
+    records:
+      - table: inbox_rules
+        mailbox_upn: alice@contoso.example
+        body_contains: [please wire the funds]
+    expect_hits: 1
+  - name: collected rule moves mail into a hiding folder without keywords
+    records:
+      - table: inbox_rules
+        mailbox_upn: alice@contoso.example
+        move_to_folder: Conversation History
+    expect_hits: 1
+  - name: collected rule moves mail into a folder with a one-character name
+    records:
+      - table: inbox_rules
+        mailbox_upn: alice@contoso.example
+        move_to_folder: "."
+    expect_hits: 1
+  - name: New-InboxRule with finance keywords and a hiding folder
+    records:
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        parameters: {Name: ., SubjectOrBodyContainsWords: "invoice;payment;wire", MoveToFolder: RSS Feeds}
+    expect_hits: 1
+  - name: New-InboxRule with finance keywords only
+    records:
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        parameters: {Name: AP, SubjectContainsWords: "Overdue invoice"}
+    expect_hits: 1
+  - name: Set-InboxRule moving mail into a one-character folder
+    records:
+      - table: ual_events
+        operation: Set-InboxRule
+        user_upn: alice@contoso.example
+        parameters: {Identity: 'alice@contoso.example\AP', MoveToFolder: x}
+    expect_hits: 1
+  - name: the same rule in the Hawk 3 admin audit log
+    records:
+      - table: admin_audit_events
+        cmdlet: New-InboxRule
+        caller: alice@contoso.example
+        run_time: "2026-03-01T10:00:00Z"
+        parameters: {Name: ., SubjectOrBodyContainsWords: "invoice;payment;wire", MoveToFolder: RSS Feeds}
+    expect_hits: 1
+  - name: hiding folder in the admin audit log without keywords
+    records:
+      - table: admin_audit_events
+        cmdlet: Set-InboxRule
+        caller: alice@contoso.example
+        run_time: "2026-03-01T10:00:00Z"
+        parameters: {Identity: 'alice@contoso.example\AP', MoveToFolder: Archive}
+    expect_hits: 1
+  - name: a vendor filing rule (a named folder, no finance words)
+    records:
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        parameters: {Name: Vendor mail, From: billing@vendor.example, MoveToFolder: Vendors}
+      - table: inbox_rules
+        mailbox_upn: alice@contoso.example
+        from_addresses: [billing@vendor.example]
+        move_to_folder: Vendors
+    expect_hits: 0
+  - name: a rule keyed on a sender that moves mail into a two-character folder
+    records:
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        parameters: {Name: Team, From: team@contoso.example, MoveToFolder: Hr}
+    expect_hits: 0
+  - name: finance words on another cmdlet are not an inbox rule
+    records:
+      - table: ual_events
+        operation: Get-InboxRule
+        user_upn: alice@contoso.example
+        parameters: {SubjectContainsWords: invoice, MoveToFolder: Archive}
+    expect_hits: 0
+  - name: a collected rule with no conditions and no folder
+    records:
+      - table: inbox_rules
+        mailbox_upn: alice@contoso.example
+        forward_to: [bob@contoso.example]
+    expect_hits: 0

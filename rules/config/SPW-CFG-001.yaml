@@ -1,0 +1,183 @@
+# SPW-CFG-001 — audit logging tampered with. Logic source: coverage.yaml ("Set-Mailbox
+# -AuditEnabled $false, Set-MailboxAuditBypassAssociation -AuditBypassEnabled $true,
+# Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $false or -AdminAuditLogEnabled $false,
+# Set-OrganizationConfig -AuditDisabled $true; or collected state showing them (audit_config
+# unified_audit_log_ingestion_enabled false or audit_disabled true, mailboxes audit_bypass_enabled
+# true). Changing the audit age limit or adding audited actions is not tampering").
+# The cmdlet arms also read admin_audit_events: Hawk 3.1 records the same cmdlets there. Exchange
+# logs a boolean parameter as the text True / False, and a script may pass $true / $false.
+id: SPW-CFG-001
+title: Audit logging tampered with
+version: 1
+status: stable
+severity: critical
+confidence: high
+mitre: [T1562.008]
+tags: [defense-evasion, audit]
+requires: []
+requires_evidence: []
+sources:
+  - source: ual_events
+    match:
+      any:
+        - all:
+            - operation: {eq: Set-Mailbox}
+            - parameters.AuditEnabled: {in: ["False", "$false"]}
+        - all:
+            - operation: {eq: Set-MailboxAuditBypassAssociation}
+            - parameters.AuditBypassEnabled: {in: ["True", "$true"]}
+        - all:
+            - operation: {eq: Set-AdminAuditLogConfig}
+            - any:
+                - parameters.UnifiedAuditLogIngestionEnabled: {in: ["False", "$false"]}
+                - parameters.AdminAuditLogEnabled: {in: ["False", "$false"]}
+        - all:
+            - operation: {eq: Set-OrganizationConfig}
+            - parameters.AuditDisabled: {in: ["True", "$true"]}
+  - source: admin_audit_events
+    match:
+      any:
+        - all:
+            - cmdlet: {eq: Set-Mailbox}
+            - parameters.AuditEnabled: {in: ["False", "$false"]}
+        - all:
+            - cmdlet: {eq: Set-MailboxAuditBypassAssociation}
+            - parameters.AuditBypassEnabled: {in: ["True", "$true"]}
+        - all:
+            - cmdlet: {eq: Set-AdminAuditLogConfig}
+            - any:
+                - parameters.UnifiedAuditLogIngestionEnabled: {in: ["False", "$false"]}
+                - parameters.AdminAuditLogEnabled: {in: ["False", "$false"]}
+        - all:
+            - cmdlet: {eq: Set-OrganizationConfig}
+            - parameters.AuditDisabled: {in: ["True", "$true"]}
+  - source: audit_config
+    match:
+      any:
+        - unified_audit_log_ingestion_enabled: {eq: false}
+        - audit_disabled: {eq: true}
+  - source: mailboxes
+    match:
+      audit_bypass_enabled: {eq: true}
+group_by: [actor_upn]
+analyst_guidance: |
+  Turning auditing off is what an attacker does before working a mailbox or the tenant, so the
+  activity after it may not be logged at all. Treat everything from the change onward as
+  partly blind: check who made the change and from which address, which mailboxes are bypassed,
+  and whether unified audit ingestion is still off. Collected state (the audit config or a
+  mailbox's bypass flag) shows the setting as it was at collection, whoever set it.
+false_positives:
+  - Auditing bypass for a service account that is documented and reviewed.
+  - A planned audit-configuration change during a tenant migration.
+references:
+  - https://learn.microsoft.com/en-us/powershell/module/exchange/set-mailbox
+  - https://learn.microsoft.com/en-us/powershell/module/exchange/set-mailboxauditbypassassociation
+  - https://learn.microsoft.com/en-us/powershell/module/exchange/set-adminauditlogconfig
+  - https://learn.microsoft.com/en-us/powershell/module/exchange/set-organizationconfig
+author: Sparrow
+tests:
+  - name: mailbox auditing switched off
+    records:
+      - table: ual_events
+        operation: Set-Mailbox
+        user_upn: admin@contoso.example
+        parameters: {Identity: alice@contoso.example, AuditEnabled: "False"}
+    expect_hits: 1
+  - name: audit bypass association enabled
+    records:
+      - table: ual_events
+        operation: Set-MailboxAuditBypassAssociation
+        user_upn: admin@contoso.example
+        parameters: {Identity: alice@contoso.example, AuditBypassEnabled: "True"}
+    expect_hits: 1
+  - name: unified audit log ingestion switched off
+    records:
+      - table: ual_events
+        operation: Set-AdminAuditLogConfig
+        user_upn: admin@contoso.example
+        parameters: {UnifiedAuditLogIngestionEnabled: "False"}
+    expect_hits: 1
+  - name: admin audit log switched off
+    records:
+      - table: ual_events
+        operation: Set-AdminAuditLogConfig
+        user_upn: admin@contoso.example
+        parameters: {AdminAuditLogEnabled: "False"}
+    expect_hits: 1
+  - name: organization auditing disabled
+    records:
+      - table: ual_events
+        operation: Set-OrganizationConfig
+        user_upn: admin@contoso.example
+        parameters: {AuditDisabled: "True"}
+    expect_hits: 1
+  - name: auditing switched off with a $false literal in the admin audit log
+    records:
+      - table: admin_audit_events
+        cmdlet: Set-Mailbox
+        caller: admin@contoso.example
+        run_time: "2026-03-01T10:00:00Z"
+        parameters: {Identity: alice@contoso.example, AuditEnabled: "$false"}
+    expect_hits: 1
+  - name: collected audit config shows ingestion off
+    records:
+      - table: audit_config
+        unified_audit_log_ingestion_enabled: false
+    expect_hits: 1
+  - name: collected audit config shows organization auditing disabled
+    records:
+      - table: audit_config
+        audit_disabled: true
+    expect_hits: 1
+  - name: collected mailbox has an audit bypass
+    records:
+      - table: mailboxes
+        upn: alice@contoso.example
+        audit_bypass_enabled: true
+    expect_hits: 1
+  - name: changing the audit age limit is not tampering
+    records:
+      - table: ual_events
+        operation: Set-AdminAuditLogConfig
+        user_upn: admin@contoso.example
+        parameters: {AdminAuditLogAgeLimit: "180.00:00:00"}
+    expect_hits: 0
+  - name: adding audited owner actions is not tampering
+    records:
+      - table: ual_events
+        operation: Set-Mailbox
+        user_upn: admin@contoso.example
+        parameters: {Identity: alice@contoso.example, AuditOwner: SearchQueryInitiated}
+    expect_hits: 0
+  - name: turning auditing on is not tampering
+    records:
+      - table: ual_events
+        operation: Set-Mailbox
+        user_upn: admin@contoso.example
+        parameters: {Identity: alice@contoso.example, AuditEnabled: "True"}
+      - table: ual_events
+        operation: Set-AdminAuditLogConfig
+        user_upn: admin@contoso.example
+        parameters: {UnifiedAuditLogIngestionEnabled: "True"}
+      - table: ual_events
+        operation: Set-MailboxAuditBypassAssociation
+        user_upn: admin@contoso.example
+        parameters: {Identity: alice@contoso.example, AuditBypassEnabled: "False"}
+    expect_hits: 0
+  - name: healthy collected state
+    records:
+      - table: audit_config
+        unified_audit_log_ingestion_enabled: true
+        audit_disabled: false
+        admin_audit_log_age_limit: "180.00:00:00"
+      - table: mailboxes
+        upn: alice@contoso.example
+        audit_bypass_enabled: false
+        audit_enabled: true
+    expect_hits: 0
+  - name: state that says nothing about auditing
+    records:
+      - table: audit_config
+      - table: mailboxes
+        upn: alice@contoso.example
+    expect_hits: 0

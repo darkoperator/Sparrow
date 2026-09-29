@@ -1,0 +1,79 @@
+# SPW-HAWK-015 — automatic replies enabled. Logic source: coverage.yaml ("mailboxes
+# auto_reply_state Enabled or Scheduled, or UAL Set-MailboxAutoReplyConfiguration with
+# AutoReplyState Enabled or Scheduled"). Hawk 3.1's admin audit log is not a source here: the
+# coverage entry lists mailboxes and ual_events only.
+id: SPW-HAWK-015
+title: Automatic reply enabled
+version: 1
+status: stable
+severity: low
+confidence: low
+tags: [bec, autoreply]
+requires: []
+requires_evidence: []
+sources:
+  - source: mailboxes
+    match:
+      auto_reply_state: {in: [Enabled, Scheduled]}
+  - source: ual_events
+    match:
+      all:
+        - operation: {eq: Set-MailboxAutoReplyConfiguration}
+        - parameters.AutoReplyState: {in: [Enabled, Scheduled]}
+group_by: [actor_upn]
+analyst_guidance: |
+  An attacker who has taken a mailbox may turn on an automatic reply to buy time (the victim's
+  contacts are told the user is away) or to harvest replies. Read the reply text and its
+  audience (internal only, or external too), and compare when it was enabled with the sign-ins
+  and rule changes around it.
+false_positives:
+  - A user going on leave who enabled an out-of-office reply.
+references:
+  - https://learn.microsoft.com/en-us/powershell/module/exchange/set-mailboxautoreplyconfiguration
+  - https://learn.microsoft.com/en-us/purview/audit-log-activities
+author: Sparrow
+tests:
+  - name: collected mailbox has automatic replies enabled
+    records:
+      - table: mailboxes
+        upn: alice@contoso.example
+        auto_reply_state: Enabled
+    expect_hits: 1
+  - name: collected mailbox has scheduled automatic replies
+    records:
+      - table: mailboxes
+        upn: alice@contoso.example
+        auto_reply_state: Scheduled
+    expect_hits: 1
+  - name: automatic replies switched on through Set-MailboxAutoReplyConfiguration
+    records:
+      - table: ual_events
+        operation: Set-MailboxAutoReplyConfiguration
+        user_upn: alice@contoso.example
+        parameters: {Identity: alice@contoso.example, AutoReplyState: Enabled}
+    expect_hits: 1
+  - name: collected mailbox has automatic replies disabled
+    records:
+      - table: mailboxes
+        upn: alice@contoso.example
+        auto_reply_state: Disabled
+    expect_hits: 0
+  - name: automatic replies switched off through Set-MailboxAutoReplyConfiguration
+    records:
+      - table: ual_events
+        operation: Set-MailboxAutoReplyConfiguration
+        user_upn: alice@contoso.example
+        parameters: {Identity: alice@contoso.example, AutoReplyState: Disabled}
+    expect_hits: 0
+  - name: a mailbox that reports no automatic reply state
+    records:
+      - table: mailboxes
+        upn: alice@contoso.example
+    expect_hits: 0
+  - name: another cmdlet with an AutoReplyState parameter
+    records:
+      - table: ual_events
+        operation: Set-Mailbox
+        user_upn: alice@contoso.example
+        parameters: {AutoReplyState: Enabled}
+    expect_hits: 0

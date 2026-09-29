@@ -1,0 +1,160 @@
+# SPW-HAWK-010 — Hawk H12 parity. Logic source: coverage.yaml ("inbox_rules row with delete_message
+# true, or non-empty forward_to, forward_as_attachment_to or redirect_to; or UAL New-InboxRule /
+# Set-InboxRule / UpdateInboxRules creating such a rule"). Hawk 3.1 records New-InboxRule and
+# Set-InboxRule in Search-AdminAuditLog (admin_audit_events), so that source is covered too.
+# Unlike Hawk, the text "False" is false: DeleteMessage matches only the value True.
+id: SPW-HAWK-010
+title: User inbox rule deletes, forwards or redirects mail
+version: 1
+status: stable
+severity: high
+confidence: medium
+mitre: [T1114.003, T1564.008]
+tags: [bec, inbox-rule, forwarding]
+requires: []
+requires_evidence: []
+sources:
+  - source: inbox_rules
+    match:
+      any:
+        - delete_message: {eq: true}
+        - forward_to: {exists: true}
+        - forward_as_attachment_to: {exists: true}
+        - redirect_to: {exists: true}
+  - source: ual_events
+    match:
+      all:
+        - operation: {in: [New-InboxRule, Set-InboxRule, UpdateInboxRules]}
+        - any:
+            - parameters.DeleteMessage: {eq: "True"}
+            - parameters.ForwardTo: {exists: true}
+            - parameters.ForwardAsAttachmentTo: {exists: true}
+            - parameters.RedirectTo: {exists: true}
+  - source: admin_audit_events
+    match:
+      all:
+        - cmdlet: {in: [New-InboxRule, Set-InboxRule]}
+        - any:
+            - parameters.DeleteMessage: {eq: "True"}
+            - parameters.ForwardTo: {exists: true}
+            - parameters.ForwardAsAttachmentTo: {exists: true}
+            - parameters.RedirectTo: {exists: true}
+group_by: [actor_upn]
+analyst_guidance: |
+  A rule that deletes, forwards or redirects mail is how a BEC actor hides replies or copies a
+  victim's mail out. Read the rule's conditions (sender, subject words) and its target; a
+  forward to an external address or a delete of everything from one sender is the pattern. Check
+  who created the rule, from which address, and what sign-in preceded it.
+false_positives:
+  - A user's own rule forwarding a shared mailbox's mail to a colleague.
+  - An out-of-office style rule that redirects mail to a delegate.
+references:
+  - https://learn.microsoft.com/en-us/powershell/module/exchange/new-inboxrule
+  - https://learn.microsoft.com/en-us/powershell/module/exchange/set-inboxrule
+  - https://learn.microsoft.com/en-us/purview/audit-log-activities
+author: Sparrow
+tests:
+  - name: collected rule forwards mail
+    records:
+      - table: inbox_rules
+        mailbox_upn: alice@contoso.example
+        forward_to: [x@example.net]
+    expect_hits: 1
+  - name: collected rule deletes mail
+    records:
+      - table: inbox_rules
+        mailbox_upn: alice@contoso.example
+        delete_message: true
+    expect_hits: 1
+  - name: collected rule redirects mail
+    records:
+      - table: inbox_rules
+        mailbox_upn: alice@contoso.example
+        redirect_to: [x@example.net]
+    expect_hits: 1
+  - name: collected rule forwards as an attachment
+    records:
+      - table: inbox_rules
+        mailbox_upn: alice@contoso.example
+        forward_as_attachment_to: [x@example.net]
+    expect_hits: 1
+  - name: collected rule only files mail into a folder
+    records:
+      - table: inbox_rules
+        mailbox_upn: alice@contoso.example
+        delete_message: false
+        move_to_folder: Vendors
+        forward_to: []
+    expect_hits: 0
+  - name: New-InboxRule with ForwardTo
+    records:
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        parameters: {Name: AP, ForwardTo: "x@example.net;bob@contoso.example"}
+    expect_hits: 1
+  - name: Set-InboxRule with RedirectTo
+    records:
+      - table: ual_events
+        operation: Set-InboxRule
+        user_upn: alice@contoso.example
+        parameters: {Identity: 'alice@contoso.example\AP', RedirectTo: x@example.net}
+    expect_hits: 1
+  - name: New-InboxRule with DeleteMessage True
+    records:
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        parameters: {Name: Purge, DeleteMessage: "True"}
+    expect_hits: 1
+  - name: the same rule in the Hawk 3 admin audit log
+    records:
+      - table: admin_audit_events
+        cmdlet: New-InboxRule
+        caller: alice@contoso.example
+        run_time: "2026-03-01T10:00:00Z"
+        parameters: {Name: AP, ForwardTo: x@example.net}
+    expect_hits: 1
+  - name: the text False is false (a Hawk bug this rule does not reproduce)
+    records:
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        parameters: {Name: Processed, MoveToFolder: Processed, DeleteMessage: "False"}
+    expect_hits: 0
+  - name: the text False is false in the admin audit log too
+    records:
+      - table: admin_audit_events
+        cmdlet: New-InboxRule
+        caller: alice@contoso.example
+        run_time: "2026-03-01T10:00:00Z"
+        parameters: {Name: Processed, DeleteMessage: "False"}
+    expect_hits: 0
+  - name: a rule that only files mail into a folder
+    records:
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        parameters: {Name: Vendor mail, From: billing@vendor.example, MoveToFolder: Vendors}
+    expect_hits: 0
+  - name: a finance-keyword rule that hides mail without forwarding or deleting it
+    records:
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        parameters: {Name: ., SubjectOrBodyContainsWords: "invoice;payment", MoveToFolder: RSS Feeds}
+    expect_hits: 0
+  - name: an empty ForwardTo is not a forward
+    records:
+      - table: ual_events
+        operation: Set-InboxRule
+        user_upn: alice@contoso.example
+        parameters: {Identity: 'alice@contoso.example\AP', ForwardTo: ""}
+    expect_hits: 0
+  - name: another operation with a ForwardTo parameter
+    records:
+      - table: ual_events
+        operation: Get-InboxRule
+        user_upn: alice@contoso.example
+        parameters: {ForwardTo: x@example.net}
+    expect_hits: 0

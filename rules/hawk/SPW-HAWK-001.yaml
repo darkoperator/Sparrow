@@ -1,0 +1,189 @@
+# SPW-HAWK-001 — Hawk H02 parity. Logic source: coverage.yaml ("ExchangeAdmin New-InboxRule,
+# Set-InboxRule or Remove-InboxRule where the rule's mailbox (parameter Mailbox, else the
+# Identity's mailbox part) differs from the actor (UserId), and ForwardTo, ForwardAsAttachmentTo or
+# RedirectTo is non-empty, DeleteMessage is True (the text "False" is false, unlike Hawk), or
+# MoveToFolder is Deleted Items. Hawk 3 admin_audit_events rows with the same cmdlets and
+# parameters count too").
+# `sql:` because the mailbox is the part of Identity before the first backslash (Identity is
+# `<mailbox>\<rule>`), which `eq_field` cannot express. The parameter map is unnested once per
+# command and pivoted by lower-cased key, so parameter names match case-insensitively as they do
+# in `match:` rules. Nothing is decided without a mailbox: a command that names neither Mailbox
+# nor Identity cannot be shown to touch another user's mailbox. Remove-InboxRule logs only an
+# Identity, so it matches only when it carries one of the action parameters. Exchange logs a
+# boolean parameter as the text True / False (`$true` would read as a bind parameter in `sql:`).
+id: SPW-HAWK-001
+title: Admin created, changed or removed another user's inbox rule that forwards, redirects or deletes
+version: 1
+status: stable
+severity: high
+confidence: medium
+mitre: [T1114.003, T1564.008]
+tags: [bec, inbox-rule, forwarding, admin]
+requires: []
+requires_evidence: [ual]
+sql: |
+  WITH cmds AS (
+    SELECT lower(CAST(u.record_id AS VARCHAR)) AS record_key, true AS is_ual, u.event_time AS t,
+           u.user_upn AS actor, u.client_ip AS ip, lower(u.operation) AS cmdlet, u.parameters AS prm
+    FROM ual_events u
+    WHERE lower(u.operation) IN ('new-inboxrule', 'set-inboxrule', 'remove-inboxrule')
+    UNION ALL
+    SELECT a.record_key, false, a.run_time, a.caller, a.client_ip, lower(a.cmdlet), a.parameters
+    FROM admin_audit_events a
+    WHERE lower(a.cmdlet) IN ('new-inboxrule', 'set-inboxrule', 'remove-inboxrule')
+  ),
+  kv AS (
+    SELECT c.record_key, c.is_ual, lower(x.e.key) AS k, x.e.value AS v
+    FROM cmds c, unnest(map_entries(c.prm)) AS x(e)
+  ),
+  p AS (
+    SELECT record_key, is_ual,
+           max(v) FILTER (WHERE k = 'mailbox') AS mailbox,
+           max(v) FILTER (WHERE k = 'identity') AS identity,
+           max(v) FILTER (WHERE k = 'forwardto') AS forward_to,
+           max(v) FILTER (WHERE k = 'forwardasattachmentto') AS forward_as_attachment_to,
+           max(v) FILTER (WHERE k = 'redirectto') AS redirect_to,
+           max(v) FILTER (WHERE k = 'deletemessage') AS delete_message,
+           max(v) FILTER (WHERE k = 'movetofolder') AS move_to_folder
+    FROM kv
+    GROUP BY record_key, is_ual
+  ),
+  rules AS (
+    SELECT c.record_key, c.is_ual, c.t, c.actor, c.ip, c.cmdlet, p.forward_to,
+           p.forward_as_attachment_to, p.redirect_to, p.delete_message, p.move_to_folder,
+           lower(trim(coalesce(nullif(trim(p.mailbox), ''), split_part(p.identity, chr(92), 1)))) AS target
+    FROM cmds c JOIN p ON p.record_key = c.record_key AND p.is_ual = c.is_ual
+  )
+  SELECT r.record_key,
+         CASE WHEN r.is_ual THEN 'ual_events' ELSE 'admin_audit_events' END AS source_table,
+         r.t AS event_time, r.actor AS actor_upn, r.ip AS ip,
+         json_object('cmdlet', r.cmdlet, 'mailbox', r.target) AS context
+  FROM rules r
+  WHERE r.target <> ''
+    AND r.target <> lower(trim(coalesce(r.actor, '')))
+    AND (   trim(coalesce(r.forward_to, '')) <> ''
+         OR trim(coalesce(r.forward_as_attachment_to, '')) <> ''
+         OR trim(coalesce(r.redirect_to, '')) <> ''
+         OR lower(trim(coalesce(r.delete_message, ''))) = 'true'
+         OR regexp_full_match(lower(trim(coalesce(r.move_to_folder, ''))), '(.*[:\\/])?deleted items'))
+group_by: [actor_upn]
+analyst_guidance: |
+  An administrator account wrote, changed or removed an inbox rule on someone else's mailbox that
+  forwards, redirects or deletes mail. Legitimate delegation rarely does this: it is what an
+  attacker with a stolen admin account does to redirect a victim's mail without touching the
+  victim's session. Read the rule's target and conditions, the admin's sign-in and address, and
+  whether the mailbox owner knows the rule exists.
+false_positives:
+  - A helpdesk or migration admin setting up a forwarding rule at the owner's request.
+  - An admin managing a shared mailbox's rules (a shared mailbox has no owner session).
+references:
+  - https://learn.microsoft.com/en-us/powershell/module/exchange/new-inboxrule
+  - https://learn.microsoft.com/en-us/powershell/module/exchange/set-inboxrule
+  - https://learn.microsoft.com/en-us/powershell/module/exchange/remove-inboxrule
+  - https://learn.microsoft.com/en-us/purview/audit-log-activities
+author: Sparrow
+tests:
+  - name: admin creates a forwarding and deleting rule on another mailbox
+    records:
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: admin@contoso.example
+        parameters: {Mailbox: bob@contoso.example, Name: Sync, ForwardTo: x@example.net, DeleteMessage: "True"}
+    expect_hits: 1
+  - name: Set-InboxRule takes the mailbox from the Identity
+    records:
+      - table: ual_events
+        operation: Set-InboxRule
+        user_upn: admin@contoso.example
+        parameters: {Identity: 'bob@contoso.example\Sync', RedirectTo: x@example.net}
+    expect_hits: 1
+  - name: forward as attachment on another mailbox
+    records:
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: admin@contoso.example
+        parameters: {Mailbox: bob@contoso.example, Name: Copy, ForwardAsAttachmentTo: x@example.net}
+    expect_hits: 1
+  - name: another mailbox's rule moves mail to Deleted Items
+    records:
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: admin@contoso.example
+        parameters: {Mailbox: bob@contoso.example, Name: tmp, MoveToFolder: Deleted Items}
+    expect_hits: 1
+  - name: the mailbox names differ only by case
+    records:
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: admin@contoso.example
+        parameters: {Mailbox: BOB@Contoso.example, Name: tmp, MoveToFolder: deleted items}
+    expect_hits: 1
+  - name: Remove-InboxRule that still logs an action parameter
+    records:
+      - table: ual_events
+        operation: Remove-InboxRule
+        user_upn: admin@contoso.example
+        parameters: {Identity: 'bob@contoso.example\Sync', ForwardTo: x@example.net}
+    expect_hits: 1
+  - name: the same command in the Hawk 3 admin audit log
+    records:
+      - table: admin_audit_events
+        cmdlet: New-InboxRule
+        caller: admin@contoso.example
+        run_time: "2026-03-01T10:00:00Z"
+        parameters: {Mailbox: bob@contoso.example, Name: Sync, ForwardTo: x@example.net}
+    expect_hits: 1
+  - name: the text False is false (a Hawk bug this rule does not reproduce)
+    records:
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: admin@contoso.example
+        parameters: {Mailbox: bob@contoso.example, Name: Processed, MoveToFolder: Processed, DeleteMessage: "False"}
+    expect_hits: 0
+  - name: the text False is false in the admin audit log too
+    records:
+      - table: admin_audit_events
+        cmdlet: New-InboxRule
+        caller: admin@contoso.example
+        run_time: "2026-03-01T10:00:00Z"
+        parameters: {Mailbox: bob@contoso.example, Name: Processed, DeleteMessage: "False"}
+    expect_hits: 0
+  - name: a user's own rule forwarding mail is not an admin acting on another mailbox
+    records:
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        parameters: {Mailbox: alice@contoso.example, Name: AP, ForwardTo: x@example.net}
+      - table: ual_events
+        operation: Set-InboxRule
+        user_upn: alice@contoso.example
+        parameters: {Identity: 'alice@contoso.example\AP', RedirectTo: x@example.net}
+    expect_hits: 0
+  - name: no mailbox and no identity means no other mailbox
+    records:
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: admin@contoso.example
+        parameters: {Name: AP, ForwardTo: x@example.net}
+    expect_hits: 0
+  - name: an admin's benign rule on another mailbox
+    records:
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: admin@contoso.example
+        parameters: {Mailbox: bob@contoso.example, Name: Processed, MoveToFolder: Processed}
+    expect_hits: 0
+  - name: an empty forward target and a folder that only ends like Deleted Items
+    records:
+      - table: ual_events
+        operation: Set-InboxRule
+        user_upn: admin@contoso.example
+        parameters: {Identity: 'bob@contoso.example\AP', ForwardTo: "", MoveToFolder: Old Deleted Items}
+    expect_hits: 0
+  - name: another cmdlet with the same parameters
+    records:
+      - table: ual_events
+        operation: Get-InboxRule
+        user_upn: admin@contoso.example
+        parameters: {Mailbox: bob@contoso.example, ForwardTo: x@example.net}
+    expect_hits: 0
