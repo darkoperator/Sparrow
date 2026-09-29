@@ -579,6 +579,9 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
         let user = plan.user;
         let (ip, session) = (plan.ip, plan.session);
         plan.received.sort_by_key(|m| m.time);
+        // The user's first sign-in of the day: the fresh authentication the captures mark with
+        // an authentication-method code, against the later ones the session lets through.
+        let first_login = plan.interactive.iter().map(|i| signins[*i].time).min();
 
         for &i in &plan.interactive {
             let s = &signins[i];
@@ -599,9 +602,9 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
                         "Login:login"
                     },
                     s.error_code,
-                    // A credential prompt: a failed password logon, or a successful sign-in
-                    // that had to satisfy an MFA challenge.
-                    !ok || s.mfa.is_some(),
+                    // A failed logon always carries the method; a successful one only on the
+                    // user's first sign-in of the day.
+                    !ok || first_login == Some(s.time),
                 ));
             }
         }

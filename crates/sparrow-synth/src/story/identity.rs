@@ -558,7 +558,7 @@ fn risk_dismissed(w: &mut World, ctx: &mut Ctx) {
 /// A sign-in from a Cloud PC: a Microsoft address (not a hosting provider) at the user's home.
 fn microsoft_asn_signin(w: &mut World, ctx: &mut Ctx) {
     let a = ctx.a.clone();
-    let ip = ctx.roaming.next();
+    let ip = ctx.shared.next_ip();
     let location = Location {
         asn: MICROSOFT_ASN.0,
         asn_org: MICROSOFT_ASN.1.to_string(),
@@ -631,7 +631,7 @@ fn plausible_travel(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     );
     push_signin(w, ctx, &a, before, true);
 
-    let ip = ctx.roaming.next();
+    let ip = ctx.shared.next_ip();
     let session = ctx.rng.uuid();
     let after = signin(
         w,

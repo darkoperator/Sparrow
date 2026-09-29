@@ -24,7 +24,8 @@ use crate::scenario::{Polarity, StoryKind, StorySpec};
 use crate::ual;
 use crate::world::{Client, Location, User, World};
 use crate::{Error, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
+use std::collections::BTreeSet;
 use std::net::IpAddr;
 use uuid::Uuid;
 
@@ -97,27 +98,41 @@ pub(crate) struct Ctx<'a> {
     pub a: User,
     pub rng: Rng,
     pub ev: Vec<Evidence>,
-    /// Roaming addresses already handed out, shared by every storyline of the world.
-    pub roaming: &'a mut Roaming,
+    /// Roaming addresses already handed out and the sign-ins of the day, shared by every
+    /// storyline of the world.
+    pub shared: &'a mut Shared,
 }
 
-/// Hands out travel / mobile / cloud look-alike addresses, each once per world: RFC 5737
-/// TEST-NET-2 hosts, then RFC 3849 addresses of the roaming role, so no address ever carries two
-/// locations.
+/// What every storyline of a world shares: the roaming addresses already handed out, and the
+/// users that have already signed in on a day.
 #[derive(Default)]
-pub(crate) struct Roaming {
+pub(crate) struct Shared {
     alloc: IpAllocator,
     used: u32,
+    /// (UPN, day) of the sign-ins the storylines have already recorded.
+    signed_today: BTreeSet<(String, NaiveDate)>,
 }
 
-impl Roaming {
-    pub fn next(&mut self) -> IpAddr {
+impl Shared {
+    /// The next travel / mobile / cloud look-alike address: RFC 5737 TEST-NET-2 hosts for the
+    /// first 254, then RFC 3849 addresses of the roaming role, so no address ever carries two
+    /// locations.
+    pub fn next_ip(&mut self) -> IpAddr {
         self.used += 1;
         if self.used <= 254 {
             IpAddr::V4(self.alloc.v4(Net::Roaming))
         } else {
             IpAddr::V6(self.alloc.v6(Net::Roaming))
         }
+    }
+
+    /// Records this sign-in and answers whether it is the user's first of that day among the
+    /// storylines' sign-ins (the fresh-authentication case a `UserAuthenticationMethod` code
+    /// marks). The baseline counts its own sign-ins separately: it is a pure function of the
+    /// world, so a user with a storyline sign-in early in a day can hold a first-of-day code
+    /// from both.
+    pub fn first_sign_in_of_day(&mut self, upn: &str, day: NaiveDate) -> bool {
+        self.signed_today.insert((upn.to_string(), day))
     }
 }
 
@@ -126,7 +141,7 @@ impl Roaming {
 pub fn apply(world: &mut World) -> Result<Vec<StoryRecord>> {
     let scenario = world.scenario.clone();
     let mut out = Vec::new();
-    let mut roaming = Roaming::default();
+    let mut shared = Shared::default();
     for spec in scenario.story_order()? {
         let t = scenario.story_time(&spec.id)?;
         let a = world.user(spec.actor.unwrap_or(1)).clone();
@@ -136,7 +151,7 @@ pub fn apply(world: &mut World) -> Result<Vec<StoryRecord>> {
             a,
             rng: stream(world.seed, &format!("story/{}", spec.id)),
             ev: Vec::new(),
-            roaming: &mut roaming,
+            shared: &mut shared,
         };
         let handled = identity::apply_one(world, &mut ctx)?
             || apps::apply_one(world, &mut ctx)?
@@ -413,9 +428,11 @@ pub(crate) fn push_signin(w: &mut World, ctx: &mut Ctx, user: &User, s: SignIn, 
             s.app_id,
             request_type,
             0,
-            // A credential prompt: the user had to prove themselves (an MFA challenge), or the
-            // sign-in failed and they typed a password that did not work.
-            s.mfa.is_some() || s.error_code != 0,
+            // A successful logon carries the sign-in's authentication method when it is the
+            // user's first sign-in of that day; the later same-day ones were let through by
+            // the session it opened.
+            ctx.shared
+                .first_sign_in_of_day(&s.user, s.time.date_naive()),
         );
         push_ual(w, ctx, u);
     }

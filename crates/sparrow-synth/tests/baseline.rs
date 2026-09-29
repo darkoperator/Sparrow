@@ -1,9 +1,9 @@
-use chrono::{Duration, NaiveDate};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde_json::Value;
 use sparrow_synth::baseline::{day, directory_audits};
 use sparrow_synth::scenario::load;
 use sparrow_synth::world::World;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn w(name: &str) -> World {
     World::build(&load(name).unwrap(), 42).unwrap()
@@ -17,12 +17,11 @@ fn first_monday(w: &World) -> NaiveDate {
     d
 }
 
-/// The window's sign-in records (`AzureActiveDirectoryStsLogon`).
-fn sts_records(w: &World) -> Vec<sparrow_synth::events::Ual> {
-    let start = w.window_start().date_naive();
-    let n = (w.collected_at().date_naive() - start).num_days();
-    (0..=n)
-        .flat_map(|i| day(w, start + Duration::days(i)).ual)
+/// The sign-in records (`AzureActiveDirectoryStsLogon`) of one day.
+fn sts_records_on(w: &World, date: NaiveDate) -> Vec<sparrow_synth::events::Ual> {
+    day(w, date)
+        .ual
+        .into_iter()
         .filter(|u| u.record_type.number() == 15)
         .collect()
 }
@@ -237,63 +236,104 @@ fn the_baseline_never_enables_an_out_of_office() {
 }
 
 /// Task F4a fix: the sign-in session properties of an `AzureActiveDirectoryStsLogon` record are
-/// typed the way the real captures hold them. `UserAuthenticationMethod` is an integer only on
-/// the records that went through a credential prompt and empty on the rest, `KeepMeSignedIn` is
-/// a boolean on a small share of them and empty otherwise, and `ZipCode` is always empty.
+/// typed the way the real captures hold them. `UserAuthenticationMethod` is an integer on every
+/// failed logon and on a user's first sign-in of the day (and empty on that user's later
+/// same-day sign-ins), `KeepMeSignedIn` is a boolean on a small share of the successful
+/// authentications that showed the "Stay signed in?" prompt and empty otherwise, and `ZipCode`
+/// is always empty.
 #[test]
 fn sts_logon_session_properties_are_typed_like_the_real_records() {
-    // The credential-prompt codes are inferred, not documented (see `ual::sts_logon`).
+    // The authentication-method codes are inferred, not documented (see `ual::sts_logon`).
     const CODES: [i64; 3] = [1, 2, 3];
-    let mut prompted = 0;
-    let mut silent = 0;
-    let mut kept = 0;
+    let mut failed = 0;
+    let mut first = 0;
+    let mut later = 0;
+    let mut kept_yes = 0;
+    let mut kept_no = 0;
+    let mut seen = 0;
     for name in ["bec-aitm", "volume"] {
         let world = w(name);
-        let mut seen = 0;
-        for u in sts_records(&world) {
-            seen += 1;
-            // The property is always present, so the column is always in the files.
-            for k in ["UserAuthenticationMethod", "KeepMeSignedIn", "ZipCode"] {
-                assert!(u.audit.get(k).is_some(), "{name}: {k} is missing");
+        let start = world.window_start().date_naive();
+        let days = (world.collected_at().date_naive() - start).num_days();
+        for d in 0..=days {
+            let recs = sts_records_on(&world, start + Duration::days(d));
+            // The first sign-in of each user that day, as the baseline counts it.
+            let mut earliest: BTreeMap<&str, DateTime<Utc>> = BTreeMap::new();
+            for u in &recs {
+                earliest
+                    .entry(u.user_id.as_str())
+                    .and_modify(|t| *t = (*t).min(u.time))
+                    .or_insert(u.time);
             }
-            assert_eq!(u.audit["ZipCode"], "");
-            match u.audit["UserAuthenticationMethod"].as_i64() {
-                Some(code) => {
-                    assert!(CODES.contains(&code), "{name}: code {code}");
-                    prompted += 1;
+            for u in &recs {
+                seen += 1;
+                // The properties are always present, so the columns are always in the files.
+                for k in ["UserAuthenticationMethod", "KeepMeSignedIn", "ZipCode"] {
+                    assert!(u.audit.get(k).is_some(), "{name}: {k} is missing");
                 }
-                None => {
-                    assert_eq!(u.audit["UserAuthenticationMethod"], "");
-                    silent += 1;
+                assert_eq!(u.audit["ZipCode"], "");
+                let is_first = earliest[u.user_id.as_str()] == u.time;
+                let failed_logon = u.audit["ResultStatus"] == "Failed";
+                // Every failed logon carries the method, and so does every successful
+                // first-of-day sign-in; the later same-day sign-ins carry none.
+                match u.audit["UserAuthenticationMethod"].as_i64() {
+                    Some(code) => {
+                        assert!(CODES.contains(&code), "{name}: code {code}");
+                        assert!(
+                            failed_logon || is_first,
+                            "{name}: a code on a later sign-in"
+                        );
+                        if failed_logon {
+                            failed += 1;
+                        } else {
+                            first += 1;
+                        }
+                    }
+                    None => {
+                        assert_eq!(u.audit["UserAuthenticationMethod"], "");
+                        assert!(
+                            !failed_logon && !is_first,
+                            "{name}: a failed or first sign-in without a code"
+                        );
+                        later += 1;
+                    }
                 }
-            }
-            match &u.audit["KeepMeSignedIn"] {
-                Value::Bool(_) => kept += 1,
-                Value::String(s) => assert!(s.is_empty(), "{name}: {s}"),
-                other => panic!("{name}: {other}"),
+                // The "Stay signed in?" prompt only follows a successful authentication, and the
+                // user answers it either way.
+                match &u.audit["KeepMeSignedIn"] {
+                    Value::Bool(true) => {
+                        assert!(
+                            !failed_logon,
+                            "{name}: a failed logon that kept the session"
+                        );
+                        kept_yes += 1;
+                    }
+                    Value::Bool(false) => {
+                        assert!(
+                            !failed_logon,
+                            "{name}: a failed logon that kept the session"
+                        );
+                        kept_no += 1;
+                    }
+                    Value::String(s) => assert!(s.is_empty(), "{name}: {s}"),
+                    other => panic!("{name}: {other}"),
+                }
             }
         }
-        assert!(seen > 20, "{name}: only {seen} sign-in records");
     }
+    assert!(seen > 20, "only {seen} sign-in records");
+    // Every failed logon and every successful first-of-day sign-in carries the method, and
+    // there are later same-day sign-ins that do not.
     assert!(
-        prompted > 0 && silent > 0,
-        "{prompted} prompted, {silent} silent"
+        failed > 0 && first > 0 && later > 0,
+        "{failed} failed, {first} first of day, {later} later"
     );
-    // A code only where the world says the user had to prove themselves, so it stays a
-    // minority of the records. The real captures' 30-50% is measured over a population that
-    // also holds app-only token grants, which this generator never writes to the UAL.
-    let share = prompted as f64 / (prompted + silent) as f64;
+    // Both answers to the prompt occur, on a small share of the records.
+    assert!(kept_yes > 0 && kept_no > 0, "{kept_yes} yes, {kept_no} no");
+    let share = (kept_yes + kept_no) as f64 / seen as f64;
     assert!(
-        share < 0.5,
-        "{prompted} of {} records carry a code ({share})",
-        prompted + silent
-    );
-    // The "Stay signed in?" flag is recorded on about 2% of the prompted records.
-    let share = kept as f64 / (prompted + silent) as f64;
-    assert!(kept > 0, "no record keeps the flag");
-    assert!(
-        share < 0.05,
-        "{kept} of {} records keep the flag ({share})",
-        prompted + silent
+        (0.005..0.05).contains(&share),
+        "{} of {seen} records keep the flag ({share})",
+        kept_yes + kept_no
     );
 }

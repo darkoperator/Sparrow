@@ -55,7 +55,8 @@ const REGIONS: &[&str] = &["namprd04", "namprd12", "eurprd07", "apcprd06"];
 /// codes, not values read from a capture.
 const USER_AUTH_METHOD_CODES: &[i64] = &[1, 2, 3];
 
-/// The share of prompted sign-ins the captures record the "Stay signed in?" flag on (about 2%).
+/// The share of successful authentications the captures record the "Stay signed in?" flag on
+/// (about 1-2% of the records).
 const KEEP_ME_SIGNED_IN_SHARE: f64 = 0.02;
 
 /// An Exchange Online Internet message id with the reserved `outlook.example` domain:
@@ -472,9 +473,12 @@ fn user_actor(user: &User) -> Value {
 
 /// An Entra ID sign-in as the UAL records it (`UserLoggedIn` / `UserLoginFailed`).
 #[allow(clippy::too_many_arguments)]
-/// `credential_prompt`: the sign-in had to collect something from the user at a credential
-/// prompt (a failed password logon or an MFA challenge), which is when the record carries a
-/// `UserAuthenticationMethod` code and may carry the "Stay signed in?" flag.
+/// `authentication_method`: the record carries the sign-in's authentication method. Every
+/// failed logon does (the captures: `UserLoginFailed` + `Failed` holds one on ~96% of the
+/// rows); a successful one does when it is the user's first sign-in of that day, the
+/// fresh-authentication case (the captures hold one on 0-57% of `UserLoggedIn` + `Success`
+/// rows, depending on the tenant), and not on the later same-day sign-ins the session it
+/// opened let through.
 pub fn sts_logon(
     w: &World,
     rng: &mut Rng,
@@ -486,7 +490,7 @@ pub fn sts_logon(
     app_id: Uuid,
     request_type: &str,
     error: i64,
-    credential_prompt: bool,
+    authentication_method: bool,
 ) -> Ual {
     let tenant = w.org_id().to_string();
     let mut u = head(
@@ -552,16 +556,17 @@ pub fn sts_logon(
     // The sign-in session properties the Management Activity API records for an StsLogon (they
     // reach the files through `Converted_Authentication_Logs`, which expands the AuditData
     // properties; survey §2e), typed the way the captures hold them:
-    // - `UserAuthenticationMethod` is a number on a record whose sign-in had a credential
-    //   prompt and empty on the rest (a session that was still valid, or an app-only token
-    //   grant, prompts for nothing). The codes are inferred: the property is not documented on
-    //   Microsoft Learn and no value was read from a capture, so they are this generator's own
-    //   small set.
+    // - `UserAuthenticationMethod` is a number on a failed logon and on a user's first
+    //   sign-in of the day, and empty on the rest (see `sts_logon`'s `authentication_method`).
+    //   The codes are inferred: the property is not documented on Microsoft Learn and no value
+    //   was read from a capture, so they are this generator's own small set.
     // - `KeepMeSignedIn` is a boolean only where the "Stay signed in?" prompt was shown, which
-    //   the captures record for about 2% of the records, and empty otherwise.
+    //   the captures record for about 1-2% of the records, and empty otherwise. The prompt
+    //   follows a successful authentication -- a failed logon has no session to keep -- and the
+    //   user answers it either way, so both boolean values occur.
     // - `ZipCode` is the postal code the geo lookup resolved; the captures hold it empty (and
     //   older ones do not have it at all), and the synthetic world has no postal codes.
-    if credential_prompt {
+    if authentication_method {
         // A stream of its own, keyed by the record: drawing from `rng` would move every value
         // the rest of the record (and the world behind it) uses.
         let mut p = stream(w.seed, &format!("stslogon/{}", u.id));
@@ -570,8 +575,8 @@ pub fn sts_logon(
             "UserAuthenticationMethod",
             json!(*p.pick(USER_AUTH_METHOD_CODES)),
         );
-        if p.chance(KEEP_ME_SIGNED_IN_SHARE) {
-            put(&mut u, "KeepMeSignedIn", json!(true));
+        if ok && p.chance(KEEP_ME_SIGNED_IN_SHARE) {
+            put(&mut u, "KeepMeSignedIn", json!(*p.pick(&[true, false])));
         } else {
             put(&mut u, "KeepMeSignedIn", json!(""));
         }

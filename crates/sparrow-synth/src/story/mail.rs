@@ -855,7 +855,7 @@ fn header_clean(w: &mut World, ctx: &mut Ctx) {
     let date = t.to_rfc2822();
     let (edge, mbx) = exo_hops(ctx);
     let sender = format!("news@{VENDOR_DOMAIN}");
-    let ip = ctx.roaming.next();
+    let ip = ctx.shared.next_ip();
     let email = Email {
         message_id: format!("<{}@mail.{VENDOR_DOMAIN}>", ctx.rng.hex(24)),
         subject: "Tailwind Supplies: autumn catalogue".to_string(),
