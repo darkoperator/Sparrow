@@ -233,3 +233,136 @@ fn hawk3_signins_are_available_not_collected_without_a_logged_window() {
     let report = check(&m, &ingest_generated(dir.path(), &m)).unwrap();
     assert!(report.ok, "{:#?}", report.problems);
 }
+
+/// The 17-column Search-AdminAuditLog shape, in the Hawk 3.1 order (capture survey §2b:59).
+const ADMIN17: &[&str] = &[
+    "ObjectModified",
+    "CmdletName",
+    "CmdletParameters",
+    "ModifiedProperties",
+    "Caller",
+    "ExternalAccess",
+    "Succeeded",
+    "Error",
+    "RunDate",
+    "OriginatingServer",
+    "ClientIP",
+    "SessionId",
+    "AppId",
+    "ClientAppId",
+    "Identity",
+    "IsValid",
+    "ObjectState",
+];
+
+fn csv_header(dir: &std::path::Path, root: &str, rel: &str) -> Vec<String> {
+    let bytes = std::fs::read(dir.join(root).join(rel)).expect(rel);
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    sparrow_core::readers::csv_scan::read_csv(&text).headers
+}
+
+/// The `CmdletName` of every data row of a CSV file.
+fn csv_column(dir: &std::path::Path, root: &str, rel: &str, column: &str) -> Vec<String> {
+    let bytes = std::fs::read(dir.join(root).join(rel)).expect(rel);
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let table = sparrow_core::readers::csv_scan::read_csv(&text);
+    let i = table
+        .headers
+        .iter()
+        .position(|h| h == column)
+        .unwrap_or_else(|| panic!("{rel} has no column {column}: {:?}", table.headers));
+    table
+        .rows
+        .iter()
+        .map(|r| r.fields.get(i).cloned().unwrap_or_default())
+        .collect()
+}
+
+/// Hawk 3.1's `Tenant/RBAC_Changes` is the 17-column Search-AdminAuditLog shape
+/// (`Get-HawkTenantRbacChange.ps1:51-68` names the 16 RBAC cmdlets, the survey records
+/// `New-ManagementRoleAssignment` in it). The registry classifies it as `hawk.tenant.raw_ual`,
+/// so without it that artifact has no 17-column file at all.
+#[test]
+fn hawk3_writes_the_17_column_rbac_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let m = generate_to_dir(&load("bec-aitm").unwrap(), &opts(51), dir.path()).unwrap();
+    let root = dir.path().join(&m.root);
+    assert!(root.join("Tenant/RBAC_Changes.csv").exists());
+    assert_eq!(
+        csv_header(dir.path(), &m.root, "Tenant/RBAC_Changes.csv"),
+        ADMIN17
+    );
+    let simple = csv_header(dir.path(), &m.root, "Tenant/Simple_RBAC_Changes.csv");
+    assert_eq!(
+        simple,
+        [
+            "Caller",
+            "Cmdlet",
+            "FullCommand",
+            "RunDate(UTC)",
+            "ObjectModified"
+        ]
+    );
+    // Only RBAC cmdlets, and at least one record.
+    let rbac = [
+        "New-ManagementRole",
+        "Remove-ManagementRole",
+        "New-ManagementRoleAssignment",
+        "Remove-ManagementRoleAssignment",
+        "Set-ManagementRoleAssignment",
+        "New-ManagementScope",
+        "Remove-ManagementScope",
+        "Set-ManagementScope",
+        "New-ManagementRoleEntry",
+        "Remove-ManagementRoleEntry",
+        "Set-ManagementRoleEntry",
+        "New-RoleGroup",
+        "Remove-RoleGroup",
+        "Set-RoleGroup",
+        "Add-RoleGroupMember",
+        "Remove-RoleGroupMember",
+    ];
+    let cmdlets = csv_column(dir.path(), &m.root, "Tenant/RBAC_Changes.csv", "CmdletName");
+    assert!(!cmdlets.is_empty(), "RBAC_Changes has no records");
+    for cmdlet in &cmdlets {
+        assert!(
+            rbac.iter().any(|r| r.eq_ignore_ascii_case(cmdlet)),
+            "unexpected RBAC cmdlet {cmdlet:?}"
+        );
+    }
+
+    // The `synth check` gate still holds with the extra files.
+    let report = check(&m, &ingest_generated(dir.path(), &m)).unwrap();
+    assert!(report.ok, "{:#?}", report.problems);
+}
+
+/// Sparrow parses the 17-column files into `admin_audit_events` (Phase 2c), one row per
+/// record, and the manifest's expectation matches.
+#[test]
+fn sparrow_loads_the_17_column_rbac_files_into_admin_audit_events() {
+    let dir = tempfile::tempdir().unwrap();
+    let m = generate_to_dir(&load("bec-aitm").unwrap(), &opts(52), dir.path()).unwrap();
+    let case = ingest_generated(dir.path(), &m);
+    let n: i64 = case
+        .conn()
+        .query_row("SELECT count(*) FROM admin_audit_events", [], |r| r.get(0))
+        .unwrap();
+    assert!(n > 0, "no admin_audit_events rows at all");
+    // Every RBAC file row is loaded, and the manifest agrees on the count.
+    let rbac_rows: i64 = case
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM record_sources r JOIN source_files f ON f.file_id = r.file_id \
+             WHERE r.table_name = 'admin_audit_events' \
+               AND f.rel_path IN ('Tenant/RBAC_Changes.csv', 'Tenant/RBAC_Changes.json')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        rbac_rows > 0,
+        "RBAC_Changes loaded no admin_audit_events rows"
+    );
+    let report = check(&m, &case).unwrap();
+    assert!(report.ok, "{:#?}", report.problems);
+}

@@ -176,7 +176,6 @@ pub fn work_window(w: &World, user: &User, date: NaiveDate) -> (DateTime<Utc>, D
 }
 
 /// A whole-second time in `[a, b)` (`a` when the range is empty).
-/// A whole-second time in `[a, b)` (`a` when the range is empty).
 fn rand_time(rng: &mut Rng, a: DateTime<Utc>, b: DateTime<Utc>) -> DateTime<Utc> {
     let span = (b - a).num_seconds();
     if span <= 0 {
@@ -761,6 +760,42 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
                     &[
                         ("Identity", &target.upn),
                         ("RetainDeletedItemsFor", "30.00:00:00"),
+                    ],
+                    ip,
+                    session,
+                ));
+            }
+        }
+
+        // A tenant admin assigns one of the built-in eDiscovery roles. This is the RBAC cmdlet
+        // the real Hawk 3.1 captures record in `Tenant/RBAC_Changes`
+        // (`Get-HawkTenantRbacChange.ps1:51-68` lists the 16 RBAC cmdlets; survey:59 records
+        // `New-ManagementRoleAssignment` there), and the 17-column Search-AdminAuditLog file is
+        // the only 17-column shape the `hawk.tenant.raw_ual` artifact ever carries. One
+        // assignment per built-in role assignment in the world, so the cmdlet, the
+        // `EDiscoveryRoleAssignments` state and the RBAC log always agree. Neither rule
+        // SPW-ID-010 nor SPW-HAWK-001 reads RBAC cmdlets, so this is detection-neutral.
+        if user.is_admin
+            && !is_weekend(date)
+            && urng.chance(0.1)
+            && !w.exchange_role_assignments.is_empty()
+        {
+            let t = rand_time(&mut urng, plan.login, plan.end);
+            if ual_logged(w, t) && w.audit.admin_audit_log_enabled {
+                let assign = urng.pick(&w.exchange_role_assignments);
+                let identity = format!("{}-{}", assign.role, assign.group);
+                ual_out.push(ual::exchange_admin(
+                    w,
+                    &mut urng,
+                    user,
+                    t,
+                    "New-ManagementRoleAssignment",
+                    &identity,
+                    &[
+                        ("Name", identity.as_str()),
+                        ("Role", assign.role.as_str()),
+                        ("RoleGroup", assign.group.as_str()),
+                        ("AssignmentMethod", "Direct"),
                     ],
                     ip,
                     session,

@@ -239,13 +239,18 @@ artifacts:
   # `file_pattern`; the check accepts a header that any entry for the artifact accepts.
   - artifact: hawk.tenant.admin_audit
     collector: hawk
-    source: hawk survey §2b (Hawk 3 New/Set/Remove_InboxRules, RBAC_Changes; 17-col Search-AdminAuditLog)
+    source: >-
+      hawk survey §2b/§2e (Hawk 3.1 Tenant/New_InboxRules, Set_InboxRules, Remove_InboxRules and
+      <user>/User_Changes_<user>; 17-col Search-AdminAuditLog)
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
-    columns_required: [ObjectModified, CmdletName, CmdletParameters, ModifiedProperties, Caller, ExternalAccess, Succeeded, Error, RunDate, OriginatingServer, ClientIP, SessionId, AppId, ClientAppId, Identity, IsValid, ObjectState]
-    # `RunDate` is a host-local `[DateTime]`, so `Export-Csv` renders it in the host culture
-    # (en-GB day-first, de-DE dotted) and `ConvertTo-Json` by .NET kind (research hawk layouts
-    # §2.1). The real captures' msdate/culture_mdy forms are Task F3's, not a culture form.
+    # The exact Search-AdminAuditLog column order (survey:59, :111): `CmdletParameters` and
+    # `ModifiedProperties` are arrays and `Identity` / `ObjectState` nested objects in JSON,
+    # strings in CSV.
+    columns:
+      - [ObjectModified, CmdletName, CmdletParameters, ModifiedProperties, Caller, ExternalAccess, Succeeded, Error, RunDate, OriginatingServer, ClientIP, SessionId, AppId, ClientAppId, Identity, IsValid, ObjectState]
+    # `RunDate` is a host-local `[DateTime]`: `Export-Csv` renders it in the host culture and
+    # `ConvertTo-Json` by .NET kind - `/Date(ms)/` on 5.1 (survey:12, :122), an offset on 7.
     dates:
       RunDate:
         any: [culture_mdy, iso_z, iso_offset, iso_nozone, local_log, msdate]
@@ -340,11 +345,33 @@ artifacts:
         de-de: [culture_dmy_de]
   - artifact: hawk.tenant.raw_ual
     collector: hawk
-    source: hawk survey §2b (Hawk 3 admin-audit raw UAL shape)
+    source: hawk survey §2b (Hawk 3 admin-audit raw UAL shape, the Hawk 4 files of these names)
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
-    file_pattern: "(Admin_Inbox_Rules|Mailbox_Permission_Change|Forwarding_Changes|RBAC_Changes|Domain_Changes_Audit)"
+    file_pattern: "(Admin_Inbox_Rules_(?:Creation|Modification|Removal)|Mailbox_Permission_Change|Forwarding_Changes|Domain_Changes_Audit)"
     columns_required: [RecordType, CreationDate, UserIds, Operations, AuditData, ResultIndex, ResultCount, Identity, IsValid, ObjectState]
+  - artifact: hawk.tenant.raw_ual
+    collector: hawk
+    source: >-
+      hawk survey §2b (Hawk 3.1 Tenant/RBAC_Changes, 17-col Search-AdminAuditLog;
+      Get-HawkTenantRbacChange.ps1:51-68, :96-99; capture A)
+    formats: [csv, json]
+    # On Windows PowerShell 5.1 the JSON is UTF-16LE BOM and the CSV UTF-8 BOM; on 7 both are
+    # UTF-8 without BOM (research hawk layouts §2.1; survey §1 encoding table).
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    file_pattern: "RBAC_Changes"
+    # The exact Search-AdminAuditLog column order (survey:59): `CmdletParameters` and
+    # `ModifiedProperties` are arrays and `Identity` / `ObjectState` nested objects in JSON,
+    # strings in CSV.
+    columns:
+      - [ObjectModified, CmdletName, CmdletParameters, ModifiedProperties, Caller, ExternalAccess, Succeeded, Error, RunDate, OriginatingServer, ClientIP, SessionId, AppId, ClientAppId, Identity, IsValid, ObjectState]
+    # `RunDate` is a host-local `[DateTime]`: `Export-Csv` renders it in the host culture and
+    # `ConvertTo-Json` by .NET kind - `/Date(ms)/` on 5.1 (survey:12, :122), an offset on 7.
+    dates:
+      RunDate:
+        any: [culture_mdy, iso_offset, msdate]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
   - artifact: hawk.tenant.entra_admins
     collector: hawk
     source: hawk survey §2c (EntraIDAdministrators)
@@ -536,7 +563,8 @@ artifacts:
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
     file_pattern: "User_Changes"
-    columns_required: [ObjectModified, CmdletName, CmdletParameters, ModifiedProperties, Caller, ExternalAccess, Succeeded, Error, RunDate, OriginatingServer, ClientIP, SessionId, AppId, ClientAppId, Identity, IsValid, ObjectState]
+    columns:
+      - [ObjectModified, CmdletName, CmdletParameters, ModifiedProperties, Caller, ExternalAccess, Succeeded, Error, RunDate, OriginatingServer, ClientIP, SessionId, AppId, ClientAppId, Identity, IsValid, ObjectState]
   - artifact: hawk.user.raw_ual
     collector: hawk
     source: hawk survey §2e (Exchange_UAL_Audit expanded AuditData)

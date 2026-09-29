@@ -112,6 +112,11 @@ fn tree_digest(dir: &Path) -> String {
 /// `Set-MailboxAutoReplyConfiguration` at rate 0.02 with service-rendered parameter strings,
 /// which changes the volume tree's bytes. The value after the first F8 commit was
 /// `0ce824fc22d5b1de43c5a05de2ba072c39993db7872de9dbc681076f2a7ae9ac`.
+///
+/// Re-recorded again for Task F3: admins now assign the built-in eDiscovery roles, which adds
+/// `ExchangeAdmin` `New-ManagementRoleAssignment` rows to every tree including the volume one.
+/// The value after the F8 fix was
+/// `10936fc24658043797a2b7ad6084bad3c00db89e5c8911b307247c7e12144552`.
 #[test]
 #[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
@@ -122,7 +127,7 @@ fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
     generate_to_dir(&load("volume").unwrap(), &o, dir.path()).unwrap();
     assert_eq!(
         tree_digest(dir.path()),
-        "10936fc24658043797a2b7ad6084bad3c00db89e5c8911b307247c7e12144552"
+        "34ecc6540381e3acc3d0bdacf5ff461587d1f60e331d950f2e02d20a104fe815"
     );
 }
 
