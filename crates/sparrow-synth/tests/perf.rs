@@ -90,6 +90,11 @@ fn tree_digest(dir: &Path) -> String {
 /// The day-by-day streaming rewrite is byte-identical to the code before it: the same small
 /// scaled tree (20k filler UAL rows, default CSV) hashes to the value recorded at the old
 /// commit. (The other UAL formats were checked the same way while developing.)
+///
+/// Re-recorded for Task F7: world users 2 and 5 now carry "Last, First" display names, so the
+/// volume tree's bytes change. The parent commit's value was
+/// `16764b6baf9619b698b7ac0c03889906b6d46c4cd079ada6ddc42aa661f99827`; re-running this same test
+/// at the parent plus the F7 change gives the value below.
 #[test]
 fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
     let dir = tempfile::tempdir().unwrap();
@@ -99,7 +104,7 @@ fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
     generate_to_dir(&load("volume").unwrap(), &o, dir.path()).unwrap();
     assert_eq!(
         tree_digest(dir.path()),
-        "16764b6baf9619b698b7ac0c03889906b6d46c4cd079ada6ddc42aa661f99827"
+        "02d2ce9d5f67b1e628540af5c6fbcb6755068556ad036b9c9a7048e32b7c9bb7"
     );
 }
 

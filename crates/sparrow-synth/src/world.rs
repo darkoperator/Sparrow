@@ -8,7 +8,7 @@
 use crate::Result;
 use crate::baseline;
 use crate::events::{Day, DirAudit, RecordType, RiskDetection, SignIn, TraceMsg, Ual};
-use crate::names::people;
+use crate::names::{Person, people};
 use crate::options::GenerateOptions;
 use crate::profiles::{AuditProfile, LicenceProfile, audit_profile, licence_profile};
 use crate::reserved::{IpAllocator, Net, WELL_KNOWN_GUIDS};
@@ -1278,6 +1278,18 @@ fn licences_for(licence: &LicenceProfile, n: u32) -> Vec<String> {
         .collect()
 }
 
+/// The directory `displayName` of an ordinary user. A few tenants carry imported (AD-synced)
+/// users whose name is "Last, First"; users 2 and 5 use that form so every collector export has
+/// to quote the comma and every parser has to keep it. Names come from the reserved lists in
+/// `names`; no name is taken from a real capture.
+fn display_name_for(n: u32, person: &Person) -> String {
+    if n == 2 || n == 5 {
+        format!("{}, {}", person.last, person.first)
+    } else {
+        format!("{} {}", person.first, person.last)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_people(
     scenario: &Scenario,
@@ -1319,7 +1331,7 @@ fn build_people(
             alias: person.alias.clone(),
             first: person.first.clone(),
             last: person.last.clone(),
-            display_name: format!("{} {}", person.first, person.last),
+            display_name: display_name_for(n, person),
             object_id: rng.uuid(),
             puid: format!("10032000{}", rng.hex(8).to_ascii_uppercase()),
             sid: format!("{sid_prefix}-{}", rng.digits(4)),
@@ -1458,15 +1470,10 @@ fn build_mailboxes(
                 "Owner".to_string(),
             ]
         };
-        // The recipient object's display name for user 2 is "Last, First": Exchange renders an
-        // EXO recipient as `"<display>" [SMTP:<addr>]`, so a rule that forwards to this user
-        // exercises the parser's split of a list on commas outside quoted display names. The
-        // directory user's own display name stays "First Last" (Graph's userDisplayName).
-        let display_name = if user.n == 2 {
-            format!("{}, {}", user.last, user.first)
-        } else {
-            user.display_name.clone()
-        };
+        // The recipient object's display name matches the user's; some users' is "Last, First"
+        // (see `display_name_for`), so the EXO render `"Last, First" [SMTP:<addr>]` exercises the
+        // parser's split of a list on commas outside quoted display names.
+        let display_name = user.display_name.clone();
         let mailbox = Mailbox {
             upn: user.upn.clone(),
             display_name,

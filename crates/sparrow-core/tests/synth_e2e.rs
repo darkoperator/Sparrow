@@ -277,6 +277,153 @@ fn collector_flags_link_to_their_records() {
     }
 }
 
+/// Values of `column` in every CSV file of `artifact`, read with Sparrow's own CSV reader, so a
+/// quoted field containing a comma stays one value (a hand-split line would shift the column).
+fn csv_column(g: &Generated, artifact: &str, column: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for f in g
+        .manifest
+        .files
+        .iter()
+        .filter(|f| f.artifact_id.as_deref() == Some(artifact))
+    {
+        let path = g.dir.join(&g.manifest.root).join(&f.rel_path);
+        if path.extension().and_then(|e| e.to_str()) != Some("csv") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        let table = sparrow_core::readers::csv_scan::read_csv(&text);
+        let Some(index) = table.headers.iter().position(|h| h == column) else {
+            continue;
+        };
+        out.extend(table.rows.iter().map(|r| r.fields[index].clone()));
+    }
+    assert!(
+        !out.is_empty(),
+        "{artifact}: no CSV rows in column {column}"
+    );
+    out
+}
+
+/// Every non-null value of one column of a case table.
+fn db_column(case: &Case, table: &str, column: &str) -> Vec<String> {
+    let mut stmt = case
+        .conn()
+        .prepare(&format!(
+            "SELECT {column} FROM {table} WHERE {column} IS NOT NULL"
+        ))
+        .unwrap();
+    stmt.query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// Values of `key` in every JSON-array file of `artifact`, parsed with `serde_json` (the
+/// `ConvertTo-Json` counterpart of `csv_column`).
+fn json_column(g: &Generated, artifact: &str, key: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for f in g
+        .manifest
+        .files
+        .iter()
+        .filter(|f| f.artifact_id.as_deref() == Some(artifact))
+    {
+        let path = g.dir.join(&g.manifest.root).join(&f.rel_path);
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        for row in value.as_array().into_iter().flatten() {
+            if let Some(s) = row.get(key).and_then(serde_json::Value::as_str) {
+                out.push(s.to_string());
+            }
+        }
+    }
+    assert!(!out.is_empty(), "{artifact}: no JSON rows with {key}");
+    out
+}
+
+/// Some directory users' `displayName` is "Last, First" (world users 2 and 5). Every collector's
+/// CSV export must quote the comma, and every parser must load the exact name.
+#[test]
+fn comma_display_names_load_exactly_per_collector() {
+    let world = sparrow_synth::world::World::build(&load("bec-aitm").unwrap(), 1).unwrap();
+    let expected: Vec<String> = [2u32, 5]
+        .iter()
+        .map(|n| world.user(*n).display_name.clone())
+        .collect();
+    assert!(expected.iter().all(|n| n.contains(", ")), "{expected:?}");
+
+    // (artifact, collector, CSV column, table, column, label).
+    let cases = [
+        (
+            "inv.users",
+            Collector::Invictus,
+            "DisplayName",
+            "users",
+            "display_name",
+            "Invictus",
+        ),
+        (
+            "hawk.tenant.entra_users",
+            Collector::Hawk4,
+            "DisplayName",
+            "users",
+            "display_name",
+            "Hawk 4",
+        ),
+        (
+            "hawk.tenant.user_forwarding_report",
+            Collector::Hawk3,
+            "DisplayName",
+            "mailboxes",
+            "display_name",
+            "Hawk 3",
+        ),
+    ];
+    for (artifact, collector, column, table, db_col, label) in cases {
+        let g = builtin("bec-aitm", &GenerateOptions::new(collector, 1));
+        let raw = csv_column(&g, artifact, column);
+        let case = ingest_generated(&g.dir, &g.manifest);
+        let loaded = db_column(&case, table, db_col);
+        for name in &expected {
+            assert!(
+                raw.contains(name),
+                "{label}: {artifact} column {column} lacks {name:?}"
+            );
+            assert!(
+                loaded.contains(name),
+                "{label}: {table}.{db_col} lacks {name:?}"
+            );
+        }
+    }
+
+    // Hawk 4 also writes EntraIDUsers through `ConvertTo-Json`; the comma must survive there.
+    let g = builtin("bec-aitm", &GenerateOptions::new(Collector::Hawk4, 1));
+    let json = json_column(&g, "hawk.tenant.entra_users", "DisplayName");
+    for name in &expected {
+        assert!(json.contains(name), "Hawk 4 JSON lacks {name:?}");
+    }
+
+    // The portal's sign-in export carries the same `User` display names, but only the users
+    // with an interactive sign-in in the window; every comma name it does carry must load
+    // exactly.
+    let g = builtin("bec-aitm", &GenerateOptions::new(Collector::Portal, 1));
+    let raw = csv_column(&g, "portal.entra_signins", "User");
+    let comma: Vec<String> = raw.into_iter().filter(|n| n.contains(", ")).collect();
+    assert!(!comma.is_empty(), "portal: no comma-bearing sign-in name");
+    let case = ingest_generated(&g.dir, &g.manifest);
+    let loaded = db_column(&case, "signins", "user_display_name");
+    for name in &comma {
+        assert!(
+            loaded.contains(name),
+            "Portal: signins.user_display_name lacks {name:?}"
+        );
+    }
+}
+
 fn no_error_files(report: &sparrow_core::ingest::IngestReport) {
     assert!(
         report

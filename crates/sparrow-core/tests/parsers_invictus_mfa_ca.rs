@@ -75,7 +75,9 @@ fn without_p1_there_are_no_ca_policies_and_no_registration_details() {
     check_green(&g);
 }
 
-/// The `lastUpdatedDateTime` cells of the UserRegistrationDetails file, in row order.
+/// The `lastUpdatedDateTime` cells of the UserRegistrationDetails file, in row order. Reads the
+/// CSV with Sparrow's own reader (quoting, BOM, a possible `#TYPE` line) rather than splitting
+/// on commas, so a display name with a comma cannot shift the column.
 fn registration_last_updated(g: &Generated) -> Vec<String> {
     let f = g
         .manifest
@@ -85,20 +87,16 @@ fn registration_last_updated(g: &Generated) -> Vec<String> {
         .expect("registration file");
     let path = g.dir.join(&g.manifest.root).join(&f.rel_path);
     let text = std::fs::read_to_string(&path).unwrap();
-    let mut lines = text.lines();
-    let header = lines.next().unwrap();
-    let index = header
-        .split(',')
-        .position(|h| h.trim_matches('"') == "lastUpdatedDateTime")
+    let table = sparrow_core::readers::csv_scan::read_csv(&text);
+    let index = table
+        .headers
+        .iter()
+        .position(|h| h == "lastUpdatedDateTime")
         .expect("lastUpdatedDateTime column");
-    lines
-        .map(|line| {
-            line.split(',')
-                .nth(index)
-                .unwrap()
-                .trim_matches('"')
-                .to_string()
-        })
+    table
+        .rows
+        .iter()
+        .map(|row| row.fields[index].clone())
         .collect()
 }
 
