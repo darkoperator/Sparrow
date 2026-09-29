@@ -1,6 +1,8 @@
 # Real collector layouts, structure only, from docs/superpowers/research/2026-09-24-hawk-capture-survey.md
 # and 2026-09-25-invictus-sample-survey.md (+ 2026-09-26-phase5-invictus-event-layouts.md §0.3
 # corrections). No values. `columns`: the CSV header as seen (any listed variant matches);
+# `columns_required`: the columns every surveyed variant shares, used where the header varies
+# with the first record (Hawk's flattened `Simple_*`, survey §2b/§2e);
 # `json_keys`: keys every JSON record has; `encodings` per PowerShell edition; `dates`: the
 # date forms seen per column (`inferred: true` marks a form inferred, not observed); `file_pattern`
 # distinguishes shapes that share one registry artifact id. Artifacts with no real sample are
@@ -246,11 +248,12 @@ artifacts:
     dates: {"RunDate(UTC)": [iso_z, culture_mdy, msdate]}
   - artifact: hawk.tenant.simple_ual
     collector: hawk
-    source: hawk survey §2c (flattened AuditData)
+    source: hawk survey §2c (flattened AuditData; the CSV header is the first record's keys,
+      so only the columns every variant shares are required)
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
     file_pattern: "Simple_eDiscoveryLogs"
-    columns_required: [CreationTime, Workload, RecordType, Operation, ResultStatus, ClientIP, UserId, Id, OrganizationId, UserType, UserKey, ObjectId, CreationDate]
+    columns_required: [CreationTime, Workload, RecordType, Operation, UserId, Id, OrganizationId, UserType, UserKey, Version, CreationDate]
   - artifact: hawk.tenant.raw_ual
     collector: hawk
     source: hawk survey §2b (Hawk 3 eDiscoveryLogs.csv, 8 cols)
@@ -422,11 +425,12 @@ artifacts:
     dates: {"RunDate(UTC)": [iso_z, culture_mdy, msdate]}
   - artifact: hawk.user.simple_ual
     collector: hawk
-    source: hawk survey §2e (Hawk 4 flattened AuditData)
+    source: hawk survey §2e (Hawk 4 flattened AuditData; the CSV header is the first record's
+      keys, so only the columns every variant shares are required)
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
     file_pattern: "(ExchangeItem(Group)?_Simple|Simple_(MailItemsAccessed|SendActivity))"
-    columns_required: [CreationTime, Workload, RecordType, Operation, ResultStatus, ClientIP, UserId, Id, OrganizationId, UserType, UserKey, CreationDate]
+    columns_required: [CreationTime, Workload, RecordType, Operation, UserId, Id, OrganizationId, UserType, UserKey, Version, CreationDate]
   - artifact: hawk.ip.events
     collector: hawk
     source: hawk-layouts §1.4 (Search-HawkTenantActivityByIP, expanded AuditData)

@@ -696,7 +696,7 @@ pub fn sharepoint_file(
                 RecordType::SharePointFileOperation
             },
             operation: op,
-            result_status: None,
+            result_status: Some("Success"),
             user_key: user.puid.clone(),
             user_type: 0,
             workload: if onedrive { "OneDrive" } else { "SharePoint" },
@@ -749,7 +749,7 @@ pub fn sharing(
         Head {
             record_type: RecordType::SharePointSharingOperation,
             operation: op,
-            result_status: None,
+            result_status: Some("Success"),
             user_key: user.puid.clone(),
             user_type: 0,
             workload: if onedrive { "OneDrive" } else { "SharePoint" },
@@ -852,7 +852,7 @@ pub fn discovery(
         Head {
             record_type: RecordType::Discovery,
             operation: op,
-            result_status: None,
+            result_status: Some("Success"),
             user_key: user.puid.clone(),
             user_type: if user.is_admin { 2 } else { 0 },
             workload: "SecurityComplianceCenter",
