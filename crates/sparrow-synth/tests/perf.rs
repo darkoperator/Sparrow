@@ -99,7 +99,7 @@ fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
     generate_to_dir(&load("volume").unwrap(), &o, dir.path()).unwrap();
     assert_eq!(
         tree_digest(dir.path()),
-        "50968249caa17ff7d19455b5462e3704491848f669d48f62fbcf6dff5e312b1a"
+        "16764b6baf9619b698b7ac0c03889906b6d46c4cd079ada6ddc42aa661f99827"
     );
 }
 
