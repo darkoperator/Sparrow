@@ -61,6 +61,7 @@ pub fn unprofiled_collections(conn: &duckdb::Connection) -> Result<Vec<i64>> {
 /// 5. tenant_capabilities (Task 5);
 /// 6. evidence_availability snapshot (Task 6).
 pub fn refresh(case: &mut Case, opts: &ProfileOptions) -> Result<ProfileReport> {
+    case.ensure_usable()?;
     let mut report = ProfileReport::default();
     let defs = crate::data::capabilities(&opts.dirs)?;
     let ops = crate::data::operation_catalog(&opts.dirs)?;

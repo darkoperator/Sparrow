@@ -85,7 +85,10 @@ fn bec_aitm_conforms_to_the_recorded_layouts() {
             let p = profile_dir(dir.path()).unwrap();
             let r = conform_layouts(&p, *c, Some(culture));
             assert!(r.ok, "bec-aitm {c:?} {ps:?} {culture:?}:\n{}", r.to_text());
-            assert!(r.checked > 0, "bec-aitm {c:?} {ps:?} {culture:?}: nothing checked");
+            assert!(
+                r.checked > 0,
+                "bec-aitm {c:?} {ps:?} {culture:?}: nothing checked"
+            );
         }
     }
 }

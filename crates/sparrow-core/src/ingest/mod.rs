@@ -172,6 +172,7 @@ pub fn ingest_collections(
     parsers: &ParserRegistry,
     opts: &IngestOptions,
 ) -> Result<IngestReport> {
+    case.ensure_usable()?;
     let mut order: Vec<usize> = (0..collections.len()).collect();
     order.sort_by_cached_key(|&i| {
         let dc = &collections[i];

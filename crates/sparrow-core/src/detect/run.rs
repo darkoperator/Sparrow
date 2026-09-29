@@ -114,6 +114,7 @@ fn status_map(case: &Case, sql: &str) -> Result<BTreeMap<(String, String), Strin
 
 /// Run the rules of `set` over every tenant of the case and merge the hits into the findings.
 pub fn run(case: &mut Case, set: &RuleSet, opts: &DetectOptions) -> Result<DetectReport> {
+    case.ensure_usable()?;
     if case.is_read_only() {
         return Err(Error::Invalid("the case database is open read-only".into()));
     }

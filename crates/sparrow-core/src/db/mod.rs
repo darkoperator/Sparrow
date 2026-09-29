@@ -14,6 +14,9 @@ pub struct Case {
     conn: Connection,
     path: Option<PathBuf>,
     read_only: bool,
+    /// Set when the file could not be reopened after `with_file_released`: `conn` is then an
+    /// empty in-memory placeholder that must never receive writes.
+    poisoned: Option<String>,
 }
 
 impl Case {
@@ -25,6 +28,7 @@ impl Case {
             conn,
             path: Some(path.to_path_buf()),
             read_only: false,
+            poisoned: None,
         })
     }
 
@@ -52,6 +56,7 @@ impl Case {
             conn,
             path: Some(path.to_path_buf()),
             read_only: true,
+            poisoned: None,
         })
     }
 
@@ -62,6 +67,7 @@ impl Case {
             conn,
             path: None,
             read_only: false,
+            poisoned: None,
         })
     }
 
@@ -74,6 +80,7 @@ impl Case {
         &mut self,
         f: impl FnOnce(&Path) -> Result<T>,
     ) -> Result<T> {
+        self.ensure_usable()?;
         if self.read_only {
             return Err(Error::Invalid("the case database is open read-only".into()));
         }
@@ -82,8 +89,26 @@ impl Case {
             let placeholder = Connection::open_in_memory()?;
             drop(std::mem::replace(&mut self.conn, placeholder));
             let out = f(&path);
-            self.conn = Connection::open(&path)?;
-            return out;
+            // Fail closed: if the file cannot be reopened (or is no longer this schema), the
+            // placeholder must never take writes that would vanish silently.
+            let reopened = Connection::open(&path)
+                .map_err(Error::from)
+                .and_then(|c| migrations::check_readable(&c).map(|_| c));
+            return match reopened {
+                Ok(conn) => {
+                    self.conn = conn;
+                    out
+                }
+                Err(e) => {
+                    let msg = format!(
+                        "the case database {} could not be reopened after the detection run: {e}; \
+                         this Case is unusable, open the case again",
+                        path.display()
+                    );
+                    self.poisoned = Some(msg.clone());
+                    Err(Error::Invalid(msg))
+                }
+            };
         }
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
@@ -109,6 +134,17 @@ impl Case {
         out
     }
 
+    /// Fails when the case file could not be reopened after `with_file_released` (see
+    /// `poisoned`). The entry points that write (`ingest`, `profile`, `detect`) call it first;
+    /// the placeholder connection behind a poisoned case holds no tables, so any other statement
+    /// fails as well.
+    pub fn ensure_usable(&self) -> Result<()> {
+        match &self.poisoned {
+            Some(msg) => Err(Error::Invalid(msg.clone())),
+            None => Ok(()),
+        }
+    }
+
     pub fn conn(&self) -> &Connection {
         &self.conn
     }
@@ -127,5 +163,87 @@ impl Case {
 
     pub fn schema_version(&self) -> Result<u32> {
         migrations::current_version(&self.conn)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_case_that_cannot_be_reopened_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("case.duckdb");
+        let mut case = Case::create_or_open(&path).unwrap();
+        case.conn()
+            .execute_batch("INSERT INTO collections (tool, root_path, sparrow_version) VALUES ('hawk', '/x', 't')")
+            .unwrap();
+        // The closure succeeds but leaves a directory where the case file was.
+        let out = case.with_file_released(|p| {
+            std::fs::remove_file(p).unwrap();
+            let _ = std::fs::remove_file(format!("{}.wal", p.display()));
+            std::fs::create_dir(p).unwrap();
+            Ok(())
+        });
+        let msg = out.unwrap_err().to_string();
+        assert!(msg.contains("could not be reopened"), "{msg}");
+        // Every later entry point errors with that message; nothing can write to the placeholder.
+        assert!(
+            case.ensure_usable()
+                .unwrap_err()
+                .to_string()
+                .contains("could not be reopened")
+        );
+        assert!(case.with_file_released(|_| Ok(())).is_err());
+        let set = crate::detect::load::load_rules(&crate::data::DataDirs::default()).unwrap();
+        let run = crate::detect::run::run(&mut case, &set, &Default::default());
+        assert!(
+            run.unwrap_err()
+                .to_string()
+                .contains("could not be reopened")
+        );
+        let profile = crate::profile::refresh(&mut case, &Default::default());
+        assert!(
+            profile
+                .unwrap_err()
+                .to_string()
+                .contains("could not be reopened")
+        );
+        assert!(case
+            .conn()
+            .execute_batch("INSERT INTO collections (tool, root_path, sparrow_version) VALUES ('hawk', '/y', 't')")
+            .is_err());
+    }
+
+    #[test]
+    fn a_reopen_failure_is_reported_even_when_the_closure_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("case.duckdb");
+        let mut case = Case::create_or_open(&path).unwrap();
+        let out: Result<()> = case.with_file_released(|p| {
+            std::fs::remove_file(p).unwrap();
+            let _ = std::fs::remove_file(format!("{}.wal", p.display()));
+            std::fs::create_dir(p).unwrap();
+            Err(Error::Invalid("closure failed".into()))
+        });
+        assert!(
+            out.unwrap_err()
+                .to_string()
+                .contains("could not be reopened")
+        );
+        assert!(case.ensure_usable().is_err());
+    }
+
+    #[test]
+    fn a_healthy_reopen_keeps_the_case_usable() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut case = Case::create_or_open(&dir.path().join("case.duckdb")).unwrap();
+        let out: Result<()> =
+            case.with_file_released(|_| Err(Error::Invalid("closure failed".into())));
+        assert!(out.unwrap_err().to_string().contains("closure failed"));
+        case.ensure_usable().unwrap();
+        case.conn()
+            .execute_batch("INSERT INTO collections (tool, root_path, sparrow_version) VALUES ('hawk', '/x', 't')")
+            .unwrap();
     }
 }
