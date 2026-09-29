@@ -53,6 +53,11 @@ pub struct LayoutDef {
     /// Keys every JSON record has.
     #[serde(default)]
     pub json_keys: Vec<String>,
+    /// The JSON shapes the source can produce for this artifact: `bare` for one record in a
+    /// call, `array` for several, `concatenated` when the collector calls the writer once per
+    /// record with `-Append`. Empty means the shape is unchecked.
+    #[serde(default)]
+    pub json_shape: Vec<String>,
     /// Date form classes seen per column/key.
     #[serde(default)]
     pub dates: BTreeMap<String, Vec<String>>,
@@ -208,6 +213,15 @@ impl ConformanceReport {
 
 fn core_err(e: sparrow_core::Error) -> Error {
     Error::Core(e.to_string())
+}
+
+/// The JSON shapes `layouts.yaml` allows for `artifact` (empty when it records none).
+fn allowed_json_shapes(artifact: &str) -> BTreeSet<&'static str> {
+    layouts()
+        .iter()
+        .filter(|d| d.artifact == artifact)
+        .flat_map(|d| d.json_shape.iter().map(String::as_str))
+        .collect()
 }
 
 /// Profile every collection found under `path` (structure only).
@@ -519,6 +533,20 @@ fn check_artifact(
             ));
         }
     }
+    let allowed_shapes: BTreeSet<&str> = defs
+        .iter()
+        .flat_map(|d| d.json_shape.iter().map(String::as_str))
+        .collect();
+    if !allowed_shapes.is_empty() {
+        for shape in ap.json_shapes.keys() {
+            if !allowed_shapes.contains(shape.as_str()) {
+                findings.push(format!(
+                    "{artifact}: JSON shape {shape} is not one of {:?}",
+                    allowed_shapes
+                ));
+            }
+        }
+    }
     let key_defs: Vec<&&LayoutDef> = defs.iter().filter(|d| !d.json_keys.is_empty()).collect();
     if !key_defs.is_empty()
         && !key_defs
@@ -589,8 +617,12 @@ pub fn conform_real(real: &Profile, generated: &[Profile]) -> ConformanceReport 
         }
         let gen_shapes: BTreeSet<&String> =
             gens.iter().flat_map(|g| g.json_shapes.keys()).collect();
+        let allowed = allowed_json_shapes(artifact);
         for shape in r.json_shapes.keys() {
-            if !gen_shapes.contains(shape) {
+            // A count-dependent shape (regulated by `json_shape:`) is fine even when the
+            // generated matrix only exercised the other count; otherwise the real shape must
+            // appear somewhere in the generated trees.
+            if !gen_shapes.contains(shape) && !allowed.contains(shape.as_str()) {
                 report.findings.push(format!(
                     "{artifact}: JSON shape {shape} seen in the real tree only"
                 ));
@@ -618,6 +650,56 @@ pub fn conform_real(real: &Profile, generated: &[Profile]) -> ConformanceReport 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn profile_with_shape(artifact: &str, shape: &str) -> Profile {
+        let mut ap = ArtifactProfile::default();
+        ap.json_shapes.insert(shape.to_string(), 1);
+        let mut p = Profile::default();
+        p.artifacts.insert(artifact.to_string(), ap);
+        p
+    }
+
+    /// `conform_layouts` rejects a generated JSON shape that the source cannot produce.
+    #[test]
+    fn conform_layouts_rejects_a_json_shape_the_source_does_not_allow() {
+        let p = profile_with_shape("hawk.tenant.remote_domain", "concatenated");
+        let r = conform_layouts(&p, Collector::Hawk4);
+        assert!(!r.ok, "{}", r.to_text());
+        assert!(
+            r.findings.iter().any(|f| f.contains("concatenated")),
+            "{}",
+            r.to_text()
+        );
+    }
+
+    /// The source allows a bare object for one record and an array for several, so both pass.
+    #[test]
+    fn conform_layouts_accepts_the_source_allowed_json_shapes() {
+        for shape in ["bare", "array"] {
+            let p = profile_with_shape("hawk.tenant.remote_domain", shape);
+            let r = conform_layouts(&p, Collector::Hawk4);
+            assert!(r.ok, "{shape}: {}", r.to_text());
+        }
+    }
+
+    /// A real shape the source allows is fine even when the generated trees only saw the other
+    /// count-dependent shape.
+    #[test]
+    fn conform_real_accepts_a_source_allowed_json_shape_that_was_not_generated() {
+        let real = profile_with_shape("hawk.tenant.remote_domain", "array");
+        let generated = vec![profile_with_shape("hawk.tenant.remote_domain", "bare")];
+        let r = conform_real(&real, &generated);
+        assert!(r.ok, "{}", r.to_text());
+    }
+
+    /// A shape neither generated nor source-allowed is still a finding.
+    #[test]
+    fn conform_real_rejects_a_json_shape_the_source_does_not_allow() {
+        let real = profile_with_shape("hawk.tenant.remote_domain", "concatenated");
+        let generated = vec![profile_with_shape("hawk.tenant.remote_domain", "bare")];
+        let r = conform_real(&real, &generated);
+        assert!(!r.ok, "{}", r.to_text());
+    }
 
     fn csv(header: &str, row: &str) -> ArtifactProfile {
         let mut p = ArtifactProfile::default();

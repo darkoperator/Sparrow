@@ -32,6 +32,25 @@ fn generated_trees_conform_to_the_recorded_layouts() {
     }
 }
 
+/// Hawk 3's `Tenant/All_InboxRules` is a single JSON document (capture survey §2b: it is
+/// byte-identical to a user's `InboxRules_<u>`), so its shape is a bare object or an array,
+/// never the concatenated documents a per-user `-Append` would leave.
+#[test]
+fn hawk3_all_inbox_rules_is_a_single_json_document() {
+    let (dir, _) = r#gen("bec-aitm", Collector::Hawk3, PsEdition::Ps7);
+    let p = profile_dir(dir.path()).unwrap();
+    let ap = p
+        .artifacts
+        .get("hawk.tenant.all_inbox_rules")
+        .expect("hawk.tenant.all_inbox_rules");
+    assert!(ap.json_shapes.contains_key("array"), "{:?}", ap.json_shapes);
+    assert!(
+        !ap.json_shapes.contains_key("concatenated"),
+        "{:?}",
+        ap.json_shapes
+    );
+}
+
 #[test]
 fn a_real_mode_report_prints_no_values() {
     // A stand-in "real" tree: a generated one with recognisable values planted in it.

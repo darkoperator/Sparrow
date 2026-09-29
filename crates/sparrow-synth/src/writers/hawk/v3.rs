@@ -810,11 +810,12 @@ fn investigate_users(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
     c.log().tick(20, 120);
     c.log().action("Starting User Investigation");
     let users: Vec<&User> = c.users.clone();
+    let mut all_inbox: Vec<(Row, String, Evidence)> = Vec::new();
     for u in &users {
         step(c, "Get-HawkUserConfiguration", "User Configuration");
         user::configuration(c, tree, u)?;
         step(c, "Get-HawkUserInboxRule", "Inbox Rules");
-        inbox_rules(c, tree, u)?;
+        all_inbox.extend(inbox_rules(c, tree, u)?);
         step(c, "Get-HawkUserEmailForwarding", "Forwarding");
         user::forwarding(c, tree, u)?;
         step(c, "Get-HawkUserAuthHistory", "Authentication History");
@@ -828,14 +829,40 @@ fn investigate_users(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         step(c, "Get-HawkUserMobileDevice", "Mobile Devices");
         user::mobile_devices(c, tree, u)?;
     }
+    // `Tenant/All_InboxRules` is one document (capture survey §2b: byte-identical to a user's
+    // `InboxRules_<u>`), so write every investigated user's rules in a single call.
+    if !all_inbox.is_empty() {
+        let rows: Vec<Row> = all_inbox.iter().map(|(r, _, _)| r.clone()).collect();
+        let w = c.omft.write(
+            tree,
+            "All_InboxRules",
+            None,
+            Art::derived("hawk.tenant.all_inbox_rules"),
+            &rows,
+            Formats::CSV_JSON,
+            false,
+            false,
+        )?;
+        register(
+            tree,
+            &w,
+            "inbox_rules",
+            |i| all_inbox.get(i).map(|(_, k, _)| k.clone()),
+            |i| all_inbox.get(i).map(|(_, _, e)| e.clone()),
+        );
+    }
     c.log().plain("User Investigation complete");
     Ok(())
 }
 
-/// Get-HawkUserInboxRule: `InboxRules_<u>` and, appended per user, `Tenant/All_InboxRules`
-/// (byte-identical to the first user's file while only one user is investigated; capture
-/// survey §5); flagged rules appended one by one to `_Investigate_InboxRules`.
-fn inbox_rules(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
+/// Get-HawkUserInboxRule: `InboxRules_<u>` (returned to the caller for the single
+/// `Tenant/All_InboxRules` document; capture survey §5); flagged rules appended one by one to
+/// `_Investigate_InboxRules`.
+fn inbox_rules(
+    c: &mut Ctx<'_>,
+    tree: &mut Tree<'_>,
+    u: &User,
+) -> Result<Vec<(Row, String, Evidence)>> {
     let world = c.world;
     let upn = u.upn.as_str();
     c.log().plain(format!("Gathering Inbox Rules: {upn}"));
@@ -846,7 +873,7 @@ fn inbox_rules(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
         .collect();
     if rules.is_empty() {
         c.log().plain(format!("No Inbox Rules found for {upn}"));
-        return Ok(());
+        return Ok(Vec::new());
     }
     let rows: Vec<Row> = rules
         .iter()
@@ -896,18 +923,22 @@ fn inbox_rules(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> Result<()> {
         false,
     )?;
     register(tree, &w, "inbox_rules", key, ev);
-    let w = c.omft.write(
-        tree,
-        "All_InboxRules",
-        None,
-        Art::derived("hawk.tenant.all_inbox_rules"),
-        &rows,
-        Formats::CSV_JSON,
-        true,
-        false,
-    )?;
-    register(tree, &w, "inbox_rules", key, ev);
-    Ok(())
+    let tenant = rows
+        .iter()
+        .zip(rules.iter())
+        .map(|(row, r)| {
+            (
+                row.clone(),
+                keys::inbox_rule("inbox", &u.alias, &r.identity.to_string()),
+                Evidence::InboxRule {
+                    mailbox: r.mailbox.clone(),
+                    identity: r.identity.to_string(),
+                    graph_id: r.graph_id.clone(),
+                },
+            )
+        })
+        .collect();
+    Ok(tenant)
 }
 
 /// The operations Hawk 3's `Exchange_UAL_Audit` holds (capture survey §2e).

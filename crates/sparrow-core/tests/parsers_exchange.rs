@@ -147,6 +147,31 @@ fn tenant_and_user_copies_of_a_rule_are_one_row() {
     );
 }
 
+/// The tenant `All_InboxRules` JSON can be a single array (the count-dependent OMFT shape);
+/// the parser loads every object in it.
+#[test]
+fn tenant_all_inbox_rules_array_shape_loads() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    json_file(
+        &root,
+        "Tenant/All_InboxRules.json",
+        &json!([
+            inbox_rule("alice", 1111, "One", json!({})),
+            inbox_rule("alice", 2222, "Two", json!({})),
+        ]),
+    );
+    let (case, report) = ingest(dir.path());
+    assert!(!report.has_errors(), "{report:#?}");
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM inbox_rules WHERE source = 'hawk'"
+        ),
+        2
+    );
+}
+
 #[test]
 fn sweep_rules_load_as_kind_sweep() {
     let dir = tempfile::tempdir().unwrap();

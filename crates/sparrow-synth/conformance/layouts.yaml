@@ -212,6 +212,8 @@ artifacts:
     source: hawk survey §2b (Hawk 3 EDiscoveryRoleAssignments / Impersonation_Rights, 37-col role assignment)
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    # One OMFT call (Get-ManagementRoleAssignment): one record is a bare object, several an array.
+    json_shape: [bare, array]
     columns_required: [DataObject, User, App, AssignmentMethod, Identity, EffectiveUserName, AssignmentChain, RoleAssigneeType, RoleAssignee, Role, RoleAssignmentDelegationType, RecipientReadScope, ConfigReadScope, RecipientWriteScope, ConfigWriteScope, Enabled, RoleAssigneeName, Id, IsValid, WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC, ObjectState]
   - artifact: hawk.tenant.impersonation
     collector: hawk
@@ -314,6 +316,8 @@ artifacts:
     source: hawk survey §2d (Get-RemoteDomain, version-dependent column count)
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    # One OMFT call: a single domain is a bare object (survey §2d), several an array.
+    json_shape: [bare, array]
     columns_required: [DomainName, IsInternal, Name, Identity, WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC, ObjectState]
   - artifact: hawk.tenant.transport_config
     collector: hawk
@@ -332,6 +336,9 @@ artifacts:
     source: hawk survey §2d (User_ForwardingReport)
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    # One OMFT call per user with `-Append`: one user is a bare object, several concatenate
+    # complete documents (research hawk-layouts §2).
+    json_shape: [bare, concatenated]
     columns_required: [DisplayName, UserPrincipalName, PrimarySmtpAddress, ForwardingSmtpAddress, ForwardingAddress, DeliverToMailboxAndForward, WhenChangedUTC]
     dates: {WhenChangedUTC: [culture_mdy, iso_z, msdate]}
   - artifact: hawk.tenant.all_inbox_rules
@@ -339,6 +346,9 @@ artifacts:
     source: hawk survey §2b (Hawk 3 Tenant/All_InboxRules, Get-InboxRule)
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    # A single document (survey §2b: byte-identical to a user's `InboxRules_<u>`): one rule is
+    # a bare object, several an array. Never the concatenated per-user `-Append` documents.
+    json_shape: [bare, array]
     columns_required: [Description, Enabled, Identity, InError, ErrorType, Name, Priority, RuleIdentity, SupportedByTask, Legacy, StopProcessingRules, MailboxOwnerId, IsValid, ObjectState]
   - artifact: hawk.tenant.all_sweep_rules
     collector: hawk
