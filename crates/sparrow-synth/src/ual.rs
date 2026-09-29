@@ -526,6 +526,10 @@ pub fn sts_logon(
     );
     put(&mut u, "InterSystemsId", json!(rng.uuid().to_string()));
     put(&mut u, "IntraSystemId", json!(rng.uuid().to_string()));
+    // The sign-in session properties the Management Activity API records for an StsLogon
+    // (they reach the files through `Converted_Authentication_Logs`, which expands the
+    // AuditData properties; survey §2e).
+    put(&mut u, "KeepMeSignedIn", json!(false));
     if !ok {
         put(&mut u, "LogonError", json!(logon_error(error)));
     }
@@ -537,6 +541,10 @@ pub fn sts_logon(
         json!([{"ID": app_id.to_string(), "Type": 0}]),
     );
     put(&mut u, "TargetContextId", json!(tenant));
+    put(&mut u, "UserAuthenticationMethod", json!("Password"));
+    // The postal code the geo lookup found: the synthetic world models locations without one,
+    // so it stays empty (a real capture carries it only when the lookup resolved one).
+    put(&mut u, "ZipCode", json!(""));
     u
 }
 

@@ -5,8 +5,8 @@
 use super::omft::{Art, Formats, HawkVersion};
 use super::tenant::{non_interactive_header, running, simple_and_raw, summary};
 use super::{
-    Ctx, additional_properties, date, date_text, expanded_row, json_val, model, opt, r, raw_row,
-    register, register_flags, register_ual, s, simple_rows,
+    Ctx, EXCHANGE_VERSION, additional_properties, date, date_text, expanded_row, json_val, model,
+    opt, r, raw_row, register, register_flags, register_ual, s, simple_rows,
 };
 use crate::Result;
 use crate::events::{RecordType, SignIn, SignInType, TraceMsg, Ual};
@@ -275,11 +275,14 @@ fn words(list: &[String]) -> Val {
 }
 
 /// A Get-InboxRule object; Hawk replaces the description's line breaks with spaces and drops
-/// its tabs before writing.
+/// its tabs before writing. The row is the cmdlet's full output: the identity block, then every
+/// condition with its `ExceptIf*` twin, then every action, then the object's own columns
+/// (survey §2e: 74 columns in the 3.x capture, 92 in the 4.x one). Conditions and actions the
+/// world does not set are neutral: `False`, `$null` or empty.
 pub(super) fn inbox_rule_row(world: &World, u: &User, rule: &InboxRule) -> Row {
     let folder = |f: &Option<String>| opt(f.as_ref().map(|f| format!("{}:\\{f}", u.alias)));
     let description = rule.description().replace("\r\n", " ").replace('\t', "");
-    vec![
+    let mut row = vec![
         r("Description", s(description)),
         r("Enabled", Val::Bool(rule.enabled)),
         r("Identity", s(format!("{}\\{}", u.alias, rule.identity))),
@@ -290,29 +293,77 @@ pub(super) fn inbox_rule_row(world: &World, u: &User, rule: &InboxRule) -> Row {
         r("RuleIdentity", Val::Raw(json!(rule.identity))),
         r("SupportedByTask", Val::Bool(true)),
         r("Legacy", Val::Bool(false)),
+        r("AnyCategory", Val::Null),
+        r("ExceptIfAnyCategory", Val::Null),
+        r("AssignedCategories", Val::Null),
+        r("ExceptIfAssignedCategories", Val::Null),
         r("BodyContainsWords", words(&rule.body_contains)),
         r("ExceptIfBodyContainsWords", Val::Null),
+        r("BulkCategory", Val::Null),
+        r("ExceptIfBulkCategory", Val::Null),
         r("FlaggedForAction", Val::Null),
+        r("ExceptIfFlaggedForAction", Val::Null),
         r("From", recipients(world, &rule.from)),
         r("ExceptIfFrom", Val::Null),
         r("FromAddressContainsWords", Val::Null),
+        r("ExceptIfFromAddressContainsWords", Val::Null),
         r("HasAttachment", Val::Bool(rule.has_attachment)),
         r("ExceptIfHasAttachment", Val::Bool(false)),
+        r("HasClassification", Val::Null),
+        r("ExceptIfHasClassification", Val::Null),
+        r("HeaderContainsWords", Val::Null),
+        r("ExceptIfHeaderContainsWords", Val::Null),
+        r("IsExternal", Val::Bool(false)),
+        r("ExceptIfIsExternal", Val::Bool(false)),
+        r("IsMentioned", Val::Bool(false)),
+        r("ExceptIfIsMentioned", Val::Bool(false)),
         r("MarkImportance", Val::Null),
         r("MessageTypeMatches", Val::Null),
+        r("ExceptIfMessageTypeMatches", Val::Null),
+        r("MyNameInCcBox", Val::Bool(false)),
+        r("ExceptIfMyNameInCcBox", Val::Bool(false)),
+        r("MyNameInToBox", Val::Bool(false)),
+        r("ExceptIfMyNameInToBox", Val::Bool(false)),
         r("MyNameInToOrCcBox", Val::Bool(false)),
+        r("ExceptIfMyNameInToOrCcBox", Val::Bool(false)),
+        r("MyNameNotInToBox", Val::Bool(false)),
+        r("ExceptIfMyNameNotInToBox", Val::Bool(false)),
+        r("ReceivedAfterDate", Val::Null),
+        r("ExceptIfReceivedAfterDate", Val::Null),
+        r("ReceivedBeforeDate", Val::Null),
+        r("ExceptIfReceivedBeforeDate", Val::Null),
+        r("RecipientAddressContainsWords", Val::Null),
+        r("ExceptIfRecipientAddressContainsWords", Val::Null),
         r("SentOnlyToMe", Val::Bool(false)),
+        r("ExceptIfSentOnlyToMe", Val::Bool(false)),
+        r("SentTo", Val::Null),
+        r("ExceptIfSentTo", Val::Null),
         r("SubjectContainsWords", words(&rule.subject_contains)),
+        r("ExceptIfSubjectContainsWords", Val::Null),
         r(
             "SubjectOrBodyContainsWords",
             words(&rule.subject_or_body_contains),
         ),
+        r("ExceptIfSubjectOrBodyContainsWords", Val::Null),
         r("WithImportance", Val::Null),
+        r("ExceptIfWithImportance", Val::Null),
+        r("WithSensitivity", Val::Null),
+        r("ExceptIfWithSensitivity", Val::Null),
         r("WithinSizeRangeMaximum", Val::Null),
+        r("ExceptIfWithinSizeRangeMaximum", Val::Null),
         r("WithinSizeRangeMinimum", Val::Null),
+        r("ExceptIfWithinSizeRangeMinimum", Val::Null),
         r("ApplyCategory", Val::Null),
+        r("ApplySystemCategory", Val::Null),
+        r("AutoReplyWithTemplate", Val::Null),
+        r("ClearCategories", Val::Bool(false)),
+        r("ClearFlag", Val::Bool(false)),
+        r("CompleteFlag", Val::Bool(false)),
         r("CopyToFolder", folder(&rule.copy_to_folder)),
         r("DeleteMessage", Val::Bool(rule.delete_message)),
+        r("DeleteSystemCategory", Val::Null),
+        r("DisplayAlert", Val::Null),
+        r("FlagMessage", Val::Bool(false)),
         r(
             "ForwardAsAttachmentTo",
             recipients(world, &rule.forward_as_attachment_to),
@@ -320,14 +371,20 @@ pub(super) fn inbox_rule_row(world: &World, u: &User, rule: &InboxRule) -> Row {
         r("ForwardTo", recipients(world, &rule.forward_to)),
         r("MarkAsRead", Val::Bool(rule.mark_as_read)),
         r("MoveToFolder", folder(&rule.move_to_folder)),
+        r("PermanentDelete", Val::Bool(false)),
+        r("PinMessage", Val::Bool(false)),
+        r("PlaySound", Val::Null),
         r("RedirectTo", recipients(world, &rule.redirect_to)),
         r("SendTextMessageNotificationTo", Val::Raw(json!([]))),
         r("SoftDeleteMessage", Val::Bool(rule.soft_delete)),
         r("StopProcessingRules", Val::Bool(rule.stop_processing)),
+    ];
+    row.extend([
         r("MailboxOwnerId", s(u.alias.clone())),
         r("IsValid", Val::Bool(true)),
         r("ObjectState", s("New")),
-    ]
+    ]);
+    row
 }
 
 /// `Get-HawkUserInboxRule`'s investigate test (H12): DeleteMessage, or a forward / redirect
@@ -1384,7 +1441,14 @@ pub(super) fn mobile_devices(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> 
                     "{}\\ExchangeActiveSyncDevices\\{}\u{00A7}{}",
                     u.alias, d.device_type, d.device_id
                 );
-                vec![
+                // The Exchange Online base-object columns of a Get-MobileDevice mailbox
+                // object (survey §2e: 39 columns), all synthetic.
+                let guid = crate::rng::stream(world.seed, &format!(
+                    "hawk/mobiledevice/{}/{}",
+                    d.mailbox, d.device_id
+                ))
+                .uuid();
+                let mut row = vec![
                     r("FriendlyName", s(d.friendly_name.clone())),
                     r("DeviceId", s(d.device_id.clone())),
                     r("DeviceImei", Val::Null),
@@ -1405,6 +1469,28 @@ pub(super) fn mobile_devices(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> 
                     r("IsManaged", Val::Bool(false)),
                     r("IsCompliant", Val::Bool(false)),
                     r("IsDisabled", Val::Bool(false)),
+                    r("AdminDisplayName", s("")),
+                    r(
+                        "DistinguishedName",
+                        s(format!(
+                            "CN={},OU=ExchangeActiveSyncDevices,CN={},{}",
+                            identity,
+                            u.alias,
+                            super::tenant::exo_dn(world)
+                        )),
+                    ),
+                    r(
+                        "ObjectCategory",
+                        s(
+                            "NAMPR04A001.prod.outlook.example/Configuration/Schema/ms-Exch-MobileDevice",
+                        ),
+                    ),
+                    r(
+                        "ObjectClass",
+                        Val::Raw(json!(["top", "msExchMobileDevice"])),
+                    ),
+                ];
+                row.extend([
                     r("WhenChanged", date_text(d.last_sync, DtKind::Local)),
                     r("WhenCreated", date_text(d.when_created, DtKind::Local)),
                     r("WhenChangedUTC", date_text(d.last_sync, DtKind::Utc)),
@@ -1414,9 +1500,23 @@ pub(super) fn mobile_devices(c: &mut Ctx<'_>, tree: &mut Tree<'_>, u: &User) -> 
                         s(format!("{}\u{00A7}{}", d.device_type, d.device_id)),
                     ),
                     r("Identity", s(identity)),
+                    r("ExchangeObjectId", s(guid.to_string())),
+                    r(
+                        "OrganizationalUnitRoot",
+                        s(world.tenant.initial_domain.clone()),
+                    ),
+                    r(
+                        "OrganizationId",
+                        s(super::tenant::organization_id(world)),
+                    ),
+                    r("Guid", s(guid.to_string())),
+                    r("OriginatingServer", s(super::tenant::server(world, "mobiledevice"))),
+                    r("Id", s(d.device_id.clone())),
                     r("IsValid", Val::Bool(true)),
+                    r("ExchangeVersion", s(EXCHANGE_VERSION)),
                     r("ObjectState", s("Unchanged")),
-                ]
+                ]);
+                row
             })
             .collect();
         for (d, row) in devices.iter().zip(&rows) {

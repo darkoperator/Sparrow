@@ -3,8 +3,8 @@
 
 use super::omft::{Art, Formats, HawkVersion, Written};
 use super::{
-    Ctx, additional_properties, date, date_text, model, one_of, opt, r, raw_rows, register,
-    register_flags, register_ual, s, simple_rows, text_of,
+    Ctx, EXCHANGE_VERSION, additional_properties, date, date_text, model, one_of, opt, props, r,
+    raw_rows, register, register_flags, register_ual, s, simple_rows, text_of,
 };
 use crate::Result;
 use crate::events::{RecordType, Ual};
@@ -241,21 +241,21 @@ pub(super) fn investigate(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
 // Exchange Online configuration
 
 /// `DC=` components of the tenant's Exchange Online directory partition.
-fn exo_dn(world: &World) -> String {
+pub(super) fn exo_dn(world: &World) -> String {
     format!(
         "CN={},CN=Microsoft Exchange Hosted Organizations,DC=NAMPR04A001,DC=prod,DC=outlook,DC=example",
         world.tenant.initial_domain
     )
 }
 
-fn organization_id(world: &World) -> String {
+pub(super) fn organization_id(world: &World) -> String {
     format!(
         "NAMPR04A001.prod.outlook.example/Microsoft Exchange Hosted Organizations/{} - NAMPR04A001.prod.outlook.example/ConfigurationUnits/{}/Configuration",
         world.tenant.initial_domain, world.tenant.initial_domain
     )
 }
 
-fn server(world: &World, label: &str) -> String {
+pub(super) fn server(world: &World, label: &str) -> String {
     let mut rng = stream(world.seed, &format!("hawk/server/{label}"));
     crate::ual::server_name(&mut rng)
 }
@@ -378,10 +378,14 @@ pub(super) fn org_config(world: &World) -> Row {
 }
 
 pub(super) fn remote_domain_row(world: &World, d: &crate::world::RemoteDomain) -> Row {
+    let guid = stream(world.seed, &format!("hawk/remotedomain/{}", d.domain)).uuid();
+    // Get-RemoteDomain's own properties in the cmdlet's order, then the Exchange Online
+    // base-object columns (survey §2d; the base block is §2b's role-assignment schema).
     let mut row = vec![
         r("AllowedOOFType", s(d.allowed_ooo_type.clone())),
         r("AutoForwardEnabled", Val::Bool(d.auto_forward_enabled)),
         r("AutoReplyEnabled", Val::Bool(true)),
+        r("ByteEncoderTypeFor7BitCharsets", Val::Null),
         r("CharacterSet", Val::Null),
         r("ContentType", s("MimeHtmlText")),
         r("DeliveryReportEnabled", Val::Bool(true)),
@@ -390,7 +394,14 @@ pub(super) fn remote_domain_row(world: &World, d: &crate::world::RemoteDomain) -
         r("IsInternal", Val::Bool(false)),
         r("LineWrapSize", s("Unlimited")),
         r("MeetingForwardNotificationEnabled", Val::Bool(false)),
+        r("MessageCountThreshold", Val::Int(0)),
         r("Name", s(d.name.clone())),
+        r("NDRDiagnosticInfoEnabled", Val::Bool(false)),
+        r("NDREnabled", Val::Bool(false)),
+        r("NonMimeCharacterSet", Val::Null),
+        r("PreferredInternetCodePageForShiftJis", Val::Null),
+        r("RequiredCharsetCoverage", Val::Null),
+        r("SmtpDaneMandatoryModeEnabled", Val::Bool(false)),
         r("TargetDeliveryDomain", Val::Bool(false)),
         r("TNEFEnabled", Val::Null),
         r("TrustedMailInboundEnabled", Val::Bool(false)),
@@ -405,13 +416,30 @@ pub(super) fn remote_domain_row(world: &World, d: &crate::world::RemoteDomain) -
                 exo_dn(world)
             )),
         ),
+        r(
+            "ObjectCategory",
+            s("NAMPR04A001.prod.outlook.example/Configuration/Schema/ms-Exch-RemoteDomain"),
+        ),
+        r(
+            "ObjectClass",
+            Val::Raw(json!(["top", "msExchRemoteDomain"])),
+        ),
         r("Identity", s(d.name.clone())),
     ];
     row.extend(when(d.when_changed, world.tenant.created));
     row.extend([
+        r("ExchangeObjectId", s(guid.to_string())),
+        r(
+            "OrganizationalUnitRoot",
+            s(world.tenant.initial_domain.clone()),
+        ),
         r("OrganizationId", s(organization_id(world))),
+        r("Guid", s(guid.to_string())),
+        r("OriginatingServer", s(server(world, "remotedomain"))),
         r("Id", s(d.name.clone())),
         r("IsValid", Val::Bool(true)),
+        r("ExchangeVersion", s(EXCHANGE_VERSION)),
+        r("DirectoryObjectVersion", s(EXCHANGE_VERSION)),
         r("ObjectState", s("Unchanged")),
     ]);
     row
@@ -473,6 +501,192 @@ pub(super) fn transport_rule_row(world: &World, t: &crate::world::TransportRule)
                 Value::Array(actions.iter().map(|a| json!(a)).collect()),
             ),
         ),
+    ];
+    // The action, condition and exception properties the world does not set (plan Task F4):
+    // every switch `False`, every unset address list, pattern or date `$null`. The
+    // properties the scenario does set are above (Priority, Description, State, Mode, the
+    // recipient actions and SentToScope).
+    row.extend(props!(
+        Val::Null;
+        "ADComparisonAttribute",
+        "ADComparisonOperator",
+        "AddManagerAsRecipientType",
+        "AnyOfCcHeader",
+        "AnyOfCcHeaderMemberOf",
+        "AnyOfRecipientAddressContainsWords",
+        "AnyOfRecipientAddressMatchesPatterns",
+        "AnyOfToCcHeader",
+        "AnyOfToCcHeaderMemberOf",
+        "AnyOfToHeader",
+        "AnyOfToHeaderMemberOf",
+        "ApplyHtmlDisclaimerFallbackAction",
+        "ApplyHtmlDisclaimerLocation",
+        "ApplyHtmlDisclaimerText",
+        "ApplyRightsProtectionCustomizationTemplate",
+        "ApplyRightsProtectionTemplate",
+        "AttachmentContainsWords",
+        "AttachmentExtensionMatchesWords",
+        "AttachmentMatchesPatterns",
+        "AttachmentNameMatchesPatterns",
+        "AttachmentPropertyContainsWords",
+        "AttachmentSizeOver",
+        "BetweenMemberOf1",
+        "BetweenMemberOf2",
+        "ContentCharacterSetContainsWords",
+        "ContentMatchesPromptFallbackResult",
+        "ContentMatchesPromptScanScope",
+        "ContentMatchesPromptVerdict",
+        "ExceptIfADComparisonAttribute",
+        "ExceptIfADComparisonOperator",
+        "ExceptIfAnyOfCcHeader",
+        "ExceptIfAnyOfCcHeaderMemberOf",
+        "ExceptIfAnyOfRecipientAddressContainsWords",
+        "ExceptIfAnyOfRecipientAddressMatchesPatterns",
+        "ExceptIfAnyOfToCcHeader",
+        "ExceptIfAnyOfToCcHeaderMemberOf",
+        "ExceptIfAnyOfToHeader",
+        "ExceptIfAnyOfToHeaderMemberOf",
+        "ExceptIfAttachmentContainsWords",
+        "ExceptIfAttachmentExtensionMatchesWords",
+        "ExceptIfAttachmentMatchesPatterns",
+        "ExceptIfAttachmentNameMatchesPatterns",
+        "ExceptIfAttachmentPropertyContainsWords",
+        "ExceptIfAttachmentSizeOver",
+        "ExceptIfBetweenMemberOf1",
+        "ExceptIfBetweenMemberOf2",
+        "ExceptIfContentCharacterSetContainsWords",
+        "ExceptIfContentMatchesPromptFallbackResult",
+        "ExceptIfContentMatchesPromptScanScope",
+        "ExceptIfContentMatchesPromptVerdict",
+        "ExceptIfFrom",
+        "ExceptIfFromAddressContainsWords",
+        "ExceptIfFromAddressMatchesPatterns",
+        "ExceptIfFromMemberOf",
+        "ExceptIfFromScope",
+        "ExceptIfHasClassification",
+        "ExceptIfHeaderContainsMessageHeader",
+        "ExceptIfHeaderContainsWords",
+        "ExceptIfHeaderMatchesMessageHeader",
+        "ExceptIfHeaderMatchesPatterns",
+        "ExceptIfManagerAddresses",
+        "ExceptIfMessageContainsAllDataClassifications",
+        "ExceptIfMessageContainsDataClassifications",
+        "ExceptIfMessageSizeOver",
+        "ExceptIfMessageTypeMatches",
+        "ExceptIfRecipientADAttributeContainsWords",
+        "ExceptIfRecipientADAttributeMatchesPatterns",
+        "ExceptIfRecipientAddressContainsWords",
+        "ExceptIfRecipientAddressMatchesPatterns",
+        "ExceptIfRecipientDomainIs",
+        "ExceptIfRecipientInSenderList",
+        "ExceptIfSCLOver",
+        "ExceptIfSenderADAttributeContainsWords",
+        "ExceptIfSenderADAttributeMatchesPatterns",
+        "ExceptIfSenderDomainIs",
+        "ExceptIfSenderInRecipientList",
+        "ExceptIfSenderIpRanges",
+        "ExceptIfSenderManagementRelationship",
+        "ExceptIfSentTo",
+        "ExceptIfSentToMemberOf",
+        "ExceptIfSentToScope",
+        "ExceptIfSubjectContainsWords",
+        "ExceptIfSubjectMatchesPatterns",
+        "ExceptIfSubjectOrBodyContainsWords",
+        "ExceptIfSubjectOrBodyMatchesPatterns",
+        "ExceptIfWithImportance",
+        "From",
+        "FromAddressContainsWords",
+        "FromAddressMatchesPatterns",
+        "FromMemberOf",
+        "FromScope",
+        "HasClassification",
+        "HasNoClassification",
+        "HeaderContainsMessageHeader",
+        "HeaderContainsWords",
+        "HeaderMatchesMessageHeader",
+        "HeaderMatchesPatterns",
+        "IncidentReportContent",
+        "LogEventText",
+        "ManagerAddresses",
+        "MessageContainsAllDataClassifications",
+        "MessageContainsDataClassifications",
+        "MessageSizeOver",
+        "MessageTypeMatches",
+        "PrependSubject",
+        "RecipientADAttributeContainsWords",
+        "RecipientADAttributeMatchesPatterns",
+        "RecipientAddressContainsWords",
+        "RecipientAddressMatchesPatterns",
+        "RecipientAddressType",
+        "RecipientDomainIs",
+        "RecipientInSenderList",
+        "RejectMessageReasonText",
+        "RemoveHeader",
+        "RouteMessageOutboundConnector",
+        "RuleConfigurationUnsupportedReason",
+        "SCLOver",
+        "SenderADAttributeContainsWords",
+        "SenderADAttributeMatchesPatterns",
+        "SenderDomainIs",
+        "SenderInRecipientList",
+        "SenderIpRanges",
+        "SenderManagementRelationship",
+        "SenderNotificationType",
+        "SentTo",
+        "SentToMemberOf",
+        "SetAuditSeverity",
+        "SetHeaderName",
+        "SetHeaderValue",
+        "SetSCL",
+        "SmtpRejectMessageRejectStatusCode",
+        "SmtpRejectMessageRejectText",
+        "SubjectContainsWords",
+        "SubjectMatchesPatterns",
+        "SubjectOrBodyContainsWords",
+        "SubjectOrBodyMatchesPatterns",
+        "WithImportance",
+    ));
+    row.extend(props!(
+        Val::Bool(false);
+        "ApplyClassification",
+        "ApplyOME",
+        "AttachmentHasExecutableContent",
+        "AttachmentIsPasswordProtected",
+        "AttachmentIsUnsupported",
+        "AttachmentProcessingLimitExceeded",
+        "ContentMatchesPrompt",
+        "DeleteMessage",
+        "Disconnect",
+        "ExceptIfAttachmentHasExecutableContent",
+        "ExceptIfAttachmentIsPasswordProtected",
+        "ExceptIfAttachmentIsUnsupported",
+        "ExceptIfAttachmentProcessingLimitExceeded",
+        "ExceptIfContentMatchesPrompt",
+        "ExceptIfHasNoClassification",
+        "ExceptIfHasSenderOverride",
+        "ExceptIfManagerForEvaluatedUser",
+        "GenerateIncidentReport",
+        "GenerateNotification",
+        "HasSenderOverride",
+        "IsRuleConfigurationSupported",
+        "ManagerForEvaluatedUser",
+        "ModerateMessageByManager",
+        "ModerateMessageByUser",
+        "Quarantine",
+        "RemoveOME",
+        "RemoveOMEv2",
+        "RemoveRMSAttachmentEncryption",
+        "RouteMessageOutboundRequireTls",
+        "StopRuleProcessing",
+    ));
+    row.extend(props!(
+        Val::Int(0);
+        "RegexSize",
+        "Size",
+    ));
+    // `CreatedBy` is the world user who created the rule, as `LastModifiedBy` is.
+    row.push(r("CreatedBy", s(t.created_by.clone())));
+    row.extend([
         r("State", s(t.state.clone())),
         r("Mode", s(t.mode.clone())),
         r("RuleErrorAction", s("Ignore")),
@@ -498,7 +712,8 @@ pub(super) fn transport_rule_row(world: &World, t: &crate::world::TransportRule)
                 exo_dn(world)
             )),
         ),
-    ];
+        r("ExchangeVersion", s(EXCHANGE_VERSION)),
+    ]);
     row.extend(when(t.when_changed, t.when_changed));
     row.extend([
         r("OrganizationId", s(organization_id(world))),
@@ -510,33 +725,116 @@ pub(super) fn transport_rule_row(world: &World, t: &crate::world::TransportRule)
 
 pub(super) fn transport_config(world: &World) -> Row {
     let name = "Transport Settings";
+    let guid = stream(world.seed, "hawk/transportconfig").uuid();
+    // Get-TransportConfig's own properties in the cmdlet's order, then the Exchange Online
+    // base-object columns (survey §2d, 93-95 columns by Exchange version).
     let mut row = vec![
         r("AddressBookPolicyRoutingEnabled", Val::Bool(false)),
+        r(
+            "AgentGeneratedMessageLoopDetectionInSmtpEnabled",
+            Val::Bool(false),
+        ),
+        r(
+            "AgentGeneratedMessageLoopDetectionInSubmissionEnabled",
+            Val::Bool(false),
+        ),
         r("AllowLegacyTLSClients", Val::Bool(false)),
+        r("AnonymousSenderToRecipientRatePerHour", Val::Int(0)),
+        r("AttributionRejectBeforeMServRequest", Val::Bool(false)),
+        r("AttributionRejectConsumerMessages", Val::Bool(false)),
         r("ClearCategories", Val::Bool(true)),
         r("ConvertDisclaimerWrapperToEml", Val::Bool(false)),
+        r("ConvertReportToMessage", Val::Null),
+        r("CurrentTransportSystemState", Val::Null),
         r("DSNConversionMode", s("UseExchangeDSNs")),
+        r("DiagnosticsAggregationServicePort", Val::Int(0)),
+        r("EnableExternalHTTPMailDelivery", Val::Bool(false)),
         r("ExternalDelayDsnEnabled", Val::Bool(true)),
+        r("ExternalDsnDefaultLanguage", Val::Null),
+        r("ExternalDsnLanguageDetectionEnabled", Val::Bool(false)),
+        r("ExternalDsnMaxMessageAttachSize", Val::Int(0)),
+        r("ExternalDsnReportingAuthority", Val::Null),
+        r("ExternalDsnSendHtml", Val::Bool(false)),
         r("ExternalPostmasterAddress", Val::Null),
+        r("GenerateCopyOfDSNFor", Val::Null),
+        r("HeaderPromotionModeSetting", Val::Null),
+        r("HygieneSuite", Val::Bool(false)),
+        r("InternalDelayDsnEnabled", Val::Bool(false)),
+        r("InternalDsnDefaultLanguage", Val::Null),
+        r("InternalDsnLanguageDetectionEnabled", Val::Bool(false)),
+        r("InternalDsnMaxMessageAttachSize", Val::Int(0)),
+        r("InternalDsnReportingAuthority", Val::Null),
+        r("InternalDsnSendHtml", Val::Bool(false)),
         r("InternalSMTPServers", Val::Raw(json!([]))),
+        r("JournalArchivingEnabled", Val::Bool(false)),
+        r("JournalMessageExpirationDays", Val::Int(0)),
+        r("JournalReportDLMemberSubstitutionEnabled", Val::Bool(false)),
         r("JournalingReportNdrTo", s("<>")),
+        r("LegacyArchiveJournalingEnabled", Val::Bool(false)),
+        r("LegacyArchiveLiveJournalingEnabled", Val::Bool(false)),
+        r("LegacyJournalingMigrationEnabled", Val::Bool(false)),
+        r("MaxAllowedAgentGeneratedMessageDepth", Val::Int(0)),
+        r("MaxAllowedAgentGeneratedMessageDepthPerAgent", Val::Int(0)),
+        r("MaxDumpsterSizePerDatabase", Val::Int(0)),
+        r("MaxDumpsterTime", Val::Int(0)),
         r("MaxReceiveSize", s("36 MB (37,748,736 bytes)")),
         r("MaxRecipientEnvelopeLimit", s("Unlimited")),
         r("MaxSendSize", s("35 MB (36,700,160 bytes)")),
+        r("MessageExpiration", Val::Int(0)),
+        r("MigrationEnabled", Val::Bool(false)),
+        r("OpenDomainRoutingEnabled", Val::Bool(false)),
+        r("OrganizationFederatedMailbox", Val::Bool(false)),
+        r("OtherWellKnownObjects", Val::Raw(json!([]))),
+        r("PreserveReportBodypart", Val::Bool(false)),
+        r("PreventDuplicateJournalingEnabled", Val::Bool(false)),
+        r("QueueDiagnosticsAggregationInterval", Val::Int(0)),
+        r(
+            "RedirectDLMessagesForLegacyArchiveJournaling",
+            Val::Bool(false),
+        ),
+        r(
+            "RedirectUnprovisionedUserMessagesForLegacyArchiveJournaling",
+            Val::Bool(false),
+        ),
+        r("ReplyAllStormBlockDurationHours", Val::Int(0)),
+        r("ReplyAllStormDetectionMinimumRecipients", Val::Int(0)),
+        r("ReplyAllStormDetectionMinimumReplies", Val::Int(0)),
+        r("ReplyAllStormProtectionEnabled", Val::Bool(false)),
+        r("Rfc2231EncodingEnabled", Val::Bool(false)),
+        r("SafetyNetHoldTime", Val::Int(0)),
         r("SmtpClientAuthenticationDisabled", Val::Bool(true)),
+        r("SupervisionTags", Val::Null),
         r("TLSReceiveDomainSecureList", Val::Raw(json!([]))),
         r("TLSSendDomainSecureList", Val::Raw(json!([]))),
+        r("TransportRuleAttachmentTextScanLimit", Val::Int(0)),
+        r("TransportRuleCollectionAddedRecipientsLimit", Val::Int(0)),
+        r("TransportRuleCollectionRegexCharsLimit", Val::Int(0)),
+        r("TransportRuleConfig", Val::Null),
+        r("TransportRuleLimit", Val::Int(0)),
         r(
             "TransportRuleMinProductVersion",
             Val::Raw(json!({"Major": 14, "Minor": 0, "Build": 0, "Revision": 0,
                 "MajorRevision": 0, "MinorRevision": 0})),
         ),
+        r("TransportRuleRegexValidationTimeout", Val::Null),
+        r("TransportRuleSizeLimit", Val::Int(0)),
+        r("TransportSystemState", Val::Null),
+        r("VerifySecureSubmitEnabled", Val::Bool(false)),
         r("VoicemailJournalingEnabled", Val::Bool(true)),
+        r("Xexch50Enabled", Val::Bool(false)),
         r("Name", s(name)),
         r("AdminDisplayName", s("")),
         r(
             "DistinguishedName",
             s(format!("CN={name},CN=Configuration,{}", exo_dn(world))),
+        ),
+        r(
+            "ObjectCategory",
+            s("NAMPR04A001.prod.outlook.example/Configuration/Schema/ms-Exch-TransportConfig"),
+        ),
+        r(
+            "ObjectClass",
+            Val::Raw(json!(["top", "msExchTransportConfig"])),
         ),
         r("Identity", s(name)),
     ];
@@ -545,14 +843,18 @@ pub(super) fn transport_config(world: &World) -> Row {
         world.tenant.created,
     ));
     row.extend([
-        r("OrganizationId", s(organization_id(world))),
+        r("ExchangeObjectId", s(guid.to_string())),
         r(
-            "Guid",
-            s(stream(world.seed, "hawk/transportconfig")
-                .uuid()
-                .to_string()),
+            "OrganizationalUnitRoot",
+            s(world.tenant.initial_domain.clone()),
         ),
+        r("OrganizationId", s(organization_id(world))),
+        r("Guid", s(guid.to_string())),
+        r("OriginatingServer", s(server(world, "transportconfig"))),
+        r("Id", s(name)),
         r("IsValid", Val::Bool(true)),
+        r("ExchangeVersion", s(EXCHANGE_VERSION)),
+        r("DirectoryObjectVersion", s(EXCHANGE_VERSION)),
         r("ObjectState", s("Unchanged")),
     ]);
     row
@@ -705,6 +1007,10 @@ pub(super) fn role_entry(world: &World, role: &str, cmdlet: &str, params: &[&str
         r("Identity", s(identity.clone())),
         r("Id", s(identity)),
         r("IsValid", Val::Bool(true)),
+        // The Exchange Online base-object build columns (survey §2b's 22/23-column role-entry
+        // schema); `DirectoryObjectVersion` is the variant that carries it.
+        r("ExchangeVersion", s(EXCHANGE_VERSION)),
+        r("DirectoryObjectVersion", s(EXCHANGE_VERSION)),
         r("DistinguishedName", s(dn)),
         r(
             "ObjectCategory",
@@ -754,6 +1060,9 @@ pub(super) fn role_assignment(world: &World, role: &str, group: &str) -> Row {
         r("RoleAssigneeName", s(group)),
         r("Id", s(name.clone())),
         r("IsValid", Val::Bool(true)),
+        // The Exchange Online base-object build column (survey §2b's 37-column role-assignment
+        // schema).
+        r("ExchangeVersion", s(EXCHANGE_VERSION)),
         r("Name", s(name.clone())),
         r(
             "DistinguishedName",
@@ -1651,7 +1960,9 @@ pub(super) fn app_audit_log(c: &mut Ctx<'_>, tree: &mut Tree<'_>, prefix: &str) 
                 r("ResultStatus", text(u, "ResultStatus")),
                 r("Workload", text(u, "Workload")),
                 r("ClientIP", text(u, "ClientIP")),
-                r("UserID", text(u, "UserId")),
+                // The 4.0 source projects `UserID`, but `Select-Object` keeps the AuditData
+                // property's own case, so every real capture holds `UserId` (survey §2a).
+                r("UserId", text(u, "UserId")),
                 r("ActorUPN", extended(u, "actorUPN")),
                 r("targetName", extended(u, "targetName")),
                 r("env_time", env_time),

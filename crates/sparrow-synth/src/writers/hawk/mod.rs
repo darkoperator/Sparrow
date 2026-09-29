@@ -79,6 +79,22 @@ pub(crate) fn r(k: &str, v: Val) -> (String, Val) {
     (k.to_string(), v)
 }
 
+/// Plan Task F4: the property list of cmdlet output columns the synthetic world does not set,
+/// all with the same neutral value (a switch `False`, a count or size `0`, an unset
+/// enumeration, string or list `$null`, which the files render empty). `v` is built once and
+/// cloned, so `props!(Val::Bool(false); "A", "B")` is two `False` properties.
+macro_rules! props {
+    ($v:expr; $($k:expr),+ $(,)?) => {{
+        let v = $v;
+        vec![$(($k.to_string(), v.clone())),+]
+    }};
+}
+pub(crate) use props;
+
+/// The Exchange Online build a captured object reports in `ExchangeVersion` /
+/// `DirectoryObjectVersion`. Exchange's own build string, not a tenant's.
+pub(crate) const EXCHANGE_VERSION: &str = "15.20.1063.014";
+
 pub(crate) fn s(v: impl Into<String>) -> Val {
     Val::Str(v.into())
 }

@@ -165,6 +165,12 @@ artifacts:
     source: hawk survey §2e (expanded STS AuditData + geo)
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    # The header is the union of the expanded records' own AuditData properties, so it varies
+    # with the record types and ExtendedProperties entries of the run: it is not one fixed
+    # list, and `columns_required` stays the right check. Every StsLogon record carries
+    # `KeepMeSignedIn`, `UserAuthenticationMethod` and `ZipCode` (the geo lookup only adds
+    # CountryName, RegionCode, RegionName, City, KnownMicrosoftIP), which is why the real
+    # captures hold them.
     columns_required: [CreationTime, UserId, Workload, ClientIP, CountryName, KnownMicrosoftIP, Operation, OrganizationId, RecordType, ResultStatus, UserType, Version]
     dates: {CreationTime: [short_g]}
   - artifact: hawk.user.message_trace
@@ -180,10 +186,32 @@ artifacts:
         de-de: [culture_dmy_de]
   - artifact: hawk.user.inbox_rules
     collector: hawk
+    # Get-InboxRule: 74 columns in the Hawk 3 capture, 92 in the Hawk 4 one (which adds the
+    # category, header, date and `MyNameIn*` columns). The generated row is the full 92-column
+    # set: the identity block, every condition with its `ExceptIf*` twin, every action, then
+    # the object's own columns.
+    # https://learn.microsoft.com/powershell/module/exchange/get-inboxrule
     source: hawk survey §2e (Get-InboxRule, 74 cols in C / 92 in B)
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
-    columns_required: [Description, Enabled, Identity, InError, ErrorType, Name, Priority, RuleIdentity, SupportedByTask, Legacy, BodyContainsWords, StopProcessingRules, MailboxOwnerId, IsValid, ObjectState]
+    columns:
+      - [Description, Enabled, Identity, InError, ErrorType, Name, Priority, RuleIdentity, SupportedByTask, Legacy,
+         AnyCategory, ExceptIfAnyCategory, AssignedCategories, ExceptIfAssignedCategories, BodyContainsWords,
+         ExceptIfBodyContainsWords, BulkCategory, ExceptIfBulkCategory, FlaggedForAction, ExceptIfFlaggedForAction, From,
+         ExceptIfFrom, FromAddressContainsWords, ExceptIfFromAddressContainsWords, HasAttachment, ExceptIfHasAttachment,
+         HasClassification, ExceptIfHasClassification, HeaderContainsWords, ExceptIfHeaderContainsWords, IsExternal,
+         ExceptIfIsExternal, IsMentioned, ExceptIfIsMentioned, MarkImportance, MessageTypeMatches,
+         ExceptIfMessageTypeMatches, MyNameInCcBox, ExceptIfMyNameInCcBox, MyNameInToBox, ExceptIfMyNameInToBox,
+         MyNameInToOrCcBox, ExceptIfMyNameInToOrCcBox, MyNameNotInToBox, ExceptIfMyNameNotInToBox, ReceivedAfterDate,
+         ExceptIfReceivedAfterDate, ReceivedBeforeDate, ExceptIfReceivedBeforeDate, RecipientAddressContainsWords,
+         ExceptIfRecipientAddressContainsWords, SentOnlyToMe, ExceptIfSentOnlyToMe, SentTo, ExceptIfSentTo,
+         SubjectContainsWords, ExceptIfSubjectContainsWords, SubjectOrBodyContainsWords,
+         ExceptIfSubjectOrBodyContainsWords, WithImportance, ExceptIfWithImportance, WithSensitivity,
+         ExceptIfWithSensitivity, WithinSizeRangeMaximum, ExceptIfWithinSizeRangeMaximum, WithinSizeRangeMinimum,
+         ExceptIfWithinSizeRangeMinimum, ApplyCategory, ApplySystemCategory, AutoReplyWithTemplate, ClearCategories,
+         ClearFlag, CompleteFlag, CopyToFolder, DeleteMessage, DeleteSystemCategory, DisplayAlert, FlagMessage,
+         ForwardAsAttachmentTo, ForwardTo, MarkAsRead, MoveToFolder, PermanentDelete, PinMessage, PlaySound, RedirectTo,
+         SendTextMessageNotificationTo, SoftDeleteMessage, StopProcessingRules, MailboxOwnerId, IsValid, ObjectState]
   - artifact: hawk.tenant.consent_grants
     collector: hawk
     source: hawk survey §2d
@@ -275,6 +303,28 @@ artifacts:
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
     columns_required: [AdminGroupName, Members]
+  - artifact: hawk.tenant.ediscovery_roles
+    collector: hawk
+    source: hawk survey §2b (EDiscoveryRoles, Get-ManagementRoleEntry)
+    formats: [csv, json]
+    encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
+    # One direct `Get-ManagementRoleEntry` per role, de-duplicated by role, and Hawk 4's
+    # `CustomEDiscoveryRoles` (the same artifact id), so two shapes share this id. The
+    # role-entry schema: 22 columns in the captures, 23 with `DirectoryObjectVersion`
+    # (survey §2b's bracketed column), which is the variant the generator writes; the second
+    # variant is the 37-column role-assignment schema of
+    # `hawk.tenant.ediscovery_role_assignments`.
+    # https://learn.microsoft.com/powershell/module/exchange/get-managementrole
+    columns:
+      - [Name, Role, Type, Parameters, PSSnapinName, Identity, Id, IsValid, ExchangeVersion, DirectoryObjectVersion,
+         DistinguishedName, ObjectCategory, ObjectClass, WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC,
+         ExchangeObjectId, OrganizationalUnitRoot, OrganizationId, Guid, OriginatingServer, ObjectState]
+      - [DataObject, User, App, AssignmentMethod, Identity, EffectiveUserName, AssignmentChain, RoleAssigneeType,
+         RoleAssignee, Role, RoleAssignmentDelegationType, CustomRecipientWriteScope, CustomConfigWriteScope,
+         CustomResourceScope, RecipientReadScope, ConfigReadScope, RecipientWriteScope, ConfigWriteScope, Enabled,
+         RoleAssigneeName, Id, IsValid, ExchangeVersion, Name, DistinguishedName, ObjectCategory, ObjectClass,
+         WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC, ExchangeObjectId, OrganizationalUnitRoot,
+         OrganizationId, Guid, OriginatingServer, ObjectState]
   - artifact: hawk.tenant.ediscovery_role_assignments
     collector: hawk
     source: hawk survey §2b (Hawk 3 EDiscoveryRoleAssignments / Impersonation_Rights, 37-col role assignment)
@@ -285,20 +335,44 @@ artifacts:
     # stays allowed for a real capture with one record.
     json_shape: [bare, array]
     json_shape_expected: [array]
-    columns_required: [DataObject, User, App, AssignmentMethod, Identity, EffectiveUserName, AssignmentChain, RoleAssigneeType, RoleAssignee, Role, RoleAssignmentDelegationType, RecipientReadScope, ConfigReadScope, RecipientWriteScope, ConfigWriteScope, Enabled, RoleAssigneeName, Id, IsValid, WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC, ObjectState]
+    # The 37 columns survey §2b records, in its order.
+    # https://learn.microsoft.com/powershell/module/exchange/get-managementroleassignment
+    columns:
+      - [DataObject, User, App, AssignmentMethod, Identity, EffectiveUserName, AssignmentChain, RoleAssigneeType,
+         RoleAssignee, Role, RoleAssignmentDelegationType, CustomRecipientWriteScope, CustomConfigWriteScope,
+         CustomResourceScope, RecipientReadScope, ConfigReadScope, RecipientWriteScope, ConfigWriteScope, Enabled,
+         RoleAssigneeName, Id, IsValid, ExchangeVersion, Name, DistinguishedName, ObjectCategory, ObjectClass,
+         WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC, ExchangeObjectId, OrganizationalUnitRoot,
+         OrganizationId, Guid, OriginatingServer, ObjectState]
   - artifact: hawk.tenant.impersonation
     collector: hawk
     source: hawk survey §2b (Hawk 3 Impersonation_Rights/Roles)
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
-    columns_required: [Identity, Role, RoleAssignee, AssignmentMethod, Enabled, Name, Id, IsValid, WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC, ObjectState]
+    # `Impersonation_Rights` is the 37-column role-assignment schema of survey §2b, as
+    # `EDiscoveryRoleAssignments`; Role is always `ApplicationImpersonation`.
+    # https://learn.microsoft.com/powershell/module/exchange/get-managementroleassignment
+    columns:
+      - [DataObject, User, App, AssignmentMethod, Identity, EffectiveUserName, AssignmentChain, RoleAssigneeType,
+         RoleAssignee, Role, RoleAssignmentDelegationType, CustomRecipientWriteScope, CustomConfigWriteScope,
+         CustomResourceScope, RecipientReadScope, ConfigReadScope, RecipientWriteScope, ConfigWriteScope, Enabled,
+         RoleAssigneeName, Id, IsValid, ExchangeVersion, Name, DistinguishedName, ObjectCategory, ObjectClass,
+         WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC, ExchangeObjectId, OrganizationalUnitRoot,
+         OrganizationId, Guid, OriginatingServer, ObjectState]
   - artifact: hawk.tenant.impersonation
     collector: hawk
     source: hawk survey §2b (Impersonation_Roles, 22-col role entry)
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
     file_pattern: "Impersonation_Roles"
-    columns_required: [Name, Role, Type, Parameters, PSSnapinName, Identity, Id, IsValid, WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC, ObjectState]
+    # The role-entry schema, as `EDiscoveryRoles`: 22 columns in the captures, 23 with
+    # `DirectoryObjectVersion` (survey §2b's bracketed column), which is the variant the
+    # generator writes.
+    # https://learn.microsoft.com/powershell/module/exchange/get-managementrole
+    columns:
+      - [Name, Role, Type, Parameters, PSSnapinName, Identity, Id, IsValid, ExchangeVersion, DirectoryObjectVersion,
+         DistinguishedName, ObjectCategory, ObjectClass, WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC,
+         ExchangeObjectId, OrganizationalUnitRoot, OrganizationId, Guid, OriginatingServer, ObjectState]
   - artifact: hawk.tenant.forwarding_recipients
     collector: hawk
     source: hawk survey §2b (Hawk 3 Forwarding_Recipients)
@@ -310,7 +384,12 @@ artifacts:
     source: hawk survey §2b/§2c (Azure_/Entra_ID_Application_Audit)
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
-    columns_required: [Id, Operation, ResultStatus, Workload, ClientIP, UserID, ActorUPN, targetName, env_time, correlationId]
+    # The 10 columns `Get-HawkTenantEntraIDAppAuditLog` projects
+    # (Collectors/hawk.4.0.0/functions/Tenant/Get-HawkTenantEntraIDAppAuditLog.ps1:100-107).
+    # The source asks for `UserID`, but `Select-Object` keeps the AuditData property's own
+    # case, so every real capture holds `UserId` (survey §2a).
+    columns:
+      - [Id, Operation, ResultStatus, Workload, ClientIP, UserId, ActorUPN, targetName, env_time, correlationId]
   - artifact: hawk.tenant.simple_ual
     collector: hawk
     source: hawk survey §2b (Hawk 3 Simple_* admin-audit flattening)
@@ -450,19 +529,120 @@ artifacts:
     # be the array; `bare` stays allowed for a real capture with one domain.
     json_shape: [bare, array]
     json_shape_expected: [array]
-    columns_required: [DomainName, IsInternal, Name, Identity, WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC, ObjectState]
+    # The cmdlet's own properties, then the Exchange Online base-object columns. Survey §2d
+    # counts 42/43 columns per Exchange version; the generated row is the union of the
+    # observed variants.
+    # https://learn.microsoft.com/powershell/module/exchange/get-remotedomain
+    columns:
+      - [AllowedOOFType, AutoForwardEnabled, AutoReplyEnabled, ByteEncoderTypeFor7BitCharsets, CharacterSet, ContentType,
+         DeliveryReportEnabled, DisplaySenderName, DomainName, IsInternal, LineWrapSize,
+         MeetingForwardNotificationEnabled, MessageCountThreshold, Name, NDRDiagnosticInfoEnabled, NDREnabled,
+         NonMimeCharacterSet, PreferredInternetCodePageForShiftJis, RequiredCharsetCoverage,
+         SmtpDaneMandatoryModeEnabled, TargetDeliveryDomain, TNEFEnabled, TrustedMailInboundEnabled,
+         TrustedMailOutboundEnabled, UseSimpleDisplayName, AdminDisplayName, DistinguishedName, ObjectCategory,
+         ObjectClass, Identity, WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC, ExchangeObjectId,
+         OrganizationalUnitRoot, OrganizationId, Guid, OriginatingServer, Id, IsValid, ExchangeVersion,
+         DirectoryObjectVersion, ObjectState]
   - artifact: hawk.tenant.transport_config
     collector: hawk
     source: hawk survey §2d (Get-TransportConfig, version-dependent column count)
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
-    columns_required: [Name, Identity, WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC, ObjectState]
+    # The cmdlet's own properties, then the Exchange Online base-object columns. Survey §2d
+    # counts 93-95 columns per Exchange version; the generated row is the union of the
+    # observed variants.
+    # https://learn.microsoft.com/powershell/module/exchange/get-transportconfig
+    columns:
+      - [AddressBookPolicyRoutingEnabled, AgentGeneratedMessageLoopDetectionInSmtpEnabled,
+         AgentGeneratedMessageLoopDetectionInSubmissionEnabled, AllowLegacyTLSClients,
+         AnonymousSenderToRecipientRatePerHour, AttributionRejectBeforeMServRequest, AttributionRejectConsumerMessages,
+         ClearCategories, ConvertDisclaimerWrapperToEml, ConvertReportToMessage, CurrentTransportSystemState,
+         DSNConversionMode, DiagnosticsAggregationServicePort, EnableExternalHTTPMailDelivery, ExternalDelayDsnEnabled,
+         ExternalDsnDefaultLanguage, ExternalDsnLanguageDetectionEnabled, ExternalDsnMaxMessageAttachSize,
+         ExternalDsnReportingAuthority, ExternalDsnSendHtml, ExternalPostmasterAddress, GenerateCopyOfDSNFor,
+         HeaderPromotionModeSetting, HygieneSuite, InternalDelayDsnEnabled, InternalDsnDefaultLanguage,
+         InternalDsnLanguageDetectionEnabled, InternalDsnMaxMessageAttachSize, InternalDsnReportingAuthority,
+         InternalDsnSendHtml, InternalSMTPServers, JournalArchivingEnabled, JournalMessageExpirationDays,
+         JournalReportDLMemberSubstitutionEnabled, JournalingReportNdrTo, LegacyArchiveJournalingEnabled,
+         LegacyArchiveLiveJournalingEnabled, LegacyJournalingMigrationEnabled, MaxAllowedAgentGeneratedMessageDepth,
+         MaxAllowedAgentGeneratedMessageDepthPerAgent, MaxDumpsterSizePerDatabase, MaxDumpsterTime, MaxReceiveSize,
+         MaxRecipientEnvelopeLimit, MaxSendSize, MessageExpiration, MigrationEnabled, OpenDomainRoutingEnabled,
+         OrganizationFederatedMailbox, OtherWellKnownObjects, PreserveReportBodypart, PreventDuplicateJournalingEnabled,
+         QueueDiagnosticsAggregationInterval, RedirectDLMessagesForLegacyArchiveJournaling,
+         RedirectUnprovisionedUserMessagesForLegacyArchiveJournaling, ReplyAllStormBlockDurationHours,
+         ReplyAllStormDetectionMinimumRecipients, ReplyAllStormDetectionMinimumReplies, ReplyAllStormProtectionEnabled,
+         Rfc2231EncodingEnabled, SafetyNetHoldTime, SmtpClientAuthenticationDisabled, SupervisionTags,
+         TLSReceiveDomainSecureList, TLSSendDomainSecureList, TransportRuleAttachmentTextScanLimit,
+         TransportRuleCollectionAddedRecipientsLimit, TransportRuleCollectionRegexCharsLimit, TransportRuleConfig,
+         TransportRuleLimit, TransportRuleMinProductVersion, TransportRuleRegexValidationTimeout, TransportRuleSizeLimit,
+         TransportSystemState, VerifySecureSubmitEnabled, VoicemailJournalingEnabled, Xexch50Enabled, Name,
+         AdminDisplayName, DistinguishedName, ObjectCategory, ObjectClass, Identity, WhenChanged, WhenCreated,
+         WhenChangedUTC, WhenCreatedUTC, ExchangeObjectId, OrganizationalUnitRoot, OrganizationId, Guid,
+         OriginatingServer, Id, IsValid, ExchangeVersion, DirectoryObjectVersion, ObjectState]
   - artifact: hawk.tenant.transport_rules
     collector: hawk
     source: hawk survey §2d (Get-TransportRule, version-dependent column count)
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
-    columns_required: [Priority, DlpPolicy, Description, RuleVersion, Conditions, Exceptions, Actions, State, Mode, Name, Identity, WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC, ObjectState]
+    # The rule's own properties, then every action, condition and exception property, then the
+    # Exchange Online base-object columns. Survey §2d counts 196-204 columns per Exchange
+    # version (B adds the `ContentMatchesPrompt*` set); the generated row is the union of the
+    # observed variants.
+    # https://learn.microsoft.com/powershell/module/exchange/get-transportrule
+    columns:
+      - [Priority, DlpPolicy, DlpPolicyId, Comments, ManuallyModified, ActivationDate, ExpiryDate, Description,
+         RuleVersion, Conditions, Exceptions, Actions, ADComparisonAttribute, ADComparisonOperator,
+         AddManagerAsRecipientType, AnyOfCcHeader, AnyOfCcHeaderMemberOf, AnyOfRecipientAddressContainsWords,
+         AnyOfRecipientAddressMatchesPatterns, AnyOfToCcHeader, AnyOfToCcHeaderMemberOf, AnyOfToHeader,
+         AnyOfToHeaderMemberOf, ApplyHtmlDisclaimerFallbackAction, ApplyHtmlDisclaimerLocation, ApplyHtmlDisclaimerText,
+         ApplyRightsProtectionCustomizationTemplate, ApplyRightsProtectionTemplate, AttachmentContainsWords,
+         AttachmentExtensionMatchesWords, AttachmentMatchesPatterns, AttachmentNameMatchesPatterns,
+         AttachmentPropertyContainsWords, AttachmentSizeOver, BetweenMemberOf1, BetweenMemberOf2,
+         ContentCharacterSetContainsWords, ContentMatchesPromptFallbackResult, ContentMatchesPromptScanScope,
+         ContentMatchesPromptVerdict, ExceptIfADComparisonAttribute, ExceptIfADComparisonOperator, ExceptIfAnyOfCcHeader,
+         ExceptIfAnyOfCcHeaderMemberOf, ExceptIfAnyOfRecipientAddressContainsWords,
+         ExceptIfAnyOfRecipientAddressMatchesPatterns, ExceptIfAnyOfToCcHeader, ExceptIfAnyOfToCcHeaderMemberOf,
+         ExceptIfAnyOfToHeader, ExceptIfAnyOfToHeaderMemberOf, ExceptIfAttachmentContainsWords,
+         ExceptIfAttachmentExtensionMatchesWords, ExceptIfAttachmentMatchesPatterns,
+         ExceptIfAttachmentNameMatchesPatterns, ExceptIfAttachmentPropertyContainsWords, ExceptIfAttachmentSizeOver,
+         ExceptIfBetweenMemberOf1, ExceptIfBetweenMemberOf2, ExceptIfContentCharacterSetContainsWords,
+         ExceptIfContentMatchesPromptFallbackResult, ExceptIfContentMatchesPromptScanScope,
+         ExceptIfContentMatchesPromptVerdict, ExceptIfFrom, ExceptIfFromAddressContainsWords,
+         ExceptIfFromAddressMatchesPatterns, ExceptIfFromMemberOf, ExceptIfFromScope, ExceptIfHasClassification,
+         ExceptIfHeaderContainsMessageHeader, ExceptIfHeaderContainsWords, ExceptIfHeaderMatchesMessageHeader,
+         ExceptIfHeaderMatchesPatterns, ExceptIfManagerAddresses, ExceptIfMessageContainsAllDataClassifications,
+         ExceptIfMessageContainsDataClassifications, ExceptIfMessageSizeOver, ExceptIfMessageTypeMatches,
+         ExceptIfRecipientADAttributeContainsWords, ExceptIfRecipientADAttributeMatchesPatterns,
+         ExceptIfRecipientAddressContainsWords, ExceptIfRecipientAddressMatchesPatterns, ExceptIfRecipientDomainIs,
+         ExceptIfRecipientInSenderList, ExceptIfSCLOver, ExceptIfSenderADAttributeContainsWords,
+         ExceptIfSenderADAttributeMatchesPatterns, ExceptIfSenderDomainIs, ExceptIfSenderInRecipientList,
+         ExceptIfSenderIpRanges, ExceptIfSenderManagementRelationship, ExceptIfSentTo, ExceptIfSentToMemberOf,
+         ExceptIfSentToScope, ExceptIfSubjectContainsWords, ExceptIfSubjectMatchesPatterns,
+         ExceptIfSubjectOrBodyContainsWords, ExceptIfSubjectOrBodyMatchesPatterns, ExceptIfWithImportance, From,
+         FromAddressContainsWords, FromAddressMatchesPatterns, FromMemberOf, FromScope, HasClassification,
+         HasNoClassification, HeaderContainsMessageHeader, HeaderContainsWords, HeaderMatchesMessageHeader,
+         HeaderMatchesPatterns, IncidentReportContent, LogEventText, ManagerAddresses,
+         MessageContainsAllDataClassifications, MessageContainsDataClassifications, MessageSizeOver, MessageTypeMatches,
+         PrependSubject, RecipientADAttributeContainsWords, RecipientADAttributeMatchesPatterns,
+         RecipientAddressContainsWords, RecipientAddressMatchesPatterns, RecipientAddressType, RecipientDomainIs,
+         RecipientInSenderList, RejectMessageReasonText, RemoveHeader, RouteMessageOutboundConnector,
+         RuleConfigurationUnsupportedReason, SCLOver, SenderADAttributeContainsWords, SenderADAttributeMatchesPatterns,
+         SenderDomainIs, SenderInRecipientList, SenderIpRanges, SenderManagementRelationship, SenderNotificationType,
+         SentTo, SentToMemberOf, SetAuditSeverity, SetHeaderName, SetHeaderValue, SetSCL,
+         SmtpRejectMessageRejectStatusCode, SmtpRejectMessageRejectText, SubjectContainsWords, SubjectMatchesPatterns,
+         SubjectOrBodyContainsWords, SubjectOrBodyMatchesPatterns, WithImportance, ApplyClassification, ApplyOME,
+         AttachmentHasExecutableContent, AttachmentIsPasswordProtected, AttachmentIsUnsupported,
+         AttachmentProcessingLimitExceeded, ContentMatchesPrompt, DeleteMessage, Disconnect,
+         ExceptIfAttachmentHasExecutableContent, ExceptIfAttachmentIsPasswordProtected, ExceptIfAttachmentIsUnsupported,
+         ExceptIfAttachmentProcessingLimitExceeded, ExceptIfContentMatchesPrompt, ExceptIfHasNoClassification,
+         ExceptIfHasSenderOverride, ExceptIfManagerForEvaluatedUser, GenerateIncidentReport, GenerateNotification,
+         HasSenderOverride, IsRuleConfigurationSupported, ManagerForEvaluatedUser, ModerateMessageByManager,
+         ModerateMessageByUser, Quarantine, RemoveOME, RemoveOMEv2, RemoveRMSAttachmentEncryption,
+         RouteMessageOutboundRequireTls, StopRuleProcessing, RegexSize, Size, CreatedBy, State, Mode, RuleErrorAction,
+         SenderAddressLocation, RuleSubType, UseLegacyRegex, SentToScope, RedirectMessageTo, BlindCopyTo, CopyTo,
+         AddToRecipients, LastModifiedBy, RejectMessageEnhancedStatusCode, Guid, ImmutableId, Name, Identity,
+         DistinguishedName, ExchangeVersion, WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC, OrganizationId,
+         IsValid, ObjectState]
   - artifact: hawk.tenant.user_forwarding_report
     collector: hawk
     source: hawk survey §2d (User_ForwardingReport)
@@ -485,7 +665,27 @@ artifacts:
     # A single document (survey §2b: byte-identical to a user's `InboxRules_<u>`): one rule is
     # a bare object, several an array. Never the concatenated per-user `-Append` documents.
     json_shape: [bare, array]
-    columns_required: [Description, Enabled, Identity, InError, ErrorType, Name, Priority, RuleIdentity, SupportedByTask, Legacy, StopProcessingRules, MailboxOwnerId, IsValid, ObjectState]
+    # The same Get-InboxRule row as `hawk.user.inbox_rules` (this file is that file's tenant
+    # copy), so the same full column set: the Hawk 3 capture holds 74 of the 92.
+    # https://learn.microsoft.com/powershell/module/exchange/get-inboxrule
+    columns:
+      - [Description, Enabled, Identity, InError, ErrorType, Name, Priority, RuleIdentity, SupportedByTask, Legacy,
+         AnyCategory, ExceptIfAnyCategory, AssignedCategories, ExceptIfAssignedCategories, BodyContainsWords,
+         ExceptIfBodyContainsWords, BulkCategory, ExceptIfBulkCategory, FlaggedForAction, ExceptIfFlaggedForAction, From,
+         ExceptIfFrom, FromAddressContainsWords, ExceptIfFromAddressContainsWords, HasAttachment, ExceptIfHasAttachment,
+         HasClassification, ExceptIfHasClassification, HeaderContainsWords, ExceptIfHeaderContainsWords, IsExternal,
+         ExceptIfIsExternal, IsMentioned, ExceptIfIsMentioned, MarkImportance, MessageTypeMatches,
+         ExceptIfMessageTypeMatches, MyNameInCcBox, ExceptIfMyNameInCcBox, MyNameInToBox, ExceptIfMyNameInToBox,
+         MyNameInToOrCcBox, ExceptIfMyNameInToOrCcBox, MyNameNotInToBox, ExceptIfMyNameNotInToBox, ReceivedAfterDate,
+         ExceptIfReceivedAfterDate, ReceivedBeforeDate, ExceptIfReceivedBeforeDate, RecipientAddressContainsWords,
+         ExceptIfRecipientAddressContainsWords, SentOnlyToMe, ExceptIfSentOnlyToMe, SentTo, ExceptIfSentTo,
+         SubjectContainsWords, ExceptIfSubjectContainsWords, SubjectOrBodyContainsWords,
+         ExceptIfSubjectOrBodyContainsWords, WithImportance, ExceptIfWithImportance, WithSensitivity,
+         ExceptIfWithSensitivity, WithinSizeRangeMaximum, ExceptIfWithinSizeRangeMaximum, WithinSizeRangeMinimum,
+         ExceptIfWithinSizeRangeMinimum, ApplyCategory, ApplySystemCategory, AutoReplyWithTemplate, ClearCategories,
+         ClearFlag, CompleteFlag, CopyToFolder, DeleteMessage, DeleteSystemCategory, DisplayAlert, FlagMessage,
+         ForwardAsAttachmentTo, ForwardTo, MarkAsRead, MoveToFolder, PermanentDelete, PinMessage, PlaySound, RedirectTo,
+         SendTextMessageNotificationTo, SoftDeleteMessage, StopProcessingRules, MailboxOwnerId, IsValid, ObjectState]
   - artifact: hawk.tenant.all_sweep_rules
     collector: hawk
     source: hawk survey §2d (Get-SweepRule)
@@ -519,7 +719,15 @@ artifacts:
     source: hawk survey §2e (Get-MobileDevice, 39 cols)
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
-    columns_required: [FriendlyName, DeviceId, DeviceImei, DeviceOS, DeviceType, FirstSyncTime, UserDisplayName, DeviceAccessState, ClientType, WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC, Name, Identity, IsValid, ObjectState]
+    # The 39 columns survey §2e counts, in the cmdlet's order.
+    # https://learn.microsoft.com/powershell/module/exchange/get-mobiledevice
+    columns:
+      - [FriendlyName, DeviceId, DeviceImei, DeviceMobileOperator, DeviceOS, DeviceOSLanguage, DeviceTelephoneNumber,
+         DeviceType, DeviceUserAgent, DeviceModel, FirstSyncTime, UserDisplayName, DeviceAccessState,
+         DeviceAccessStateReason, DeviceAccessControlRule, ClientVersion, ClientType, IsManaged, IsCompliant, IsDisabled,
+         AdminDisplayName, DistinguishedName, ObjectCategory, ObjectClass, WhenChanged, WhenCreated, WhenChangedUTC,
+         WhenCreatedUTC, Name, Identity, ExchangeObjectId, OrganizationalUnitRoot, OrganizationId, Guid,
+         OriginatingServer, Id, IsValid, ExchangeVersion, ObjectState]
     dates:
       FirstSyncTime:
         any: [culture_mdy, iso_z, msdate]
