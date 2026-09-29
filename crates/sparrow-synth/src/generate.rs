@@ -53,6 +53,7 @@ pub fn generate_with_policy(
         )));
     }
     let mut world = World::build(scenario, opts.seed)?;
+    world.apply_scale(opts);
     let records = story::apply(&mut world)?;
     let tracked: BTreeSet<Evidence> = records
         .iter()

@@ -9,6 +9,7 @@ use crate::Result;
 use crate::baseline;
 use crate::events::{Day, DirAudit, RecordType, RiskDetection, SignIn, TraceMsg, Ual};
 use crate::names::people;
+use crate::options::GenerateOptions;
 use crate::profiles::{AuditProfile, LicenceProfile, audit_profile, licence_profile};
 use crate::reserved::{IpAllocator, Net, WELL_KNOWN_GUIDS};
 use crate::rng::{Rng, stream};
@@ -100,6 +101,17 @@ pub struct World {
     pub audit_profile: &'static AuditProfile,
     pub attacker: Attacker,
     pub victims: BTreeSet<u32>,
+    /// Task 25 scale: effective benign UAL filler rows over the window (`apply_scale`).
+    pub scale_ual: u64,
+    /// Task 25 scale: effective benign sign-in filler rows over the window.
+    pub scale_signins: u64,
+    /// The first UTC day of the window (filler spreads from here).
+    pub scale_start: Option<NaiveDate>,
+    /// The number of UTC days in the window (UAL filler divides by this).
+    pub scale_days: u64,
+    /// The first UTC day the sign-in collector retrieves (sign-in retention), and its day count.
+    pub scale_signin_start: Option<NaiveDate>,
+    pub scale_signin_days: u64,
 }
 
 impl World {
@@ -176,11 +188,88 @@ impl World {
             audit_profile: audit,
             attacker,
             victims,
+            scale_ual: 0,
+            scale_signins: 0,
+            scale_start: None,
+            scale_days: 0,
+            scale_signin_start: None,
+            scale_signin_days: 0,
         };
         if scenario.pin_ambiguous_dates {
             world.pin_historical_dates();
         }
         Ok(world)
+    }
+
+    /// Apply the Task 25 scale knobs: `opts.ual_rows` / `opts.signins` override the scenario's
+    /// `scale:`. Filler is spread evenly over the window's UTC days; `baseline::day` adds the
+    /// per-day slice and the remainder on the last day.
+    pub fn apply_scale(&mut self, opts: &GenerateOptions) {
+        self.scale_ual = opts.ual_rows.unwrap_or(self.scenario.scale.ual_rows);
+        self.scale_signins = opts.signins.unwrap_or(self.scenario.scale.signins);
+        let (start, end) = (self.window_start(), self.window_end());
+        let first = start.date_naive();
+        let mut days = 0u64;
+        let mut date = first;
+        while let Some(day0) = date.and_hms_opt(0, 0, 0).map(|t| t.and_utc()) {
+            if day0 >= end {
+                break;
+            }
+            days += 1;
+            date = match date.succ_opt() {
+                Some(n) => n,
+                None => break,
+            };
+        }
+        self.scale_start = Some(first);
+        self.scale_days = days;
+        // The Invictus sign-in collector retrieves only Entra ID's 30-day sign-in retention
+        // (`graph_start`), so filler sign-ins are placed inside that range and all of them
+        // reach the tree.
+        let signin_first = (self.collected_at() - Duration::days(30))
+            .max(start)
+            .date_naive();
+        let mut sdays = 0u64;
+        let mut date = signin_first;
+        while let Some(day0) = date.and_hms_opt(0, 0, 0).map(|t| t.and_utc()) {
+            if day0 >= end {
+                break;
+            }
+            sdays += 1;
+            date = match date.succ_opt() {
+                Some(n) => n,
+                None => break,
+            };
+        }
+        self.scale_signin_start = Some(signin_first);
+        self.scale_signin_days = sdays;
+    }
+
+    /// The filler rows `date` adds: (UAL, sign-in) shares, the remainder on each range's last
+    /// day. 0 for days outside a range or with no filler.
+    pub fn scale_share(&self, date: NaiveDate) -> (usize, usize) {
+        let share = |total: u64, start: Option<NaiveDate>, days: u64| -> usize {
+            if total == 0 || days == 0 {
+                return 0;
+            }
+            let Some(start) = start else {
+                return 0;
+            };
+            let idx = (date - start).num_days();
+            if idx < 0 || idx as u64 >= days {
+                return 0;
+            }
+            let last = idx as u64 == days - 1;
+            (total / days + if last { total % days } else { 0 }) as usize
+        };
+        (
+            share(self.scale_ual, self.scale_start, self.scale_days),
+            share(
+                self.scale_signins,
+                self.scale_signin_start,
+                self.scale_signin_days,
+            ),
+        )
     }
 
     /// Test-only (`Scenario::pin_ambiguous_dates`): move every historical state date to day 1 of

@@ -806,6 +806,8 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
         ));
     }
 
+    scale_filler(w, date, &apps, &mut ual_out, &mut signins);
+
     ual_out.sort_by_key(|u| (u.time, u.id));
     signins.sort_by_key(|s| (s.time, s.id));
     trace.sort_by_key(|t| (t.received, t.trace_id));
@@ -814,6 +816,159 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
         ual: ual_out,
         signins,
         trace,
+    }
+}
+
+/// Task 25 scale filler: exactly the day's share of the window's `scale_ual` UAL rows and
+/// `scale_signins` sign-ins. 70% benign SharePoint `FileAccessed`/`FileModified`, 20%
+/// `MailItemsAccessed` Bind on a random user (falling back to a file access when the mailbox
+/// does not audit it), 10% `MailboxLogin` where audited; the sign-in filler is non-interactive
+/// refreshes. Every row is logged, so the totals are exact. Deterministic on `scale/<day>`.
+fn scale_filler(
+    w: &World,
+    date: NaiveDate,
+    apps: &Apps,
+    ual_out: &mut Vec<Ual>,
+    signins: &mut Vec<SignIn>,
+) {
+    let (n_ual, n_signin) = w.scale_share(date);
+    if n_ual == 0 && n_signin == 0 {
+        return;
+    }
+    let people: Vec<&User> = w.all_people().collect();
+    if people.is_empty() {
+        return;
+    }
+    let label = date.format("%Y-%m-%d").to_string();
+    let mut rng = stream(w.seed, &format!("scale/{label}"));
+    let (ds, de) = (
+        day_start(date),
+        day_start(date) + Duration::days(1) - Duration::seconds(1),
+    );
+    // The sign-in collector only retrieves Entra ID's 30-day retention: keep the first sign-in
+    // day's rows at/after that exact start so none are dropped.
+    let signin_from = (w.collected_at() - Duration::days(30)).max(w.window_start());
+    let signin_start = if Some(date) == w.scale_signin_start {
+        signin_from.max(ds)
+    } else {
+        ds
+    };
+    let tenant_word = w.primary_domain().split('.').next().unwrap_or("tenant");
+    let primary = w.primary_domain().to_string();
+    // The five heaviest mailboxes that audit MailItemsAccessed get the MIA filler.
+    let heavy: Vec<&User> = people
+        .iter()
+        .copied()
+        .filter(|u| mailbox_logged(w, &u.upn, 0, "MailItemsAccessed", ds))
+        .take(5)
+        .collect();
+    for _ in 0..n_signin {
+        let user = rng.pick(&people);
+        let t = rand_time(&mut rng, signin_start, de);
+        let ip = if rng.chance(0.8) {
+            user.office_ip
+        } else {
+            user.home_ip
+        };
+        let session = rng.uuid();
+        signins.push(signin(
+            w,
+            &mut rng,
+            user,
+            t,
+            ip,
+            SignInType::NonInteractive,
+            apps.office,
+            apps.exchange,
+            Outcome::Ok,
+            session,
+        ));
+    }
+    for _ in 0..n_ual {
+        let roll = rng.unit();
+        let user = if (0.70..0.90).contains(&roll) && !heavy.is_empty() {
+            *rng.pick(&heavy)
+        } else {
+            *rng.pick(&people)
+        };
+        let t = rand_time(&mut rng, ds, de);
+        let ip = if rng.chance(0.8) {
+            user.office_ip
+        } else {
+            user.home_ip
+        };
+        let file_op = |rng: &mut Rng, out: &mut Vec<Ual>| {
+            let op = if rng.chance(0.5) {
+                "FileAccessed"
+            } else {
+                "FileModified"
+            };
+            let (site, folder, file) = if rng.chance(0.5) {
+                let personal = format!(
+                    "https://{tenant_word}-my.sharepoint.example/personal/{}",
+                    user.upn.replace(['.', '@', '-'], "_")
+                );
+                (personal, "Documents", rng.pick(ONEDRIVE_FILES).to_string())
+            } else {
+                (
+                    format!("https://{tenant_word}.sharepoint.example/sites/Finance"),
+                    "Shared Documents",
+                    rng.pick(FINANCE_FILES).to_string(),
+                )
+            };
+            out.push(ual::sharepoint_file(
+                w,
+                rng,
+                user,
+                t,
+                op,
+                &site,
+                folder,
+                &file,
+                ip,
+                &user.client.user_agent,
+            ));
+        };
+        if roll < 0.70 {
+            file_op(&mut rng, ual_out);
+        } else if roll < 0.90 {
+            if mailbox_logged(w, &user.upn, 0, "MailItemsAccessed", t) {
+                let session = rng.uuid();
+                let item = format!("<{}@{primary}>", rng.hex(12));
+                let size = rng.range(1_000, 5_000) as u64;
+                ual_out.push(ual::mail_items_accessed(
+                    w,
+                    &mut rng,
+                    user,
+                    t,
+                    "Bind",
+                    &[("\\Inbox".to_string(), vec![(item, size)])],
+                    ip,
+                    OUTLOOK_DESKTOP,
+                    apps.office,
+                    session,
+                    false,
+                ));
+            } else {
+                file_op(&mut rng, ual_out);
+            }
+        } else if mailbox_logged(w, &user.upn, 0, "MailboxLogin", t) {
+            let session = rng.uuid();
+            ual_out.push(ual::mailbox_item(
+                w,
+                &mut rng,
+                user,
+                user,
+                t,
+                "MailboxLogin",
+                None,
+                ip,
+                OUTLOOK_DESKTOP,
+                session,
+            ));
+        } else {
+            file_op(&mut rng, ual_out);
+        }
     }
 }
 

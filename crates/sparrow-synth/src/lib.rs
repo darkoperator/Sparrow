@@ -19,6 +19,7 @@ pub mod profiles;
 pub mod ps;
 pub mod reserved;
 pub mod rng;
+pub mod scale;
 pub mod scenario;
 pub mod story;
 #[doc(hidden)]
