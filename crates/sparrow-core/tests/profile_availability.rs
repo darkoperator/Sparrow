@@ -534,6 +534,51 @@ fn truncation_comes_from_the_files_that_sighted_the_rows() {
     assert!(!r.reason.contains("export cap"), "{r:?}");
 }
 
+/// Truncation is flagged for every grouped UAL-backed evidence type, not only `ual` and
+/// `mail_items_accessed`: a file carrying the export-cap warning that sighted a `SendAs` row
+/// and a `SearchQueryInitiatedSharePoint` row makes both `mail_send` and `search_queries`
+/// partial (Task 26 review). Reserved values only.
+#[test]
+fn truncation_flags_mail_send_and_search_queries() {
+    let mut case = Case::in_memory().unwrap();
+    let c = collection(&case, "portal_export", "2026-09-20 00:00:00+00", None);
+    let f = file(
+        &case,
+        c,
+        "audit.csv",
+        "portal.ual",
+        "parsed",
+        Some(r#"["row count equals known export cap 50000 — results likely truncated"]"#),
+    );
+    ual(
+        &case,
+        c,
+        f,
+        "11111111-1111-4111-8111-111111111111",
+        "2026-09-01 10:00:00+00",
+        "SendAs",
+        "alice@contoso.example",
+    );
+    ual(
+        &case,
+        c,
+        f,
+        "22222222-2222-4222-8222-222222222222",
+        "2026-09-01 11:00:00+00",
+        "SearchQueryInitiatedSharePoint",
+        "alice@contoso.example",
+    );
+    let rows = evaluate(&mut case);
+    for ev in ["mail_send", "search_queries"] {
+        let r = row(&rows, ev);
+        assert_eq!(r.status, "partial", "{ev}: {r:?}");
+        assert!(r.reason.contains("export cap"), "{ev}: {r:?}");
+    }
+    // The same file must not leak the flag into another UAL-backed type.
+    let r = row(&rows, "mail_items_accessed");
+    assert!(!r.reason.contains("export cap"), "{r:?}");
+}
+
 #[test]
 fn each_tenant_sees_only_its_own_evidence() {
     const T2: &str = "d8d8d8d8-0000-4000-8000-000000000002";
