@@ -34,10 +34,10 @@ pub struct Compiled {
     /// The SQL references `$tenant` (only `sql:` rules may). The runner binds it when set; the
     /// tenant scope itself is structural (see `detect::scope`), not this parameter.
     pub uses_tenant: bool,
-    /// The `source_table` values the rule emits, when they can be read from the SQL (always for
-    /// `match:` and `sources:` rules; the projected string constants for `sql:` rules; `None`
-    /// when a `sql:` rule projects none).
-    pub emitted_tables: Option<BTreeSet<String>>,
+    /// The `source_table` values the rule emits. Always statically known: the hit tables of
+    /// `match:` / `sources:` rules, and for `sql:` rules the string literals of the projected
+    /// `source_table` (a literal, or a CASE whose every branch is a literal).
+    pub emitted_tables: BTreeSet<String>,
 }
 
 /// Column names and types of every table and view in a case.
@@ -273,11 +273,11 @@ fn build(
     };
     let mut tables = BTreeSet::new();
     let mut uses_tenant = false;
-    let emitted: Option<BTreeSet<String>>;
+    let emitted: BTreeSet<String>;
     let base = match &rule.body {
         RuleBody::Match { source, m } => {
             tables.insert(source.clone());
-            emitted = Some(BTreeSet::from([source.clone()]));
+            emitted = BTreeSet::from([source.clone()]);
             hit_select(&mut cx, schema, source, m)?
         }
         RuleBody::Sources { sources } => {
@@ -285,7 +285,7 @@ fn build(
                 return bad("sources must not be empty");
             }
             let mut parts = Vec::new();
-            emitted = Some(sources.iter().map(|s| s.source.clone()).collect());
+            emitted = sources.iter().map(|s| s.source.clone()).collect();
             for s in sources {
                 tables.insert(s.source.clone());
                 parts.push(hit_select(&mut cx, schema, &s.source, &s.m)?);
@@ -987,7 +987,7 @@ fn threshold_sql(base: &str, th: &Threshold) -> Result<String> {
     };
     // Epoch milliseconds: TIMESTAMPTZ arithmetic and `epoch()` need the ICU extension, which a
     // locked rule connection cannot autoload. `epoch_ms` is built in.
-    let secs = u64::from(n) * unit * 1000;
+    let window_ms = u64::from(n) * unit * 1000;
     let count = th.count.trim();
     let (cmp, rest) = if let Some(r) = count.strip_prefix(">=") {
         (">=", r)
@@ -1020,10 +1020,10 @@ fn threshold_sql(base: &str, th: &Threshold) -> Result<String> {
     };
     Ok(format!(
         "WITH base AS ({base}),\n\
-         w AS (SELECT *, count(*) OVER ({partition}ORDER BY epoch_ms(event_time) RANGE BETWEEN {secs} PRECEDING AND CURRENT ROW) AS n FROM base),\n\
+         w AS (SELECT *, count(*) OVER ({partition}ORDER BY epoch_ms(event_time) RANGE BETWEEN {window_ms} PRECEDING AND CURRENT ROW) AS n FROM base),\n\
          q AS (SELECT * FROM w WHERE n {cmp} {n})\n\
          SELECT b.record_key, b.source_table, b.event_time, b.actor_upn, b.ip, b.context FROM base b\n\
-         WHERE EXISTS (SELECT 1 FROM q WHERE {same} AND epoch_ms(b.event_time) <= epoch_ms(q.event_time) AND epoch_ms(b.event_time) >= epoch_ms(q.event_time) - {secs})"
+         WHERE EXISTS (SELECT 1 FROM q WHERE {same} AND epoch_ms(b.event_time) <= epoch_ms(q.event_time) AND epoch_ms(b.event_time) >= epoch_ms(q.event_time) - {window_ms})"
     ))
 }
 
@@ -1106,38 +1106,85 @@ fn check_ast(v: &serde_json::Value, schema: &CaseSchema, out: &mut BTreeSet<Stri
     Ok(())
 }
 
-/// The `source_table` strings a `sql:` rule projects: the select-list position aliased
-/// `source_table` in any SELECT, read as a string constant in every SELECT of the statement
-/// (later `UNION` arms are often unaliased). `None` when no constant is found.
-fn emitted_source_tables(ast: &serde_json::Value) -> Option<BTreeSet<String>> {
-    fn selects<'a>(v: &'a serde_json::Value, out: &mut Vec<&'a Vec<serde_json::Value>>) {
-        match v {
-            serde_json::Value::Object(o) => {
-                if o.get("type").and_then(|t| t.as_str()) == Some("SELECT_NODE") {
-                    if let Some(l) = o.get("select_list").and_then(|l| l.as_array()) {
-                        out.push(l);
+/// The `source_table` strings a `sql:` rule emits. `source_table` must be statically known, so
+/// every projection of it (each `UNION` arm) has to be a string literal or a CASE whose every
+/// THEN / ELSE branch is a string literal; anything else (a column, a function, a concatenation)
+/// is an error. Each literal must name a hit table.
+fn static_source_tables(ast: &serde_json::Value) -> Result<BTreeSet<String>> {
+    fn literals(e: &serde_json::Value, out: &mut BTreeSet<String>) -> Result<()> {
+        match e.get("class").and_then(|c| c.as_str()) {
+            Some("CONSTANT") => {
+                let is_text = e.pointer("/value/type/id").and_then(|t| t.as_str())
+                    == Some("VARCHAR")
+                    && e.pointer("/value/is_null").and_then(|n| n.as_bool()) == Some(false);
+                match e.pointer("/value/value").and_then(|v| v.as_str()) {
+                    Some(s) if is_text => {
+                        out.insert(s.to_string());
+                        Ok(())
                     }
+                    _ => bad("sql rule: source_table must be a string literal"),
                 }
-                o.values().for_each(|x| selects(x, out));
             }
-            serde_json::Value::Array(a) => a.iter().for_each(|x| selects(x, out)),
-            _ => {}
+            Some("CASE") => {
+                let checks = e.get("case_checks").and_then(|c| c.as_array());
+                for c in checks.into_iter().flatten() {
+                    literals(&c["then_expr"], out)?;
+                }
+                match e.get("else_expr") {
+                    Some(el) if !el.is_null() => literals(el, out),
+                    _ => bad("sql rule: a CASE for source_table needs an ELSE branch"),
+                }
+            }
+            _ => bad(
+                "sql rule: source_table must be a string literal or a CASE whose every branch is a string literal (a column, function or concatenation is not statically known)",
+            ),
         }
     }
-    let mut lists = Vec::new();
-    selects(ast, &mut lists);
-    let pos = lists.iter().find_map(|l| {
-        l.iter()
-            .position(|i| i.get("alias").and_then(|a| a.as_str()) == Some("source_table"))
-    })?;
-    let out: BTreeSet<String> = lists
-        .iter()
-        .filter_map(|l| l.get(pos))
-        .filter(|i| i.get("class").and_then(|c| c.as_str()) == Some("CONSTANT"))
-        .filter_map(|i| i.pointer("/value/value").and_then(|v| v.as_str()))
-        .map(String::from)
-        .collect();
-    (!out.is_empty()).then_some(out)
+    fn arms(
+        node: &serde_json::Value,
+        pos: &mut Option<usize>,
+        out: &mut BTreeSet<String>,
+    ) -> Result<()> {
+        match node.get("type").and_then(|t| t.as_str()) {
+            Some("SELECT_NODE") => {
+                let list = node["select_list"].as_array().cloned().unwrap_or_default();
+                let idx = match *pos {
+                    Some(i) => i,
+                    None => {
+                        let i = list
+                            .iter()
+                            .position(|x| {
+                                x.get("alias").and_then(|a| a.as_str()) == Some("source_table")
+                            })
+                            .ok_or_else(|| {
+                                Error::Invalid(
+                                    "sql rule must project source_table with that alias".into(),
+                                )
+                            })?;
+                        *pos = Some(i);
+                        i
+                    }
+                };
+                let Some(item) = list.get(idx) else {
+                    return bad("sql rule: a UNION arm is missing the source_table column");
+                };
+                literals(item, out)
+            }
+            Some("SET_OPERATION_NODE") => {
+                arms(&node["left"], pos, out)?;
+                arms(&node["right"], pos, out)
+            }
+            _ => bad("sql rule: unsupported statement shape for source_table"),
+        }
+    }
+    let mut out = BTreeSet::new();
+    arms(&ast["statements"][0]["node"], &mut None, &mut out)?;
+    for t in &out {
+        if !OUTPUT_COLUMNS.iter().any(|o| o.table == t) {
+            return bad(format!("sql rule: source_table {t:?} is not a hit table"));
+        }
+    }
+    Ok(out)
 }
 
 /// An empty in-memory database with the case's tables (views included, as tables) to check a
@@ -1199,7 +1246,6 @@ fn sql_select(
     let mut found = BTreeSet::new();
     check_ast(&ast, schema, &mut found)?;
     tables.extend(found.into_iter().filter(|t| schema.tables.contains_key(t)));
-    let emitted = emitted_source_tables(&ast);
 
     // Bind every parameter the text uses so DuckDB can type it.
     let mut bound: Vec<(String, Value)> = Vec::new();
@@ -1247,6 +1293,7 @@ fn sql_select(
             _ => {}
         }
     }
+    let emitted = static_source_tables(&ast)?;
     let optional = |name: &str, ty: &str| -> Result<String> {
         match cols.get(name) {
             None => Ok(format!("CAST(NULL AS {ty})")),
@@ -1271,7 +1318,7 @@ fn sql_select(
 struct SqlSel {
     sql: String,
     uses_tenant: bool,
-    emitted: Option<BTreeSet<String>>,
+    emitted: BTreeSet<String>,
 }
 
 #[cfg(test)]

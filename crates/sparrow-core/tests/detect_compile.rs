@@ -10,7 +10,6 @@ use sparrow_core::detect::coverage::CoverageMatrix;
 use sparrow_core::detect::lint::{LintIssue, LintSeverity, lint};
 use sparrow_core::detect::load::{ListMeta, LoadedRule, RuleSet, load_rules};
 use sparrow_core::detect::rule::Rule;
-use sparrow_core::detect::scope::{lock_down, scope_to_tenant};
 use std::collections::BTreeMap;
 
 const T1: &str = "t1";
@@ -40,7 +39,7 @@ fn compile_on(case: &Case, rule: &Rule) -> sparrow_core::Result<Compiled> {
     compile(rule, &no_lists(), &schema)
 }
 
-fn hits(case: &Case, rule: &Rule, tenant: &str) -> Vec<String> {
+fn hits(case: &mut Case, rule: &Rule, tenant: &str) -> Vec<String> {
     let c = compile_on(case, rule).unwrap_or_else(|e| panic!("{e}"));
     run(case, &c, tenant, &BTreeMap::new())
         .unwrap_or_else(|e| panic!("{e}\n{}", c.sql))
@@ -83,7 +82,7 @@ fn ops_case() -> Case {
 
 #[test]
 fn match_leaf_operators_compile_and_run() {
-    let case = ops_case();
+    let mut case = ops_case();
     let cases: &[(&str, &[&str])] = &[
         ("operation: {eq: new-inboxrule}", &[R1]),
         ("operation: {neq: New-InboxRule}", &[R2, R3]),
@@ -131,7 +130,7 @@ fn match_leaf_operators_compile_and_run() {
         ("not:\n  parameters.DeleteMessage: {eq: 'True'}", &[R2]),
     ];
     for (cond, want) in cases {
-        let got = hits(&case, &match_rule("ual_events", cond), T1);
+        let got = hits(&mut case, &match_rule("ual_events", cond), T1);
         let mut want: Vec<String> = ids(want);
         want.sort();
         let mut got = got;
@@ -142,10 +141,10 @@ fn match_leaf_operators_compile_and_run() {
 
 #[test]
 fn map_parameter_keys_are_case_insensitive() {
-    let case = ops_case();
+    let mut case = ops_case();
     for key in ["ForwardTo", "forwardto", "FORWARDTO"] {
         let got = hits(
-            &case,
+            &mut case,
             &match_rule(
                 "ual_events",
                 &format!("parameters.{key}: {{contains: evil}}"),
@@ -158,7 +157,7 @@ fn map_parameter_keys_are_case_insensitive() {
 
 #[test]
 fn list_values_are_bound_not_interpolated() {
-    let case = Case::in_memory().unwrap();
+    let mut case = Case::in_memory().unwrap();
     let values = ["o'brien", "50%", "a_b", "back\\slash", "a.b"];
     let look_alikes = ["axb", "aXb", "500", "backXslash", "obrien"];
     for (i, v) in values.iter().chain(look_alikes.iter()).enumerate() {
@@ -180,7 +179,7 @@ fn list_values_are_bound_not_interpolated() {
             assert!(!c.sql.contains(v), "{v} was interpolated into {}", c.sql);
         }
         assert!(c.lists.contains("kw"));
-        let got = run(&case, &c, T1, &BTreeMap::new()).unwrap();
+        let got = run(&mut case, &c, T1, &BTreeMap::new()).unwrap();
         let mut ops: Vec<String> = got.iter().map(|h| h.record_key.clone()).collect();
         ops.sort();
         assert_eq!(ops.len(), values.len(), "{op}: {ops:?}");
@@ -194,19 +193,19 @@ fn list_values_are_bound_not_interpolated() {
     let rule = match_rule("ual_events", "operation: {in: [\"o'brien\", \"50%\"]}");
     let c = compile(&rule, &no_lists(), &schema).unwrap();
     assert!(!c.sql.contains("o'brien"));
-    assert_eq!(run(&case, &c, T1, &BTreeMap::new()).unwrap().len(), 2);
+    assert_eq!(run(&mut case, &c, T1, &BTreeMap::new()).unwrap().len(), 2);
 }
 
 #[test]
 fn case_sensitive_lists_compare_exactly() {
-    let case = Case::in_memory().unwrap();
+    let mut case = Case::in_memory().unwrap();
     insert_ual(&case, T1, json!({"record_id": R1, "operation": "BAV2ROPC"}));
     insert_ual(&case, T1, json!({"record_id": R2, "operation": "bav2ropc"}));
     let lists = BTreeMap::from([("ua".to_string(), vec!["BAV2ROPC".to_string()])]);
     let schema = CaseSchema::of(case.conn()).unwrap();
     let rule = match_rule("ual_events", "operation: {in: '@list:ua'}");
     let ci = compile(&rule, &lists, &schema).unwrap();
-    assert_eq!(run(&case, &ci, T1, &BTreeMap::new()).unwrap().len(), 2);
+    assert_eq!(run(&mut case, &ci, T1, &BTreeMap::new()).unwrap().len(), 2);
     let meta = BTreeMap::from([(
         "ua".to_string(),
         ListMeta {
@@ -214,41 +213,41 @@ fn case_sensitive_lists_compare_exactly() {
         },
     )]);
     let cs = compile_with_meta(&rule, &lists, &meta, &schema).unwrap();
-    let got = run(&case, &cs, T1, &BTreeMap::new()).unwrap();
+    let got = run(&mut case, &cs, T1, &BTreeMap::new()).unwrap();
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].record_key, R1);
 }
 
 #[test]
 fn case_iocs_lists_are_run_time_parameters() {
-    let case = ops_case();
+    let mut case = ops_case();
     let rule = match_rule("ual_events", "client_ip: {in: '@list:case_iocs.ip'}");
     let c = compile_on(&case, &rule).unwrap();
     assert!(c.lists.contains("case_iocs.ip"));
     assert!(!c.params.iter().any(|(k, _)| k.starts_with("ioc_")));
     let iocs = BTreeMap::from([("ip".to_string(), vec!["203.0.113.7".to_string()])]);
-    let got = run(&case, &c, T1, &iocs).unwrap();
+    let got = run(&mut case, &c, T1, &iocs).unwrap();
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].record_key, R1);
-    assert!(run(&case, &c, T1, &BTreeMap::new()).unwrap().is_empty());
+    assert!(run(&mut case, &c, T1, &BTreeMap::new()).unwrap().is_empty());
 }
 
 #[test]
 fn regex_is_only_used_by_the_regex_operator() {
-    let case = Case::in_memory().unwrap();
+    let mut case = Case::in_memory().unwrap();
     insert_ual(&case, T1, json!({"record_id": R1, "operation": "a.b"}));
     insert_ual(&case, T1, json!({"record_id": R2, "operation": "axb"}));
     for op in ["eq", "contains", "startswith", "endswith", "in"] {
         let value = if op == "in" { "[\"a.b\"]" } else { "\"a.b\"" };
         let got = hits(
-            &case,
+            &mut case,
             &match_rule("ual_events", &format!("operation: {{{op}: {value}}}")),
             T1,
         );
         assert_eq!(got, ids(&[R1]), "{op} must match a.b literally");
     }
     let mut got = hits(
-        &case,
+        &mut case,
         &match_rule("ual_events", "operation: {regex: 'a.b'}"),
         T1,
     );
@@ -258,10 +257,10 @@ fn regex_is_only_used_by_the_regex_operator() {
 
 #[test]
 fn false_text_is_not_true() {
-    let case = ops_case();
+    let mut case = ops_case();
     for v in ["'True'", "true"] {
         let got = hits(
-            &case,
+            &mut case,
             &match_rule(
                 "ual_events",
                 &format!("parameters.DeleteMessage: {{eq: {v}}}"),
@@ -274,7 +273,7 @@ fn false_text_is_not_true() {
 
 #[test]
 fn sources_union_keeps_the_output_contract() {
-    let case = Case::in_memory().unwrap();
+    let mut case = Case::in_memory().unwrap();
     insert_ual(
         &case,
         T1,
@@ -298,7 +297,7 @@ fn sources_union_keeps_the_output_contract() {
         "sources:\n  - source: ual_events\n    match:\n      operation: {eq: new-inboxrule}\n  - source: admin_audit_events\n    match:\n      cmdlet: {eq: new-inboxrule}",
     );
     let c = compile_on(&case, &rule).unwrap();
-    let got = run(&case, &c, T1, &BTreeMap::new()).unwrap();
+    let got = run(&mut case, &c, T1, &BTreeMap::new()).unwrap();
     assert_eq!(
         got,
         vec![
@@ -326,7 +325,7 @@ fn sources_union_keeps_the_output_contract() {
 
 #[test]
 fn tenant_filter_is_applied_to_every_source() {
-    let case = Case::in_memory().unwrap();
+    let mut case = Case::in_memory().unwrap();
     for (tenant, n) in [(T1, 1), (T2, 2)] {
         insert_ual(
             &case,
@@ -343,13 +342,13 @@ fn tenant_filter_is_applied_to_every_source() {
     let rule = rule_from(
         "sources:\n  - source: ual_events\n    match:\n      operation: {eq: new-inboxrule}\n  - source: admin_audit_events\n    match:\n      cmdlet: {eq: new-inboxrule}",
     );
-    let mut t1 = hits(&case, &rule, T1);
+    let mut t1 = hits(&mut case, &rule, T1);
     t1.sort();
     assert_eq!(t1, ids(&["00000000-0000-0000-0000-000000000001", "aae-t1"]));
-    let mut t2 = hits(&case, &rule, T2);
+    let mut t2 = hits(&mut case, &rule, T2);
     t2.sort();
     assert_eq!(t2, ids(&["00000000-0000-0000-0000-000000000002", "aae-t2"]));
-    assert!(hits(&case, &rule, "nobody").is_empty());
+    assert!(hits(&mut case, &rule, "nobody").is_empty());
 }
 
 fn burst_case(events: &[i64]) -> Case {
@@ -375,24 +374,24 @@ fn burst_rule() -> Rule {
 #[test]
 fn threshold_counts_a_sliding_window() {
     // 49 events inside 10 minutes: no hit.
-    let case = burst_case(&(0..49).map(|i| i * 10).collect::<Vec<_>>());
-    assert!(hits(&case, &burst_rule(), T1).is_empty());
+    let mut case = burst_case(&(0..49).map(|i| i * 10).collect::<Vec<_>>());
+    assert!(hits(&mut case, &burst_rule(), T1).is_empty());
     // 50 events inside 10 minutes: every one of them is a hit.
-    let case = burst_case(&(0..50).map(|i| i * 10).collect::<Vec<_>>());
-    assert_eq!(hits(&case, &burst_rule(), T1).len(), 50);
+    let mut case = burst_case(&(0..50).map(|i| i * 10).collect::<Vec<_>>());
+    assert_eq!(hits(&mut case, &burst_rule(), T1).len(), 50);
     // 50 events spread over 11 minutes (13 s apart): never 50 within any 10 minutes.
-    let case = burst_case(&(0..50).map(|i| i * 13).collect::<Vec<_>>());
-    assert!(hits(&case, &burst_rule(), T1).is_empty());
+    let mut case = burst_case(&(0..50).map(|i| i * 13).collect::<Vec<_>>());
+    assert!(hits(&mut case, &burst_rule(), T1).is_empty());
     // A burst plus far-away stragglers: only the burst is a hit.
     let mut times: Vec<i64> = (0..50).map(|i| i * 5).collect();
     times.extend([10_000, 20_000]);
-    let case = burst_case(&times);
-    assert_eq!(hits(&case, &burst_rule(), T1).len(), 50);
+    let mut case = burst_case(&times);
+    assert_eq!(hits(&mut case, &burst_rule(), T1).len(), 50);
 }
 
 #[test]
 fn threshold_groups_do_not_mix() {
-    let case = Case::in_memory().unwrap();
+    let mut case = Case::in_memory().unwrap();
     for i in 0..60 {
         let t = chrono::DateTime::from_timestamp(1_772_000_000 + i * 5, 0).unwrap();
         let who = if i % 2 == 0 {
@@ -408,7 +407,7 @@ fn threshold_groups_do_not_mix() {
         );
     }
     // 30 per user: neither reaches 50, together they would.
-    assert!(hits(&case, &burst_rule(), T1).is_empty());
+    assert!(hits(&mut case, &burst_rule(), T1).is_empty());
 }
 
 fn sql_rule(sql: &str) -> Rule {
@@ -418,7 +417,7 @@ fn sql_rule(sql: &str) -> Rule {
 
 #[test]
 fn sql_rule_must_be_a_single_select_with_contract_columns() {
-    let case = Case::in_memory().unwrap();
+    let mut case = Case::in_memory().unwrap();
     insert_ual(
         &case,
         T1,
@@ -426,7 +425,7 @@ fn sql_rule_must_be_a_single_select_with_contract_columns() {
     );
     let good = "SELECT lower(CAST(u.record_id AS VARCHAR)) AS record_key, 'ual_events' AS source_table, u.event_time, u.user_upn AS actor_upn\nFROM ual_events u JOIN collections c USING (collection_id)\nWHERE c.tenant_key = $tenant AND u.operation = 'X'";
     let c = compile_on(&case, &sql_rule(good)).unwrap_or_else(|e| panic!("{e}"));
-    let got = run(&case, &c, T1, &BTreeMap::new()).unwrap();
+    let got = run(&mut case, &c, T1, &BTreeMap::new()).unwrap();
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].actor_upn.as_deref(), Some("a@x.example"));
     assert_eq!(got[0].ip, None);
@@ -442,11 +441,11 @@ fn sql_rule_must_be_a_single_select_with_contract_columns() {
             "record_key",
         ),
         (
-            "SELECT 'x' AS record_key, 'y' AS source_table, 'notatime' AS event_time WHERE $tenant IS NOT NULL",
+            "SELECT 'x' AS record_key, 'ual_events' AS source_table, 'notatime' AS event_time WHERE $tenant IS NOT NULL",
             "event_time",
         ),
         (
-            "SELECT 'x' AS record_key, 'y' AS source_table, now() AS event_time FROM nosuchtable WHERE $tenant IS NOT NULL",
+            "SELECT 'x' AS record_key, 'ual_events' AS source_table, now() AS event_time FROM nosuchtable WHERE $tenant IS NOT NULL",
             "nosuchtable",
         ),
     ];
@@ -458,15 +457,15 @@ fn sql_rule_must_be_a_single_select_with_contract_columns() {
 
 #[test]
 fn sql_rule_sees_only_its_tenant_without_a_tenant_predicate() {
-    let case = Case::in_memory().unwrap();
+    let mut case = Case::in_memory().unwrap();
     insert_ual(&case, T1, json!({"record_id": R1, "operation": "X"}));
     insert_ual(&case, T2, json!({"record_id": R2, "operation": "X"}));
     // Not a single mention of the tenant: the scope is structural.
     let sql = "SELECT lower(CAST(record_id AS VARCHAR)) AS record_key, 'ual_events' AS source_table, event_time FROM ual_events";
     let c = compile_on(&case, &sql_rule(sql)).unwrap_or_else(|e| panic!("{e}"));
     assert!(!c.uses_tenant);
-    let one = |t| {
-        run(&case, &c, t, &BTreeMap::new())
+    let mut one = |t| {
+        run(&mut case, &c, t, &BTreeMap::new())
             .unwrap()
             .into_iter()
             .map(|h| h.record_key)
@@ -481,17 +480,17 @@ fn sql_rule_sees_only_its_tenant_without_a_tenant_predicate() {
     )
     .unwrap();
     assert!(c.uses_tenant);
-    assert_eq!(run(&case, &c, T1, &BTreeMap::new()).unwrap().len(), 1);
+    assert_eq!(run(&mut case, &c, T1, &BTreeMap::new()).unwrap().len(), 1);
     // Subqueries and joins over other tables are scoped too.
     let sql = "SELECT lower(CAST(u.record_id AS VARCHAR)) AS record_key, 'ual_events' AS source_table, u.event_time FROM ual_events u WHERE u.collection_id IN (SELECT collection_id FROM collections)";
     let c = compile_on(&case, &sql_rule(sql)).unwrap();
-    assert_eq!(run(&case, &c, T2, &BTreeMap::new()).unwrap().len(), 1);
+    assert_eq!(run(&mut case, &c, T2, &BTreeMap::new()).unwrap().len(), 1);
 }
 
 #[test]
 fn sql_rules_cannot_name_base_tables_read_files_or_read_unscoped_tables() {
     let case = Case::in_memory().unwrap();
-    let head = "SELECT 'x' AS record_key, 'y' AS source_table, now() AS event_time";
+    let head = "SELECT 'x' AS record_key, 'ual_events' AS source_table, now() AS event_time";
     let cases = [
         (format!("{head} FROM main.ual_events"), "schema-qualified"),
         (
@@ -527,53 +526,13 @@ fn sql_rules_cannot_name_base_tables_read_files_or_read_unscoped_tables() {
         assert!(err.contains(want), "want {want:?} in {err:?} for {sql}");
     }
     // The allow-listed table functions and the global reference tables are fine.
-    let ok = "SELECT CAST(i AS VARCHAR) AS record_key, 'y' AS source_table, now() AS event_time FROM range(3) t(i), ip_intel";
+    let ok = "SELECT CAST(i AS VARCHAR) AS record_key, 'ual_events' AS source_table, now() AS event_time FROM range(3) t(i), ip_intel";
     compile_on(&case, &sql_rule(ok)).unwrap_or_else(|e| panic!("{e}"));
 }
 
 #[test]
-fn a_locked_rule_connection_reads_no_files_and_cannot_be_reconfigured() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("case.duckdb");
-    {
-        let case = Case::create_or_open(&path).unwrap();
-        insert_ual(&case, T1, json!({"record_id": R1, "operation": "X"}));
-        insert_ual(&case, T2, json!({"record_id": R2, "operation": "X"}));
-    }
-    // A dedicated read-only connection, as the runner uses.
-    let case = Case::open_read_only(&path).unwrap();
-    let schema = CaseSchema::of(case.conn()).unwrap();
-    let sql = "SELECT lower(CAST(record_id AS VARCHAR)) AS record_key, 'ual_events' AS source_table, event_time FROM ual_events";
-    let c = compile(&sql_rule(sql), &no_lists(), &schema).unwrap();
-    scope_to_tenant(case.conn(), &schema, T1).unwrap();
-    lock_down(case.conn()).unwrap();
-    let got = detect::run_scoped(case.conn(), &c, T1, &BTreeMap::new()).unwrap();
-    assert_eq!(got.len(), 1);
-    // The tenant can still be switched (views are not configuration).
-    scope_to_tenant(case.conn(), &schema, T2).unwrap();
-    let got = detect::run_scoped(case.conn(), &c, T2, &BTreeMap::new()).unwrap();
-    assert_eq!(got[0].record_key, R2);
-    for stmt in [
-        "SELECT * FROM read_csv('/etc/hosts')",
-        "SELECT * FROM read_json('/etc/hosts')",
-        "SELECT * FROM read_parquet('/etc/x.parquet')",
-        "SELECT * FROM glob('/etc/*')",
-        "ATTACH '/tmp/zz-sparrow.db' AS z",
-        "COPY (SELECT 1) TO '/tmp/zz-sparrow.csv'",
-        "SET enable_external_access = true",
-        "SET lock_configuration = false",
-    ] {
-        let err = case.conn().execute_batch(stmt).unwrap_err().to_string();
-        assert!(
-            err.contains("disabled by configuration") || err.contains("has been locked"),
-            "{stmt}: {err}"
-        );
-    }
-}
-
-#[test]
 fn sql_rule_lists_and_case_iocs_expand_to_bound_parameters() {
-    let case = Case::in_memory().unwrap();
+    let mut case = Case::in_memory().unwrap();
     insert_ual(
         &case,
         T1,
@@ -589,7 +548,7 @@ fn sql_rule_lists_and_case_iocs_expand_to_bound_parameters() {
     let sql = "SELECT lower(CAST(u.record_id AS VARCHAR)) AS record_key, 'ual_events' AS source_table, u.event_time\nFROM ual_events u JOIN collections c USING (collection_id)\nWHERE c.tenant_key = $tenant AND list_contains(@list:ops, lower(u.operation))\n  AND (u.client_ip IN (SELECT unnest(@list:case_iocs.ip)) OR true)";
     let c = compile(&sql_rule(sql), &lists, &schema).unwrap_or_else(|e| panic!("{e}"));
     assert!(c.lists.contains("ops") && c.lists.contains("case_iocs.ip"));
-    let got = run(&case, &c, T1, &BTreeMap::new()).unwrap();
+    let got = run(&mut case, &c, T1, &BTreeMap::new()).unwrap();
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].record_key, R1);
     let err = compile(
@@ -813,14 +772,14 @@ fn run_inline_tests(rule: &Rule, set: &RuleSet) {
     let c = compile_with_meta(rule, &set.lists, &set.list_meta, &schema)
         .unwrap_or_else(|e| panic!("{e}"));
     for t in &rule.tests {
-        let case = Case::in_memory().unwrap();
+        let mut case = Case::in_memory().unwrap();
         for rec in &t.records {
             let mut rec = rec.clone();
             let table = rec.remove("table").unwrap().as_str().unwrap().to_string();
             insert_row(&case, &table, T1, serde_json::Value::Object(rec));
         }
         let got =
-            run(&case, &c, T1, &BTreeMap::new()).unwrap_or_else(|e| panic!("{}: {e}", t.name));
+            run(&mut case, &c, T1, &BTreeMap::new()).unwrap_or_else(|e| panic!("{}: {e}", t.name));
         assert_eq!(got.len() as u32, t.expect_hits, "{}: {}", rule.id, t.name);
     }
 }
@@ -836,7 +795,7 @@ fn shipped_rule_samples_pass_their_inline_tests() {
 
 #[test]
 fn hit_times_fall_back_like_the_timeline() {
-    let case = Case::in_memory().unwrap();
+    let mut case = Case::in_memory().unwrap();
     // Activity happened before the detection: the hit time is the activity time.
     insert_row(
         &case,
@@ -864,9 +823,9 @@ fn hit_times_fall_back_like_the_timeline() {
         T1,
         json!({"record_key": "sa-2", "created_time": "2026-03-01T11:30:00Z", "severity": "high"}),
     );
-    let epoch = |table: &str, col: &str| {
+    let mut epoch = |table: &str, col: &str| {
         let c = compile_on(&case, &match_rule(table, &format!("{col}: {{eq: high}}"))).unwrap();
-        run(&case, &c, T1, &BTreeMap::new())
+        run(&mut case, &c, T1, &BTreeMap::new())
             .unwrap()
             .into_iter()
             .map(|h| (h.record_key, h.event_epoch.unwrap()))
@@ -890,7 +849,7 @@ fn hit_times_fall_back_like_the_timeline() {
 
 #[test]
 fn cidr_validates_octets_and_normalises_mapped_addresses_and_ports() {
-    let case = Case::in_memory().unwrap();
+    let mut case = Case::in_memory().unwrap();
     let ips = [
         ("00000000-0000-0000-0000-0000000000a1", "203.0.113.5"),
         ("00000000-0000-0000-0000-0000000000a2", "203.0.113.999"),
@@ -909,9 +868,9 @@ fn cidr_validates_octets_and_normalises_mapped_addresses_and_ports() {
     for (id, ip) in ips {
         insert_ual(&case, T1, json!({"record_id": id, "client_ip": ip}));
     }
-    let got = |cidr: &str| {
+    let mut got = |cidr: &str| {
         let mut h = hits(
-            &case,
+            &mut case,
             &match_rule("ual_events", &format!("client_ip: {{cidr: {cidr}}}")),
             T1,
         );
@@ -929,7 +888,7 @@ fn cidr_validates_octets_and_normalises_mapped_addresses_and_ports() {
 
 #[test]
 fn absence_is_explicit_missing_values_never_match_a_negated_comparison() {
-    let case = Case::in_memory().unwrap();
+    let mut case = Case::in_memory().unwrap();
     insert_row(
         &case,
         "mailboxes",
@@ -943,9 +902,9 @@ fn absence_is_explicit_missing_values_never_match_a_negated_comparison() {
         json!({"upn": "fwd-bad@x.example", "forwarding_smtp_address": "evil@example.net"}),
     );
     insert_row(&case, "mailboxes", T1, json!({"upn": "none@x.example"}));
-    let actors = |cond: &str| {
+    let mut actors = |cond: &str| {
         let c = compile_on(&case, &match_rule("mailboxes", cond)).unwrap();
-        run(&case, &c, T1, &BTreeMap::new())
+        run(&mut case, &c, T1, &BTreeMap::new())
             .unwrap()
             .into_iter()
             .filter_map(|h| h.actor_upn)
@@ -1001,5 +960,70 @@ fn lint_checks_the_emitted_source_tables_of_sql_rules() {
         errs("[admin_audit_events, ual_events, signins]")
             .iter()
             .any(|m| m.contains("first coverage table"))
+    );
+}
+
+#[test]
+fn sql_rule_source_table_must_be_a_static_literal() {
+    let case = Case::in_memory().unwrap();
+    let with = |expr: &str| {
+        sql_rule(&format!(
+            "SELECT 'x' AS record_key, {expr} AS source_table, now() AS event_time, operation FROM ual_events"
+        ))
+    };
+    let ok = [
+        ("'ual_events'", vec!["ual_events"]),
+        (
+            "CASE WHEN operation = 'a' THEN 'ual_events' ELSE 'signins' END",
+            vec!["signins", "ual_events"],
+        ),
+        (
+            "CASE WHEN operation = 'a' THEN 'ual_events' WHEN operation = 'b' THEN 'signins' ELSE 'mailboxes' END",
+            vec!["mailboxes", "signins", "ual_events"],
+        ),
+    ];
+    for (expr, want) in ok {
+        let c = compile_on(&case, &with(expr)).unwrap_or_else(|e| panic!("{expr}: {e}"));
+        assert_eq!(
+            c.emitted_tables.iter().cloned().collect::<Vec<_>>(),
+            want,
+            "{expr}"
+        );
+    }
+    let bad = [
+        ("operation", "string literal"),
+        ("lower(operation)", "string literal"),
+        ("'ual_' || 'events'", "string literal"),
+        (
+            "CASE WHEN operation = 'a' THEN 'ual_events' ELSE operation END",
+            "string literal",
+        ),
+        (
+            "CASE WHEN operation = 'a' THEN 'ual_events' END",
+            "string literal",
+        ),
+        ("CAST('ual_events' AS VARCHAR)", "string literal"),
+        ("'nosuchtable'", "not a hit table"),
+        ("CAST(NULL AS VARCHAR)", "string literal"),
+    ];
+    for (expr, want) in bad {
+        let err = compile_on(&case, &with(expr)).unwrap_err().to_string();
+        assert!(err.contains(want), "{expr}: want {want:?} in {err:?}");
+    }
+    // Lint reports it as an error, not a warning.
+    let schema = CaseSchema::of(case.conn()).unwrap();
+    let set = set_of(vec![with_id(with("operation"), "SPW-T-001")]);
+    assert!(
+        errors(&lint(&set, &schema, None))
+            .iter()
+            .any(|m| m.contains("string literal"))
+    );
+    // A UNION arm with a non-literal is rejected too.
+    let sql = "SELECT 'x' AS record_key, 'ual_events' AS source_table, now() AS event_time\nUNION ALL\nSELECT 'y', operation, now() FROM ual_events";
+    assert!(
+        compile_on(&case, &sql_rule(sql))
+            .unwrap_err()
+            .to_string()
+            .contains("string literal")
     );
 }

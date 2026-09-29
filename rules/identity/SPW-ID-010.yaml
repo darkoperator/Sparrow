@@ -14,12 +14,12 @@ requires: []
 requires_evidence: []
 sql: |
   WITH rule_events AS (
-    SELECT lower(CAST(u.record_id AS VARCHAR)) AS record_key, 'ual_events' AS source_table,
+    SELECT lower(CAST(u.record_id AS VARCHAR)) AS record_key, true AS is_ual,
            u.event_time, u.user_upn AS actor_upn, u.client_ip AS ip
     FROM ual_events u
     WHERE lower(u.operation) IN ('new-inboxrule', 'set-inboxrule', 'updateinboxrules')
     UNION ALL
-    SELECT a.record_key, 'admin_audit_events' AS source_table, a.run_time, a.caller, a.client_ip
+    SELECT a.record_key, false, a.run_time, a.caller, a.client_ip
     FROM admin_audit_events a
     WHERE lower(a.cmdlet) IN ('new-inboxrule', 'set-inboxrule')
   ),
@@ -34,7 +34,9 @@ sql: |
     WHERE lower(u.operation) = 'userloggedin'
       AND EXISTS (SELECT 1 FROM ip_intel i WHERE i.ip = u.client_ip AND i.is_hosting)
   )
-  SELECT r.record_key, r.source_table, r.event_time, r.actor_upn, r.ip
+  SELECT r.record_key,
+         CASE WHEN r.is_ual THEN 'ual_events' ELSE 'admin_audit_events' END AS source_table,
+         r.event_time, r.actor_upn, r.ip
   FROM rule_events r
   WHERE EXISTS (
     SELECT 1 FROM risky_signins s

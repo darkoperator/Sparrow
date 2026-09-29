@@ -6,4 +6,5 @@ pub mod coverage;
 pub mod lint;
 pub mod load;
 pub mod rule;
-pub mod scope;
+pub mod rule_conn;
+mod scope;

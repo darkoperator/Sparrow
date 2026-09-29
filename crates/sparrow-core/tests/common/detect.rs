@@ -3,12 +3,10 @@
 
 #![allow(dead_code)]
 
-use duckdb::ToSql;
-use duckdb::types::Value as DValue;
 use serde_json::Value;
 use sparrow_core::Case;
-use sparrow_core::detect::compile::{CaseSchema, Compiled};
-use sparrow_core::detect::scope::{scope_to_tenant, unscope};
+use sparrow_core::detect::compile::Compiled;
+use sparrow_core::detect::rule_conn::with_rule_conn;
 use std::collections::BTreeMap;
 
 /// The `collection_id` of `tenant`'s (single) test collection, created on first use.
@@ -148,58 +146,35 @@ pub struct Hit {
     pub ip: Option<String>,
 }
 
-/// Run a compiled rule for `tenant` on `case`'s connection, scoped the way the runner scopes a
-/// dedicated rule connection (`scope_to_tenant`), then unscoped again so the test can go on
-/// inserting. `iocs` binds the `ioc_<type>` parameters (JSON arrays).
+/// Run a compiled rule for `tenant` through the production path (`with_rule_conn`: a separate,
+/// locked, tenant-scoped read-only instance). The case's writer connection is released while it
+/// runs and comes back afterwards. `iocs` binds the `ioc_<type>` parameters.
 pub fn run(
-    case: &Case,
+    case: &mut Case,
     compiled: &Compiled,
     tenant: &str,
     iocs: &BTreeMap<String, Vec<String>>,
-) -> Result<Vec<Hit>, duckdb::Error> {
-    let schema = CaseSchema::of(case.conn()).unwrap();
-    scope_to_tenant(case.conn(), &schema, tenant).unwrap();
-    let out = run_scoped(case.conn(), compiled, tenant, iocs);
-    unscope(case.conn(), &schema).unwrap();
-    out
-}
-
-/// Run a compiled rule on a connection that is already scoped to `tenant`.
-pub fn run_scoped(
-    conn: &duckdb::Connection,
-    compiled: &Compiled,
-    tenant: &str,
-    iocs: &BTreeMap<String, Vec<String>>,
-) -> Result<Vec<Hit>, duckdb::Error> {
-    let mut named: Vec<(String, DValue)> = compiled.params.clone();
-    if compiled.uses_tenant {
-        named.push(("tenant".to_string(), DValue::Text(tenant.to_string())));
-    }
-    for l in &compiled.lists {
-        if let Some(t) = l.strip_prefix("case_iocs.") {
-            let vals = iocs.get(t).cloned().unwrap_or_default();
-            named.push((
-                format!("ioc_{t}"),
-                DValue::Text(serde_json::to_string(&vals).unwrap()),
-            ));
-        }
-    }
-    let refs: Vec<(&str, &dyn ToSql)> = named
-        .iter()
-        .map(|(k, v)| (k.as_str(), v as &dyn ToSql))
-        .collect();
-    let mut st = conn.prepare(&format!(
-        "SELECT record_key, source_table, epoch_ms(event_time) / 1000, actor_upn, ip FROM ({}) ORDER BY 3, 1, 2",
-        compiled.sql
-    ))?;
-    let rows = st.query_map(refs.as_slice(), |r| {
-        Ok(Hit {
-            record_key: r.get(0)?,
-            source_table: r.get(1)?,
-            event_epoch: r.get(2)?,
-            actor_upn: r.get(3)?,
-            ip: r.get(4)?,
-        })
-    })?;
-    rows.collect()
+) -> Result<Vec<Hit>, sparrow_core::Error> {
+    with_rule_conn(case, |rc| {
+        rc.scope(tenant)?;
+        let hits = rc.run(compiled, iocs)?;
+        let mut out: Vec<Hit> = hits
+            .into_iter()
+            .map(|h| Hit {
+                record_key: h.record_key,
+                source_table: h.source_table,
+                event_epoch: h.event_time.map(|t| t.timestamp()),
+                actor_upn: h.actor_upn,
+                ip: h.ip,
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            (a.event_epoch, &a.record_key, &a.source_table).cmp(&(
+                b.event_epoch,
+                &b.record_key,
+                &b.source_table,
+            ))
+        });
+        Ok(out)
+    })
 }

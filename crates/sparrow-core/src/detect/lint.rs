@@ -160,34 +160,28 @@ fn cross_check(set: &RuleSet, schema: &CaseSchema, cov: &CoverageMatrix, out: &m
                 let Ok(c) = compile_with_meta(&lr.rule, &set.lists, &set.list_meta, schema) else {
                     continue;
                 };
-                match c.emitted_tables {
-                    None => out.push(issue(
-                        &r.id,
-                        LintSeverity::Warning,
-                        "cannot read the emitted source_table values from the sql; not checked against coverage",
-                    )),
-                    Some(emitted) => {
-                        for t in &emitted {
-                            if !def.tables.contains(t) {
-                                out.push(issue(
-                                    &r.id,
-                                    LintSeverity::Error,
-                                    format!(
-                                        "sql emits source_table {t}, which is not in coverage tables {:?}",
-                                        def.tables
-                                    ),
-                                ));
-                            }
-                        }
-                        if let Some(first) = def.tables.first() {
-                            if !emitted.contains(first) {
-                                out.push(issue(
-                                    &r.id,
-                                    LintSeverity::Error,
-                                    format!("sql never emits the first coverage table {first} as source_table"),
-                                ));
-                            }
-                        }
+                let emitted = c.emitted_tables;
+                for t in &emitted {
+                    if !def.tables.contains(t) {
+                        out.push(issue(
+                            &r.id,
+                            LintSeverity::Error,
+                            format!(
+                                "sql emits source_table {t}, which is not in coverage tables {:?}",
+                                def.tables
+                            ),
+                        ));
+                    }
+                }
+                if let Some(first) = def.tables.first() {
+                    if !emitted.contains(first) {
+                        out.push(issue(
+                            &r.id,
+                            LintSeverity::Error,
+                            format!(
+                                "sql never emits the first coverage table {first} as source_table"
+                            ),
+                        ));
                     }
                 }
             }

@@ -65,6 +65,50 @@ impl Case {
         })
     }
 
+    /// Lend the case's data to `f` as a database file, with this case's writer connection
+    /// released meanwhile: a file case is checkpointed and its connection closed (DuckDB will not
+    /// open a second instance on a file a writer holds), then reopened; an in-memory case is
+    /// copied to a temporary file that is removed afterwards. `f` must open the file read-only
+    /// (the detection rule connection). The writer is restored even when `f` fails.
+    pub(crate) fn with_file_released<T>(
+        &mut self,
+        f: impl FnOnce(&Path) -> Result<T>,
+    ) -> Result<T> {
+        if self.read_only {
+            return Err(Error::Invalid("the case database is open read-only".into()));
+        }
+        if let Some(path) = self.path.clone() {
+            self.conn.execute_batch("CHECKPOINT")?;
+            let placeholder = Connection::open_in_memory()?;
+            drop(std::mem::replace(&mut self.conn, placeholder));
+            let out = f(&path);
+            self.conn = Connection::open(&path)?;
+            return out;
+        }
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "sparrow-snapshot-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
+        let file = dir.join("case.duckdb");
+        let name: String = self
+            .conn
+            .query_row("SELECT current_database()", [], |r| r.get(0))?;
+        let copied = self.conn.execute_batch(&format!(
+            "ATTACH '{}' AS rule_snapshot; COPY FROM DATABASE \"{name}\" TO rule_snapshot; DETACH rule_snapshot;",
+            file.display().to_string().replace('\'', "''")
+        ));
+        let out = match copied {
+            Ok(()) => f(&file),
+            Err(e) => Err(e.into()),
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+        out
+    }
+
     pub fn conn(&self) -> &Connection {
         &self.conn
     }

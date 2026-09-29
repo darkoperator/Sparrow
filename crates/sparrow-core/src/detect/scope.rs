@@ -7,6 +7,8 @@
 //! its SQL tries otherwise; compile rejects schema/catalog-qualified table references so the
 //! base tables cannot be named directly.
 //!
+//! Only `detect::rule_conn::RuleConn` calls these, so lockdown cannot be forgotten by a caller.
+//!
 //! Usage: `scope_to_tenant` (per tenant, replaces the previous tenant's views), and `lock_down`
 //! once before any rule SQL runs: `enable_external_access = false` (no `read_csv`, `ATTACH`,
 //! `COPY`, glob, ...) and `lock_configuration = true` (the rule cannot turn it back on).
@@ -40,7 +42,7 @@ fn check_tenant(tenant: &str) -> Result<()> {
 /// Shadow every tenant-aware table with a TEMP VIEW of the same name filtered to `tenant`
 /// (tables with a `tenant_key` filter on it; tables with a `collection_id` filter on the
 /// tenant's collections). Replaces the views of a previous tenant.
-pub fn scope_to_tenant(conn: &Connection, schema: &CaseSchema, tenant: &str) -> Result<()> {
+pub(crate) fn scope_to_tenant(conn: &Connection, schema: &CaseSchema, tenant: &str) -> Result<()> {
     check_tenant(tenant)?;
     let db: String = conn.query_row("SELECT current_database()", [], |r| r.get(0))?;
     let lit = tenant.replace('\'', "''");
@@ -64,19 +66,9 @@ pub fn scope_to_tenant(conn: &Connection, schema: &CaseSchema, tenant: &str) -> 
     Ok(())
 }
 
-/// Drop the tenant views again (tests that keep using the connection for setup).
-pub fn unscope(conn: &Connection, schema: &CaseSchema) -> Result<()> {
-    for (table, cols) in &schema.tables {
-        if cols.contains_key("tenant_key") || cols.contains_key("collection_id") {
-            conn.execute_batch(&format!("DROP VIEW IF EXISTS temp.main.\"{table}\""))?;
-        }
-    }
-    Ok(())
-}
-
 /// Turn off external access and lock the configuration of the connection's database instance.
 /// Irreversible for that instance: call it only on the dedicated rule connection.
-pub fn lock_down(conn: &Connection) -> Result<()> {
+pub(crate) fn lock_down(conn: &Connection) -> Result<()> {
     conn.execute_batch("SET enable_external_access = false; SET lock_configuration = true;")?;
     Ok(())
 }
