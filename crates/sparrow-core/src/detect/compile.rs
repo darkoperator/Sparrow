@@ -31,6 +31,13 @@ pub struct Compiled {
     pub tables: BTreeSet<String>,
     /// Static list names and `case_iocs.<type>` entries the rule references.
     pub lists: BTreeSet<String>,
+    /// The SQL references `$tenant` (only `sql:` rules may). The runner binds it when set; the
+    /// tenant scope itself is structural (see `detect::scope`), not this parameter.
+    pub uses_tenant: bool,
+    /// The `source_table` values the rule emits, when they can be read from the SQL (always for
+    /// `match:` and `sources:` rules; the projected string constants for `sql:` rules; `None`
+    /// when a `sql:` rule projects none).
+    pub emitted_tables: Option<BTreeSet<String>>,
 }
 
 /// Column names and types of every table and view in a case.
@@ -45,6 +52,7 @@ impl CaseSchema {
         let mut st = conn.prepare(
             "SELECT table_name, column_name, replace(data_type, chr(10), ' ') \
              FROM information_schema.columns WHERE table_schema = 'main' \
+               AND table_catalog NOT IN ('temp', 'system') \
              ORDER BY table_name, ordinal_position",
         )?;
         let rows = st.query_map([], |r| {
@@ -73,6 +81,8 @@ pub struct TableOutput {
     /// The table's time column (its `event_time`, else the closest event time, else
     /// `collected_at`); for `via_ual` tables it is a `ual_events` column.
     pub time_col: &'static str,
+    /// Used when `time_col` is NULL (the timeline view's fallbacks).
+    pub time_fallback: Option<&'static str>,
     pub actor: Option<&'static str>,
     pub ip: Option<&'static str>,
     /// The table has no time or actor of its own: it joins `ual_events` on `record_id`.
@@ -91,6 +101,7 @@ const fn state(
         table,
         key_col: "record_key",
         time_col,
+        time_fallback: None,
         actor,
         ip,
         via_ual: false,
@@ -110,6 +121,7 @@ const fn side(table: &'static str) -> TableOutput {
         table,
         key_col: "record_id",
         time_col: "event_time",
+        time_fallback: None,
         actor: Some("user_upn"),
         ip: Some("client_ip"),
         via_ual: true,
@@ -173,12 +185,15 @@ pub const OUTPUT_COLUMNS: &[TableOutput] = &[
     state("oauth_grants", "collected_at", Some("principal_upn"), None),
     state("remote_domains", "collected_at", None, None),
     current("remote_domains_current"),
-    state(
-        "risk_detections",
-        "detected_time",
-        Some("user_upn"),
-        Some("ip"),
-    ),
+    TableOutput {
+        time_fallback: Some("detected_time"),
+        ..state(
+            "risk_detections",
+            "activity_time",
+            Some("user_upn"),
+            Some("ip"),
+        )
+    },
     state("risky_users", "collected_at", Some("upn"), None),
     state(
         "role_assignments",
@@ -188,7 +203,10 @@ pub const OUTPUT_COLUMNS: &[TableOutput] = &[
     ),
     side("search_queries"),
     state("secure_score", "collected_at", None, None),
-    state("security_alerts", "created_time", None, None),
+    TableOutput {
+        time_fallback: Some("created_time"),
+        ..state("security_alerts", "event_time", None, None)
+    },
     side("sharing_events"),
     state("signins", "event_time", Some("user_upn"), Some("ip")),
     state("tenant_settings", "collected_at", None, None),
@@ -198,6 +216,7 @@ pub const OUTPUT_COLUMNS: &[TableOutput] = &[
         table: "ual_events",
         key_col: "record_id",
         time_col: "event_time",
+        time_fallback: None,
         actor: Some("user_upn"),
         ip: Some("client_ip"),
         via_ual: false,
@@ -253,9 +272,12 @@ fn build(
         counter: 0,
     };
     let mut tables = BTreeSet::new();
+    let mut uses_tenant = false;
+    let emitted: Option<BTreeSet<String>>;
     let base = match &rule.body {
         RuleBody::Match { source, m } => {
             tables.insert(source.clone());
+            emitted = Some(BTreeSet::from([source.clone()]));
             hit_select(&mut cx, schema, source, m)?
         }
         RuleBody::Sources { sources } => {
@@ -263,13 +285,19 @@ fn build(
                 return bad("sources must not be empty");
             }
             let mut parts = Vec::new();
+            emitted = Some(sources.iter().map(|s| s.source.clone()).collect());
             for s in sources {
                 tables.insert(s.source.clone());
                 parts.push(hit_select(&mut cx, schema, &s.source, &s.m)?);
             }
             parts.join("\nUNION ALL\n")
         }
-        RuleBody::Sql { sql } => sql_select(&mut cx, schema, sql, &mut tables)?,
+        RuleBody::Sql { sql } => {
+            let sel = sql_select(&mut cx, schema, sql, &mut tables)?;
+            uses_tenant = sel.uses_tenant;
+            emitted = sel.emitted;
+            sel.sql
+        }
     };
     let base = match &rule.threshold {
         Some(th) => threshold_sql(&base, th)?,
@@ -282,6 +310,8 @@ fn build(
         params: cx.params,
         tables,
         lists: cx.used_lists,
+        uses_tenant,
+        emitted_tables: emitted,
     })
 }
 
@@ -603,30 +633,25 @@ fn hit_select(cx: &mut Cx, schema: &CaseSchema, source: &str, m: &Cond) -> Resul
         format!("t.{}", out.key_col)
     };
     let owner = if out.via_ual { "u" } else { "t" };
-    let time = format!("{owner}.{}", out.time_col);
+    let time = match out.time_fallback {
+        Some(fb) => format!("coalesce({owner}.{}, {owner}.{fb})", out.time_col),
+        None => format!("{owner}.{}", out.time_col),
+    };
     let actor = out.actor.map_or("CAST(NULL AS VARCHAR)".to_string(), |c| {
         format!("{owner}.{c}")
     });
     let ip = out.ip.map_or("CAST(NULL AS VARCHAR)".to_string(), |c| {
         format!("{owner}.{c}")
     });
-    let (from, tenant) = if out.tenant_key {
-        (format!("{source} t"), "t.tenant_key = $tenant")
-    } else if out.via_ual {
-        (
-            format!(
-                "{source} t JOIN collections c ON c.collection_id = t.collection_id JOIN ual_events u ON u.record_id = t.record_id"
-            ),
-            "c.tenant_key = $tenant",
-        )
+    // No tenant predicate: the tenant scope is structural (`detect::scope` shadows every
+    // tenant-aware table with a view of the tenant's rows on the rule connection).
+    let from = if out.via_ual {
+        format!("{source} t JOIN ual_events u ON u.record_id = t.record_id")
     } else {
-        (
-            format!("{source} t JOIN collections c ON c.collection_id = t.collection_id"),
-            "c.tenant_key = $tenant",
-        )
+        format!("{source} t")
     };
     Ok(format!(
-        "SELECT {key} AS record_key, '{source}' AS source_table, {time} AS event_time, {actor} AS actor_upn, {ip} AS ip, CAST(NULL AS JSON) AS context\nFROM {from}\nWHERE {tenant} AND ({cond})"
+        "SELECT {key} AS record_key, '{source}' AS source_table, {time} AS event_time, {actor} AS actor_upn, {ip} AS ip, CAST(NULL AS JSON) AS context\nFROM {from}\nWHERE COALESCE(({cond}), false)"
     ))
 }
 
@@ -676,10 +701,8 @@ fn leaf_sql(
 ) -> Result<String> {
     let f = res.field(path)?;
     let inner = match op {
-        Op::Neq => format!(
-            "NOT COALESCE({}, false)",
-            leaf_positive(cx, &f, path, Op::Eq, v)?
-        ),
+        // Three-valued: a missing value makes the leaf NULL (no match); use `exists: false`.
+        Op::Neq => format!("NOT ({})", leaf_positive(cx, &f, path, Op::Eq, v)?),
         Op::Exists => exists_sql(&f, path, v)?,
         Op::EqField | Op::NeqField => {
             let other = scalar_string(v, &format!("{path}.{op:?}"))?;
@@ -694,13 +717,13 @@ fn leaf_sql(
             if op == Op::EqField {
                 format!("{a} = {b}")
             } else {
-                format!("{a} IS DISTINCT FROM {b}")
+                format!("{a} <> {b}")
             }
         }
         Op::Gt | Op::Gte | Op::Lt | Op::Lte => compare_sql(cx, &f, path, op, v)?,
         _ => leaf_positive(cx, &f, path, op, v)?,
     };
-    Ok(format!("COALESCE({inner}, false)"))
+    Ok(format!("({inner})"))
 }
 
 fn exists_sql(f: &Field, path: &str, v: &serde_json::Value) -> Result<String> {
@@ -709,15 +732,18 @@ fn exists_sql(f: &Field, path: &str, v: &serde_json::Value) -> Result<String> {
         _ => return bad(format!("{path}: exists takes true or false")),
     };
     let e = &f.expr;
+    // `exists` is the explicit test for absence, so it is two-valued.
     let present = match f.kind {
         Kind::Text => format!("({e} IS NOT NULL AND {e} <> '')"),
-        Kind::List => format!("len(list_filter({e}, x -> x IS NOT NULL AND x <> '')) > 0"),
+        Kind::List => {
+            format!("COALESCE(len(list_filter({e}, x -> x IS NOT NULL AND x <> '')) > 0, false)")
+        }
         _ => format!("{e} IS NOT NULL"),
     };
     Ok(if want {
         present
     } else {
-        format!("NOT COALESCE({present}, false)")
+        format!("NOT ({present})")
     })
 }
 
@@ -903,10 +929,27 @@ fn cidr_pred(cx: &mut Cx, x: &str, path: &str, v: &serde_json::Value) -> Result<
         };
         ranges.push((u32::from(n.network()), u32::from(n.broadcast())));
     }
-    let base = format!("split_part({x}, ':', 1)");
+    // Normalise to a dotted quad: `[v6]:port` brackets, an IPv4-mapped `::ffff:` prefix and an
+    // `:port` suffix are stripped; anything that is not four octets 0..=255 yields NULL (no
+    // match, never a different address).
+    let h = format!("lower(trim({x}))");
+    let unbracketed = format!(
+        "(CASE WHEN starts_with({h}, '[') THEN split_part(substr({h}, 2), ']', 1) ELSE {h} END)"
+    );
+    let unmapped = format!(
+        "(CASE WHEN starts_with({unbracketed}, '::ffff:') THEN substr({unbracketed}, 8) ELSE {unbracketed} END)"
+    );
+    let base = format!("split_part({unmapped}, ':', 1)");
     let octet = |i: u8| format!("TRY_CAST(split_part({base}, '.', {i}) AS BIGINT)");
+    let valid = format!(
+        "regexp_full_match({base}, '[0-9]{{1,3}}(\\.[0-9]{{1,3}}){{3}}') AND {} <= 255 AND {} <= 255 AND {} <= 255 AND {} <= 255",
+        octet(1),
+        octet(2),
+        octet(3),
+        octet(4)
+    );
     let ip = format!(
-        "(CASE WHEN len(string_split({base}, '.')) = 4 THEN {} * 16777216 + {} * 65536 + {} * 256 + {} END)",
+        "(CASE WHEN {valid} THEN {} * 16777216 + {} * 65536 + {} * 256 + {} END)",
         octet(1),
         octet(2),
         octet(3),
@@ -942,8 +985,9 @@ fn threshold_sql(base: &str, th: &Threshold) -> Result<String> {
         "d" => 86_400,
         _ => return bad(format!("threshold window {w:?}: expected 10m, 1h or 1d")),
     };
-    // Epoch seconds: TIMESTAMPTZ +/- INTERVAL needs the ICU extension, which is not loaded.
-    let secs = u64::from(n) * unit;
+    // Epoch milliseconds: TIMESTAMPTZ arithmetic and `epoch()` need the ICU extension, which a
+    // locked rule connection cannot autoload. `epoch_ms` is built in.
+    let secs = u64::from(n) * unit * 1000;
     let count = th.count.trim();
     let (cmp, rest) = if let Some(r) = count.strip_prefix(">=") {
         (">=", r)
@@ -976,10 +1020,10 @@ fn threshold_sql(base: &str, th: &Threshold) -> Result<String> {
     };
     Ok(format!(
         "WITH base AS ({base}),\n\
-         w AS (SELECT *, count(*) OVER ({partition}ORDER BY epoch(event_time) RANGE BETWEEN {secs} PRECEDING AND CURRENT ROW) AS n FROM base),\n\
+         w AS (SELECT *, count(*) OVER ({partition}ORDER BY epoch_ms(event_time) RANGE BETWEEN {secs} PRECEDING AND CURRENT ROW) AS n FROM base),\n\
          q AS (SELECT * FROM w WHERE n {cmp} {n})\n\
          SELECT b.record_key, b.source_table, b.event_time, b.actor_upn, b.ip, b.context FROM base b\n\
-         WHERE EXISTS (SELECT 1 FROM q WHERE {same} AND epoch(b.event_time) <= epoch(q.event_time) AND epoch(b.event_time) >= epoch(q.event_time) - {secs})"
+         WHERE EXISTS (SELECT 1 FROM q WHERE {same} AND epoch_ms(b.event_time) <= epoch_ms(q.event_time) AND epoch_ms(b.event_time) >= epoch_ms(q.event_time) - {secs})"
     ))
 }
 
@@ -998,19 +1042,102 @@ fn param_token() -> &'static regex::Regex {
     RE.get_or_init(|| regex::Regex::new(r"\$([A-Za-z_][A-Za-z0-9_]*)").unwrap())
 }
 
-fn walk_base_tables(v: &serde_json::Value, out: &mut BTreeSet<String>) {
+/// Table functions a rule may call in `FROM`: none reads files or the catalog by name.
+const ALLOWED_TABLE_FUNCTIONS: &[&str] = &[
+    "unnest",
+    "generate_series",
+    "range",
+    "json_each",
+    "json_tree",
+];
+
+/// Reject what would let a `sql:` rule escape the tenant scope or the file sandbox:
+/// schema/catalog-qualified tables (the base tables sit behind the tenant views), tables the
+/// scope does not cover, and table functions outside the allow-list (`read_csv`, `glob`,
+/// `query_table`, `duckdb_tables`, ...). Collects the case tables the rule reads.
+fn check_ast(v: &serde_json::Value, schema: &CaseSchema, out: &mut BTreeSet<String>) -> Result<()> {
     match v {
         serde_json::Value::Object(o) => {
-            if o.get("type").and_then(|t| t.as_str()) == Some("BASE_TABLE") {
-                if let Some(n) = o.get("table_name").and_then(|n| n.as_str()) {
-                    out.insert(n.to_string());
+            match o.get("type").and_then(|t| t.as_str()) {
+                Some("BASE_TABLE") => {
+                    let name = o.get("table_name").and_then(|n| n.as_str()).unwrap_or("");
+                    for key in ["schema_name", "catalog_name"] {
+                        let q = o.get(key).and_then(|n| n.as_str()).unwrap_or("");
+                        if !q.is_empty() {
+                            return bad(format!(
+                                "schema-qualified reference to {q}.{name}: use the plain table name (the tenant scope replaces it)"
+                            ));
+                        }
+                    }
+                    if schema.tables.contains_key(name) {
+                        if !crate::detect::scope::readable(schema, name) {
+                            return bad(format!(
+                                "table {name:?} cannot be read by a rule (it has no tenant scope)"
+                            ));
+                        }
+                        out.insert(name.to_string());
+                    }
                 }
+                Some("TABLE_FUNCTION") => {
+                    let f = v
+                        .pointer("/function/function_name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("?");
+                    if !ALLOWED_TABLE_FUNCTIONS.contains(&f.to_lowercase().as_str()) {
+                        return bad(format!(
+                            "table function {f} is not allowed in a rule (allowed: {})",
+                            ALLOWED_TABLE_FUNCTIONS.join(", ")
+                        ));
+                    }
+                }
+                _ => {}
             }
-            o.values().for_each(|x| walk_base_tables(x, out));
+            for x in o.values() {
+                check_ast(x, schema, out)?;
+            }
         }
-        serde_json::Value::Array(a) => a.iter().for_each(|x| walk_base_tables(x, out)),
+        serde_json::Value::Array(a) => {
+            for x in a {
+                check_ast(x, schema, out)?;
+            }
+        }
         _ => {}
     }
+    Ok(())
+}
+
+/// The `source_table` strings a `sql:` rule projects: the select-list position aliased
+/// `source_table` in any SELECT, read as a string constant in every SELECT of the statement
+/// (later `UNION` arms are often unaliased). `None` when no constant is found.
+fn emitted_source_tables(ast: &serde_json::Value) -> Option<BTreeSet<String>> {
+    fn selects<'a>(v: &'a serde_json::Value, out: &mut Vec<&'a Vec<serde_json::Value>>) {
+        match v {
+            serde_json::Value::Object(o) => {
+                if o.get("type").and_then(|t| t.as_str()) == Some("SELECT_NODE") {
+                    if let Some(l) = o.get("select_list").and_then(|l| l.as_array()) {
+                        out.push(l);
+                    }
+                }
+                o.values().for_each(|x| selects(x, out));
+            }
+            serde_json::Value::Array(a) => a.iter().for_each(|x| selects(x, out)),
+            _ => {}
+        }
+    }
+    let mut lists = Vec::new();
+    selects(ast, &mut lists);
+    let pos = lists.iter().find_map(|l| {
+        l.iter()
+            .position(|i| i.get("alias").and_then(|a| a.as_str()) == Some("source_table"))
+    })?;
+    let out: BTreeSet<String> = lists
+        .iter()
+        .filter_map(|l| l.get(pos))
+        .filter(|i| i.get("class").and_then(|c| c.as_str()) == Some("CONSTANT"))
+        .filter_map(|i| i.pointer("/value/value").and_then(|v| v.as_str()))
+        .map(String::from)
+        .collect();
+    (!out.is_empty()).then_some(out)
 }
 
 /// An empty in-memory database with the case's tables (views included, as tables) to check a
@@ -1022,6 +1149,8 @@ fn scratch(schema: &CaseSchema) -> Result<duckdb::Connection> {
         conn.execute_batch(&format!("CREATE TABLE \"{table}\" ({})", defs.join(", ")))
             .map_err(|e| Error::Invalid(format!("scratch table {table}: {e}")))?;
     }
+    // Validation must not read files either.
+    crate::detect::scope::lock_down(&conn)?;
     Ok(conn)
 }
 
@@ -1030,10 +1159,8 @@ fn sql_select(
     schema: &CaseSchema,
     sql: &str,
     tables: &mut BTreeSet<String>,
-) -> Result<String> {
-    if !regex::Regex::new(r"\$tenant\b").unwrap().is_match(sql) {
-        return bad("sql rule must reference $tenant (the tenant scope)");
-    }
+) -> Result<SqlSel> {
+    let uses_tenant = regex::Regex::new(r"\$tenant\b").unwrap().is_match(sql);
     // @list:name -> from_json($list_name, ...) / @list:case_iocs.t -> from_json($ioc_t, ...)
     let mut failure = None;
     let mut expanded = String::new();
@@ -1070,8 +1197,9 @@ fn sql_select(
         return bad("sql rule must be a single statement");
     }
     let mut found = BTreeSet::new();
-    walk_base_tables(&ast, &mut found);
+    check_ast(&ast, schema, &mut found)?;
     tables.extend(found.into_iter().filter(|t| schema.tables.contains_key(t)));
+    let emitted = emitted_source_tables(&ast);
 
     // Bind every parameter the text uses so DuckDB can type it.
     let mut bound: Vec<(String, Value)> = Vec::new();
@@ -1128,12 +1256,22 @@ fn sql_select(
             )),
         }
     };
-    Ok(format!(
-        "SELECT record_key, source_table, event_time, {} AS actor_upn, {} AS ip, {} AS context FROM ({expanded}) AS s",
-        optional("actor_upn", "VARCHAR")?,
-        optional("ip", "VARCHAR")?,
-        optional("context", "JSON")?,
-    ))
+    Ok(SqlSel {
+        sql: format!(
+            "SELECT record_key, source_table, event_time, {} AS actor_upn, {} AS ip, {} AS context FROM ({expanded}) AS s",
+            optional("actor_upn", "VARCHAR")?,
+            optional("ip", "VARCHAR")?,
+            optional("context", "JSON")?,
+        ),
+        uses_tenant,
+        emitted,
+    })
+}
+
+struct SqlSel {
+    sql: String,
+    uses_tenant: bool,
+    emitted: Option<BTreeSet<String>>,
 }
 
 #[cfg(test)]
@@ -1160,6 +1298,9 @@ mod tests {
                 o.table
             );
             assert!(other.contains_key(o.time_col), "{} {}", o.table, o.time_col);
+            if let Some(fb) = o.time_fallback {
+                assert!(other.contains_key(fb), "{} {fb}", o.table);
+            }
             for c in o.actor.into_iter().chain(o.ip) {
                 assert!(other.contains_key(c), "{} {c}", o.table);
             }

@@ -1,6 +1,7 @@
 # SPW-ID-010 — inbox rule created shortly after a risky or hosting-ASN sign-in (spec §8.2 example).
 # Logic source: coverage.yaml. Hawk 3.1 records New-InboxRule / Set-InboxRule in
-# Search-AdminAuditLog (admin_audit_events), so both sources are covered.
+# Search-AdminAuditLog (admin_audit_events), so both sources are covered. The tenant scope is
+# structural (the rule connection shows only the tenant's rows), so no tenant predicate here.
 id: SPW-ID-010
 title: Inbox rule created within 60 minutes of a risky or hosting-ASN sign-in
 version: 1
@@ -15,25 +16,22 @@ sql: |
   WITH rule_events AS (
     SELECT lower(CAST(u.record_id AS VARCHAR)) AS record_key, 'ual_events' AS source_table,
            u.event_time, u.user_upn AS actor_upn, u.client_ip AS ip
-    FROM ual_events u JOIN collections c ON c.collection_id = u.collection_id
-    WHERE c.tenant_key = $tenant
-      AND lower(u.operation) IN ('new-inboxrule', 'set-inboxrule', 'updateinboxrules')
+    FROM ual_events u
+    WHERE lower(u.operation) IN ('new-inboxrule', 'set-inboxrule', 'updateinboxrules')
     UNION ALL
-    SELECT a.record_key, 'admin_audit_events', a.run_time, a.caller, a.client_ip
-    FROM admin_audit_events a JOIN collections c ON c.collection_id = a.collection_id
-    WHERE c.tenant_key = $tenant
-      AND lower(a.cmdlet) IN ('new-inboxrule', 'set-inboxrule')
+    SELECT a.record_key, 'admin_audit_events' AS source_table, a.run_time, a.caller, a.client_ip
+    FROM admin_audit_events a
+    WHERE lower(a.cmdlet) IN ('new-inboxrule', 'set-inboxrule')
   ),
   risky_signins AS (
     SELECT lower(s.user_upn) AS upn, s.event_time
-    FROM signins s JOIN collections c ON c.collection_id = s.collection_id
-    WHERE c.tenant_key = $tenant
-      AND (lower(s.risk_level_during) IN ('medium', 'high')
+    FROM signins s
+    WHERE (lower(s.risk_level_during) IN ('medium', 'high')
            OR EXISTS (SELECT 1 FROM ip_intel i WHERE i.ip = s.ip AND i.is_hosting))
     UNION ALL
     SELECT lower(u.user_upn), u.event_time
-    FROM ual_events u JOIN collections c ON c.collection_id = u.collection_id
-    WHERE c.tenant_key = $tenant AND lower(u.operation) = 'userloggedin'
+    FROM ual_events u
+    WHERE lower(u.operation) = 'userloggedin'
       AND EXISTS (SELECT 1 FROM ip_intel i WHERE i.ip = u.client_ip AND i.is_hosting)
   )
   SELECT r.record_key, r.source_table, r.event_time, r.actor_upn, r.ip
@@ -41,8 +39,8 @@ sql: |
   WHERE EXISTS (
     SELECT 1 FROM risky_signins s
     WHERE s.upn = lower(r.actor_upn)
-      AND epoch(s.event_time) <= epoch(r.event_time)
-      AND epoch(s.event_time) >= epoch(r.event_time) - 3600
+      AND epoch_ms(s.event_time) <= epoch_ms(r.event_time)
+      AND epoch_ms(s.event_time) >= epoch_ms(r.event_time) - 3600000
   )
 group_by: [actor_upn]
 analyst_guidance: |

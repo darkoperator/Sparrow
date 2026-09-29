@@ -7,7 +7,8 @@ use duckdb::ToSql;
 use duckdb::types::Value as DValue;
 use serde_json::Value;
 use sparrow_core::Case;
-use sparrow_core::detect::compile::Compiled;
+use sparrow_core::detect::compile::{CaseSchema, Compiled};
+use sparrow_core::detect::scope::{scope_to_tenant, unscope};
 use std::collections::BTreeMap;
 
 /// The `collection_id` of `tenant`'s (single) test collection, created on first use.
@@ -147,15 +148,33 @@ pub struct Hit {
     pub ip: Option<String>,
 }
 
-/// Run a compiled rule for `tenant`; `iocs` binds the `ioc_<type>` parameters (JSON arrays).
+/// Run a compiled rule for `tenant` on `case`'s connection, scoped the way the runner scopes a
+/// dedicated rule connection (`scope_to_tenant`), then unscoped again so the test can go on
+/// inserting. `iocs` binds the `ioc_<type>` parameters (JSON arrays).
 pub fn run(
     case: &Case,
     compiled: &Compiled,
     tenant: &str,
     iocs: &BTreeMap<String, Vec<String>>,
 ) -> Result<Vec<Hit>, duckdb::Error> {
+    let schema = CaseSchema::of(case.conn()).unwrap();
+    scope_to_tenant(case.conn(), &schema, tenant).unwrap();
+    let out = run_scoped(case.conn(), compiled, tenant, iocs);
+    unscope(case.conn(), &schema).unwrap();
+    out
+}
+
+/// Run a compiled rule on a connection that is already scoped to `tenant`.
+pub fn run_scoped(
+    conn: &duckdb::Connection,
+    compiled: &Compiled,
+    tenant: &str,
+    iocs: &BTreeMap<String, Vec<String>>,
+) -> Result<Vec<Hit>, duckdb::Error> {
     let mut named: Vec<(String, DValue)> = compiled.params.clone();
-    named.push(("tenant".to_string(), DValue::Text(tenant.to_string())));
+    if compiled.uses_tenant {
+        named.push(("tenant".to_string(), DValue::Text(tenant.to_string())));
+    }
     for l in &compiled.lists {
         if let Some(t) = l.strip_prefix("case_iocs.") {
             let vals = iocs.get(t).cloned().unwrap_or_default();
@@ -169,8 +188,8 @@ pub fn run(
         .iter()
         .map(|(k, v)| (k.as_str(), v as &dyn ToSql))
         .collect();
-    let mut st = case.conn().prepare(&format!(
-        "SELECT record_key, source_table, epoch(event_time)::BIGINT, actor_upn, ip FROM ({}) ORDER BY 3, 1, 2",
+    let mut st = conn.prepare(&format!(
+        "SELECT record_key, source_table, epoch_ms(event_time) / 1000, actor_upn, ip FROM ({}) ORDER BY 3, 1, 2",
         compiled.sql
     ))?;
     let rows = st.query_map(refs.as_slice(), |r| {

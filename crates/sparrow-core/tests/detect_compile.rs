@@ -10,6 +10,7 @@ use sparrow_core::detect::coverage::CoverageMatrix;
 use sparrow_core::detect::lint::{LintIssue, LintSeverity, lint};
 use sparrow_core::detect::load::{ListMeta, LoadedRule, RuleSet, load_rules};
 use sparrow_core::detect::rule::Rule;
+use sparrow_core::detect::scope::{lock_down, scope_to_tenant};
 use std::collections::BTreeMap;
 
 const T1: &str = "t1";
@@ -86,6 +87,11 @@ fn match_leaf_operators_compile_and_run() {
     let cases: &[(&str, &[&str])] = &[
         ("operation: {eq: new-inboxrule}", &[R1]),
         ("operation: {neq: New-InboxRule}", &[R2, R3]),
+        ("parameters.ForwardTo: {neq: x@evil.example}", &[]),
+        (
+            "all:\n  - parameters.ForwardTo: {exists: false}\n  - operation: {neq: setinboxrule}",
+            &[R2, R3],
+        ),
         (
             "operation: {in: [set-inboxrule, MAILITEMSACCESSED]}",
             &[R2, R3],
@@ -112,7 +118,7 @@ fn match_leaf_operators_compile_and_run() {
         ("parameters.ForwardTo: {exists: false}", &[R2, R3]),
         ("audit_data.$.Foo: {exists: true}", &[R1, R2]),
         ("user_upn: {eq_field: mailbox_upn}", &[R1]),
-        ("user_upn: {neq_field: mailbox_upn}", &[R2, R3]),
+        ("user_upn: {neq_field: mailbox_upn}", &[R2]),
         (
             "all:\n  - operation: {contains: rule}\n  - user_upn: {startswith: bob}",
             &[R2],
@@ -122,7 +128,7 @@ fn match_leaf_operators_compile_and_run() {
             &[R1, R3],
         ),
         ("not:\n  operation: {contains: rule}", &[R3]),
-        ("not:\n  parameters.DeleteMessage: {eq: 'True'}", &[R2, R3]),
+        ("not:\n  parameters.DeleteMessage: {eq: 'True'}", &[R2]),
     ];
     for (cond, want) in cases {
         let got = hits(&case, &match_rule("ual_events", cond), T1);
@@ -451,11 +457,118 @@ fn sql_rule_must_be_a_single_select_with_contract_columns() {
 }
 
 #[test]
-fn sql_rule_without_tenant_is_rejected() {
+fn sql_rule_sees_only_its_tenant_without_a_tenant_predicate() {
     let case = Case::in_memory().unwrap();
-    let sql = "SELECT 'x' AS record_key, 'y' AS source_table, now() AS event_time";
-    let err = compile_on(&case, &sql_rule(sql)).unwrap_err().to_string();
-    assert!(err.contains("$tenant"), "{err}");
+    insert_ual(&case, T1, json!({"record_id": R1, "operation": "X"}));
+    insert_ual(&case, T2, json!({"record_id": R2, "operation": "X"}));
+    // Not a single mention of the tenant: the scope is structural.
+    let sql = "SELECT lower(CAST(record_id AS VARCHAR)) AS record_key, 'ual_events' AS source_table, event_time FROM ual_events";
+    let c = compile_on(&case, &sql_rule(sql)).unwrap_or_else(|e| panic!("{e}"));
+    assert!(!c.uses_tenant);
+    let one = |t| {
+        run(&case, &c, t, &BTreeMap::new())
+            .unwrap()
+            .into_iter()
+            .map(|h| h.record_key)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(one(T1), ids(&[R1]));
+    assert_eq!(one(T2), ids(&[R2]));
+    // A `WHERE $tenant IS NOT NULL` "filter" no longer leaks anything either.
+    let c = compile_on(
+        &case,
+        &sql_rule(&format!("{sql} WHERE $tenant IS NOT NULL")),
+    )
+    .unwrap();
+    assert!(c.uses_tenant);
+    assert_eq!(run(&case, &c, T1, &BTreeMap::new()).unwrap().len(), 1);
+    // Subqueries and joins over other tables are scoped too.
+    let sql = "SELECT lower(CAST(u.record_id AS VARCHAR)) AS record_key, 'ual_events' AS source_table, u.event_time FROM ual_events u WHERE u.collection_id IN (SELECT collection_id FROM collections)";
+    let c = compile_on(&case, &sql_rule(sql)).unwrap();
+    assert_eq!(run(&case, &c, T2, &BTreeMap::new()).unwrap().len(), 1);
+}
+
+#[test]
+fn sql_rules_cannot_name_base_tables_read_files_or_read_unscoped_tables() {
+    let case = Case::in_memory().unwrap();
+    let head = "SELECT 'x' AS record_key, 'y' AS source_table, now() AS event_time";
+    let cases = [
+        (format!("{head} FROM main.ual_events"), "schema-qualified"),
+        (
+            format!("{head} FROM memory.main.ual_events"),
+            "schema-qualified",
+        ),
+        (
+            format!("{head} FROM temp.main.ual_events"),
+            "schema-qualified",
+        ),
+        (format!("{head} FROM timeline"), "no tenant scope"),
+        (format!("{head} FROM record_sources"), "no tenant scope"),
+        (format!("{head} FROM read_csv('/etc/hosts')"), "read_csv"),
+        (format!("{head} FROM read_json('/etc/hosts')"), "read_json"),
+        (
+            format!("{head} FROM read_parquet('/etc/x.parquet')"),
+            "read_parquet",
+        ),
+        (format!("{head} FROM glob('/etc/*')"), "glob"),
+        (
+            format!("{head} FROM query_table('ual_events')"),
+            "query_table",
+        ),
+        (format!("{head} FROM duckdb_tables()"), "duckdb_tables"),
+        ("ATTACH '/tmp/zz.db' AS z".to_string(), "not a SELECT"),
+        (
+            "COPY ual_events TO '/tmp/zz.csv'".to_string(),
+            "not a SELECT",
+        ),
+    ];
+    for (sql, want) in cases {
+        let err = compile_on(&case, &sql_rule(&sql)).unwrap_err().to_string();
+        assert!(err.contains(want), "want {want:?} in {err:?} for {sql}");
+    }
+    // The allow-listed table functions and the global reference tables are fine.
+    let ok = "SELECT CAST(i AS VARCHAR) AS record_key, 'y' AS source_table, now() AS event_time FROM range(3) t(i), ip_intel";
+    compile_on(&case, &sql_rule(ok)).unwrap_or_else(|e| panic!("{e}"));
+}
+
+#[test]
+fn a_locked_rule_connection_reads_no_files_and_cannot_be_reconfigured() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("case.duckdb");
+    {
+        let case = Case::create_or_open(&path).unwrap();
+        insert_ual(&case, T1, json!({"record_id": R1, "operation": "X"}));
+        insert_ual(&case, T2, json!({"record_id": R2, "operation": "X"}));
+    }
+    // A dedicated read-only connection, as the runner uses.
+    let case = Case::open_read_only(&path).unwrap();
+    let schema = CaseSchema::of(case.conn()).unwrap();
+    let sql = "SELECT lower(CAST(record_id AS VARCHAR)) AS record_key, 'ual_events' AS source_table, event_time FROM ual_events";
+    let c = compile(&sql_rule(sql), &no_lists(), &schema).unwrap();
+    scope_to_tenant(case.conn(), &schema, T1).unwrap();
+    lock_down(case.conn()).unwrap();
+    let got = detect::run_scoped(case.conn(), &c, T1, &BTreeMap::new()).unwrap();
+    assert_eq!(got.len(), 1);
+    // The tenant can still be switched (views are not configuration).
+    scope_to_tenant(case.conn(), &schema, T2).unwrap();
+    let got = detect::run_scoped(case.conn(), &c, T2, &BTreeMap::new()).unwrap();
+    assert_eq!(got[0].record_key, R2);
+    for stmt in [
+        "SELECT * FROM read_csv('/etc/hosts')",
+        "SELECT * FROM read_json('/etc/hosts')",
+        "SELECT * FROM read_parquet('/etc/x.parquet')",
+        "SELECT * FROM glob('/etc/*')",
+        "ATTACH '/tmp/zz-sparrow.db' AS z",
+        "COPY (SELECT 1) TO '/tmp/zz-sparrow.csv'",
+        "SET enable_external_access = true",
+        "SET lock_configuration = false",
+    ] {
+        let err = case.conn().execute_batch(stmt).unwrap_err().to_string();
+        assert!(
+            err.contains("disabled by configuration") || err.contains("has been locked"),
+            "{stmt}: {err}"
+        );
+    }
 }
 
 #[test]
@@ -595,7 +708,7 @@ fn lint_rejects_unknown_column_and_list() {
     has("SPW-T-002", "nope");
     has("SPW-T-003", "no_table");
     has("SPW-T-004", "regex");
-    has("SPW-T-005", "$tenant");
+    has("SPW-T-005", "record_key");
     has("SPW-T-006", "positive");
     has("SPW-T-006", "look-alike");
     has("SPW-T-007", "look-alike");
@@ -719,4 +832,174 @@ fn shipped_rule_samples_pass_their_inline_tests() {
         let r = set.rules.iter().find(|r| r.rule.id == id).unwrap();
         run_inline_tests(&r.rule, &set);
     }
+}
+
+#[test]
+fn hit_times_fall_back_like_the_timeline() {
+    let case = Case::in_memory().unwrap();
+    // Activity happened before the detection: the hit time is the activity time.
+    insert_row(
+        &case,
+        "risk_detections",
+        T1,
+        json!({"record_key": "rd-1", "activity_time": "2026-03-01T09:00:00Z",
+               "detected_time": "2026-03-01T10:00:00Z", "risk_level": "high"}),
+    );
+    insert_row(
+        &case,
+        "risk_detections",
+        T1,
+        json!({"record_key": "rd-2", "detected_time": "2026-03-01T10:30:00Z", "risk_level": "high"}),
+    );
+    insert_row(
+        &case,
+        "security_alerts",
+        T1,
+        json!({"record_key": "sa-1", "event_time": "2026-03-01T08:00:00Z",
+               "created_time": "2026-03-01T11:00:00Z", "severity": "high"}),
+    );
+    insert_row(
+        &case,
+        "security_alerts",
+        T1,
+        json!({"record_key": "sa-2", "created_time": "2026-03-01T11:30:00Z", "severity": "high"}),
+    );
+    let epoch = |table: &str, col: &str| {
+        let c = compile_on(&case, &match_rule(table, &format!("{col}: {{eq: high}}"))).unwrap();
+        run(&case, &c, T1, &BTreeMap::new())
+            .unwrap()
+            .into_iter()
+            .map(|h| (h.record_key, h.event_epoch.unwrap()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        epoch("risk_detections", "risk_level"),
+        vec![
+            ("rd-1".to_string(), 1_772_355_600),
+            ("rd-2".to_string(), 1_772_361_000)
+        ]
+    );
+    assert_eq!(
+        epoch("security_alerts", "severity"),
+        vec![
+            ("sa-1".to_string(), 1_772_352_000),
+            ("sa-2".to_string(), 1_772_362_800 + 1800)
+        ]
+    );
+}
+
+#[test]
+fn cidr_validates_octets_and_normalises_mapped_addresses_and_ports() {
+    let case = Case::in_memory().unwrap();
+    let ips = [
+        ("00000000-0000-0000-0000-0000000000a1", "203.0.113.5"),
+        ("00000000-0000-0000-0000-0000000000a2", "203.0.113.999"),
+        ("00000000-0000-0000-0000-0000000000a3", "::ffff:203.0.113.5"),
+        ("00000000-0000-0000-0000-0000000000a4", "203.0.113.5:443"),
+        (
+            "00000000-0000-0000-0000-0000000000a5",
+            "[::ffff:203.0.113.5]:443",
+        ),
+        ("00000000-0000-0000-0000-0000000000a6", "2001:db8::5"),
+        ("00000000-0000-0000-0000-0000000000a7", "203.0.113.5.7"),
+        ("00000000-0000-0000-0000-0000000000a8", "203.0.113"),
+        ("00000000-0000-0000-0000-0000000000a9", "::FFFF:203.0.113.6"),
+        ("00000000-0000-0000-0000-0000000000b0", "203.0.114.5"),
+    ];
+    for (id, ip) in ips {
+        insert_ual(&case, T1, json!({"record_id": id, "client_ip": ip}));
+    }
+    let got = |cidr: &str| {
+        let mut h = hits(
+            &case,
+            &match_rule("ual_events", &format!("client_ip: {{cidr: {cidr}}}")),
+            T1,
+        );
+        h.sort();
+        h.into_iter()
+            .map(|k| k[k.len() - 2..].to_string())
+            .collect::<Vec<_>>()
+    };
+    // 999 is not an address: it never becomes 203.0.114.243 or anything else.
+    assert_eq!(got("203.0.113.5/32"), ["a1", "a3", "a4", "a5"]);
+    assert_eq!(got("203.0.113.0/24"), ["a1", "a3", "a4", "a5", "a9"]);
+    assert_eq!(got("203.0.114.0/24"), ["b0"]);
+    assert_eq!(got("203.0.114.243/32"), Vec::<String>::new());
+}
+
+#[test]
+fn absence_is_explicit_missing_values_never_match_a_negated_comparison() {
+    let case = Case::in_memory().unwrap();
+    insert_row(
+        &case,
+        "mailboxes",
+        T1,
+        json!({"upn": "fwd-ok@x.example", "forwarding_smtp_address": "approved@x.example"}),
+    );
+    insert_row(
+        &case,
+        "mailboxes",
+        T1,
+        json!({"upn": "fwd-bad@x.example", "forwarding_smtp_address": "evil@example.net"}),
+    );
+    insert_row(&case, "mailboxes", T1, json!({"upn": "none@x.example"}));
+    let actors = |cond: &str| {
+        let c = compile_on(&case, &match_rule("mailboxes", cond)).unwrap();
+        run(&case, &c, T1, &BTreeMap::new())
+            .unwrap()
+            .into_iter()
+            .filter_map(|h| h.actor_upn)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+    };
+    // "Forwards anywhere except the approved address" does not match a mailbox with no forwarding.
+    let except = "all:\n  - forwarding_smtp_address: {exists: true}\n  - forwarding_smtp_address: {neq: approved@x.example}";
+    assert_eq!(actors(except), ["fwd-bad@x.example"]);
+    assert_eq!(
+        actors("forwarding_smtp_address: {neq: approved@x.example}"),
+        ["fwd-bad@x.example"]
+    );
+    assert_eq!(
+        actors("not:\n  forwarding_smtp_address: {eq: approved@x.example}"),
+        ["fwd-bad@x.example"]
+    );
+    // Absence is spelled out.
+    assert_eq!(
+        actors("forwarding_smtp_address: {exists: false}"),
+        ["none@x.example"]
+    );
+    assert_eq!(
+        actors(
+            "any:\n  - forwarding_smtp_address: {exists: false}\n  - forwarding_smtp_address: {eq: evil@example.net}"
+        ),
+        ["fwd-bad@x.example", "none@x.example"]
+    );
+}
+
+#[test]
+fn lint_checks_the_emitted_source_tables_of_sql_rules() {
+    let case = Case::in_memory().unwrap();
+    let schema = CaseSchema::of(case.conn()).unwrap();
+    let cov = |tables: &str| {
+        CoverageMatrix::from_yaml(&format!(
+            "version: 1\nrules:\n  - id: SPW-T-001\n    title: t\n    category: mail\n    severity: high\n    hawk: null\n    logic: l\n    tables: {tables}\n    requires: []\n    requires_evidence: []\n    needs_geoip: false\n    collectors: [hawk4]\n    positives: [a]\n    lookalikes: [b]\n"
+        ))
+        .unwrap()
+    };
+    let sql = "SELECT 'x' AS record_key, 'ual_events' AS source_table, now() AS event_time\nUNION ALL\nSELECT 'y', 'signins', now()";
+    let mut set = set_of(vec![with_id(sql_rule(sql), "SPW-T-001")]);
+    set.rules[0].path = "builtin:identity/SPW-T-001.yaml".into();
+    let errs = |tables: &str| errors(&lint(&set, &schema, Some(&cov(tables))));
+    assert_eq!(errs("[ual_events, signins]"), Vec::<String>::new());
+    assert!(
+        errs("[ual_events]")
+            .iter()
+            .any(|m| m.contains("emits source_table signins"))
+    );
+    assert!(
+        errs("[admin_audit_events, ual_events, signins]")
+            .iter()
+            .any(|m| m.contains("first coverage table"))
+    );
 }

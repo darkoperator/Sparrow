@@ -1,7 +1,7 @@
 //! Rule lint (spec §8.4): every compile error, shape checks on the rule's tests and `group_by`,
 //! duplicate ids, and the cross-check against `rules/coverage.yaml`.
 
-use crate::detect::compile::{CaseSchema, OUTPUT_COLUMNS, OUTPUT_FIELDS, compile_with_meta};
+use crate::detect::compile::{CaseSchema, OUTPUT_FIELDS, compile_with_meta};
 use crate::detect::coverage::CoverageMatrix;
 use crate::detect::load::{LoadedRule, RuleSet};
 use crate::detect::rule::{Rule, RuleBody};
@@ -155,24 +155,38 @@ fn cross_check(set: &RuleSet, schema: &CaseSchema, cov: &CoverageMatrix, out: &m
                 }
             }
             None => {
-                // A sql: rule names its own tables; each must be a coverage table.
-                if let Ok(c) = compile_with_meta(&lr.rule, &set.lists, &set.list_meta, schema)
-                    .map(|c| c.tables)
-                {
-                    // Only evidence tables count (collections / ip_intel are helpers).
-                    for t in c
-                        .into_iter()
-                        .filter(|t| OUTPUT_COLUMNS.iter().any(|o| o.table == t))
-                    {
-                        if !def.tables.contains(&t) {
-                            out.push(issue(
-                                &r.id,
-                                LintSeverity::Error,
-                                format!(
-                                    "sql reads {t}, which is not in coverage tables {:?}",
-                                    def.tables
-                                ),
-                            ));
+                // A sql: rule's hits land in the tables it emits as `source_table`: each must be
+                // a coverage table, and the first coverage table must be one of them.
+                let Ok(c) = compile_with_meta(&lr.rule, &set.lists, &set.list_meta, schema) else {
+                    continue;
+                };
+                match c.emitted_tables {
+                    None => out.push(issue(
+                        &r.id,
+                        LintSeverity::Warning,
+                        "cannot read the emitted source_table values from the sql; not checked against coverage",
+                    )),
+                    Some(emitted) => {
+                        for t in &emitted {
+                            if !def.tables.contains(t) {
+                                out.push(issue(
+                                    &r.id,
+                                    LintSeverity::Error,
+                                    format!(
+                                        "sql emits source_table {t}, which is not in coverage tables {:?}",
+                                        def.tables
+                                    ),
+                                ));
+                            }
+                        }
+                        if let Some(first) = def.tables.first() {
+                            if !emitted.contains(first) {
+                                out.push(issue(
+                                    &r.id,
+                                    LintSeverity::Error,
+                                    format!("sql never emits the first coverage table {first} as source_table"),
+                                ));
+                            }
                         }
                     }
                 }
