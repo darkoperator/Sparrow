@@ -434,3 +434,32 @@ fn outcome(
         rule.tables.clone(),
     )
 }
+
+/// Restrict the outcomes to what `collector` can supply, as `rules/coverage.yaml` documents it
+/// (`collectors` for a positive kind, `lookalike_collectors` for a look-alike). A tree can carry
+/// a row for the evidence (Microsoft-Extractor-Suite lists every mailbox) without the attribute
+/// the rule reads (its mailbox list has no forwarding address); the outcome there is
+/// `no_evidence`, not `hit` / `no_hit`. Decided from the coverage file, never from Sparrow.
+pub fn restrict_to_collector(rules: &mut [RuleExpect], collector: Collector) {
+    for r in rules {
+        if !matches!(r.outcome, RuleOutcome::Hit | RuleOutcome::NoHit) {
+            continue;
+        }
+        let Some(def) = crate::coverage::rule(&r.rule_id) else {
+            continue;
+        };
+        let supplied = if r.outcome == RuleOutcome::Hit {
+            def.collectors.contains(&collector)
+        } else {
+            def.lookalike_collectors.contains(&collector)
+        };
+        if !supplied {
+            r.outcome = RuleOutcome::NoEvidence;
+            r.reason = format!(
+                "{} cannot supply {}'s evidence (coverage.yaml collectors)",
+                collector.as_str(),
+                r.rule_id
+            );
+        }
+    }
+}

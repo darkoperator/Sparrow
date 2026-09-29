@@ -264,6 +264,10 @@ story_kind! {
         AnonymousLinkBenign => "anonymous_link_benign",
         InternalDocxShare => "internal_docx_share",
         AuditConfigBenign => "audit_config_benign",
+        MfaAfterStaleRisk => "mfa_after_stale_risk",
+        InboxRuleAfterStaleRisk => "inbox_rule_after_stale_risk",
+        AnonymousLinkAfterStaleRisk => "anonymous_link_after_stale_risk",
+        LureSharedLate => "lure_shared_late",
     }
 }
 

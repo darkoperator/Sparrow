@@ -20,6 +20,15 @@
 #                     timing/actor correlation itself; this only checks the evidence is present).
 #   positives         storyline kinds that must trigger the rule
 #   lookalikes        storyline kinds that must not trigger it
+#   correlation_negatives  required for every rule with `evidence_all_of`: look-alike kinds (also
+#                     listed under `lookalikes`) whose storyline delivers BOTH evidence halves but
+#                     fails the rule's time or actor condition. `sparrow synth coverage` reports
+#                     the gap "correlated rule has no correlation negative" without one.
+#   baseline_allow    optional exceptions to the detection gate's baseline rule (`sparrow synth
+#                     check`): every finding of a rule must cite a storyline whose expected
+#                     outcome is `hit`. A finding that cites only records of a kind listed here
+#                     (`kind:` a storyline kind, or `baseline` for background activity) is
+#                     tolerated. Each entry needs a `reason` and a ruling; prefer fixing the rule.
 # Rules SPW-HAWK-001..015 cover every Hawk 4.0 investigate condition (research
 # 2026-09-26-phase5-hawk-layouts.md §6, H01-H15) plus the two content-derived ones.
 version: 1
@@ -368,7 +377,8 @@ rules:
     evidence_all_of: [[directory_audits, ual_events], [signins, ual_events]]
     collectors: [hawk4, invictus, portal]
     positives: [mfa_method_added]
-    lookalikes: [mfa_new_hire]
+    lookalikes: [mfa_new_hire, mfa_after_stale_risk]
+    correlation_negatives: [mfa_after_stale_risk]
   - id: SPW-ID-002
     title: Sign-in from a hosting-provider ASN
     category: identity
@@ -435,7 +445,8 @@ rules:
     evidence_all_of: [[ual_events, admin_audit_events], [signins, ual_events]]
     collectors: [hawk3, hawk4, invictus, portal]
     positives: [inbox_rule_finance]
-    lookalikes: [vendor_filing_rule]
+    lookalikes: [vendor_filing_rule, inbox_rule_after_stale_risk]
+    correlation_negatives: [inbox_rule_after_stale_risk]
   - id: SPW-APP-001
     title: Consent to an app with Mail.*, Files.* or offline_access
     category: apps
@@ -503,7 +514,8 @@ rules:
     collectors: [hawk4, invictus, portal]
     lookalike_collectors: [invictus, portal]
     positives: [anonymous_link]
-    lookalikes: [anonymous_link_benign]
+    lookalikes: [anonymous_link_benign, anonymous_link_after_stale_risk]
+    correlation_negatives: [anonymous_link_after_stale_risk]
   - id: SPW-FILE-003
     title: OneNote or PDF lure uploaded and shared
     category: files
@@ -524,7 +536,8 @@ rules:
     collectors: [hawk4, invictus, portal]
     lookalike_collectors: [invictus, portal]
     positives: [lure_share]
-    lookalikes: [internal_docx_share]
+    lookalikes: [internal_docx_share, lure_shared_late]
+    correlation_negatives: [lure_shared_late]
   - id: SPW-CFG-001
     title: Audit logging tampered with
     category: config

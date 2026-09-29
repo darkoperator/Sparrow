@@ -261,7 +261,7 @@ fn confirmed_compromised(w: &mut World, ctx: &mut Ctx) -> Result<()> {
 /// the security-info registration, the `Update user` of the strong-authentication details (and
 /// its UAL record), and the MFA registration state. A user who already has the Authenticator
 /// app (on their own device) gets a second one.
-fn register_authenticator(w: &mut World, ctx: &mut Ctx, ip: IpAddr, device_name: &str) {
+pub(super) fn register_authenticator(w: &mut World, ctx: &mut Ctx, ip: IpAddr, device_name: &str) {
     let a = ctx.a.clone();
     let t = ctx.t;
     let registered_before = w.mfa.get(&a.upn).map_or(0, |m| {

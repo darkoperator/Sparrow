@@ -40,12 +40,12 @@ fn tenant_word(w: &World) -> String {
 }
 
 /// A SharePoint team site URL (no trailing `/`), as the baseline names them.
-fn site(w: &World, name: &str) -> String {
+pub(super) fn site(w: &World, name: &str) -> String {
     format!("https://{}.sharepoint.example/sites/{name}", tenant_word(w))
 }
 
 /// `user`'s OneDrive URL (no trailing `/`), as the baseline names it.
-fn onedrive(w: &World, user: &User) -> String {
+pub(super) fn onedrive(w: &World, user: &User) -> String {
     format!(
         "https://{}-my.sharepoint.example/personal/{}",
         tenant_word(w),
@@ -104,7 +104,7 @@ fn normal_download(w: &mut World, ctx: &mut Ctx) {
 }
 
 /// An anyone-with-the-link (view) link on the document at `url`.
-fn anonymous_link(w: &mut World, ctx: &mut Ctx, url: &str, ip: std::net::IpAddr) {
+pub(super) fn anonymous_link(w: &mut World, ctx: &mut Ctx, url: &str, ip: std::net::IpAddr) {
     let a = ctx.a.clone();
     let u = ual::sharing(
         w,

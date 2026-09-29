@@ -89,7 +89,11 @@ pub fn generate_with_policy(
         audit_profile: world.audit_profile.id.clone(),
         tenant: manifest::tenant_expect(&world, opts),
         evidence: expect::evidence(&world, opts, &out),
-        rules: expect::rule_outcomes(&world, &records, &caps, &out),
+        rules: {
+            let mut rules = expect::rule_outcomes(&world, &records, &caps, &out);
+            expect::restrict_to_collector(&mut rules, opts.collector);
+            rules
+        },
         storylines: manifest::story_expects(&world, &records, &out),
         capabilities: caps,
         files: out.files,

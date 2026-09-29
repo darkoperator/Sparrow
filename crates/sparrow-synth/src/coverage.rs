@@ -40,6 +40,14 @@ fn load() -> Vec<RuleDef> {
         if r.lookalike_collectors.is_empty() {
             r.lookalike_collectors = r.collectors.clone();
         }
+        for n in &r.correlation_negatives {
+            assert!(
+                r.lookalikes.contains(n),
+                "rules/coverage.yaml: {}: correlation negative {} must also be a look-alike",
+                r.id,
+                n.as_str()
+            );
+        }
         if r.evidence_all_of.is_empty() {
             r.evidence_all_of = vec![r.tables.clone()];
         }
@@ -163,11 +171,19 @@ struct Observed {
     has_geoip: bool,
     /// The rule's tables the storyline's evidence reached (the manifest rule's `tables`).
     tables: Vec<String>,
+    /// The storyline's kind (`StoryKind::as_str`).
+    kind: String,
 }
 
 /// Generate every built-in scenario (except `volume`) for every collector into a [`NullSink`]
 /// and aggregate their manifests' rule outcomes into the coverage report.
 pub fn report(seed: u64) -> Result<CoverageReport> {
+    report_with(seed, rules())
+}
+
+/// [`report`] against an explicit rule list (tests remove a rule's correlation negatives to see
+/// the gap).
+pub fn report_with(seed: u64, rules: &[RuleDef]) -> Result<CoverageReport> {
     let mut observed: BTreeMap<String, Vec<Observed>> = BTreeMap::new();
     for name in crate::scenario::builtin_names()
         .iter()
@@ -187,6 +203,12 @@ pub fn report(seed: u64) -> Result<CoverageReport> {
                         outcome: r.outcome,
                         has_geoip,
                         tables: r.tables.clone(),
+                        kind: manifest
+                            .storylines
+                            .iter()
+                            .find(|st| st.id == r.storyline)
+                            .map(|st| st.kind.clone())
+                            .unwrap_or_default(),
                         exercise: Exercise {
                             scenario: name.to_string(),
                             collector: *collector,
@@ -204,7 +226,7 @@ pub fn report(seed: u64) -> Result<CoverageReport> {
         gaps: Vec::new(),
         ok: true,
     };
-    for rule in rules() {
+    for rule in rules {
         let entries = observed.remove(&rule.id).unwrap_or_default();
         let mut hits = Vec::new();
         let mut no_hits = Vec::new();
@@ -212,6 +234,7 @@ pub fn report(seed: u64) -> Result<CoverageReport> {
         let mut no_evidence = Vec::new();
         let mut collectors_hit = BTreeSet::new();
         let mut collectors_no_hit = BTreeSet::new();
+        let mut negative_seen = false;
         let mut geoip_hits = 0usize;
         for o in entries {
             let full = evidence_all_of_satisfied(&rule.evidence_all_of, &o.tables);
@@ -224,6 +247,10 @@ pub fn report(seed: u64) -> Result<CoverageReport> {
                     hits.push(o.exercise);
                 }
                 RuleOutcome::NoHit if full => {
+                    negative_seen |= rule
+                        .correlation_negatives
+                        .iter()
+                        .any(|k| k.as_str() == o.kind);
                     collectors_no_hit.insert(o.exercise.collector);
                     no_hits.push(o.exercise);
                 }
@@ -259,6 +286,12 @@ pub fn report(seed: u64) -> Result<CoverageReport> {
             if !collectors_no_hit.contains(c) {
                 gaps.push(format!("{}: no no_hit through {c}", rule.id));
             }
+        }
+        if rule.evidence_all_of.len() > 1 && !negative_seen {
+            gaps.push(format!(
+                "{}: correlated rule has no correlation negative",
+                rule.id
+            ));
         }
         if (!rule.requires.is_empty() || !rule.requires_evidence.is_empty())
             && not_applicable.is_empty()

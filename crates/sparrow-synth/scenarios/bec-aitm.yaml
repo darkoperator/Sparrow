@@ -67,3 +67,8 @@ lookalikes:
   - {kind: autoreply_disabled, id: l-autooff, actor: 10, at: {day: 6, hour: 17}}
   - {kind: header_clean, id: l-hdrok, target: 2, at: {day: 10, hour: 9, minute: 15}}
   - {kind: permission_system_discovery, id: l-sysperm, at: {day: 2, hour: 3}}
+  # Correlation negatives: both evidence halves exist, the time condition fails.
+  - {kind: inbox_rule_after_stale_risk, id: l-cn-rule, actor: 11, at: {day: 24, hour: 14}}
+  - {kind: mfa_after_stale_risk, id: l-cn-mfa, actor: 12, at: {day: 26, hour: 11}}
+  - {kind: anonymous_link_after_stale_risk, id: l-cn-anon, actor: 10, at: {day: 27, hour: 16}}
+  - {kind: lure_shared_late, id: l-cn-lure, actor: 9, at: {day: 22, hour: 9}}

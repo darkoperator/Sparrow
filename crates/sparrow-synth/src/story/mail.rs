@@ -883,7 +883,7 @@ fn header_clean(w: &mut World, ctx: &mut Ctx) {
 }
 
 /// The user files a vendor's mail into a folder, from the office.
-fn vendor_filing_rule(w: &mut World, ctx: &mut Ctx) {
+pub(super) fn vendor_filing_rule(w: &mut World, ctx: &mut Ctx) {
     let a = ctx.a.clone();
     let t = ctx.t;
     let from = format!("billing@{VENDOR_DOMAIN}");

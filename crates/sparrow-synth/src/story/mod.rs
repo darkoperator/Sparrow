@@ -13,6 +13,7 @@ mod config;
 mod files;
 mod identity;
 mod mail;
+mod negatives;
 
 use crate::events::{
     Actor, DirAudit, RecordType, RiskDetection, SignIn, SignInType, Target, TraceMsg, Ual,
@@ -141,6 +142,7 @@ pub fn apply(world: &mut World) -> Result<Vec<StoryRecord>> {
             || apps::apply_one(world, &mut ctx)?
             || mail::apply_one(world, &mut ctx)?
             || files::apply_one(world, &mut ctx)?
+            || negatives::apply_one(world, &mut ctx)?
             || config::apply_one(world, &mut ctx)?;
         if !handled {
             return Err(Error::Scenario(format!(

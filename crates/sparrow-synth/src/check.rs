@@ -1,13 +1,16 @@
 //! `sparrow synth check`: compares a case ingested (and profiled) from a generated tree with
 //! the tree's manifest, and lists every difference.
 
-use crate::manifest::{Manifest, TableExpect};
+use crate::manifest::{Manifest, RuleOutcome, TableExpect};
 use crate::{Error, Result};
 use chrono::Duration;
 use duckdb::params;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sparrow_core::Case;
+use sparrow_core::data::DataDirs;
+use sparrow_core::detect::coverage::BaselineAllow;
+use sparrow_core::detect::load::{RuleSet, load_rules};
 use sparrow_core::profile::availability::capabilities_report;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -19,8 +22,26 @@ pub struct CheckReport {
     pub ok: bool,
     pub collection_id: Option<i64>,
     pub problems: Vec<String>,
-    /// Rule expectations are not checked until Phase 6 (the detection engine).
+    /// Manifest rules that have no rule file yet: their expectations are not checked.
     pub rules_unchecked: usize,
+    /// The detection gate (`check_detection`).
+    pub detection: DetectionCheck,
+}
+
+/// The detection gate's findings. `ok` of the report includes every list being empty.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct DetectionCheck {
+    /// Rules with a rule file whose latest run for the tenant was compared.
+    pub rules_checked: usize,
+    /// A `hit` storyline no finding of its rule cites.
+    pub missing_hits: Vec<String>,
+    /// A finding on a `no_hit` storyline, or on records no `hit` storyline explains (and no
+    /// `baseline_allow` entry excuses).
+    pub unexpected_hits: Vec<String>,
+    /// A tenant-wide `not_applicable` the run log does not show, or a rule that errored.
+    pub applicability: Vec<String>,
+    /// Why the gate did not run (the case holds no detection run).
+    pub skipped: Option<String>,
 }
 
 fn db(e: duckdb::Error) -> Error {
@@ -32,9 +53,27 @@ fn core(e: sparrow_core::Error) -> Error {
 }
 
 /// Compare an ingested (and profiled) case with `manifest`. `as_of` for availability is
-/// `manifest.collected_at + 1 day`.
+/// `manifest.collected_at + 1 day`. The detection gate uses the built-in rules and the
+/// `baseline_allow` entries of `rules/coverage.yaml`.
 pub fn check(manifest: &Manifest, case: &sparrow_core::Case) -> Result<CheckReport> {
+    let set = load_rules(&DataDirs::default()).map_err(core)?;
+    let allow = crate::coverage::rules()
+        .iter()
+        .map(|r| (r.id.clone(), r.baseline_allow.clone()))
+        .collect();
+    check_with(manifest, case, &set, &allow)
+}
+
+/// [`check`] with an explicit rule set (the rules the case's detection ran) and baseline
+/// exceptions per rule id.
+pub fn check_with(
+    manifest: &Manifest,
+    case: &sparrow_core::Case,
+    set: &RuleSet,
+    baseline_allow: &BTreeMap<String, Vec<BaselineAllow>>,
+) -> Result<CheckReport> {
     let mut problems = Vec::new();
+    let mut detection = DetectionCheck::default();
     let collection = find_collection(manifest, case, &mut problems)?;
     if let Some((cid, tenant_key)) = &collection {
         let file_ids = check_files(manifest, case, *cid, &mut problems)?;
@@ -44,6 +83,15 @@ pub fn check(manifest: &Manifest, case: &sparrow_core::Case) -> Result<CheckRepo
                 check_tenant(manifest, case, tk, &mut problems)?;
                 check_capabilities(manifest, case, tk, &mut problems)?;
                 check_evidence(manifest, case, tk, &mut problems)?;
+                detection = check_detection(manifest, case, *cid, tk, set, baseline_allow)?;
+                problems.extend(
+                    detection
+                        .missing_hits
+                        .iter()
+                        .chain(&detection.unexpected_hits)
+                        .chain(&detection.applicability)
+                        .map(|p| format!("detection: {p}")),
+                );
             }
             None => problems.push(format!(
                 "collection {cid} has no tenant_key (was the case profiled?)"
@@ -55,7 +103,14 @@ pub fn check(manifest: &Manifest, case: &sparrow_core::Case) -> Result<CheckRepo
         ok: problems.is_empty(),
         collection_id: collection.map(|(cid, _)| cid),
         problems,
-        rules_unchecked: manifest.rules.len(),
+        rules_unchecked: manifest
+            .rules
+            .iter()
+            .map(|r| r.rule_id.as_str())
+            .filter(|id| !set.rules.iter().any(|r| r.rule.id == *id))
+            .collect::<BTreeSet<_>>()
+            .len(),
+        detection,
     })
 }
 
@@ -471,4 +526,248 @@ fn check_sightings(
         }
     }
     Ok(())
+}
+
+/// Whether the rule is `not_applicable` for the whole tenant under this manifest: a required
+/// capability is not licensed, or a required evidence is never available (not licensed / not
+/// enabled). The runner decides per tenant; a storyline that is `not_applicable` only because it
+/// falls in a logging gap (audit-tamper) is a different cause and is checked as "no finding".
+fn tenant_wide_not_applicable(
+    manifest: &Manifest,
+    rule: &sparrow_core::detect::rule::Rule,
+) -> bool {
+    rule.requires.iter().any(|c| {
+        manifest
+            .capabilities
+            .get(c)
+            .is_some_and(|e| e.status == "not_licensed")
+    }) || rule.requires_evidence.iter().any(|e| {
+        manifest.evidence.get(e).is_some_and(|x| {
+            !x.allowed.is_empty()
+                && x.allowed
+                    .iter()
+                    .all(|a| a == "not_licensed" || a == "not_enabled")
+        })
+    })
+}
+
+/// The exact detection gate (Addendum C.3) for every rule that has a rule file.
+///
+/// 1. `hit` storyline: a finding of the rule cites one of the storyline's delivered records in
+///    one of the rule's tables.
+/// 2. `no_hit` storyline: no finding of the rule cites its records.
+/// 3. `not_applicable`: for a tenant-wide cause the run log has the rule `not_applicable`;
+///    for a logging-gap cause (audit-tamper) the storyline is treated like `no_evidence`, plus
+///    no finding of the rule may cite its records.
+/// 4. Baseline: every finding must cite the records of a `hit` storyline of its rule, unless the
+///    kinds it cites are listed in `baseline_allow`. Otherwise it is an extra finding.
+/// 5. `no_evidence` is skipped.
+fn check_detection(
+    manifest: &Manifest,
+    case: &Case,
+    cid: i64,
+    tenant_key: &str,
+    set: &RuleSet,
+    baseline_allow: &BTreeMap<String, Vec<BaselineAllow>>,
+) -> Result<DetectionCheck> {
+    let mut out = DetectionCheck::default();
+    // The latest run's statuses for the tenant.
+    let mut stmt = case
+        .conn()
+        .prepare(
+            "SELECT rule_id, CAST(status AS VARCHAR), reason FROM detection_runs \
+             WHERE tenant_key = ? AND run_id = (SELECT max(run_id) FROM detection_runs) ORDER BY rule_id",
+        )
+        .map_err(db)?;
+    let runs: BTreeMap<String, (String, Option<String>)> = stmt
+        .query_map(params![tenant_key], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                (r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?),
+            ))
+        })
+        .map_err(db)?
+        .collect::<std::result::Result<_, _>>()
+        .map_err(db)?;
+    if runs.is_empty() {
+        out.skipped = Some("the case holds no detection run for the tenant".to_string());
+        return Ok(out);
+    }
+
+    // What each storyline delivered, and who owns each record.
+    let cid = cid.to_string();
+    let mut records: BTreeMap<&str, BTreeSet<(String, String)>> = BTreeMap::new();
+    let mut owners: BTreeMap<(String, String), Vec<&str>> = BTreeMap::new();
+    let kind_of: BTreeMap<&str, &str> = manifest
+        .storylines
+        .iter()
+        .map(|s| (s.id.as_str(), s.kind.as_str()))
+        .collect();
+    for story in &manifest.storylines {
+        for ev in &story.evidence {
+            for landed in &ev.delivered {
+                let Some(key) = &landed.record_key else {
+                    continue;
+                };
+                let rec = (landed.table.clone(), key.replace(crate::keys::CID, &cid));
+                records
+                    .entry(story.id.as_str())
+                    .or_default()
+                    .insert(rec.clone());
+                owners.entry(rec).or_default().push(story.id.as_str());
+            }
+        }
+    }
+
+    // The findings of the tenant: rule -> finding -> the records that triggered it.
+    let mut stmt = case
+        .conn()
+        .prepare(
+            "SELECT f.rule_id, f.finding_id, e.source_table, e.record_key FROM findings f \
+             JOIN finding_evidence e USING (finding_id) \
+             WHERE f.tenant_key = ? AND f.rule_id IS NOT NULL AND CAST(e.role AS VARCHAR) = 'trigger' \
+             ORDER BY f.rule_id, f.finding_id, e.source_table, e.record_key",
+        )
+        .map_err(db)?;
+    let mut findings: BTreeMap<String, BTreeMap<String, BTreeSet<(String, String)>>> =
+        BTreeMap::new();
+    for row in stmt
+        .query_map(params![tenant_key], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(db)?
+    {
+        let (rule, fid, table, key) = row.map_err(db)?;
+        findings
+            .entry(rule)
+            .or_default()
+            .entry(fid)
+            .or_default()
+            .insert((table, key));
+    }
+
+    let no_findings = BTreeMap::new();
+    for lr in &set.rules {
+        let id = lr.rule.id.as_str();
+        let Some((status, reason)) = runs.get(id) else {
+            continue;
+        };
+        out.rules_checked += 1;
+        if status == "error" {
+            out.applicability.push(format!(
+                "{id}: the rule failed: {}",
+                reason.as_deref().unwrap_or("?")
+            ));
+            continue;
+        }
+        let rule_findings = findings.get(id).unwrap_or(&no_findings);
+        let cites = |story: &str, tables: Option<&[String]>| -> bool {
+            let Some(recs) = records.get(story) else {
+                return false;
+            };
+            rule_findings.values().any(|ev| {
+                ev.iter()
+                    .any(|e| recs.contains(e) && tables.is_none_or(|t| t.iter().any(|x| *x == e.0)))
+            })
+        };
+        let mut explained: BTreeSet<&str> = BTreeSet::new();
+        let mut reported: BTreeSet<&str> = BTreeSet::new();
+        for ex in manifest.rules.iter().filter(|r| r.rule_id == id) {
+            match ex.outcome {
+                RuleOutcome::Hit => {
+                    explained.insert(ex.storyline.as_str());
+                    if !cites(&ex.storyline, Some(&ex.tables)) {
+                        out.missing_hits.push(format!(
+                            "{id}: storyline {} ({}) should hit but no finding cites its records in {}",
+                            ex.storyline,
+                            kind_of.get(ex.storyline.as_str()).copied().unwrap_or("?"),
+                            ex.tables.join(", ")
+                        ));
+                    }
+                }
+                RuleOutcome::NoHit => {
+                    if cites(&ex.storyline, None) {
+                        reported.insert(ex.storyline.as_str());
+                        out.unexpected_hits.push(format!(
+                            "{id}: look-alike storyline {} ({}) triggered a finding",
+                            ex.storyline,
+                            kind_of.get(ex.storyline.as_str()).copied().unwrap_or("?"),
+                        ));
+                    }
+                }
+                RuleOutcome::NotApplicable => {
+                    if tenant_wide_not_applicable(manifest, &lr.rule) {
+                        if status != "not_applicable" {
+                            out.applicability.push(format!(
+                                "{id}: storyline {} is not applicable for the tenant but the run log says {status}",
+                                ex.storyline
+                            ));
+                        }
+                    } else if cites(&ex.storyline, None) {
+                        reported.insert(ex.storyline.as_str());
+                        out.unexpected_hits.push(format!(
+                            "{id}: storyline {} ({}) is not applicable ({}) yet a finding cites its records",
+                            ex.storyline,
+                            kind_of.get(ex.storyline.as_str()).copied().unwrap_or("?"),
+                            ex.reason
+                        ));
+                    }
+                }
+                RuleOutcome::NoEvidence => {}
+            }
+        }
+        // Rule 4: findings no `hit` storyline explains.
+        let allow = baseline_allow.get(id).map(Vec::as_slice).unwrap_or(&[]);
+        let hit_records: BTreeSet<&(String, String)> = explained
+            .iter()
+            .filter_map(|s| records.get(s))
+            .flatten()
+            .collect();
+        for (fid, evidence) in rule_findings {
+            if evidence.iter().any(|e| hit_records.contains(e)) {
+                continue;
+            }
+            // Already reported above as a look-alike / gap finding.
+            if evidence.iter().any(|e| {
+                owners
+                    .get(e)
+                    .is_some_and(|st| st.iter().any(|s| reported.contains(s)))
+            }) {
+                continue;
+            }
+            let mut kinds = BTreeSet::new();
+            for e in evidence {
+                match owners.get(e) {
+                    Some(stories) => {
+                        for s in stories {
+                            kinds.insert(kind_of.get(s).copied().unwrap_or("?").to_string());
+                        }
+                    }
+                    None => {
+                        kinds.insert("baseline".to_string());
+                    }
+                }
+            }
+            if kinds.iter().all(|k| allow.iter().any(|a| &a.kind == k)) {
+                continue;
+            }
+            let msg = format!(
+                "{id}: finding {fid} cites records of {} that no hit storyline explains",
+                kinds.iter().cloned().collect::<Vec<_>>().join(", ")
+            );
+            if !out
+                .unexpected_hits
+                .iter()
+                .any(|m| m.starts_with(&format!("{id}: look-alike")) && msg.contains("look"))
+            {
+                out.unexpected_hits.push(msg);
+            }
+        }
+    }
+    Ok(out)
 }

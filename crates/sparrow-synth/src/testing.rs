@@ -15,6 +15,35 @@ use std::path::Path;
 /// `ingest_culture`), then profiles it with `--geoip-dir <dir>/<geoip_dir>` and
 /// `as_of = collected_at + 1 day`. Panics with the cause when ingest or profile fails.
 pub fn ingest_generated(dir: &Path, manifest: &Manifest) -> Case {
+    ingest_and_profile(dir, manifest)
+}
+
+/// [`ingest_generated`], then the detection step with the built-in rules (what `sparrow ingest`
+/// does), at the same evaluation time. The detection gate of `check` needs it.
+pub fn ingest_generated_detected(dir: &Path, manifest: &Manifest) -> Case {
+    let set = sparrow_core::detect::load::load_rules(&DataDirs::default())
+        .unwrap_or_else(|e| panic!("rules: {e}"));
+    ingest_generated_with_rules(dir, manifest, &set)
+}
+
+/// [`ingest_generated_detected`] with an explicit rule set.
+pub fn ingest_generated_with_rules(
+    dir: &Path,
+    manifest: &Manifest,
+    set: &sparrow_core::detect::load::RuleSet,
+) -> Case {
+    let mut case = ingest_and_profile(dir, manifest);
+    let opts = sparrow_core::detect::DetectOptions {
+        now: Some(manifest.collected_at + Duration::days(1)),
+        ..Default::default()
+    };
+    if let Err(e) = sparrow_core::detect::run::run(&mut case, set, &opts) {
+        panic!("detection of {} failed: {e}", manifest.root);
+    }
+    case
+}
+
+fn ingest_and_profile(dir: &Path, manifest: &Manifest) -> Case {
     let date_order = manifest
         .ingest_culture
         .as_deref()

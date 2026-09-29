@@ -26,7 +26,7 @@ use sparrow_synth::options::{
     Collector, Culture, GenerateOptions, PsEdition, SigninExport, UalFormat,
 };
 use sparrow_synth::scenario::{At, Scenario, StoryKind, StorySpec, builtin_names, load};
-use sparrow_synth::testing::ingest_generated;
+use sparrow_synth::testing::{ingest_generated, ingest_generated_detected};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -133,14 +133,21 @@ fn builtin(name: &str, opts: &GenerateOptions) -> Arc<Generated> {
     generated(name, &load(name).unwrap(), opts)
 }
 
-/// Generate `name` for `opts`, ingest and profile it, and `check` it against its manifest.
+/// Generate `name` for `opts`, ingest, profile and detect it, and `check` it against its
+/// manifest, the exact detection gate included.
 fn checked(name: &str, opts: &GenerateOptions) {
     let g = builtin(name, opts);
-    let r = check(&g.manifest, &ingest_generated(&g.dir, &g.manifest)).unwrap();
+    let r = check(&g.manifest, &ingest_generated_detected(&g.dir, &g.manifest)).unwrap();
     assert!(
         r.ok,
         "{name} {:?} seed {}: {:#?}",
         opts.collector, opts.seed, r.problems
+    );
+    assert!(
+        r.detection.skipped.is_none() && r.detection.rules_checked > 0,
+        "{name} {:?}: the detection gate did not run: {:?}",
+        opts.collector,
+        r.detection
     );
 }
 
@@ -758,6 +765,85 @@ fn two_captures_of_one_tenant_latest_wins_in_either_order() {
     );
 }
 
+/// Detection results of a case as sorted text: findings (id, fingerprint, rule, tenant, actor,
+/// severity) and their evidence rows.
+fn finding_state(case: &Case) -> (Vec<String>, Vec<String>) {
+    let rows = |sql: &str| -> Vec<String> {
+        let mut st = case.conn().prepare(sql).unwrap();
+        st.query_map([], |r| {
+            Ok((0..r.as_ref().column_count())
+                .map(|i| format!("{:?}", r.get::<_, duckdb::types::Value>(i).unwrap()))
+                .collect::<Vec<_>>()
+                .join("|"))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+    };
+    (
+        rows(
+            "SELECT finding_id, fingerprint, rule_id, tenant_key, actor_upn, severity FROM findings ORDER BY finding_id",
+        ),
+        rows(
+            "SELECT finding_id, source_table, record_key FROM finding_evidence ORDER BY finding_id, source_table, record_key",
+        ),
+    )
+}
+
+fn detect_now(case: &mut Case, as_of: DateTime<Utc>) {
+    sparrow_core::detect::run::run_with_dirs(
+        case,
+        &DataDirs::default(),
+        &sparrow_core::detect::DetectOptions {
+            now: Some(as_of),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+}
+
+/// Ingesting capture A then B, B then A, or A again gives the same findings (fingerprints and
+/// evidence sets): detection depends on the evidence, not the ingest order.
+#[test]
+fn findings_are_order_independent() {
+    let base = load("bec-aitm").unwrap();
+    let mut newer_scenario = base.clone();
+    newer_scenario.window.collected_at += Duration::days(2);
+    newer_scenario.storylines.push(StorySpec {
+        kind: StoryKind::ForwardingMailbox,
+        id: "s-extra-fwd".into(),
+        actor: Some(3),
+        target: None,
+        at: At::Day {
+            day: 25,
+            hour: 10,
+            minute: 0,
+        },
+    });
+    let a = builtin("bec-aitm", &GenerateOptions::new(Collector::Hawk4, 1));
+    let b = generated(
+        "bec-aitm+2d",
+        &newer_scenario,
+        &GenerateOptions::new(Collector::Hawk4, 1),
+    );
+    let geoip = a.dir.join(a.manifest.geoip_dir.clone().unwrap());
+    let as_of = b.manifest.collected_at + Duration::days(1);
+    let mut states = Vec::new();
+    let (ga, gb): (&Generated, &Generated) = (&a, &b);
+    for order in [vec![ga, gb], vec![gb, ga], vec![ga, gb, ga]] {
+        let mut case = ingest_many(&order, Some(&geoip), as_of);
+        detect_now(&mut case, as_of);
+        states.push(finding_state(&case));
+    }
+    assert!(!states[0].0.is_empty(), "the captures produce findings");
+    assert!(
+        states[0].0.iter().any(|f| f.contains("SPW-HAWK-011")),
+        "the extra forwarding storyline is detected"
+    );
+    assert_eq!(states[0], states[1], "A then B differs from B then A");
+    assert_eq!(states[0], states[2], "re-ingesting A changes the findings");
+}
+
 /// Ingesting a tree twice adds nothing: every file is a duplicate and table counts are
 /// unchanged. Profiling twice leaves the profile snapshots identical.
 #[test]
@@ -889,11 +975,42 @@ fn two_tenants_in_one_case_stay_apart() {
         Some(&geoip),
         hawk.manifest.collected_at + Duration::days(1),
     );
+    let mut case = case;
     assert_ne!(
         hawk.manifest.tenant.tenant_id,
         inv.manifest.tenant.tenant_id
     );
     assert_eq!(count(&case, "SELECT count(*) FROM tenant"), 2);
+    // Detection runs per tenant: no finding cites another tenant's evidence.
+    detect_now(&mut case, hawk.manifest.collected_at + Duration::days(1));
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(DISTINCT tenant_key) FROM detection_runs"
+        ),
+        2
+    );
+    assert!(count(&case, "SELECT count(*) FROM findings") > 0);
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM findings f JOIN finding_evidence e USING (finding_id) \
+             JOIN ual_events u ON e.source_table = 'ual_events' AND lower(CAST(u.record_id AS VARCHAR)) = e.record_key \
+             JOIN collections c ON c.collection_id = u.collection_id WHERE c.tenant_key <> f.tenant_key"
+        ),
+        0,
+        "a finding cites a UAL record of another tenant"
+    );
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM findings f JOIN finding_evidence e USING (finding_id) \
+             JOIN mailboxes m ON e.source_table = 'mailboxes' AND m.record_key = e.record_key \
+             JOIN collections c ON c.collection_id = m.collection_id WHERE c.tenant_key <> f.tenant_key"
+        ),
+        0,
+        "a finding cites a mailbox of another tenant"
+    );
     assert_eq!(
         count(&case, "SELECT count(DISTINCT tenant_key) FROM collections"),
         2

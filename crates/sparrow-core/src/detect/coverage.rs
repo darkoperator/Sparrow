@@ -42,6 +42,22 @@ pub struct RuleDef<C = String, S = String> {
     pub evidence_all_of: Vec<Vec<String>>,
     pub positives: Vec<S>,
     pub lookalikes: Vec<S>,
+    /// Look-alike kinds (also in `lookalikes`) that deliver both evidence halves of a
+    /// correlated rule but fail its time or actor condition.
+    #[serde(default = "Vec::new")]
+    pub correlation_negatives: Vec<S>,
+    /// Kinds whose records a finding of this rule may cite without an expected `hit`.
+    #[serde(default = "Vec::new")]
+    pub baseline_allow: Vec<BaselineAllow>,
+}
+
+/// One documented exception to the detection gate's baseline rule.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BaselineAllow {
+    /// A storyline kind, or `baseline` for background activity no storyline produced.
+    pub kind: String,
+    pub reason: String,
 }
 
 /// The whole file.
