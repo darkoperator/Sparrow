@@ -46,7 +46,7 @@ fn an_external_file_overrides_by_id_and_adds_new_ids() {
     .unwrap();
     let dirs = DataDirs {
         data: Some(dir.path().to_path_buf()),
-        rules: None,
+        rules: Vec::new(),
     };
     let caps = capabilities(&dirs).unwrap();
     let std_ = caps.iter().find(|c| c.id == "ual_standard").unwrap();
@@ -68,7 +68,7 @@ fn a_bad_external_file_names_the_file() {
     .unwrap();
     let err = capabilities(&DataDirs {
         data: Some(dir.path().to_path_buf()),
-        rules: None,
+        rules: Vec::new(),
     })
     .unwrap_err()
     .to_string();

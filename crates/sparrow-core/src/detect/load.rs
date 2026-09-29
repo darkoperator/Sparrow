@@ -1,0 +1,257 @@
+//! Loading the built-in and custom rules and lists (spec §8.1, Addendum C.2). Built-ins are
+//! embedded by `build.rs`; every directory in `DataDirs::rules` is then overlaid in order.
+
+use crate::data::DataDirs;
+use crate::detect::rule::Rule;
+use crate::{Error, Result};
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+
+include!(concat!(env!("OUT_DIR"), "/builtin_rules.rs"));
+
+#[derive(Debug, Clone)]
+pub struct LoadedRule {
+    pub rule: Rule,
+    /// `builtin:hawk/SPW-HAWK-011.yaml` for an embedded rule, else the file path.
+    pub path: String,
+    /// Hex SHA-256 of the normalized rule plus every static list it references.
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuleSet {
+    /// Sorted by rule id.
+    pub rules: Vec<LoadedRule>,
+    /// Resolved static lists by name (`hosting_asns` included).
+    pub lists: BTreeMap<String, Vec<String>>,
+    pub warnings: Vec<String>,
+}
+
+/// The shape of `rules/lists/<name>.yaml` other than `hosting_asns`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListFile {
+    name: String,
+    description: String,
+    #[serde(default)]
+    case_sensitive: bool,
+    values: Vec<String>,
+}
+
+/// `rules/lists/hosting_asns.yaml` has its own shape (shared with `data::hosting_asns`).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostingAsnsListFile {
+    version: u32,
+    asns: Vec<HostingAsnListEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostingAsnListEntry {
+    asn: u32,
+    name: String,
+    kind: String,
+}
+
+fn parse_yaml<T: for<'de> Deserialize<'de>>(text: &str, origin: &str) -> Result<T> {
+    serde_norway::from_str(text).map_err(|e| Error::Invalid(format!("{origin}: {e}")))
+}
+
+/// Flatten one list file into `(name, values)`. `stem` is the file name without `.yaml`; a
+/// `hosting_asns` file is parsed in its own shape and yields the ASN numbers as strings.
+fn parse_list(text: &str, origin: &str, stem: &str) -> Result<(String, Vec<String>)> {
+    if stem == "hosting_asns" {
+        let f: HostingAsnsListFile = parse_yaml(text, origin)?;
+        if f.version != 1 {
+            return Err(Error::Invalid(format!(
+                "{origin}: unsupported version {}",
+                f.version
+            )));
+        }
+        let mut values = Vec::with_capacity(f.asns.len());
+        for a in &f.asns {
+            if a.name.trim().is_empty() || a.kind.trim().is_empty() {
+                return Err(Error::Invalid(format!(
+                    "{origin}: ASN {} needs a name and a kind",
+                    a.asn
+                )));
+            }
+            values.push(a.asn.to_string());
+        }
+        return Ok(("hosting_asns".to_string(), values));
+    }
+    let f: ListFile = parse_yaml(text, origin)?;
+    if f.description.trim().is_empty() {
+        return Err(Error::Invalid(format!(
+            "{origin}: list {:?} needs a description",
+            f.name
+        )));
+    }
+    // The flag is part of the list format; comparison case is resolved by the compiler (Task 2).
+    let _ = f.case_sensitive;
+    Ok((f.name, f.values))
+}
+
+fn yaml_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| Error::Invalid(format!("{}: {e}", dir.display())))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| Error::Invalid(format!("{}: {e}", dir.display())))?;
+        let path = entry.path();
+        if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("yaml") {
+            out.push(path);
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// The built-in lists, overlaid by `<dir>/lists/*.yaml` of each rule directory in order.
+fn load_lists(dirs: &DataDirs) -> Result<BTreeMap<String, Vec<String>>> {
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (rel, text) in BUILTIN_LISTS {
+        let origin = format!("built-in rules/{rel}");
+        let stem = rel
+            .rsplit('/')
+            .next()
+            .unwrap_or(rel)
+            .trim_end_matches(".yaml");
+        let (name, values) = parse_list(text, &origin, stem)?;
+        out.insert(name, values);
+    }
+    for dir in &dirs.rules {
+        let lists = dir.join("lists");
+        if !lists.is_dir() {
+            continue;
+        }
+        for path in yaml_files(&lists)? {
+            let text = std::fs::read_to_string(&path)
+                .map_err(|e| Error::Invalid(format!("{}: {e}", path.display())))?;
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let (name, values) = parse_list(&text, &path.display().to_string(), stem)?;
+            out.insert(name, values);
+        }
+    }
+    Ok(out)
+}
+
+/// `**/SPW-*.yaml` and `**/*.rule.yaml` under a custom rule directory, sorted.
+fn custom_rule_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    for entry in walkdir::WalkDir::new(dir) {
+        let entry = entry.map_err(|e| Error::Invalid(format!("{}: {e}", dir.display())))?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy();
+        if (name.starts_with("SPW-") && name.ends_with(".yaml")) || name.ends_with(".rule.yaml") {
+            out.push(entry.into_path());
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Built-in rules, overlaid by every `DataDirs::rules` directory in order (a custom rule with a
+/// built-in id replaces it and warns).
+pub fn load_rules(dirs: &DataDirs) -> Result<RuleSet> {
+    let lists = load_lists(dirs)?;
+    let mut by_id: BTreeMap<String, LoadedRule> = BTreeMap::new();
+    let mut warnings = Vec::new();
+
+    for (rel, text) in BUILTIN_RULES {
+        let origin = format!("built-in rules/{rel}");
+        let rule: Rule = parse_yaml(text, &origin)?;
+        let sha256 = rule_sha256(&rule, &lists);
+        by_id.insert(
+            rule.id.clone(),
+            LoadedRule {
+                rule,
+                path: format!("builtin:{rel}"),
+                sha256,
+            },
+        );
+    }
+
+    for dir in &dirs.rules {
+        for path in custom_rule_files(dir)? {
+            let text = std::fs::read_to_string(&path)
+                .map_err(|e| Error::Invalid(format!("{}: {e}", path.display())))?;
+            let rule: Rule = parse_yaml(&text, &path.display().to_string())?;
+            if by_id
+                .get(&rule.id)
+                .is_some_and(|e| e.path.starts_with("builtin:"))
+            {
+                warnings.push(format!(
+                    "custom rule {} replaces the built-in rule",
+                    rule.id
+                ));
+            }
+            let sha256 = rule_sha256(&rule, &lists);
+            by_id.insert(
+                rule.id.clone(),
+                LoadedRule {
+                    rule,
+                    path: path.display().to_string(),
+                    sha256,
+                },
+            );
+        }
+    }
+
+    Ok(RuleSet {
+        rules: by_id.into_values().collect(),
+        lists,
+        warnings,
+    })
+}
+
+/// Hex SHA-256 over the normalized rule (its serde JSON) followed by every referenced static list
+/// (`name \n value \n ...`, both sorted). Editing a list is therefore a rule change.
+pub fn rule_sha256(rule: &Rule, lists: &BTreeMap<String, Vec<String>>) -> String {
+    let value = serde_json::to_value(rule).expect("a rule serializes to JSON");
+    let mut refs = BTreeSet::new();
+    collect_list_refs(&value, &mut refs);
+
+    let mut hasher = Sha256::new();
+    hasher.update(serde_json::to_vec(rule).expect("a rule serializes to JSON"));
+    for name in refs {
+        let Some(values) = lists.get(&name) else {
+            continue;
+        };
+        hasher.update(name.as_bytes());
+        hasher.update(b"\n");
+        let mut sorted: Vec<&str> = values.iter().map(String::as_str).collect();
+        sorted.sort_unstable();
+        for value in sorted {
+            hasher.update(value.as_bytes());
+            hasher.update(b"\n");
+        }
+    }
+    hex::encode(hasher.finalize())
+}
+
+fn collect_list_refs(value: &serde_json::Value, out: &mut BTreeSet<String>) {
+    match value {
+        serde_json::Value::String(s) => {
+            if let Some(name) = s.strip_prefix("@list:") {
+                out.insert(name.to_string());
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_list_refs(item, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for item in map.values() {
+                collect_list_refs(item, out);
+            }
+        }
+        _ => {}
+    }
+}

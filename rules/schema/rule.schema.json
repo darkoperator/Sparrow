@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sparrow.invalid/rules/schema/rule.schema.json",
+  "title": "Sparrow detection rule",
+  "description": "Editor autocomplete and validation for rules/<category>/<id>.yaml. The typed serde model in sparrow_core::detect::rule is authoritative; lint also checks semantics.",
+  "type": "object",
+  "required": ["id", "title", "version", "status", "severity", "analyst_guidance", "tests"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^SPW-[A-Z]+-[0-9]{3}$" },
+    "title": { "type": "string" },
+    "version": { "type": "integer", "minimum": 1 },
+    "status": { "enum": ["experimental", "stable", "deprecated"] },
+    "severity": { "enum": ["info", "low", "medium", "high", "critical"] },
+    "confidence": { "type": "string" },
+    "mitre": { "type": "array", "items": { "type": "string" } },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "requires": { "type": "array", "items": { "type": "string" }, "description": "Capability ids." },
+    "requires_evidence": { "type": "array", "items": { "type": "string" } },
+    "source": { "type": "string", "description": "Hit table of a single-source match rule." },
+    "match": { "$ref": "#/$defs/cond" },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/sourceMatch" },
+      "description": "Union of per-table match arms."
+    },
+    "sql": { "type": "string", "description": "One SELECT; must reference $tenant." },
+    "group_by": { "type": "array", "items": { "type": "string" } },
+    "threshold": { "$ref": "#/$defs/threshold" },
+    "analyst_guidance": { "type": "string" },
+    "false_positives": { "type": "array", "items": { "type": "string" } },
+    "references": { "type": "array", "items": { "type": "string" } },
+    "author": { "type": "string" },
+    "tests": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/ruleTest" } }
+  },
+  "$defs": {
+    "sourceMatch": {
+      "type": "object",
+      "required": ["source", "match"],
+      "properties": {
+        "source": { "type": "string" },
+        "match": { "$ref": "#/$defs/cond" }
+      }
+    },
+    "cond": {
+      "description": "all / any / not, or one field: {op: value} leaf.",
+      "oneOf": [
+        { "type": "object", "required": ["all"], "properties": { "all": { "type": "array", "items": { "$ref": "#/$defs/cond" } } } },
+        { "type": "object", "required": ["any"], "properties": { "any": { "type": "array", "items": { "$ref": "#/$defs/cond" } } } },
+        { "type": "object", "required": ["not"], "properties": { "not": { "$ref": "#/$defs/cond" } } },
+        {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": { "$ref": "#/$defs/op" }
+          }
+        }
+      ]
+    },
+    "op": {
+      "type": "object",
+      "description": "One operator per leaf.",
+      "minProperties": 1,
+      "maxProperties": 1,
+      "additionalProperties": true,
+      "propertyNames": {
+        "enum": [
+          "eq", "neq", "in", "contains", "contains_any", "startswith", "endswith",
+          "regex", "cidr", "gt", "gte", "lt", "lte", "exists", "eq_field", "neq_field"
+        ]
+      }
+    },
+    "threshold": {
+      "type": "object",
+      "required": ["group_by", "window", "count"],
+      "properties": {
+        "group_by": { "type": "array", "items": { "type": "string" } },
+        "window": { "type": "string", "pattern": "^[0-9]+(m|h|d)$" },
+        "count": { "type": "string", "pattern": "^(>=|>|=) ?[0-9]+$" }
+      }
+    },
+    "ruleTest": {
+      "type": "object",
+      "required": ["name", "records", "expect_hits"],
+      "properties": {
+        "name": { "type": "string" },
+        "records": { "type": "array", "items": { "type": "object" } },
+        "expect_hits": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

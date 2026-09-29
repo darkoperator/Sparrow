@@ -1,0 +1,42 @@
+# SPW-HAWK-011 — Hawk H13 parity. Logic source: coverage.yaml
+# ("mailboxes row (as collected) with forwarding_smtp_address or forwarding_address set").
+id: SPW-HAWK-011
+title: Mailbox forwarding configured
+version: 1
+status: stable
+severity: medium
+confidence: medium
+mitre: [T1114.003]
+tags: [bec, forwarding]
+requires: []
+requires_evidence: []
+source: mailboxes
+match:
+  any:
+    - forwarding_smtp_address: {exists: true}
+    - forwarding_address: {exists: true}
+group_by: [actor_upn]
+analyst_guidance: |
+  Confirm the forwarding target is expected (a user delegate, a migration artefact) rather
+  than an attacker redirecting mail. Check the mailbox's inbox rules and the owner's sign-ins
+  around the change, and whether mail was forwarded outside the tenant.
+false_positives:
+  - Legitimate forwarding to another internal mailbox.
+  - Migration or tenant-to-tenant forwarding left in place.
+references:
+  - https://learn.microsoft.com/en-us/purview/audit-log-activities
+author: Sparrow
+tests:
+  - name: mailbox forwards mail to an external address
+    records:
+      - table: mailboxes
+        upn: alice@contoso.example
+        forwarding_smtp_address: external@example.net
+    expect_hits: 1
+  - name: forwarding was removed
+    records:
+      - table: mailboxes
+        upn: bob@contoso.example
+        forwarding_smtp_address: ""
+        forwarding_address: ""
+    expect_hits: 0

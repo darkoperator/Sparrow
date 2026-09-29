@@ -56,9 +56,9 @@ enum Command {
         /// Directory overriding the embedded data files (capabilities.yaml, ...); default $SPARROW_DATA
         #[arg(long)]
         data: Option<PathBuf>,
-        /// Directory overriding the embedded rule lists (lists/hosting_asns.yaml); default $SPARROW_RULES
+        /// Rule directory (repeatable); replaces embedded rules/lists by id; default $SPARROW_RULES
         #[arg(long)]
-        rules: Option<PathBuf>,
+        rules: Vec<PathBuf>,
         /// Folder with MaxMind GeoLite2 City / ASN .mmdb files for IP enrichment
         #[arg(long)]
         geoip_dir: Option<PathBuf>,
@@ -70,7 +70,7 @@ enum Command {
         #[arg(long)]
         data: Option<PathBuf>,
         #[arg(long)]
-        rules: Option<PathBuf>,
+        rules: Vec<PathBuf>,
         #[arg(long)]
         geoip_dir: Option<PathBuf>,
     },

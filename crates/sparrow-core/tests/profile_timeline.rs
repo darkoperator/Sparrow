@@ -305,7 +305,7 @@ fn catalog_override_changes_a_category() {
     let opts = ProfileOptions {
         dirs: DataDirs {
             data: Some(data_dir.path().to_path_buf()),
-            rules: None,
+            rules: Vec::new(),
         },
         ..Default::default()
     };
@@ -337,7 +337,7 @@ fn catalog_override_workload_matches_case_insensitively() {
     let opts = ProfileOptions {
         dirs: DataDirs {
             data: Some(data_dir.path().to_path_buf()),
-            rules: None,
+            rules: Vec::new(),
         },
         ..Default::default()
     };

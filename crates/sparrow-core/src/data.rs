@@ -1,7 +1,7 @@
 //! Embedded data files (`data/`, `rules/lists/`) and their external overrides (spec §2, §13):
 //! built-ins are compiled in; `--data DIR` / `SPARROW_DATA` (and `--rules DIR` /
 //! `SPARROW_RULES` for `lists/`) supply files of the same name that replace built-in entries
-//! by id or add new ones.
+//! by id or add new ones. `--rules` / `SPARROW_RULES` may name several directories.
 
 use crate::{Error, Result};
 use serde::Deserialize;
@@ -15,25 +15,35 @@ const OPERATION_CATALOG: &str = include_str!("../../../data/operation_catalog.ya
 #[derive(Debug, Clone, Default)]
 pub struct DataDirs {
     pub data: Option<PathBuf>,
-    pub rules: Option<PathBuf>,
+    /// Rule directories, in load order: built-ins first, then each directory here (later
+    /// directories replace earlier entries by id). Empty means only the built-in rules and lists.
+    pub rules: Vec<PathBuf>,
 }
 
 impl DataDirs {
-    /// `SPARROW_DATA` / `SPARROW_RULES`.
+    /// `SPARROW_DATA` / `SPARROW_RULES` (the latter split on the platform path separator).
     pub fn from_env() -> DataDirs {
-        DataDirs::with_env_fallback(None, None)
+        DataDirs::with_env_fallback(None, Vec::new())
     }
 
     /// Explicit directories (CLI flags) win over the environment.
-    pub fn with_env_fallback(data: Option<PathBuf>, rules: Option<PathBuf>) -> DataDirs {
+    pub fn with_env_fallback(data: Option<PathBuf>, rules: Vec<PathBuf>) -> DataDirs {
         let env = |k: &str| {
             std::env::var_os(k)
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from)
         };
+        let rules = if rules.is_empty() {
+            std::env::var_os("SPARROW_RULES")
+                .filter(|v| !v.is_empty())
+                .map(|v| std::env::split_paths(&v).collect())
+                .unwrap_or_default()
+        } else {
+            rules
+        };
         DataDirs {
             data: data.or_else(|| env("SPARROW_DATA")),
-            rules: rules.or_else(|| env("SPARROW_RULES")),
+            rules,
         }
     }
 }
@@ -223,17 +233,22 @@ fn hosting_asns_file(text: &str, name: &str) -> Result<Vec<HostingAsn>> {
 }
 
 /// Hosting/cloud/VPS autonomous systems (spec §5.3 `ip_intel.is_hosting`): built-in, overlaid by
-/// `<rules>/lists/hosting_asns.yaml` (entries replace built-ins by `asn`).
+/// `<rules>/lists/hosting_asns.yaml` (entries replace built-ins by `asn`). Several rule
+/// directories apply in order, so a later directory wins.
 pub fn hosting_asns(dirs: &DataDirs) -> Result<Vec<HostingAsn>> {
-    let base = hosting_asns_file(HOSTING_ASNS, "built-in rules/lists/hosting_asns.yaml")?;
-    match read_overlay(dirs.rules.as_deref(), "lists/hosting_asns.yaml")? {
-        Some((text, path)) => {
-            let name = path.display().to_string();
-            let extra = hosting_asns_file(&text, &name)?;
-            Ok(overlay_by_key(base, extra, |a| a.asn))
+    let mut base = hosting_asns_file(HOSTING_ASNS, "built-in rules/lists/hosting_asns.yaml")?;
+    for dir in &dirs.rules {
+        let path = dir.join("lists/hosting_asns.yaml");
+        if !path.is_file() {
+            continue;
         }
-        None => Ok(base),
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| Error::Invalid(format!("{}: {e}", path.display())))?;
+        let name = path.display().to_string();
+        let extra = hosting_asns_file(&text, &name)?;
+        base = overlay_by_key(base, extra, |a| a.asn);
     }
+    Ok(base)
 }
 
 // Task 9: operation catalog (timeline categories, ATT&CK techniques).

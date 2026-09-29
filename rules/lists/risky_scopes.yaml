@@ -1,0 +1,15 @@
+# Generic public OAuth scope names. No customer data.
+name: risky_scopes
+description: >-
+  Generic public Microsoft Graph and Exchange OAuth scopes that grant mail or file
+  access, used to judge consent grants; contains no customer or capture data.
+values:
+  - Mail.Read
+  - Mail.ReadWrite
+  - Mail.Send
+  - Files.Read.All
+  - Files.ReadWrite.All
+  - offline_access
+  - MailboxSettings.ReadWrite
+  - full_access_as_user
+  - EWS.AccessAsUser.All

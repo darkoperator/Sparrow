@@ -1,0 +1,14 @@
+# Generic public BEC vocabulary: mailbox folders attackers hide mail in or redirect to.
+# No customer data.
+name: hiding_folders
+description: >-
+  Generic public mailbox folder names (RSS Feeds, Conversation History, Archive, ...)
+  that BEC inbox rules move mail into; contains no customer or capture data.
+values:
+  - RSS Feeds
+  - RSS Subscriptions
+  - Conversation History
+  - Archive
+  - Junk Email
+  - Deleted Items
+  - Notes

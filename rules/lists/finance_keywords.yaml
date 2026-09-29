@@ -1,0 +1,21 @@
+# Generic public BEC vocabulary: finance-themed lure wording. No customer data.
+name: finance_keywords
+description: >-
+  Generic public finance and payment terms used in business-email-compromise lures;
+  contains no customer or capture data.
+values:
+  - invoice
+  - payment
+  - wire
+  - bank
+  - remittance
+  - iban
+  - swift
+  - ach
+  - payroll
+  - w-2
+  - w2
+  - tax
+  - refund
+  - purchase order
+  - overdue

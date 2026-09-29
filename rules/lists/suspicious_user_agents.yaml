@@ -1,0 +1,13 @@
+# Generic public HTTP clients and scripted user agents. No customer data.
+name: suspicious_user_agents
+description: >-
+  Generic public user-agent strings (axios, python-requests, curl, ...) typical of
+  scripted or tool-driven sign-ins; contains no customer or capture data.
+values:
+  - axios
+  - python-requests
+  - python-urllib
+  - go-http-client
+  - curl
+  - okhttp
+  - BAV2ROPC
