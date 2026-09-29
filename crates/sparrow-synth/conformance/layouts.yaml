@@ -433,15 +433,18 @@ artifacts:
         de-de: [culture_dmy_de]
   - artifact: hawk.tenant.raw_ual
     collector: hawk
-    source: hawk survey §2b (Hawk 3 admin-audit raw UAL shape, the Hawk 4 files of these names)
+    source: >-
+      hawk survey §2b/§2c (RBAC_Changes and the other admin-audit roll-ups: Hawk 4.0 writes
+      them from Search-UnifiedAuditLog, so the raw-UAL shape; Hawk 3.1 Tenant/RBAC_Changes is
+      the 17-col Search-AdminAuditLog shape, the next entry)
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
-    file_pattern: "(Admin_Inbox_Rules_(?:Creation|Modification|Removal)|Mailbox_Permission_Change|Forwarding_Changes|Domain_Changes_Audit)"
+    file_pattern: "(Admin_Inbox_Rules_(?:Creation|Modification|Removal)|Mailbox_Permission_Change|Forwarding_Changes|Domain_Changes_Audit|RBAC_Changes)"
     columns_required: [RecordType, CreationDate, UserIds, Operations, AuditData, ResultIndex, ResultCount, Identity, IsValid, ObjectState]
   - artifact: hawk.tenant.raw_ual
     collector: hawk
     source: >-
-      hawk survey §2b (Hawk 3.1 Tenant/RBAC_Changes, 17-col Search-AdminAuditLog;
+      hawk survey §2b (Hawk 3.1 only: Tenant/RBAC_Changes, 17-col Search-AdminAuditLog;
       Get-HawkTenantRbacChange.ps1:51-68, :96-99; capture A)
     formats: [csv, json]
     # On Windows PowerShell 5.1 the JSON is UTF-16LE BOM and the CSV UTF-8 BOM; on 7 both are

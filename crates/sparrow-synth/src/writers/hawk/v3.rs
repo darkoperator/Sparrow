@@ -162,13 +162,14 @@ fn impersonation(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         world,
         role,
         IMPERSONATION_DEFAULT_GROUP,
+        world.tenant.created,
     )];
     for a in world
         .roles
         .iter()
         .filter(|a| a.role == "Exchange Administrator")
     {
-        let mut row = tenant::role_assignment(world, role, &a.principal);
+        let mut row = tenant::role_assignment(world, role, &a.principal, world.tenant.created);
         for (k, v) in row.iter_mut() {
             match k.as_str() {
                 "RoleAssigneeType" => *v = s("User"),

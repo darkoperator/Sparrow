@@ -18,6 +18,7 @@ use crate::ual::{self, ItemRef};
 use crate::world::{Location, RiskyUser, User, World};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc, Weekday};
 use serde_json::json;
+use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv6Addr};
 use uuid::Uuid;
 
@@ -179,29 +180,6 @@ pub fn work_window(w: &World, user: &User, date: NaiveDate) -> (DateTime<Utc>, D
     }
 }
 
-/// The day of the window on which the tenant's role assignments are created: the `i`-th
-/// weekday of the window, for the `i`-th built-in role assignment.
-///
-/// A real tenant creates each assignment once - the cmdlet fails on a duplicate - so each
-/// identity gets exactly one day, a pure function of its index. That keeps it independent of
-/// the order the days are generated in (and of any cross-day state), and a 90-day window
-/// yields one record per built-in role assignment, inside the survey's 1-35 records per file
-/// (2026-09-24-hawk-capture-survey.md:59).
-fn role_assignment_day(w: &World, i: usize) -> NaiveDate {
-    let start = w.window_start().date_naive();
-    let mut d = start;
-    let mut seen = 0usize;
-    loop {
-        if !is_weekend(d) {
-            if seen == i {
-                return d;
-            }
-            seen += 1;
-        }
-        d += Duration::days(1);
-    }
-}
-
 /// A whole-second time in `[a, b)` (`a` when the range is empty).
 fn rand_time(rng: &mut Rng, a: DateTime<Utc>, b: DateTime<Utc>) -> DateTime<Utc> {
     let span = (b - a).num_seconds();
@@ -264,6 +242,28 @@ impl Apps {
 enum Outcome {
     Ok,
     Failed(i64),
+}
+
+fn external_ip(rng: &mut Rng, block: u16) -> IpAddr {
+    IpAddr::V6(Ipv6Addr::new(
+        0x2001,
+        0x0db8,
+        block,
+        0,
+        0,
+        0,
+        0,
+        rng.range(1, 250) as u16,
+    ))
+}
+
+/// The folder a delivered message lands in: a `Move to folder` inbox rule on the sender wins.
+fn delivery_folder(w: &World, mailbox: &str, sender: &str) -> String {
+    w.inbox_rules
+        .iter()
+        .find(|r| r.mailbox == mailbox && r.enabled && r.from.iter().any(|f| f == sender))
+        .and_then(|r| r.move_to_folder.as_ref())
+        .map_or_else(|| "\\Inbox".to_string(), |f| format!("\\{f}"))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -365,26 +365,11 @@ fn signin(
     }
 }
 
-fn external_ip(rng: &mut Rng, block: u16) -> IpAddr {
-    IpAddr::V6(Ipv6Addr::new(
-        0x2001,
-        0x0db8,
-        block,
-        0,
-        0,
-        0,
-        0,
-        rng.range(1, 250) as u16,
-    ))
-}
-
-/// The folder a delivered message lands in: a `Move to folder` inbox rule on the sender wins.
-fn delivery_folder(w: &World, mailbox: &str, sender: &str) -> String {
-    w.inbox_rules
+/// The custom role assignment the baseline logs, if the world has one.
+fn custom_role_assignment(w: &World) -> Option<&crate::world::ExchangeRoleAssignment> {
+    w.exchange_role_assignments
         .iter()
-        .find(|r| r.mailbox == mailbox && r.enabled && r.from.iter().any(|f| f == sender))
-        .and_then(|r| r.move_to_folder.as_ref())
-        .map_or_else(|| "\\Inbox".to_string(), |f| format!("\\{f}"))
+        .find(|a| a.group == crate::world::CUSTOM_ROLE_GROUP)
 }
 
 /// The baseline events of UTC day `date` (deterministic per date).
@@ -835,32 +820,46 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
         }
     }
 
-    // A tenant admin creates the built-in eDiscovery role assignments, one per identity on
-    // its own day. A real tenant cannot create the same assignment twice - the cmdlet fails on
-    // a duplicate - so each identity is created at most once per tree; the day is a pure
-    // function of the identity's index, so this holds whatever order the days are generated
-    // in and needs no cross-day state. This is the RBAC cmdlet the real Hawk 3.1 captures
-    // record in `Tenant/RBAC_Changes` (`Get-HawkTenantRbacChange.ps1:51-68` lists the 16 RBAC
-    // cmdlets, :96-99 writes them; survey:59 records `New-ManagementRoleAssignment` there),
-    // and that 17-column Search-AdminAuditLog file is the only 17-column shape the
-    // `hawk.tenant.raw_ual` artifact ever carries. One record per built-in role assignment
-    // keeps the cmdlet, the `EDiscoveryRoleAssignments` state and the RBAC log in agreement,
-    // and lands inside the survey's 1-35 records per file. Neither SPW-ID-010 nor
-    // SPW-HAWK-001 reads RBAC cmdlets, so this is detection-neutral.
-    if !w.exchange_role_assignments.is_empty()
-        && !is_weekend(date)
-        && w.audit.admin_audit_log_enabled
-        && let Some(admin) = w.admins.first()
+    // A tenant admin creates ONE new custom eDiscovery role assignment (Mailbox Search to a
+    // legal role group). The built-in assignments already exist - their
+    // `EDiscoveryRoleAssignments` rows say `WhenCreated = tenant.created` - so the admin audit
+    // log never claims to have created them. This is the RBAC cmdlet the real Hawk 3.1
+    // captures record in `Tenant/RBAC_Changes` (`Get-HawkTenantRbacChange.ps1:51-68` lists the
+    // 16 RBAC cmdlets, :96-99 writes them; survey:59 records `New-ManagementRoleAssignment`
+    // there), and that 17-column Search-AdminAuditLog file is the only 17-column shape the
+    // `hawk.tenant.raw_ual` artifact ever carries.
+    //
+    // It runs on the custom assignment's own day (`World::exchange_role_assignments` carries it
+    // with that time, so the state and the log agree), spread over the window by seed, and
+    // reuses the session and client address of an admin who signed in that day. Only
+    // `Mailbox Search` is granted: `Mailbox Import Export` is a BEC / persistence step a future
+    // rule would flag, so the baseline stays clear of it. Neither SPW-ID-010 nor SPW-HAWK-001
+    // reads RBAC cmdlets, so this is detection-neutral.
+    if w.audit.admin_audit_log_enabled
+        && let Some(assign) = custom_role_assignment(w)
+        && assign.created.date_naive() == date
     {
-        for (i, assign) in w.exchange_role_assignments.iter().enumerate() {
-            if role_assignment_day(w, i) != date {
-                continue;
-            }
-            let mut rng = stream(w.seed, &format!("rbac/{}/{i}", assign.group));
-            let t = day_start(date) + Duration::hours(9) + Duration::minutes(rng.below(180) as i64);
-            let session = rng.uuid();
+        let admin_ids: BTreeSet<&str> = w.admins.iter().map(|a| a.upn.as_str()).collect();
+        // The sign-ins of this day are already built. The change is stamped with the admin's
+        // own first sign-in that day, so the record and the sign-in share a session and a
+        // client address (and the time is never before the admin actually arrived).
+        let signin = signins
+            .iter()
+            .filter(|s| admin_ids.contains(s.user.as_str()))
+            .min_by_key(|s| s.time);
+        if let (Some(admin), Some(signin)) = (w.admins.first(), signin) {
+            // The state says the assignment was created at `assign.created`; the log stamps
+            // exactly that instant, and reuses the admin's own session and address from the
+            // nearest sign-in of that day.
+            let t = assign.created;
+            let signin = signins
+                .iter()
+                .filter(|s| admin_ids.contains(s.user.as_str()))
+                .min_by_key(|s| (s.time - t).num_seconds().abs())
+                .unwrap_or(signin);
             if ual_logged(w, t) {
                 let identity = format!("{}-{}", assign.role, assign.group);
+                let mut rng = stream(w.seed, "rbac/custom");
                 ual_out.push(ual::exchange_admin(
                     w,
                     &mut rng,
@@ -874,8 +873,8 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
                         ("RoleGroup", assign.group.as_str()),
                         ("AssignmentMethod", "Direct"),
                     ],
-                    admin.office_ip,
-                    session,
+                    signin.ip,
+                    signin.session_id,
                 ));
             }
         }

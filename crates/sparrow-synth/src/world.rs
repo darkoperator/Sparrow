@@ -14,7 +14,7 @@ use crate::profiles::{AuditProfile, LicenceProfile, audit_profile, licence_profi
 use crate::reserved::{IpAllocator, Net, WELL_KNOWN_GUIDS};
 use crate::rng::{Rng, stream};
 use crate::scenario::Scenario;
-use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc, Weekday};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
@@ -154,7 +154,14 @@ impl World {
         let mobile_devices = build_mobile_devices(scenario, seed, &users);
         let transport_rules = build_transport_rules(scenario, seed, &admins);
         let remote_domains = build_remote_domains(&tenant);
-        let exchange_role_assignments = build_exchange_role_assignments();
+        let mut exchange_role_assignments = build_exchange_role_assignments(&tenant);
+        // The one custom assignment the benign baseline logs, so the state carries it with the
+        // time of its own `New-ManagementRoleAssignment` record.
+        exchange_role_assignments.push(custom_role_assignment(
+            seed,
+            scenario.window.start,
+            scenario.window.days,
+        ));
         let secure_score = build_secure_score();
         let alerts = build_alerts(scenario, seed, &tenant, &users);
         let azure = build_azure(scenario, seed, &tenant, &users, &admins);
@@ -922,6 +929,10 @@ pub struct RemoteDomain {
 pub struct ExchangeRoleAssignment {
     pub role: String,
     pub group: String,
+    /// When the assignment was created. A built-in assignment dates from the tenant, so the
+    /// RBAC log can never claim to have created it; a custom assignment carries the time of
+    /// its own `New-ManagementRoleAssignment` record.
+    pub created: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
@@ -2163,10 +2174,15 @@ fn build_remote_domains(tenant: &Tenant) -> Vec<RemoteDomain> {
     ]
 }
 
-/// The built-in eDiscovery role assignments the survey saw (3–6 records): the `Mailbox Search`
-/// and `Mailbox Import Export` management roles assigned to the Discovery Management,
-/// eDiscovery Manager and eDiscovery Reviewer role groups.
-fn build_exchange_role_assignments() -> Vec<ExchangeRoleAssignment> {
+/// The eDiscovery role assignments the survey saw in `EDiscoveryRoleAssignments` (3-6
+/// records): the `Mailbox Search` and `Mailbox Import Export` management roles assigned to the
+/// Discovery Management, eDiscovery Manager and eDiscovery Reviewer role groups.
+///
+/// These are all built-in assignments, created with the tenant, so the admin audit log never
+/// claims to have created them. The one custom assignment the baseline logs
+/// (`New-ManagementRoleAssignment`) is added to this list by `World::build` with its own
+/// creation time, so the state and the log agree.
+fn build_exchange_role_assignments(tenant: &Tenant) -> Vec<ExchangeRoleAssignment> {
     [
         ("Mailbox Search", "Discovery Management"),
         ("Mailbox Search", "eDiscovery Manager"),
@@ -2176,8 +2192,43 @@ fn build_exchange_role_assignments() -> Vec<ExchangeRoleAssignment> {
     .map(|(role, group)| ExchangeRoleAssignment {
         role: role.to_string(),
         group: group.to_string(),
+        created: tenant.created,
     })
     .collect()
+}
+
+/// The custom assignment the benign baseline creates: `Mailbox Search` to a neutral legal
+/// role group, in a window taken from the seed so it is not clustered on the first weekdays of
+/// every tree. Only `Mailbox Search` - granting `Mailbox Import Export` is a BEC / persistence
+/// step a future rule would flag, so the baseline stays clear of it.
+pub const CUSTOM_ROLE_GROUP: &str = "Legal Discovery";
+
+/// The custom role assignment's creation time: the `new_day`th weekday of the window, chosen
+/// by the seed.
+fn custom_role_assignment(
+    w_seed: u64,
+    window_start: DateTime<Utc>,
+    window_days: u32,
+) -> ExchangeRoleAssignment {
+    let start = window_start.date_naive();
+    let days = window_days as i64;
+    let mut rng = crate::rng::stream(w_seed, "rbac/customday");
+    let span = days.max(1);
+    let offset = (rng.below(span as u64) as i64) % span;
+    let mut d = start + Duration::days(offset);
+    while is_weekday_free(d) {
+        d += Duration::days(1);
+    }
+    ExchangeRoleAssignment {
+        role: "Mailbox Search".to_string(),
+        group: CUSTOM_ROLE_GROUP.to_string(),
+        created: d.and_hms_opt(11, 30, 0).unwrap_or_default().and_utc(),
+    }
+}
+
+/// Whether `d` is a weekend (a setup step happens on a working day).
+fn is_weekday_free(d: NaiveDate) -> bool {
+    matches!(d.weekday(), Weekday::Sat | Weekday::Sun)
 }
 
 #[allow(clippy::too_many_arguments)]

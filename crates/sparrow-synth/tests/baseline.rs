@@ -338,42 +338,155 @@ fn sts_logon_session_properties_are_typed_like_the_real_records() {
     );
 }
 
-/// A real tenant cannot create the same role assignment twice: the cmdlet fails on a
-/// duplicate, so a tree must not log the same identity twice. Each of the world's built-in
-/// role assignments is created at most once per tree.
+/// Every `New-ManagementRoleAssignment` the baseline logs, as (identity, role, group, time,
+/// session).
+fn rbac_assignments(w: &World) -> Vec<(String, String, String, DateTime<Utc>, String)> {
+    let mut out = Vec::new();
+    let mut d = w.window_start().date_naive();
+    while d < w.window_end().date_naive() {
+        for u in &day(w, d).ual {
+            if u.operation != "New-ManagementRoleAssignment" {
+                continue;
+            }
+            let param = |n: &str| -> String {
+                u.audit["Parameters"]
+                    .as_array()
+                    .and_then(|ps| {
+                        ps.iter()
+                            .find(|p| p["Name"] == n)
+                            .map(|p| p["Value"].as_str().unwrap_or_default().to_string())
+                    })
+                    .unwrap_or_default()
+            };
+            out.push((
+                u.audit["ObjectId"].as_str().unwrap_or_default().to_string(),
+                param("Role"),
+                param("RoleGroup"),
+                u.time,
+                u.audit["SessionId"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+            ));
+        }
+        d += Duration::days(1);
+    }
+    out
+}
+
+/// A built-in role assignment already exists in the tenant (its `EDiscoveryRoleAssignments`
+/// row says `WhenCreated = tenant.created`), so logging its creation would be impossible. The
+/// baseline logs one new CUSTOM assignment instead, and it never logs a built-in.
 #[test]
-fn each_role_assignment_is_created_at_most_once() {
+fn the_baseline_rbac_change_is_a_new_custom_assignment() {
     for name in sparrow_synth::scenario::builtin_names()
         .iter()
         .filter(|n| **n != "volume")
     {
         for seed in [1u64, 7, 42] {
             let world = World::build(&load(name).unwrap(), seed).unwrap();
-            let mut d = world.window_start().date_naive();
-            let mut seen: BTreeMap<String, NaiveDate> = BTreeMap::new();
-            let mut total = 0usize;
-            while d < world.window_end().date_naive() {
-                for u in &day(&world, d).ual {
-                    if u.operation != "New-ManagementRoleAssignment" {
-                        continue;
-                    }
-                    total += 1;
-                    let identity = u.audit["ObjectId"].as_str().unwrap_or_default().to_string();
-                    assert!(
-                        seen.insert(identity.clone(), d).is_none(),
-                        "{name} seed {seed}: {identity} created twice ({:?} and {d})",
-                        seen.get(&identity)
-                    );
-                }
-                d += Duration::days(1);
+            let logged = rbac_assignments(&world);
+            assert!(!logged.is_empty(), "{name} seed {seed}: no RBAC change");
+            // The built-ins are the assignments that predate the window; the custom one the
+            // baseline logs is the assignment it creates, so it is not "already there".
+            let built_in: BTreeSet<(&str, &str)> = world
+                .exchange_role_assignments
+                .iter()
+                .filter(|a| a.group != sparrow_synth::world::CUSTOM_ROLE_GROUP)
+                .map(|a| (a.role.as_str(), a.group.as_str()))
+                .collect();
+            for (identity, role, group, _, _) in &logged {
+                assert!(
+                    !built_in.contains(&(role.as_str(), group.as_str())),
+                    "{name} seed {seed}: re-logged the built-in {role}/{group}"
+                );
+                assert!(!identity.is_empty(), "{name} seed {seed}: empty identity");
             }
-            // Not vacuous: the event really is emitted, and never more than once per identity.
-            assert!(total > 0, "{name} seed {seed}: no role assignment at all");
-            assert!(
-                total <= world.exchange_role_assignments.len(),
-                "{name} seed {seed}: {total} records for {} assignments",
-                world.exchange_role_assignments.len()
-            );
+            // The state and the log agree: the world carries the custom assignment with the
+            // creation time the log stamped, and no built-in is ever re-logged.
+            let custom = world
+                .exchange_role_assignments
+                .iter()
+                .find(|a| a.group == sparrow_synth::world::CUSTOM_ROLE_GROUP)
+                .expect("the world has the custom assignment");
+            let logged_custom: Vec<_> = logged
+                .iter()
+                .filter(|(_, role, group, ..)| *role == custom.role && *group == custom.group)
+                .collect();
+            if !logged.is_empty() {
+                assert_eq!(logged_custom.len(), 1, "{name} seed {seed}");
+                assert_eq!(
+                    logged_custom[0].3, custom.created,
+                    "{name} seed {seed}: the log time and the state time differ"
+                );
+            }
+        }
+    }
+}
+
+/// The benign baseline must not assign `Mailbox Import Export`: granting it is a BEC /
+/// persistence step a future rule would flag, so the baseline stays clear of it.
+#[test]
+fn the_baseline_never_assigns_mailbox_import_export() {
+    for name in sparrow_synth::scenario::builtin_names()
+        .iter()
+        .filter(|n| **n != "volume")
+    {
+        for seed in [1u64, 7, 42] {
+            for (_, role, group, _, _) in
+                rbac_assignments(&World::build(&load(name).unwrap(), seed).unwrap())
+            {
+                assert!(
+                    !role.eq_ignore_ascii_case("Mailbox Import Export"),
+                    "{name} seed {seed}: baseline assigned {role} to {group}"
+                );
+            }
+        }
+    }
+}
+
+/// The change lands on a day chosen by the seed, so it is not clustered on the first weekdays
+/// of every window.
+#[test]
+fn the_rbac_change_day_varies_across_seeds() {
+    let mut days = BTreeSet::new();
+    for seed in [1u64, 7, 42, 99, 2024] {
+        let world = World::build(&load("bec-aitm").unwrap(), seed).unwrap();
+        for (_, _, _, t, _) in rbac_assignments(&world) {
+            days.insert(t.date_naive());
+        }
+    }
+    assert!(
+        days.len() > 1,
+        "the RBAC change lands on the same day in every seed: {days:?}"
+    );
+}
+
+/// The change is run by an admin who actually signed in that day: the record reuses that
+/// sign-in's session and client address.
+#[test]
+fn the_rbac_change_reuses_an_admin_sign_in_that_day() {
+    for name in sparrow_synth::scenario::builtin_names()
+        .iter()
+        .filter(|n| **n != "volume")
+    {
+        for seed in [1u64, 7, 42] {
+            let world = World::build(&load(name).unwrap(), seed).unwrap();
+            for (identity, _, _, t, session) in rbac_assignments(&world) {
+                let d = t.date_naive();
+                let admin_ids: BTreeSet<String> =
+                    world.admins.iter().map(|a| a.upn.clone()).collect();
+                let day_events = day(&world, d);
+                let same_day: Vec<&sparrow_synth::events::SignIn> = day_events
+                    .signins
+                    .iter()
+                    .filter(|s| admin_ids.contains(&s.user))
+                    .collect();
+                assert!(
+                    same_day.iter().any(|s| s.session_id.to_string() == session),
+                    "{name} seed {seed}: {identity} has no admin sign-in on {d} with session {session}"
+                );
+            }
         }
     }
 }

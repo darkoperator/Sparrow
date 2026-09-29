@@ -138,6 +138,10 @@ fn tree_digest(dir: &Path) -> String {
 /// Re-recorded by the architect after merging the parallel fidelity lanes (F4a + fixes, F9 part 1,
 /// F3 fix, F4b) onto one branch: each lane had recorded its own value against its own parent, so
 /// the combined tree has a new value. The last single-lane value on this branch was
+///
+/// Re-recorded again for the F3 fix 2: the benign RBAC change is now one new CUSTOM role
+/// assignment at the admin's own sign-in time on a seed-chosen day, so the volume tree's
+/// ExchangeAdmin rows differ. The value after F4 part B was
 /// `92660857d6e02546fe0494fea809d7336e4c5b0bbace901eff9d46cb4175b979`.
 #[test]
 #[ignore = "heavy: run with cargo test --workspace -- --ignored"]

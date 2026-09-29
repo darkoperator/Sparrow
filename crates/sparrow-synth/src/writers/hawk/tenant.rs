@@ -1033,8 +1033,15 @@ pub(super) fn role_entry(world: &World, role: &str, cmdlet: &str, params: &[&str
     row
 }
 
-/// A Get-ManagementRoleAssignment object assigning `role` to role group `group`.
-pub(super) fn role_assignment(world: &World, role: &str, group: &str) -> Row {
+/// A Get-ManagementRoleAssignment object assigning `role` to role group `group`, created at
+/// `created` (a built-in assignment dates from the tenant; a custom one from its own
+/// `New-ManagementRoleAssignment` record, so the state and the log agree).
+pub(super) fn role_assignment(
+    world: &World,
+    role: &str,
+    group: &str,
+    created: DateTime<Utc>,
+) -> Row {
     let name = format!("{role}-{group}");
     let guid = stream(world.seed, &format!("hawk/roleassignment/{name}")).uuid();
     let mut row = vec![
@@ -1080,7 +1087,7 @@ pub(super) fn role_assignment(world: &World, role: &str, group: &str) -> Row {
             Val::Raw(json!(["top", "msExchRoleAssignment"])),
         ),
     ];
-    row.extend(when(world.tenant.created, world.tenant.created));
+    row.extend(when(created, created));
     row.extend([
         r("ExchangeObjectId", s(guid.to_string())),
         r(
@@ -1229,7 +1236,7 @@ pub(super) fn ediscovery_configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> 
     let assignments: Vec<Row> = world
         .exchange_role_assignments
         .iter()
-        .map(|a| role_assignment(world, &a.role, &a.group))
+        .map(|a| role_assignment(world, &a.role, &a.group, a.created))
         .collect();
     c.log().info_v4(format!(
         "Found {} Role Assignments for these Roles",
