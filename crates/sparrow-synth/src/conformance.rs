@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use sparrow_core::discovery::{
     FileFormat, Registry, discover_collections, format_from_path, list_collection_files,
 };
-use sparrow_core::readers::csv_scan::read_csv;
+use sparrow_core::readers::csv_scan::{normalize_headers, read_csv};
 use sparrow_core::readers::json_scan::{JsonShape, scan_json};
 use sparrow_core::readers::text::{TextEncoding, decode};
 use sparrow_core::readers::xlsx::xlsx_headers;
@@ -352,6 +352,11 @@ impl ArtifactProfile {
         *self.formats.entry(format.as_str().to_string()).or_default() += 1;
         if format == FileFormat::Xlsx {
             if let Some(headers) = xlsx_headers(bytes) {
+                // A workbook's header row is cleaned like a CSV header's (the portal sign-in
+                // export spells `Application ID ` and `Autonomous system  number` with the
+                // spaces the CSV carries), so a real workbook and a generated CSV compare
+                // equal. `sparrow_core::parsers::signins` keys its rows the same way.
+                let headers = normalize_headers(headers.iter().map(String::as_str));
                 *self.headers.entry(mask_header(&headers)).or_default() += 1;
             }
             return;

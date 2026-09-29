@@ -120,9 +120,9 @@ fn tree_digest(dir: &Path) -> String {
 /// `0b121ea0ed6234f4c23375c009d0671c3c08712a224c338e4436cd378320a34c`; re-running this same
 /// test at the parent plus the F4 change gives the value below.
 ///
-/// Re-recorded again for the reviewer's F4a findings: the "Stay signed in?" flag now follows a
-/// successful authentication only, and the user answers it either way. The value above was the
-/// F4a commit's.
+/// Re-recorded again for Task F9: the internal mail now holds one subject with a non-ASCII
+/// character ("Re: Café supplies"), so the UAL and message-trace rows of the volume tree change
+/// with it.
 #[test]
 #[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {

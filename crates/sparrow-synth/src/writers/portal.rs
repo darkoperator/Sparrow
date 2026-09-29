@@ -436,13 +436,16 @@ fn trace_row(t: &TraceMsg) -> Vec<String> {
     ]
 }
 
-/// `MTSummary_Message trace report - _<yyyy-MM-ddTHHmmss.fffZ>__<guid>.csv`: UTF-16LE without
-/// BOM, CRLF, every field quoted.
+/// `MTSummary_Message trace report - _<yyyy-MM-ddTHHmmss.fffZ>__<guid>.csv`: the Exchange admin
+/// center's summary download, a Windows-1252 file with CRLF and every field quoted. The captures
+/// read as that encoding (survey §3: A/B are UTF-16LE without a BOM, D is neither valid UTF-8,
+/// UTF-16 nor cp1252 -- an Excel re-save -- so the reader's Windows-1252 fallback is what the
+/// analyst's ingest sees), and a subject with a non-ASCII character exercises it.
 fn write_message_trace(world: &World, trace: &[&TraceMsg], tree: &mut Tree<'_>) -> Result<()> {
     let mut rng = stream(world.seed, "portal/message_trace");
     let ts = world.collected_at().format("%Y-%m-%dT%H%M%S%.3fZ");
     let rel = format!("MTSummary_Message trace report - _{ts}__{}.csv", rng.uuid());
-    let spec = FileSpec::new(&rel, Some("portal.message_trace"), Encoding::Utf16LeNoBom);
+    let spec = FileSpec::new(&rel, Some("portal.message_trace"), Encoding::Cp1252);
     let all_quoted = |fields: &[String]| {
         let mut line = fields
             .iter()

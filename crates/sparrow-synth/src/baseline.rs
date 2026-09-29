@@ -28,6 +28,10 @@ const INTERNAL_SUBJECTS: &[&str] = &[
     "Lunch on Friday?",
     "Re: Budget review",
     "Updated slides",
+    // The one subject with a non-ASCII character: the portal message-trace summary is written
+    // in Windows-1252 (the real download's encoding), so a tree carries a byte the reader has to
+    // decode, and nothing of the case depends on the text.
+    "Re: Café supplies",
 ];
 
 const INCOMING: &[(&str, &str)] = &[

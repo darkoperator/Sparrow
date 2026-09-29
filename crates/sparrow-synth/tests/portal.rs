@@ -67,6 +67,10 @@ fn portal_tree_checks_green() {
     }
 }
 
+/// The Excel export carries the portal's own header spellings (`Application ID `, `Resource
+/// ID `, `Autonomous system  number`), and the sign-in parser keys its rows by the header
+/// cleanup a CSV header gets, so the values behind them are the manifest's: this check is the
+/// value-level proof that both spellings load.
 #[test]
 fn xlsx_signin_export_checks_green() {
     let dir = tempfile::tempdir().unwrap();
@@ -170,14 +174,10 @@ fn portal_files_follow_the_export_encodings() {
             .unwrap()
             .contains(",Autonomous system  number,")
     );
-    // Message trace summary: UTF-16LE without BOM, quoted header, CRLF.
+    // Message trace summary: Windows-1252 (the real download's encoding), quoted header, CRLF.
     let (_, mt) = file("MTSummary_Message trace report - _2026-09-10T141500.000Z__");
-    assert_eq!(&mt[..4], &[b'"', 0, b'o', 0]);
-    let units: Vec<u16> = mt
-        .chunks(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .collect();
-    let text = String::from_utf16(&units).unwrap();
+    assert_eq!(&mt[..4], b"\"ori", "{:?}", &mt[..4]);
+    let text = sparrow_core::readers::text::decode(&mt).text;
     assert!(text.starts_with("\"origin_timestamp_utc\",\"sender_address\",\"recipient_status\""));
     assert!(text.contains("##"));
     assert_eq!(text.matches('\n').count(), text.matches("\r\n").count());
@@ -290,5 +290,102 @@ fn check_reports_hash_count_capability_and_unlisted_sighting_problems() {
             .any(|p| p.contains("nowhere.csv") && p.contains("not in the manifest")),
         "{:#?}",
         r.problems
+    );
+}
+
+/// Task F9.1: the real portal sign-in export writes `Application ID `, `Resource ID ` and
+/// `Autonomous system  number` with their trailing and double spaces, in the CSV and in the
+/// Excel workbook alike. The generator writes those spellings in both, and a profile of either
+/// file cleans its header the same way (trimmed, inner spaces collapsed, a repeated column
+/// suffixed `_2`), so a real capture's workbook and a generated CSV compare equal -- which is
+/// what `conformance --real` compares.
+#[test]
+fn signin_export_headers_clean_the_same_in_csv_and_xlsx() {
+    let headers = |export: SigninExport| {
+        let mut o = opts(3);
+        o.signin_export = export;
+        let dir = tempfile::tempdir().unwrap();
+        generate_to_dir(&load("bec-aitm").unwrap(), &o, dir.path()).unwrap();
+        let p = sparrow_synth::conformance::profile_dir(dir.path()).unwrap();
+        let ap = p
+            .artifacts
+            .get("portal.entra_signins")
+            .expect("portal.entra_signins");
+        ap.headers.keys().cloned().collect::<Vec<Vec<String>>>()
+    };
+    let (csv, xlsx) = (headers(SigninExport::Csv), headers(SigninExport::Xlsx));
+    assert_eq!(csv, xlsx, "the CSV and the workbook clean differently");
+    let header = &csv[0];
+    assert_eq!(header.len(), 57);
+    // The real spellings are in the file, and the profile cleaned them.
+    assert!(
+        header.contains(&"Application ID".to_string())
+            && header.contains(&"Autonomous system number".to_string())
+            && header.contains(&"Resource ID".to_string()),
+        "{header:?}"
+    );
+    assert!(
+        header.contains(&"Incoming token type".to_string())
+            && header.contains(&"Incoming token type_2".to_string()),
+        "{header:?}"
+    );
+}
+
+/// Task F9.2: the Exchange message-trace "summary report" download is a Windows-1252 file (the
+/// real capture reads as that encoding), and a subject with a non-ASCII character exercises the
+/// encoding end to end: the byte is one, the parser decodes it back to the character, and the
+/// stored text is neither mangled nor a replacement character.
+#[test]
+fn message_trace_summary_is_windows_1252_and_decodes_back() {
+    let mut sink = MemSink::default();
+    let m = generate(&load("bec-aitm").unwrap(), &opts(2), &mut sink).unwrap();
+    let (rel, bytes) = sink
+        .files
+        .iter()
+        .find(|(rel, _)| rel.contains("MTSummary_"))
+        .expect("the message-trace summary");
+    assert!(rel.starts_with(&m.root));
+    let decoded = sparrow_core::readers::text::decode(bytes);
+    assert_eq!(
+        decoded.encoding,
+        sparrow_core::readers::text::TextEncoding::Windows1252,
+        "{rel}"
+    );
+    assert!(
+        decoded
+            .text
+            .starts_with("\"origin_timestamp_utc\",\"sender_address\",\"recipient_status\"")
+    );
+    // The non-ASCII character is a single 0xE9 byte, not its two-byte UTF-8 spelling.
+    assert!(
+        bytes.contains(&0xE9) && !bytes.windows(2).any(|w| w == [0xC3, 0xA9]),
+        "no Windows-1252 subject byte in {rel}"
+    );
+    assert!(
+        decoded.text.contains('é'),
+        "no non-ASCII subject to exercise the encoding"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let m = generate_to_dir(&load("bec-aitm").unwrap(), &opts(2), dir.path()).unwrap();
+    let case = ingest_generated(dir.path(), &m);
+    let q = |sql: &str| {
+        case.conn()
+            .query_row(sql, [], |r| r.get::<_, i64>(0))
+            .unwrap()
+    };
+    assert!(
+        q("SELECT count(*) FROM message_trace WHERE subject LIKE '%é%'") > 0,
+        "the subject did not survive the encoding"
+    );
+    assert_eq!(
+        q("SELECT count(*) FROM message_trace WHERE subject LIKE '%Caf?%'"),
+        0,
+        "the non-ASCII subject was mangled"
+    );
+    assert_eq!(
+        q("SELECT count(*) FROM message_trace WHERE position('\u{fffd}' in subject) > 0"),
+        0,
+        "a subject holds a replacement character"
     );
 }
