@@ -79,6 +79,36 @@ fn generated_remote_domain_and_ediscovery_role_assignments_are_arrays() {
     }
 }
 
+/// A real Hawk capture can hold the portal exports pulled beside it. `conform_real` compares
+/// them when the generated side includes the portal collector (0 findings), and reports them
+/// when it does not — the guard that keeps the comparison non-vacuous.
+#[test]
+fn conform_real_compares_portal_exports_beside_a_hawk_capture() {
+    let (hawk_dir, _) = r#gen("bec-aitm", Collector::Hawk4, PsEdition::Ps7);
+    let hawk = profile_dir(hawk_dir.path()).unwrap();
+    let (portal_dir, _) = r#gen("bec-aitm", Collector::Portal, PsEdition::Ps7);
+    let portal = profile_dir(portal_dir.path()).unwrap();
+
+    // The stand-in real tree: the Hawk artifacts plus the portal exports beside them.
+    let mut real = hawk.clone();
+    for (artifact, ap) in &portal.artifacts {
+        real.artifacts.insert(artifact.clone(), ap.clone());
+    }
+
+    let with_portal = vec![hawk.clone(), portal.clone()];
+    let r = conform_real(&real, &with_portal);
+    assert!(r.ok, "{}", r.to_text());
+
+    let without_portal = vec![hawk];
+    let r = conform_real(&real, &without_portal);
+    assert!(!r.ok);
+    assert!(
+        r.findings.iter().any(|f| f.starts_with("portal.")),
+        "{}",
+        r.to_text()
+    );
+}
+
 #[test]
 fn a_real_mode_report_prints_no_values() {
     // A stand-in "real" tree: a generated one with recognisable values planted in it.

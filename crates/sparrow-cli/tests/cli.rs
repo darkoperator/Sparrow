@@ -915,6 +915,34 @@ fn synth_generates_then_checks_a_case() {
     assert_eq!(r["ok"], true, "{r}");
 }
 
+/// The real Hawk captures hold portal exports beside the Hawk trees (survey §3), so
+/// `conformance --real --collector hawk` must generate the portal collector too and compare
+/// them. A stand-in real tree is a generated Hawk tree with a generated portal export beside
+/// it; before the fix every portal artifact was "seen in the real tree, never generated".
+#[test]
+fn conformance_real_hawk_compares_portal_exports_beside_the_capture() {
+    use sparrow_synth::options::{Collector, GenerateOptions, PsEdition};
+    let dir = tempfile::tempdir().unwrap();
+    let scenario = sparrow_synth::scenario::load("bec-aitm").unwrap();
+    let real = dir.path().join("real");
+    let mut o = GenerateOptions::new(Collector::Hawk4, 4);
+    o.ps = PsEdition::Ps7;
+    sparrow_synth::generate::generate_to_dir(&scenario, &o, &real).unwrap();
+    let portal = dir.path().join("portal");
+    let mut o = GenerateOptions::new(Collector::Portal, 4);
+    o.ps = PsEdition::Ps7;
+    let m = sparrow_synth::generate::generate_to_dir(&scenario, &o, &portal).unwrap();
+    std::fs::rename(portal.join(&m.root), real.join(&m.root)).unwrap();
+    let v = json_out(
+        sparrow()
+            .args(["--json", "synth", "conformance", "--real"])
+            .arg(&real)
+            .args(["--collector", "hawk", "--seed", "4"]),
+        0,
+    );
+    assert_eq!(v["ok"], true, "{v}");
+}
+
 #[test]
 fn synth_rejects_unknown_scenario_and_collector() {
     let dir = tempfile::tempdir().unwrap();

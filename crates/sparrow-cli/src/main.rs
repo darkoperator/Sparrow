@@ -250,17 +250,24 @@ fn conformance_collector(c: ConformanceCollector) -> Collector {
     }
 }
 
+/// The collectors a `--real` run generates for `--collector c`. A real Hawk capture holds the
+/// portal exports that were pulled beside it (survey §3), so the Hawk run also generates the
+/// portal collector.
+fn conformance_collectors(c: ConformanceCollector) -> &'static [Collector] {
+    match c {
+        ConformanceCollector::Hawk => &[Collector::Hawk3, Collector::Hawk4, Collector::Portal],
+        ConformanceCollector::Invictus => &[Collector::Invictus],
+        ConformanceCollector::Portal => &[Collector::Portal],
+    }
+}
+
 /// Profile every built-in scenario (except `volume`) for `collector` with both editions and the
 /// three host cultures, so `--real` compares a real capture with the whole generated matrix.
 fn generated_profiles(
     c: ConformanceCollector,
     seed: u64,
 ) -> Result<Vec<sparrow_synth::conformance::Profile>> {
-    let collectors: &[Collector] = match c {
-        ConformanceCollector::Hawk => &[Collector::Hawk3, Collector::Hawk4],
-        ConformanceCollector::Invictus => &[Collector::Invictus],
-        ConformanceCollector::Portal => &[Collector::Portal],
-    };
+    let collectors = conformance_collectors(c);
     let mut out = Vec::new();
     for name in sparrow_synth::scenario::builtin_names()
         .iter()
@@ -1178,4 +1185,27 @@ fn cmd_synth_list(json: bool) -> Result<ExitCode> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A real Hawk capture holds the portal exports beside it, so the Hawk `--real` run must
+    /// generate the portal collector too.
+    #[test]
+    fn hawk_real_mode_generates_the_portal_collector_too() {
+        let hawks = conformance_collectors(ConformanceCollector::Hawk);
+        assert!(hawks.contains(&Collector::Hawk3), "{hawks:?}");
+        assert!(hawks.contains(&Collector::Hawk4), "{hawks:?}");
+        assert!(hawks.contains(&Collector::Portal), "{hawks:?}");
+        assert_eq!(
+            conformance_collectors(ConformanceCollector::Invictus),
+            [Collector::Invictus]
+        );
+        assert_eq!(
+            conformance_collectors(ConformanceCollector::Portal),
+            [Collector::Portal]
+        );
+    }
 }
