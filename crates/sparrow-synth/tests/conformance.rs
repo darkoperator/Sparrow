@@ -51,6 +51,34 @@ fn hawk3_all_inbox_rules_is_a_single_json_document() {
     );
 }
 
+/// The world now holds a partner remote domain and 3+ eDiscovery role assignments, so the
+/// generated trees produce arrays for both (the real captures' shape).
+#[test]
+fn generated_remote_domain_and_ediscovery_role_assignments_are_arrays() {
+    for c in [Collector::Hawk3, Collector::Hawk4] {
+        let (dir, _) = r#gen("bec-aitm", c, PsEdition::Ps7);
+        let p = profile_dir(dir.path()).unwrap();
+        for a in [
+            "hawk.tenant.remote_domain",
+            "hawk.tenant.ediscovery_role_assignments",
+        ] {
+            let Some(ap) = p.artifacts.get(a) else {
+                continue;
+            };
+            assert!(
+                ap.json_shapes.contains_key("array"),
+                "{a} {c:?}: {:?}",
+                ap.json_shapes
+            );
+            assert!(
+                !ap.json_shapes.contains_key("bare"),
+                "{a} {c:?}: {:?}",
+                ap.json_shapes
+            );
+        }
+    }
+}
+
 #[test]
 fn a_real_mode_report_prints_no_values() {
     // A stand-in "real" tree: a generated one with recognisable values planted in it.

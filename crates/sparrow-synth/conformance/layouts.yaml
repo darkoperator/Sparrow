@@ -213,7 +213,10 @@ artifacts:
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
     # One OMFT call (Get-ManagementRoleAssignment): one record is a bare object, several an array.
+    # The generated world holds 3+ assignments, so the generated shape must be the array; `bare`
+    # stays allowed for a real capture with one record.
     json_shape: [bare, array]
+    json_shape_expected: [array]
     columns_required: [DataObject, User, App, AssignmentMethod, Identity, EffectiveUserName, AssignmentChain, RoleAssigneeType, RoleAssignee, Role, RoleAssignmentDelegationType, RecipientReadScope, ConfigReadScope, RecipientWriteScope, ConfigWriteScope, Enabled, RoleAssigneeName, Id, IsValid, WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC, ObjectState]
   - artifact: hawk.tenant.impersonation
     collector: hawk
@@ -317,7 +320,10 @@ artifacts:
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
     # One OMFT call: a single domain is a bare object (survey §2d), several an array.
+    # The generated world holds the Default plus a partner domain, so the generated shape must
+    # be the array; `bare` stays allowed for a real capture with one domain.
     json_shape: [bare, array]
+    json_shape_expected: [array]
     columns_required: [DomainName, IsInternal, Name, Identity, WhenChanged, WhenCreated, WhenChangedUTC, WhenCreatedUTC, ObjectState]
   - artifact: hawk.tenant.transport_config
     collector: hawk

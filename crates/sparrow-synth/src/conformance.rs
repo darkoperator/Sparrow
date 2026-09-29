@@ -55,9 +55,15 @@ pub struct LayoutDef {
     pub json_keys: Vec<String>,
     /// The JSON shapes the source can produce for this artifact: `bare` for one record in a
     /// call, `array` for several, `concatenated` when the collector calls the writer once per
-    /// record with `-Append`. Empty means the shape is unchecked.
+    /// record with `-Append`. Empty means the shape is unchecked. This is the allowed set for
+    /// a real capture, where the record count can differ.
     #[serde(default)]
     pub json_shape: Vec<String>,
+    /// The JSON shape(s) the generated trees must produce (a stricter subset of `json_shape`
+    /// for artifacts whose generated counts now fix the shape). Empty means only `json_shape`
+    /// is enforced.
+    #[serde(default)]
+    pub json_shape_expected: Vec<String>,
     /// Date form classes seen per column/key.
     #[serde(default)]
     pub dates: BTreeMap<String, Vec<String>>,
@@ -547,6 +553,20 @@ fn check_artifact(
             }
         }
     }
+    let expected_shapes: BTreeSet<&str> = defs
+        .iter()
+        .flat_map(|d| d.json_shape_expected.iter().map(String::as_str))
+        .collect();
+    if !expected_shapes.is_empty() {
+        for shape in ap.json_shapes.keys() {
+            if !expected_shapes.contains(shape.as_str()) {
+                findings.push(format!(
+                    "{artifact}: JSON shape {shape} is not the generated shape {:?}",
+                    expected_shapes
+                ));
+            }
+        }
+    }
     let key_defs: Vec<&&LayoutDef> = defs.iter().filter(|d| !d.json_keys.is_empty()).collect();
     if !key_defs.is_empty()
         && !key_defs
@@ -672,14 +692,21 @@ mod tests {
         );
     }
 
-    /// The source allows a bare object for one record and an array for several, so both pass.
+    /// The generated trees now hold several records, so their shape must be the array the
+    /// count implies (`json_shape_expected`), even though `bare` stays allowed for a real
+    /// capture with one record.
     #[test]
-    fn conform_layouts_accepts_the_source_allowed_json_shapes() {
-        for shape in ["bare", "array"] {
-            let p = profile_with_shape("hawk.tenant.remote_domain", shape);
-            let r = conform_layouts(&p, Collector::Hawk4);
-            assert!(r.ok, "{shape}: {}", r.to_text());
-        }
+    fn conform_layouts_requires_the_array_when_the_count_implies_it() {
+        let p = profile_with_shape("hawk.tenant.remote_domain", "array");
+        assert!(conform_layouts(&p, Collector::Hawk4).ok);
+        let p = profile_with_shape("hawk.tenant.remote_domain", "bare");
+        let r = conform_layouts(&p, Collector::Hawk4);
+        assert!(!r.ok, "{}", r.to_text());
+        assert!(
+            r.findings.iter().any(|f| f.contains("bare")),
+            "{}",
+            r.to_text()
+        );
     }
 
     /// A real shape the source allows is fine even when the generated trees only saw the other

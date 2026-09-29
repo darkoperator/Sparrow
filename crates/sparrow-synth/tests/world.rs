@@ -65,6 +65,39 @@ fn attacker_infrastructure_is_distinct_from_users() {
     assert!(w.attacker.forward_address.ends_with(".test"));
 }
 
+/// Every Exchange Online tenant has the `Default` remote domain (`DomainName *`); a partner
+/// remote domain is added so `Get-RemoteDomain` returns several records (an array).
+#[test]
+fn the_tenant_has_a_default_and_a_partner_remote_domain() {
+    let w = world("bec-aitm", 3);
+    assert_eq!(w.remote_domains.len(), 2, "{:?}", w.remote_domains);
+    assert!(w.remote_domains.iter().any(|d| d.domain == "*"));
+    assert!(w.remote_domains.iter().any(|d| d.domain == "fabrikam.test"));
+    assert!(
+        w.remote_domains
+            .iter()
+            .all(|d| is_reserved_domain(&d.domain) || d.domain == "*")
+    );
+}
+
+/// The survey saw 3–6 eDiscovery role assignments; the world holds a realistic set to three or
+/// more principals.
+#[test]
+fn ediscovery_role_assignments_cover_three_principals() {
+    let w = world("bec-aitm", 3);
+    assert!(
+        w.exchange_role_assignments.len() >= 3,
+        "{:?}",
+        w.exchange_role_assignments
+    );
+    let groups: BTreeSet<&str> = w
+        .exchange_role_assignments
+        .iter()
+        .map(|a| a.group.as_str())
+        .collect();
+    assert!(groups.len() >= 3, "{groups:?}");
+}
+
 #[test]
 fn every_state_collection_is_populated() {
     let w = world("bec-aitm", 3);

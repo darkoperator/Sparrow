@@ -917,11 +917,11 @@ pub(super) fn ediscovery_configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> 
         &entries,
     )?;
     register_role_entries(tree, &w, &entries);
-    let assignments = vec![role_assignment(
-        world,
-        "Mailbox Search",
-        "Discovery Management",
-    )];
+    let assignments: Vec<Row> = world
+        .exchange_role_assignments
+        .iter()
+        .map(|a| role_assignment(world, &a.role, &a.group))
+        .collect();
     c.log().info_v4(format!(
         "Found {} Role Assignments for these Roles",
         assignments.len()
@@ -942,12 +942,11 @@ pub(super) fn ediscovery_configuration(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> 
         tree,
         &w,
         "role_assignments",
-        |_| {
-            Some(keys::role(
-                "exchange_ediscovery",
-                "Mailbox Search",
-                "Discovery Management",
-            ))
+        |i| {
+            world
+                .exchange_role_assignments
+                .get(i)
+                .map(|a| keys::role("exchange_ediscovery", &a.role, &a.group))
         },
         |_| None,
     );

@@ -89,6 +89,7 @@ pub struct World {
     pub mobile_devices: Vec<MobileDevice>,
     pub transport_rules: Vec<TransportRule>,
     pub remote_domains: Vec<RemoteDomain>,
+    pub exchange_role_assignments: Vec<ExchangeRoleAssignment>,
     pub secure_score: Vec<SecureScoreControl>,
     pub alerts: Vec<Alert>,
     pub azure: Vec<AzureEvent>,
@@ -149,6 +150,7 @@ impl World {
         let mobile_devices = build_mobile_devices(scenario, seed, &users);
         let transport_rules = build_transport_rules(scenario, seed, &admins);
         let remote_domains = build_remote_domains(&tenant);
+        let exchange_role_assignments = build_exchange_role_assignments();
         let secure_score = build_secure_score();
         let alerts = build_alerts(scenario, seed, &tenant, &users);
         let azure = build_azure(scenario, seed, &tenant, &users, &admins);
@@ -176,6 +178,7 @@ impl World {
             mobile_devices,
             transport_rules,
             remote_domains,
+            exchange_role_assignments,
             secure_score,
             alerts,
             azure,
@@ -887,6 +890,15 @@ pub struct RemoteDomain {
     pub auto_forward_enabled: bool,
     pub allowed_ooo_type: String,
     pub when_changed: DateTime<Utc>,
+}
+
+/// One Exchange RBAC role assignment (`Get-ManagementRoleAssignment`): a management role
+/// assigned to a role group. The 37-column output shape is the survey's
+/// `EDiscoveryRoleAssignments` (`2026-09-24-hawk-capture-survey.md` §2b).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExchangeRoleAssignment {
+    pub role: String,
+    pub group: String,
 }
 
 #[derive(Debug, Clone)]
@@ -2104,14 +2116,45 @@ fn build_transport_rules(scenario: &Scenario, seed: u64, admins: &[User]) -> Vec
     ]
 }
 
+/// Get-RemoteDomain always returns the tenant's `Default` remote domain (`DomainName *`), and
+/// admins add one per partner/trusted domain (Microsoft Learn, "Remote domains in Exchange
+/// Online" https://learn.microsoft.com/en-us/exchange/mail-flow-best-practices/remote-domains/remote-domains
+/// and `Get-RemoteDomain` https://learn.microsoft.com/en-us/powershell/module/exchange/get-remotedomain).
+/// A partner domain makes the output an array, as the real captures show.
 fn build_remote_domains(tenant: &Tenant) -> Vec<RemoteDomain> {
-    vec![RemoteDomain {
-        name: "Default".to_string(),
-        domain: "*".to_string(),
-        auto_forward_enabled: false,
-        allowed_ooo_type: "External".to_string(),
-        when_changed: tenant.created,
-    }]
+    vec![
+        RemoteDomain {
+            name: "Default".to_string(),
+            domain: "*".to_string(),
+            auto_forward_enabled: false,
+            allowed_ooo_type: "External".to_string(),
+            when_changed: tenant.created,
+        },
+        RemoteDomain {
+            name: "Partner".to_string(),
+            domain: "fabrikam.test".to_string(),
+            auto_forward_enabled: false,
+            allowed_ooo_type: "External".to_string(),
+            when_changed: tenant.created,
+        },
+    ]
+}
+
+/// The built-in eDiscovery role assignments the survey saw (3–6 records): the `Mailbox Search`
+/// and `Mailbox Import Export` management roles assigned to the Discovery Management,
+/// eDiscovery Manager and eDiscovery Reviewer role groups.
+fn build_exchange_role_assignments() -> Vec<ExchangeRoleAssignment> {
+    [
+        ("Mailbox Search", "Discovery Management"),
+        ("Mailbox Search", "eDiscovery Manager"),
+        ("Mailbox Import Export", "eDiscovery Reviewer"),
+    ]
+    .into_iter()
+    .map(|(role, group)| ExchangeRoleAssignment {
+        role: role.to_string(),
+        group: group.to_string(),
+    })
+    .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
