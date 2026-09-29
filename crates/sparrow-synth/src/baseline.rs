@@ -176,11 +176,7 @@ pub fn work_window(w: &World, user: &User, date: NaiveDate) -> (DateTime<Utc>, D
 }
 
 /// A whole-second time in `[a, b)` (`a` when the range is empty).
-/// An AuditData parameter value as the audit service emits it: ISO-8601 in UTC.
-fn iso(t: DateTime<Utc>) -> String {
-    t.format("%Y-%m-%dT%H:%M:%S").to_string()
-}
-
+/// A whole-second time in `[a, b)` (`a` when the range is empty).
 fn rand_time(rng: &mut Rng, a: DateTime<Utc>, b: DateTime<Utc>) -> DateTime<Utc> {
     let span = (b - a).num_seconds();
     if span <= 0 {
@@ -772,30 +768,31 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
             }
         }
 
-        // A mailbox owner searches their own mailbox for a retention dispute, which logs an
-        // `ExchangeAdmin` `New-MailboxSearch` carrying the search window as `StartTime` /
-        // `EndTime` (survey:2e / 2026-09-24-hawk-capture-survey.md:123 records the two
-        // `Param_` columns of the real captures). The values are ISO-8601 as the audit service
-        // emits them, so `Get-SimpleUnifiedAuditLog` types them as dates and they follow the
-        // host culture. The user is the actor, so the record lands in their own
-        // `User_Changes` / `Simple_User_Changes` (`Get-HawkUserAdminAudit.ps1:60`).
-        if !user.is_admin && !is_weekend(date) && urng.chance(0.12) {
+        // A user switches their out-of-office off after leave. OWA sends the whole
+        // configuration, so the record carries the old window as `StartTime`/`EndTime`
+        // (survey:123 records those two `Param_` columns of the real captures). The state is
+        // `Disabled`, never `Enabled`/`Scheduled`: SPW-HAWK-015 (coverage.yaml:263-271) fires
+        // on those, and the benign baseline must produce no finding.
+        if !user.is_admin && !is_weekend(date) && urng.chance(0.02) {
             let t = rand_time(&mut urng, plan.login, plan.end);
             if ual_logged(w, t) && w.audit.admin_audit_log_enabled {
-                let start = t - Duration::days(30);
-                let end = t;
+                let start = t - Duration::days(14);
+                let end = start + Duration::days(7);
                 ual_out.push(ual::exchange_admin(
                     w,
                     &mut urng,
                     user,
                     t,
-                    "New-MailboxSearch",
+                    "Set-MailboxAutoReplyConfiguration",
                     &user.upn,
                     &[
-                        ("Name", "Retention review"),
-                        ("SourceMailboxes", &user.upn),
-                        ("StartTime", &iso(start)),
-                        ("EndTime", &iso(end)),
+                        ("Identity", &user.upn),
+                        ("AutoReplyState", "Disabled"),
+                        ("StartTime", &w.service_datetime(start)),
+                        ("EndTime", &w.service_datetime(end)),
+                        ("InternalMessage", "Out of office"),
+                        ("ExternalMessage", "Out of office"),
+                        ("ExternalAudience", "None"),
                     ],
                     ip,
                     session,

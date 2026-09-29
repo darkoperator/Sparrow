@@ -9,7 +9,7 @@ use crate::Result;
 use crate::baseline;
 use crate::events::{Day, DirAudit, RecordType, RiskDetection, SignIn, TraceMsg, Ual};
 use crate::names::{Person, people};
-use crate::options::GenerateOptions;
+use crate::options::{Culture, GenerateOptions};
 use crate::profiles::{AuditProfile, LicenceProfile, audit_profile, licence_profile};
 use crate::reserved::{IpAllocator, Net, WELL_KNOWN_GUIDS};
 use crate::rng::{Rng, stream};
@@ -72,6 +72,10 @@ const MEETING_NOTES_REPLY_URL: &str = "https://app.meetingnotespro.example/oauth
 pub struct World {
     pub scenario: Scenario,
     pub seed: u64,
+    /// The host culture the tree is generated in. `World::build` starts at en-US;
+    /// `generate` replaces it with the option's culture. Audit-service parameter values are
+    /// rendered in it (see `World::service_datetime`).
+    pub culture: Culture,
     pub tenant: Tenant,
     pub users: Vec<User>,
     pub admins: Vec<User>,
@@ -161,6 +165,7 @@ impl World {
         let mut world = World {
             scenario: scenario.clone(),
             seed,
+            culture: Culture::EnUs,
             tenant,
             users,
             admins,
@@ -371,6 +376,24 @@ impl World {
     /// Every person in the tenant: ordinary users, then admins.
     pub fn all_people(&self) -> impl Iterator<Item = &User> {
         self.users.iter().chain(self.admins.iter())
+    }
+
+    /// A datetime as the audit service writes it into an AuditData parameter value: 24-hour,
+    /// zero-padded, in the mailbox's regional format. The survey records
+    /// `Param_StartTime`/`Param_EndTime` as `MM/dd/yyyy HH:mm:ss` (24 h), against the 12-hour
+    /// re-typed form in the same table (2026-09-24-hawk-capture-survey.md:123 against :122), so
+    /// these are service-rendered strings, not `ConvertFrom-Json` re-typed ones.
+    ///
+    /// Keying the format on the *tree* culture is an assumption: the real service uses the
+    /// mailbox's own regional settings, while a synthetic tenant is generated in one culture.
+    pub fn service_datetime(&self, t: DateTime<Utc>) -> String {
+        let n = t.naive_utc();
+        match self.culture {
+            Culture::EnUs => n.format("%m/%d/%Y %H:%M:%S").to_string(),
+            Culture::EnGb => n.format("%d/%m/%Y %H:%M:%S").to_string(),
+            Culture::DeDe => n.format("%d.%m.%Y %H:%M:%S").to_string(),
+            Culture::JaJp => n.format("%Y/%m/%d %H:%M:%S").to_string(),
+        }
     }
 
     pub fn window_start(&self) -> DateTime<Utc> {

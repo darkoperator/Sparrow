@@ -584,14 +584,18 @@ artifacts:
     # PS7 (`ConvertFrom-Json`) and `ConvertTo-FlatObject` keeps it typed, so it renders in the
     # host culture through `Export-Csv` (research hawk layouts §4.2/§4.3). The real captures
     # hold `Param_StartTime`/`Param_EndTime` of a mailbox search (survey:123).
+    # An OWA out-of-office change logs the whole configuration, so the old window arrives as
+    # `Param_StartTime`/`Param_EndTime`. These are STRINGS the service rendered, 24-hour and
+    # zero-padded (survey:123) - not ISO strings re-typed by `ConvertFrom-Json` - so the host
+    # culture of the *writer* does not change them; the service's own regional format does,
+    # and the tree is generated in one culture. en-US and en-GB are both 24-hour without a
+    # marker, so both classify as `culture_dmy`; de-DE is dotted and has its own class.
     dates:
       Param_StartTime:
-        any: [culture_mdy, iso_nozone]
-        en-gb: [culture_dmy]
+        any: [culture_dmy]
         de-de: [culture_dmy_de]
       Param_EndTime:
-        any: [culture_mdy, iso_nozone]
-        en-gb: [culture_dmy]
+        any: [culture_dmy]
         de-de: [culture_dmy_de]
   - artifact: hawk.ip.events
     collector: hawk

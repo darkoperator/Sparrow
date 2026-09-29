@@ -107,6 +107,11 @@ fn tree_digest(dir: &Path) -> String {
 /// non-streaming equivalence was established at `a900fb1`; re-recording here follows the F6/F7
 /// precedent above, because the pre-streaming reference commit `0477080` predates the F4/F6/F7
 /// world changes and can no longer serve as the byte reference.
+///
+/// Re-recorded again for the Task F8 fix: the out-of-office baseline event is now
+/// `Set-MailboxAutoReplyConfiguration` at rate 0.02 with service-rendered parameter strings,
+/// which changes the volume tree's bytes. The value after the first F8 commit was
+/// `0ce824fc22d5b1de43c5a05de2ba072c39993db7872de9dbc681076f2a7ae9ac`.
 #[test]
 #[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
@@ -117,7 +122,7 @@ fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
     generate_to_dir(&load("volume").unwrap(), &o, dir.path()).unwrap();
     assert_eq!(
         tree_digest(dir.path()),
-        "0ce824fc22d5b1de43c5a05de2ba072c39993db7872de9dbc681076f2a7ae9ac"
+        "10936fc24658043797a2b7ad6084bad3c00db89e5c8911b307247c7e12144552"
     );
 }
 

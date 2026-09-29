@@ -180,3 +180,47 @@ fn ual_cut_off_and_mailbox_bypass_are_honoured() {
     );
     assert!(dd.ual.iter().any(|u| u.record_type.number() == 50));
 }
+
+/// SPW-HAWK-015 (coverage.yaml:263-271) fires on a UAL `Set-MailboxAutoReplyConfiguration`
+/// whose `AutoReplyState` is `Enabled` or `Scheduled`, so no baseline day may emit one: the
+/// benign event is a user switching their out-of-office off. Checked over every built-in
+/// scenario, every day of its window, and several seeds.
+#[test]
+fn the_baseline_never_enables_an_out_of_office() {
+    let mut total = 0usize;
+    for name in sparrow_synth::scenario::builtin_names()
+        .iter()
+        .filter(|n| **n != "volume")
+    {
+        for seed in [1u64, 7, 42] {
+            let world = World::build(&load(name).unwrap(), seed).unwrap();
+            let mut d = world.window_start().date_naive();
+            while d < world.window_end().date_naive() {
+                for u in &day(&world, d).ual {
+                    if u.operation != "Set-MailboxAutoReplyConfiguration" {
+                        continue;
+                    }
+                    total += 1;
+                    let state = u.audit["Parameters"]
+                        .as_array()
+                        .map(|ps| {
+                            ps.iter()
+                                .filter(|p| p["Name"] == "AutoReplyState")
+                                .map(|p| p["Value"].as_str().unwrap_or_default().to_string())
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        })
+                        .unwrap_or_default();
+                    assert!(
+                        !state.eq_ignore_ascii_case("Enabled")
+                            && !state.eq_ignore_ascii_case("Scheduled"),
+                        "{name} seed {seed} {d}: {state}"
+                    );
+                }
+                d += Duration::days(1);
+            }
+        }
+    }
+    // Not vacuous: the benign event really is emitted across the built-in scenarios.
+    assert!(total > 0, "no baseline out-of-office change at all");
+}
