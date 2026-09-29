@@ -12,7 +12,7 @@ use crate::events::{RecordType, Ual};
 use crate::reserved::WELL_KNOWN_GUIDS;
 use crate::rng::{Rng, stream};
 use crate::world::{User, World};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde_json::{Map, Value, json};
 use std::net::IpAddr;
 use uuid::Uuid;
@@ -73,6 +73,50 @@ pub fn unique_token_id(rng: &mut Rng) -> String {
     chars(rng, B64URL, 22)
 }
 
+/// The application id an Exchange client session runs under: a tenant app where the world
+/// has one, else a well-known Microsoft client id, else a synthetic uuid. The Management
+/// Activity API records it as `ClientAppId` and `HostAppId` (office-365-management-api-schema).
+pub fn host_app_id(rng: &mut Rng) -> Uuid {
+    if !WELL_KNOWN_GUIDS.is_empty() {
+        // The first well-known id, so the value stays stable and reserved.
+        if let Ok(id) = WELL_KNOWN_GUIDS[0].0.parse::<Uuid>() {
+            return id;
+        }
+    }
+    rng.uuid()
+}
+
+/// The Outlook app-access API id an Exchange client calls, recorded as
+/// `AppAccessContext.APIId` (office-365-management-api-schema). A fixed reserved id, so the
+/// value is stable.
+const APP_ACCESS_API_ID: Uuid = Uuid::from_u128(0x9e5f94bc_e2b0_4a3f_9b4a_7c0f1b2a3d4e);
+
+/// A neutral attachment summary for an item. The Management Activity API records
+/// `Item.Attachments` as one string listing the attachment names, not an object array
+/// (office-365-management-api-schema), so the flattened files carry the bare
+/// `Item_Attachments` / `AffectedItems_Attachments` column rather than per-attachment keys
+/// (an array of objects would descend to `Item_Attachments_Name`, research §4.2).
+fn attachments(rng: &mut Rng) -> String {
+    let n = rng.below(2) + 1;
+    (0..n)
+        .map(|i| format!("attachment-{i}.pdf"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// A neutral message subject for a folder item the aggregated record refers to by id alone.
+fn subject_for(rng: &mut Rng, imid: &str) -> String {
+    const SUBJECTS: &[&str] = &[
+        "Weekly report",
+        "Invoice",
+        "Project update",
+        "Re: schedule",
+        "Notes",
+    ];
+    let tail = &imid[imid.len().saturating_sub(8)..];
+    format!("{} {}", rng.pick(SUBJECTS), tail)
+}
+
 /// A mailbox folder's opaque id, stable per mailbox and folder path.
 pub fn folder_id(w: &World, owner: &str, path: &str) -> String {
     let mut r = stream(w.seed, &format!("folder/{owner}/{path}"));
@@ -103,6 +147,10 @@ pub fn app_name(w: &World, id: Uuid) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemRef {
     pub id: String,
+    /// The item's `EID`-style immutable id, which the Management Activity API records beside
+    /// `Id` (`office-365-management-api-schema`, `Item.ImmutableId`). Distinct per item, so the
+    /// flattened files carry `Item_ImmutableId`.
+    pub immutable_id: String,
     pub internet_message_id: String,
     pub folder_id: String,
     pub folder_path: String,
@@ -123,6 +171,10 @@ impl ItemRef {
     ) -> ItemRef {
         ItemRef {
             id: item_id(w, owner, internet_message_id),
+            immutable_id: {
+                let mut r = stream(w.seed, &format!("immutable/{owner}/{internet_message_id}"));
+                chars(&mut r, B64, 40)
+            },
             internet_message_id: internet_message_id.to_string(),
             folder_id: folder_id(w, owner, folder_path),
             folder_path: folder_path.to_string(),
@@ -130,6 +182,11 @@ impl ItemRef {
             size,
         }
     }
+}
+
+/// A folder path's display name: `\Sent Items` -> `Sent Items`.
+pub fn folder_name(path: &str) -> String {
+    path.trim_start_matches('\\').to_string()
 }
 
 /// The common keys of every record.
@@ -222,6 +279,9 @@ pub fn exchange_admin(
     put(&mut u, "AppId", json!(""));
     put(&mut u, "ClientAppId", json!(""));
     put(&mut u, "ExternalAccess", json!(false));
+    put(&mut u, "ExchangeVersion", json!(15));
+    let app = host_app_id(rng);
+    token_context(&mut u, rng, w, app, session, time, None);
     put(
         &mut u,
         "OrganizationName",
@@ -252,6 +312,41 @@ pub fn logon_type(owner: &User, logon: &User) -> i64 {
     }
 }
 
+/// The token / app-access context an Exchange session runs under, plus the request
+/// correlation ids and the token object the Management Activity API records beside it
+/// (https://learn.microsoft.com/office/office-365-management-api/office-365-management-api-schema,
+/// `AppAccessContext`, `AppPoolName`, `TokenObjectId`, `TokenTenantId`, `TokenType`,
+/// `CorrelationID`, `RequestId`). Microsoft emits them on the Exchange workloads; the real
+/// Hawk captures' flattened files carry them all.
+fn token_context(
+    u: &mut Ual,
+    rng: &mut Rng,
+    w: &World,
+    app_id: Uuid,
+    session: Uuid,
+    issued: DateTime<Utc>,
+    api_id: Option<Uuid>,
+) {
+    let correlation = rng.uuid();
+    let request = rng.uuid();
+    let mut ctx = Map::new();
+    ctx.insert("AADSessionId".into(), json!(session.to_string()));
+    ctx.insert("APIId".into(), json!(api_id.map(|a| a.to_string())));
+    ctx.insert("ClientAppId".into(), json!(app_id.to_string()));
+    ctx.insert("ClientAppName".into(), json!(app_name(w, app_id)));
+    ctx.insert("CorrelationId".into(), json!(correlation.to_string()));
+    ctx.insert("IssuedAtTime".into(), json!(issued.to_rfc3339()));
+    ctx.insert("UniqueTokenId".into(), json!(unique_token_id(rng)));
+    put(u, "AppAccessContext", Value::Object(ctx));
+    put(u, "AppPoolName", json!(app_name(w, app_id)));
+    put(u, "ClientAppId", json!(app_id.to_string()));
+    put(u, "CorrelationID", json!(correlation.to_string()));
+    put(u, "RequestId", json!(request.to_string()));
+    put(u, "TokenObjectId", json!(rng.uuid().to_string()));
+    put(u, "TokenTenantId", json!(w.org_id().to_string()));
+    put(u, "TokenType", json!("User"));
+}
+
 fn mailbox_keys(
     w: &World,
     rng: &mut Rng,
@@ -263,6 +358,16 @@ fn mailbox_keys(
 ) {
     put(u, "ClientIPAddress", json!(ip.to_string()));
     put(u, "ClientInfoString", json!(client_info));
+    // The Outlook desktop client detail the Management Activity API records beside
+    // `ClientInfoString` for an `ExchangeItem` / `ExchangeItemGroup`
+    // (office-365-management-api-schema: `ClientProcessName`, `ClientRequestId`,
+    // `ClientVersion`, `HostAppId`, `SaveToSentItems`).
+    put(u, "ClientProcessName", json!("OUTLOOK.EXE"));
+    put(u, "ClientRequestId", json!(rng.uuid().to_string()));
+    put(u, "ClientVersion", json!("16.0.17928.0"));
+    put(u, "HostAppId", json!(host_app_id(rng).to_string()));
+    put(u, "SaveToSentItems", json!(true));
+    put(u, "CrossMailboxOperation", json!(false));
     put(u, "ExternalAccess", json!(false));
     put(u, "InternalLogonType", json!(0));
     put(u, "LogonType", json!(logon_type(owner, logon)));
@@ -318,6 +423,26 @@ pub fn mailbox_item(
         },
     );
     mailbox_keys(w, rng, &mut u, owner, logon, ip, client_info);
+    let app = host_app_id(rng);
+    token_context(&mut u, rng, w, app, session, time, None);
+    put(&mut u, "ActorInfoString", json!(logon.upn.clone()));
+    // The property-change list the Management Activity API records on an Exchange operation
+    // (office-365-management-api-schema `ModifiedProperties`). The real captures keep it as the
+    // embedded JSON text the audit service sent, not as an object (survey §2c, "some
+    // `Settings_*` and `DataSources` values are still embedded JSON strings"), so the flattened
+    // files carry the bare `ModifiedProperties` column instead of `ModifiedProperties_Name`.
+    put(
+        &mut u,
+        "ModifiedProperties",
+        json!(
+            json!([{
+                "Name": "Item",
+                "OldValue": "",
+                "NewValue": item.as_ref().map_or("", |i| i.subject.as_str()),
+            }])
+            .to_string()
+        ),
+    );
     put(&mut u, "SessionId", json!(session.to_string()));
     if let Some(i) = item {
         let parent = json!({"Id": i.folder_id, "Path": i.folder_path});
@@ -336,6 +461,7 @@ pub fn mailbox_item(
                 "AffectedItems",
                 json!([{
                     "Id": i.id,
+                    "Attachments": attachments(rng),
                     "InternetMessageId": i.internet_message_id,
                     "ParentFolder": parent,
                     "Subject": i.subject,
@@ -346,9 +472,16 @@ pub fn mailbox_item(
                 &mut u,
                 "Item",
                 json!({
+                    "Attachments": attachments(rng),
                     "Id": i.id,
+                    "ImmutableId": i.immutable_id,
                     "InternetMessageId": i.internet_message_id,
-                    "ParentFolder": parent,
+                    "IsRecord": false,
+                    "ParentFolder": {
+                        "Id": i.folder_id,
+                        "Name": folder_name(&i.folder_path),
+                        "Path": i.folder_path,
+                    },
                     "Subject": i.subject,
                     "SizeInBytes": i.size,
                 }),
@@ -391,21 +524,30 @@ pub fn mail_items_accessed(
             user_id: &owner.upn,
         },
     );
-    let correlation = rng.uuid();
-    let token = unique_token_id(rng);
+    token_context(
+        &mut u,
+        rng,
+        w,
+        app_id,
+        session,
+        time,
+        Some(APP_ACCESS_API_ID),
+    );
+    mailbox_keys(w, rng, &mut u, owner, owner, ip, client_info);
+    // The auth method the aggregated record reports
+    // (office-365-management-api-schema, `MailItemsAccessed.AuthType`).
+    put(&mut u, "AuthType", json!("OAuth"));
+    // The aggregate's own property list. Two entries share a name, so the flattened files
+    // carry `ExtendedProperties_Name` and `ExtendedProperties_Name_1` (research §4.2).
     put(
         &mut u,
-        "AppAccessContext",
-        json!({
-            "AADSessionId": session.to_string(),
-            "ClientAppId": app_id.to_string(),
-            "ClientAppName": app_name(w, app_id),
-            "CorrelationId": correlation.to_string(),
-            "UniqueTokenId": token,
-        }),
+        "ExtendedProperties",
+        json!([
+            {"Name": "MailboxOwner", "Value": owner.upn},
+            {"Name": "Folder", "Value": "\\Inbox"},
+            {"Name": "Folder", "Value": "\\Inbox"},
+        ]),
     );
-    put(&mut u, "ClientAppId", json!(app_id.to_string()));
-    mailbox_keys(w, rng, &mut u, owner, owner, ip, client_info);
     put(
         &mut u,
         "OperationProperties",
@@ -431,10 +573,20 @@ pub fn mail_items_accessed(
                         items
                             .iter()
                             .map(|(imid, size)| {
+                                // The full item detail the Management Activity API records per
+                                // folder item (office-365-management-api-schema,
+                                // `MailItemsAccessed.Folders.FolderItems`): `CreationTime` and
+                                // `ImmutableId` sit beside `Id` / `InternetMessageId` /
+                                // `SizeInBytes`, and the flattened files carry
+                                // `Folders_FolderItems_*` for each.
+                                let mut r = stream(w.seed, &format!("mia/{}/{imid}", owner.upn));
                                 json!({
+                                    "CreationTime": creation_time(time - Duration::days(r.below(30) as i64)),
                                     "Id": item_id(w, &owner.upn, imid),
+                                    "ImmutableId": chars(&mut r, B64, 40),
                                     "InternetMessageId": imid,
                                     "SizeInBytes": size,
+                                    "Subject": subject_for(&mut r, imid),
                                 })
                             })
                             .collect(),
@@ -650,6 +802,13 @@ pub fn aad(
         json!({"Name": "additionalDetails", "Value": "{}"}),
         json!({"Name": "extendedAuditEventCategory", "Value": "User"}),
     ];
+    // An interactive sign-in reports the same name twice, so `ConvertTo-FlatObject` suffixes
+    // the second with `_1` (research hawk layouts §4.2): the real captures carry
+    // `ExtendedProperties_Name` / `ExtendedProperties_Name_1` / `ExtendedProperties_Value_2`.
+    if let Some(a) = actor {
+        ext.push(json!({"Name": "ClientAppUsed", "Value": a.client.browser.clone()}));
+        ext.push(json!({"Name": "ClientAppUsed", "Value": a.client.browser.clone()}));
+    }
     for (name, value) in extra {
         let text = match value {
             Value::String(s) => s.clone(),
@@ -658,6 +817,41 @@ pub fn aad(
         ext.push(json!({"Name": name, "Value": text}));
     }
     put(&mut u, "ExtendedProperties", Value::Array(ext));
+    // The target's object types and the device the change came from
+    // (office-365-management-api-schema, AzureActiveDirectory: `Object1Type`, `Object2Type`,
+    // `DeviceId`).
+    put(&mut u, "Object1Type", json!("User"));
+    put(
+        &mut u,
+        "Object2Type",
+        json!(if actor.is_some() {
+            "User"
+        } else {
+            "ServicePrincipal"
+        }),
+    );
+    put(
+        &mut u,
+        "DeviceId",
+        json!(actor.map(|a| a.object_id.to_string()).unwrap_or_default()),
+    );
+    put(&mut u, "Scope", json!("Directory.ReadWrite.All"));
+    // The workload locations an admin change reports (office-365-management-api-schema,
+    // `ExchangeLocations`, `SharepointLocations`, `PublicFolderLocations`).
+    put(
+        &mut u,
+        "ExchangeLocations",
+        json!([w.tenant.initial_domain.clone()]),
+    );
+    put(
+        &mut u,
+        "SharepointLocations",
+        json!([format!(
+            "https://{}.sharepoint.example/sites/Finance",
+            w.tenant.folder_name.to_lowercase()
+        )]),
+    );
+    put(&mut u, "PublicFolderLocations", json!([""]));
     put(
         &mut u,
         "ModifiedProperties",
@@ -912,5 +1106,49 @@ pub fn discovery(
     put(&mut u, "Case", json!(case));
     put(&mut u, "ObjectType", json!("ComplianceSearch"));
     put(&mut u, "Query", json!("kind:email"));
+    // A content search runs under a token like the other Exchange records, and reports the
+    // object types and locations it touched (office-365-management-api-schema, the
+    // SecurityComplianceCenter workload: `AppAccessContext`, `ExtendedProperties`,
+    // `Object1Type`, `Object2Type`, `DeviceId`, `Scope`, `ExchangeLocations`,
+    // `SharepointLocations`, `PublicFolderLocations`). The repeated `ExtendedProperties` name
+    // is what gives the flattened files their `_1` / `_2` suffixes (research §4.2).
+    let app = host_app_id(rng);
+    let aad_session = rng.uuid();
+    token_context(
+        &mut u,
+        rng,
+        w,
+        app,
+        aad_session,
+        time,
+        Some(APP_ACCESS_API_ID),
+    );
+    put(
+        &mut u,
+        "ExtendedProperties",
+        json!([
+            {"Name": "ListPath", "Value": "/Cases"},
+            {"Name": "ListItem", "Value": case},
+            {"Name": "ListItem", "Value": case},
+        ]),
+    );
+    put(&mut u, "Object1Type", json!("ComplianceSearch"));
+    put(&mut u, "Object2Type", json!("Case"));
+    put(&mut u, "DeviceId", json!(user.object_id.to_string()));
+    put(&mut u, "Scope", json!("Case"));
+    put(
+        &mut u,
+        "ExchangeLocations",
+        json!([w.tenant.initial_domain.clone()]),
+    );
+    put(
+        &mut u,
+        "SharepointLocations",
+        json!([format!(
+            "https://{}.sharepoint.example/sites/Finance",
+            w.tenant.folder_name.to_lowercase()
+        )]),
+    );
+    put(&mut u, "PublicFolderLocations", json!([""]));
     u
 }

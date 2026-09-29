@@ -128,6 +128,12 @@ fn tree_digest(dir: &Path) -> String {
 /// day instead of re-issued at random, so the volume tree's `ExchangeAdmin` rows differ. The
 /// value after the F3 commit was
 /// `34ecc6540381e3acc3d0bdacf5ff461587d1f60e331d950f2e02d20a104fe815`.
+///
+/// Re-recorded again for F4 part B: the flattened AuditData now carries the token / app-access
+/// context, the client detail, the item and folder-item properties and the MIA/discovery
+/// property lists the real captures hold, so every Exchange record's bytes change. The value
+/// after the F3 fix was
+/// `8c46a8aba1ed0cafd2abfa66b73fc2d9e8451d5ad475264b8158e0620afb47aa`.
 #[test]
 #[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
@@ -138,7 +144,7 @@ fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
     generate_to_dir(&load("volume").unwrap(), &o, dir.path()).unwrap();
     assert_eq!(
         tree_digest(dir.path()),
-        "8c46a8aba1ed0cafd2abfa66b73fc2d9e8451d5ad475264b8158e0620afb47aa"
+        "92660857d6e02546fe0494fea809d7336e4c5b0bbace901eff9d46cb4175b979"
     );
 }
 

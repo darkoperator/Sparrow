@@ -728,3 +728,105 @@ fn a_real_mode_report_prints_no_values() {
     );
     assert!(text.contains("<masked>"));
 }
+
+/// The real captures' flattened / raw UAL files carry AuditData properties the generated
+/// trees never did, so `--real` reported them as columns that are never generated. Each entry
+/// is a property the generator already produces the operation for, per the Office 365
+/// Management Activity API schema; the flattening itself is the collector's
+/// `ConvertTo-FlatObject` (research hawk layouts §4.2), so a property in AuditData becomes the
+/// column automatically.
+///
+/// Read from the JSON column union, not the CSV header: these are per-record-varying
+/// flattened files, and `Export-Csv` writes only the first record's keys (research §2.3).
+#[test]
+fn the_flattened_ual_files_carry_the_captured_properties() {
+    // (artifact, column): one representative column per AuditData property group.
+    const EXPECTED: &[(&str, &str)] = &[
+        // Token / app access context, on every Exchange record.
+        ("hawk.user.raw_ual", "TokenObjectId"),
+        ("hawk.user.raw_ual", "TokenTenantId"),
+        ("hawk.user.raw_ual", "TokenType"),
+        ("hawk.user.raw_ual", "HostAppId"),
+        ("hawk.user.simple_ual", "AppAccessContext_UniqueTokenId"),
+        ("hawk.user.simple_ual", "AppAccessContext_AADSessionId"),
+        ("hawk.user.simple_ual", "AppAccessContext_IssuedAtTime"),
+        ("hawk.user.simple_ual", "AppAccessContext_APIId"),
+        ("hawk.user.simple_ual", "AppPoolName"),
+        ("hawk.user.simple_ual", "CorrelationID"),
+        ("hawk.user.simple_ual", "RequestId"),
+        ("hawk.investigate_file", "AppAccessContext_UniqueTokenId"),
+        ("hawk.investigate_file", "AppPoolName"),
+        ("hawk.investigate_file", "TokenObjectId"),
+        ("hawk.investigate_file", "TokenTenantId"),
+        // ExchangeItem client detail and the item itself.
+        ("hawk.user.raw_ual", "ClientInfoString"),
+        ("hawk.user.raw_ual", "ClientProcessName"),
+        ("hawk.user.raw_ual", "ClientVersion"),
+        ("hawk.user.raw_ual", "ClientRequestId"),
+        ("hawk.user.raw_ual", "SaveToSentItems"),
+        ("hawk.user.raw_ual", "CrossMailboxOperation"),
+        ("hawk.user.raw_ual", "ActorInfoString"),
+        ("hawk.user.simple_ual", "Item_ImmutableId"),
+        ("hawk.user.simple_ual", "Item_IsRecord"),
+        ("hawk.user.simple_ual", "Item_ParentFolder_Name"),
+        // MailItemsAccessed folder items.
+        ("hawk.user.simple_ual", "AuthType"),
+        ("hawk.user.simple_ual", "Folders_FolderItems_CreationTime"),
+        ("hawk.user.simple_ual", "Folders_FolderItems_CreationTime_1"),
+        ("hawk.user.simple_ual", "Folders_FolderItems_ImmutableId"),
+        (
+            "hawk.user.simple_ual",
+            "Folders_FolderItems_InternetMessageId",
+        ),
+        ("hawk.user.simple_ual", "Folders_FolderItems_SizeInBytes"),
+        ("hawk.user.simple_ual", "Folders_FolderItems_Subject"),
+        // Exchange admin cmdlet parameters already logged, with their full parameter set.
+        ("hawk.tenant.simple_ual", "Param_Force"),
+        (
+            "hawk.tenant.simple_ual",
+            "Param_AlwaysDeleteOutlookRulesBlob",
+        ),
+        ("hawk.investigate_file", "Param_DeleteMessage"),
+        ("hawk.investigate_file", "Param_MoveToFolder"),
+        ("hawk.investigate_file", "Param_Force"),
+        (
+            "hawk.investigate_file",
+            "Param_AlwaysDeleteOutlookRulesBlob",
+        ),
+        // The attacker's finance rule parameters reach the user Simple file.
+        ("hawk.user.simple_ual", "Param_StopProcessingRules"),
+        ("hawk.user.simple_ual", "Param_SubjectOrBodyContainsWords"),
+        // Entra sign-in / AAD detail.
+        ("hawk.user.simple_ual", "ExtendedProperties_Name"),
+        ("hawk.user.simple_ual", "ExtendedProperties_Name_1"),
+    ];
+    // Column sets over the whole generated matrix.
+    let mut seen: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        Default::default();
+    for name in builtin_names().iter().filter(|n| **n != "volume") {
+        for c in Collector::ALL {
+            for ps in [PsEdition::Ps7, PsEdition::Ps51] {
+                let dir = tempfile::tempdir().unwrap();
+                let mut o = GenerateOptions::new(*c, 1);
+                o.ps = ps;
+                generate_to_dir(&load(name).unwrap(), &o, dir.path()).unwrap();
+                for (art, ap) in &profile_dir(dir.path()).unwrap().artifacts {
+                    for k in &ap.keys {
+                        seen.entry(art.clone()).or_default().insert(k.clone());
+                    }
+                    for h in ap.headers.keys() {
+                        seen.entry(art.clone())
+                            .or_default()
+                            .extend(h.iter().cloned());
+                    }
+                }
+            }
+        }
+    }
+    let missing: Vec<String> = EXPECTED
+        .iter()
+        .filter(|(art, col)| !seen.get(*art).is_some_and(|cols| cols.contains(*col)))
+        .map(|(art, col)| format!("{art} {col}"))
+        .collect();
+    assert!(missing.is_empty(), "never generated: {missing:#?}");
+}

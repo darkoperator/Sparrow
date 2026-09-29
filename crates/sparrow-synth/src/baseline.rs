@@ -825,6 +825,8 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
                         ("InternalMessage", "Out of office"),
                         ("ExternalMessage", "Out of office"),
                         ("ExternalAudience", "None"),
+                        ("AutoDeclineFutureRequestsWhenOOF", "False"),
+                        ("CreateOOFEvent", "False"),
                     ],
                     ip,
                     session,
