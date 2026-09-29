@@ -9,7 +9,13 @@ range and hash so an analyst can verify it.
 - **Hawk** 3.x and 4.x output folders, found by content (`Hawk.log`, a `Tenant` folder or `<user>@<domain>`
   folders with known Hawk files). The folder name does not matter.
 - **Microsoft-Extractor-Suite** 4.x Output roots (a folder of `<Component>/<yyyyMMdd-HHmmss>` run folders, with
-  or without `LogFile.txt`). One root is one collection, however many runs it holds.
+  or without `LogFile.txt`). One root is one collection, however many runs it holds. Parsed components include
+  Get-UAL (CSV, JSON, JSONL and SOF-ELK, per-window, merged and Get-UALGraph), Graph sign-ins and audit logs,
+  Azure and directory activity logs, message trace, mailbox audit logs, MailItemsAccessed Sessions/MessageIDs,
+  mailbox and transport rules (Exchange and Graph), exported e-mail headers, Tenant/UserLicenses, mailbox audit
+  status and permissions, MFA registration and methods, Conditional Access, users, admins/roles/PIM, OAuth
+  grants, service principals, app registrations, user applications, devices, groups and members, risky users,
+  risk detections, security alerts and secure score.
 - **Portal exports** recognized by their header wherever they are: Purview audit log search CSV, Entra ID
   sign-in CSV or XLSX, Exchange admin center message trace. A folder holding only such files is ingested as a
   `portal_export` collection.
@@ -27,11 +33,15 @@ auto-reply, merged from several files), `audit_config`, `tenant_settings` (every
 OrganizationConfig and TransportConfig property, and Exchange role entries), `transport_rules`, `remote_domains`,
 `mobile_devices`, `risky_users` and `risk_detections`. When several collections of the same case hold the same
 entity, the newest collection's values win whatever the ingest order. Records Hawk itself flagged
-(`_Investigate_*` files, `_Investigate.txt`) are in `collector_flags`, linked to the flagged row.
+(`_Investigate_*` files, `_Investigate.txt`) are in `collector_flags`, linked to the flagged row. The
+Microsoft-Extractor-Suite state artifacts add `mfa_registration`, `ca_policies`, `applications` (service
+principals, app registrations and user applications), `devices`, `groups` and `group_members`,
+`security_alerts` and `secure_score`.
 
 Event evidence loads into `signins` (Hawk Entra sign-in logs and Entra admin center sign-in exports, CSV or
 XLSX), `directory_audits` (Hawk `EntraIDAuditLogs`), `message_trace` (Hawk 3 `Message_Trace` and Exchange admin
-center summary reports), `mailbox_audit_legacy` (Hawk 3 `Exchange_Mailbox_Audit`) and `admin_audit_events`.
+center summary reports), `mailbox_audit_legacy` (Hawk 3 `Exchange_Mailbox_Audit`) and `admin_audit_events`; Azure
+activity logs load into `azure_activity`.
 The same event from several files or collections is one row: the first copy's values are kept and later copies
 only fill values it lacks (a portal export adds the session id, ASN and MFA detail to a Graph sign-in). Hawk 3
 `Hawk.log` and PSFramework `<date>_logs.csv` load into `collection_log`. When every culture date in a small file
@@ -53,9 +63,11 @@ Microsoft-Extractor-Suite output loads into the same tables:
 
 Repeated runs of a cmdlet merge by entity, and the latest run's values win. `collector_runs` lists every run
 folder with its file count, so a run that returned nothing is visible. Empty exports (0 bytes or a bare BOM) get a
-warning. Artifacts with no parser yet (users, roles, MFA, Conditional Access, devices, groups, risk, alerts,
-secure score, licences, inbox and transport rules, activity logs, Get-UALGraph, QuickUAL) are reported
-`not_supported`.
+warning. Exported e-mail headers load into `email_artifacts` (keyed by Message-ID) and the messages Hawk flagged
+into `inbox_rules` with `source = 'hawk'` (Microsoft-Extractor-Suite rules use `source = 'graph'` or `'exo'`).
+Hawk artifacts with no parser (`hawk.xml`, mailbox-statistics text, raw message headers, forwarding-recipient
+reports, the unique-user IP file) are reported `not_supported`; every Microsoft-Extractor-Suite and portal
+artifact listed above now has one.
 
 ## Tenant profile and enrichment
 
@@ -66,9 +78,10 @@ After loading, `sparrow ingest` runs the profile step (again at any time with `s
   `tenant_settings_current`, `transport_rules_current` and `remote_domains_current`.
 - `tenant_domains`: domains that count as internal, from user UPNs and message trace; change them with
   `sparrow tenant domains add|remove|list`.
-- `licenses`: today only Hawk's licence line (low confidence: Hawk matches SKU-name substrings, so "E5" is
-  also logged for Office 365 E5, which has no Entra ID P1/P2). Microsoft-Extractor-Suite licence exports
-  are not parsed yet.
+- `licenses`: Hawk's licence line (low confidence: Hawk matches SKU-name substrings, so "E5" is also logged
+  for Office 365 E5, which has no Entra ID P1/P2), and Microsoft-Extractor-Suite `TenantLicenses.csv`
+  (source `invictus_tenant_licenses`, high confidence, `ServicePlans` split on `;`). `user_licenses` holds
+  the per-user `UserLicenses.csv` rows.
 - `capabilities` and `tenant_capabilities`: which Microsoft 365 features the tenant has, from licences,
   evidence (visible sign-in risk levels, Graph sign-in downloads, UAL records older than 180 days) and
   baseline assumptions. The facts live in `data/capabilities.yaml`, each with its Microsoft Learn source.
@@ -111,3 +124,21 @@ sparrow verify ual_events <record-id> --case case.duckdb [--root /moved/Hawk_fol
 Add `--json` to any command for machine-readable output. `ingest` exits with code 2 when it completed but a file
 failed, a record could not be parsed, or a file's record counts did not reconcile; `verify` exits with code 2 when
 a record no longer matches its source. With `--json`, fatal errors (exit code 1) are also printed to stdout as `{"error": "..."}`.
+
+## Synthetic data
+
+`sparrow synth` generates deterministic collector trees from a scenario and a seed, each with a ground-truth
+`manifest.json`, so parsing, provenance, dedup, supersession and profiling can be tested end to end without any
+customer data. It writes reserved values only (RFC 5737/RFC 3849 addresses, `*.example`/`*.test` domains,
+seed-derived GUIDs) and never reads a real capture except in the aggregates-only `conformance --real` run:
+
+```bash
+sparrow synth --scenario bec-aitm --collector hawk4 --out tree       # also hawk3, invictus, portal
+sparrow ingest tree --case case.duckdb --geoip-dir tree/geoip
+sparrow synth check --manifest tree/manifest.json --case case.duckdb
+sparrow synth coverage                                               # seed-rule coverage report
+sparrow synth conformance --tree tree --collector hawk              # structure vs the recorded layouts
+```
+
+See [`crates/sparrow-synth/README.md`](crates/sparrow-synth/README.md) for the flags, the scenario and manifest
+formats, the storyline kinds, the licence and audit profiles, coverage (`rules/coverage.yaml`) and conformance.

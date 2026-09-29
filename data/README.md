@@ -8,10 +8,12 @@ built-in entry, a new id is added, and any built-in entry with no matching id is
 
 ## Files
 
-- `capabilities.yaml` — the licensing and retention facts behind the `capabilities` table and,
-  later, `evidence_availability`: which Microsoft 365 / Purview / Entra / Defender capability
-  requires which Graph `subscribedSkus` service plan, what it costs (retention in days), and
-  which evidence tables it unlocks.
+- `capabilities.yaml` — the licensing and retention facts behind the `capabilities` table and
+  `evidence_availability`: which Microsoft 365 / Purview / Entra / Defender capability requires
+  which Graph `subscribedSkus` service plan, what it costs (retention in days), and which
+  evidence tables it unlocks. The `evidence` ids are the `evidence_availability` source ids
+  (`ual`, `signins`, `directory_audits`, `ca_policies`, `risk_detections`, ...); `ca_policies`
+  was added in Phase 5 for the Conditional Access policy parser.
 - `ms365_ip_ranges.json` — Microsoft's published Microsoft 365 service front-end IP ranges
   (Exchange, SharePoint, Skype, Common), used by `ip_intel.is_microsoft` /
   `microsoft_service_area`. Unlike `capabilities.yaml`, an external `<data>/ms365_ip_ranges.json`
