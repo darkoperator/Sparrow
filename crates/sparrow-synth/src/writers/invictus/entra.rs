@@ -4,7 +4,7 @@
 //! `ConvertTo-Json | Out-File -Append`), and `-MergeOutput` copies under `Merged/`.
 
 use super::Ctx;
-use super::ual::merge_json;
+use super::ual::json_inner;
 use crate::Result;
 use crate::events::{DirAudit, SignIn, SignInType};
 use crate::keys;
@@ -150,64 +150,119 @@ type PerItem<'a> = dyn FnMut(&mut Tree<'_>, &str, usize, (u32, u32)) + 'a;
 /// 2's file). Calls `each(tree, rel, item index, line span)` per item. Returns the files' texts
 /// in name order (for the merge).
 #[allow(clippy::too_many_arguments)]
-fn write_pages(
+/// A `Merged/<name>` JSON file written incrementally: `[`, each page entry's inner part joined
+/// by `,`, `]`, using the collector's newline. Byte-identical to `merge_json` over all entries.
+struct JsonMerge {
+    rel: String,
+    artifact: &'static str,
+    started: bool,
+    any: bool,
+}
+
+impl JsonMerge {
+    fn new(rel: String, artifact: &'static str) -> JsonMerge {
+        JsonMerge {
+            rel,
+            artifact,
+            started: false,
+            any: false,
+        }
+    }
+
+    fn spec(&self, c: &Ctx<'_>) -> FileSpec {
+        FileSpec::new(&self.rel, Some(self.artifact), c.utf8())
+            .derived()
+            .source_derived()
+    }
+
+    /// Appends one page entry (one `files` element of the old merge), filtering an empty one.
+    fn push(&mut self, c: &Ctx<'_>, tree: &mut Tree<'_>, entry: &str) -> Result<()> {
+        let spec = self.spec(c);
+        if !self.started {
+            let mut open = String::new();
+            open.push('[');
+            open.push_str(c.nl());
+            tree.write(&spec, &open)?;
+            self.started = true;
+        }
+        let inner = json_inner(entry);
+        if !inner.is_empty() {
+            let mut text = String::new();
+            if self.any {
+                text.push(',');
+            }
+            text.push_str(inner);
+            tree.write(&spec, &text)?;
+            self.any = true;
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self, c: &Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
+        let spec = self.spec(c);
+        let mut text = String::new();
+        if !self.started {
+            text.push('[');
+            text.push_str(c.nl());
+        }
+        text.push(']');
+        text.push_str(c.nl());
+        tree.write(&spec, &text)?;
+        Ok(())
+    }
+}
+
+/// Writes the page files of `records` (one per Graph `PAGE`) and streams their merge entries
+/// into `merge`. Returns the number of merge entries (the old `files.len()`).
+#[allow(clippy::too_many_arguments)]
+fn write_pages<T>(
     c: &mut Ctx<'_>,
     tree: &mut Tree<'_>,
     dir: &str,
     suffix: &str,
     artifact: &'static str,
-    rows: &[Row],
+    records: &[T],
+    row: impl Fn(&T) -> Row,
     clock: &mut NaiveDateTime,
     same_second_third: bool,
     each: &mut PerItem<'_>,
-) -> Result<Vec<String>> {
-    let mut files: Vec<String> = Vec::new();
+    merge: &mut JsonMerge,
+) -> Result<usize> {
+    let mut entries = 0usize;
     let mut last_stamp = String::new();
-    for (p, chunk) in rows.chunks(PAGE).enumerate() {
+    let mut current = String::new();
+    for (p, chunk) in records.chunks(PAGE).enumerate() {
         if !(p == 2 && same_second_third) {
             *clock += Duration::seconds(c.rng.range(1, 3));
         }
         let stamp = clock.format("%Y%m%d%H%M%S").to_string();
         let rel = format!("{dir}/{stamp}-{suffix}.json");
         let spec = FileSpec::new(&rel, Some(artifact), c.utf8());
-        let r = convert_to_json(&c.host, chunk, false);
+        let rows: Vec<Row> = chunk.iter().map(&row).collect();
+        let r = convert_to_json(&c.host, &rows, false);
         let text = format!("{}{}", r.text, c.nl());
         let before = tree.write(&spec, &text)?;
         for (i, (a, b)) in r.spans.iter().enumerate() {
             each(tree, &rel, p * PAGE + i, (a + before, b + before));
         }
         if stamp == last_stamp {
-            if let Some(f) = files.last_mut() {
-                f.push_str(&text);
-            }
+            current.push_str(&text);
         } else {
-            files.push(text);
+            if !current.is_empty() {
+                merge.push(c, tree, &current)?;
+                entries += 1;
+            }
+            current = text;
         }
         last_stamp = stamp;
         c.log
             .add(*clock, format!("[INFO] Retrieved {} records", chunk.len()));
     }
-    Ok(files)
-}
-
-/// `Merged/<name>` of a folder of page files (`[`/`]` merge), derived from them.
-fn write_merged(
-    c: &Ctx<'_>,
-    tree: &mut Tree<'_>,
-    dir: &str,
-    name: &str,
-    artifact: &'static str,
-    files: &[String],
-) -> Result<String> {
-    let merged_dir = format!("{dir}/Merged");
-    tree.dir(&merged_dir)?;
-    let rel = format!("{merged_dir}/{name}");
-    let texts: Vec<&str> = files.iter().map(String::as_str).collect();
-    let spec = FileSpec::new(&rel, Some(artifact), c.utf8())
-        .derived()
-        .source_derived();
-    tree.write(&spec, &merge_json(c.nl(), &texts))?;
-    Ok(rel)
+    if !current.is_empty() {
+        merge.push(c, tree, &current)?;
+        entries += 1;
+    }
+    Ok(entries)
 }
 
 /// Start-EvidenceCollection passes no dates: both cmdlets use their default start, 30 days
@@ -220,11 +275,9 @@ fn graph_start(world: &World) -> DateTime<Utc> {
 fn signins_of(c: &Ctx<'_>, types: &[SignInType]) -> Vec<SignIn> {
     let from = graph_start(c.world);
     let mut v: Vec<SignIn> = c
-        .days
-        .iter()
-        .flat_map(|d| &d.signins)
+        .days()
+        .flat_map(|d| d.signins)
         .filter(|s| types.contains(&s.event_type) && s.time >= from)
-        .cloned()
         .collect();
     v.sort_by_key(|s| Reverse((s.time, s.id)));
     v
@@ -269,37 +322,34 @@ pub(super) fn write_signins(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> 
         c.log
             .add(clock, format!("[INFO] Acquiring the {folder} sign-in logs"));
         let signins = signins_of(c, kinds);
-        let rows: Vec<Row> = signins.iter().map(signin_row).collect();
         let type_dir = format!("{dir}/{folder}");
         let mut each = |tree: &mut Tree<'_>, rel: &str, k: usize, span: (u32, u32)| {
             let s = &signins[k];
             tree.row(rel, "signins", keys::signin(s.id));
             tree.deliver(&Evidence::SignIn(s.id), "signins", rel, span);
         };
-        let files = write_pages(
+        let merged_rel = format!("{type_dir}/Merged/SignInLogs-{file_name}-Combined.json");
+        tree.dir(&format!("{type_dir}/Merged"))?;
+        let mut merge = JsonMerge::new(merged_rel.clone(), "inv.signins.merged");
+        let entries = write_pages(
             c,
             tree,
             &type_dir,
             &format!("{file_name}-SignInLogs"),
             "inv.signins",
-            &rows,
+            &signins,
+            signin_row,
             &mut clock,
             i == 0,
             &mut each,
+            &mut merge,
         )?;
+        merge.finish(c, tree)?;
         c.log.add(clock, format!("\nSummary for {folder}:"));
         c.log.add(clock, format!("  Records: {}", signins.len()));
-        c.log.add(clock, format!("  Files: {}\n", files.len()));
-        let merged = write_merged(
-            c,
-            tree,
-            &type_dir,
-            &format!("SignInLogs-{file_name}-Combined.json"),
-            "inv.signins.merged",
-            &files,
-        )?;
+        c.log.add(clock, format!("  Files: {entries}\n"));
         for s in &signins {
-            tree.row(&merged, "signins", keys::signin(s.id));
+            tree.row(&merged_rel, "signins", keys::signin(s.id));
         }
     }
     c.runs.busy_until(clock);
@@ -383,7 +433,6 @@ pub(super) fn write_audits(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
         .collect();
     audits.sort_by(|a, b| (b.time, &b.id).cmp(&(a.time, &a.id)));
     c.log.add(clock, "=== Starting Audit Log Collection ===");
-    let rows: Vec<Row> = audits.iter().map(|a| audit_row(c.world, a)).collect();
     let mut each = |tree: &mut Tree<'_>, rel: &str, k: usize, span: (u32, u32)| {
         let a = &audits[k];
         tree.row(rel, "directory_audits", keys::dir_audit(&a.id));
@@ -394,27 +443,26 @@ pub(super) fn write_audits(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
             span,
         );
     };
-    let files = write_pages(
+    let world = c.world;
+    let merged_rel = format!("{dir}/Merged/AuditLogs-Combined.json");
+    tree.dir(&format!("{dir}/Merged"))?;
+    let mut merge = JsonMerge::new(merged_rel.clone(), "inv.entra_audit.merged");
+    write_pages(
         c,
         tree,
         &dir,
         "AuditLogs",
         "inv.entra_audit",
-        &rows,
+        &audits,
+        |a| audit_row(world, a),
         &mut clock,
         false,
         &mut each,
+        &mut merge,
     )?;
-    let merged = write_merged(
-        c,
-        tree,
-        &dir,
-        "AuditLogs-Combined.json",
-        "inv.entra_audit.merged",
-        &files,
-    )?;
+    merge.finish(c, tree)?;
     for a in &audits {
-        tree.row(&merged, "directory_audits", keys::dir_audit(&a.id));
+        tree.row(&merged_rel, "directory_audits", keys::dir_audit(&a.id));
     }
     c.runs.busy_until(clock);
     Ok(())

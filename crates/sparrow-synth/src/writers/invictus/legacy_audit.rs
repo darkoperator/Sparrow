@@ -9,7 +9,7 @@ use crate::ps::{DateEvidence, DtKind, PsDate, Row, Val, export_csv};
 use crate::tree::{FileSpec, Tree};
 use serde_json::{Value, json};
 use std::cmp::Reverse;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 
 fn r(k: &str, v: Val) -> (String, Val) {
@@ -196,23 +196,29 @@ pub(super) fn write(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
     let dir = c.path(&run.rel);
     tree.dir(&dir)?;
     let since = c.world.collected_at() - chrono::Duration::days(90);
+    // One pass over the days: group the ExchangeItem(Group) records by their owner, so each
+    // mailbox is not a separate scan of the window.
+    let mut by_owner: BTreeMap<String, Vec<crate::events::Ual>> = BTreeMap::new();
+    for d in c.days() {
+        for u in d.ual {
+            if u.time < since
+                || !matches!(
+                    u.record_type,
+                    RecordType::ExchangeItem | RecordType::ExchangeItemGroup
+                )
+            {
+                continue;
+            }
+            if let Some(o) = u.audit.get("MailboxOwnerUPN").and_then(Value::as_str) {
+                by_owner.entry(o.to_lowercase()).or_default().push(u);
+            }
+        }
+    }
     for mailbox in c.world.mailboxes.values() {
-        let mut records: Vec<&crate::events::Ual> = c
-            .days
-            .iter()
-            .flat_map(|d| &d.ual)
-            .filter(|u| {
-                u.time >= since
-                    && matches!(
-                        u.record_type,
-                        RecordType::ExchangeItem | RecordType::ExchangeItemGroup
-                    )
-                    && u.audit
-                        .get("MailboxOwnerUPN")
-                        .and_then(Value::as_str)
-                        .is_some_and(|o| o.eq_ignore_ascii_case(&mailbox.upn))
-            })
-            .collect();
+        let mut records: Vec<&crate::events::Ual> = by_owner
+            .get(&mailbox.upn.to_lowercase())
+            .map(|v| v.iter().collect())
+            .unwrap_or_default();
         records.sort_by_key(|u| Reverse((u.time, u.id)));
         let rel = format!(
             "{dir}/{}-mailboxAuditLog-{}.csv",

@@ -24,6 +24,24 @@ pub fn root_name(world: &World, opts: &GenerateOptions) -> String {
     }
 }
 
+/// The UTC dates of the collection window, oldest first (the keys of [`window_days`]).
+pub fn window_dates(world: &World) -> Vec<chrono::NaiveDate> {
+    let (start, end) = (world.window_start(), world.window_end());
+    let mut out = Vec::new();
+    let mut date = start.date_naive();
+    while let Some(first) = date.and_hms_opt(0, 0, 0).map(|t| t.and_utc()) {
+        if first >= end {
+            break;
+        }
+        out.push(date);
+        date = match date.succ_opt() {
+            Some(n) => n,
+            None => break,
+        };
+    }
+    out
+}
+
 /// The events of every UTC day of the collection window (`World::day`), each restricted to
 /// `[window_start, window_end)`.
 pub fn window_days(world: &World) -> Vec<Day> {

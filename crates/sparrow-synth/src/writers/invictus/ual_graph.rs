@@ -27,11 +27,9 @@ fn victims(c: &Ctx<'_>) -> BTreeSet<String> {
 /// write_get_ual` reads the same set to predict which `-AuditDataOnly` windows are upgraded.
 pub(super) fn full_records(c: &Ctx<'_>) -> Vec<crate::events::Ual> {
     let victims = victims(c);
-    c.days
-        .iter()
-        .flat_map(|d| &d.ual)
+    c.days()
+        .flat_map(|d| d.ual)
         .filter(|u| victims.contains(&u.user_id.to_lowercase()))
-        .cloned()
         .collect()
 }
 

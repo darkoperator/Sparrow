@@ -128,11 +128,10 @@ const FULL_OPERATIONS: [&str; 4] = [
     "Consent to application.",
 ];
 
-fn op_records<'a>(c: &'a Ctx<'_>, op: &str) -> Vec<&'a crate::events::Ual> {
+fn op_records(c: &Ctx<'_>, op: &str) -> Vec<crate::events::Ual> {
     let victims = victims(c);
-    c.days
-        .iter()
-        .flat_map(|d| &d.ual)
+    c.days()
+        .flat_map(|d| d.ual)
         .filter(|u| victims.contains(&u.user_id.to_lowercase()) && u.operation == op)
         .collect()
 }
@@ -143,7 +142,6 @@ pub(super) fn full_records(c: &Ctx<'_>) -> Vec<crate::events::Ual> {
     FULL_OPERATIONS
         .iter()
         .flat_map(|op| op_records(c, op))
-        .cloned()
         .collect()
 }
 
@@ -153,7 +151,7 @@ fn write_json(
     rel: &str,
     artifact: &'static str,
     rows: &[Row],
-    records: &[&crate::events::Ual],
+    records: &[crate::events::Ual],
 ) -> Result<()> {
     let rendered = convert_to_json(&c.host, rows, false);
     if c.opts.non_windows {
@@ -179,7 +177,7 @@ fn write_csv(
     artifact: &'static str,
     derived: bool,
     rows: &[Row],
-    records: &[&crate::events::Ual],
+    records: &[crate::events::Ual],
 ) -> Result<Rendered> {
     let mut ev = DateEvidence::default();
     let rendered = export_csv(&c.host, rows, &mut ev);

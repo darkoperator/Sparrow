@@ -36,7 +36,7 @@ use crate::ps::{Encoding, Host};
 use crate::rng::{Rng, stream};
 use crate::tree::Tree;
 use crate::world::World;
-use chrono::{Duration, NaiveDateTime};
+use chrono::{Duration, NaiveDate, NaiveDateTime};
 
 /// One cmdlet run's folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,8 +125,9 @@ pub(crate) struct Ctx<'w> {
     pub log: log::Log,
     /// Seconds between pages of a paged download.
     pub rng: Rng,
-    /// The window's events per UTC day (`writers::window_days`), built once.
-    pub days: Vec<Day>,
+    /// The window's UTC dates (`writers::window_dates`). Days are generated on demand by
+    /// [`Ctx::days`] so no writer holds the whole window's events at once.
+    pub dates: Vec<NaiveDate>,
 }
 
 impl<'w> Ctx<'w> {
@@ -151,8 +152,25 @@ impl<'w> Ctx<'w> {
             runs: Runs::new(world),
             log: log::Log::default(),
             rng: stream(world.seed, "invictus/pages"),
-            days: crate::writers::window_days(world),
+            dates: crate::writers::window_dates(world),
         }
+    }
+
+    /// The window's days, oldest first. Each day is generated when yielded and dropped after, so
+    /// iterating never holds more than one day's events (the writers that need a cross-day view
+    /// stream or keep bounded summaries).
+    pub fn days(&self) -> impl Iterator<Item = Day> + '_ {
+        self.dates.iter().map(|date| self.day(*date))
+    }
+
+    /// One UTC day's events, restricted to `[window_start, window_end)`.
+    fn day(&self, date: NaiveDate) -> Day {
+        let (start, end) = (self.world.window_start(), self.world.window_end());
+        let mut d = self.world.day(date);
+        d.ual.retain(|u| u.time >= start && u.time < end);
+        d.signins.retain(|s| s.time >= start && s.time < end);
+        d.trace.retain(|t| t.received >= start && t.received < end);
+        d
     }
 
     /// A path below the project folder, as a tree path.

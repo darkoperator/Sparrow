@@ -36,10 +36,9 @@ fn opt(v: Option<String>) -> Val {
 fn trace_rows(c: &Ctx<'_>) -> Vec<(Row, Uuid, String, DateTime<Utc>)> {
     let world = c.world;
     let from = (world.collected_at() - Duration::days(90)).max(world.window_start());
-    let mut msgs: Vec<_> = c
-        .days
-        .iter()
-        .flat_map(|d| &d.trace)
+    let mut msgs: Vec<crate::events::TraceMsg> = c
+        .days()
+        .flat_map(|d| d.trace)
         .filter(|t| t.received >= from)
         .collect();
     msgs.sort_by_key(|t| Reverse((t.received, t.trace_id)));
@@ -503,45 +502,76 @@ fn write_derived(
 /// records in the window (only when a user has at most the collector's 4999-record cap), once
 /// more for a user without any (an empty run folder), then Get-MessageIDs over the window (no
 /// filter: the cmdlet has no `-UserIds`), split into 5000-row runs.
+/// One `Get-Sessions -UserIds <upn>` file from `records` (reverse-time order).
+fn write_sessions(c: &mut Ctx<'_>, tree: &mut Tree<'_>, upn: &str, records: &[Ual]) -> Result<()> {
+    let run = c.runs.next("MailItemsAccessed", None);
+    let dir = c.path(&run.rel);
+    tree.dir(&dir)?;
+    c.log.add(run.local, "=== Starting Session Collection ===");
+    let groups: Vec<(&Ual, Vec<Row>)> = records.iter().map(|u| (u, vec![session_row(u)])).collect();
+    let rel = format!("{dir}/{}-Sessions-{upn}.csv", run.stamp);
+    write_derived(c, tree, &rel, "inv.mia.sessions", &groups)
+}
+
+/// One `Get-MessageIDs` run file from a chunk of MIA records.
+fn write_message_ids(c: &mut Ctx<'_>, tree: &mut Tree<'_>, chunk: &[Ual]) -> Result<()> {
+    let run = c.runs.next("MailItemsAccessed", None);
+    let dir = c.path(&run.rel);
+    tree.dir(&dir)?;
+    c.log
+        .add(run.local, "=== Starting Message IDs Collection ===");
+    let groups: Vec<(&Ual, Vec<Row>)> = chunk.iter().map(|u| (u, message_id_rows(u))).collect();
+    let rel = format!("{dir}/{}-MessageIDs.csv", run.stamp);
+    write_derived(c, tree, &rel, "inv.mia.message_ids", &groups)
+}
+
 pub(super) fn write_mail_items_accessed(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
-    let mut records: Vec<Ual> = c
-        .days
-        .iter()
-        .flat_map(|d| &d.ual)
-        .filter(|u| u.operation == "MailItemsAccessed")
-        .cloned()
-        .collect();
-    records.sort_by_key(|u| Reverse((u.time, u.id)));
-    // The five heaviest mailboxes: most MailItemsAccessed records, ties by UPN for determinism.
+    // Pass 1: counts per mailbox only (no records held), for the heavy-user and quiet-mailbox
+    // selection.
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-    for u in &records {
-        *counts.entry(u.user_id.clone()).or_default() += 1;
+    for d in c.days() {
+        for u in d.ual {
+            if u.operation == "MailItemsAccessed" {
+                *counts.entry(u.user_id.clone()).or_default() += 1;
+            }
+        }
     }
-    let mut heavy: Vec<(String, usize)> = counts.into_iter().collect();
+    // The five heaviest mailboxes: most MailItemsAccessed records, ties by UPN for determinism.
+    let mut heavy: Vec<(String, usize)> = counts.iter().map(|(k, v)| (k.clone(), *v)).collect();
     heavy.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     heavy.truncate(5);
+    // Pass 2: one reverse-time scan accumulating only the qualifying heavy users' records
+    // (each at most the collector's cap), then write the Session files in heavy order.
+    let mut sessions: BTreeMap<String, Vec<Ual>> = BTreeMap::new();
+    for (upn, n) in &heavy {
+        if *n <= MIA_CAP {
+            sessions.insert(upn.clone(), Vec::new());
+        }
+    }
+    for date in c.dates.clone().iter().rev() {
+        let mut d = c.day(*date);
+        for u in d.ual.drain(..).rev() {
+            if u.operation != "MailItemsAccessed" {
+                continue;
+            }
+            if let Some(v) = sessions.get_mut(&u.user_id) {
+                v.push(u);
+            }
+        }
+    }
     for (upn, n) in &heavy {
         if *n > MIA_CAP {
             continue;
         }
-        let run = c.runs.next("MailItemsAccessed", None);
-        let dir = c.path(&run.rel);
-        tree.dir(&dir)?;
-        c.log.add(run.local, "=== Starting Session Collection ===");
-        let groups: Vec<(&Ual, Vec<Row>)> = records
-            .iter()
-            .filter(|u| u.user_id == *upn)
-            .map(|u| (u, vec![session_row(u)]))
-            .collect();
-        let rel = format!("{dir}/{}-Sessions-{upn}.csv", run.stamp);
-        write_derived(c, tree, &rel, "inv.mia.sessions", &groups)?;
+        let records = sessions.remove(upn).unwrap_or_default();
+        write_sessions(c, tree, upn, &records)?;
     }
     // A mailbox nobody signs in to (the shared or discovery mailbox) has no hits.
     if let Some(quiet) = c
         .world
         .mailboxes
         .keys()
-        .find(|upn| !records.iter().any(|u| &u.user_id == *upn))
+        .find(|upn| !counts.contains_key(*upn))
     {
         let run = c.runs.next("MailItemsAccessed", None);
         tree.dir(&c.path(&run.rel))?;
@@ -551,15 +581,23 @@ pub(super) fn write_mail_items_accessed(c: &mut Ctx<'_>, tree: &mut Tree<'_>) ->
             format!("[INFO] No MailItemsAccessed events found for {quiet}"),
         );
     }
-    for chunk in records.chunks(MIA_SPLIT) {
-        let run = c.runs.next("MailItemsAccessed", None);
-        let dir = c.path(&run.rel);
-        tree.dir(&dir)?;
-        c.log
-            .add(run.local, "=== Starting Message IDs Collection ===");
-        let groups: Vec<(&Ual, Vec<Row>)> = chunk.iter().map(|u| (u, message_id_rows(u))).collect();
-        let rel = format!("{dir}/{}-MessageIDs.csv", run.stamp);
-        write_derived(c, tree, &rel, "inv.mia.message_ids", &groups)?;
+    // Pass 3: one reverse-time scan for every MessageIDs run, buffering one 5000-record chunk.
+    let mut chunk: Vec<Ual> = Vec::with_capacity(MIA_SPLIT);
+    for date in c.dates.clone().iter().rev() {
+        let mut d = c.day(*date);
+        for u in d.ual.drain(..).rev() {
+            if u.operation != "MailItemsAccessed" {
+                continue;
+            }
+            chunk.push(u);
+            if chunk.len() == MIA_SPLIT {
+                write_message_ids(c, tree, &chunk)?;
+                chunk.clear();
+            }
+        }
+    }
+    if !chunk.is_empty() {
+        write_message_ids(c, tree, &chunk)?;
     }
     Ok(())
 }

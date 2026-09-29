@@ -33,7 +33,7 @@ type LastSignins = BTreeMap<String, (Option<DateTime<Utc>>, Option<DateTime<Utc>
 /// Every person's last interactive and last non-interactive sign-in of the window.
 fn last_signins(c: &Ctx<'_>) -> LastSignins {
     let mut map: LastSignins = BTreeMap::new();
-    for s in c.days.iter().flat_map(|d| &d.signins) {
+    for s in c.days().flat_map(|d| d.signins) {
         if s.user.is_empty() {
             continue;
         }
