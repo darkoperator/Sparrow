@@ -22,7 +22,9 @@ use sparrow_core::verify::verify_record;
 use sparrow_synth::check::check;
 use sparrow_synth::generate::generate_to_dir;
 use sparrow_synth::manifest::Manifest;
-use sparrow_synth::options::{Collector, Culture, GenerateOptions, PsEdition, SigninExport};
+use sparrow_synth::options::{
+    Collector, Culture, GenerateOptions, PsEdition, SigninExport, UalFormat,
+};
 use sparrow_synth::scenario::{At, Scenario, StoryKind, StorySpec, builtin_names, load};
 use sparrow_synth::testing::ingest_generated;
 use std::collections::BTreeMap;
@@ -35,6 +37,66 @@ fn count(case: &Case, sql: &str) -> i64 {
 
 fn text(case: &Case, sql: &str) -> String {
     case.conn().query_row(sql, [], |r| r.get(0)).unwrap()
+}
+
+/// The distinct keys of `table` as Sparrow stores them (`check`'s key expression).
+fn table_keys(case: &Case, table: &str) -> std::collections::BTreeSet<String> {
+    let expr = if table == "ual_events" {
+        "lower(CAST(record_id AS VARCHAR))"
+    } else {
+        "record_key"
+    };
+    let mut stmt = case
+        .conn()
+        .prepare(&format!("SELECT DISTINCT {expr} FROM {table}"))
+        .unwrap();
+    stmt.query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// The manifest's `keys_sha256` scheme: SHA-256 of the sorted unique keys joined by `\n`.
+fn keys_sha256(keys: &std::collections::BTreeSet<String>) -> String {
+    use sha2::{Digest, Sha256};
+    let joined = keys
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join("\n");
+    hex::encode(Sha256::digest(joined.as_bytes()))
+}
+
+/// `case`'s key set for `table` matches the manifest: the listed keys, or (above 5000) the hash.
+fn assert_keys_match_manifest(case: &Case, m: &Manifest, table: &str) {
+    let e = &m.tables[table];
+    let keys = table_keys(case, table);
+    if !e.keys.is_empty() {
+        let expected: std::collections::BTreeSet<String> = e.keys.iter().cloned().collect();
+        assert_eq!(keys, expected, "{table} keys");
+    } else if let Some(h) = &e.keys_sha256 {
+        assert_eq!(keys_sha256(&keys), *h, "{table} key hash");
+    }
+    assert_eq!(keys.len() as u64, e.rows, "{table} key count");
+}
+
+/// Ingest one cached tree into an existing case (no profile).
+fn ingest_into(case: &mut Case, g: &Generated) {
+    let report = ingest_path(
+        case,
+        &g.dir,
+        &ParserRegistry::builtin(),
+        &IngestOptions::default(),
+    )
+    .unwrap();
+    no_error_files(&report);
+}
+
+/// Ingest one cached tree into a fresh case (no profile); for key-set checks.
+fn ingest_tree(g: &Generated) -> Case {
+    let mut case = Case::in_memory().unwrap();
+    ingest_into(&mut case, g);
+    case
 }
 
 /// One generated tree: the parent dir that holds `<manifest.root>` and the manifest.
@@ -251,82 +313,216 @@ fn ingest_many(trees: &[&Generated], geoip: Option<&Path>, as_of: DateTime<Utc>)
     case
 }
 
-/// A Hawk 4 and a portal export of the same world: the UAL and sign-in keys deduplicate by id,
-/// and a key carries sightings from both collections.
+/// A Hawk 4 and a portal export of the same world: each table's key set is exactly the union of
+/// the two manifests' key sets, in either ingest order, and the portal UAL file's duplicate count
+/// is the overlap predicted from those sets.
 #[test]
 fn portal_exports_beside_a_hawk_capture_deduplicate_by_id() {
     let hawk = builtin("bec-aitm", &GenerateOptions::new(Collector::Hawk4, 1));
     let portal = builtin("bec-aitm", &GenerateOptions::new(Collector::Portal, 1));
     let geoip = hawk.dir.join(hawk.manifest.geoip_dir.clone().unwrap());
-    let case = ingest_many(
-        &[&hawk, &portal],
-        Some(&geoip),
-        hawk.manifest.collected_at + Duration::days(1),
-    );
+    let as_of = hawk.manifest.collected_at + Duration::days(1);
+    const TABLES: [&str; 3] = ["ual_events", "signins", "message_trace"];
 
-    assert_eq!(count(&case, "SELECT count(*) FROM collections"), 2);
-    for key in ["ual_events", "signins"] {
-        let rows = hawk.manifest.tables[key].rows + portal.manifest.tables[key].rows;
-        let union = count(&case, &format!("SELECT count(*) FROM {key}"));
-        assert!(
-            union < rows as i64,
-            "{key}: the two captures did not deduplicate ({union} vs {rows})"
-        );
-        assert!(
-            count(
-                &case,
-                &format!(
-                    "SELECT count(*) FROM (
-                       SELECT rs.record_key,
-                         max(CASE WHEN sf.collection_id IN (SELECT collection_id FROM collections WHERE root_path LIKE '%Hawk%') THEN 1 ELSE 0 END) AS in_hawk,
-                         max(CASE WHEN sf.collection_id IN (SELECT collection_id FROM collections WHERE root_path LIKE '%Portal%') THEN 1 ELSE 0 END) AS in_portal
-                       FROM record_sources rs JOIN source_files sf USING (file_id)
-                       WHERE rs.table_name = '{key}'
-                       GROUP BY rs.record_key
-                     ) x WHERE in_hawk > 0 AND in_portal > 0"
-                )
-            ) > 0,
-            "{key}: no key is seen through both collectors"
+    // The portal's `ual_events` is above the 5000-key listing cap, so its key set is read from a
+    // portal-only ingest and checked against the manifest's `keys_sha256` before it is used; the
+    // other tables list their keys in the manifests directly.
+    let portal_case = ingest_tree(&portal);
+    for table in TABLES {
+        assert_keys_match_manifest(&portal_case, &portal.manifest, table);
+    }
+    let manifest_keys = |m: &Manifest, table: &str| -> std::collections::BTreeSet<String> {
+        if m.tables[table].keys.is_empty() {
+            table_keys(&portal_case, table)
+        } else {
+            m.tables[table].keys.iter().cloned().collect()
+        }
+    };
+    let mut expected: BTreeMap<&str, std::collections::BTreeSet<String>> = BTreeMap::new();
+    for table in TABLES {
+        let mut union = manifest_keys(&hawk.manifest, table);
+        union.extend(manifest_keys(&portal.manifest, table));
+        expected.insert(table, union);
+    }
+
+    let mut key_snapshots = Vec::new();
+    for (order, portal_second) in [([&hawk, &portal], true), ([&portal, &hawk], false)] {
+        let mut case = Case::in_memory().unwrap();
+        // The portal may be the first or second collection, so capture its file's counts from
+        // whichever ingest actually processed it.
+        let mut portal_ual: Option<(u64, u64, u64)> = None;
+        for g in order {
+            let report = ingest_path(
+                &mut case,
+                &g.dir,
+                &ParserRegistry::builtin(),
+                &IngestOptions::default(),
+            )
+            .unwrap();
+            no_error_files(&report);
+            if let Some(f) = report
+                .collections
+                .iter()
+                .flat_map(|c| &c.files)
+                .find(|f| f.artifact_id.as_deref() == Some("portal.ual"))
+            {
+                portal_ual = Some((f.records_read, f.records_loaded, f.records_duplicate));
+            }
+        }
+        let (read, loaded, duplicate) = portal_ual.expect("portal.ual file");
+        refresh(
+            &mut case,
+            &ProfileOptions {
+                dirs: DataDirs::default(),
+                geoip_dir: Some(geoip.clone()),
+                as_of: Some(as_of),
+            },
+        )
+        .unwrap();
+        let mut snapshot = Vec::new();
+        for table in TABLES {
+            let keys = table_keys(&case, table);
+            assert_eq!(keys, expected[table], "{table} combined keys");
+            snapshot.push(keys);
+        }
+        key_snapshots.push(snapshot);
+
+        // The portal UAL file: when the portal is processed second its rows already seen in the
+        // Hawk capture are duplicates (the overlap of the two key sets), the rest are loaded; when
+        // it is first it loads everything and the Hawk files are the duplicates.
+        let overlap = hawk.manifest.tables["ual_events"].rows
+            + portal.manifest.tables["ual_events"].rows
+            - expected["ual_events"].len() as u64;
+        if portal_second {
+            assert_eq!(duplicate, overlap, "portal ual duplicates");
+            assert_eq!(
+                loaded,
+                portal.manifest.tables["ual_events"].rows - overlap,
+                "portal ual loaded"
+            );
+        } else {
+            assert_eq!(duplicate, 0, "portal ual first");
+            assert_eq!(
+                loaded, portal.manifest.tables["ual_events"].rows,
+                "portal ual loaded first"
+            );
+        }
+        assert_eq!(
+            read, portal.manifest.tables["ual_events"].rows,
+            "portal ual rows read"
         );
     }
+    assert_eq!(
+        key_snapshots[0], key_snapshots[1],
+        "the combined key sets depend on the ingest order"
+    );
 
     // The XLSX rendering of the same sign-in export joins the Hawk capture too.
     let mut xlsx_opts = GenerateOptions::new(Collector::Portal, 1);
     xlsx_opts.signin_export = SigninExport::Xlsx;
     let xlsx = builtin("bec-aitm", &xlsx_opts);
-    let case = ingest_many(
-        &[&hawk, &xlsx],
-        Some(&geoip),
-        hawk.manifest.collected_at + Duration::days(1),
-    );
+    let case = ingest_many(&[&hawk, &xlsx], Some(&geoip), as_of);
     assert!(
-        count(&case, "SELECT count(*) FROM signins")
-            < (hawk.manifest.tables["signins"].rows + xlsx.manifest.tables["signins"].rows) as i64,
-        "the XLSX sign-in export did not deduplicate"
+        count(&case, "SELECT count(*) FROM signins") == expected["signins"].len() as i64,
+        "the XLSX sign-in export did not join the Hawk capture's sign-in key set"
     );
 }
 
-/// A full Purview export upgrades the partial rows a Hawk 4 capture left behind.
+/// A full Purview export upgrades the partial rows an earlier capture left behind. The earlier
+/// capture is the Microsoft-Extractor-Suite `-AuditDataOnly` window (its MIA rows lose `Folders`),
+/// the full copy is the portal's Purview CSV of the same world.
 #[test]
 fn a_purview_export_upgrades_hawk_partial_rows() {
-    let hawk = builtin("bec-aitm", &GenerateOptions::new(Collector::Hawk4, 1));
+    let mut hawk_opts = GenerateOptions::new(Collector::Invictus, 1);
+    hawk_opts.ual_format = UalFormat::CsvAuditDataOnly;
+    let hawk = builtin("bec-aitm", &hawk_opts);
     let portal = builtin("bec-aitm", &GenerateOptions::new(Collector::Portal, 1));
     let geoip = hawk.dir.join(hawk.manifest.geoip_dir.clone().unwrap());
-    let case = ingest_many(
-        &[&hawk, &portal],
-        Some(&geoip),
-        hawk.manifest.collected_at + Duration::days(1),
+    let as_of = hawk.manifest.collected_at + Duration::days(1);
+
+    // Hawk alone: a partial MailItemsAccessed row exists, its key is attested by the manifest
+    // (the key set hash above 5000), and it has its window's single synthetic child.
+    let mut case = ingest_tree(&hawk);
+    assert_keys_match_manifest(&case, &hawk.manifest, "ual_events");
+    let key: String = case
+        .conn()
+        .query_row(
+            "SELECT CAST(record_id AS VARCHAR) FROM ual_events
+             WHERE operation = 'MailItemsAccessed' AND data_completeness = 'partial'
+             ORDER BY record_id LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let children_before = count(
+        &case,
+        &format!("SELECT count(*) FROM mail_items_accessed WHERE record_id = '{key}'"),
     );
-    // The portal's full UAL export replaces the Hawk partial rows with full ones.
+    assert!(children_before > 0, "the partial row has no child");
     assert_eq!(
-        count(
+        text(
             &case,
-            "SELECT count(*) FROM ual_events WHERE data_completeness = 'partial'"
+            &format!(
+                "SELECT CAST(data_completeness AS VARCHAR) FROM ual_events WHERE record_id = '{key}'"
+            )
         ),
-        0,
-        "a partial row survived the full export"
+        "partial"
     );
-    assert!(count(&case, "SELECT count(*) FROM ual_events") > 0);
+
+    // The full export replaces the partial row and its synthetic child with the real children.
+    let report = ingest_path(
+        &mut case,
+        &portal.dir,
+        &ParserRegistry::builtin(),
+        &IngestOptions::default(),
+    )
+    .unwrap();
+    no_error_files(&report);
+    let portal_ual = report
+        .collections
+        .iter()
+        .flat_map(|c| &c.files)
+        .find(|f| f.artifact_id.as_deref() == Some("portal.ual"))
+        .expect("portal.ual file");
+    assert!(
+        portal_ual
+            .warnings
+            .iter()
+            .any(|w| w.contains("replaced partial rows")),
+        "the full copy did not report replacing partial rows: {:?}",
+        portal_ual.warnings
+    );
+    refresh(
+        &mut case,
+        &ProfileOptions {
+            dirs: DataDirs::default(),
+            geoip_dir: Some(geoip),
+            as_of: Some(as_of),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        text(
+            &case,
+            &format!(
+                "SELECT CAST(data_completeness AS VARCHAR) FROM ual_events WHERE record_id = '{key}'"
+            )
+        ),
+        "full",
+        "the partial row was not upgraded"
+    );
+    let children_after = count(
+        &case,
+        &format!("SELECT count(*) FROM mail_items_accessed WHERE record_id = '{key}'"),
+    );
+    let full_children = count(
+        &case,
+        &format!(
+            "SELECT count(*) FROM mail_items_accessed WHERE record_id = '{key}' AND internet_message_id IS NOT NULL"
+        ),
+    );
+    assert!(full_children > 0, "no real child after the upgrade");
+    assert!(children_after >= children_before);
 }
 
 /// Two captures of one tenant, different `collected_at`: the newer value wins whichever order
@@ -645,5 +841,204 @@ fn one_run_ingests_collections_oldest_first_and_reports_in_the_given_order() {
         )
         .contains("_20260910_"),
         "the older capture is processed (and registered) first"
+    );
+}
+
+/// Columns only an older capture supplies survive in either ingest order, and their
+/// `column_collections` still names the older collection. The newer capture is the same world
+/// two days later with the `autoreply_enabled` storyline removed, so its tree has no
+/// `AutoReply_<u>.txt` and the auto-reply columns can only come from the older one.
+#[test]
+fn older_only_columns_survive_in_either_order() {
+    let base = load("bec-aitm").unwrap();
+    let mut newer_scenario = base.clone();
+    newer_scenario.window.collected_at += Duration::days(2);
+    newer_scenario
+        .storylines
+        .retain(|s| s.kind != StoryKind::AutoreplyEnabled);
+    let old = builtin("bec-aitm", &GenerateOptions::new(Collector::Hawk4, 1));
+    let new = generated(
+        "bec-aitm-noauto",
+        &newer_scenario,
+        &GenerateOptions::new(Collector::Hawk4, 1),
+    );
+    assert!(
+        !new.manifest
+            .files
+            .iter()
+            .any(|f| f.rel_path.contains("AutoReply_")),
+        "the newer tree still has an AutoReply file"
+    );
+    assert!(
+        old.manifest
+            .files
+            .iter()
+            .any(|f| f.rel_path.contains("AutoReply_")),
+        "the older tree has no AutoReply file"
+    );
+
+    let mut finals = Vec::new();
+    for order in [[&old, &new], [&new, &old]] {
+        let mut case = Case::in_memory().unwrap();
+        for g in order {
+            ingest_into(&mut case, g);
+        }
+        assert!(
+            count(
+                &case,
+                "SELECT count(*) FROM mailboxes WHERE auto_reply_state IS NOT NULL"
+            ) > 0,
+            "auto_reply_state did not survive"
+        );
+        assert!(
+            count(
+                &case,
+                "SELECT count(*) FROM mailboxes WHERE auto_reply_external_audience IS NOT NULL"
+            ) > 0,
+            "auto_reply_external_audience did not survive"
+        );
+        for column in ["auto_reply_state", "auto_reply_external_audience"] {
+            assert!(
+                text(
+                    &case,
+                    &format!(
+                        "SELECT c.root_path FROM mailboxes m
+                         JOIN collections c ON c.collection_id = CAST(m.column_collections->>'$.{column}' AS BIGINT)
+                         WHERE m.{column} IS NOT NULL ORDER BY m.record_key LIMIT 1"
+                    )
+                )
+                .contains("_20260910_"),
+                "{column} does not point at the older capture"
+            );
+        }
+        finals.push(snapshot(
+            &case,
+            "SELECT record_key, auto_reply_state, auto_reply_external_audience FROM mailboxes",
+        ));
+    }
+    assert_eq!(
+        finals[0], finals[1],
+        "the older-only columns depend on the ingest order"
+    );
+}
+
+/// The profile's `timeline` has one row per event record of every event table the manifest
+/// lists, every row carries `source_refs`, and one storyline user's UPN, object id and PUID
+/// converge on one identity.
+#[test]
+fn profile_timeline_and_identities_cover_the_window() {
+    const EVENT_TABLES: [&str; 9] = [
+        "ual_events",
+        "signins",
+        "directory_audits",
+        "message_trace",
+        "mailbox_audit_legacy",
+        "admin_audit_events",
+        "risk_detections",
+        "azure_activity",
+        "security_alerts",
+    ];
+    for c in [Collector::Invictus, Collector::Hawk4] {
+        let g = builtin("bec-aitm", &GenerateOptions::new(c, 1));
+        let case = ingest_generated(&g.dir, &g.manifest);
+        let mut stmt = case
+            .conn()
+            .prepare("SELECT source_table, count(*) FROM timeline GROUP BY source_table")
+            .unwrap();
+        let actual: BTreeMap<String, i64> = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        for table in EVENT_TABLES {
+            match g.manifest.tables.get(table) {
+                Some(expect) if expect.rows > 0 => assert_eq!(
+                    actual.get(table).copied().unwrap_or(0) as u64,
+                    expect.rows,
+                    "{c:?}: timeline {table}"
+                ),
+                _ => assert_eq!(
+                    actual.get(table).copied().unwrap_or(0),
+                    0,
+                    "{c:?}: timeline {table}"
+                ),
+            }
+        }
+        assert_eq!(
+            count(
+                &case,
+                "SELECT count(*) FROM timeline WHERE source_refs IS NULL OR len(source_refs) = 0"
+            ),
+            0,
+            "{c:?}: a timeline row has no source_refs"
+        );
+
+        // One storyline user: the manifest names the actor; its UPN, object id and PUID must
+        // resolve to one identity through `identity_aliases`.
+        let upn = g
+            .manifest
+            .storylines
+            .iter()
+            .find(|s| s.polarity == "positive" && !s.actor.is_empty())
+            .expect("a positive storyline with an actor")
+            .actor
+            .to_lowercase();
+        let identity: String = case
+            .conn()
+            .query_row(
+                "SELECT identity_id FROM identity_aliases WHERE alias_type = 'upn' AND alias = ?",
+                duckdb::params![upn],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|e| panic!("{c:?} {upn}: {e}"));
+        let (object_id, puid): (Option<String>, Option<String>) = case
+            .conn()
+            .query_row(
+                "SELECT object_id, puid FROM identities WHERE identity_id = ?",
+                duckdb::params![identity],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        let object_id = object_id.unwrap_or_else(|| panic!("{c:?} {upn}: no object id"));
+        let puid = puid.unwrap_or_else(|| panic!("{c:?} {upn}: no puid"));
+        let id_of = |alias_type: &str, alias: &str| -> String {
+            case.conn()
+                .query_row(
+                    "SELECT identity_id FROM identity_aliases WHERE alias_type = ? AND alias = ?",
+                    duckdb::params![alias_type, alias],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(
+            id_of("object_id", &object_id),
+            identity,
+            "{c:?} {upn} object id"
+        );
+        assert_eq!(id_of("puid", &puid), identity, "{c:?} {upn} puid");
+    }
+}
+
+/// The Hawk 4 state capture's audit configuration matches the scenario's audit profile:
+/// bec-aitm's `search_audited` reports UnifiedAuditLogIngestionEnabled true and AuditDisabled
+/// false (the old `state_e2e` asserted `false|false` on its own `default` fixture).
+#[test]
+fn hawk4_audit_config_matches_the_audit_profile() {
+    let g = builtin("bec-aitm", &GenerateOptions::new(Collector::Hawk4, 1));
+    let case = ingest_generated(&g.dir, &g.manifest);
+    assert_eq!(
+        text(
+            &case,
+            "SELECT CAST(unified_audit_log_ingestion_enabled AS VARCHAR) || '|' || CAST(audit_disabled AS VARCHAR)
+             FROM audit_config"
+        ),
+        "true|false"
+    );
+    assert_eq!(
+        text(
+            &case,
+            "SELECT CAST(unified_audit_log_ingestion_enabled AS VARCHAR) FROM audit_config"
+        ),
+        "true"
     );
 }
