@@ -82,6 +82,62 @@ fn layouts() -> &'static [LayoutDef] {
     })
 }
 
+/// Date column/key names from the surveys that `layouts.yaml` does not list under `dates:`
+/// (mostly `WhenChanged`/`WhenCreated` family columns of Exchange objects, and the risk and
+/// sign-in timestamps). The classifier only ever looks at names: a column's values never make
+/// it a date column.
+const CURATED_DATE_COLUMNS: &[&str] = &[
+    "CreationTime",
+    "CreationDate",
+    "CreatedDateTime",
+    "createdDateTime",
+    "DateCreated",
+    "activityDateTime",
+    "ActivityDateTime",
+    "RunDate",
+    "Received",
+    "WhenChanged",
+    "WhenCreated",
+    "WhenChangedUTC",
+    "WhenCreatedUTC",
+    "LastSignInDateTime",
+    "LastSuccessfulSignInDateTime",
+    "LastPasswordChangeDateTime",
+    "LastModifiedDateTime",
+    "DeletedDateTime",
+    "ModifiedTime",
+    "UserStateChangedOn",
+    "FirstSyncTime",
+    "LastAccessed",
+    "StartDate",
+    "EndDate",
+    "CheckDate",
+    "TimeStamp",
+    "Timestamp",
+    "origin_timestamp_utc",
+    "Param_StartTime",
+    "Param_EndTime",
+];
+
+/// The set of column/key names whose values may carry a date form: every `dates:` key in
+/// `layouts.yaml` plus the curated survey list.
+fn known_date_columns() -> &'static BTreeSet<&'static str> {
+    static COLUMNS: OnceLock<BTreeSet<&'static str>> = OnceLock::new();
+    COLUMNS.get_or_init(|| {
+        let mut set: BTreeSet<&'static str> = layouts()
+            .iter()
+            .flat_map(|d| d.dates.keys().map(String::as_str))
+            .collect();
+        set.extend(CURATED_DATE_COLUMNS.iter().copied());
+        set
+    })
+}
+
+/// Whether a column/key is a known date column. Values are never consulted.
+fn is_date_column(name: &str) -> bool {
+    known_date_columns().contains(name)
+}
+
 fn collector_str(c: Collector) -> &'static str {
     match c {
         Collector::Hawk3 | Collector::Hawk4 => "hawk",
@@ -223,6 +279,9 @@ impl ArtifactProfile {
                 let Some(column) = header.get(i) else {
                     continue;
                 };
+                if !is_date_column(column) {
+                    continue;
+                }
                 if let Some(form) = classify_date(value) {
                     self.dates
                         .entry(column.clone())
@@ -246,6 +305,9 @@ impl ArtifactProfile {
             for (key, value) in map {
                 let key = mask(key);
                 self.keys.insert(key.clone());
+                if !is_date_column(&key) {
+                    continue;
+                }
                 if let Some(s) = value.as_str() {
                     if let Some(form) = classify_date(s) {
                         self.dates.entry(key).or_default().insert(form.to_string());
@@ -551,4 +613,85 @@ pub fn conform_real(real: &Profile, generated: &[Profile]) -> ConformanceReport 
     }
     report.ok = report.findings.is_empty();
     report
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn csv(header: &str, row: &str) -> ArtifactProfile {
+        let mut p = ArtifactProfile::default();
+        p.observe_csv(&format!("{header}\r\n{row}\r\n"));
+        p
+    }
+
+    fn json(text: &str) -> ArtifactProfile {
+        let mut p = ArtifactProfile::default();
+        p.observe_json(text);
+        p
+    }
+
+    /// Free-text columns whose values merely contain a slash/dot and one colon must not be
+    /// guessed to be dates (`userAgent`, `resourceDisplayName`, arbitrary `Param_*`).
+    #[test]
+    fn free_text_columns_are_never_classified_as_dates() {
+        let p = csv(
+            "userAgent,resourceDisplayName,Param_Foo,CreationDate",
+            "\"Mozilla/5.0 (rv:109.0)\",\"Contoso: 1.2.3\",\"4/5 1:23\",\"4/5/2024 1:23 PM\"",
+        );
+        assert!(!p.dates.contains_key("userAgent"), "{:?}", p.dates);
+        assert!(
+            !p.dates.contains_key("resourceDisplayName"),
+            "{:?}",
+            p.dates
+        );
+        assert!(!p.dates.contains_key("Param_Foo"), "{:?}", p.dates);
+        assert_eq!(
+            p.dates.get("CreationDate").map(|s| s.contains("short_g")),
+            Some(true),
+            "{:?}",
+            p.dates
+        );
+    }
+
+    /// The same rule for JSON keys: only known date keys get a date form.
+    #[test]
+    fn free_text_json_keys_are_never_classified_as_dates() {
+        let p = json(
+            r#"{"userAgent":"Mozilla/5.0 (rv:109.0)","resourceDisplayName":"Contoso: 1.2.3","createdDateTime":"2024-01-02T03:04:05Z"}"#,
+        );
+        assert!(!p.dates.contains_key("userAgent"), "{:?}", p.dates);
+        assert!(
+            !p.dates.contains_key("resourceDisplayName"),
+            "{:?}",
+            p.dates
+        );
+        assert_eq!(
+            p.dates.get("createdDateTime").map(|s| s.contains("iso_z")),
+            Some(true),
+            "{:?}",
+            p.dates
+        );
+    }
+
+    /// A real date column still gets its value form classified.
+    #[test]
+    fn date_columns_still_classify_by_value_form() {
+        let p = csv(
+            "CreationTime,WhenChanged",
+            "\"2024-01-02T03:04:05.0000000Z\",\"4/5/2024 1:23 PM\"",
+        );
+        assert_eq!(
+            p.dates.get("CreationTime").map(|s| s.contains("iso_z")),
+            Some(true),
+            "{:?}",
+            p.dates
+        );
+        assert_eq!(
+            p.dates.get("WhenChanged").map(|s| s.contains("short_g")),
+            Some(true),
+            "{:?}",
+            p.dates
+        );
+    }
 }
