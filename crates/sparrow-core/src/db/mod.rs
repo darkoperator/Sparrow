@@ -10,12 +10,33 @@ use crate::{Error, Result};
 use duckdb::{AccessMode, Config, Connection};
 use std::path::{Path, PathBuf};
 
+/// An empty database file opened READ_ONLY: the stand-in connection while a case's file is
+/// lent out, and for good when it cannot be reopened. Every write on it fails, so nothing
+/// written to a placeholder can vanish silently.
+fn read_only_placeholder() -> Result<Connection> {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "sparrow-placeholder-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
+    let file = dir.join("placeholder.duckdb");
+    drop(Connection::open(&file)?);
+    let conn =
+        Connection::open_with_flags(&file, Config::default().access_mode(AccessMode::ReadOnly)?);
+    // The open handle keeps the data readable on Unix; the file itself is not needed any more.
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(conn?)
+}
+
 pub struct Case {
     conn: Connection,
     path: Option<PathBuf>,
     read_only: bool,
     /// Set when the file could not be reopened after `with_file_released`: `conn` is then an
-    /// empty in-memory placeholder that must never receive writes.
+    /// read-only, empty placeholder database that cannot take writes.
     poisoned: Option<String>,
 }
 
@@ -86,7 +107,7 @@ impl Case {
         }
         if let Some(path) = self.path.clone() {
             self.conn.execute_batch("CHECKPOINT")?;
-            let placeholder = Connection::open_in_memory()?;
+            let placeholder = read_only_placeholder()?;
             drop(std::mem::replace(&mut self.conn, placeholder));
             let out = f(&path);
             // Fail closed: if the file cannot be reopened (or is no longer this schema), the
@@ -136,8 +157,9 @@ impl Case {
 
     /// Fails when the case file could not be reopened after `with_file_released` (see
     /// `poisoned`). The entry points that write (`ingest`, `profile`, `detect`) call it first;
-    /// the placeholder connection behind a poisoned case holds no tables, so any other statement
-    /// fails as well.
+    /// the placeholder connection behind a poisoned case is a read-only, empty database, so every
+    /// write fails (and any read finds no tables);
+    ///     /// fails as well.
     pub fn ensure_usable(&self) -> Result<()> {
         match &self.poisoned {
             Some(msg) => Err(Error::Invalid(msg.clone())),
@@ -213,6 +235,23 @@ mod tests {
             .conn()
             .execute_batch("INSERT INTO collections (tool, root_path, sparrow_version) VALUES ('hawk', '/y', 't')")
             .is_err());
+        // Nothing can be created or written on the placeholder either.
+        assert!(
+            case.conn()
+                .execute_batch("CREATE TABLE x (id INTEGER)")
+                .is_err()
+        );
+        let actor = crate::case::indicators::Actor::analyst("sam").unwrap();
+        let ind = crate::case::indicators::add_indicator(
+            case.conn(),
+            &actor,
+            None,
+            crate::case::indicators::IndicatorType::Ip,
+            "203.0.113.7",
+            crate::case::indicators::Verdict::Malicious,
+            None,
+        );
+        assert!(ind.is_err());
     }
 
     #[test]
