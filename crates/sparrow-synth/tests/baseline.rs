@@ -257,9 +257,11 @@ fn sts_logon_session_properties_are_typed_like_the_real_records() {
         let days = (world.collected_at().date_naive() - start).num_days();
         for d in 0..=days {
             let recs = sts_records_on(&world, start + Duration::days(d));
-            // The first sign-in of each user that day, as the baseline counts it.
+            // The first *successful* interactive sign-in of each user that day, as the baseline
+            // counts it: a failed first attempt does not count, and carries a code as a failed
+            // logon.
             let mut earliest: BTreeMap<&str, DateTime<Utc>> = BTreeMap::new();
-            for u in &recs {
+            for u in recs.iter().filter(|u| u.audit["ResultStatus"] != "Failed") {
                 earliest
                     .entry(u.user_id.as_str())
                     .and_modify(|t| *t = (*t).min(u.time))
@@ -489,4 +491,59 @@ fn the_rbac_change_reuses_an_admin_sign_in_that_day() {
             }
         }
     }
+}
+
+/// A user a storyline has sent on a trip does not also sign in from home: while the flight is
+/// in the air there is no sign-in of theirs at all, and from the arrival until the end of the
+/// window their sign-ins come from where they landed. Task 10's ID-003 look-alike depends on
+/// this, because a home sign-in an hour after an arrival half a world away is impossible.
+#[test]
+fn a_travelling_user_signs_in_from_where_they_are() {
+    for name in [
+        "bec-aitm",
+        "bec-e3-audit-gaps",
+        "bec-o365-no-p1",
+        "business-basic",
+    ] {
+        let mut world = w(name);
+        let (w2, recs) = {
+            let recs = sparrow_synth::story::apply(&mut world).unwrap();
+            (world, recs)
+        };
+        let trips: Vec<_> = w2
+            .trips
+            .iter()
+            .map(|t| (t.user.clone(), t.departure, t.arrival, t.location.clone()))
+            .collect();
+        assert!(!trips.is_empty(), "{name}: no trip");
+        for (user, departure, arrival, location) in &trips {
+            let home_ip = w2.user_by_upn(user).unwrap().home_ip;
+            let days = (w2.collected_at().date_naive() - w2.window_start().date_naive()).num_days();
+            for d in 0..=days {
+                let day = w2.window_start().date_naive() + Duration::days(d);
+                for s in sts_and_all_signins(&w2, day) {
+                    if s.user != *user {
+                        continue;
+                    }
+                    // In the air: no sign-in of theirs at all.
+                    assert!(
+                        s.time < *departure || s.time >= *arrival,
+                        "{name}: a sign-in in the air at {}",
+                        s.time
+                    );
+                    if s.time >= *arrival {
+                        // Away: the destination, never home.
+                        assert_ne!(s.ip, home_ip, "{name}: a home sign-in at {}", s.time);
+                        assert_eq!(s.location.city, location.city, "{name}: {}", s.time);
+                    }
+                }
+            }
+        }
+        assert!(!recs.is_empty());
+    }
+}
+
+/// The sign-in records of a day (every event type, not just the logon ones).
+fn sts_and_all_signins(w: &World, date: NaiveDate) -> Vec<sparrow_synth::events::SignIn> {
+    day(w, date).signins
 }
