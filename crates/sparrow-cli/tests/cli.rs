@@ -1112,7 +1112,16 @@ fn rules_list_filters_by_requires() {
         .iter()
         .map(|r| r["id"].as_str().unwrap())
         .collect();
-    assert_eq!(ids, ["SPW-CUS-003"]);
+    // The custom rule, plus every built-in whose rule file lists the capability under
+    // `requires:` (derived from the files, so a new built-in needs no edit here).
+    let mut expected = vec!["SPW-CUS-003".to_string()];
+    expected.extend(builtin_rules_requiring("identity_protection"));
+    expected.sort();
+    assert_eq!(ids, expected);
+    assert!(
+        ids.len() > 1,
+        "at least one built-in requires identity_protection"
+    );
     let all = json_out(
         sparrow()
             .args(["--json", "rules", "list", "--rules"])
@@ -1348,4 +1357,41 @@ fn ingest_no_detect_skips_detection() {
         .assert()
         .success()
         .stdout(contains("detection: run 3"));
+}
+
+/// Ids of the built-in rules (`rules/<category>/SPW-*.yaml`) whose `requires:` line names
+/// `capability`.
+fn builtin_rules_requiring(capability: &str) -> Vec<String> {
+    fn walk(dir: &std::path::Path, capability: &str, out: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, capability, out);
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            if !(name.starts_with("SPW-") && name.ends_with(".yaml")) {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let requires = text
+                .lines()
+                .find_map(|l| l.strip_prefix("requires:"))
+                .unwrap_or("");
+            if requires
+                .trim_matches(|c: char| c == ' ' || c == '[' || c == ']')
+                .split(',')
+                .any(|c| c.trim() == capability)
+            {
+                out.push(name.trim_end_matches(".yaml").to_string());
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../rules"),
+        capability,
+        &mut out,
+    );
+    out
 }
