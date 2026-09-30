@@ -8,7 +8,10 @@
 # `<mailbox>\<rule>`), which `eq_field` cannot express. The parameter map is unnested once per
 # command and pivoted by lower-cased key, so parameter names match case-insensitively as they do
 # in `match:` rules. Nothing is decided without a mailbox: a command that names neither Mailbox
-# nor Identity cannot be shown to touch another user's mailbox. Remove-InboxRule logs only an
+# nor Identity cannot be shown to touch another user's mailbox. -Mailbox and -Identity accept a UPN,
+# an alias, a display name or a distinguished name: the target is resolved through users and
+# mailboxes (a spelling shared by two mailboxes resolves to none), also by the tail of a DN; a
+# target that is itself an address stands for itself; any other unresolved target makes no decision. Remove-InboxRule logs only an
 # Identity, so it matches only when it carries one of the action parameters. Exchange logs a
 # boolean parameter as the text True / False (`$true` would read as a bind parameter in `sql:`).
 id: SPW-HAWK-001
@@ -48,19 +51,52 @@ sql: |
     FROM kv
     GROUP BY record_key, is_ual
   ),
-  rules AS (
+  idmap AS (
+    -- Every spelling of a mailbox that -Mailbox / -Identity accepts (UPN, primary address, alias,
+    -- display name) -> its UPN. A spelling shared by two mailboxes resolves to neither.
+    SELECT k, min(upn) AS upn
+    FROM (
+      SELECT lower(trim(k)) AS k, lower(upn) AS upn
+      FROM (
+        SELECT upn, upn AS k FROM users
+        UNION ALL SELECT upn, mail FROM users
+        UNION ALL SELECT upn, display_name FROM users
+        UNION ALL SELECT upn, split_part(upn, '@', 1) FROM users
+        UNION ALL SELECT upn, upn FROM mailboxes
+        UNION ALL SELECT upn, primary_smtp_address FROM mailboxes
+        UNION ALL SELECT upn, display_name FROM mailboxes
+        UNION ALL SELECT upn, split_part(upn, '@', 1) FROM mailboxes
+      )
+      WHERE k IS NOT NULL AND upn IS NOT NULL AND trim(k) <> ''
+    )
+    GROUP BY k
+    HAVING count(DISTINCT upn) = 1
+  ),
+  named AS (
     SELECT c.record_key, c.is_ual, c.t, c.actor, c.ip, c.cmdlet, p.forward_to,
            p.forward_as_attachment_to, p.redirect_to, p.delete_message, p.move_to_folder,
-           lower(trim(coalesce(nullif(trim(p.mailbox), ''), split_part(p.identity, chr(92), 1)))) AS target
+           lower(trim(coalesce(nullif(trim(p.mailbox), ''), split_part(p.identity, chr(92), 1)))) AS raw_target
     FROM cmds c JOIN p ON p.record_key = c.record_key AND p.is_ual = c.is_ual
+  ),
+  rules AS (
+    -- The target is decided only when it resolves: through the id map (also by the tail of a
+    -- distinguished name, `domain/OU/name`), or because it is itself an address. The actor is
+    -- resolved the same way, else compared as written.
+    SELECT n.*,
+           coalesce(m1.upn, m2.upn, CASE WHEN n.raw_target LIKE '%@%' THEN n.raw_target END) AS target,
+           coalesce(ma.upn, lower(trim(coalesce(n.actor, '')))) AS actor_res
+    FROM named n
+    LEFT JOIN idmap m1 ON m1.k = n.raw_target
+    LEFT JOIN idmap m2 ON m2.k = trim(regexp_extract(n.raw_target, '([^/]*)$', 1))
+    LEFT JOIN idmap ma ON ma.k = lower(trim(coalesce(n.actor, '')))
   )
   SELECT r.record_key,
          CASE WHEN r.is_ual THEN 'ual_events' ELSE 'admin_audit_events' END AS source_table,
          r.t AS event_time, r.actor AS actor_upn, r.ip AS ip,
          json_object('cmdlet', r.cmdlet, 'mailbox', r.target) AS context
   FROM rules r
-  WHERE r.target <> ''
-    AND r.target <> lower(trim(coalesce(r.actor, '')))
+  WHERE r.target IS NOT NULL AND r.target <> ''
+    AND r.target <> r.actor_res
     AND (   trim(coalesce(r.forward_to, '')) <> ''
          OR trim(coalesce(r.forward_as_attachment_to, '')) <> ''
          OR trim(coalesce(r.redirect_to, '')) <> ''
@@ -179,6 +215,56 @@ tests:
         operation: Set-InboxRule
         user_upn: admin@contoso.example
         parameters: {Identity: 'bob@contoso.example\AP', ForwardTo: "", MoveToFolder: Old Deleted Items}
+    expect_hits: 0
+  - name: a user's own mailbox named by its alias is not another mailbox
+    records:
+      - table: users
+        upn: alice@contoso.example
+        display_name: Alice Adams
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        parameters: {Mailbox: alice, Name: AP, ForwardTo: x@example.net}
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        parameters: {Mailbox: Alice Adams, Name: AP, ForwardTo: x@example.net}
+      - table: ual_events
+        operation: Set-InboxRule
+        user_upn: alice@contoso.example
+        parameters: {Identity: 'contoso.example/Users/Alice Adams\AP', RedirectTo: x@example.net}
+    expect_hits: 0
+  - name: another user's mailbox named by display name or distinguished name
+    records:
+      - table: users
+        upn: bob@contoso.example
+        display_name: Bob Brown
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: admin@contoso.example
+        parameters: {Mailbox: Bob Brown, Name: AP, ForwardTo: x@example.net}
+      - table: ual_events
+        operation: Set-InboxRule
+        user_upn: admin@contoso.example
+        parameters: {Identity: 'contoso.example/Users/Bob Brown\AP', RedirectTo: x@example.net}
+    expect_hits: 2
+  - name: an alias that resolves to nobody makes no decision
+    records:
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: admin@contoso.example
+        parameters: {Mailbox: ghost, Name: AP, ForwardTo: x@example.net}
+    expect_hits: 0
+  - name: an alias shared by two mailboxes makes no decision
+    records:
+      - table: users
+        upn: sam@contoso.example
+      - table: users
+        upn: sam@fabrikam.example
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: admin@contoso.example
+        parameters: {Mailbox: sam, Name: AP, ForwardTo: x@example.net}
     expect_hits: 0
   - name: another cmdlet with the same parameters
     records:

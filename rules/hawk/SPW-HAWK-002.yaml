@@ -11,7 +11,8 @@
 # excluded only when all three parts hold (actor, a DiscoverySearchMailbox, Discovery Management),
 # so a person granting Discovery Management, or the service granting anything else, still matches.
 # The parameter map is unnested once per command and pivoted by lower-cased key, so parameter
-# names match case-insensitively as they do in `match:` rules.
+# names match case-insensitively as they do in `match:` rules. A collected permission names no
+# grantor, so that arm has no actor (the mailbox and the grantee are in the context).
 id: SPW-HAWK-002
 title: FullAccess, SendAs or recipient permission granted (not the SYSTEM discovery grant)
 version: 1
@@ -67,9 +68,10 @@ sql: |
              AND lower(trim(coalesce(g.grantee, ''))) = 'discovery management')
   UNION ALL
   SELECT m.record_key, 'mailbox_permissions' AS source_table,
-         coalesce(m.collected_at, c.window_end) AS event_time, m.mailbox_upn AS actor_upn,
+         coalesce(m.collected_at, c.window_end) AS event_time,
+         CAST(NULL AS VARCHAR) AS actor_upn,  -- a collected ACE names no grantor
          CAST(NULL AS VARCHAR) AS ip,
-         json_object('grantee', coalesce(nullif(m.grantee_upn, ''), m.grantee),
+         json_object('mailbox', m.mailbox_upn, 'grantee', coalesce(nullif(m.grantee_upn, ''), m.grantee),
                      'permission', CAST(m.permission AS VARCHAR)) AS context
   FROM mailbox_permissions m JOIN collections c ON c.collection_id = m.collection_id
   WHERE m.permission IN ('full_access', 'send_as')

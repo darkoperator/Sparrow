@@ -2,9 +2,9 @@
 # tenant_domains: mailboxes forwarding_smtp_address / forwarding_address, inbox_rules forward_to /
 # forward_as_attachment_to / redirect_to, transport_rules blind_copy_to / redirect_to / copy_to /
 # add_to_recipients, or the UAL events that set them (Set-Mailbox, New-/Set-InboxRule,
-# New-/Set-TransportRule)"). The coverage tables do not list admin_audit_events (lint requires a
-# `sql:` rule to emit only coverage tables), so Hawk 3.1's Search-AdminAuditLog rows are not read;
-# a Hawk 3 tenant is covered through the collected mailboxes, inbox_rules and transport_rules.
+# New-/Set-TransportRule)"). Hawk 3.1 records the same cmdlets in Search-AdminAuditLog
+# (admin_audit_events, in the coverage tables): an external forward an admin created and removed
+# before the collection shows only there.
 # `sql:` because the addresses are compared with the tenant's own domains (`tenant_domains`).
 # An address is a domain after `@`; the domain is read out of every address in the value, so the
 # `;`-separated lists of a cmdlet parameter, the array elements of a collected rule and Exchange's
@@ -34,6 +34,11 @@ sql: |
     FROM ual_events u
     WHERE lower(u.operation) IN ('set-mailbox', 'new-inboxrule', 'set-inboxrule',
                                  'new-transportrule', 'set-transportrule')
+    UNION ALL
+    SELECT a.record_key, 'admin_audit_events', a.run_time, a.caller, a.client_ip, a.parameters
+    FROM admin_audit_events a
+    WHERE lower(a.cmdlet) IN ('set-mailbox', 'new-inboxrule', 'set-inboxrule',
+                              'new-transportrule', 'set-transportrule')
   ),
   cmd_addrs AS (
     SELECT c.record_key, c.src, c.t, c.actor, c.ip,
@@ -72,6 +77,7 @@ sql: |
          CASE WHEN f.src = 'mailboxes' THEN 'mailboxes'
               WHEN f.src = 'inbox_rules' THEN 'inbox_rules'
               WHEN f.src = 'transport_rules' THEN 'transport_rules'
+              WHEN f.src = 'admin_audit_events' THEN 'admin_audit_events'
               ELSE 'ual_events' END AS source_table,
          f.t AS event_time, f.actor AS actor_upn, f.ip AS ip,
          json_object('external_domains', string_agg(DISTINCT rtrim(f.domain, '.'), ', ')) AS context
@@ -210,6 +216,28 @@ tests:
         user_upn: admin@contoso.example
         parameters: {Name: Journal copy, SentToScope: NotInOrganization, BlindCopyTo: x@example.net}
     expect_hits: 1
+  - name: the same command in the Hawk 3 admin audit log
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: contoso.example
+      - table: admin_audit_events
+        cmdlet: Set-Mailbox
+        caller: alice@contoso.example
+        run_time: "2026-03-01T10:00:00Z"
+        parameters: {Identity: alice@contoso.example, ForwardingSmtpAddress: "smtp:x@example.net"}
+    expect_hits: 1
+  - name: an internal forward in the admin audit log
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: contoso.example
+      - table: admin_audit_events
+        cmdlet: New-InboxRule
+        caller: admin@contoso.example
+        run_time: "2026-03-01T10:00:00Z"
+        parameters: {Name: AP, ForwardTo: "bob@contoso.example"}
+    expect_hits: 0
   - name: Set-Mailbox forwards to an internal address
     records:
       - table: tenant_domains

@@ -311,7 +311,7 @@ rules:
       forwarding_address, inbox_rules forward_to / forward_as_attachment_to / redirect_to,
       transport_rules blind_copy_to / redirect_to / copy_to / add_to_recipients, or the UAL
       events that set them (Set-Mailbox, New-/Set-InboxRule, New-/Set-TransportRule).
-    tables: [mailboxes, inbox_rules, transport_rules, ual_events]
+    tables: [mailboxes, inbox_rules, transport_rules, ual_events, admin_audit_events]
     requires: []
     requires_evidence: []
     needs_geoip: false

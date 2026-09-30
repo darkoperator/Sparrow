@@ -3,9 +3,11 @@
 # SubjectContainsWords, BodyContainsWords or SubjectOrBodyContainsWords hit @list:finance_keywords,
 # or whose MoveToFolder is in @list:hiding_folders or is a single character"). Hawk 3.1 records
 # New-InboxRule and Set-InboxRule in Search-AdminAuditLog (admin_audit_events), so that source is
-# covered too. The keyword lists are matched as substrings (`contains_any`), the folder list as
-# whole names (`in`); both are written as `match:` (not `sql:`) so that editing either list changes
-# the rule's hash (`rule_sha256` only sees `@list:` values of the rule text).
+# covered too. The keyword list is matched as substrings; the folder list as whole names of the LAST
+# path segment of MoveToFolder (a bare name, or `MailboxID:\\Parent[\\Sub]` as Exchange documents it);
+# a one-character segment is hiding too. Outlook's UpdateInboxRules record has no MoveToFolder
+# value, only RuleCondition (keywords) and RuleActions. `sql:` because of the path split;
+# `rule_sha256` also sees `@list:` names inside sql text, so editing a list changes the hash.
 id: SPW-MAIL-003
 title: Inbox rule with finance keywords or a hiding folder
 version: 1
@@ -16,35 +18,60 @@ mitre: [T1564.008, T1114.003]
 tags: [bec, inbox-rule]
 requires: []
 requires_evidence: []
-sources:
-  - source: inbox_rules
-    match:
-      any:
-        - subject_contains: {contains_any: "@list:finance_keywords"}
-        - body_contains: {contains_any: "@list:finance_keywords"}
-        - subject_or_body_contains: {contains_any: "@list:finance_keywords"}
-        - move_to_folder: {in: "@list:hiding_folders"}
-        - move_to_folder: {regex: "^.$"}
-  - source: ual_events
-    match:
-      all:
-        - operation: {in: [New-InboxRule, Set-InboxRule, UpdateInboxRules]}
-        - any:
-            - parameters.SubjectContainsWords: {contains_any: "@list:finance_keywords"}
-            - parameters.BodyContainsWords: {contains_any: "@list:finance_keywords"}
-            - parameters.SubjectOrBodyContainsWords: {contains_any: "@list:finance_keywords"}
-            - parameters.MoveToFolder: {in: "@list:hiding_folders"}
-            - parameters.MoveToFolder: {regex: "^.$"}
-  - source: admin_audit_events
-    match:
-      all:
-        - cmdlet: {in: [New-InboxRule, Set-InboxRule]}
-        - any:
-            - parameters.SubjectContainsWords: {contains_any: "@list:finance_keywords"}
-            - parameters.BodyContainsWords: {contains_any: "@list:finance_keywords"}
-            - parameters.SubjectOrBodyContainsWords: {contains_any: "@list:finance_keywords"}
-            - parameters.MoveToFolder: {in: "@list:hiding_folders"}
-            - parameters.MoveToFolder: {regex: "^.$"}
+sql: |
+  WITH cmds AS (
+    SELECT lower(CAST(u.record_id AS VARCHAR)) AS record_key, true AS is_ual, u.event_time AS t,
+           u.user_upn AS actor, u.client_ip AS ip, u.parameters AS prm
+    FROM ual_events u
+    WHERE lower(u.operation) IN ('new-inboxrule', 'set-inboxrule', 'updateinboxrules')
+    UNION ALL
+    SELECT a.record_key, false, a.run_time, a.caller, a.client_ip, a.parameters
+    FROM admin_audit_events a
+    WHERE lower(a.cmdlet) IN ('new-inboxrule', 'set-inboxrule')
+  ),
+  kv AS (
+    SELECT c.record_key, c.is_ual, lower(x.e.key) AS k, x.e.value AS v
+    FROM cmds c, unnest(map_entries(c.prm)) AS x(e)
+  ),
+  p AS (
+    SELECT record_key, is_ual,
+           concat_ws(' ', max(v) FILTER (WHERE k = 'subjectcontainswords'),
+                     max(v) FILTER (WHERE k = 'bodycontainswords'),
+                     max(v) FILTER (WHERE k = 'subjectorbodycontainswords'),
+                     max(v) FILTER (WHERE k = 'rulecondition')) AS words,
+           max(v) FILTER (WHERE k = 'movetofolder') AS folder
+    FROM kv
+    GROUP BY record_key, is_ual
+  ),
+  cand AS (
+    SELECT r.record_key, 'inbox_rules' AS src, r.collected_at AS t, r.mailbox_upn AS actor,
+           CAST(NULL AS VARCHAR) AS ip,
+           concat_ws(' ', array_to_string(r.subject_contains, ' '),
+                     array_to_string(r.body_contains, ' '),
+                     array_to_string(r.subject_or_body_contains, ' ')) AS words,
+           r.move_to_folder AS folder
+    FROM inbox_rules r
+    WHERE r.kind IS DISTINCT FROM 'sweep'  -- an Outlook sweep rule (kind sweep) is not an inbox rule
+    UNION ALL
+    SELECT c.record_key, CASE WHEN c.is_ual THEN 'ual_events' ELSE 'admin_audit_events' END,
+           c.t, c.actor, c.ip, p.words, p.folder
+    FROM cmds c JOIN p ON p.record_key = c.record_key AND p.is_ual = c.is_ual
+  ),
+  seg AS (
+    -- MoveToFolder is a bare name or MailboxID:\Parent[\Sub]: the last path segment is the folder.
+    SELECT c.*, trim(regexp_extract(coalesce(c.folder, ''), '([^\\/:]*)$', 1)) AS leaf
+    FROM cand c
+  )
+  SELECT s.record_key,
+         CASE WHEN s.src = 'inbox_rules' THEN 'inbox_rules'
+              WHEN s.src = 'ual_events' THEN 'ual_events' ELSE 'admin_audit_events' END AS source_table,
+         s.t AS event_time, s.actor AS actor_upn, s.ip AS ip,
+         json_object('folder', s.folder) AS context
+  FROM seg s
+  WHERE len(list_filter(@list:finance_keywords,
+                        k -> k <> '' AND strpos(lower(coalesce(s.words, '')), lower(k)) > 0)) > 0
+     OR list_contains(list_transform(@list:hiding_folders, f -> lower(f)), lower(s.leaf))
+     OR length(s.leaf) = 1
 group_by: [actor_upn]
 analyst_guidance: |
   BEC actors watch for finance mail and hide it from the victim: a rule keyed on words such as
@@ -146,6 +173,64 @@ tests:
         operation: New-InboxRule
         user_upn: alice@contoso.example
         parameters: {Name: Team, From: team@contoso.example, MoveToFolder: Hr}
+    expect_hits: 0
+  - name: MoveToFolder in the documented path form
+    records:
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        parameters: {Name: ., MoveToFolder: 'alice@contoso.example:\RSS Feeds'}
+      - table: ual_events
+        operation: Set-InboxRule
+        user_upn: alice@contoso.example
+        parameters: {Identity: 'alice@contoso.example\AP', MoveToFolder: 'alice:\.'}
+      - table: admin_audit_events
+        cmdlet: New-InboxRule
+        caller: alice@contoso.example
+        run_time: "2026-03-01T10:00:00Z"
+        parameters: {Name: x, MoveToFolder: 'alice@contoso.example:\Parent\Archive'}
+    expect_hits: 3
+  - name: a path to a folder that only ends like a hiding folder
+    records:
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        parameters: {Name: x, MoveToFolder: 'alice@contoso.example:\Old Archive'}
+    expect_hits: 0
+  - name: UpdateInboxRules from Outlook with finance words in its condition
+    records:
+      - table: ual_events
+        operation: UpdateInboxRules
+        user_upn: bob@contoso.example
+        parameters: {RuleName: ., RuleCondition: "SubjectContainsWords: invoice, payment", RuleActions: MoveToFolder}
+    expect_hits: 1
+  - name: UpdateInboxRules from Outlook, the fixture shape (no words, no folder name)
+    records:
+      - table: ual_events
+        operation: UpdateInboxRules
+        user_upn: bob@contoso.example
+        parameters: {RuleName: ., RuleActions: MoveToFolder}
+    expect_hits: 0
+  - name: a collected sweep rule into Archive is not an inbox rule
+    records:
+      - table: inbox_rules
+        mailbox_upn: alice@contoso.example
+        kind: sweep
+        move_to_folder: 'alice:\Archive'
+    expect_hits: 0
+  - name: a collected inbox rule into Archive in the path form
+    records:
+      - table: inbox_rules
+        mailbox_upn: alice@contoso.example
+        kind: inbox
+        move_to_folder: 'alice:\Archive'
+    expect_hits: 1
+  - name: Notes is an ordinary folder, not a hiding one
+    records:
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        parameters: {Name: x, MoveToFolder: Notes}
     expect_hits: 0
   - name: finance words on another cmdlet are not an inbox rule
     records:

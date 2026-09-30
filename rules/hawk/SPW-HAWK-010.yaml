@@ -24,12 +24,24 @@ sources:
   - source: ual_events
     match:
       all:
-        - operation: {in: [New-InboxRule, Set-InboxRule, UpdateInboxRules]}
+        - operation: {in: [New-InboxRule, Set-InboxRule]}
         - any:
             - parameters.DeleteMessage: {eq: "True"}
             - parameters.ForwardTo: {exists: true}
             - parameters.ForwardAsAttachmentTo: {exists: true}
             - parameters.RedirectTo: {exists: true}
+  # The Outlook-client record of a rule change (ExchangeItem, RecordType 2) carries
+  # OperationProperties RuleName / RuleCondition / RuleActions, merged into parameters; it never
+  # has ForwardTo / DeleteMessage. RuleActions names the actions (MoveToFolder, ForwardToRecipients,
+  # RedirectToRecipients, Delete ...), so a forward, redirect or delete action is matched by name.
+  - source: ual_events
+    match:
+      all:
+        - operation: {eq: UpdateInboxRules}
+        - any:
+            - parameters.RuleActions: {contains: forward}
+            - parameters.RuleActions: {contains: redirect}
+            - parameters.RuleActions: {contains: delete}
   - source: admin_audit_events
     match:
       all:
@@ -115,6 +127,27 @@ tests:
         run_time: "2026-03-01T10:00:00Z"
         parameters: {Name: AP, ForwardTo: x@example.net}
     expect_hits: 1
+  - name: UpdateInboxRules from Outlook whose actions forward mail
+    records:
+      - table: ual_events
+        operation: UpdateInboxRules
+        user_upn: bob@contoso.example
+        parameters: {RuleName: ".", RuleActions: "ForwardToRecipients, MarkAsRead"}
+    expect_hits: 1
+  - name: UpdateInboxRules from Outlook whose actions delete mail
+    records:
+      - table: ual_events
+        operation: UpdateInboxRules
+        user_upn: bob@contoso.example
+        parameters: {RuleName: Purge, RuleActions: Delete}
+    expect_hits: 1
+  - name: UpdateInboxRules from Outlook that only moves mail (the fixture shape)
+    records:
+      - table: ual_events
+        operation: UpdateInboxRules
+        user_upn: bob@contoso.example
+        parameters: {RuleName: ".", RuleActions: MoveToFolder}
+    expect_hits: 0
   - name: the text False is false (a Hawk bug this rule does not reproduce)
     records:
       - table: ual_events
