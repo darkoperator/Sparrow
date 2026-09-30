@@ -30,6 +30,7 @@ use sparrow_synth::testing::{ingest_generated, ingest_generated_detected};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
+use uuid::Uuid;
 
 fn count(case: &Case, sql: &str) -> i64 {
     case.conn().query_row(sql, [], |r| r.get(0)).unwrap()
@@ -992,11 +993,11 @@ fn geoip_enrichment_marks_hosting_and_microsoft_asns() {
 #[test]
 fn two_tenants_in_one_case_stay_apart() {
     let hawk = builtin("bec-aitm", &GenerateOptions::new(Collector::Hawk4, 1));
-    // A different seed: the tenant id derives from the seed, so the two scenarios would
-    // otherwise share one tenant.
+    // The same seed: the tenant id follows the scenario as well as the seed, so two scenarios
+    // at one seed are two tenants.
     let inv = builtin(
         "hawk-investigate",
-        &GenerateOptions::new(Collector::Invictus, 2),
+        &GenerateOptions::new(Collector::Invictus, 1),
     );
     let geoip = hawk.dir.join(hawk.manifest.geoip_dir.clone().unwrap());
     let case = ingest_many(
@@ -1005,9 +1006,15 @@ fn two_tenants_in_one_case_stay_apart() {
         hawk.manifest.collected_at + Duration::days(1),
     );
     let mut case = case;
+    // The two scenarios, at the same seed, are two tenants: the id follows the scenario name.
+    assert!(
+        Uuid::parse_str(&hawk.manifest.tenant.tenant_id).is_ok(),
+        "the tenant id is not a GUID: {}",
+        hawk.manifest.tenant.tenant_id
+    );
     assert_ne!(
-        hawk.manifest.tenant.tenant_id,
-        inv.manifest.tenant.tenant_id
+        hawk.manifest.tenant.tenant_id, inv.manifest.tenant.tenant_id,
+        "two scenarios at one seed share a tenant id"
     );
     assert_eq!(count(&case, "SELECT count(*) FROM tenant"), 2);
     // Detection runs per tenant: no finding cites another tenant's evidence.

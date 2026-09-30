@@ -1,42 +1,42 @@
 [
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "ual",
     "title": "Unified audit log",
     "status": "collected",
-    "reason": "5774 rows",
-    "rows": 5774,
+    "reason": "5858 rows",
+    "rows": 5858,
     "min_time": "2026-08-01T00:19:21Z",
-    "max_time": "2026-09-09T23:59:25Z",
+    "max_time": "2026-09-09T23:59:59Z",
     "users_covered": 14,
     "retention_days": 365
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "mail_items_accessed",
     "title": "MailItemsAccessed (mailbox reads)",
     "status": "collected",
     "reason": "1491 rows; Microsoft Learn contradicts itself on the licence (Audit Standard since 2024 vs E5).",
     "rows": 1491,
     "min_time": "2026-08-01T00:24:21Z",
-    "max_time": "2026-09-09T23:59:25Z",
+    "max_time": "2026-09-09T23:59:59Z",
     "users_covered": 13,
     "retention_days": 365
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "mail_send",
     "title": "Mail sent (Send, SendAs, SendOnBehalf)",
     "status": "collected",
-    "reason": "1214 rows",
-    "rows": 1214,
+    "reason": "1213 rows",
+    "rows": 1213,
     "min_time": "2026-08-01T06:38:17Z",
     "max_time": "2026-09-09T23:55:36Z",
     "users_covered": 13,
     "retention_days": 365
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "search_queries",
     "title": "Search queries (Exchange, SharePoint)",
     "status": "collected",
@@ -48,33 +48,33 @@
     "retention_days": 365
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "signins",
     "title": "Entra ID sign-in logs",
     "status": "partial",
     "reason": "the window starts before the 30-day retention at collection time",
     "remediation": "Microsoft-Extractor-Suite: Get-GraphEntraSignInLogs -startDate 2026-08-12 -endDate 2026-09-11 | Hawk: Get-HawkUserEntraIDSignInLog -UserPrincipalName <upn> | portal: Entra admin center > Sign-in logs > Download (works on every edition)",
-    "rows": 1261,
+    "rows": 1265,
     "min_time": "2026-08-11T14:24:08Z",
     "max_time": "2026-09-09T23:49:44Z",
     "users_covered": 13,
     "retention_days": 30
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "directory_audits",
     "title": "Entra ID audit logs",
     "status": "partial",
     "reason": "the window starts before the 30-day retention at collection time",
     "remediation": "Microsoft-Extractor-Suite: Get-GraphEntraAuditLogs -startDate 2026-08-12 -endDate 2026-09-11 | Hawk: Get-HawkTenantEntraIDAuditLog | portal: Entra admin center > Audit logs > Download",
-    "rows": 18,
+    "rows": 20,
     "min_time": "2026-08-12T16:00:00Z",
     "max_time": "2026-09-09T20:08:41Z",
-    "users_covered": 2,
+    "users_covered": 3,
     "retention_days": 30
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "risk_detections",
     "title": "Entra ID Protection risk detections",
     "status": "collected",
@@ -86,7 +86,7 @@
     "retention_days": 90
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "message_trace",
     "title": "Exchange Online message trace",
     "status": "collected",
@@ -98,19 +98,19 @@
     "retention_days": 90
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "mailbox_audit_legacy",
     "title": "Mailbox audit log (Search-MailboxAuditLog)",
     "status": "collected",
-    "reason": "1801 rows",
-    "rows": 1801,
+    "reason": "1772 rows",
+    "rows": 1772,
     "min_time": "2026-08-01T08:38:17Z",
     "max_time": "2026-09-10T01:55:36Z",
     "users_covered": 13,
     "retention_days": 90
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "admin_audit",
     "title": "Exchange admin audit log",
     "status": "available_not_collected",
@@ -120,7 +120,7 @@
     "retention_days": 90
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "email_threat_events",
     "title": "Defender for Office 365 email threat events",
     "status": "available_not_collected",
@@ -130,7 +130,7 @@
     "retention_days": 30
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "url_clicks",
     "title": "Defender for Office 365 Safe Links URL clicks",
     "status": "available_not_collected",
@@ -140,7 +140,7 @@
     "retention_days": 30
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "risky_users",
     "title": "Entra ID Protection risky users",
     "status": "collected",
@@ -151,16 +151,16 @@
     "users_covered": 2
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "inbox_rules",
     "title": "Inbox and sweep rules",
     "status": "collected",
-    "reason": "14 rows",
-    "rows": 14,
-    "users_covered": 5
+    "reason": "26 rows",
+    "rows": 26,
+    "users_covered": 8
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "mailbox_config",
     "title": "Mailbox configuration (forwarding, auto-reply, auditing)",
     "status": "collected",
@@ -169,7 +169,7 @@
     "users_covered": 15
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "mailbox_permissions",
     "title": "Mailbox permissions",
     "status": "collected",
@@ -178,7 +178,7 @@
     "users_covered": 4
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "users",
     "title": "Entra ID users",
     "status": "collected",
@@ -187,7 +187,7 @@
     "users_covered": 13
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "role_assignments",
     "title": "Admin role assignments (Entra ID, Exchange, eDiscovery)",
     "status": "partial",
@@ -196,7 +196,7 @@
     "rows": 4
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "oauth_grants",
     "title": "OAuth / application permission grants",
     "status": "collected",
@@ -204,7 +204,7 @@
     "rows": 17
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "app_credentials",
     "title": "Application and service principal credentials",
     "status": "available_not_collected",
@@ -213,7 +213,7 @@
     "rows": 0
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "applications",
     "title": "Applications and service principals",
     "status": "collected",
@@ -221,7 +221,7 @@
     "rows": 11
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "devices",
     "title": "Entra devices",
     "status": "collected",
@@ -229,7 +229,7 @@
     "rows": 18
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "groups",
     "title": "Entra groups and members",
     "status": "collected",
@@ -237,7 +237,7 @@
     "rows": 3
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "transport_rules",
     "title": "Exchange transport rules",
     "status": "collected",
@@ -245,7 +245,7 @@
     "rows": 3
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "mobile_devices",
     "title": "Mobile devices attached to mailboxes",
     "status": "available_not_collected",
@@ -254,7 +254,7 @@
     "rows": 0
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "audit_config",
     "title": "Organization audit configuration",
     "status": "collected",
@@ -262,7 +262,7 @@
     "rows": 1
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "licenses",
     "title": "Tenant licences",
     "status": "collected",
@@ -270,7 +270,7 @@
     "rows": 2
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "mfa_registration",
     "title": "Entra MFA registration",
     "status": "collected",
@@ -279,7 +279,7 @@
     "users_covered": 13
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "ca_policies",
     "title": "Conditional Access policies",
     "status": "collected",
@@ -287,7 +287,7 @@
     "rows": 2
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "security_alerts",
     "title": "Microsoft Defender security alerts",
     "status": "collected",
@@ -297,7 +297,7 @@
     "max_time": "2026-08-04T10:00:00Z"
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "secure_score",
     "title": "Microsoft Secure Score",
     "status": "collected",
@@ -305,7 +305,7 @@
     "rows": 8
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "azure_activity",
     "title": "Azure activity logs",
     "status": "collected",
@@ -316,7 +316,7 @@
     "users_covered": 2
   },
   {
-    "tenant_key": "31e6e8bf-216e-415a-b070-a390a5e64e29",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
     "evidence": "email_artifacts",
     "title": "Exported e-mail messages",
     "status": "collected",

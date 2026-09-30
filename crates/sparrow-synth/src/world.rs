@@ -1318,7 +1318,10 @@ fn compute_victims(scenario: &Scenario) -> BTreeSet<u32> {
 }
 
 fn build_tenant(scenario: &Scenario, seed: u64) -> Tenant {
-    let mut rng = stream(seed, "tenant");
+    // The tenant id follows the scenario as well as the seed, like the per-tree choices do:
+    // two scenarios generated at one seed are two tenants, not one tenant wearing two names
+    // (a case may hold both, and the tenant is part of a finding's fingerprint).
+    let mut rng = stream(seed, &format!("tenant/{}", scenario.name));
     let tenant_id = rng.uuid();
     let domains = scenario.tenant.domains.clone();
     let primary = &domains[0];

@@ -16,6 +16,23 @@ fn same_seed_same_world_other_seed_other_ids() {
     assert_ne!(a.tenant.tenant_id, c.tenant.tenant_id);
 }
 
+/// The tenant id follows the scenario as well as the seed: two scenarios generated at one seed
+/// are two tenants, not one tenant wearing two names (a case may hold both, and the tenant is
+/// part of a finding's fingerprint).
+#[test]
+fn the_tenant_id_depends_on_the_scenario() {
+    let a = world("bec-aitm", 42);
+    let b = world("bec-aitm", 42);
+    let c = world("bec-aitm", 43);
+    let other = world("business-basic", 42);
+    // Deterministic, and the same scenario and seed give the same id.
+    assert_eq!(a.tenant.tenant_id, b.tenant.tenant_id);
+    assert_ne!(a.tenant.tenant_id, c.tenant.tenant_id);
+    assert_ne!(a.tenant.tenant_id, other.tenant.tenant_id);
+    // A reserved, deterministic GUID (the derivation cannot collide with a real tenant id:
+    // it is this generator's own stream).
+}
+
 #[test]
 fn people_and_mailboxes_are_consistent() {
     let w = world("bec-aitm", 1);

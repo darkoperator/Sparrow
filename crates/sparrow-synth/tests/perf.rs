@@ -179,6 +179,10 @@ fn tree_digest(dir: &Path) -> String {
 /// Re-recorded by the architect on the integration branch: F4b (0f8a7d3) reverted after review, the
 /// travel, audit and sign-in generator fixes and the rule batches merged. Previous value
 /// `bb718ce5f01b8d2f146118974230936e48c00034eade65025baca2727787f276`.
+///
+/// Re-recorded for Task F6 part 2: the tenant id is derived from the scenario name and the seed,
+/// not the seed alone, so every row carrying it changes in every tree. Previous value
+/// `65be86036234c884af183b3530e9a65817d0f0f70b5f85cad5b9961565739563`.
 #[test]
 #[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
@@ -189,7 +193,7 @@ fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
     generate_to_dir(&load("volume").unwrap(), &o, dir.path()).unwrap();
     assert_eq!(
         tree_digest(dir.path()),
-        "65be86036234c884af183b3530e9a65817d0f0f70b5f85cad5b9961565739563"
+        "563b547e93f40270a3a050b8a08019e2be1ff6d83133f30ab8cc70e5043c6d0d"
     );
 }
 
