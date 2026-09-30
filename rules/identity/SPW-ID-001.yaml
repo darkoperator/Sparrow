@@ -1,0 +1,164 @@
+# SPW-ID-001 — MFA method registered after a risky sign-in. Logic source: coverage.yaml
+# ("Directory audit \"User registered security info\" / \"Update user\" with StrongAuthentication*
+# modified properties (or UAL \"Update user.\" with the same), within 24 hours after a sign-in of the
+# same user that is risky (risk level medium/high) or comes from a hosting ASN"). The
+# risky sign-in comes from the Entra log or, as in SPW-ID-010, from a UAL UserLoggedIn on a hosting IP
+# (coverage.yaml evidence_all_of pairs signins with ual_events).
+id: SPW-ID-001
+title: MFA method registered after a risky sign-in
+version: 1
+status: stable
+severity: high
+confidence: medium
+mitre: [T1098.005]
+tags: [bec, mfa, correlation]
+requires: []
+requires_evidence: []
+needs_geoip: true
+sql: |
+  WITH mfa_events AS (
+    SELECT d.record_key, false AS is_ual, d.event_time,
+           lower(d.initiated_by_upn) AS actor_upn, d.initiated_by_ip AS ip
+    FROM directory_audits d
+    WHERE lower(d.activity) = 'user registered security info'
+       OR (lower(d.activity) = 'update user'
+           AND (CAST(d.targets AS VARCHAR) LIKE '%StrongAuthentication%'
+                OR CAST(d.modified_properties AS VARCHAR) LIKE '%StrongAuthentication%'))
+    UNION ALL
+    SELECT lower(CAST(u.record_id AS VARCHAR)), true, u.event_time,
+           lower(u.user_upn), u.client_ip
+    FROM ual_events u
+    WHERE lower(u.operation) = 'update user.'
+      AND CAST(u.audit_data AS VARCHAR) LIKE '%StrongAuthentication%'
+  ),
+  risky_signins AS (
+    SELECT lower(s.user_upn) AS upn, s.event_time
+    FROM signins s
+    WHERE (lower(s.risk_level_during) IN ('medium', 'high')
+           OR EXISTS (SELECT 1 FROM ip_intel i WHERE i.ip = s.ip AND i.is_hosting))
+    UNION ALL
+    SELECT lower(u.user_upn), u.event_time
+    FROM ual_events u
+    WHERE lower(u.operation) = 'userloggedin'
+      AND EXISTS (SELECT 1 FROM ip_intel i WHERE i.ip = u.client_ip AND i.is_hosting)
+  )
+  SELECT m.record_key,
+         CASE WHEN m.is_ual THEN 'ual_events' ELSE 'directory_audits' END AS source_table,
+         m.event_time, m.actor_upn, m.ip
+  FROM mfa_events m
+  WHERE EXISTS (
+    SELECT 1 FROM risky_signins s
+    WHERE s.upn = m.actor_upn
+      AND epoch_ms(s.event_time) <= epoch_ms(m.event_time)
+      AND epoch_ms(s.event_time) >= epoch_ms(m.event_time) - 86400000
+  )
+group_by: [actor_upn]
+analyst_guidance: |
+  Registering a new authenticator soon after a risky sign-in is how an attacker keeps access after
+  the stolen session expires. Compare the registration IP and device name with the user's normal
+  sign-ins, and check whether the user was travelling or had just been hired.
+false_positives:
+  - A new hire registering MFA during onboarding, from a corporate network.
+  - A user who registers a new phone after a risk detection they cleared themselves.
+references:
+  - https://learn.microsoft.com/en-us/entra/identity/monitoring-health/reference-audit-activities
+author: Sparrow
+tests:
+  - name: security info registered two hours after a high-risk sign-in
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        risk_level_during: high
+      - table: directory_audits
+        activity: User registered security info
+        initiated_by_upn: alice@contoso.example
+        event_time: "2026-03-01T12:00:00Z"
+    expect_hits: 1
+  - name: StrongAuthentication property update after a sign-in from a hosting IP
+    records:
+      - table: ip_intel
+        ip: 203.0.113.50
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        ip: 203.0.113.50
+      - table: directory_audits
+        activity: Update user
+        initiated_by_upn: alice@contoso.example
+        event_time: "2026-03-01T12:00:00Z"
+        targets: '[{"type":"User","modifiedProperties":[{"displayName":"StrongAuthenticationPhoneAppDetail"}]}]'
+    expect_hits: 1
+  - name: the UAL Update user. record with StrongAuthentication properties counts
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        risk_level_during: medium
+      - table: ual_events
+        operation: Update user.
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T11:00:00Z"
+        audit_data:
+          ModifiedProperties:
+            - Name: StrongAuthenticationMethod
+    expect_hits: 1
+  - name: registration more than 24 hours after the risky sign-in
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        risk_level_during: high
+      - table: directory_audits
+        activity: User registered security info
+        initiated_by_upn: alice@contoso.example
+        event_time: "2026-03-02T16:00:00Z"
+    expect_hits: 0
+  - name: another user had the risky sign-in
+    records:
+      - table: signins
+        user_upn: bob@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        risk_level_during: high
+      - table: directory_audits
+        activity: User registered security info
+        initiated_by_upn: alice@contoso.example
+        event_time: "2026-03-01T12:00:00Z"
+    expect_hits: 0
+  - name: a benign sign-in before the registration
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        risk_level_during: none
+      - table: directory_audits
+        activity: User registered security info
+        initiated_by_upn: alice@contoso.example
+        event_time: "2026-03-01T12:00:00Z"
+    expect_hits: 0
+  - name: an Update user without authentication properties
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        risk_level_during: high
+      - table: directory_audits
+        activity: Update user
+        initiated_by_upn: alice@contoso.example
+        event_time: "2026-03-01T12:00:00Z"
+        targets: '[{"type":"User","modifiedProperties":[{"displayName":"JobTitle"}]}]'
+    expect_hits: 0
+  - name: a registration before the sign-in
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T12:00:00Z"
+        risk_level_during: high
+      - table: directory_audits
+        activity: User registered security info
+        initiated_by_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 0

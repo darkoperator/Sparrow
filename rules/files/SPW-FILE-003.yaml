@@ -1,0 +1,225 @@
+# SPW-FILE-003 — OneNote or PDF lure uploaded and shared. Logic source: coverage.yaml ("FileUploaded
+# of a .one, .onetoc2, .onepkg or .pdf file (file_events is_onenote or file_ext pdf) followed within 24
+# hours by a sharing event on the same file (SharingSet, SharingInvitationCreated, CompanyLinkCreated,
+# AnonymousLinkCreated) that reaches an external target or a company-wide link").
+id: SPW-FILE-003
+title: OneNote or PDF lure uploaded and shared
+version: 1
+status: stable
+severity: high
+confidence: medium
+mitre: [T1566.002, T1204.002]
+tags: [bec, phishing, sharing, correlation]
+requires: []
+requires_evidence: [ual]
+sql: |
+  SELECT lower(CAST(s.record_id AS VARCHAR)) AS record_key, 'ual_events' AS source_table,
+         s.event_time, lower(s.user_upn) AS actor_upn, s.client_ip AS ip
+  FROM ual_events s JOIN sharing_events se ON se.record_id = s.record_id
+  WHERE lower(s.operation) IN ('sharingset', 'sharinginvitationcreated', 'companylinkcreated',
+                               'anonymouslinkcreated')
+    AND (se.is_external OR se.link_type IN ('company', 'anonymous'))
+    AND EXISTS (
+      SELECT 1
+      FROM ual_events up
+      JOIN file_events f ON f.record_id = up.record_id
+      WHERE lower(up.operation) = 'fileuploaded'
+        AND (f.is_onenote OR lower(f.file_ext) = 'pdf')
+        AND lower(up.object_id) = lower(s.object_id)
+        AND epoch_ms(up.event_time) <= epoch_ms(s.event_time)
+        AND epoch_ms(s.event_time) <= epoch_ms(up.event_time) + 86400000
+    )
+group_by: [actor_upn]
+analyst_guidance: |
+  A OneNote or PDF uploaded to a compromised account and shared outside the company or with everyone
+  is the lure of a phishing wave sent from a trusted sender. Open the file, list who received the
+  link, and check the mail sent around the same time.
+false_positives:
+  - A user sharing a PDF with a partner or a company-wide notice as PDF.
+  - A OneNote notebook shared with an external collaborator.
+references:
+  - https://learn.microsoft.com/en-us/purview/audit-log-activities
+author: Sparrow
+tests:
+  - name: OneNote upload shared with an external guest five minutes later
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000000008"
+        operation: FileUploaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        object_id: https://contoso-my.sharepoint.example/personal/alice/Documents/Secure.one
+      - table: file_events
+        record_id: "00000000-0000-0000-0000-000000000008"
+        file_ext: one
+        is_onenote: true
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000000009"
+        operation: SharingInvitationCreated
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:05:00Z"
+        object_id: https://contoso-my.sharepoint.example/personal/alice/Documents/Secure.one
+      - table: sharing_events
+        record_id: "00000000-0000-0000-0000-000000000009"
+        link_type: direct
+        is_external: true
+    expect_hits: 1
+  - name: PDF upload shared through a company-wide link
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-00000000000a"
+        operation: FileUploaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        object_id: https://contoso-my.sharepoint.example/personal/alice/Documents/Remit.pdf
+      - table: file_events
+        record_id: "00000000-0000-0000-0000-00000000000a"
+        file_ext: pdf
+        is_onenote: false
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-00000000000b"
+        operation: CompanyLinkCreated
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:05:00Z"
+        object_id: https://contoso-my.sharepoint.example/personal/alice/Documents/Remit.pdf
+      - table: sharing_events
+        record_id: "00000000-0000-0000-0000-00000000000b"
+        link_type: company
+    expect_hits: 1
+  - name: lure shared through an anonymous link
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-00000000000c"
+        operation: FileUploaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        object_id: https://contoso-my.sharepoint.example/personal/alice/Documents/Remit.pdf
+      - table: file_events
+        record_id: "00000000-0000-0000-0000-00000000000c"
+        file_ext: pdf
+        is_onenote: false
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-00000000000d"
+        operation: AnonymousLinkCreated
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:05:00Z"
+        object_id: https://contoso-my.sharepoint.example/personal/alice/Documents/Remit.pdf
+      - table: sharing_events
+        record_id: "00000000-0000-0000-0000-00000000000d"
+        link_type: anonymous
+    expect_hits: 1
+  - name: the share came more than 24 hours after the upload
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-00000000000e"
+        operation: FileUploaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        object_id: https://contoso-my.sharepoint.example/personal/alice/Documents/Secure.one
+      - table: file_events
+        record_id: "00000000-0000-0000-0000-00000000000e"
+        file_ext: one
+        is_onenote: true
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-00000000000f"
+        operation: SharingInvitationCreated
+        user_upn: alice@contoso.example
+        event_time: "2026-03-02T16:00:00Z"
+        object_id: https://contoso-my.sharepoint.example/personal/alice/Documents/Secure.one
+      - table: sharing_events
+        record_id: "00000000-0000-0000-0000-00000000000f"
+        link_type: direct
+        is_external: true
+    expect_hits: 0
+  - name: a docx is not a lure type
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000000010"
+        operation: FileUploaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        object_id: https://contoso-my.sharepoint.example/personal/alice/Documents/Plan.docx
+      - table: file_events
+        record_id: "00000000-0000-0000-0000-000000000010"
+        file_ext: docx
+        is_onenote: false
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000000011"
+        operation: SharingInvitationCreated
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:05:00Z"
+        object_id: https://contoso-my.sharepoint.example/personal/alice/Documents/Plan.docx
+      - table: sharing_events
+        record_id: "00000000-0000-0000-0000-000000000011"
+        link_type: direct
+        is_external: true
+    expect_hits: 0
+  - name: a lure shared with a colleague only
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000000012"
+        operation: FileUploaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        object_id: https://contoso-my.sharepoint.example/personal/alice/Documents/Secure.one
+      - table: file_events
+        record_id: "00000000-0000-0000-0000-000000000012"
+        file_ext: one
+        is_onenote: true
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000000013"
+        operation: SharingSet
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:05:00Z"
+        object_id: https://contoso-my.sharepoint.example/personal/alice/Documents/Secure.one
+      - table: sharing_events
+        record_id: "00000000-0000-0000-0000-000000000013"
+        link_type: direct
+        is_external: false
+    expect_hits: 0
+  - name: the share is of a different file
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000000014"
+        operation: FileUploaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        object_id: https://contoso-my.sharepoint.example/personal/alice/Documents/Secure.one
+      - table: file_events
+        record_id: "00000000-0000-0000-0000-000000000014"
+        file_ext: one
+        is_onenote: true
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000000015"
+        operation: SharingInvitationCreated
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:05:00Z"
+        object_id: https://contoso-my.sharepoint.example/personal/alice/Documents/Other.one
+      - table: sharing_events
+        record_id: "00000000-0000-0000-0000-000000000015"
+        link_type: direct
+        is_external: true
+    expect_hits: 0
+  - name: the share came before the upload
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000000016"
+        operation: SharingInvitationCreated
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        object_id: https://contoso-my.sharepoint.example/personal/alice/Documents/Secure.one
+      - table: sharing_events
+        record_id: "00000000-0000-0000-0000-000000000016"
+        link_type: direct
+        is_external: true
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000000017"
+        operation: FileUploaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:05:00Z"
+        object_id: https://contoso-my.sharepoint.example/personal/alice/Documents/Secure.one
+      - table: file_events
+        record_id: "00000000-0000-0000-0000-000000000017"
+        file_ext: one
+        is_onenote: true
+    expect_hits: 0

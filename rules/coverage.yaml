@@ -385,9 +385,12 @@ rules:
     requires_evidence: []
     needs_geoip: true
     # Hawk 3.1 exports no Entra sign-in log and no Entra ID audit log (survey; hawk-layouts
-    # §7.2), so it cannot supply the risky-sign-in half of the correlation.
+    # §7.2), but its UAL carries both halves: the UAL "Update user." with StrongAuthentication
+    # properties and a UserLoggedIn from a hosting IP (evidence_all_of pairs signins with
+    # ual_events). Hawk 4's sign-in files do not reach back to the AiTM sign-in either, so the
+    # UAL is the risky-sign-in evidence there too; hawk3 is a collector.
     evidence_all_of: [[directory_audits, ual_events], [signins, ual_events]]
-    collectors: [hawk4, invictus, portal]
+    collectors: [hawk3, hawk4, invictus, portal]
     positives: [mfa_method_added]
     lookalikes: [mfa_new_hire, mfa_after_stale_risk]
     correlation_negatives: [mfa_after_stale_risk]
@@ -472,11 +475,12 @@ rules:
     # The inbox-rule half and the preceding risky / hosting-ASN sign-in.
     evidence_all_of: [[ual_events, admin_audit_events], [signins, ual_events]]
     collectors: [hawk3, hawk4, invictus, portal]
-    # forwarding_inbox_rule creates the attacker's forwarding rule (New-InboxRule) 35 minutes
-    # after the AiTM sign-in: a true hit of this rule's own logic.
-    positives: [inbox_rule_finance, forwarding_inbox_rule]
+    positives: [inbox_rule_finance]
     lookalikes: [vendor_filing_rule, inbox_rule_after_stale_risk]
     correlation_negatives: [inbox_rule_after_stale_risk]
+    baseline_allow:
+      - kind: forwarding_inbox_rule
+        reason: "the attacker's forwarding rule (New-InboxRule) follows the AiTM sign-in by 35 minutes: a true hit of this rule's logic wherever the scenario has that risky sign-in (bec-aitm), so it cannot be a per-kind positive (hawk-investigate has none)"
   - id: SPW-APP-001
     title: Consent to an app with Mail.*, Files.* or offline_access
     category: apps

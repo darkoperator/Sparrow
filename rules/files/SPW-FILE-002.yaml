@@ -1,0 +1,165 @@
+# SPW-FILE-002 — anonymous sharing link created after a compromise indicator. Logic source:
+# coverage.yaml ("AnonymousLinkCreated (sharing_events link_type anonymous) by a user who had a risky
+# or hosting-ASN sign-in in the preceding 24 hours").
+id: SPW-FILE-002
+title: Anonymous sharing link created after a compromise indicator
+version: 1
+status: stable
+severity: high
+confidence: medium
+mitre: [T1567]
+tags: [bec, sharing, correlation]
+requires: []
+requires_evidence: [ual]
+needs_geoip: true
+sql: |
+  WITH risky_signins AS (
+    SELECT lower(s.user_upn) AS upn, s.event_time
+    FROM signins s
+    WHERE (lower(s.risk_level_during) IN ('medium', 'high')
+           OR EXISTS (SELECT 1 FROM ip_intel i WHERE i.ip = s.ip AND i.is_hosting))
+    UNION ALL
+    SELECT lower(u.user_upn), u.event_time
+    FROM ual_events u
+    WHERE lower(u.operation) = 'userloggedin'
+      AND EXISTS (SELECT 1 FROM ip_intel i WHERE i.ip = u.client_ip AND i.is_hosting)
+  )
+  SELECT lower(CAST(u.record_id AS VARCHAR)) AS record_key, 'ual_events' AS source_table,
+         u.event_time, lower(u.user_upn) AS actor_upn, u.client_ip AS ip
+  FROM ual_events u JOIN sharing_events se ON se.record_id = u.record_id
+  WHERE se.link_type = 'anonymous'
+    AND EXISTS (
+      SELECT 1 FROM risky_signins s
+      WHERE s.upn = lower(u.user_upn)
+        AND epoch_ms(s.event_time) <= epoch_ms(u.event_time)
+        AND epoch_ms(s.event_time) >= epoch_ms(u.event_time) - 86400000
+    )
+group_by: [actor_upn]
+analyst_guidance: |
+  An anyone-with-the-link URL created by an account that just signed in from a risky or hosting
+  address is how stolen data leaves the tenant without a guest account. Open the shared document,
+  check who used the link, and compare the creating IP with the user's normal sign-ins.
+false_positives:
+  - A user sharing a brochure or public document right after signing in from a VPN.
+  - Risk detections that Entra ID later dismisses as safe.
+references:
+  - https://learn.microsoft.com/en-us/purview/audit-log-activities
+author: Sparrow
+tests:
+  - name: anonymous link three hours after a high-risk sign-in
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        risk_level_during: high
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000000001"
+        operation: AnonymousLinkCreated
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T13:00:00Z"
+        object_id: https://contoso-my.sharepoint.example/personal/alice/Documents/Plan.docx
+      - table: sharing_events
+        record_id: "00000000-0000-0000-0000-000000000001"
+        link_type: anonymous
+    expect_hits: 1
+  - name: anonymous link after a sign-in from a hosting IP
+    records:
+      - table: ip_intel
+        ip: 203.0.113.50
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        ip: 203.0.113.50
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000000002"
+        operation: AnonymousLinkCreated
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T13:00:00Z"
+        object_id: https://contoso-my.sharepoint.example/personal/alice/Documents/Plan.docx
+      - table: sharing_events
+        record_id: "00000000-0000-0000-0000-000000000002"
+        link_type: anonymous
+    expect_hits: 1
+  - name: the risky sign-in was more than 24 hours earlier
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        risk_level_during: high
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000000003"
+        operation: AnonymousLinkCreated
+        user_upn: alice@contoso.example
+        event_time: "2026-03-02T16:00:00Z"
+        object_id: https://contoso-my.sharepoint.example/personal/alice/Documents/Plan.docx
+      - table: sharing_events
+        record_id: "00000000-0000-0000-0000-000000000003"
+        link_type: anonymous
+    expect_hits: 0
+  - name: no compromise indicator before the link
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        risk_level_during: none
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000000004"
+        operation: AnonymousLinkCreated
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T13:00:00Z"
+        object_id: https://contoso-my.sharepoint.example/personal/alice/Documents/Plan.docx
+      - table: sharing_events
+        record_id: "00000000-0000-0000-0000-000000000004"
+        link_type: anonymous
+    expect_hits: 0
+  - name: a company link is not an anonymous link
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        risk_level_during: high
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000000005"
+        operation: CompanyLinkCreated
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T13:00:00Z"
+        object_id: https://contoso-my.sharepoint.example/personal/alice/Documents/Plan.docx
+      - table: sharing_events
+        record_id: "00000000-0000-0000-0000-000000000005"
+        link_type: company
+    expect_hits: 0
+  - name: another user had the risky sign-in
+    records:
+      - table: signins
+        user_upn: bob@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        risk_level_during: high
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000000006"
+        operation: AnonymousLinkCreated
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T13:00:00Z"
+        object_id: https://contoso-my.sharepoint.example/personal/alice/Documents/Plan.docx
+      - table: sharing_events
+        record_id: "00000000-0000-0000-0000-000000000006"
+        link_type: anonymous
+    expect_hits: 0
+  - name: the risky sign-in came after the link
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T14:00:00Z"
+        risk_level_during: high
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000000007"
+        operation: AnonymousLinkCreated
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T13:00:00Z"
+        object_id: https://contoso-my.sharepoint.example/personal/alice/Documents/Plan.docx
+      - table: sharing_events
+        record_id: "00000000-0000-0000-0000-000000000007"
+        link_type: anonymous
+    expect_hits: 0

@@ -1,0 +1,643 @@
+# SPW-FILE-001 — mass file download. Logic source: coverage.yaml ("At least 30 FileDownloaded /
+# FileSyncDownloadedFull records by one user within 15 minutes"). The first shipped rule that uses
+# the `threshold:` block: the hits are every download record of a qualifying window.
+id: SPW-FILE-001
+title: Mass file download
+version: 1
+status: stable
+severity: medium
+confidence: medium
+mitre: [T1530]
+tags: [bec, exfiltration, files]
+requires: []
+requires_evidence: [ual]
+source: ual_events
+match:
+  operation: {in: [FileDownloaded, FileSyncDownloadedFull]}
+threshold:
+  group_by: [actor_upn]
+  window: 15m
+  count: ">= 30"
+group_by: [actor_upn]
+analyst_guidance: |
+  Dozens of downloads within minutes is a script or a sync client copying a library, not a person
+  reading documents. Check the client IP and user agent, the site the files came from, and whether
+  the same user signed in from a hosting provider shortly before.
+false_positives:
+  - A user who syncs a document library to a new laptop with the OneDrive client.
+  - A migration or backup tool running under the user's account.
+references:
+  - https://learn.microsoft.com/en-us/purview/audit-log-activities
+author: Sparrow
+tests:
+  - name: thirty downloads in under fifteen minutes
+    records:
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:01:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:01:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:01:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:02:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:02:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:02:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:03:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:03:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:03:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:04:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:04:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:04:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:05:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:05:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:05:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:06:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:06:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:06:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:07:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:07:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:07:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:08:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:08:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:08:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:09:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:09:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:09:40Z"
+    expect_hits: 30
+  - name: twenty-nine downloads are below the threshold
+    records:
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:01:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:01:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:01:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:02:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:02:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:02:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:03:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:03:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:03:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:04:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:04:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:04:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:05:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:05:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:05:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:06:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:06:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:06:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:07:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:07:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:07:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:08:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:08:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:08:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:09:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:09:20Z"
+    expect_hits: 0
+  - name: thirty downloads spread over an hour never share a window
+    records:
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:02:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:04:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:06:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:08:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:10:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:12:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:14:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:16:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:18:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:20:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:22:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:24:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:26:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:28:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:30:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:32:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:34:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:36:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:38:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:40:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:42:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:44:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:46:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:48:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:50:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:52:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:54:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:56:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:58:00Z"
+    expect_hits: 0
+  - name: FileSyncDownloadedFull counts
+    records:
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:01Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:02Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:03Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:04Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:05Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:06Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:07Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:08Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:09Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:10Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:11Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:12Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:13Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:14Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:15Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:16Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:17Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:18Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:19Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:20Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:21Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:22Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:23Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:24Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:25Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:26Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:27Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:28Z"
+      - table: ual_events
+        operation: FileSyncDownloadedFull
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:29Z"
+    expect_hits: 30
+  - name: thirty downloads split between two users
+    records:
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:01:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:01:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:01:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:02:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:02:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:02:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:03:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:03:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:03:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:04:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:04:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:04:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: bob@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: bob@contoso.example
+        event_time: "2026-03-01T10:00:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: bob@contoso.example
+        event_time: "2026-03-01T10:00:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: bob@contoso.example
+        event_time: "2026-03-01T10:01:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: bob@contoso.example
+        event_time: "2026-03-01T10:01:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: bob@contoso.example
+        event_time: "2026-03-01T10:01:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: bob@contoso.example
+        event_time: "2026-03-01T10:02:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: bob@contoso.example
+        event_time: "2026-03-01T10:02:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: bob@contoso.example
+        event_time: "2026-03-01T10:02:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: bob@contoso.example
+        event_time: "2026-03-01T10:03:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: bob@contoso.example
+        event_time: "2026-03-01T10:03:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: bob@contoso.example
+        event_time: "2026-03-01T10:03:40Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: bob@contoso.example
+        event_time: "2026-03-01T10:04:00Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: bob@contoso.example
+        event_time: "2026-03-01T10:04:20Z"
+      - table: ual_events
+        operation: FileDownloaded
+        user_upn: bob@contoso.example
+        event_time: "2026-03-01T10:04:40Z"
+    expect_hits: 0

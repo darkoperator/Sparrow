@@ -81,18 +81,24 @@ fn gate_passes_for_the_sample_rules() {
     // bec-aitm exercises every sample rule and every collector; the full matrix is the ignored job.
     for c in Collector::ALL {
         let r = assert_gate_ok("bec-aitm", *c);
-        assert!(r.rules_unchecked > 0, "rules without a file are reported");
+        assert_eq!(r.rules_unchecked, 0, "every seed rule has a rule file");
     }
 }
 
 #[test]
 #[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn gate_passes_for_the_sample_rules_on_every_scenario_and_collector() {
+    // Every scenario and collector is checked and ALL failures are reported at once.
+    let mut failed = Vec::new();
     for name in builtin_names().iter().filter(|n| **n != "volume") {
         for c in Collector::ALL {
-            assert_gate_ok(name, *c);
+            let (r, ..) = gate(name, *c);
+            if !r.ok {
+                failed.push(format!("{name} {c:?}: {:#?}", r.problems));
+            }
         }
     }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
 
 #[test]
@@ -114,7 +120,7 @@ fn gate_catches_a_missing_hit() {
         .unwrap(),
     };
     let case = ingest_generated_with_rules(dir.path(), &m, &set);
-    let r = check_with(&m, &case, &set, &BTreeMap::new()).unwrap();
+    let r = check_with(&m, &case, &set, &coverage_allow()).unwrap();
     assert!(!r.ok);
     assert!(
         r.detection
@@ -142,7 +148,7 @@ fn gate_catches_an_unexpected_baseline_hit() {
     let mut set = builtin_set();
     every_login_rule(&mut set);
     let case = ingest_generated_with_rules(dir.path(), &m, &set);
-    let r = check_with(&m, &case, &set, &BTreeMap::new()).unwrap();
+    let r = check_with(&m, &case, &set, &coverage_allow()).unwrap();
     assert!(!r.ok);
     assert!(
         r.detection
@@ -268,7 +274,7 @@ fn a_gap_not_applicable_is_checked_as_no_finding() {
         x.outcome = RuleOutcome::NotApplicable;
         x.reason = "unified audit log ingestion disabled".to_string();
     }
-    let r = check_with(&m, &case, &set, &BTreeMap::new()).unwrap();
+    let r = check_with(&m, &case, &set, &coverage_allow()).unwrap();
     assert!(!r.ok);
     assert!(
         r.detection
@@ -289,7 +295,7 @@ fn a_gap_not_applicable_is_checked_as_no_finding() {
         tables: vec!["mailboxes".into()],
         complete: true,
     });
-    let r = check_with(&m2, &case2, &set, &BTreeMap::new()).unwrap();
+    let r = check_with(&m2, &case2, &set, &coverage_allow()).unwrap();
     assert!(r.ok, "{:#?}", r.problems);
 }
 
@@ -317,7 +323,7 @@ fn a_tenant_wide_not_applicable_must_be_in_the_run_log() {
         .capabilities
         .get("identity_protection")
         .map(|c| c.status.clone());
-    let r = check_with(&m, &case, &set, &BTreeMap::new()).unwrap();
+    let r = check_with(&m, &case, &set, &coverage_allow()).unwrap();
     if cap.as_deref() == Some("not_licensed") {
         assert!(r.ok, "{:#?}", r.problems);
     }
@@ -336,7 +342,7 @@ fn a_tenant_wide_not_applicable_must_be_in_the_run_log() {
         tables: vec!["risky_users".into()],
         complete: true,
     });
-    let r = check_with(&m2, &case2, &set, &BTreeMap::new()).unwrap();
+    let r = check_with(&m2, &case2, &set, &coverage_allow()).unwrap();
     assert!(
         r.detection
             .applicability
@@ -426,7 +432,7 @@ fn the_gate_fails_on_a_partial_run() {
     let mut partial = builtin_set();
     partial.rules.retain(|r| r.rule.id != "SPW-ID-010");
     let case = ingest_generated_with_rules(dir.path(), &m, &partial);
-    let r = check_with(&m, &case, &full, &BTreeMap::new()).unwrap();
+    let r = check_with(&m, &case, &full, &coverage_allow()).unwrap();
     assert!(!r.ok);
     assert!(
         r.detection
@@ -457,7 +463,7 @@ fn a_finding_citing_hit_and_baseline_records_fails() {
         tables: vec!["ual_events".into()],
         complete: true,
     });
-    let r = check_with(&m, &case, &set, &BTreeMap::new()).unwrap();
+    let r = check_with(&m, &case, &set, &coverage_allow()).unwrap();
     assert!(
         r.detection
             .unexpected_hits
@@ -587,4 +593,31 @@ fn no_built_in_rule_reads_a_failed_logon() {
         readers.contains(&"SPW-ID-002") && readers.contains(&"SPW-ID-003"),
         "the sign-in rules name UserLoggedIn: {readers:?}"
     );
+}
+
+/// The four correlation negatives deliver both evidence halves and must not fire their rule:
+/// the manifest expects NoHit, the rule file exists, and the gate passes with them checked.
+#[test]
+fn gate_exercises_the_correlation_negatives() {
+    const NEGATIVES: [(&str, &str); 4] = [
+        ("l-cn-mfa", "SPW-ID-001"),
+        ("l-cn-rule", "SPW-ID-010"),
+        ("l-cn-anon", "SPW-FILE-002"),
+        ("l-cn-lure", "SPW-FILE-003"),
+    ];
+    let (report, m, _case) = gate("bec-aitm", Collector::Invictus);
+    assert!(report.ok, "{:#?}", report.problems);
+    let set = builtin_set();
+    for (story, rule) in NEGATIVES {
+        assert!(
+            set.rules.iter().any(|r| r.rule.id == rule),
+            "{rule} has a rule file"
+        );
+        assert!(
+            m.rules.iter().any(|r| r.rule_id == rule
+                && r.storyline == story
+                && r.outcome == RuleOutcome::NoHit),
+            "{story} is a NoHit for {rule}"
+        );
+    }
 }

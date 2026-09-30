@@ -48,6 +48,23 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
 fn stale_risky_signin(w: &mut World, ctx: &mut Ctx, before: Duration) {
     let a = ctx.a.clone();
     let att = w.attacker.clone();
+    // The user's own sign-in from home, 40 minutes before the proxied one (as in the AiTM
+    // storyline): the pair a travel rule reads, so the outcome does not depend on which
+    // background sign-in happens to sit next to it.
+    let own_session = ctx.rng.uuid();
+    let own = signin(
+        w,
+        &mut ctx.rng,
+        &a,
+        ctx.t - before - Duration::minutes(40),
+        a.home_ip,
+        &a.home,
+        SignInType::Interactive,
+        well_known("OfficeHome"),
+        well_known("Office 365 Exchange Online"),
+        own_session,
+    );
+    push_signin(w, ctx, &a, own, true);
     let session = ctx.rng.uuid();
     let mut s = signin(
         w,
