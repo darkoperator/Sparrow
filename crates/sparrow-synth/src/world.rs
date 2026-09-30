@@ -67,6 +67,21 @@ const NEWSLETTER_VENDOR_DOMAIN: &str = "newsdigest.example";
 /// A vendor's own domain for the third-party app's reply URL host (spec: reserved domains only).
 const MEETING_NOTES_REPLY_URL: &str = "https://app.meetingnotespro.example/oauth/callback";
 
+/// A trip a storyline sent a user on: from `departure` (their last sign-in at home) to `arrival`
+/// (their first sign-in where they landed), and the destination's address and location for the
+/// rest of the window. A user away from home cannot sign in from home, so the baseline keeps
+/// their sign-ins at the destination and out of the air altogether; a rule on impossible travel
+/// reads this as the world it should have been.
+#[derive(Debug, Clone)]
+pub struct Trip {
+    /// The traveller's UPN.
+    pub user: String,
+    pub departure: DateTime<Utc>,
+    pub arrival: DateTime<Utc>,
+    pub ip: IpAddr,
+    pub location: Location,
+}
+
 /// The tenant and every state object as it stands at the start of the collection window.
 #[derive(Debug, Clone)]
 pub struct World {
@@ -105,6 +120,10 @@ pub struct World {
     pub licence: &'static LicenceProfile,
     pub audit_profile: &'static AuditProfile,
     pub attacker: Attacker,
+    /// The trips the storylines sent users on (Task 10's ID-003 look-alike among them): a user
+    /// away from home signs in from the destination, and not at all while in the air, so the
+    /// baseline never puts a home sign-in next to an arrival half a world away.
+    pub trips: Vec<Trip>,
     /// The Purview audit search export version this tree was "pulled" with: `true` renders
     /// `CreationDate` the way the older downloader does, in the downloading host's culture
     /// (`M/d/yyyy h:mm:ss tt` on en-US, survey §3 capture A), `false` the ISO 8601 string with
@@ -209,6 +228,7 @@ impl World {
             licence,
             audit_profile: audit,
             attacker,
+            trips: Vec::new(),
             purview_culture_dates: stream(seed, &format!("purview/{}", scenario.name)).chance(0.5),
             victims,
             scale_ual: 0,

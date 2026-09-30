@@ -617,11 +617,12 @@ fn plausible_travel(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     let exchange = well_known("Office 365 Exchange Online");
 
     let session = ctx.rng.uuid();
+    let departure = ctx.t - Duration::hours(14);
     let before = signin(
         w,
         &mut ctx.rng,
         &a,
-        ctx.t - Duration::hours(14),
+        departure,
         a.home_ip,
         &a.home,
         SignInType::Interactive,
@@ -632,6 +633,16 @@ fn plausible_travel(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     push_signin(w, ctx, &a, before, true);
 
     let ip = ctx.shared.next_ip();
+    // The trip itself, so the baseline keeps this user at the destination from the arrival to
+    // the end of the window and out of the air in between: a home sign-in next to the arrival
+    // is what a correct impossible-travel rule must not see on its look-alike.
+    w.trips.push(crate::world::Trip {
+        user: a.upn.clone(),
+        departure,
+        arrival: ctx.t,
+        ip,
+        location: dest.clone(),
+    });
     let session = ctx.rng.uuid();
     let after = signin(
         w,

@@ -193,6 +193,24 @@ fn is_weekend(date: NaiveDate) -> bool {
     matches!(date.weekday(), Weekday::Sat | Weekday::Sun)
 }
 
+/// The trip `user` is on at `time`, if any: none before the departure, the trip from the
+/// departure (in the air until the arrival) and after it.
+fn trip_at<'w>(w: &'w World, user: &str, time: DateTime<Utc>) -> Option<&'w crate::world::Trip> {
+    w.trips
+        .iter()
+        .find(|t| t.user == user && time >= t.departure)
+}
+
+/// Where `user` signs in at `time`, and whether that is possible at all: at home until a trip
+/// departs, nowhere (`None`) from the departure to the arrival, at the destination after it.
+fn place_at(w: &World, user: &User, time: DateTime<Utc>) -> Option<(IpAddr, Location)> {
+    match trip_at(w, &user.upn, time) {
+        None => Some((user.home_ip, user.home.clone())),
+        Some(t) if time < t.arrival => None,
+        Some(t) => Some((t.ip, t.location.clone())),
+    }
+}
+
 /// One person's day.
 struct Plan<'a> {
     user: &'a User,
@@ -273,6 +291,7 @@ fn signin(
     user: &User,
     time: DateTime<Utc>,
     ip: IpAddr,
+    location: &Location,
     event_type: SignInType,
     app: Uuid,
     resource: Uuid,
@@ -335,7 +354,7 @@ fn signin(
         resource_id: resource,
         resource_name: ual::app_name(w, resource),
         ip,
-        location: user.home.clone(),
+        location: location.clone(),
         user_agent: user.client.user_agent.clone(),
         client_app: client_app.to_string(),
         event_type,
@@ -361,7 +380,7 @@ fn signin(
         incoming_token_type: "none".to_string(),
         home_tenant_id: w.org_id(),
         resource_tenant_id: w.org_id(),
-        asn: user.home.asn,
+        asn: location.asn,
     }
 }
 
@@ -418,12 +437,14 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
         };
         // The morning sign-in of Outlook desktop starts the day's session.
         plan.interactive.push(signins.len());
+        let (morning_ip, morning_at) = place_at(w, user, login).unwrap_or((ip, user.home.clone()));
         signins.push(signin(
             w,
             &mut srng,
             user,
             login,
-            ip,
+            morning_ip,
+            &morning_at,
             SignInType::Interactive,
             apps.office,
             apps.exchange,
@@ -437,12 +458,14 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
                 let code = if srng.chance(0.5) { 50126 } else { 50074 };
                 let failed_session = srng.uuid();
                 plan.interactive.push(signins.len());
+                let (at_ip, at) = place_at(w, user, t).unwrap_or((ip, user.home.clone()));
                 signins.push(signin(
                     w,
                     &mut srng,
                     user,
                     t,
-                    ip,
+                    at_ip,
+                    &at,
                     SignInType::Interactive,
                     apps.office_home,
                     apps.sharepoint,
@@ -452,12 +475,14 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
             } else if roll < 0.75 {
                 let t = t.max(login);
                 let resource = *srng.pick(&[apps.exchange, apps.sharepoint, apps.graph]);
+                let (at_ip, at) = place_at(w, user, t).unwrap_or((ip, user.home.clone()));
                 signins.push(signin(
                     w,
                     &mut srng,
                     user,
                     t,
-                    ip,
+                    at_ip,
+                    &at,
                     SignInType::NonInteractive,
                     apps.office,
                     resource,
@@ -467,12 +492,14 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
             } else {
                 let t = t.max(login);
                 plan.interactive.push(signins.len());
+                let (at_ip, at) = place_at(w, user, t).unwrap_or((ip, user.home.clone()));
                 signins.push(signin(
                     w,
                     &mut srng,
                     user,
                     t,
-                    ip,
+                    at_ip,
+                    &at,
                     SignInType::Interactive,
                     apps.office_home,
                     apps.sharepoint,
@@ -591,9 +618,17 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
         let user = plan.user;
         let (ip, session) = (plan.ip, plan.session);
         plan.received.sort_by_key(|m| m.time);
-        // The user's first sign-in of the day: the fresh authentication the captures mark with
-        // an authentication-method code, against the later ones the session lets through.
-        let first_login = plan.interactive.iter().map(|i| signins[*i].time).min();
+        // The user's first *successful* interactive sign-in of the day: the fresh authentication
+        // the captures mark with an authentication-method code, against the later ones the
+        // session lets through. A failed first attempt is not that authentication, and it
+        // carries a code of its own as a failed logon.
+        let first_login = plan
+            .interactive
+            .iter()
+            .map(|i| &signins[*i])
+            .filter(|s| s.error_code == 0)
+            .map(|s| s.time)
+            .min();
 
         for &i in &plan.interactive {
             let s = &signins[i];
@@ -924,7 +959,12 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
     Day {
         date,
         ual: ual_out,
-        signins,
+        // Nobody signs in while they are in the air: the records are built (so no other value
+        // moves) and dropped here, in one place for every person's sign-ins of the day.
+        signins: signins
+            .into_iter()
+            .filter(|s| !trip_at(w, &s.user, s.time).is_some_and(|t| s.time < t.arrival))
+            .collect(),
         trace,
     }
 }
@@ -980,13 +1020,15 @@ fn scale_filler(
         } else {
             user.home_ip
         };
+        let (at_ip, at) = place_at(w, user, t).unwrap_or((ip, user.home.clone()));
         let session = rng.uuid();
         signins.push(signin(
             w,
             &mut rng,
             user,
             t,
-            ip,
+            at_ip,
+            &at,
             SignInType::NonInteractive,
             apps.office,
             apps.exchange,
