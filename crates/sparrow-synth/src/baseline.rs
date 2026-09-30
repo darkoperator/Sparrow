@@ -632,6 +632,24 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
     for plan in &mut plans {
         let user = plan.user;
         let (ip, session) = (plan.ip, plan.session);
+        // Every record of this day carries the address the user is at when it happens, and a
+        // user in the air has no record at all: their sign-ins moved to the destination, so
+        // their mailbox, mail and file records have to follow, or the session shows two
+        // addresses (SPW-ID-004) on the very look-alike that is a plausible trip.
+        let address = |t: DateTime<Utc>| {
+            if in_flight(w, &user.upn, t) {
+                ip
+            } else {
+                place_at(w, user, t, ip).map_or(ip, |(at, _)| at)
+            }
+        };
+        // A record made while the user is in the air is dropped after it is built, so the
+        // random streams every other record draws from do not move.
+        let mut log = |rec: Ual, at: DateTime<Utc>| {
+            if !in_flight(w, &user.upn, at) {
+                ual_out.push(rec);
+            }
+        };
         plan.received.sort_by_key(|m| m.time);
         // The user's first *successful* interactive sign-in of the day: the fresh authentication
         // the captures mark with an authentication-method code, against the later ones the
@@ -647,29 +665,30 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
 
         for &i in &plan.interactive {
             let s = &signins[i];
-            // In the air there is no sign-in to log either: the audit log is where a parser
-            // reads a logon back from, so a record here would be a sign-in in the air.
-            if !in_flight(w, &user.upn, s.time) && ual_logged(w, s.time) {
+            if ual_logged(w, s.time) {
                 let ok = s.error_code == 0;
-                ual_out.push(ual::sts_logon(
-                    w,
-                    &mut urng,
-                    user,
+                log(
+                    ual::sts_logon(
+                        w,
+                        &mut urng,
+                        user,
+                        s.time,
+                        ok,
+                        s.ip,
+                        &s.user_agent,
+                        s.app_id,
+                        if ok {
+                            "OAuth2:Authorize"
+                        } else {
+                            "Login:login"
+                        },
+                        s.error_code,
+                        // A failed logon always carries the method; a successful one only on the
+                        // user's first sign-in of the day.
+                        !ok || first_login == Some(s.time),
+                    ),
                     s.time,
-                    ok,
-                    s.ip,
-                    &s.user_agent,
-                    s.app_id,
-                    if ok {
-                        "OAuth2:Authorize"
-                    } else {
-                        "Login:login"
-                    },
-                    s.error_code,
-                    // A failed logon always carries the method; a successful one only on the
-                    // user's first sign-in of the day.
-                    !ok || first_login == Some(s.time),
-                ));
+                );
             }
         }
 
@@ -678,37 +697,43 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
         let sync_time = (plan.login + Duration::seconds(urng.range(30, 300))).min(d_end);
         used += 1;
         if mailbox_logged(w, &user.upn, 0, "MailItemsAccessed", sync_time) {
-            ual_out.push(ual::mail_items_accessed(
-                w,
-                &mut urng,
-                user,
+            log(
+                ual::mail_items_accessed(
+                    w,
+                    &mut urng,
+                    user,
+                    sync_time,
+                    "Sync",
+                    &[("\\Inbox".to_string(), Vec::new())],
+                    address(sync_time),
+                    OUTLOOK_DESKTOP,
+                    apps.office,
+                    session,
+                    false,
+                ),
                 sync_time,
-                "Sync",
-                &[("\\Inbox".to_string(), Vec::new())],
-                ip,
-                OUTLOOK_DESKTOP,
-                apps.office,
-                session,
-                false,
-            ));
+            );
         }
 
         for m in &plan.sent {
             used += 1;
             if mailbox_logged(w, &user.upn, 0, "Send", m.time) {
                 let item = ItemRef::new(w, &user.upn, &m.folder, &m.imid, &m.subject, m.size);
-                ual_out.push(ual::mailbox_item(
-                    w,
-                    &mut urng,
-                    user,
-                    user,
+                log(
+                    ual::mailbox_item(
+                        w,
+                        &mut urng,
+                        user,
+                        user,
+                        m.time,
+                        "Send",
+                        Some(item),
+                        address(m.time),
+                        OUTLOOK_DESKTOP,
+                        session,
+                    ),
                     m.time,
-                    "Send",
-                    Some(item),
-                    ip,
-                    OUTLOOK_DESKTOP,
-                    session,
-                ));
+                );
             }
         }
 
@@ -740,19 +765,22 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
                     None => folders.push((m.folder.clone(), vec![item])),
                 }
             }
-            ual_out.push(ual::mail_items_accessed(
-                w,
-                &mut urng,
-                user,
+            log(
+                ual::mail_items_accessed(
+                    w,
+                    &mut urng,
+                    user,
+                    t,
+                    "Bind",
+                    &folders,
+                    address(t),
+                    OUTLOOK_DESKTOP,
+                    apps.office,
+                    session,
+                    false,
+                ),
                 t,
-                "Bind",
-                &folders,
-                ip,
-                OUTLOOK_DESKTOP,
-                apps.office,
-                session,
-                false,
-            ));
+            );
         }
 
         // The rest of the day's records: item updates and deletes, file access.
@@ -768,18 +796,21 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
                 let t = rand_time(&mut urng, m.time.max(plan.login), plan.end).min(d_end);
                 if mailbox_logged(w, &user.upn, 0, op, t) {
                     let item = ItemRef::new(w, &user.upn, &m.folder, &m.imid, &m.subject, m.size);
-                    ual_out.push(ual::mailbox_item(
-                        w,
-                        &mut urng,
-                        user,
-                        user,
+                    log(
+                        ual::mailbox_item(
+                            w,
+                            &mut urng,
+                            user,
+                            user,
+                            t,
+                            op,
+                            Some(item),
+                            address(t),
+                            OUTLOOK_DESKTOP,
+                            session,
+                        ),
                         t,
-                        op,
-                        Some(item),
-                        ip,
-                        OUTLOOK_DESKTOP,
-                        session,
-                    ));
+                    );
                 }
                 continue;
             }
@@ -806,18 +837,21 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
                 )
             };
             if ual_logged(w, t) {
-                ual_out.push(ual::sharepoint_file(
-                    w,
-                    &mut urng,
-                    user,
+                log(
+                    ual::sharepoint_file(
+                        w,
+                        &mut urng,
+                        user,
+                        t,
+                        op,
+                        &site,
+                        folder,
+                        &file,
+                        address(t),
+                        &user.client.user_agent,
+                    ),
                     t,
-                    op,
-                    &site,
-                    folder,
-                    &file,
-                    ip,
-                    &user.client.user_agent,
-                ));
+                );
             }
         }
 
@@ -826,20 +860,23 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
             let target = urng.pick(&w.users);
             let t = rand_time(&mut urng, plan.login, plan.end);
             if ual_logged(w, t) && w.audit.admin_audit_log_enabled {
-                ual_out.push(ual::exchange_admin(
-                    w,
-                    &mut urng,
-                    user,
+                log(
+                    ual::exchange_admin(
+                        w,
+                        &mut urng,
+                        user,
+                        t,
+                        "Set-Mailbox",
+                        &target.upn,
+                        &[
+                            ("Identity", &target.upn),
+                            ("RetainDeletedItemsFor", "30.00:00:00"),
+                        ],
+                        address(t),
+                        session,
+                    ),
                     t,
-                    "Set-Mailbox",
-                    &target.upn,
-                    &[
-                        ("Identity", &target.upn),
-                        ("RetainDeletedItemsFor", "30.00:00:00"),
-                    ],
-                    ip,
-                    session,
-                ));
+                );
             }
         }
 
@@ -853,29 +890,32 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
             if ual_logged(w, t) && w.audit.admin_audit_log_enabled {
                 let start = t - Duration::days(14);
                 let end = start + Duration::days(7);
-                ual_out.push(ual::exchange_admin(
-                    w,
-                    &mut urng,
-                    user,
+                log(
+                    ual::exchange_admin(
+                        w,
+                        &mut urng,
+                        user,
+                        t,
+                        "Set-MailboxAutoReplyConfiguration",
+                        &user.upn,
+                        &[
+                            ("Identity", &user.upn),
+                            ("AutoReplyState", "Disabled"),
+                            ("StartTime", &w.service_datetime(start)),
+                            ("EndTime", &w.service_datetime(end)),
+                            ("InternalMessage", "Out of office"),
+                            ("ExternalMessage", "Out of office"),
+                            ("ExternalAudience", "None"),
+                            // Set-MailboxAutoReplyConfiguration parameters (cmdlet reference) that
+                            // Outlook sends with every change.
+                            ("AutoDeclineFutureRequestsWhenOOF", "False"),
+                            ("CreateOOFEvent", "False"),
+                        ],
+                        address(t),
+                        session,
+                    ),
                     t,
-                    "Set-MailboxAutoReplyConfiguration",
-                    &user.upn,
-                    &[
-                        ("Identity", &user.upn),
-                        ("AutoReplyState", "Disabled"),
-                        ("StartTime", &w.service_datetime(start)),
-                        ("EndTime", &w.service_datetime(end)),
-                        ("InternalMessage", "Out of office"),
-                        ("ExternalMessage", "Out of office"),
-                        ("ExternalAudience", "None"),
-                        // Set-MailboxAutoReplyConfiguration parameters (cmdlet reference) that
-                        // Outlook sends with every change.
-                        ("AutoDeclineFutureRequestsWhenOOF", "False"),
-                        ("CreateOOFEvent", "False"),
-                    ],
-                    ip,
-                    session,
-                ));
+                );
             }
         }
     }

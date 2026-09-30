@@ -597,13 +597,17 @@ fn a_travelling_user_has_no_sign_in_while_in_the_air() {
 }
 
 /// A session's activity comes from the address that session signed in from: one session never
-/// shows two IPs. A session that moves is the token-replay signal (SPW-ID-004), so a benign
-/// baseline must not produce one; only a storyline may.
+/// shows two IPs, over its sign-ins *and* its audit records. A session that moves is the
+/// token-replay signal (SPW-ID-004), so a benign baseline must not produce one; only a storyline
+/// may. The storylines are applied, since a traveller's session is the one that moves.
 #[test]
 fn a_session_keeps_the_address_it_signed_in_from() {
     for name in builtin_names() {
         for seed in [7u64, 21, 42] {
-            let world = w(name);
+            // With the storylines applied: a traveller's session is the one that moves
+            // address, so a world without them would never see one.
+            let mut world = World::build(&load(name).unwrap(), seed).unwrap();
+            sparrow_synth::story::apply(&mut world).unwrap();
             let days =
                 (world.collected_at().date_naive() - world.window_start().date_naive()).num_days();
             for d in 0..=days {
@@ -637,4 +641,61 @@ fn a_session_keeps_the_address_it_signed_in_from() {
             }
         }
     }
+}
+
+/// A traveller's mailbox and OneDrive activity follows them: from the arrival it comes from the
+/// destination, and in the flight window it does not exist at all. Left at home it would be a
+/// session showing two addresses (SPW-ID-004) on the very look-alike meant to be a plausible
+/// trip.
+#[test]
+fn mailbox_activity_follows_the_traveller() {
+    // Counted over the whole matrix: a small tenant's traveller may have no mail of their own
+    // after the arrival, but the property has to be exercised somewhere to be worth asserting.
+    let mut away_total = 0;
+    for name in builtin_names() {
+        for seed in [7u64, 21, 42] {
+            let mut world = World::build(&load(name).unwrap(), seed).unwrap();
+            sparrow_synth::story::apply(&mut world).unwrap();
+            for trip in world.trips.clone() {
+                let days = (world.collected_at().date_naive() - world.window_start().date_naive())
+                    .num_days();
+                let mut away = 0;
+                for d in 0..=days {
+                    let date = world.window_start().date_naive() + Duration::days(d);
+                    for u in day(&world, date).ual {
+                        // The user's own records: the logon and the mailbox, mail and file
+                        // activity, the ones a session carries.
+                        if u.user_id != trip.user
+                            || u.audit.get("SessionId").is_none()
+                            || u.record_type.number() == 15
+                        {
+                            continue;
+                        }
+                        let ip = u.audit["ClientIP"].as_str().unwrap_or_default().to_string();
+                        assert!(
+                            u.time < trip.departure || u.time >= trip.arrival,
+                            "{name} seed {seed}: {} in the air at {} from {ip}",
+                            u.operation,
+                            u.time
+                        );
+                        if u.time >= trip.arrival {
+                            away += 1;
+                            assert_eq!(
+                                ip,
+                                trip.ip.to_string(),
+                                "{name} seed {seed}: {} at {} is not from the destination",
+                                u.operation,
+                                u.time
+                            );
+                        }
+                    }
+                }
+                away_total += away;
+            }
+        }
+    }
+    assert!(
+        away_total > 50,
+        "only {away_total} records were checked after an arrival"
+    );
 }
