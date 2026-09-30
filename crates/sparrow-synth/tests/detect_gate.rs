@@ -47,6 +47,16 @@ fn custom_rule(set: &mut RuleSet, id: &str, body: &str) {
     set.rules.sort_by(|a, b| a.rule.id.cmp(&b.rule.id));
 }
 
+/// The `baseline_allow` entries of `coverage.yaml`: the real exceptions apply next to a test's
+/// own (every trigger record of a finding is checked against them).
+fn coverage_allow() -> BTreeMap<String, Vec<BaselineAllow>> {
+    sparrow_synth::coverage::rules()
+        .iter()
+        .filter(|r| !r.baseline_allow.is_empty())
+        .map(|r| (r.id.clone(), r.baseline_allow.clone()))
+        .collect()
+}
+
 fn gate(name: &str, c: Collector) -> (CheckReport, Manifest, Case) {
     let (dir, m) = tree(name, c);
     let case = ingest_generated_detected(dir.path(), &m);
@@ -155,7 +165,8 @@ fn baseline_allow_accepts_a_documented_exception() {
     // Allow the background logins and every storyline kind that also logs in.
     let mut kinds: Vec<String> = m.storylines.iter().map(|s| s.kind.clone()).collect();
     kinds.push("baseline".to_string());
-    let allow = BTreeMap::from([(
+    let mut allow = coverage_allow();
+    allow.insert(
         "SPW-TEST-001".to_string(),
         kinds
             .into_iter()
@@ -164,17 +175,18 @@ fn baseline_allow_accepts_a_documented_exception() {
                 reason: "test: logins are ordinary activity".into(),
             })
             .collect::<Vec<_>>(),
-    )]);
+    );
     let r = check_with(&m, &case, &set, &allow).unwrap();
     assert!(r.ok, "{:#?}", r.problems);
     // A narrower allow-list still fails.
-    let narrow = BTreeMap::from([(
+    let mut narrow = coverage_allow();
+    narrow.insert(
         "SPW-TEST-001".to_string(),
         vec![BaselineAllow {
             kind: "baseline".into(),
             reason: "only background".into(),
         }],
-    )]);
+    );
     assert!(!check_with(&m, &case, &set, &narrow).unwrap().ok);
 }
 
