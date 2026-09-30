@@ -519,11 +519,16 @@ pub fn mail_items_accessed(
     let correlation = rng.uuid();
     let token = unique_token_id(rng);
     // AppAccessContext (Management Activity API schema): `IssuedAtTime` is when the Entra token
-    // was issued (a token lives about an hour, so within the hour before the access) and
-    // `APIId` the API pathway, set for access through the Graph / REST API.
-    let mut aside = side_stream(w, "aac", &u.id.to_string());
-    let issued =
-        time - Duration::minutes(aside.range(1, 60)) - Duration::seconds(aside.range(0, 59));
+    // was issued and `APIId` the API pathway, set for access through the Graph / REST API. One
+    // session uses one token until it expires (about 90 minutes, then it is refreshed), so the
+    // issue time is a function of the session and the 90-minute window the access falls in, not
+    // of the record: every record of a session inside a window carries the same time, which is
+    // never after the access.
+    const TOKEN_WINDOW_SECS: i64 = 90 * 60;
+    let window_start = time.timestamp().div_euclid(TOKEN_WINDOW_SECS) * TOKEN_WINDOW_SECS;
+    let mut aside = side_stream(w, "aac", &format!("{session}/{window_start}"));
+    let issued = DateTime::<Utc>::from_timestamp(window_start - aside.range(0, 30 * 60), 0)
+        .expect("a timestamp in range");
     let mut aac = Map::new();
     aac.insert("AADSessionId".into(), json!(session.to_string()));
     if client_info.contains("REST") {

@@ -242,7 +242,26 @@ fn attachments_come_from_the_message_and_most_messages_have_none() {
 
 #[test]
 fn nothing_is_there_only_to_produce_a_column_name() {
-    let recs = audit_records("bec-aitm");
+    // bec-aitm for the Entra ID and sign-in records, hawk-investigate for the compliance search.
+    let mut recs = audit_records("bec-aitm");
+    recs.extend(audit_records("hawk-investigate"));
+    // Non-vacuity: the checks below only mean something if the tree holds the records they
+    // look at.
+    let entra = recs
+        .iter()
+        .filter(|r| text(r, "Workload") == "AzureActiveDirectory")
+        .count();
+    let searches = recs
+        .iter()
+        .filter(|r| r.get("ExchangeLocations").is_some())
+        .count();
+    let with_ext = recs
+        .iter()
+        .filter(|r| matches!(r.get("ExtendedProperties"), Some(Value::Array(a)) if !a.is_empty()))
+        .count();
+    assert!(entra > 20, "{entra} Entra ID records");
+    assert!(searches > 0, "{searches} compliance-search records");
+    assert!(with_ext > 20, "{with_ext} records with ExtendedProperties");
     for r in &recs {
         let op = text(r, "Operation");
         let wl = text(r, "Workload");
@@ -299,4 +318,53 @@ fn mail_items_accessed_items_carry_their_own_detail() {
         subjects * 2 > n,
         "world-defined subjects on most items ({subjects}/{n})"
     );
+}
+
+#[test]
+fn a_token_is_issued_once_per_session_window_and_never_after_the_access() {
+    let recs = audit_records("bec-aitm");
+    let mut by_session: BTreeMap<(String, i64), BTreeSet<String>> = BTreeMap::new();
+    let mut checked = 0;
+    for r in recs.iter().filter(|r| r.get("AppAccessContext").is_some()) {
+        let ctx = &r["AppAccessContext"];
+        let (Some(session), Some(issued)) =
+            (ctx["AADSessionId"].as_str(), ctx["IssuedAtTime"].as_str())
+        else {
+            continue;
+        };
+        let at =
+            chrono::NaiveDateTime::parse_from_str(text(r, "CreationTime"), "%Y-%m-%dT%H:%M:%S")
+                .unwrap()
+                .and_utc()
+                .timestamp();
+        let iss = chrono::NaiveDateTime::parse_from_str(issued, "%Y-%m-%dT%H:%M:%S")
+            .unwrap()
+            .and_utc()
+            .timestamp();
+        assert!(
+            iss <= at,
+            "issued {issued} after the access {}",
+            text(r, "CreationTime")
+        );
+        assert!(
+            at - iss < 2 * 3600 + 1800,
+            "a token older than its lifetime"
+        );
+        by_session
+            .entry((session.to_string(), at.div_euclid(90 * 60)))
+            .or_default()
+            .insert(issued.to_string());
+        checked += 1;
+    }
+    assert!(checked > 100, "{checked} records with a token");
+    assert!(
+        by_session.values().all(|s| s.len() == 1),
+        "one issue time per session and window"
+    );
+    // A session with several records exists, so the per-session check is not trivially one record each.
+    let mut per: BTreeMap<&str, usize> = BTreeMap::new();
+    for (s, _) in by_session.keys() {
+        *per.entry(s.as_str()).or_default() += 1;
+    }
+    assert!(!per.is_empty());
 }
