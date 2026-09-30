@@ -668,3 +668,33 @@ fn an_org_audit_disabled_profile_is_an_explicit_cfg_hit() {
         assert_eq!(o.outcome, RuleOutcome::Hit, "{c:?}: {o:?}");
     }
 }
+
+/// The correlated half comes from the storyline itself or one it is anchored after: an
+/// unrelated storyline of the same user (here an AiTM sign-in anchored by day, not `after`) does
+/// not complete it.
+#[test]
+fn only_a_storyline_it_follows_supplies_the_missing_half() {
+    let complete = |anchored: bool| {
+        let mut sc = load("bec-aitm").unwrap();
+        sc.storylines
+            .retain(|s| s.id == "s-aitm" || s.id == "s-mfa");
+        if !anchored {
+            let mfa = sc.storylines.iter_mut().find(|s| s.id == "s-mfa").unwrap();
+            mfa.at = At::Day {
+                day: 20,
+                hour: 12,
+                minute: 0,
+            };
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let m =
+            generate_to_dir(&sc, &GenerateOptions::new(Collector::Hawk4, 1), dir.path()).unwrap();
+        m.rules
+            .iter()
+            .find(|r| r.rule_id == "SPW-ID-001" && r.storyline == "s-mfa")
+            .unwrap()
+            .complete
+    };
+    assert!(complete(true), "anchored after the AiTM sign-in");
+    assert!(!complete(false), "same user, but not anchored to it");
+}

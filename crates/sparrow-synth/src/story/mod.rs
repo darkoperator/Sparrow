@@ -87,6 +87,9 @@ pub struct StoryRecord {
     pub actor: String,
     pub time: DateTime<Utc>,
     pub evidence: Vec<Evidence>,
+    /// The storyline this one is anchored `after` in the scenario (`at: {after: ..}`): the
+    /// explicit correlated source of a half its own evidence does not carry.
+    pub after: Option<String>,
 }
 
 /// One storyline being applied: its spec, resolved time, the affected user and the evidence
@@ -172,6 +175,10 @@ pub fn apply(world: &mut World) -> Result<Vec<StoryRecord>> {
             actor: ctx.a.upn.clone(),
             time: t,
             evidence: ctx.ev,
+            after: match &spec.at {
+                crate::scenario::At::After { after, .. } => Some(after.clone()),
+                _ => None,
+            },
         });
     }
     Ok(out)

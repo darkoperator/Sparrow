@@ -472,11 +472,15 @@ const UAL_CHILDREN: [&str; 4] = [
     "search_queries",
 ];
 
+/// A delivered evidence item for the correlation check: whether it is the storyline's own, the
+/// tables it reached, and whether it is a UserLoggedIn UAL record.
+type HalfItem = (bool, BTreeSet<String>, bool);
+
 /// Whether every `evidence_all_of` group of `rule` is covered by a DISTINCT delivered evidence
 /// item (one delivered UAL record cannot stand for both halves of a correlation). The items are
-/// the storyline's own plus those of the other storylines of the same user (the risky sign-in
-/// half of an anonymous link comes from the AiTM storyline); at least one must be the
-/// storyline's own. A rule with a single group is always complete.
+/// the storyline's own plus those of the same user's storylines it is anchored after (the risky
+/// sign-in half of an anonymous link comes from the AiTM storyline it follows); at least one
+/// must be the storyline's own. A rule with a single group is always complete.
 fn halves_distinct(
     world: &World,
     r: &StoryRecord,
@@ -488,34 +492,58 @@ fn halves_distinct(
     if rule.evidence_all_of.len() < 2 {
         return true;
     }
-    let mut items: Vec<(bool, BTreeSet<String>)> = Vec::new();
-    for other in all.iter().filter(|o| o.actor == r.actor) {
+    let mut items: Vec<HalfItem> = Vec::new();
+    // The half a storyline does not carry itself comes only from a storyline it is explicitly
+    // anchored after (transitively) and that is the same user's: an unrelated storyline of the
+    // same actor, at some other time, is not the correlated evidence.
+    let mut sources: BTreeSet<&str> = BTreeSet::from([r.id.as_str()]);
+    let mut next = r.after.as_deref();
+    while let Some(id) = next {
+        if !sources.insert(id) {
+            break;
+        }
+        next = all
+            .iter()
+            .find(|o| o.id == id)
+            .and_then(|o| o.after.as_deref());
+    }
+    for other in all
+        .iter()
+        .filter(|o| o.actor == r.actor && sources.contains(o.id.as_str()))
+    {
         for e in &other.evidence {
             let t = delivered_tables(world, e, rule, ual, out);
             if !t.is_empty() {
-                items.push((other.id == r.id, t));
+                let login = matches!(e, Evidence::Ual(id)
+                    if ual.get(id).is_some_and(|u| u.operation == "UserLoggedIn"));
+                items.push((other.id == r.id, t, login));
             }
         }
     }
-    let covers = |item: &BTreeSet<String>, group: &[String]| -> bool {
+    // A sign-in half (a group naming `signins`) is met by a sign-in row or a UserLoggedIn UAL
+    // record, not by any UAL record of the user (an "Update user." is not a sign-in).
+    let covers = |item: &HalfItem, group: &[String]| -> bool {
         let child = group.iter().any(|t| UAL_CHILDREN.contains(&t.as_str()));
-        group
-            .iter()
-            .any(|t| item.contains(t) && !(child && t == "ual_events"))
+        let signin = group.iter().any(|t| t == "signins");
+        group.iter().any(|t| {
+            item.1.contains(t)
+                && !(child && t == "ual_events")
+                && !(signin && t == "ual_events" && !item.2)
+        })
     };
     fn assign(
         g: usize,
         groups: &[Vec<String>],
-        items: &[(bool, BTreeSet<String>)],
+        items: &[HalfItem],
         used: &mut Vec<bool>,
         own_used: bool,
-        covers: &dyn Fn(&BTreeSet<String>, &[String]) -> bool,
+        covers: &dyn Fn(&HalfItem, &[String]) -> bool,
     ) -> bool {
         if g == groups.len() {
             return own_used;
         }
         for i in 0..items.len() {
-            if !used[i] && covers(&items[i].1, &groups[g]) {
+            if !used[i] && covers(&items[i], &groups[g]) {
                 used[i] = true;
                 if assign(g + 1, groups, items, used, own_used || items[i].0, covers) {
                     return true;
