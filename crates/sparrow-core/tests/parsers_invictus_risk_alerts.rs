@@ -72,7 +72,7 @@ fn alerts_and_secure_score_load_in_every_culture() {
             1
         );
         assert_eq!(count(&case, "SELECT count(*) FROM security_alerts"), 1);
-        let r = sparrow_synth::check::check(&m, &case).unwrap();
+        let r = sparrow_synth::check::check_without_detection(&m, &case).unwrap();
         assert!(r.ok, "{culture:?}: {:#?}", r.problems);
     }
 }

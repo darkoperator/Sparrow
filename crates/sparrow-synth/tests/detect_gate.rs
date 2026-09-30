@@ -7,15 +7,15 @@ use sparrow_core::data::DataDirs;
 use sparrow_core::detect::coverage::BaselineAllow;
 use sparrow_core::detect::load::{LoadedRule, RuleSet, load_rules, rule_sha256};
 use sparrow_core::detect::rule::{Cond, Rule, RuleBody};
-use sparrow_synth::check::{CheckReport, check, check_with};
+use sparrow_synth::check::{CheckReport, check, check_with, check_without_detection};
 use sparrow_synth::generate::generate_to_dir;
 use sparrow_synth::manifest::{Manifest, RuleExpect, RuleOutcome};
 use sparrow_synth::options::{Collector, GenerateOptions};
-use sparrow_synth::scenario::{builtin_names, load};
-use sparrow_synth::testing::{ingest_generated_detected, ingest_generated_with_rules};
+use sparrow_synth::scenario::{At, builtin_names, load};
+use sparrow_synth::testing::{
+    ingest_generated, ingest_generated_detected, ingest_generated_with_rules,
+};
 use std::collections::BTreeMap;
-
-const SAMPLE: [&str; 3] = ["SPW-HAWK-011", "SPW-ID-010", "SPW-MAIL-005"];
 
 fn tree(name: &str, c: Collector) -> (tempfile::TempDir, Manifest) {
     let dir = tempfile::tempdir().unwrap();
@@ -58,10 +58,10 @@ fn assert_gate_ok(name: &str, c: Collector) -> CheckReport {
     let (r, ..) = gate(name, c);
     assert!(r.ok, "{name} {c:?}: {:#?}", r.problems);
     assert!(r.detection.skipped.is_none(), "{name} {c:?}");
-    assert!(
-        r.detection.rules_checked >= SAMPLE.len(),
-        "{name} {c:?}: {}",
-        r.detection.rules_checked
+    assert_eq!(
+        r.detection.rules_checked,
+        builtin_set().rules.len(),
+        "{name} {c:?}: every loaded rule file was checked"
     );
     r
 }
@@ -275,6 +275,7 @@ fn a_gap_not_applicable_is_checked_as_no_finding() {
         outcome: RuleOutcome::NotApplicable,
         reason: "unified audit log ingestion disabled".into(),
         tables: vec!["mailboxes".into()],
+        complete: true,
     });
     let r = check_with(&m2, &case2, &set, &BTreeMap::new()).unwrap();
     assert!(r.ok, "{:#?}", r.problems);
@@ -298,6 +299,7 @@ fn a_tenant_wide_not_applicable_must_be_in_the_run_log() {
         outcome: RuleOutcome::NotApplicable,
         reason: "capability identity_protection is not_licensed".into(),
         tables: vec!["risky_users".into()],
+        complete: true,
     });
     let cap = m
         .capabilities
@@ -320,6 +322,7 @@ fn a_tenant_wide_not_applicable_must_be_in_the_run_log() {
         outcome: RuleOutcome::NotApplicable,
         reason: "capability identity_protection is not_licensed".into(),
         tables: vec!["risky_users".into()],
+        complete: true,
     });
     let r = check_with(&m2, &case2, &set, &BTreeMap::new()).unwrap();
     assert!(
@@ -379,4 +382,110 @@ fn forwarding_in_the_ual_off_window_has_no_evidence_on_invictus() {
         .find(|r| r.rule_id == "SPW-MAIL-004" && r.storyline == "s-fwd")
         .unwrap();
     assert_eq!(o.outcome, RuleOutcome::Hit, "{o:?}");
+}
+
+/// An ingest without detection reports a problem, not a silent pass; the explicit opt-out
+/// `check_without_detection` is the only way to skip the gate.
+#[test]
+fn the_gate_fails_when_detection_did_not_run() {
+    let (dir, m) = tree("bec-aitm", Collector::Hawk4);
+    let case = ingest_generated(dir.path(), &m);
+    let r = check(&m, &case).unwrap();
+    assert!(!r.ok);
+    assert!(
+        r.detection
+            .applicability
+            .iter()
+            .any(|p| p.contains("no detection run")),
+        "{:#?}",
+        r.detection
+    );
+    assert_eq!(r.detection.rules_checked, 0);
+    let r = check_without_detection(&m, &case).unwrap();
+    assert!(r.ok, "{:#?}", r.problems);
+    assert!(r.detection.skipped.is_some());
+}
+
+/// A partial run (a rule of the set missing from the latest run) fails the gate.
+#[test]
+fn the_gate_fails_on_a_partial_run() {
+    let (dir, m) = tree("bec-aitm", Collector::Hawk4);
+    let full = builtin_set();
+    let mut partial = builtin_set();
+    partial.rules.retain(|r| r.rule.id != "SPW-ID-010");
+    let case = ingest_generated_with_rules(dir.path(), &m, &partial);
+    let r = check_with(&m, &case, &full, &BTreeMap::new()).unwrap();
+    assert!(!r.ok);
+    assert!(
+        r.detection
+            .applicability
+            .iter()
+            .any(|p| p.starts_with("SPW-ID-010") && p.contains("partial run")),
+        "{:#?}",
+        r.detection
+    );
+    assert_eq!(r.detection.rules_checked, full.rules.len() - 1);
+}
+
+/// One finding that cites a hit storyline's record AND background records fails: every trigger
+/// record is checked, not just one.
+#[test]
+fn a_finding_citing_hit_and_baseline_records_fails() {
+    let (dir, mut m) = tree("bec-aitm", Collector::Hawk4);
+    let mut set = builtin_set();
+    every_login_rule(&mut set);
+    let case = ingest_generated_with_rules(dir.path(), &m, &set);
+    // Declare the AiTM storyline a hit of the custom rule: its login is one of the records the
+    // (per-actor) finding cites, next to the background logins of the same user.
+    m.rules.push(RuleExpect {
+        rule_id: "SPW-TEST-001".into(),
+        storyline: "s-aitm".into(),
+        outcome: RuleOutcome::Hit,
+        reason: "test".into(),
+        tables: vec!["ual_events".into()],
+        complete: true,
+    });
+    let r = check_with(&m, &case, &set, &BTreeMap::new()).unwrap();
+    assert!(
+        r.detection
+            .unexpected_hits
+            .iter()
+            .any(|p| p.starts_with("SPW-TEST-001") && p.contains("baseline")),
+        "{:#?}",
+        r.detection
+    );
+}
+
+/// A correlated rule's storyline that lost a half is not complete: one delivered UAL record
+/// cannot stand for both halves.
+#[test]
+fn a_correlated_storyline_with_a_lost_half_is_incomplete() {
+    let mut sc = load("bec-aitm").unwrap();
+    // The anonymous link of a user with no risky sign-in of its own storyline.
+    sc.storylines
+        .retain(|s| s.id == "s-aitm" || s.id == "s-anon");
+    let anon = sc.storylines.iter_mut().find(|s| s.id == "s-anon").unwrap();
+    anon.actor = Some(12);
+    anon.at = At::Day {
+        day: 20,
+        hour: 12,
+        minute: 0,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let m = generate_to_dir(&sc, &GenerateOptions::new(Collector::Hawk4, 1), dir.path()).unwrap();
+    let o = m
+        .rules
+        .iter()
+        .find(|r| r.rule_id == "SPW-FILE-002" && r.storyline == "s-anon")
+        .unwrap();
+    assert_eq!(o.outcome, RuleOutcome::Hit);
+    assert!(!o.complete, "{o:?}");
+    // With the AiTM sign-in of the same user, the same storyline is complete.
+    let full = manifest_of("bec-aitm", Collector::Hawk4);
+    let o = full
+        .rules
+        .iter()
+        .find(|r| r.rule_id == "SPW-FILE-002" && r.storyline == "s-anon")
+        .unwrap();
+    assert!(o.complete, "{o:?}");
 }

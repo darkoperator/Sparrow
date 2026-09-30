@@ -51,7 +51,7 @@ fn json_written_to_a_csv_path_is_read_as_json() {
     let m = generate_to_dir(&load("bec-aitm").unwrap(), &o, dir.path()).unwrap();
     let case = ingest_generated(dir.path(), &m);
     assert_eq!(count(&case, "SELECT count(*) FROM devices"), 18);
-    let r = sparrow_synth::check::check(&m, &case).unwrap();
+    let r = sparrow_synth::check::check_without_detection(&m, &case).unwrap();
     assert!(r.ok, "{:#?}", r.problems);
 }
 

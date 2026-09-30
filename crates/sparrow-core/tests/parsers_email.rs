@@ -66,7 +66,7 @@ fn hawk_header_exports_load_with_findings() {
         ),
         1
     );
-    let r = sparrow_synth::check::check(&m, &case).unwrap();
+    let r = sparrow_synth::check::check_without_detection(&m, &case).unwrap();
     assert!(r.ok, "{:#?}", r.problems);
 }
 

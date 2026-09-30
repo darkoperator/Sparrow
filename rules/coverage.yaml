@@ -469,7 +469,9 @@ rules:
     # The inbox-rule half and the preceding risky / hosting-ASN sign-in.
     evidence_all_of: [[ual_events, admin_audit_events], [signins, ual_events]]
     collectors: [hawk3, hawk4, invictus, portal]
-    positives: [inbox_rule_finance]
+    # forwarding_inbox_rule creates the attacker's forwarding rule (New-InboxRule) 35 minutes
+    # after the AiTM sign-in: a true hit of this rule's own logic.
+    positives: [inbox_rule_finance, forwarding_inbox_rule]
     lookalikes: [vendor_filing_rule, inbox_rule_after_stale_risk]
     correlation_negatives: [inbox_rule_after_stale_risk]
   - id: SPW-APP-001

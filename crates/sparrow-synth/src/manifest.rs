@@ -156,6 +156,19 @@ pub struct RuleExpect {
     pub outcome: RuleOutcome,
     pub reason: String,
     pub tables: Vec<String>,
+    /// A correlated rule (`evidence_all_of` with several groups): whether DISTINCT delivered
+    /// evidence items cover every group. `false` when a half was lost (one record cannot stand
+    /// for both). Always `true`, and not written, for an uncorrelated rule.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub complete: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

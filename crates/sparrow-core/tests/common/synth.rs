@@ -111,6 +111,6 @@ pub fn text(case: &Case, sql: &str) -> String {
 }
 
 pub fn check_green(g: &Generated) {
-    let r = sparrow_synth::check::check(&g.manifest, &g.case).unwrap();
+    let r = sparrow_synth::check::check_without_detection(&g.manifest, &g.case).unwrap();
     assert!(r.ok, "{:#?}", r.problems);
 }

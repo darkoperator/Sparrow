@@ -1,4 +1,4 @@
-use sparrow_synth::check::check;
+use sparrow_synth::check::check_without_detection as check;
 use sparrow_synth::generate::{generate, generate_to_dir};
 use sparrow_synth::options::{Collector, GenerateOptions, PsEdition};
 use sparrow_synth::reserved::scan_text;

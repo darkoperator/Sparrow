@@ -365,16 +365,90 @@ pub fn rule_outcomes(
                 continue;
             }
             let (outcome, reason, tables) = outcome(world, &ual, r, rule, positive, caps, out);
+            let complete = !matches!(outcome, RuleOutcome::Hit | RuleOutcome::NoHit)
+                || halves_distinct(r, records, rule, &ual, out);
             v.push(RuleExpect {
                 rule_id: rule.id.clone(),
                 storyline: r.id.clone(),
                 outcome,
                 reason,
                 tables,
+                complete,
             });
         }
     }
     v
+}
+
+/// Child tables a UAL record feeds; a group that lists one next to `ual_events` names the
+/// record kind of that half (the upload or the sharing), so only the child table counts for it.
+const UAL_CHILDREN: [&str; 4] = [
+    "file_events",
+    "sharing_events",
+    "mail_items_accessed",
+    "search_queries",
+];
+
+/// Whether every `evidence_all_of` group of `rule` is covered by a DISTINCT delivered evidence
+/// item (one delivered UAL record cannot stand for both halves of a correlation). The items are
+/// the storyline's own plus those of the other storylines of the same user (the risky sign-in
+/// half of an anonymous link comes from the AiTM storyline); at least one must be the
+/// storyline's own. A rule with a single group is always complete.
+fn halves_distinct(
+    r: &StoryRecord,
+    all: &[StoryRecord],
+    rule: &RuleDef,
+    ual: &BTreeMap<Uuid, &Ual>,
+    out: &TreeOutcome,
+) -> bool {
+    if rule.evidence_all_of.len() < 2 {
+        return true;
+    }
+    let mut items: Vec<(bool, BTreeSet<String>)> = Vec::new();
+    for other in all.iter().filter(|o| o.actor == r.actor) {
+        for e in &other.evidence {
+            let t = delivered_tables(e, rule, ual, out);
+            if !t.is_empty() {
+                items.push((other.id == r.id, t));
+            }
+        }
+    }
+    let covers = |item: &BTreeSet<String>, group: &[String]| -> bool {
+        let child = group.iter().any(|t| UAL_CHILDREN.contains(&t.as_str()));
+        group
+            .iter()
+            .any(|t| item.contains(t) && !(child && t == "ual_events"))
+    };
+    fn assign(
+        g: usize,
+        groups: &[Vec<String>],
+        items: &[(bool, BTreeSet<String>)],
+        used: &mut Vec<bool>,
+        own_used: bool,
+        covers: &dyn Fn(&BTreeSet<String>, &[String]) -> bool,
+    ) -> bool {
+        if g == groups.len() {
+            return own_used;
+        }
+        for i in 0..items.len() {
+            if !used[i] && covers(&items[i].1, &groups[g]) {
+                used[i] = true;
+                if assign(g + 1, groups, items, used, own_used || items[i].0, covers) {
+                    return true;
+                }
+                used[i] = false;
+            }
+        }
+        false
+    }
+    assign(
+        0,
+        &rule.evidence_all_of,
+        &items,
+        &mut vec![false; items.len()],
+        false,
+        &covers,
+    )
 }
 
 fn outcome(

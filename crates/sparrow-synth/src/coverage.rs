@@ -173,6 +173,8 @@ struct Observed {
     tables: Vec<String>,
     /// The storyline's kind (`StoryKind::as_str`).
     kind: String,
+    /// Distinct delivered evidence items cover every `evidence_all_of` group.
+    complete: bool,
 }
 
 /// Generate every built-in scenario (except `volume`) for every collector into a [`NullSink`]
@@ -203,6 +205,7 @@ pub fn report_with(seed: u64, rules: &[RuleDef]) -> Result<CoverageReport> {
                         outcome: r.outcome,
                         has_geoip,
                         tables: r.tables.clone(),
+                        complete: r.complete,
                         kind: manifest
                             .storylines
                             .iter()
@@ -237,7 +240,7 @@ pub fn report_with(seed: u64, rules: &[RuleDef]) -> Result<CoverageReport> {
         let mut negative_seen = false;
         let mut geoip_hits = 0usize;
         for o in entries {
-            let full = evidence_all_of_satisfied(&rule.evidence_all_of, &o.tables);
+            let full = o.complete && evidence_all_of_satisfied(&rule.evidence_all_of, &o.tables);
             match o.outcome {
                 RuleOutcome::Hit if full => {
                     collectors_hit.insert(o.exercise.collector);

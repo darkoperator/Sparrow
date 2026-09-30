@@ -40,7 +40,9 @@ pub struct DetectionCheck {
     pub unexpected_hits: Vec<String>,
     /// A tenant-wide `not_applicable` the run log does not show, or a rule that errored.
     pub applicability: Vec<String>,
-    /// Why the gate did not run (the case holds no detection run).
+    /// Why the gate did not run: only set by [`check_without_detection`], the explicit opt-out
+    /// for tests that ingest without detection. A case with no detection run fails the gate
+    /// otherwise.
     pub skipped: Option<String>,
 }
 
@@ -72,6 +74,24 @@ pub fn check_with(
     set: &RuleSet,
     baseline_allow: &BTreeMap<String, Vec<BaselineAllow>>,
 ) -> Result<CheckReport> {
+    check_inner(manifest, case, Some((set, baseline_allow)))
+}
+
+/// [`check`] without the detection gate, for tests that deliberately ingest without detection
+/// (`ingest_generated`). The report's `detection.skipped` says so; a case that was meant to be
+/// detected must go through [`check`], which fails when detection did not run.
+pub fn check_without_detection(
+    manifest: &Manifest,
+    case: &sparrow_core::Case,
+) -> Result<CheckReport> {
+    check_inner(manifest, case, None)
+}
+
+fn check_inner(
+    manifest: &Manifest,
+    case: &sparrow_core::Case,
+    detect: Option<(&RuleSet, &BTreeMap<String, Vec<BaselineAllow>>)>,
+) -> Result<CheckReport> {
     let mut problems = Vec::new();
     let mut detection = DetectionCheck::default();
     let collection = find_collection(manifest, case, &mut problems)?;
@@ -83,7 +103,13 @@ pub fn check_with(
                 check_tenant(manifest, case, tk, &mut problems)?;
                 check_capabilities(manifest, case, tk, &mut problems)?;
                 check_evidence(manifest, case, tk, &mut problems)?;
-                detection = check_detection(manifest, case, *cid, tk, set, baseline_allow)?;
+                detection = match detect {
+                    Some((set, allow)) => check_detection(manifest, case, *cid, tk, set, allow)?,
+                    None => DetectionCheck {
+                        skipped: Some("detection not checked (check_without_detection)".into()),
+                        ..DetectionCheck::default()
+                    },
+                };
                 problems.extend(
                     detection
                         .missing_hits
@@ -107,7 +133,7 @@ pub fn check_with(
             .rules
             .iter()
             .map(|r| r.rule_id.as_str())
-            .filter(|id| !set.rules.iter().any(|r| r.rule.id == *id))
+            .filter(|id| detect.is_none_or(|(set, _)| !set.rules.iter().any(|r| r.rule.id == *id)))
             .collect::<BTreeSet<_>>()
             .len(),
         detection,
@@ -590,7 +616,11 @@ fn check_detection(
         .collect::<std::result::Result<_, _>>()
         .map_err(db)?;
     if runs.is_empty() {
-        out.skipped = Some("the case holds no detection run for the tenant".to_string());
+        out.applicability.push(
+            "the case holds no detection run for the tenant (ingest with detection, or use \
+             check_without_detection)"
+                .to_string(),
+        );
         return Ok(out);
     }
 
@@ -655,6 +685,9 @@ fn check_detection(
     for lr in &set.rules {
         let id = lr.rule.id.as_str();
         let Some((status, reason)) = runs.get(id) else {
+            out.applicability.push(format!(
+                "{id}: the latest detection run has no result for this rule (a partial run)"
+            ));
             continue;
         };
         out.rules_checked += 1;
@@ -729,21 +762,19 @@ fn check_detection(
             .flatten()
             .collect();
         for (fid, evidence) in rule_findings {
-            if evidence.iter().any(|e| hit_records.contains(e)) {
-                continue;
-            }
-            // Already reported above as a look-alike / gap finding.
-            if evidence.iter().any(|e| {
-                owners
-                    .get(e)
-                    .is_some_and(|st| st.iter().any(|s| reported.contains(s)))
-            }) {
-                continue;
-            }
+            // Every trigger record must be explained: owned by a `hit` storyline of this rule,
+            // or of a kind `baseline_allow` lists (`baseline` for records no storyline owns).
+            // A record of a look-alike that was reported above is not reported twice.
             let mut kinds = BTreeSet::new();
             for e in evidence {
+                if hit_records.contains(e) {
+                    continue;
+                }
                 match owners.get(e) {
                     Some(stories) => {
+                        if stories.iter().any(|s| reported.contains(s)) {
+                            continue;
+                        }
                         for s in stories {
                             kinds.insert(kind_of.get(s).copied().unwrap_or("?").to_string());
                         }
@@ -756,17 +787,10 @@ fn check_detection(
             if kinds.iter().all(|k| allow.iter().any(|a| &a.kind == k)) {
                 continue;
             }
-            let msg = format!(
+            out.unexpected_hits.push(format!(
                 "{id}: finding {fid} cites records of {} that no hit storyline explains",
                 kinds.iter().cloned().collect::<Vec<_>>().join(", ")
-            );
-            if !out
-                .unexpected_hits
-                .iter()
-                .any(|m| m.starts_with(&format!("{id}: look-alike")) && msg.contains("look"))
-            {
-                out.unexpected_hits.push(msg);
-            }
+            ));
         }
     }
     Ok(out)

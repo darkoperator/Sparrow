@@ -2,7 +2,7 @@
 //! and the tree stays checkable; the ignored one prints the generate/ingest/profile timings.
 
 use sha2::{Digest, Sha256};
-use sparrow_synth::check::check;
+use sparrow_synth::check::check_without_detection as check;
 use sparrow_synth::generate::generate_to_dir;
 use sparrow_synth::options::{Collector, GenerateOptions};
 use sparrow_synth::scale::run_perf;
