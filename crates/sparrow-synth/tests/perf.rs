@@ -143,6 +143,10 @@ fn tree_digest(dir: &Path) -> String {
 /// assignment at the admin's own sign-in time on a seed-chosen day, so the volume tree's
 /// ExchangeAdmin rows differ. The value after F4 part B was
 /// `92660857d6e02546fe0494fea809d7336e4c5b0bbace901eff9d46cb4175b979`.
+///
+/// Re-recorded by the architect on the integration branch: F4b (0f8a7d3) reverted after review, the
+/// travel, audit and sign-in generator fixes and the rule batches merged. Previous value
+/// `bb718ce5f01b8d2f146118974230936e48c00034eade65025baca2727787f276`.
 #[test]
 #[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
@@ -153,7 +157,7 @@ fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
     generate_to_dir(&load("volume").unwrap(), &o, dir.path()).unwrap();
     assert_eq!(
         tree_digest(dir.path()),
-        "bb718ce5f01b8d2f146118974230936e48c00034eade65025baca2727787f276"
+        "65be86036234c884af183b3530e9a65817d0f0f70b5f85cad5b9961565739563"
     );
 }
 
