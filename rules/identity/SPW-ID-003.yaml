@@ -20,9 +20,11 @@
 # - Known false positives: VPNs and mobile-carrier egress (the address geolocates to the
 #   carrier's gateway, often a different region), and split-tunnel VPN where two paths are live.
 #   The rule cannot tell these apart; the analyst guidance says how to.
-# - Only the LATER event of a flagged pair is the hit (the sign-in that could not have been
-#   reached); the earlier one (record key, table, time, address and city coordinates) is in the
-#   context, so a baseline sign-in that merely came first never becomes a trigger.
+# - One event of a flagged pair is the hit: the LATER one (the sign-in that could not have been
+#   reached), except that when only the EARLIER one is from a hosting address (ip_intel.is_hosting)
+#   the hosting one is the hit, because the other is where the user normally signs in. The other
+#   end (record key, table, time, address, coordinates) is in the context, so a routine sign-in
+#   that merely sits next to a suspicious one is never the trigger.
 # `sql:` because the pair needs a window over the user's sign-ins joined to ip_intel.
 id: SPW-ID-003
 title: Impossible travel
@@ -38,13 +40,14 @@ needs_geoip: true
 sql: |
   WITH ev AS (
     SELECT s.record_key, 'signins' AS src, s.event_time AS t, lower(s.user_upn) AS usr,
-           s.user_upn AS actor, s.ip AS ip, i.latitude AS lat, i.longitude AS lon
+           s.user_upn AS actor, s.ip AS ip, i.latitude AS lat, i.longitude AS lon,
+           coalesce(i.is_hosting, false) AS host
     FROM signins s JOIN ip_intel i ON i.ip = s.ip
     WHERE s.error_code = 0 AND s.user_upn IS NOT NULL AND s.event_time IS NOT NULL
       AND i.latitude IS NOT NULL AND i.longitude IS NOT NULL AND NOT coalesce(i.is_microsoft, false)
     UNION ALL
     SELECT lower(CAST(u.record_id AS VARCHAR)), 'ual_events', u.event_time, lower(u.user_upn),
-           u.user_upn, u.client_ip, i.latitude, i.longitude
+           u.user_upn, u.client_ip, i.latitude, i.longitude, coalesce(i.is_hosting, false)
     FROM ual_events u JOIN ip_intel i ON i.ip = u.client_ip
     WHERE lower(u.operation) = 'userloggedin' AND u.user_upn IS NOT NULL
       AND i.latitude IS NOT NULL AND i.longitude IS NOT NULL AND NOT coalesce(i.is_microsoft, false)
@@ -53,7 +56,7 @@ sql: |
     SELECT *,
            lag(record_key) OVER w AS p_key, lag(src) OVER w AS p_src, lag(t) OVER w AS p_t,
            lag(actor) OVER w AS p_actor, lag(ip) OVER w AS p_ip,
-           lag(lat) OVER w AS p_lat, lag(lon) OVER w AS p_lon
+           lag(lat) OVER w AS p_lat, lag(lon) OVER w AS p_lon, lag(host) OVER w AS p_host
     FROM ev
     WINDOW w AS (PARTITION BY usr ORDER BY epoch_ms(t), src, record_key)
   ),
@@ -68,19 +71,30 @@ sql: |
     WHERE p_key IS NOT NULL AND p_ip <> ip
   ),
   flagged AS (SELECT * FROM pairs WHERE km >= 500 AND km / hours > 900)
-  SELECT f.record_key,
-         CASE WHEN f.src = 'signins' THEN 'signins' ELSE 'ual_events' END AS source_table,
-         f.t AS event_time, f.actor AS actor_upn, f.ip AS ip,
+  -- The trigger is the later sign-in, except when only the earlier one is a hosting address: the
+  -- hosting side is then the odd one out (the other is where the user normally is), and it is the
+  -- trigger. The other end of the pair is in the context either way.
+  SELECT CASE WHEN f.p_host AND NOT f.host THEN f.p_key ELSE f.record_key END AS record_key,
+         CASE WHEN f.p_host AND NOT f.host THEN
+                CASE WHEN f.p_src = 'signins' THEN 'signins' ELSE 'ual_events' END
+              ELSE CASE WHEN f.src = 'signins' THEN 'signins' ELSE 'ual_events' END END AS source_table,
+         CASE WHEN f.p_host AND NOT f.host THEN f.p_t ELSE f.t END AS event_time,
+         CASE WHEN f.p_host AND NOT f.host THEN f.p_actor ELSE f.actor END AS actor_upn,
+         CASE WHEN f.p_host AND NOT f.host THEN f.p_ip ELSE f.ip END AS ip,
          json_object('distance_km', round(f.km), 'speed_kmh', round(f.km / f.hours),
-                     'from_record_key', f.p_key, 'from_table', f.p_src,
-                     'from_time_epoch_ms', epoch_ms(f.p_t),
-                     'from_ip', f.p_ip, 'from_lat', f.p_lat, 'from_lon', f.p_lon) AS context
+                     'other_record_key', CASE WHEN f.p_host AND NOT f.host THEN f.record_key ELSE f.p_key END,
+                     'other_table', CASE WHEN f.p_host AND NOT f.host THEN f.src ELSE f.p_src END,
+                     'other_time_epoch_ms', epoch_ms(CASE WHEN f.p_host AND NOT f.host THEN f.t ELSE f.p_t END),
+                     'other_ip', CASE WHEN f.p_host AND NOT f.host THEN f.ip ELSE f.p_ip END,
+                     'other_lat', CASE WHEN f.p_host AND NOT f.host THEN f.lat ELSE f.p_lat END,
+                     'other_lon', CASE WHEN f.p_host AND NOT f.host THEN f.lon ELSE f.p_lon END) AS context
   FROM flagged f
 group_by: [actor_upn]
 analyst_guidance: |
   Two successful sign-ins of one user, from places too far apart to have travelled between
-  (over 900 km/h and at least 500 km). The hit is the later sign-in; the context gives the
-  distance, the implied speed and the earlier sign-in (record, time, address, coordinates).
+  (over 900 km/h and at least 500 km). The hit is the later sign-in (the hosting one when only
+  the earlier is a hosting address); the context gives the distance, the implied speed and the
+  other sign-in (record, time, address, coordinates).
   First rule out the common false positives: a VPN or a mobile carrier whose egress sits in
   another region, and a user signing in from a phone and a laptop on different networks. What
   usually separates an attacker is the rest of the session: an unfamiliar device or user agent,
@@ -112,6 +126,30 @@ tests:
         user_upn: alice@contoso.example
         ip: 203.0.113.2
         event_time: "2026-03-01T09:40:00Z"
+        error_code: 0
+    expect_hits: 1
+  - name: a hosting sign-in first and the user's home sign-in after it, the hosting one is the hit
+    records:
+      - table: ip_intel
+        ip: 203.0.113.1
+        latitude: 48.85
+        longitude: 2.35
+        asn: 14061
+        is_hosting: true
+      - table: ip_intel
+        ip: 198.51.100.9
+        latitude: 59.3
+        longitude: 18.1
+        asn: 64501
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.1
+        event_time: "2026-03-01T11:00:00Z"
+        error_code: 0
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.9
+        event_time: "2026-03-01T11:39:00Z"
         error_code: 0
     expect_hits: 1
   - name: the same trip taking fourteen hours is a flight

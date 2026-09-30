@@ -419,7 +419,7 @@ rules:
     # attacker's proxy address (a hosting ASN, far from the user's home): the logic hits. Only the
     # kinds whose far sign-in is the later one of its pair in every scenario are listed here (the
     # hit is the later endpoint); mfa_after_stale_risk and oauth_consent pair only in some.
-    positives: [aitm_signin, inbox_rule_after_stale_risk, anonymous_link_after_stale_risk]
+    positives: [aitm_signin, inbox_rule_after_stale_risk, mfa_after_stale_risk, anonymous_link_after_stale_risk]
     lookalikes: [plausible_travel]
     baseline_allow:
       - kind: oauth_consent
