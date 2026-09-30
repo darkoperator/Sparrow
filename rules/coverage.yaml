@@ -397,7 +397,9 @@ rules:
     requires_evidence: []
     needs_geoip: true
     collectors: [hawk3, hawk4, invictus, portal]
-    positives: [aitm_signin]
+    # The correlation negatives and the illicit consent each carry a successful sign-in of the
+    # attacker's proxy or replay address (a hosting ASN, far from the user's home): the logic hits.
+    positives: [aitm_signin, inbox_rule_after_stale_risk, mfa_after_stale_risk, anonymous_link_after_stale_risk, oauth_consent]
     lookalikes: [microsoft_asn_signin]
   - id: SPW-ID-003
     title: Impossible travel
@@ -412,7 +414,11 @@ rules:
     requires_evidence: []
     needs_geoip: true
     collectors: [hawk3, hawk4, invictus, portal]
-    positives: [aitm_signin]
+    # The correlation negatives and the illicit consent each carry a successful sign-in of the
+    # attacker's proxy address (a hosting ASN, far from the user's home): the logic hits. Only the
+    # kinds whose far sign-in is the later one of its pair in every scenario are listed here (the
+    # hit is the later endpoint); mfa_after_stale_risk and oauth_consent pair only in some.
+    positives: [aitm_signin, inbox_rule_after_stale_risk, anonymous_link_after_stale_risk]
     lookalikes: [plausible_travel]
   - id: SPW-ID-004
     title: Adversary-in-the-middle indicators

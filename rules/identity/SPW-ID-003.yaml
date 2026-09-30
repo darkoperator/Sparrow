@@ -20,7 +20,9 @@
 # - Known false positives: VPNs and mobile-carrier egress (the address geolocates to the
 #   carrier's gateway, often a different region), and split-tunnel VPN where two paths are live.
 #   The rule cannot tell these apart; the analyst guidance says how to.
-# - Both events of a flagged pair are hits (the earlier one is the departure).
+# - Only the LATER event of a flagged pair is the hit (the sign-in that could not have been
+#   reached); the earlier one (record key, table, time, address and city coordinates) is in the
+#   context, so a baseline sign-in that merely came first never becomes a trigger.
 # `sql:` because the pair needs a window over the user's sign-ins joined to ip_intel.
 id: SPW-ID-003
 title: Impossible travel
@@ -65,22 +67,20 @@ sql: |
     FROM seq
     WHERE p_key IS NOT NULL AND p_ip <> ip
   ),
-  flagged AS (SELECT * FROM pairs WHERE km >= 500 AND km / hours > 900),
-  hits AS (
-    SELECT record_key, src, t, actor, ip, round(km) AS km, round(km / hours) AS kmh FROM flagged
-    UNION ALL
-    SELECT p_key, p_src, p_t, p_actor, p_ip, round(km), round(km / hours) FROM flagged
-  )
-  SELECT h.record_key,
-         CASE WHEN h.src = 'signins' THEN 'signins' ELSE 'ual_events' END AS source_table,
-         min(h.t) AS event_time, min(h.actor) AS actor_upn, min(h.ip) AS ip,
-         json_object('distance_km', max(h.km), 'speed_kmh', max(h.kmh)) AS context
-  FROM hits h
-  GROUP BY h.record_key, h.src
+  flagged AS (SELECT * FROM pairs WHERE km >= 500 AND km / hours > 900)
+  SELECT f.record_key,
+         CASE WHEN f.src = 'signins' THEN 'signins' ELSE 'ual_events' END AS source_table,
+         f.t AS event_time, f.actor AS actor_upn, f.ip AS ip,
+         json_object('distance_km', round(f.km), 'speed_kmh', round(f.km / f.hours),
+                     'from_record_key', f.p_key, 'from_table', f.p_src,
+                     'from_time_epoch_ms', epoch_ms(f.p_t),
+                     'from_ip', f.p_ip, 'from_lat', f.p_lat, 'from_lon', f.p_lon) AS context
+  FROM flagged f
 group_by: [actor_upn]
 analyst_guidance: |
   Two successful sign-ins of one user, from places too far apart to have travelled between
-  (over 900 km/h and at least 500 km). The context gives the distance and the implied speed.
+  (over 900 km/h and at least 500 km). The hit is the later sign-in; the context gives the
+  distance, the implied speed and the earlier sign-in (record, time, address, coordinates).
   First rule out the common false positives: a VPN or a mobile carrier whose egress sits in
   another region, and a user signing in from a phone and a laptop on different networks. What
   usually separates an attacker is the rest of the session: an unfamiliar device or user agent,
@@ -93,7 +93,7 @@ references:
   - https://learn.microsoft.com/en-us/purview/audit-log-activities
 author: Sparrow
 tests:
-  - name: Paris then Johannesburg forty minutes later
+  - name: Paris then Johannesburg forty minutes later, only the later sign-in is a hit
     records:
       - table: ip_intel
         ip: 198.51.100.1
@@ -113,7 +113,7 @@ tests:
         ip: 203.0.113.2
         event_time: "2026-03-01T09:40:00Z"
         error_code: 0
-    expect_hits: 2
+    expect_hits: 1
   - name: the same trip taking fourteen hours is a flight
     records:
       - table: ip_intel
@@ -160,7 +160,7 @@ tests:
         user_upn: alice@contoso.example
         client_ip: 203.0.113.2
         event_time: "2026-03-01T09:30:00Z"
-    expect_hits: 2
+    expect_hits: 1
   - name: Paris to Berlin in ten minutes is above 900 km/h
     records:
       - table: ip_intel
@@ -181,7 +181,7 @@ tests:
         ip: 198.51.100.2
         event_time: "2026-03-01T09:10:00Z"
         error_code: 0
-    expect_hits: 2
+    expect_hits: 1
   - name: Paris to Berlin in two hours is 440 km/h
     records:
       - table: ip_intel
