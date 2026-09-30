@@ -242,14 +242,6 @@ fn inbox_rule_finance(w: &mut World, ctx: &mut Ctx) {
             ("MoveToFolder", "RSS Feeds"),
             ("MarkAsRead", "True"),
             ("StopProcessingRules", "True"),
-            // The rest of what an interactive `New-InboxRule` sends, so the flattened files
-            // carry the parameter set the real captures hold
-            // (office-365-management-api-schema `ExchangeAdmin.Parameters`). Neutral and
-            // not read by any rule; the detection-relevant values above are untouched.
-            ("AlwaysDeleteOutlookRulesBlob", "False"),
-            ("Confirm", "False"),
-            ("ErrorAction", "Stop"),
-            ("Force", "False"),
         ],
         ip,
         session,
@@ -289,10 +281,6 @@ fn admin_inbox_rule(w: &mut World, ctx: &mut Ctx) -> Result<()> {
             ("Name", "Sync"),
             ("ForwardTo", fwd.as_str()),
             ("DeleteMessage", "True"),
-            ("AlwaysDeleteOutlookRulesBlob", "False"),
-            ("Confirm", "False"),
-            ("ErrorAction", "Stop"),
-            ("Force", "False"),
         ],
         ip,
         session,
