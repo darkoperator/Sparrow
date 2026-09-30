@@ -754,18 +754,19 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
             {
                 let mut srng = stream(w.seed, &format!("ual-extra/outlook-rule/{}", user.upn));
                 let from = rule.from.join(", ");
-                ual_out.push(ual::inbox_rules_update(
+                let rec = ual::inbox_rules_update(
                     w,
                     &mut srng,
                     user,
                     t,
-                    ip,
+                    address(t),
                     OUTLOOK_DESKTOP,
                     session,
                     &rule.name,
                     Some(&format!("From: {from}")),
                     "MoveToFolder",
-                ));
+                );
+                log(rec, t);
             }
         }
 
