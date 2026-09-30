@@ -201,11 +201,25 @@ fn trip_at<'w>(w: &'w World, user: &str, time: DateTime<Utc>) -> Option<&'w crat
         .find(|t| t.user == user && time >= t.departure)
 }
 
-/// Where `user` signs in at `time`, and whether that is possible at all: at home until a trip
-/// departs, nowhere (`None`) from the departure to the arrival, at the destination after it.
-fn place_at(w: &World, user: &User, time: DateTime<Utc>) -> Option<(IpAddr, Location)> {
+/// Whether `user` is in the air at `time`: on a trip that has departed and not yet arrived.
+/// They are on no network then, so no sign-in of theirs may exist -- in the sign-in table or
+/// in the audit log, which is where a parser reads a logon back from.
+fn in_flight(w: &World, user: &str, time: DateTime<Utc>) -> bool {
+    trip_at(w, user, time).is_some_and(|t| time < t.arrival)
+}
+
+/// Where `user` signs in at `time`, and whether that is possible at all: at `day_ip` (wherever
+/// the day put them) until a trip departs, nowhere (`None`) from the departure to the arrival,
+/// at the destination after it. `day_ip` keeps a session on one address: a session that moves
+/// is the token-replay signal, and a benign day never produces one.
+fn place_at(
+    w: &World,
+    user: &User,
+    time: DateTime<Utc>,
+    day_ip: IpAddr,
+) -> Option<(IpAddr, Location)> {
     match trip_at(w, &user.upn, time) {
-        None => Some((user.home_ip, user.home.clone())),
+        None => Some((day_ip, user.home.clone())),
         Some(t) if time < t.arrival => None,
         Some(t) => Some((t.ip, t.location.clone())),
     }
@@ -437,7 +451,8 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
         };
         // The morning sign-in of Outlook desktop starts the day's session.
         plan.interactive.push(signins.len());
-        let (morning_ip, morning_at) = place_at(w, user, login).unwrap_or((ip, user.home.clone()));
+        let (morning_ip, morning_at) =
+            place_at(w, user, login, ip).unwrap_or((ip, user.home.clone()));
         signins.push(signin(
             w,
             &mut srng,
@@ -458,7 +473,7 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
                 let code = if srng.chance(0.5) { 50126 } else { 50074 };
                 let failed_session = srng.uuid();
                 plan.interactive.push(signins.len());
-                let (at_ip, at) = place_at(w, user, t).unwrap_or((ip, user.home.clone()));
+                let (at_ip, at) = place_at(w, user, t, ip).unwrap_or((ip, user.home.clone()));
                 signins.push(signin(
                     w,
                     &mut srng,
@@ -475,7 +490,7 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
             } else if roll < 0.75 {
                 let t = t.max(login);
                 let resource = *srng.pick(&[apps.exchange, apps.sharepoint, apps.graph]);
-                let (at_ip, at) = place_at(w, user, t).unwrap_or((ip, user.home.clone()));
+                let (at_ip, at) = place_at(w, user, t, ip).unwrap_or((ip, user.home.clone()));
                 signins.push(signin(
                     w,
                     &mut srng,
@@ -492,7 +507,7 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
             } else {
                 let t = t.max(login);
                 plan.interactive.push(signins.len());
-                let (at_ip, at) = place_at(w, user, t).unwrap_or((ip, user.home.clone()));
+                let (at_ip, at) = place_at(w, user, t, ip).unwrap_or((ip, user.home.clone()));
                 signins.push(signin(
                     w,
                     &mut srng,
@@ -632,7 +647,9 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
 
         for &i in &plan.interactive {
             let s = &signins[i];
-            if ual_logged(w, s.time) {
+            // In the air there is no sign-in to log either: the audit log is where a parser
+            // reads a logon back from, so a record here would be a sign-in in the air.
+            if !in_flight(w, &user.upn, s.time) && ual_logged(w, s.time) {
                 let ok = s.error_code == 0;
                 ual_out.push(ual::sts_logon(
                     w,
@@ -973,7 +990,7 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
         // moves) and dropped here, in one place for every person's sign-ins of the day.
         signins: signins
             .into_iter()
-            .filter(|s| !trip_at(w, &s.user, s.time).is_some_and(|t| s.time < t.arrival))
+            .filter(|s| !in_flight(w, &s.user, s.time))
             .collect(),
         trace,
     }
@@ -1030,7 +1047,7 @@ fn scale_filler(
         } else {
             user.home_ip
         };
-        let (at_ip, at) = place_at(w, user, t).unwrap_or((ip, user.home.clone()));
+        let (at_ip, at) = place_at(w, user, t, ip).unwrap_or((ip, user.home.clone()));
         let session = rng.uuid();
         signins.push(signin(
             w,

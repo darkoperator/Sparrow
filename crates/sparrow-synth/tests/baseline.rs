@@ -1,7 +1,7 @@
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde_json::Value;
 use sparrow_synth::baseline::{day, directory_audits};
-use sparrow_synth::scenario::load;
+use sparrow_synth::scenario::{builtin_names, load};
 use sparrow_synth::world::World;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -546,4 +546,95 @@ fn a_travelling_user_signs_in_from_where_they_are() {
 /// The sign-in records of a day (every event type, not just the logon ones).
 fn sts_and_all_signins(w: &World, date: NaiveDate) -> Vec<sparrow_synth::events::SignIn> {
     day(w, date).signins
+}
+
+/// A user in the air has no sign-in at all, in any channel: not in the sign-in table and not
+/// in the audit log either, which is where a parser reads a logon back from. Between the
+/// departure and the arrival there is nothing but the departure sign-in itself.
+#[test]
+fn a_travelling_user_has_no_sign_in_while_in_the_air() {
+    for name in builtin_names() {
+        for seed in [7u64, 21, 42] {
+            let mut world = World::build(&load(name).unwrap(), seed).unwrap();
+            sparrow_synth::story::apply(&mut world).unwrap();
+            let trips: Vec<_> = world
+                .trips
+                .iter()
+                .map(|t| (t.user.clone(), t.departure, t.arrival))
+                .collect();
+            for (user, departure, arrival) in &trips {
+                let days = (world.collected_at().date_naive() - world.window_start().date_naive())
+                    .num_days();
+                for d in 0..=days {
+                    let date = world.window_start().date_naive() + Duration::days(d);
+                    let records = day(&world, date);
+                    for s in records.signins.iter().filter(|s| &s.user == user) {
+                        assert!(
+                            s.time < *departure || s.time >= *arrival,
+                            "{name} seed {seed}: a sign-in in the air at {} ({:?})",
+                            s.time,
+                            s.ip
+                        );
+                    }
+                    // The logons the files carry: the audit log is what a parser turns back
+                    // into a sign-in, so a sign-in in the air there is a sign-in in the air.
+                    for u in records
+                        .ual
+                        .iter()
+                        .filter(|u| u.record_type.number() == 15 && &u.user_id == user)
+                    {
+                        assert!(
+                            u.time < *departure || u.time >= *arrival,
+                            "{name} seed {seed}: a logon in the air at {} from {}",
+                            u.time,
+                            u.audit["ClientIP"]
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A session's activity comes from the address that session signed in from: one session never
+/// shows two IPs. A session that moves is the token-replay signal (SPW-ID-004), so a benign
+/// baseline must not produce one; only a storyline may.
+#[test]
+fn a_session_keeps_the_address_it_signed_in_from() {
+    for name in builtin_names() {
+        for seed in [7u64, 21, 42] {
+            let world = w(name);
+            let days =
+                (world.collected_at().date_naive() - world.window_start().date_naive()).num_days();
+            for d in 0..=days {
+                let date = world.window_start().date_naive() + Duration::days(d);
+                let day = day(&world, date);
+                // session -> the addresses that session shows, over its sign-ins and its audit
+                // records.
+                let mut ips: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+                for s in &day.signins {
+                    ips.entry(s.session_id.to_string())
+                        .or_default()
+                        .insert(s.ip.to_string());
+                }
+                for u in &day.ual {
+                    let Some(session) = u.audit.get("SessionId").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    let Some(ip) = u.audit.get("ClientIP").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    ips.entry(session.to_string())
+                        .or_default()
+                        .insert(ip.to_string());
+                }
+                for (session, seen) in &ips {
+                    assert!(
+                        seen.len() == 1,
+                        "{name} seed {seed} {date}: session {session} shows {seen:?}"
+                    );
+                }
+            }
+        }
+    }
 }
