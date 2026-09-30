@@ -15,7 +15,7 @@ use crate::events::{
 use crate::reserved::WELL_KNOWN_GUIDS;
 use crate::rng::{Rng, stream};
 use crate::ual::{self, ItemRef};
-use crate::world::{Location, RiskyUser, User, World};
+use crate::world::{Location, OUTLOOK_FILING_RULE, RiskyUser, User, World};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc, Weekday};
 use serde_json::json;
 use std::collections::BTreeSet;
@@ -734,6 +734,38 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
                     ),
                     m.time,
                 );
+            }
+        }
+
+        // The filing rule the user created from Outlook today (`world::build_rules`): the
+        // `UpdateInboxRules` record, in the user's own session and from their device address,
+        // when the user is at work at that time and mailbox auditing logs it. It uses its own
+        // random stream, so no other record of the day changes.
+        for rule in w
+            .inbox_rules
+            .iter()
+            .filter(|r| r.name == OUTLOOK_FILING_RULE && r.mailbox == user.upn)
+            .filter(|r| r.created.date_naive() == date)
+        {
+            let t = rule.created;
+            if t >= plan.login
+                && t <= plan.end
+                && mailbox_logged(w, &user.upn, 0, "UpdateInboxRules", t)
+            {
+                let mut srng = stream(w.seed, &format!("ual-extra/outlook-rule/{}", user.upn));
+                let from = rule.from.join(", ");
+                ual_out.push(ual::inbox_rules_update(
+                    w,
+                    &mut srng,
+                    user,
+                    t,
+                    ip,
+                    OUTLOOK_DESKTOP,
+                    session,
+                    &rule.name,
+                    Some(&format!("From: {from}")),
+                    "MoveToFolder",
+                ));
             }
         }
 

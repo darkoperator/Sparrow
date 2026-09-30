@@ -64,6 +64,12 @@ const OWNER_ACTIONS: &[&str] = &[
 
 const NEWSLETTER_VENDOR_DOMAIN: &str = "newsdigest.example";
 
+/// The name of the baseline filing rule a share of users creates from Outlook (see `build_rules`).
+pub const OUTLOOK_FILING_RULE: &str = "Project updates";
+
+/// The reserved domain of the project mailing list that rule files.
+const PROJECT_LIST_DOMAIN: &str = "projects-list.example";
+
 /// A vendor's own domain for the third-party app's reply URL host (spec: reserved domains only).
 const MEETING_NOTES_REPLY_URL: &str = "https://app.meetingnotespro.example/oauth/callback";
 
@@ -162,7 +168,8 @@ impl World {
         let (users, admins) = build_people(scenario, seed, &tenant, licence);
         let victims = compute_victims(scenario);
         let mailboxes = build_mailboxes(scenario, seed, &tenant, &users, &admins, audit, &victims);
-        let (inbox_rules, sweep_rules) = build_rules(seed, &users);
+        let (inbox_rules, sweep_rules) =
+            build_rules(seed, &users, scenario.window.start, scenario.window.days);
         let (apps, grants) = build_apps(scenario, seed, &tenant, &users, &admins);
         let roles = build_roles(scenario, &users, &admins);
         let mfa = build_mfa(&users, &admins);
@@ -1686,7 +1693,12 @@ fn graph_opaque_id(rng: &mut Rng) -> String {
     s
 }
 
-fn build_rules(seed: u64, users: &[User]) -> (Vec<InboxRule>, Vec<SweepRule>) {
+fn build_rules(
+    seed: u64,
+    users: &[User],
+    window_start: DateTime<Utc>,
+    window_days: u32,
+) -> (Vec<InboxRule>, Vec<SweepRule>) {
     let mut rng = stream(seed, "rules");
     let mut inbox_rules = Vec::new();
     let mut sweep_rules = Vec::new();
@@ -1728,6 +1740,42 @@ fn build_rules(seed: u64, users: &[User]) -> (Vec<InboxRule>, Vec<SweepRule>) {
                 source_folder: "Inbox".to_string(),
                 destination_folder: "Archive".to_string(),
                 keep_latest: 10,
+            });
+        }
+    }
+
+    // A share of the users (every fifth) creates an ordinary filing rule from Outlook inside the
+    // window: mail from a project list goes to a Projects folder. Its own random stream and
+    // identity range keep every other rule's ids where they were. `baseline::day` writes the
+    // matching `UpdateInboxRules` record on the day the rule was created.
+    if window_days > 21 {
+        let mut orng = stream(seed, "rules/outlook");
+        for user in users.iter().filter(|u| u.n % 5 == 2) {
+            let day = 7 + orng.below(u64::from(window_days) - 14) as i64;
+            let created =
+                window_start + Duration::days(day) + Duration::minutes(9 * 60 + orng.range(0, 420));
+            inbox_rules.push(InboxRule {
+                mailbox: user.upn.clone(),
+                name: OUTLOOK_FILING_RULE.to_string(),
+                identity: 9_000_000_000 + u64::from(user.n),
+                priority: 0,
+                enabled: true,
+                from: vec![format!("projects@{PROJECT_LIST_DOMAIN}")],
+                subject_contains: Vec::new(),
+                body_contains: Vec::new(),
+                subject_or_body_contains: Vec::new(),
+                has_attachment: false,
+                move_to_folder: Some("Projects".to_string()),
+                copy_to_folder: None,
+                delete_message: false,
+                soft_delete: false,
+                forward_to: Vec::new(),
+                forward_as_attachment_to: Vec::new(),
+                redirect_to: Vec::new(),
+                mark_as_read: false,
+                stop_processing: false,
+                created,
+                graph_id: graph_opaque_id(&mut orng),
             });
         }
     }

@@ -41,6 +41,7 @@ storylines:
   - {kind: anonymous_link, id: s-anon, actor: 1, at: {after: s-aitm, minutes: 130}}
   - {kind: lure_share, id: s-lure, actor: 1, at: {after: s-aitm, minutes: 140}}
   - {kind: autoreply_enabled, id: s-auto, actor: 1, at: {after: s-aitm, minutes: 160}}
+  - {kind: outlook_client_hiding_rule, id: s-owa-rule, actor: 1, at: {after: s-aitm, minutes: 180}}
   - {kind: forwarding_transport_rule, id: s-trule, at: {day: 22, hour: 23, minute: 40}}
   - {kind: mailbox_permission_grant, id: s-perm, actor: 1, target: 2, at: {day: 22, hour: 23, minute: 10}}
   - {kind: header_spoof, id: s-hdr, target: 1, at: {day: 19, hour: 15}}
@@ -57,6 +58,7 @@ lookalikes:
   - {kind: plausible_travel, id: l-travel-recent, actor: 2, at: {day: 35, hour: 7}}
   - {kind: same_ip_token_use, id: l-sameip, actor: 9, at: {day: 15, hour: 9}}
   - {kind: vendor_filing_rule, id: l-vendor, actor: 3, at: {day: 12, hour: 10}}
+  - {kind: outlook_client_filing_rule, id: l-owa-filing, actor: 11, at: {day: 13, hour: 11}}
   - {kind: internal_forwarding, id: l-intfwd, actor: 4, at: {day: 13, hour: 16}}
   - {kind: mia_sync, id: l-miasync, actor: 5, at: {day: 13, hour: 8, minute: 5}}
   - {kind: send_known_ip, id: l-sendok, actor: 5, at: {day: 14, hour: 11}}

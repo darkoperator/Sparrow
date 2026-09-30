@@ -7,6 +7,7 @@ use super::{
     push_ual, target,
 };
 use crate::events::TraceMsg;
+use crate::rng::stream;
 use crate::scenario::StoryKind;
 use crate::ual::{self, ItemRef};
 use crate::world::{Email, InboxRule, MailboxPermission, TransportRule, User, World};
@@ -96,6 +97,8 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
         }
         StoryKind::HeaderSpoof => header_spoof(w, ctx)?,
         StoryKind::VendorFilingRule => vendor_filing_rule(w, ctx),
+        StoryKind::OutlookClientHidingRule => outlook_client_hiding_rule(w, ctx),
+        StoryKind::OutlookClientFilingRule => outlook_client_filing_rule(w, ctx),
         StoryKind::AdminBenignRule => admin_benign_rule(w, ctx)?,
         StoryKind::InternalForwarding => {
             let g = target(w, ctx, 2);
@@ -259,6 +262,72 @@ fn inbox_rule_finance(w: &mut World, ctx: &mut Ctx) {
     rule.move_to_folder = Some("RSS Feeds".to_string());
     rule.mark_as_read = true;
     rule.stop_processing = true;
+    add_rule(w, ctx, rule);
+}
+
+/// The attacker, in the victim's stolen session, creates a rule from Outlook on the web that
+/// files finance mail as read and deletes it: the mailbox-audit `UpdateInboxRules` record (from
+/// the attacker's replay address, OWA client) and the rule the collectors later read.
+fn outlook_client_hiding_rule(w: &mut World, ctx: &mut Ctx) {
+    let a = ctx.a.clone();
+    let t = ctx.t;
+    let ip = w.attacker.replay_ip;
+    let session = attacker_session(w, ctx, &a, t);
+    let mut r = stream(
+        w.seed,
+        &format!("ual-extra/owa-rule/{}/{}", a.upn, t.timestamp()),
+    );
+    let u = ual::inbox_rules_update(
+        w,
+        &mut r,
+        &a,
+        t,
+        ip,
+        OWA,
+        session,
+        "Filter",
+        Some("SubjectOrBodyContainsWords: invoice, payment, wire"),
+        "DeleteMessage, MarkAsRead",
+    );
+    push_ual(w, ctx, u);
+    let mut rule = new_rule(ctx, &a.upn, "Filter", t);
+    rule.subject_or_body_contains = vec![
+        "invoice".to_string(),
+        "payment".to_string(),
+        "wire".to_string(),
+    ];
+    rule.delete_message = true;
+    rule.mark_as_read = true;
+    add_rule(w, ctx, rule);
+}
+
+/// The user files a project list's mail into a Projects folder from Outlook on their own
+/// computer, in their own session and from the office.
+fn outlook_client_filing_rule(w: &mut World, ctx: &mut Ctx) {
+    let a = ctx.a.clone();
+    let t = ctx.t;
+    let session = ctx.rng.uuid();
+    let mut r = stream(
+        w.seed,
+        &format!("ual-extra/outlook-filing/{}/{}", a.upn, t.timestamp()),
+    );
+    let from = "projects@projects-list.example";
+    let u = ual::inbox_rules_update(
+        w,
+        &mut r,
+        &a,
+        t,
+        a.office_ip,
+        OUTLOOK_DESKTOP,
+        session,
+        "Project mail",
+        Some(&format!("From: {from}")),
+        "MoveToFolder",
+    );
+    push_ual(w, ctx, u);
+    let mut rule = new_rule(ctx, &a.upn, "Project mail", t);
+    rule.from = vec![from.to_string()];
+    rule.move_to_folder = Some("Projects".to_string());
     add_rule(w, ctx, rule);
 }
 

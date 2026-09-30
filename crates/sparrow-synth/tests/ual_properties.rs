@@ -368,3 +368,53 @@ fn a_token_is_issued_once_per_session_window_and_never_after_the_access() {
     }
     assert!(!per.is_empty());
 }
+
+fn op_props(r: &Value) -> BTreeMap<String, String> {
+    r["OperationProperties"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|p| {
+                    (
+                        p["Name"].as_str().unwrap_or("").to_string(),
+                        p["Value"].as_str().unwrap_or("").to_string(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn outlook_client_inbox_rules_are_in_the_baseline_and_the_storyline() {
+    let recs = audit_records("bec-aitm");
+    let updates: Vec<&Value> = recs
+        .iter()
+        .filter(|r| text(r, "Operation") == "UpdateInboxRules")
+        .collect();
+    let (hiding, filing): (Vec<&Value>, Vec<&Value>) = updates.iter().partition(|r| {
+        op_props(r)
+            .get("RuleActions")
+            .is_some_and(|a| a.contains("Delete"))
+    });
+    // The storyline: the attacker's rule from Outlook on the web, from the replay address.
+    assert_eq!(hiding.len(), 1, "one hiding rule");
+    let h = hiding[0];
+    assert!(text(h, "ClientInfoString").starts_with("Client=OWA"));
+    assert!(op_props(h)["RuleCondition"].contains("invoice"));
+    assert!(
+        h.get("ClientProcessName").is_none(),
+        "OWA is not a desktop client"
+    );
+    // The benign rules: from Outlook on the user's own computer, filing into a folder only.
+    assert!(filing.len() >= 2, "{} benign Outlook rules", filing.len());
+    for r in &filing {
+        let p = op_props(r);
+        assert_eq!(p["RuleActions"], "MoveToFolder");
+        assert!(p.contains_key("RuleName") && p["RuleCondition"].starts_with("From: "));
+        assert!(text(r, "ClientInfoString").contains("MSExchangeRPC"));
+        assert_ne!(text(r, "ClientIP"), text(h, "ClientIP"));
+    }
+    // The record has no item (the fixture's shape).
+    assert!(updates.iter().all(|r| r.get("Item").is_none()));
+}

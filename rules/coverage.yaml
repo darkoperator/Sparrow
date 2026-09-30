@@ -210,8 +210,8 @@ rules:
     requires_evidence: []
     needs_geoip: false
     collectors: [hawk3, hawk4, invictus, portal]
-    positives: [forwarding_inbox_rule, admin_inbox_rule]
-    lookalikes: [vendor_filing_rule, inbox_rule_finance]
+    positives: [forwarding_inbox_rule, admin_inbox_rule, outlook_client_hiding_rule]
+    lookalikes: [vendor_filing_rule, inbox_rule_finance, outlook_client_filing_rule]
   - id: SPW-HAWK-011
     title: Mailbox forwarding configured
     category: mail
@@ -310,8 +310,8 @@ rules:
     needs_geoip: false
     collectors: [hawk3, hawk4, invictus, portal]
     # admin_inbox_rule: its throw-away rule moves mail to Deleted Items, a hiding folder.
-    positives: [inbox_rule_finance, admin_inbox_rule]
-    lookalikes: [vendor_filing_rule]
+    positives: [inbox_rule_finance, admin_inbox_rule, outlook_client_hiding_rule]
+    lookalikes: [vendor_filing_rule, outlook_client_filing_rule]
   - id: SPW-MAIL-004
     title: External forwarding through the mailbox, an inbox rule or a transport rule
     category: mail

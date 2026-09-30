@@ -241,6 +241,7 @@ Positives:
 | `domain_federation` | An admin session from the attacker's address adds, verifies and federates a domain. |
 | `new_mobile_device` | A new iPhone starts syncing the mailbox over ActiveSync. |
 | `inbox_rule_finance` | The victim's own finance-keyword rule: finance mail marked read and hidden in RSS Feeds. |
+| `outlook_client_hiding_rule` | The attacker, in the victim's stolen session, creates a finance-keyword rule that deletes matching mail from Outlook on the web (`UpdateInboxRules`, OWA client, replay address). |
 | `admin_inbox_rule` | An admin creates a forwarding-and-deleting rule on another mailbox, edits it, and creates/removes a throw-away rule. |
 | `forwarding_mailbox` | `Set-Mailbox -ForwardingSmtpAddress` to the attacker's address. |
 | `forwarding_inbox_rule` | The victim's rule forwarding a vendor's invoices to the attacker. |
@@ -271,6 +272,7 @@ Look-alikes:
 | `microsoft_asn_signin` | A sign-in from a Cloud PC: a Microsoft address at the user's home. |
 | `plausible_travel` | A flight home 14 hours before, then a far city a plane could reach in the time. |
 | `same_ip_token_use` | An interactive sign-in and its token refresh 20 minutes later, same IP and client. |
+| `outlook_client_filing_rule` | The user files a project list's mail into a Projects folder from Outlook on their own computer (`UpdateInboxRules`, office address, own session). |
 | `vendor_filing_rule` | The user files a vendor's mail into a folder. |
 | `admin_benign_rule` | The admin files processed mail on a shared mailbox with `DeleteMessage False`. |
 | `internal_forwarding` | Forwarding to another user of the same tenant. |

@@ -484,6 +484,48 @@ impl MiaItem {
     }
 }
 
+/// An inbox rule created or changed from an Outlook client: `UpdateInboxRules`, an
+/// `ExchangeItem` mailbox audit record (Management Activity API, Exchange mailbox schema) with no
+/// item. Microsoft documents the action ("An inbox rule was added, removed, or changed", Manage
+/// mailbox auditing, purview/audit-mailboxes) and that it is audited by default for every sign-in
+/// type, but not the text of its `OperationProperties`. The form here is the one the core
+/// fixture `h3_update_inbox_rules` holds (`RuleName`, `RuleActions` naming the actions such as
+/// `MoveToFolder`), extended with `RuleCondition`; `RuleActions` lists the New-InboxRule action
+/// names the rule sets and `RuleCondition` the condition as `Name: value, value`.
+#[allow(clippy::too_many_arguments)]
+pub fn inbox_rules_update(
+    w: &World,
+    rng: &mut Rng,
+    owner: &User,
+    time: DateTime<Utc>,
+    ip: IpAddr,
+    client_info: &str,
+    session: Uuid,
+    rule_name: &str,
+    condition: Option<&str>,
+    actions: &str,
+) -> Ual {
+    let mut u = mailbox_item(
+        w,
+        rng,
+        owner,
+        owner,
+        time,
+        "UpdateInboxRules",
+        None,
+        ip,
+        client_info,
+        session,
+    );
+    let mut props = vec![("RuleName", rule_name)];
+    if let Some(c) = condition {
+        props.push(("RuleCondition", c));
+    }
+    props.push(("RuleActions", actions));
+    put(&mut u, "OperationProperties", name_value(&props));
+    u
+}
+
 /// `MailItemsAccessed` (`ExchangeItemAggregated`): `access` is `Bind` (with the items read)
 /// or `Sync` (one folder per record, no items). `folders` is (path, items).
 #[allow(clippy::too_many_arguments)]

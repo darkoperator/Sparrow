@@ -26,6 +26,7 @@ storylines:
   - {kind: new_mobile_device, id: s-mobile, actor: 2, at: {day: 12, hour: 18}}
   - {kind: oauth_consent, id: s-consent, actor: 3, at: {day: 25, hour: 10}}
   - {kind: admin_inbox_rule, id: s-admrule, target: 2, at: {day: 18, hour: 21}}
+  - {kind: outlook_client_hiding_rule, id: s-owa-rule, actor: 4, at: {day: 21, hour: 14}}
   - {kind: mailbox_permission_grant, id: s-perm, actor: 5, target: 4, at: {day: 20, hour: 22, minute: 30}}
   - {kind: forwarding_mailbox, id: s-fwd, actor: 6, at: {day: 22, hour: 12}}
   - {kind: forwarding_inbox_rule, id: s-fwdrule, actor: 7, at: {day: 23, hour: 12, minute: 30}}
@@ -46,3 +47,4 @@ lookalikes:
   - {kind: autoreply_disabled, id: l-autooff, actor: 10, at: {day: 12, hour: 17}}
   - {kind: header_clean, id: l-hdrok, target: 10, at: {day: 15, hour: 8}}
   - {kind: vendor_filing_rule, id: l-vendor, actor: 1, at: {day: 14, hour: 10}}
+  - {kind: outlook_client_filing_rule, id: l-owa-filing, actor: 3, at: {day: 16, hour: 11}}
