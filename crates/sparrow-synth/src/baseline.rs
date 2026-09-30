@@ -243,6 +243,58 @@ const INTERRUPT_GAP_SECONDS: std::ops::RangeInclusive<i64> = 3..=25;
 /// who has no method yet. See `ual::logon_error` for the Microsoft Learn reference.
 const INTERRUPT_ERRORS: [i64; 7] = [50076, 50076, 50076, 50076, 50076, 50074, 50079];
 
+/// The interrupt a sign-in gets, as `(error code, seconds before the sign-in)`, or `None` when
+/// this sign-in has none. Decided from a side stream keyed by **the sign-in's own id**, so
+/// adding interrupts moves no other record's bytes. `force` skips the share (a storyline whose
+/// sign-in always passes through a prompt).
+pub(crate) fn interrupt_for(w: &World, s: &SignIn, force: bool) -> Option<(i64, i64)> {
+    let mut sstream = stream(w.seed, &format!("interrupt/{}", s.id));
+    if !force {
+        // Admins, and any sign-in the world made an MFA sign-in, are the ones that meet a strong
+        // authentication prompt; they get one more often.
+        let share = if s.mfa.is_some() || s.auth_requirement == "multiFactorAuthentication" {
+            INTERRUPT_SHARE_MFA
+        } else {
+            INTERRUPT_SHARE_PLAIN
+        };
+        if !sstream.chance(share) {
+            return None;
+        }
+    }
+    let error = *sstream.pick(&INTERRUPT_ERRORS);
+    let gap = sstream.range(*INTERRUPT_GAP_SECONDS.start(), *INTERRUPT_GAP_SECONDS.end());
+    Some((error, gap))
+}
+
+/// The interrupt record itself. The record's own id and the two cross-system ids come from
+/// `rng`; a caller in a day passes a stream of its own keyed by the sign-in, so the day's
+/// `ual` stream is untouched.
+pub(crate) fn interrupt_record(
+    w: &World,
+    rng: &mut Rng,
+    user: &User,
+    s: &SignIn,
+    at: DateTime<Utc>,
+    ip: IpAddr,
+    error: i64,
+) -> Ual {
+    ual::sts_logon(
+        w,
+        rng,
+        user,
+        at,
+        ual::LogonOutcome::Interrupt,
+        ip,
+        &s.user_agent,
+        s.app_id,
+        // The prompt is shown inside the authorization request the sign-in goes on to complete.
+        "OAuth2:Authorize",
+        error,
+        // The attempt stopped at the authentication method, so the method is recorded.
+        true,
+    )
+}
+
 /// The sign-in interrupt that precedes an interactive sign-in `s`, when that sign-in had one,
 /// and the time it was recorded at.
 ///
@@ -257,29 +309,13 @@ const INTERRUPT_ERRORS: [i64; 7] = [50076, 50076, 50076, 50076, 50076, 50074, 50
 /// a few seconds before the sign-in), so it is not pinned to the sign-in's own address. A trip
 /// boundary falling in those few seconds would put the two records at different addresses, so
 /// such a sign-in gets no interrupt rather than one that contradicts the sign-in it precedes.
-///
-/// Whether a given sign-in has one is decided from a side stream keyed by **the sign-in's own
-/// id**, and the record is built from a side stream keyed by that id too, so adding interrupts
-/// moves no other record's bytes.
 fn signin_interrupt(
     w: &World,
     user: &User,
     s: &SignIn,
     address: &dyn Fn(DateTime<Utc>) -> IpAddr,
 ) -> Option<(Ual, DateTime<Utc>)> {
-    let mut sstream = stream(w.seed, &format!("interrupt/{}", s.id));
-    // Admins, and any sign-in the world made an MFA sign-in, are the ones that meet a strong
-    // authentication prompt; they get one more often.
-    let share = if s.mfa.is_some() || s.auth_requirement == "multiFactorAuthentication" {
-        INTERRUPT_SHARE_MFA
-    } else {
-        INTERRUPT_SHARE_PLAIN
-    };
-    if !sstream.chance(share) {
-        return None;
-    }
-    let error = *sstream.pick(&INTERRUPT_ERRORS);
-    let gap = sstream.range(*INTERRUPT_GAP_SECONDS.start(), *INTERRUPT_GAP_SECONDS.end());
+    let (error, gap) = interrupt_for(w, s, false)?;
     let at = s.time - Duration::seconds(gap);
     let ip = address(at);
     if ip != s.ip {
@@ -290,22 +326,10 @@ fn signin_interrupt(
     // A stream of its own, keyed by the sign-in: the record's own id and the two cross-system
     // ids would otherwise come out of the day's `ual` stream and shift every later record.
     let mut rstream = stream(w.seed, &format!("interrupt-record/{}", s.id));
-    let u = ual::sts_logon(
-        w,
-        &mut rstream,
-        user,
+    Some((
+        interrupt_record(w, &mut rstream, user, s, at, ip, error),
         at,
-        ual::LogonOutcome::Interrupt,
-        ip,
-        &s.user_agent,
-        s.app_id,
-        // The prompt is shown inside the authorization request the sign-in goes on to complete.
-        "OAuth2:Authorize",
-        error,
-        // The attempt stopped at the authentication method, so the method is recorded.
-        true,
-    );
-    Some((u, at))
+    ))
 }
 
 /// One person's day.
@@ -398,6 +422,12 @@ fn signin(
     let p2 = w.licence.p2();
     let (error_code, failure_reason) = match outcome {
         Outcome::Ok => (0, "Other."),
+        // A genuine failure, never a prompt: a code whose LogonError ends in `Interrupt` names a
+        // sign-in the user answered, which the audit log records with `ResultStatus` Success.
+        // 50074/50076/50079 stay mapped for a storyline that wants an interrupted attempt, but
+        // the benign baseline draws only real failures (c_reviewer, F10).
+        Outcome::Failed(50053) => (50053, "The user account is locked out."),
+        Outcome::Failed(50057) => (50057, "The user account is disabled."),
         Outcome::Failed(50074) => (50074, "Strong Authentication is required."),
         Outcome::Failed(code) => (code, "Invalid username or password"),
     };
@@ -553,7 +583,10 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
             let t = rand_time(&mut srng, start, end);
             let roll = srng.unit();
             if roll < 0.05 {
-                let code = if srng.chance(0.5) { 50126 } else { 50074 };
+                // A genuine failed logon. Never 50074 / 50076 / 50079: those name a prompt the
+                // user answered, and the generator emits them as interrupts (ResultStatus
+                // Success), so a Failed row carrying one would contradict itself.
+                let code = if srng.chance(0.5) { 50126 } else { 50053 };
                 let failed_session = srng.uuid();
                 plan.interactive.push(signins.len());
                 let (at_ip, at) = place_at(w, user, t, ip).unwrap_or((ip, user.home.clone()));

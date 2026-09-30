@@ -563,8 +563,11 @@ detection: run 2, 1 rule runs (0 not applicable, 0 errors), 0 new findings, 1 up
   SPW-MAIL-003   91de958c-e6a3-4936-a34d-e68332c57c1d ran             0 hits
 ```
 
-(the case was ingested with the built-in rules, which produced that rule's findings; the run above
-is the first with the replacement, so it updates one finding and adds none).
+(The case is a `bec-aitm` Hawk 4 tree ingested with the **built-in** rules, which left
+`SPW-MAIL-003` with one finding — its two hits belong to one actor, and the rule groups by
+`actor_upn`. The run above is the first with the replacement, so it updates that finding and adds
+none. The numbers are this tree's: a tree where the built-in rule hit two actors would report
+`2 updated`, and one where it hit nobody would report `0 updated`.)
 
 Custom rules take part in everything: they run in `sparrow detect`, their inline tests run in
 `sparrow rules test`, they are compiled and checked in `sparrow rules lint`, and the detection gate

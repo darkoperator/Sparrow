@@ -168,8 +168,13 @@ impl World {
         let (users, admins) = build_people(scenario, seed, &tenant, licence);
         let victims = compute_victims(scenario);
         let mailboxes = build_mailboxes(scenario, seed, &tenant, &users, &admins, audit, &victims);
-        let (inbox_rules, sweep_rules) =
-            build_rules(seed, &users, scenario.window.start, scenario.window.days);
+        let (inbox_rules, sweep_rules) = build_rules(
+            seed,
+            &users,
+            scenario.window.start,
+            scenario.window.days,
+            scenario.baseline.work_hours,
+        );
         let (apps, grants) = build_apps(scenario, seed, &tenant, &users, &admins);
         let roles = build_roles(scenario, &users, &admins);
         let mfa = build_mfa(&users, &admins);
@@ -1693,11 +1698,75 @@ fn graph_opaque_id(rng: &mut Rng) -> String {
     s
 }
 
+/// A weekday offset drawn from `from..=to` inclusive, or `None` when the range holds none.
+///
+/// The candidates are enumerated, not searched by stepping: stepping with a clamp can pin the
+/// cursor on a weekend and never terminate, and the range is small enough to enumerate.
+fn pick_workday(rng: &mut Rng, window_start: DateTime<Utc>, from: i64, to: i64) -> Option<i64> {
+    if to < from {
+        return None;
+    }
+    let candidates: Vec<i64> = (from..=to)
+        .filter(|d| {
+            !matches!(
+                (window_start + Duration::days(*d)).weekday(),
+                Weekday::Sat | Weekday::Sun
+            )
+        })
+        .collect();
+    // `Rng::below` panics on n == 0, so a range with no workday is answered before it is asked.
+    if candidates.is_empty() {
+        return None;
+    }
+    Some(candidates[rng.below(candidates.len() as u64) as usize])
+}
+
+/// A time inside `user`'s working hours on `date`, in UTC: the same window
+/// `baseline::work_window` computes for the day's records, so a record placed here is inside the
+/// window that `baseline::day` later tests against.
+///
+/// The time is taken from the second hour of the window on: the user's first sign-in of the day
+/// falls in the first hour, and the audit record for an action is only written once they are
+/// signed in, so a rule created in the first hour could precede the sign-in that records it.
+fn in_work_window(
+    rng: &mut Rng,
+    user: &User,
+    window_start: DateTime<Utc>,
+    date: NaiveDate,
+    work_hours: (u32, u32),
+) -> DateTime<Utc> {
+    let d0 = date.and_hms_opt(0, 0, 0).expect("midnight").and_utc();
+    let d1 = d0 + Duration::days(1);
+    let (h0, h1) = work_hours;
+    let off = baseline::utc_offset_hours(&user.home);
+    let s = (d0 + Duration::hours(i64::from(h0) - off)).max(d0);
+    let e = (d0 + Duration::hours(i64::from(h1) - off)).min(d1);
+    let (mut s, mut e) = if e - s >= Duration::hours(1) {
+        (s, e)
+    } else {
+        // The same fallback `work_window` uses when clipping to the UTC day leaves under an hour.
+        let s = d0 + Duration::hours(i64::from(h0.min(23)));
+        let e = (d0 + Duration::hours(i64::from(h1.max(h0 + 1)))).min(d1);
+        (s, e)
+    };
+    s = s.max(window_start);
+    e = e.max(s);
+    // After the first hour, so the rule follows the sign-in that records it.
+    let from = (s + Duration::hours(1)).min(e);
+    let span = (e - from).num_seconds();
+    if span <= 0 {
+        from
+    } else {
+        from + Duration::seconds(rng.below(span as u64) as i64)
+    }
+}
+
 fn build_rules(
     seed: u64,
     users: &[User],
     window_start: DateTime<Utc>,
     window_days: u32,
+    work_hours: (u32, u32),
 ) -> (Vec<InboxRule>, Vec<SweepRule>) {
     let mut rng = stream(seed, "rules");
     let mut inbox_rules = Vec::new();
@@ -1747,13 +1816,22 @@ fn build_rules(
     // A share of the users (every fifth) creates an ordinary filing rule from Outlook inside the
     // window: mail from a project list goes to a Projects folder. Its own random stream and
     // identity range keep every other rule's ids where they were. `baseline::day` writes the
-    // matching `UpdateInboxRules` record on the day the rule was created.
+    // matching `UpdateInboxRules` record on the day the rule was created, and only while the user
+    // is inside their work window that day, so the rule is placed *inside* that window on a
+    // workday (c_reviewer, F11): a rule created at a fixed 09:00 UTC falls outside the window of
+    // anyone whose tenant is far from Greenwich, and the collected rule then has no audit record
+    // that a real Hawk capture would hold.
     if window_days > 21 {
         let mut orng = stream(seed, "rules/outlook");
         for user in users.iter().filter(|u| u.n % 5 == 2) {
-            let day = 7 + orng.below(u64::from(window_days) - 14) as i64;
-            let created =
-                window_start + Duration::days(day) + Duration::minutes(9 * 60 + orng.range(0, 420));
+            // A workday somewhere in `[7, window_days - 8]`, searched over the finite set of
+            // candidate days: there is no retry loop to get stuck, and a range with no workday in
+            // it simply gives this user no filing rule.
+            let Some(day) = pick_workday(&mut orng, window_start, 7, window_days as i64 - 8) else {
+                continue;
+            };
+            let date = (window_start + Duration::days(day)).date_naive();
+            let created = in_work_window(&mut orng, user, window_start, date, work_hours);
             inbox_rules.push(InboxRule {
                 mailbox: user.upn.clone(),
                 name: OUTLOOK_FILING_RULE.to_string(),
@@ -2680,5 +2758,41 @@ fn build_attacker(tenant: &Tenant) -> Attacker {
         lure_domain: format!("{word}-secure-signin.test"),
         user_agent_scripted: "python-requests/2.32.3".to_string(),
         user_agent_axios: "axios/1.7.7".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    /// `pick_workday` terminates on every input, including the ones a stepping search would hang
+    /// on: an empty range, an inverted range, and a range that is exactly one weekend long.
+    #[test]
+    fn pick_workday_is_bounded_and_skips_a_range_without_a_workday() {
+        let start = chrono::Utc.with_ymd_and_hms(2026, 8, 3, 0, 0, 0).unwrap(); // a Monday
+        let mut rng = stream(1, "test/pick_workday");
+
+        // Offsets from Monday 2026-08-03: 4 is Friday the 7th, 5 Saturday the 8th, 6 Sunday
+        // the 9th, 7 Monday the 10th.
+        assert_eq!(pick_workday(&mut rng, start, 5, 6), None); // Sat + Sun only
+        assert_eq!(pick_workday(&mut rng, start, 5, 5), None); // Sat only
+        assert_eq!(pick_workday(&mut rng, start, 5, 7), Some(7)); // the one Monday
+        assert_eq!(pick_workday(&mut rng, start, 8, 6), None); // inverted range
+        assert_eq!(pick_workday(&mut rng, start, 0, 0), Some(0)); // a single Monday
+        assert_eq!(pick_workday(&mut rng, start, 4, 4), Some(4)); // a single Friday
+
+        // Over a real range it only ever returns a weekday inside the range.
+        for _ in 0..200 {
+            let d = pick_workday(&mut rng, start, 7, 30).expect("a 24-day range has workdays");
+            assert!((7..=30).contains(&d), "{d} outside 7..=30");
+            assert!(
+                !matches!(
+                    (start + Duration::days(d)).weekday(),
+                    Weekday::Sat | Weekday::Sun
+                ),
+                "{d} is a weekend"
+            );
+        }
     }
 }

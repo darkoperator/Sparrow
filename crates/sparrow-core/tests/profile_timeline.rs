@@ -625,3 +625,122 @@ fn timeline_view_is_the_phase_5_definition_plus_findings() {
         assert!(m9.contains(target), "{target} not re-issued");
     }
 }
+
+/// `auth_events` must never contradict itself: `succeeded` and `result` come from one
+/// classification, so a row is a success exactly when its result is 'success'. The rows that
+/// broke it are the ones the classification used to miss: a `UserLoggedIn` whose `ResultStatus`
+/// is `Failed` (the operation says success, the result says failure), and an STS-logon row
+/// admitted by `record_type_name` under an operation name that is neither `UserLoggedIn` nor
+/// `UserLoginFailed`.
+#[test]
+fn auth_events_never_contradicts_itself() {
+    let (_dir, mut case) = case_with_events();
+    // (id, operation, result_status, LogonError)
+    let rows = [
+        // A UserLoggedIn that nevertheless carries ResultStatus Failed.
+        (
+            "b3333333-3333-4333-8333-333333333331",
+            "UserLoggedIn",
+            "Failed",
+            "Invalid user name or password",
+        ),
+        // An STS-logon row admitted by its record type, under another operation name.
+        (
+            "b3333333-3333-4333-8333-333333333332",
+            "StsLogonSomethingElse",
+            "Failed",
+            "Invalid user name or password",
+        ),
+        // The same, with a ResultStatus that is neither, to pin the "success otherwise" rule.
+        (
+            "b3333333-3333-4333-8333-333333333333",
+            "StsLogonSomethingElse",
+            "Weird",
+            "Whatever",
+        ),
+    ];
+    for (id, operation, status, error) in rows {
+        insert_record(
+            &case,
+            "contoso.example",
+            "ual_events",
+            &json!({
+                "record_id": id,
+                "event_time": "2026-09-14T11:00:00Z",
+                "operation": operation,
+                "workload": "AzureActiveDirectory",
+                "record_type": 15,
+                "record_type_name": "AzureActiveDirectoryStsLogon",
+                "result_status": status,
+                "user_upn": "alice@contoso.example",
+                "audit_data": format!(
+                    "{{\"CreationTime\":\"2026-09-14T11:00:00\",\"Id\":\"{id}\",\
+                      \"Operation\":\"{operation}\",\"ResultStatus\":\"{status}\",\
+                      \"Workload\":\"AzureActiveDirectory\",\"LogonError\":\"{error}\",\
+                      \"ErrorNumber\":50126,\"ClientIP\":\"203.0.113.10\",\
+                      \"UserId\":\"alice@contoso.example\"}}"
+                ),
+            }),
+            "auth-contradiction",
+        )
+        .unwrap();
+    }
+    refresh(&mut case, &ProfileOptions::default()).unwrap();
+
+    // The invariant, over every row the view holds.
+    let contradictions: Vec<String> = case
+        .conn()
+        .prepare(
+            "SELECT source_table || ' ' || record_key || ' succeeded=' || succeeded \
+                    || ' result=' || result || ' interrupt=' || interrupt \
+             FROM auth_events WHERE (result = 'success') <> succeeded",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert!(
+        contradictions.is_empty(),
+        "auth_events contradicts itself: {contradictions:#?}"
+    );
+
+    // And the two rows Codex named, read directly.
+    for (id, operation) in [
+        ("b3333333-3333-4333-8333-333333333331", "UserLoggedIn"),
+        (
+            "b3333333-3333-4333-8333-333333333332",
+            "StsLogonSomethingElse",
+        ),
+    ] {
+        let (succeeded, result): (bool, String) = case
+            .conn()
+            .query_row(
+                "SELECT succeeded, result FROM auth_events \
+                 WHERE source_table = 'ual_events' AND record_key = $1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(
+            !succeeded,
+            "{operation} + ResultStatus Failed was a success"
+        );
+        assert_eq!(result, "failure", "{operation} + ResultStatus Failed");
+    }
+    // A result status that is neither 'Failed' nor 'Success' falls through to success.
+    let (succeeded, result): (bool, String) = case
+        .conn()
+        .query_row(
+            "SELECT succeeded, result FROM auth_events \
+             WHERE source_table = 'ual_events' AND record_key = $1",
+            ["b3333333-3333-4333-8333-333333333333"],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert!(
+        succeeded,
+        "an unknown ResultStatus should fall through to success"
+    );
+    assert_eq!(result, "success");
+}

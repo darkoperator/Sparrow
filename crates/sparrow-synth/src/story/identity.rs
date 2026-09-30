@@ -154,6 +154,19 @@ fn aitm_signin(w: &mut World, ctx: &mut Ctx) {
             "unfamiliarFeatures".to_string(),
         ];
     }
+    // The proxy relays the MFA prompt: the proxied sign-in is an MFA sign-in, so the audit log
+    // records the interrupted attempt (`UserLoginFailed` + `ResultStatus` Success) a few seconds
+    // before the success it completes. Forced rather than a share, because this sign-in always
+    // passes through the prompt -- that is the attack. The record is the same user, address,
+    // application and client as `s2`, and carries no session of its own to keep.
+    if let Some((error, gap)) = crate::baseline::interrupt_for(w, &s2, true) {
+        let at = s2.time - Duration::seconds(gap);
+        // A stream keyed by the sign-in, so the storyline's own `ctx.rng` draws are untouched.
+        let mut istream = crate::rng::stream(w.seed, &format!("interrupt-record/{}", s2.id));
+        let u = crate::baseline::interrupt_record(w, &mut istream, &a, &s2, at, s2.ip, error);
+        ctx.ev.push(crate::story::Evidence::Ual(u.id));
+        push_ual(w, ctx, u);
+    }
     push_signin(w, ctx, &a, s2, true);
 
     // (3) The replayed token: a script, single factor, same session.

@@ -828,12 +828,14 @@ fn interrupts_are_a_share_of_the_sign_ins_and_of_the_failed_logons() {
 #[test]
 fn a_real_failed_logon_keeps_its_own_result_status() {
     // The interrupt must not swallow the failure: a genuine failed logon still reads
-    // ResultStatus Failed, keeps its own LogonError, and keeps no session to keep. 50074 is
-    // shared (the generator uses it as a hard failure too, and a real capture holds it both
-    // ways), so what separates the two is the ResultStatus, not the name.
-    const FAILURE_CODES: [i64; 2] = [50126, 50074];
+    // ResultStatus Failed, keeps its own LogonError, and keeps no session to keep. A failure
+    // never carries a code whose LogonError is an `…Interrupt` name -- that name means the user
+    // answered a prompt, which is a success the audit log records under UserLoginFailed. The
+    // ResultStatus is what separates the two, and the code must agree with it.
+    const FAILURE_CODES: [i64; 2] = [50126, 50053];
     let world = w("bec-aitm");
     let mut failed = 0;
+    let mut seen_codes: BTreeSet<i64> = BTreeSet::new();
     for date in span(&world) {
         for u in sts_records_on(&world, date)
             .into_iter()
@@ -846,6 +848,10 @@ fn a_real_failed_logon_keeps_its_own_result_status() {
                 !error.is_empty(),
                 "{date}: a failed logon with no LogonError"
             );
+            assert!(
+                !error.ends_with("Interrupt"),
+                "{date}: a genuine failure labelled {error:?}"
+            );
             let number: i64 = u.audit["ErrorNumber"]
                 .as_str()
                 .unwrap_or_default()
@@ -853,12 +859,15 @@ fn a_real_failed_logon_keeps_its_own_result_status() {
                 .unwrap();
             assert!(
                 FAILURE_CODES.contains(&number),
-                "{date}: a failure with the interrupt-only code {number}"
+                "{date}: a failure with the unexpected code {number} ({error})"
             );
+            seen_codes.insert(number);
             assert_eq!(u.audit["KeepMeSignedIn"], "");
         }
     }
     assert!(failed > 0, "no failed logons");
+    // Both genuine failure codes occur, so the pool is not one code in practice.
+    assert_eq!(seen_codes.len(), 2, "{seen_codes:?}");
 }
 
 /// A sign-in interrupt follows the traveller like every other record of theirs: none exists in

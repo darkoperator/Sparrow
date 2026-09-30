@@ -418,3 +418,64 @@ fn outlook_client_inbox_rules_are_in_the_baseline_and_the_storyline() {
     // The record has no item (the fixture's shape).
     assert!(updates.iter().all(|r| r.get("Item").is_none()));
 }
+
+/// Every collected Outlook filing rule sits where `baseline::day` will write the
+/// `UpdateInboxRules` record that created it: on a workday, inside the user's work window, and
+/// after the first hour of it (their first sign-in of the day falls in that hour, and the record
+/// is only written once they are signed in). A rule placed at a fixed 09:00 UTC falls outside the
+/// window of anyone whose tenant is far from Greenwich, and the collected rule then carries no
+/// audit record a real Hawk capture would hold. Checked over every built-in scenario and seed
+/// that creates one.
+#[test]
+fn every_collected_filing_rule_sits_in_its_owner_work_window() {
+    use chrono::{Datelike, Weekday};
+    use sparrow_synth::baseline::{utc_offset_hours, work_window};
+    use sparrow_synth::scenario::builtin_names;
+    use sparrow_synth::world::{OUTLOOK_FILING_RULE, World};
+
+    let mut checked = 0;
+    // `volume` is left out for the same reason `coverage.rs` leaves it out: it is the 200-user
+    // scale scenario and building its world takes minutes, where every other scenario takes
+    // milliseconds. The property is per-user and holds the same way there.
+    for name in builtin_names().iter().filter(|n| **n != "volume") {
+        for seed in [1u64, 42] {
+            let world = World::build(&load(name).unwrap(), seed).unwrap();
+            for r in world
+                .inbox_rules
+                .iter()
+                .filter(|r| r.name == OUTLOOK_FILING_RULE)
+            {
+                checked += 1;
+                let user = world
+                    .users
+                    .iter()
+                    .find(|u| u.upn == r.mailbox)
+                    .unwrap_or_else(|| panic!("{name}: no user for {}", r.mailbox));
+                let date = r.created.date_naive();
+                assert!(
+                    !matches!(date.weekday(), Weekday::Sat | Weekday::Sun),
+                    "{name} seed {seed}: {} created its filing rule on a weekend ({date})",
+                    r.mailbox
+                );
+                let (start, end) = work_window(&world, user, date);
+                assert!(
+                    r.created >= start && r.created <= end,
+                    "{name} seed {seed}: {} created its filing rule at {} outside its work \
+                     window {start}..{end} (UTC offset {})",
+                    r.mailbox,
+                    r.created,
+                    utc_offset_hours(&user.home)
+                );
+                // After the first hour of the window, where their first sign-in falls.
+                assert!(
+                    r.created >= start + chrono::Duration::hours(1),
+                    "{name} seed {seed}: {} created its filing rule at {} in the first hour \
+                     of its window ({start}), before the sign-in that records it",
+                    r.mailbox,
+                    r.created
+                );
+            }
+        }
+    }
+    assert!(checked > 0, "no filing rule was checked");
+}

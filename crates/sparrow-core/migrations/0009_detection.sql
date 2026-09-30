@@ -205,36 +205,55 @@ COMMENT ON COLUMN timeline.finding_ids IS 'The finding_id of each such finding, 
 
 -- Phase 6 fix: a sign-in the user interrupted (`UserLoginFailed` with `ResultStatus` Success and
 -- a `LogonError`) is neither a success nor a failure, so 0007's `operation <> 'UserLoginFailed'`
--- counted it as a failure. `succeeded` now reads `ResultStatus` for a `UserLoginFailed` row, and
--- the new `result` and `interrupt` columns say which of the three a row is.
+-- counted it as a failure. The new `result` and `interrupt` columns say which of the three a row
+-- is.
+--
+-- Codex fix: the first version derived `succeeded` and `result` from *different* expressions, so
+-- they contradicted each other on the rows an operation-based test misses: a `UserLoggedIn` with
+-- `ResultStatus` Failed came out `succeeded = true, result = 'failure'`, and so did any STS-logon
+-- row admitted by `record_type_name` under another operation name. All three columns now come
+-- from ONE classification, computed once per row in a CTE, so a row is a success exactly when its
+-- result is 'success' and cannot disagree with it:
+--   interrupt  UserLoginFailed + ResultStatus Success + a non-empty LogonError
+--   failure    ResultStatus Failed
+--   success    otherwise
+-- `operation` is consulted only for the interrupt test, because that is the one case where the
+-- operation and the ResultStatus deliberately differ. A `UserLoginFailed` whose ResultStatus is
+-- neither (the captures hold a few with no LogonError) therefore reads as a success, which is the
+-- "success otherwise" rule applied literally.
 CREATE OR REPLACE VIEW auth_events AS
-SELECT s.event_time, s.time_tz_assumed, 'signins' AS source_table, s.record_key,
-       CAST(s.event_type AS VARCHAR) AS event_type, s.user_upn, s.user_id,
-       coalesce(s.error_code, 0) = 0 AS succeeded, false AS interrupt,
-       CASE WHEN coalesce(s.error_code, 0) = 0 THEN 'success' ELSE 'failure' END AS result,
-       s.error_code, s.failure_reason, s.ip, s.user_agent,
-       s.app_id, s.app_name, s.session_id, s.correlation_id
-FROM signins s
-UNION ALL
-SELECT u.event_time, u.time_tz_assumed, 'ual_events', CAST(u.record_id AS VARCHAR), 'ual_logon', u.user_upn,
-       NULL,
-       -- A `UserLoginFailed` row is not a success. Whether it is a *failure* or an
-       -- *interrupt* is what `ResultStatus` says (see `interrupt` and `result` below): a
-       -- cancelled credential prompt is not a failed sign-in, and `succeeded = false` on its own
-       -- cannot tell the two apart.
-       u.operation <> 'UserLoginFailed',
-       u.operation = 'UserLoginFailed' AND lower(coalesce(u.result_status, '')) = 'success',
-       CASE
-         WHEN u.operation = 'UserLoginFailed' AND lower(coalesce(u.result_status, '')) = 'success'
-           THEN 'interrupt'
-         WHEN u.operation = 'UserLoginFailed' OR lower(coalesce(u.result_status, '')) IN ('failed', 'false')
-           THEN 'failure'
-         ELSE 'success'
-       END,
-       TRY_CAST(u.audit_data->>'$.ErrorNumber' AS INTEGER), u.audit_data->>'$.LogonError', u.client_ip,
-       u.user_agent, coalesce(u.app_id, u.audit_data->>'$.ApplicationId'), NULL, u.session_id, NULL
-FROM ual_events u
-WHERE u.operation IN ('UserLoggedIn', 'UserLoginFailed') OR u.record_type_name = 'AzureActiveDirectoryStsLogon';
+WITH classified AS (
+  SELECT s.event_time, s.time_tz_assumed, 'signins' AS source_table, s.record_key,
+         CAST(s.event_type AS VARCHAR) AS event_type, s.user_upn, s.user_id,
+         -- A signins row is a completed sign-in attempt or a real failure; it carries no
+         -- interrupt (the audit log is where an interrupted attempt is recorded).
+         CASE WHEN coalesce(s.error_code, 0) = 0 THEN 'success' ELSE 'failure' END AS classification,
+         s.error_code, s.failure_reason, s.ip, s.user_agent,
+         s.app_id, s.app_name, s.session_id, s.correlation_id
+  FROM signins s
+  UNION ALL
+  SELECT u.event_time, u.time_tz_assumed, 'ual_events', CAST(u.record_id AS VARCHAR), 'ual_logon', u.user_upn,
+         NULL,
+         CASE
+           WHEN u.operation = 'UserLoginFailed'
+             AND lower(coalesce(u.result_status, '')) = 'success'
+             AND coalesce(u.audit_data->>'$.LogonError', '') <> ''
+             THEN 'interrupt'
+           WHEN lower(coalesce(u.result_status, '')) IN ('failed', 'false')
+             THEN 'failure'
+           ELSE 'success'
+         END,
+         TRY_CAST(u.audit_data->>'$.ErrorNumber' AS INTEGER), u.audit_data->>'$.LogonError', u.client_ip,
+         u.user_agent, coalesce(u.app_id, u.audit_data->>'$.ApplicationId'), NULL, u.session_id, NULL
+  FROM ual_events u
+  WHERE u.operation IN ('UserLoggedIn', 'UserLoginFailed') OR u.record_type_name = 'AzureActiveDirectoryStsLogon'
+)
+SELECT event_time, time_tz_assumed, source_table, record_key, event_type, user_upn, user_id,
+       (classification = 'success') AS succeeded,
+       (classification = 'interrupt') AS interrupt,
+       classification AS result,
+       error_code, failure_reason, ip, user_agent, app_id, app_name, session_id, correlation_id
+FROM classified;
 
 COMMENT ON VIEW auth_events IS 'Sign-in / logon events in one shape (spec 5.1, deferred from Phase 2c): signins and UAL logon records (UserLoggedIn, UserLoginFailed, and records of record_type_name AzureActiveDirectoryStsLogon). Phase 6: re-issued for the sign-in interrupts, so a cancelled credential prompt is neither a success nor a failure (0007 counted every UserLoginFailed as a failure).';
 COMMENT ON COLUMN auth_events.event_time IS 'Event time (UTC): signins.event_time or ual_events.event_time.';
@@ -244,9 +263,9 @@ COMMENT ON COLUMN auth_events.record_key IS 'Key of the record in source_table.'
 COMMENT ON COLUMN auth_events.event_type IS 'signins.event_type (interactive, noninteractive, service_principal, managed_identity), or ual_logon for a UAL row.';
 COMMENT ON COLUMN auth_events.user_upn IS 'signins.user_upn or ual_events.user_upn.';
 COMMENT ON COLUMN auth_events.user_id IS 'signins.user_id; NULL for a UAL row (UAL carries no Entra object id).';
-COMMENT ON COLUMN auth_events.succeeded IS 'signins: error_code is 0 (or absent). UAL: the operation is not UserLoginFailed. False on a UserLoginFailed row, which is a failure or an interrupt -- read `result` for which.';
-COMMENT ON COLUMN auth_events.interrupt IS 'True for a sign-in the user interrupted: a UAL UserLoginFailed row whose ResultStatus is Success, i.e. the credential prompt was cancelled. Always false for a signins row and for a successful logon.';
-COMMENT ON COLUMN auth_events.result IS 'Which of the three the row is: success, failure or interrupt. A signins row is a success when its error_code is 0 (or absent); a UAL UserLoginFailed row is a failure, or an interrupt when its ResultStatus is Success.';
+COMMENT ON COLUMN auth_events.succeeded IS 'True exactly when `result` is ''success'', which is how it is derived (one classification, so the two can never disagree). A sign-ins row succeeds when its error_code is 0 or absent; a UAL row succeeds unless its ResultStatus is Failed or it is an interrupt. False on both a failure and an interrupt -- read `result` for which.';
+COMMENT ON COLUMN auth_events.interrupt IS 'True exactly when `result` is ''interrupt'', which is how it is derived: a UAL UserLoginFailed row whose ResultStatus is Success and whose LogonError is non-empty, i.e. the credential prompt the user answered. Always false for a signins row (a signins export holds no interrupted attempt) and for a successful logon.';
+COMMENT ON COLUMN auth_events.result IS 'Which of the three the row is -- the single classification `succeeded` and `interrupt` are both derived from, so all three always agree. ''interrupt'': a UAL row that is UserLoginFailed with ResultStatus Success and a non-empty LogonError (a prompt the user answered). ''failure'': a signins row with a non-zero error_code, else a UAL row whose ResultStatus is Failed (or False). ''success'': everything else, including a UserLoginFailed row whose ResultStatus is neither.';
 COMMENT ON COLUMN auth_events.error_code IS 'signins.error_code, or the UAL AuditData ErrorNumber when present and numeric.';
 COMMENT ON COLUMN auth_events.failure_reason IS 'signins.failure_reason, or the UAL AuditData LogonError.';
 COMMENT ON COLUMN auth_events.ip IS 'signins.ip or ual_events.client_ip.';
