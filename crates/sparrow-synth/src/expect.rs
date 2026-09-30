@@ -302,6 +302,7 @@ fn collector_name(out: &TreeOutcome) -> &'static str {
 /// `ual_events` delivery standing for every table of `ual_tables` (an admin-audit rendering is
 /// delivered to `admin_audit_events` by the writer itself).
 fn delivered_tables(
+    world: &World,
     e: &Evidence,
     rule: &RuleDef,
     ual: &BTreeMap<Uuid, &Ual>,
@@ -309,6 +310,9 @@ fn delivered_tables(
 ) -> BTreeSet<String> {
     let mut set = BTreeSet::new();
     for (table, sighting) in out.delivered.get(e).into_iter().flatten() {
+        if table == "inbox_rules" && !state_row_meets(world, rule, e) {
+            continue;
+        }
         if table == "mailboxes" && !mailbox_file_carries(rule, &sighting.rel_path, out) {
             continue;
         }
@@ -320,6 +324,85 @@ fn delivered_tables(
         set.insert(table.clone());
     }
     set
+}
+
+/// Finance keywords and hiding folders of the rule pack, read once.
+fn pack_lists() -> &'static BTreeMap<String, Vec<String>> {
+    static LISTS: std::sync::OnceLock<BTreeMap<String, Vec<String>>> = std::sync::OnceLock::new();
+    LISTS.get_or_init(|| {
+        sparrow_core::detect::load::load_rules(&sparrow_core::data::DataDirs::default())
+            .map(|s| s.lists)
+            .unwrap_or_default()
+    })
+}
+
+/// Whether the collected state row of an inbox rule meets the CONTENT `rule` reads (a row
+/// delivered into `inbox_rules` is evidence only when what it says is what the rule looks for;
+/// the qualifying part of a storyline may have been a cmdlet that was never logged, and the row
+/// that survived a different rule of the same storyline). Rules that read an inbox rule's
+/// content are decided from the world's rule; any other rule, or a rule the world no longer
+/// holds, accepts the row.
+fn state_row_meets(world: &World, rule: &RuleDef, e: &Evidence) -> bool {
+    let Evidence::InboxRule {
+        mailbox, identity, ..
+    } = e
+    else {
+        return true;
+    };
+    let Some(r) = world
+        .inbox_rules
+        .iter()
+        .find(|r| &r.mailbox == mailbox && r.identity.to_string() == *identity)
+    else {
+        return true;
+    };
+    let lists = pack_lists();
+    let listed = |name: &str, v: &str| {
+        lists
+            .get(name)
+            .is_some_and(|l| l.iter().any(|x| x.eq_ignore_ascii_case(v)))
+    };
+    let forwards = !r.forward_to.is_empty()
+        || !r.forward_as_attachment_to.is_empty()
+        || !r.redirect_to.is_empty();
+    match rule.id.as_str() {
+        "SPW-HAWK-010" => r.delete_message || forwards,
+        "SPW-MAIL-003" => {
+            let words = r
+                .subject_contains
+                .iter()
+                .chain(&r.body_contains)
+                .chain(&r.subject_or_body_contains);
+            let keyword = words.into_iter().any(|w| {
+                lists.get("finance_keywords").is_some_and(|l| {
+                    l.iter()
+                        .any(|k| w.to_lowercase().contains(&k.to_lowercase()))
+                })
+            });
+            let folder = r
+                .move_to_folder
+                .as_deref()
+                .is_some_and(|f| listed("hiding_folders", f) || f.chars().count() == 1);
+            keyword || folder
+        }
+        "SPW-MAIL-004" => r
+            .forward_to
+            .iter()
+            .chain(&r.forward_as_attachment_to)
+            .chain(&r.redirect_to)
+            .any(|a| {
+                let domain = a
+                    .rsplit_once('@')
+                    .map_or("", |(_, d)| d.trim_end_matches(']'));
+                !world
+                    .tenant
+                    .domains
+                    .iter()
+                    .chain([&world.tenant.initial_domain])
+                    .any(|d| d.eq_ignore_ascii_case(domain))
+            }),
+        _ => true,
+    }
 }
 
 /// Forwarding rules read a forwarding attribute of the mailbox row. The Microsoft-Extractor-Suite
@@ -366,7 +449,7 @@ pub fn rule_outcomes(
             }
             let (outcome, reason, tables) = outcome(world, &ual, r, rule, positive, caps, out);
             let complete = !matches!(outcome, RuleOutcome::Hit | RuleOutcome::NoHit)
-                || halves_distinct(r, records, rule, &ual, out);
+                || halves_distinct(world, r, records, rule, &ual, out);
             v.push(RuleExpect {
                 rule_id: rule.id.clone(),
                 storyline: r.id.clone(),
@@ -395,6 +478,7 @@ const UAL_CHILDREN: [&str; 4] = [
 /// half of an anonymous link comes from the AiTM storyline); at least one must be the
 /// storyline's own. A rule with a single group is always complete.
 fn halves_distinct(
+    world: &World,
     r: &StoryRecord,
     all: &[StoryRecord],
     rule: &RuleDef,
@@ -407,7 +491,7 @@ fn halves_distinct(
     let mut items: Vec<(bool, BTreeSet<String>)> = Vec::new();
     for other in all.iter().filter(|o| o.actor == r.actor) {
         for e in &other.evidence {
-            let t = delivered_tables(e, rule, ual, out);
+            let t = delivered_tables(world, e, rule, ual, out);
             if !t.is_empty() {
                 items.push((other.id == r.id, t));
             }
@@ -497,7 +581,7 @@ fn outcome(
     let got: BTreeSet<String> = r
         .evidence
         .iter()
-        .flat_map(|e| delivered_tables(e, rule, ual, out))
+        .flat_map(|e| delivered_tables(world, e, rule, ual, out))
         .collect();
     let hit: Vec<String> = rule
         .tables

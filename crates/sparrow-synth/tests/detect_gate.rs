@@ -621,3 +621,27 @@ fn gate_exercises_the_correlation_negatives() {
         );
     }
 }
+
+/// What landed decides the outcome: in audit-tamper the surviving collected rule of the admin's
+/// storyline is the forwarding "Sync" rule (no finance words, no hiding folder) and the cmdlet
+/// that made the qualifying rule fell in the audit-off window, so SPW-MAIL-003 has no evidence;
+/// where the cmdlets are logged (hawk-investigate) it still expects the hit.
+#[test]
+fn a_collected_rule_that_does_not_meet_the_rule_is_no_evidence() {
+    for c in [Collector::Hawk3, Collector::Hawk4, Collector::Invictus] {
+        let m = manifest_of("audit-tamper", c);
+        let o = m
+            .rules
+            .iter()
+            .find(|r| r.rule_id == "SPW-MAIL-003" && r.storyline == "s-admrule")
+            .unwrap();
+        assert_eq!(o.outcome, RuleOutcome::NoEvidence, "{c:?}: {o:?}");
+    }
+    let m = manifest_of("hawk-investigate", Collector::Hawk4);
+    let o = m
+        .rules
+        .iter()
+        .find(|r| r.rule_id == "SPW-MAIL-003" && r.storyline == "s-admrule")
+        .unwrap();
+    assert_eq!(o.outcome, RuleOutcome::Hit, "{o:?}");
+}
