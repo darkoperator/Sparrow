@@ -7,6 +7,10 @@ pub const ORG_ID: &str = "c9c9c9c9-0000-4000-8000-000000000001";
 pub const ID_RULE: &str = "a1111111-1111-4111-8111-111111111111";
 pub const ID_MIA: &str = "a2222222-2222-4222-8222-222222222222";
 pub const ID_LOGIN: &str = "a3333333-3333-4333-8333-333333333333";
+/// An interrupted sign-in (`UserLoginFailed` + `ResultStatus` Success + a `LogonError`).
+pub const ID_LOGIN_INTERRUPT: &str = "a3333333-3333-4333-8333-333333333334";
+/// A failed sign-in (`UserLoginFailed` + `ResultStatus` Failed).
+pub const ID_LOGIN_FAIL: &str = "a3333333-3333-4333-8333-333333333335";
 pub const ID_FILE: &str = "a4444444-4444-4444-8444-444444444444";
 pub const ID_SHARE: &str = "a5555555-5555-4555-8555-555555555555";
 pub const ID_SEARCH: &str = "a6666666-6666-4666-8666-666666666666";

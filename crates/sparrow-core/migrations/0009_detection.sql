@@ -202,3 +202,56 @@ COMMENT ON COLUMN timeline.summary IS 'Short human-readable summary built from t
 COMMENT ON COLUMN timeline.source_refs IS 'record_source_refs.source_refs for (source_table, record_key); empty for a row provenance could not resolve (should not occur for ingested evidence).';
 COMMENT ON COLUMN timeline.finding_count IS 'Number of distinct findings whose finding_evidence cites this record (source_table, record_key); 0 when none.';
 COMMENT ON COLUMN timeline.finding_ids IS 'The finding_id of each such finding, sorted; empty when none.';
+
+-- Phase 6 fix: a sign-in the user interrupted (`UserLoginFailed` with `ResultStatus` Success and
+-- a `LogonError`) is neither a success nor a failure, so 0007's `operation <> 'UserLoginFailed'`
+-- counted it as a failure. `succeeded` now reads `ResultStatus` for a `UserLoginFailed` row, and
+-- the new `result` and `interrupt` columns say which of the three a row is.
+CREATE OR REPLACE VIEW auth_events AS
+SELECT s.event_time, s.time_tz_assumed, 'signins' AS source_table, s.record_key,
+       CAST(s.event_type AS VARCHAR) AS event_type, s.user_upn, s.user_id,
+       coalesce(s.error_code, 0) = 0 AS succeeded, false AS interrupt,
+       CASE WHEN coalesce(s.error_code, 0) = 0 THEN 'success' ELSE 'failure' END AS result,
+       s.error_code, s.failure_reason, s.ip, s.user_agent,
+       s.app_id, s.app_name, s.session_id, s.correlation_id
+FROM signins s
+UNION ALL
+SELECT u.event_time, u.time_tz_assumed, 'ual_events', CAST(u.record_id AS VARCHAR), 'ual_logon', u.user_upn,
+       NULL,
+       -- A `UserLoginFailed` row is not a success. Whether it is a *failure* or an
+       -- *interrupt* is what `ResultStatus` says (see `interrupt` and `result` below): a
+       -- cancelled credential prompt is not a failed sign-in, and `succeeded = false` on its own
+       -- cannot tell the two apart.
+       u.operation <> 'UserLoginFailed',
+       u.operation = 'UserLoginFailed' AND lower(coalesce(u.result_status, '')) = 'success',
+       CASE
+         WHEN u.operation = 'UserLoginFailed' AND lower(coalesce(u.result_status, '')) = 'success'
+           THEN 'interrupt'
+         WHEN u.operation = 'UserLoginFailed' OR lower(coalesce(u.result_status, '')) IN ('failed', 'false')
+           THEN 'failure'
+         ELSE 'success'
+       END,
+       TRY_CAST(u.audit_data->>'$.ErrorNumber' AS INTEGER), u.audit_data->>'$.LogonError', u.client_ip,
+       u.user_agent, coalesce(u.app_id, u.audit_data->>'$.ApplicationId'), NULL, u.session_id, NULL
+FROM ual_events u
+WHERE u.operation IN ('UserLoggedIn', 'UserLoginFailed') OR u.record_type_name = 'AzureActiveDirectoryStsLogon';
+
+COMMENT ON VIEW auth_events IS 'Sign-in / logon events in one shape (spec 5.1, deferred from Phase 2c): signins and UAL logon records (UserLoggedIn, UserLoginFailed, and records of record_type_name AzureActiveDirectoryStsLogon). Phase 6: re-issued for the sign-in interrupts, so a cancelled credential prompt is neither a success nor a failure (0007 counted every UserLoginFailed as a failure).';
+COMMENT ON COLUMN auth_events.event_time IS 'Event time (UTC): signins.event_time or ual_events.event_time.';
+COMMENT ON COLUMN auth_events.time_tz_assumed IS 'True when the source time had no timezone and UTC was assumed.';
+COMMENT ON COLUMN auth_events.source_table IS 'signins or ual_events.';
+COMMENT ON COLUMN auth_events.record_key IS 'Key of the record in source_table.';
+COMMENT ON COLUMN auth_events.event_type IS 'signins.event_type (interactive, noninteractive, service_principal, managed_identity), or ual_logon for a UAL row.';
+COMMENT ON COLUMN auth_events.user_upn IS 'signins.user_upn or ual_events.user_upn.';
+COMMENT ON COLUMN auth_events.user_id IS 'signins.user_id; NULL for a UAL row (UAL carries no Entra object id).';
+COMMENT ON COLUMN auth_events.succeeded IS 'signins: error_code is 0 (or absent). UAL: the operation is not UserLoginFailed. False on a UserLoginFailed row, which is a failure or an interrupt -- read `result` for which.';
+COMMENT ON COLUMN auth_events.interrupt IS 'True for a sign-in the user interrupted: a UAL UserLoginFailed row whose ResultStatus is Success, i.e. the credential prompt was cancelled. Always false for a signins row and for a successful logon.';
+COMMENT ON COLUMN auth_events.result IS 'Which of the three the row is: success, failure or interrupt. A signins row is a success when its error_code is 0 (or absent); a UAL UserLoginFailed row is a failure, or an interrupt when its ResultStatus is Success.';
+COMMENT ON COLUMN auth_events.error_code IS 'signins.error_code, or the UAL AuditData ErrorNumber when present and numeric.';
+COMMENT ON COLUMN auth_events.failure_reason IS 'signins.failure_reason, or the UAL AuditData LogonError.';
+COMMENT ON COLUMN auth_events.ip IS 'signins.ip or ual_events.client_ip.';
+COMMENT ON COLUMN auth_events.user_agent IS 'signins.user_agent or ual_events.user_agent.';
+COMMENT ON COLUMN auth_events.app_id IS 'signins.app_id, or ual_events.app_id (else AuditData ApplicationId).';
+COMMENT ON COLUMN auth_events.app_name IS 'signins.app_name; NULL for a UAL row (UAL carries no application display name).';
+COMMENT ON COLUMN auth_events.session_id IS 'signins.session_id or ual_events.session_id.';
+COMMENT ON COLUMN auth_events.correlation_id IS 'signins.correlation_id; NULL for a UAL row (UAL carries no correlation id).';

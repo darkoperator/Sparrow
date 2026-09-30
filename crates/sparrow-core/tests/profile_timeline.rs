@@ -1,7 +1,9 @@
 //! Task 9: operation catalog categories, `record_source_refs`, `timeline` and `auth_events`.
 
+use serde_json::json;
 use sparrow_core::Case;
 use sparrow_core::data::DataDirs;
+use sparrow_core::detect::test::insert_record;
 use sparrow_core::fixtures::events::{AUDIT_1, SIGNIN_2, hawk4_events_tree};
 use sparrow_core::fixtures::hawk4::hawk4_tree;
 use sparrow_core::fixtures::invictus::{BOB as INV_BOB, invictus_output_tree};
@@ -291,6 +293,128 @@ fn auth_events_unions_signins_and_ual_logons() {
         )
         .unwrap();
     assert!(!signin2_succeeded);
+}
+
+/// A sign-in the user interrupted: `UserLoginFailed` with `ResultStatus` Success and a
+/// `LogonError` (the credential prompt was cancelled). It is neither a success nor a failure,
+/// so it must not be counted as one in `auth_events`.
+#[test]
+fn an_interrupted_signin_is_neither_a_success_nor_a_failure() {
+    let (_dir, mut case) = case_with_events();
+    // A real failure and an interrupt, next to the successes the fixture tree already holds.
+    for (id, status, error) in [
+        (
+            ual::ID_LOGIN_INTERRUPT,
+            "Success",
+            "User interrupted the sign-in",
+        ),
+        (
+            ual::ID_LOGIN_FAIL,
+            "Failed",
+            "Invalid user name or password",
+        ),
+    ] {
+        insert_record(
+            &case,
+            "contoso.example",
+            "ual_events",
+            &json!({
+                "record_id": id,
+                "event_time": "2026-09-14T10:15:00Z",
+                "operation": "UserLoginFailed",
+                "workload": "AzureActiveDirectory",
+                "record_type": 15,
+                "result_status": status,
+                "user_upn": "alice@contoso.example",
+                "audit_data": format!(
+                    "{{\"CreationTime\":\"2026-09-14T10:15:00\",\"Id\":\"{id}\",\
+                      \"Operation\":\"UserLoginFailed\",\"ResultStatus\":\"{status}\",\
+                      \"Workload\":\"AzureActiveDirectory\",\"LogonError\":\"{error}\",\
+                      \"ErrorNumber\":0,\"ClientIP\":\"203.0.113.10\",\
+                      \"UserId\":\"alice@contoso.example\"}}"
+                ),
+            }),
+            "auth-interrupt",
+        )
+        .unwrap();
+    }
+    refresh(&mut case, &ProfileOptions::default()).unwrap();
+
+    let of = |id: &str| {
+        format!(
+            "SELECT succeeded FROM auth_events WHERE source_table = 'ual_events' \
+             AND record_key = '{id}'"
+        )
+    };
+    // The interrupt is not a success, and not a failure either.
+    let interrupt: i64 = count(
+        &case,
+        &format!(
+            "SELECT count(*) FROM auth_events WHERE record_key = '{}'",
+            ual::ID_LOGIN_INTERRUPT
+        ),
+    );
+    assert_eq!(interrupt, 1, "the interrupt is not in auth_events");
+    let succeeded: bool = case
+        .conn()
+        .query_row(&of(ual::ID_LOGIN_INTERRUPT), [], |r| r.get(0))
+        .unwrap();
+    assert!(
+        !succeeded,
+        "an interrupted sign-in was reported as a success"
+    );
+    assert_eq!(
+        count(
+            &case,
+            &format!(
+                "SELECT count(*) FROM auth_events WHERE interrupt \
+                 AND record_key = '{}'",
+                ual::ID_LOGIN_INTERRUPT
+            )
+        ),
+        1,
+        "the interrupt is not flagged"
+    );
+    // The real failure is still a failure, the successes still successes.
+    let failed: bool = case
+        .conn()
+        .query_row(&of(ual::ID_LOGIN_FAIL), [], |r| r.get(0))
+        .unwrap();
+    assert!(!failed, "a real failure was reported as a success");
+    assert_eq!(
+        count(
+            &case,
+            &format!(
+                "SELECT count(*) FROM auth_events WHERE interrupt \
+                 AND record_key = '{}'",
+                ual::ID_LOGIN_FAIL
+            )
+        ),
+        0,
+        "a real failure was flagged as an interrupt"
+    );
+    let login: bool = case
+        .conn()
+        .query_row(&of(ual::ID_LOGIN), [], |r| r.get(0))
+        .unwrap();
+    assert!(login, "a successful logon changed");
+    // Every row now says which of the three it is.
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM auth_events WHERE result NOT IN ('success', 'failure', 'interrupt')"
+        ),
+        0,
+        "a row has no result"
+    );
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM auth_events WHERE (result = 'success') <> succeeded"
+        ),
+        0,
+        "result and succeeded disagree"
+    );
 }
 
 #[test]
