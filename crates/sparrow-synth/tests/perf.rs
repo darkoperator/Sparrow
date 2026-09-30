@@ -47,8 +47,40 @@ fn perf_large_invictus_tree() {
     let mut o = GenerateOptions::new(Collector::Invictus, 3);
     o.ual_rows = Some(1_000_000);
     o.signins = Some(200_000);
-    let t = run_perf(&load("volume").unwrap(), &o, dir.path()).unwrap();
+    // SPARROW_PERF_KEEP=<dir>: use (and keep) that directory, so `perf_detect_on_kept_case` can
+    // rerun the detect step alone on the ingested case.
+    let keep = std::env::var_os("SPARROW_PERF_KEEP").map(PathBuf::from);
+    let path = keep.as_deref().unwrap_or(dir.path());
+    let t = run_perf(&load("volume").unwrap(), &o, path).unwrap();
     println!("{}", t.to_text());
+}
+
+/// The detect step alone on the case kept by `perf_large_invictus_tree` (a copy of
+/// `$SPARROW_PERF_KEEP/case.duckdb` is used, so the kept case stays as ingested):
+/// SPARROW_PERF_KEEP=<dir> cargo test -p sparrow-synth --release --test perf perf_detect_on_kept_case -- --ignored --nocapture
+#[test]
+#[ignore]
+fn perf_detect_on_kept_case() {
+    let keep = PathBuf::from(std::env::var_os("SPARROW_PERF_KEEP").expect("SPARROW_PERF_KEEP"));
+    let dir = tempfile::tempdir().unwrap();
+    let copy = dir.path().join("case.duckdb");
+    std::fs::copy(keep.join("case.duckdb"), &copy).unwrap();
+    let mut case = sparrow_core::Case::create_or_open(&copy).unwrap();
+    let t = std::time::Instant::now();
+    let r = sparrow_core::detect::run::run_with_dirs(
+        &mut case,
+        &sparrow_core::data::DataDirs::default(),
+        &sparrow_core::detect::DetectOptions::default(),
+    )
+    .unwrap();
+    println!("detect {:.2}s", t.elapsed().as_secs_f64());
+    for p in &r.phases {
+        println!("  {:32} {} ms", p.name, p.ms);
+    }
+    println!(
+        "findings {} new, evidence {}",
+        r.findings_new, r.evidence_added
+    );
 }
 
 /// A digest of every file under `dir`, relative paths included, sorted by path.

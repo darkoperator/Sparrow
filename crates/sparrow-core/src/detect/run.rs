@@ -14,6 +14,7 @@ use crate::data::DataDirs;
 use crate::detect::compile::{CaseSchema, Compiled, compile_with_meta};
 use crate::detect::findings::{Outcome, RunStatus, merge_hits, next_run_id, write_run_row};
 use crate::detect::load::{LoadedRule, RuleSet, load_rules};
+use crate::detect::phase::{self, Phase};
 use crate::detect::rule_conn::with_rule_conn;
 use crate::{Case, Error, Result};
 use chrono::{DateTime, Utc};
@@ -52,6 +53,9 @@ pub struct DetectReport {
     pub findings_updated: u64,
     pub evidence_added: u64,
     pub warnings: Vec<String>,
+    /// Wall time per phase of this run, in the order they ran (the sum of the per-rule
+    /// `duration_ms` is only the "rules" part).
+    pub phases: Vec<Phase>,
 }
 
 enum Plan {
@@ -141,7 +145,9 @@ pub fn run(case: &mut Case, set: &RuleSet, opts: &DetectOptions) -> Result<Detec
     let mut report = DetectReport::default();
     let rules = selected(set, opts, &mut report.warnings);
 
+    let _ = phase::take();
     // 1. Inputs, on the writer.
+    let t = Instant::now();
     let schema = CaseSchema::of(case.conn())?;
     let tenants: Vec<String> = {
         let mut st = case
@@ -165,13 +171,17 @@ pub fn run(case: &mut Case, set: &RuleSet, opts: &DetectOptions) -> Result<Detec
         "SELECT tenant_key, evidence, CAST(status AS VARCHAR) FROM evidence_availability",
     )?;
     let indicators = list_indicators(case.conn(), None)?;
+    phase::record("inputs", t);
+    let t = Instant::now();
     let geo_tenants = if rules.iter().any(|r| r.rule.needs_geoip) {
         tenants_with_geoip(case)?
     } else {
         BTreeSet::new()
     };
 
+    phase::record("geoip tenants", t);
     // 2. The plan.
+    let t = Instant::now();
     let mut compiled: Vec<Compiled> = Vec::new();
     let mut compile_of: Vec<std::result::Result<usize, String>> = Vec::new();
     for lr in &rules {
@@ -252,7 +262,9 @@ pub fn run(case: &mut Case, set: &RuleSet, opts: &DetectOptions) -> Result<Detec
         }
     }
 
+    phase::record("plan (compile)", t);
     // 3. Execute on the rule instance.
+    let t = Instant::now();
     let outcomes: Vec<Outcome> = with_rule_conn(case, |rc| {
         let mut out = Vec::new();
         let mut scoped: Option<&str> = None;
@@ -290,6 +302,7 @@ pub fn run(case: &mut Case, set: &RuleSet, opts: &DetectOptions) -> Result<Detec
                     let t0 = Instant::now();
                     let result = rc.run(&compiled[*ci], iocs);
                     let duration_ms = t0.elapsed().as_millis() as u64;
+                    phase::record("rules (sum)", t0);
                     match result {
                         Ok(hits) => Outcome {
                             hits,
@@ -311,7 +324,9 @@ pub fn run(case: &mut Case, set: &RuleSet, opts: &DetectOptions) -> Result<Detec
         Ok(out)
     })?;
 
+    phase::record("execute (total, with release)", t);
     // 4. Merge, one transaction on the writer.
+    let t = Instant::now();
     let by_id: BTreeMap<&str, &LoadedRule> =
         rules.iter().map(|r| (r.rule.id.as_str(), *r)).collect();
     let tx = case.conn_mut().transaction()?;
@@ -336,6 +351,8 @@ pub fn run(case: &mut Case, set: &RuleSet, opts: &DetectOptions) -> Result<Detec
         });
     }
     tx.commit()?;
+    phase::record("merge", t);
+    report.phases = phase::take();
     Ok(report)
 }
 

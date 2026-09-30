@@ -865,3 +865,49 @@ fn detection_never_writes_the_analyst_columns() {
         }
     }
 }
+
+/// A rule with many hits (one finding each) merges completely, a re-run adds nothing, and the
+/// report says where the time went (the phases the performance work reads).
+#[test]
+fn many_hits_merge_once_and_the_run_reports_its_phases() {
+    let mut case = Case::in_memory().unwrap();
+    tenant(&case, T1);
+    for i in 0..1_300 {
+        mailbox(
+            &case,
+            T1,
+            &format!("u{i}@contoso.example"),
+            "evil@example.net",
+        );
+    }
+    let set = set_of(vec![rule_from(
+        "SPW-T-002",
+        "source: mailboxes\nmatch:\n  forwarding_smtp_address: {exists: true}\ngroup_by: [record_key]",
+    )]);
+    let first = run(&mut case, &set, &opts(2)).unwrap();
+    assert_eq!(
+        (
+            first.findings_new,
+            first.findings_updated,
+            first.evidence_added
+        ),
+        (1_300, 0, 1_300)
+    );
+    assert_eq!(count(&case, "SELECT count(*) FROM findings"), 1_300);
+    assert_eq!(count(&case, "SELECT count(*) FROM finding_evidence"), 1_300);
+    let names: Vec<&str> = first.phases.iter().map(|p| p.name.as_str()).collect();
+    for want in ["inputs", "plan (compile)", "rules (sum)", "merge"] {
+        assert!(names.contains(&want), "{want} in {names:?}");
+    }
+    let before = (findings_dump(&case), evidence_dump(&case));
+    let second = run(&mut case, &set, &opts(3)).unwrap();
+    assert_eq!(
+        (
+            second.findings_new,
+            second.findings_updated,
+            second.evidence_added
+        ),
+        (0, 0, 0)
+    );
+    assert_eq!((findings_dump(&case), evidence_dump(&case)), before);
+}

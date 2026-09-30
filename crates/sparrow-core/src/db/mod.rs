@@ -106,15 +106,21 @@ impl Case {
             return Err(Error::Invalid("the case database is open read-only".into()));
         }
         if let Some(path) = self.path.clone() {
+            let t = std::time::Instant::now();
             self.conn.execute_batch("CHECKPOINT")?;
+            crate::detect::phase::record("release: checkpoint", t);
+            let t = std::time::Instant::now();
             let placeholder = read_only_placeholder()?;
             drop(std::mem::replace(&mut self.conn, placeholder));
+            crate::detect::phase::record("release: close writer", t);
             let out = f(&path);
+            let t = std::time::Instant::now();
             // Fail closed: if the file cannot be reopened (or is no longer this schema), the
             // placeholder must never take writes that would vanish silently.
             let reopened = Connection::open(&path)
                 .map_err(Error::from)
                 .and_then(|c| migrations::check_readable(&c).map(|_| c));
+            crate::detect::phase::record("release: reopen writer", t);
             return match reopened {
                 Ok(conn) => {
                     self.conn = conn;

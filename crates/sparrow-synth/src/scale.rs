@@ -37,6 +37,8 @@ pub struct Timings {
     /// The slowest rules of the detect run, (rule id, duration_ms), longest first: what to read
     /// when the detect time is over budget.
     pub detect_slowest: Vec<(String, u64)>,
+    /// Wall time per phase of the detect run (name, ms), in the order they ran.
+    pub detect_phases: Vec<(String, u64)>,
     pub ual_rows: u64,
     pub signins: u64,
     pub mia_rows: u64,
@@ -53,6 +55,7 @@ impl Timings {
              profile:      {}\n\
              capabilities: {}\n\
              detect:       {} ({} rules, {} errored; slowest: {})\n\
+             detect phases: {}\n\
              ual_events:   {}\n\
              signins:      {}\n\
              mia:          {}",
@@ -68,6 +71,11 @@ impl Timings {
                 .map(|(r, ms)| format!("{r} {ms}ms"))
                 .collect::<Vec<_>>()
                 .join(", "),
+            self.detect_phases
+                .iter()
+                .map(|(n, ms)| format!("{n} {ms}ms"))
+                .collect::<Vec<_>>()
+                .join("; "),
             self.ual_rows,
             self.signins,
             self.mia_rows,
@@ -175,6 +183,11 @@ pub fn run_perf(scenario: &Scenario, opts: &GenerateOptions, dir: &Path) -> Resu
             .iter()
             .filter(|r| r.status == "error")
             .count(),
+        detect_phases: detected
+            .phases
+            .iter()
+            .map(|p| (p.name.clone(), p.ms))
+            .collect(),
         detect_slowest: {
             let mut slow: Vec<(String, u64)> = detected
                 .rules

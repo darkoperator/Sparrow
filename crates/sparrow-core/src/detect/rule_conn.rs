@@ -44,12 +44,17 @@ pub fn with_rule_conn<T>(case: &mut Case, f: impl FnOnce(&mut RuleConn) -> Resul
 
 impl RuleConn {
     fn open(path: &Path) -> Result<RuleConn> {
+        let t = std::time::Instant::now();
         let conn = Connection::open_in_memory()?;
         let file = path.display().to_string().replace('\'', "''");
         conn.execute_batch(&format!(
             "ATTACH '{file}' AS case_ro (READ_ONLY); USE case_ro;"
         ))?;
+        crate::detect::phase::record("rule instance: attach", t);
+        let t = std::time::Instant::now();
         let schema = CaseSchema::of(&conn)?;
+        crate::detect::phase::record("rule instance: schema", t);
+        let t = std::time::Instant::now();
         lock_down(&conn)?;
         let rc = RuleConn {
             conn,
@@ -57,6 +62,7 @@ impl RuleConn {
             tenant: None,
         };
         rc.assert_locked()?;
+        crate::detect::phase::record("rule instance: lock down", t);
         Ok(rc)
     }
 
@@ -83,7 +89,9 @@ impl RuleConn {
 
     /// Scope the connection to one tenant (replaces the previous tenant's views).
     pub fn scope(&mut self, tenant: &str) -> Result<()> {
+        let t = std::time::Instant::now();
         scope_to_tenant(&self.conn, &self.schema, tenant)?;
+        crate::detect::phase::record("rule instance: scope views", t);
         self.tenant = Some(tenant.to_string());
         Ok(())
     }

@@ -165,6 +165,53 @@ pub fn merge_hits(
     }
     let severity = severity_str(rule);
     let mut touched = BTreeSet::new();
+    // What the case already holds for this (tenant, rule), read once (a finding id includes both,
+    // so it never matches another rule's or tenant's finding): the stored findings and their
+    // evidence keys. Reading them per finding scanned the growing evidence table each time.
+    let mut stored_all: BTreeMap<String, Stored> = BTreeMap::new();
+    {
+        let mut st = tx.prepare(
+            "SELECT finding_id, rule_sha256, rule_version, severity, title, epoch_us(first_seen), \
+                 epoch_us(last_seen) FROM findings WHERE tenant_key = ? AND rule_id = ?",
+        )?;
+        let rows = st.query_map(params![o.tenant_key, rule.id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                Stored {
+                    rule_sha256: r.get(1)?,
+                    rule_version: r.get(2)?,
+                    severity: r.get(3)?,
+                    title: r.get(4)?,
+                    first_seen: r.get(5)?,
+                    last_seen: r.get(6)?,
+                },
+            ))
+        })?;
+        for row in rows {
+            let (id, stored) = row?;
+            stored_all.insert(id, stored);
+        }
+    }
+    let mut have_all: BTreeMap<String, BTreeSet<(String, String)>> = BTreeMap::new();
+    if !stored_all.is_empty() {
+        let mut st = tx.prepare(
+            "SELECT e.finding_id, e.source_table, e.record_key FROM finding_evidence e \
+             JOIN findings f USING (finding_id) WHERE f.tenant_key = ? AND f.rule_id = ?",
+        )?;
+        let rows = st.query_map(params![o.tenant_key, rule.id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, table, key) = row?;
+            have_all.entry(id).or_default().insert((table, key));
+        }
+    }
+    // New evidence rows, inserted in batches after the findings (same order as one by one).
+    let mut new_evidence: Vec<(String, &Hit)> = Vec::new();
     for (fp, mut hits) in groups {
         hits.sort_by(|a, b| {
             (a.event_time, &a.record_key, &a.source_table).cmp(&(
@@ -179,23 +226,7 @@ pub fn merge_hits(
         let last = hits.iter().filter_map(|h| h.event_time).max();
         let actor = hits.iter().find_map(|h| h.actor_upn.clone());
 
-        let stored = tx
-            .query_row(
-                "SELECT rule_sha256, rule_version, severity, title, epoch_us(first_seen), epoch_us(last_seen) \
-                 FROM findings WHERE finding_id = ?",
-                params![finding_id],
-                |r| {
-                    Ok(Stored {
-                        rule_sha256: r.get(0)?,
-                        rule_version: r.get(1)?,
-                        severity: r.get(2)?,
-                        title: r.get(3)?,
-                        first_seen: r.get(4)?,
-                        last_seen: r.get(5)?,
-                    })
-                },
-            )
-            .ok();
+        let stored = stored_all.remove(&finding_id);
         match stored {
             None => {
                 tx.execute(
@@ -263,33 +294,18 @@ pub fn merge_hits(
             }
         }
 
-        let mut have: BTreeSet<(String, String)> = BTreeSet::new();
-        let mut st = tx.prepare(
-            "SELECT source_table, record_key FROM finding_evidence WHERE finding_id = ?",
-        )?;
-        for row in st.query_map(params![finding_id], |r| Ok((r.get(0)?, r.get(1)?)))? {
-            have.insert(row?);
-        }
+        let mut have = have_all.remove(&finding_id).unwrap_or_default();
         for h in hits {
             if !have.insert((h.source_table.clone(), h.record_key.clone())) {
                 continue;
             }
-            tx.execute(
-                "INSERT INTO finding_evidence (finding_id, source_table, record_key, event_time, role, context, \
-                     added_run_id) \
-                 VALUES (?, ?, ?, CAST(? AS TIMESTAMPTZ), CAST('trigger' AS evidence_role), CAST(? AS JSON), ?)",
-                params![
-                    finding_id,
-                    h.source_table,
-                    h.record_key,
-                    h.event_time.map(ts),
-                    h.context,
-                    run_id,
-                ],
-            )?;
+            new_evidence.push((finding_id.clone(), h));
             counts.evidence_added += 1;
         }
     }
+    let t = std::time::Instant::now();
+    insert_evidence(tx, run_id, &new_evidence)?;
+    crate::detect::phase::record("merge: evidence insert", t);
 
     // Findings of this rule that were not hit this time: still flag a changed rule (or changed
     // case indicators) so the analyst re-reviews them.
@@ -310,4 +326,41 @@ pub fn merge_hits(
         counts.findings_updated += 1;
     }
     Ok(counts)
+}
+
+/// Insert `rows` into `finding_evidence`: appended in bulk to a temporary all-text staging table
+/// (an appender is columnar; one INSERT per row was the dominant cost of merging a rule with
+/// many hits), then copied with the casts in one statement, in the same order.
+fn insert_evidence(tx: &Transaction, run_id: i64, rows: &[(String, &Hit)]) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    tx.execute_batch(
+        "CREATE OR REPLACE TEMP TABLE _evidence_stage (ord BIGINT, finding_id VARCHAR, \
+             source_table VARCHAR, record_key VARCHAR, event_time VARCHAR, context VARCHAR)",
+    )?;
+    {
+        let mut app = tx.appender("_evidence_stage")?;
+        for (i, (id, h)) in rows.iter().enumerate() {
+            app.append_row(params![
+                i as i64,
+                id,
+                h.source_table,
+                h.record_key,
+                h.event_time.map(ts),
+                h.context,
+            ])?;
+        }
+        app.flush()?;
+    }
+    tx.execute(
+        "INSERT INTO finding_evidence (finding_id, source_table, record_key, event_time, role, context, \
+             added_run_id) \
+         SELECT finding_id, source_table, record_key, CAST(event_time AS TIMESTAMPTZ), \
+             CAST('trigger' AS evidence_role), CAST(context AS JSON), ? \
+         FROM _evidence_stage ORDER BY ord",
+        params![run_id],
+    )?;
+    tx.execute_batch("DROP TABLE _evidence_stage")?;
+    Ok(())
 }

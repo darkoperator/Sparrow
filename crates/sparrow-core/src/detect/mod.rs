@@ -6,6 +6,7 @@ pub mod coverage;
 pub mod findings;
 pub mod lint;
 pub mod load;
+pub mod phase;
 pub mod rule;
 pub mod rule_conn;
 pub mod run;
