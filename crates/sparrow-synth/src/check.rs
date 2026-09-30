@@ -672,7 +672,7 @@ fn check_detection(
             };
             rule_findings.values().any(|ev| {
                 ev.iter()
-                    .any(|e| recs.contains(e) && tables.is_none_or(|t| t.iter().any(|x| *x == e.0)))
+                    .any(|e| recs.contains(e) && tables.is_none_or(|t| t.contains(&e.0)))
             })
         };
         let mut explained: BTreeSet<&str> = BTreeSet::new();
