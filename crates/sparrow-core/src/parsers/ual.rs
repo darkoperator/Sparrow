@@ -66,6 +66,23 @@ pub fn register(r: &mut ParserRegistry) {
     }
 }
 
+/// UAL RecordType 24, `Discovery`.
+const DISCOVERY_RECORD_TYPE: &str = "24";
+
+/// `Tenant/eDiscoveryLogs.(csv|json)`, Hawk 3.1's search of the audit log for eDiscovery activity.
+/// Provenance: the collector runs `Search-UnifiedAuditLog -RecordType Discovery` (survey / hawk
+/// layouts) and writes a reduced 8-column CSV without RecordType, so every row of that artifact is
+/// a Discovery (24) record even though the file does not say so. A RecordType the file carries
+/// (Hawk 4, or a full export) always wins.
+fn is_hawk3_ediscovery(rel_path: &str) -> bool {
+    let lower = rel_path.replace('\\', "/").to_ascii_lowercase();
+    lower.rsplit('/').next().is_some_and(|f| {
+        f.strip_suffix(".csv")
+            .or_else(|| f.strip_suffix(".json"))
+            .is_some_and(|s| s == "ediscoverylogs")
+    })
+}
+
 fn preview_keys(map: &Map<String, Value>) -> String {
     let mut s = map
         .keys()
@@ -214,13 +231,24 @@ impl ArtifactParser for UalParser {
         }
         ctx.stats.read += records.len() as u64;
         let lossy = is_csv || self.derived;
+        let ediscovery = is_hawk3_ediscovery(ctx.rel_path);
         let inputs: Vec<(SourceRecord, std::result::Result<AuditInput, String>)> = records
             .into_iter()
             .map(|r| {
                 let input = if self.source == UalSource::Quickual && is_csv {
                     quickual_csv_input(&r.map).map_err(|e| e.to_string())
                 } else {
-                    to_audit(shape, &r.map, lossy)
+                    to_audit(shape, &r.map, lossy).map(|mut i| {
+                        // Hawk 3.1's reduced eDiscoveryLogs CSV has no RecordType column.
+                        if ediscovery
+                            && shape == UalShape::Record
+                            && i.outer_record_type.is_none()
+                            && crate::normalize::ual_shape::get_ci(&i.audit, "RecordType").is_none()
+                        {
+                            i.outer_record_type = Some(DISCOVERY_RECORD_TYPE.to_string());
+                        }
+                        i
+                    })
                 };
                 (r, input)
             })

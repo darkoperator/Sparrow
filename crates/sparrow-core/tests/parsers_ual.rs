@@ -401,6 +401,72 @@ fn records_without_an_id_get_synthetic_ids_and_a_warning() {
 }
 
 #[test]
+fn hawk3_ediscovery_rows_without_a_record_type_are_discovery_records() {
+    // Hawk 3.1's Tenant/eDiscoveryLogs is a reduced CSV without RecordType; the collector searches
+    // -RecordType Discovery, so every row is a Discovery (24) record. A RecordType the file does
+    // carry wins, and other artifacts are not touched.
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    let reduced = csv_line(&["CreationTime", "Id", "Operation", "Workload", "UserId"])
+        + &csv_line(&[
+            "2026-09-02T08:00:00",
+            ID_A,
+            "SearchCreated",
+            "SecurityComplianceCenter",
+            "admin@contoso.example",
+        ]);
+    fixtures::write(&root, "Tenant/eDiscoveryLogs.csv", reduced.as_bytes());
+    let other = csv_line(&["CreationTime", "Id", "Operation", "Workload", "UserId"])
+        + &csv_line(&[
+            "2026-09-02T09:00:00",
+            ID_B,
+            "SearchCreated",
+            "SecurityComplianceCenter",
+            "admin@contoso.example",
+        ]);
+    fixtures::write(&root, "Tenant/User_Changes.csv", other.as_bytes());
+    let (case, _) = ingest(dir.path(), None);
+    let rt = |id: &str| {
+        count(
+            &case,
+            &format!(
+                "SELECT coalesce(max(record_type), -1) FROM ual_events WHERE record_id = '{id}'"
+            ),
+        )
+    };
+    assert_eq!(rt(ID_A), 24, "eDiscoveryLogs row");
+    assert_eq!(rt(ID_B), -1, "another artifact stays NULL");
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    let full = csv_line(&[
+        "CreationTime",
+        "Id",
+        "Operation",
+        "RecordType",
+        "Workload",
+        "UserId",
+    ]) + &csv_line(&[
+        "2026-09-02T08:00:00",
+        ID_A,
+        "SearchCreated",
+        "1",
+        "SecurityComplianceCenter",
+        "admin@contoso.example",
+    ]);
+    fixtures::write(&root, "Tenant/eDiscoveryLogs.csv", full.as_bytes());
+    let (case, _) = ingest(dir.path(), None);
+    assert_eq!(
+        count(
+            &case,
+            &format!("SELECT max(record_type) FROM ual_events WHERE record_id = '{ID_A}'")
+        ),
+        1,
+        "a RecordType the file carries is kept"
+    );
+}
+
+#[test]
 fn phase1_hawk_fixture_now_loads_its_raw_ual_file() {
     let dir = tempfile::tempdir().unwrap();
     fixtures::hawk_tree(dir.path());
