@@ -75,16 +75,16 @@ sql: |
            a.initiated_by_ip,
            coalesce(nullif(trim(array_to_string(list_transform(
              list_filter(from_json(a.modified_properties,
-                                  '[{"Name":"VARCHAR","OldValue":"VARCHAR","NewValue":"VARCHAR"}]'),
-             e -> lower(coalesce(e.Name, '')) IN ('consentaction.permissions', 'permissions')),
-             e -> coalesce(e.NewValue, '')), ' ')), ''),
+                                  '[{"target":"VARCHAR","property":"VARCHAR","old":"VARCHAR","new":"VARCHAR"}]'),
+             e -> lower(coalesce(e.property, '')) IN ('consentaction.permissions', 'permissions')),
+             e -> coalesce(e."new", '')), ' ')), ''),
              coalesce(json_extract_string(a.modified_properties, '$.Permissions'), '')),
-           coalesce(nullif(lower(json_extract_string(a.modified_properties, '$.ConsentType')), ''),
-                    CASE WHEN list_contains(list_transform(
-                           from_json(a.modified_properties,
-                                     '[{"Name":"VARCHAR","NewValue":"VARCHAR"}]'),
-                           e -> lower(coalesce(e.NewValue, ''))), 'allprincipals')
-                         THEN 'allprincipals' END)
+           CASE WHEN list_contains(list_transform(
+                       list_filter(from_json(a.modified_properties,
+                                    '[{"target":"VARCHAR","property":"VARCHAR","old":"VARCHAR","new":"VARCHAR"}]'),
+                         e -> lower(coalesce(e.property, '')) = 'consenttype'),
+                       e -> lower(trim(coalesce(e."new", '')))), 'allprincipals')
+                    THEN 'allprincipals' END
     FROM directory_audits a
     WHERE lower(a.activity) IN ('consent to application', 'add delegated permission grant')
   )
@@ -122,15 +122,16 @@ sql: |
   FROM events e
   WHERE e.consent_type = 'allprincipals'
      OR (
-       regexp_matches(regexp_replace(lower(e.scopes), '[^a-z0-9._-]+', ' ', 'g'), '(^| )[a-z0-9.]+\.all( |$)')
-       AND NOT regexp_matches(regexp_replace(lower(e.scopes), '[^a-z0-9._-]+', ' ', 'g'),
-                              '(^| )(user\.read|user\.readbasic\.all)( |$)')
+       -- at least one .All token other than User.ReadBasic.All (User.Read and
+       -- User.ReadBasic.All alone are not high risk; other tokens do not veto the event)
+       len(list_filter(string_split(regexp_replace(lower(e.scopes), '[^a-z0-9._-]+', ' ', 'g'), ' '),
+                       t -> t LIKE '%.all' AND t <> 'user.readbasic.all')) > 0
      )
      OR regexp_matches(regexp_replace(lower(e.scopes), '[^a-z0-9._-]+', ' ', 'g'),
-          '(^| )(approleassignment\.readwrite\.all| rolemanagement\.readwrite\.directory'
-          '| bitlockerkey\.read\.all| directory\.readwrite\.all| user\.read\.all'
-          '| mailboxsettings\.readwrite| mail\.readwrite| mail\.send'
-          '| chat\.[a-z]+| ediscovery\.[a-z]+| files\.[a-z]+| sites\.[a-z]+| user\.readwrite[a-z]*)( |$)')
+          '(^| )(approleassignment\.readwrite\.all|rolemanagement\.readwrite\.directory'
+          '|bitlockerkey\.read\.all|directory\.readwrite\.all|user\.read\.all'
+          '|mailboxsettings\.readwrite|mail\.readwrite|mail\.send'
+          '|chat\.[a-z]+|ediscovery\.[a-z]+|files\.[a-z]+|sites\.[a-z]+|user\.readwrite[a-z]*)( |$)')
 group_by: [actor_upn]
 analyst_guidance: |
   The consent is a grant of standing access, so the scopes matter more than the app. An
@@ -252,7 +253,7 @@ tests:
         record_key: 00000000-0000-0000-0000-07000000000d
         activity: Consent to application
         initiated_by_upn: admin@contoso.example
-        modified_properties: '[{"Name":"ConsentType","NewValue":"AllPrincipals"},{"Name":"ConsentAction.Permissions","NewValue":"\"Mail.Read\""}]'
+        modified_properties: '[{"target":"App","property":"ConsentType","old":null,"new":"AllPrincipals"},{"target":"App","property":"ConsentAction.Permissions","old":null,"new":"\"Mail.Read\""}]'
         event_time: "2026-03-05T09:00:00Z"
     expect_hits: 1
   - name: a consent event for User.Read and User.ReadBasic.All alone is not a hit
@@ -275,3 +276,32 @@ tests:
         audit_data: '{"ResourceAppName":"https://portal.example/files.aspx","ModifiedProperties":[{"Name":"ConsentAction.Permissions","NewValue":"\"openid profile\""}]}'
         event_time: "2026-03-05T09:00:00Z"
     expect_hits: 0
+  - name: a named scope after another token is a hit
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-070000000020"
+        operation: "Consent to application."
+        workload: AzureActiveDirectory
+        user_upn: victim@contoso.example
+        audit_data: '{"ModifiedProperties":[{"Name":"ConsentAction.Permissions","NewValue":"\"User.Read Mail.ReadWrite\""}]}'
+        event_time: "2026-03-05T09:00:00Z"
+    expect_hits: 1
+  - name: User.Read beside a broad .All scope does not veto the event
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-070000000021"
+        operation: "Consent to application."
+        workload: AzureActiveDirectory
+        user_upn: victim@contoso.example
+        audit_data: '{"ModifiedProperties":[{"Name":"ConsentAction.Permissions","NewValue":"\"Group.ReadWrite.All User.Read\""}]}'
+        event_time: "2026-03-05T09:00:00Z"
+    expect_hits: 1
+  - name: a directory audit granting Mail.ReadWrite in the parser's shape is a hit
+    records:
+      - table: directory_audits
+        record_key: 00000000-0000-0000-0000-07000000000e
+        activity: Consent to application
+        initiated_by_upn: victim@contoso.example
+        modified_properties: '[{"target":"App","property":"ConsentAction.Permissions","old":null,"new":"Mail.ReadWrite"}]'
+        event_time: "2026-03-05T09:00:00Z"
+    expect_hits: 1

@@ -62,9 +62,9 @@ sql: |
            a.initiated_by_ip,
            coalesce(nullif(trim(array_to_string(list_transform(
              list_filter(from_json(a.modified_properties,
-                                  '[{"Name":"VARCHAR","OldValue":"VARCHAR","NewValue":"VARCHAR"}]'),
-             e -> lower(coalesce(e.Name, '')) IN ('consentaction.permissions', 'permissions')),
-             e -> coalesce(e.NewValue, '')), ' ')), ''),
+                                  '[{"target":"VARCHAR","property":"VARCHAR","old":"VARCHAR","new":"VARCHAR"}]'),
+             e -> lower(coalesce(e.property, '')) IN ('consentaction.permissions', 'permissions')),
+             e -> coalesce(e."new", '')), ' ')), ''),
              coalesce(json_extract_string(a.modified_properties, '$.Permissions'), '')) AS scopes
     FROM directory_audits a
     WHERE lower(a.activity) = 'consent to application'
@@ -213,3 +213,21 @@ tests:
         audit_data: '{"ResourceAppName":"https://portal.example/files.aspx","ModifiedProperties":[{"Name":"ConsentAction.Permissions","NewValue":"\"openid profile\""}]}'
         event_time: "2026-03-05T09:00:00Z"
     expect_hits: 0
+  - name: a directory audit granting Mail.ReadWrite in the parser's shape is a hit
+    records:
+      - table: directory_audits
+        record_key: 00000000-0000-0000-0000-071000000000
+        activity: Consent to application
+        initiated_by_upn: victim@contoso.example
+        modified_properties: '[{"target":"App","property":"ConsentAction.Permissions","old":null,"new":"Mail.ReadWrite"}]'
+        event_time: "2026-03-05T09:00:00Z"
+    expect_hits: 1
+  - name: a directory audit granting Mail.Read with offline_access is a hit
+    records:
+      - table: directory_audits
+        record_key: 00000000-0000-0000-0000-071000000001
+        activity: Consent to application
+        initiated_by_upn: victim@contoso.example
+        modified_properties: '[{"target":"App","property":"ConsentAction.Permissions","old":null,"new":"Mail.Read offline_access"}]'
+        event_time: "2026-03-05T09:00:00Z"
+    expect_hits: 1
