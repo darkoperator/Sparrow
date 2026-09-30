@@ -25,15 +25,15 @@ sql: |
   -- carrying either one is covered; each hit is keyed on the UAL record id, the key the side
   -- table joins on and the key a storyline attests. Substring matching is what "hits" means for
   -- a search box: "invoice" inside "vendor invoices 2026" is a hit.
-  -- One search, one hit, on one table. The query text is the side table's reading of the record
-  -- where it has one (the normalizer's own), read the way the normalizer reads it: the
-  -- QueryText, SearchQuery or Query property, whatever its case. A record whose side-table row
-  -- carries no text is read from its own AuditData and attributed to the side table, the one
-  -- table the rule consults for it.
+  -- One search, one hit. The query text is the side table's reading of the record where it has
+  -- one (the normalizer's own), read the way the normalizer reads it: the QueryText, SearchQuery
+  -- or Query property, whatever its case. A record whose side-table row carries no text is read
+  -- from its own AuditData. The hit key is always the UAL record id and search_queries is derived
+  -- from ual_events, so the evidence points at the UAL record (source_table ual_events)
+  -- whichever table supplied the text.
   WITH searches AS (
-    -- The side table has the text: the hit is on the record itself, the table the record was
-    -- delivered as.
-    SELECT u.record_id, u.event_time, u.user_upn, u.client_ip, s.query_text, 'ual_events' AS src
+    -- The side table has the text.
+    SELECT u.record_id, u.event_time, u.user_upn, u.client_ip, s.query_text
     FROM ual_events u
     JOIN search_queries s ON s.record_id = u.record_id
     WHERE nullif(trim(coalesce(s.query_text, '')), '') IS NOT NULL
@@ -42,8 +42,7 @@ sql: |
     -- search), read out of the record's own AuditData.
     SELECT u.record_id, u.event_time, u.user_upn, u.client_ip,
            coalesce((SELECT string_agg(j.value, ' ') FROM json_each(u.audit_data) j
-                     WHERE lower(j.key) IN ('querytext', 'searchquery', 'query')), ''),
-           'search_queries' AS src
+                     WHERE lower(j.key) IN ('querytext', 'searchquery', 'query')), '')
     FROM ual_events u
     WHERE lower(u.operation) IN ('searchqueryinitiated', 'searchqueryinitiatedexchange',
                                  'searchqueryinitiatedsharepoint',
@@ -53,7 +52,7 @@ sql: |
                         AND nullif(trim(coalesce(s.query_text, '')), '') IS NOT NULL)
   )
   SELECT lower(CAST(q.record_id AS VARCHAR)) AS record_key,
-         CASE WHEN q.src = 'ual_events' THEN 'ual_events' ELSE 'search_queries' END AS source_table,
+         'ual_events' AS source_table,
          q.event_time, q.user_upn AS actor_upn, q.client_ip AS ip
   FROM searches q
   WHERE len(list_filter(@list:finance_keywords,

@@ -363,7 +363,7 @@ rules:
     logic: >-
       search_queries (or UAL SearchQueryInitiatedExchange / SearchQueryInitiatedSharePoint)
       whose query_text hits @list:finance_keywords.
-    tables: [search_queries, ual_events]
+    tables: [ual_events, search_queries]
     requires: []
     requires_evidence: [search_queries]
     needs_geoip: false

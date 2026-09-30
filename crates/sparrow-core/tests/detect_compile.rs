@@ -1051,3 +1051,46 @@ fn mia_item_volume_alone_is_a_burst() {
         );
     }
 }
+
+/// SPW-MAIL-007's hit key is the UAL record id, so both the side-table path and the AuditData
+/// path cite `ual_events` (search_queries is derived from it).
+#[test]
+fn search_hits_always_cite_the_ual_record() {
+    let set = load_rules(&DataDirs::default()).unwrap();
+    let rule = &set
+        .rules
+        .iter()
+        .find(|r| r.rule.id == "SPW-MAIL-007")
+        .unwrap()
+        .rule;
+    let mut case = Case::in_memory().unwrap();
+    // Path 1: the text comes from the search_queries row.
+    insert_ual(
+        &case,
+        T1,
+        json!({"record_id": R1, "operation": "SearchQueryInitiatedExchange",
+               "user_upn": "v@x.example", "event_time": "2026-03-01T10:00:00Z"}),
+    );
+    insert_row(
+        &case,
+        "search_queries",
+        T1,
+        json!({"record_id": R1, "workload": "exchange", "query_text": "invoice payment"}),
+    );
+    // Path 2: no side-table row; the text is read from the record's own AuditData.
+    insert_ual(
+        &case,
+        T1,
+        json!({"record_id": R2, "operation": "SearchQueryInitiatedExchange",
+               "user_upn": "v@x.example", "event_time": "2026-03-01T11:00:00Z",
+               "audit_data": {"QueryText": "bank details"}}),
+    );
+    let schema = CaseSchema::of(case.conn()).unwrap();
+    let c = compile_with_meta(rule, &set.lists, &set.list_meta, &schema).unwrap();
+    let hits = run(&mut case, &c, T1, &BTreeMap::new()).unwrap();
+    let got: Vec<(&str, &str)> = hits
+        .iter()
+        .map(|h| (h.record_key.as_str(), h.source_table.as_str()))
+        .collect();
+    assert_eq!(got, vec![(R1, "ual_events"), (R2, "ual_events")]);
+}
