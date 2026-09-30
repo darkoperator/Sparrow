@@ -1,7 +1,3 @@
-    # The correlation negatives each carry a successful sign-in of the attacker's proxy address (a
-    # hosting ASN, far from the user's home), which pairs with a neighbouring home sign-in on
-    # either side: the hit is the hosting end of the pair, else the later sign-in. oauth_consent
-    # is not listed (its replay sign-in pairs only in some scenarios; see baseline_allow).
 # Detection coverage matrix for the spec §8.5 seed rule pack (Phase 5 defines the rules'
 # ids, intended logic and test storylines; Phase 6 implements them).
 #
@@ -425,10 +421,10 @@ rules:
     requires_evidence: []
     needs_geoip: true
     collectors: [hawk3, hawk4, invictus, portal]
-    # The correlation negatives and the illicit consent each carry a successful sign-in of the
-    # attacker's proxy address (a hosting ASN, far from the user's home): the logic hits. Only the
-    # kinds whose far sign-in is the later one of its pair in every scenario are listed here (the
-    # hit is the later endpoint); mfa_after_stale_risk and oauth_consent pair only in some.
+    # The correlation negatives each carry a successful sign-in of the attacker's proxy address (a
+    # hosting ASN, far from the user's home), which pairs with a neighbouring home sign-in on
+    # either side: the hit is the hosting end of the pair, else the later sign-in. oauth_consent
+    # is not listed (its replay sign-in pairs only in some scenarios; see baseline_allow).
     positives: [aitm_signin, inbox_rule_after_stale_risk, mfa_after_stale_risk, anonymous_link_after_stale_risk]
     lookalikes: [plausible_travel]
     baseline_allow:
@@ -451,6 +447,13 @@ rules:
     collectors: [hawk3, hawk4, invictus, portal]
     positives: [aitm_signin]
     lookalikes: [same_ip_token_use]
+    baseline_allow:
+      - kind: inbox_rule_finance
+        reason: &stolen_session "the storyline reuses the AiTM sign-in session from another hosting address (a true session_moved signal); it is visible only where UAL rows carry the session id and the creator sign-in exists (not Hawk UAL, not scenarios without an AiTM sign-in), so it cannot be a per-kind positive"
+      - kind: forwarding_inbox_rule
+        reason: *stolen_session
+      - kind: mia_burst
+        reason: *stolen_session
   - id: SPW-ID-010
     title: Inbox rule created within 60 minutes of a risky or hosting-ASN sign-in
     category: identity
