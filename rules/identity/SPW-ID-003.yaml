@@ -70,25 +70,42 @@ sql: |
     FROM seq
     WHERE p_key IS NOT NULL AND p_ip <> ip
   ),
-  flagged AS (SELECT * FROM pairs WHERE km >= 500 AND km / hours > 900)
+  flagged AS (
+    SELECT *, (p_host AND NOT host) AS swap FROM pairs WHERE km >= 500 AND km / hours > 900
+  ),
   -- The trigger is the later sign-in, except when only the earlier one is a hosting address: the
   -- hosting side is then the odd one out (the other is where the user normally is), and it is the
   -- trigger. The other end of the pair is in the context either way.
-  SELECT CASE WHEN f.p_host AND NOT f.host THEN f.p_key ELSE f.record_key END AS record_key,
-         CASE WHEN f.p_host AND NOT f.host THEN
-                CASE WHEN f.p_src = 'signins' THEN 'signins' ELSE 'ual_events' END
-              ELSE CASE WHEN f.src = 'signins' THEN 'signins' ELSE 'ual_events' END END AS source_table,
-         CASE WHEN f.p_host AND NOT f.host THEN f.p_t ELSE f.t END AS event_time,
-         CASE WHEN f.p_host AND NOT f.host THEN f.p_actor ELSE f.actor END AS actor_upn,
-         CASE WHEN f.p_host AND NOT f.host THEN f.p_ip ELSE f.ip END AS ip,
-         json_object('distance_km', round(f.km), 'speed_kmh', round(f.km / f.hours),
-                     'other_record_key', CASE WHEN f.p_host AND NOT f.host THEN f.record_key ELSE f.p_key END,
-                     'other_table', CASE WHEN f.p_host AND NOT f.host THEN f.src ELSE f.p_src END,
-                     'other_time_epoch_ms', epoch_ms(CASE WHEN f.p_host AND NOT f.host THEN f.t ELSE f.p_t END),
-                     'other_ip', CASE WHEN f.p_host AND NOT f.host THEN f.ip ELSE f.p_ip END,
-                     'other_lat', CASE WHEN f.p_host AND NOT f.host THEN f.lat ELSE f.p_lat END,
-                     'other_lon', CASE WHEN f.p_host AND NOT f.host THEN f.lon ELSE f.p_lon END) AS context
-  FROM flagged f
+  trig AS (
+    SELECT CASE WHEN swap THEN p_key ELSE record_key END AS tkey,
+           CASE WHEN swap THEN p_src ELSE src END AS tsrc,
+           CASE WHEN swap THEN p_t ELSE t END AS tt,
+           CASE WHEN swap THEN p_actor ELSE actor END AS tactor,
+           CASE WHEN swap THEN p_ip ELSE ip END AS tip,
+           CASE WHEN swap THEN record_key ELSE p_key END AS okey,
+           CASE WHEN swap THEN src ELSE p_src END AS osrc,
+           CASE WHEN swap THEN t ELSE p_t END AS ot,
+           CASE WHEN swap THEN ip ELSE p_ip END AS oip,
+           CASE WHEN swap THEN lat ELSE p_lat END AS olat,
+           CASE WHEN swap THEN lon ELSE p_lon END AS olon,
+           km, km / hours AS kmh
+    FROM flagged
+  ),
+  -- One row per trigger: a sign-in that is the odd one out of two pairs (home, far, home) is
+  -- reported once, with its fastest pair (ties by the other record's key), so the result never
+  -- depends on which duplicate is kept.
+  ranked AS (
+    SELECT *, row_number() OVER (PARTITION BY tkey, tsrc ORDER BY kmh DESC, okey) AS rn FROM trig
+  )
+  SELECT r.tkey AS record_key,
+         CASE WHEN r.tsrc = 'signins' THEN 'signins' ELSE 'ual_events' END AS source_table,
+         r.tt AS event_time, r.tactor AS actor_upn, r.tip AS ip,
+         json_object('distance_km', round(r.km), 'speed_kmh', round(r.kmh),
+                     'other_record_key', r.okey, 'other_table', r.osrc,
+                     'other_time_epoch_ms', epoch_ms(r.ot), 'other_ip', r.oip,
+                     'other_lat', r.olat, 'other_lon', r.olon) AS context
+  FROM ranked r
+  WHERE r.rn = 1
 group_by: [actor_upn]
 analyst_guidance: |
   Two successful sign-ins of one user, from places too far apart to have travelled between
@@ -141,6 +158,35 @@ tests:
         latitude: 59.3
         longitude: 18.1
         asn: 64501
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.1
+        event_time: "2026-03-01T11:00:00Z"
+        error_code: 0
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.9
+        event_time: "2026-03-01T11:39:00Z"
+        error_code: 0
+    expect_hits: 1
+  - name: a hosting sign-in between two home sign-ins is one hit, not two
+    records:
+      - table: ip_intel
+        ip: 203.0.113.1
+        latitude: 48.85
+        longitude: 2.35
+        asn: 14061
+        is_hosting: true
+      - table: ip_intel
+        ip: 198.51.100.9
+        latitude: 59.3
+        longitude: 18.1
+        asn: 64501
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.9
+        event_time: "2026-03-01T10:20:00Z"
+        error_code: 0
       - table: signins
         user_upn: alice@contoso.example
         ip: 203.0.113.1

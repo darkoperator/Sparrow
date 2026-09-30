@@ -1,3 +1,7 @@
+    # The correlation negatives each carry a successful sign-in of the attacker's proxy address (a
+    # hosting ASN, far from the user's home), which pairs with a neighbouring home sign-in on
+    # either side: the hit is the hosting end of the pair, else the later sign-in. oauth_consent
+    # is not listed (its replay sign-in pairs only in some scenarios; see baseline_allow).
 # Detection coverage matrix for the spec §8.5 seed rule pack (Phase 5 defines the rules'
 # ids, intended logic and test storylines; Phase 6 implements them).
 #
