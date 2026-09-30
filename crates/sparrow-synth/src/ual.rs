@@ -646,15 +646,82 @@ pub fn mail_items_accessed(
     u
 }
 
-/// `LogonError` for an Entra ID sign-in error code.
+/// `LogonError` for an Entra ID sign-in error code, from Microsoft Learn, "Microsoft Entra
+/// authentication and authorization error codes":
+/// <https://learn.microsoft.com/en-us/entra/identity/authentication/concept-authentication-errors>.
+///
+/// The names ending in `Interrupt` are **sign-in interrupts**: the authentication reached the
+/// prompt (MFA, "Stay signed in?", ...) and Entra ID recorded the attempt as
+/// `UserLoginFailed` with a `ResultStatus` of `Success`, because the user then completes it. The
+/// captures hold many of those (roughly 20-85% of all `UserLoginFailed` rows per capture, and
+/// ~97% of them carry a non-empty `LogonError`). The rest are genuine failures.
 fn logon_error(error: i64) -> &'static str {
     match error {
         50126 => "InvalidUserNameOrPassword",
+        50076 => "UserStrongAuthMFARequiredInterrupt",
         50074 => "UserStrongAuthClientAuthNRequiredInterrupt",
+        50079 => "UserStrongAuthEnrollmentRequiredInterrupt",
         50053 => "IdsLocked",
         50057 => "UserDisabled",
         53003 => "BlockedByConditionalAccess",
         _ => "UnknownError",
+    }
+}
+
+/// How an `AzureActiveDirectoryStsLogon` record ended.
+///
+/// `Success` and `Failure` are the two outcomes the operation names already: a completed sign-in
+/// and a genuine failed logon. `Interrupt` is the third one the real audit log holds, and it is
+/// why the operation alone does not decide the result: an interrupted sign-in is recorded as
+/// `UserLoginFailed` (`logon_error`, `Errors`) with a `ResultStatus` of `Success`, because the
+/// user answers the prompt and the sign-in goes on to complete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogonOutcome {
+    /// `UserLoggedIn` + `Success`: the sign-in completed.
+    Success,
+    /// `UserLoginFailed` + `Failed`: a genuine failed logon.
+    Failure,
+    /// `UserLoginFailed` + `Success`: a sign-in interrupt (MFA, "Stay signed in?", ...). The
+    /// user completes the sign-in a few seconds later.
+    Interrupt,
+}
+
+impl LogonOutcome {
+    /// The `Operation` the audit log carries.
+    fn operation(self) -> &'static str {
+        match self {
+            LogonOutcome::Success => "UserLoggedIn",
+            LogonOutcome::Failure | LogonOutcome::Interrupt => "UserLoginFailed",
+        }
+    }
+
+    /// The `ResultStatus`: `Failed` only for a genuine failure, so an interrupt reads `Success`.
+    fn result_status(self) -> &'static str {
+        match self {
+            LogonOutcome::Failure => "Failed",
+            LogonOutcome::Success | LogonOutcome::Interrupt => "Success",
+        }
+    }
+
+    /// `ResultStatusDetail`.
+    fn result_status_detail(self) -> &'static str {
+        match self {
+            LogonOutcome::Failure => "UserError",
+            LogonOutcome::Success | LogonOutcome::Interrupt => "Success",
+        }
+    }
+
+    /// Whether the record carries a `LogonError` (a failure and an interrupt both do; a completed
+    /// sign-in has nothing to report).
+    fn has_logon_error(self) -> bool {
+        !matches!(self, LogonOutcome::Success)
+    }
+
+    /// Whether the "Stay signed in?" answer can be on this record. Only a completed sign-in has a
+    /// session to keep, so the property stays off a failure and off an interrupt (the captures
+    /// hold it on `UserLoggedIn` + `Success` only).
+    fn keeps_session(self) -> bool {
+        matches!(self, LogonOutcome::Success)
     }
 }
 
@@ -666,20 +733,24 @@ fn user_actor(user: &User) -> Value {
     ])
 }
 
-/// An Entra ID sign-in as the UAL records it (`UserLoggedIn` / `UserLoginFailed`).
 #[allow(clippy::too_many_arguments)]
+/// An Entra ID sign-in as the UAL records it: a completed sign-in (`UserLoggedIn`), a genuine
+/// failed logon (`UserLoginFailed` + `Failed`) or a sign-in interrupt (`UserLoginFailed` +
+/// `Success`, see [`LogonOutcome`]).
+///
 /// `authentication_method`: the record carries the sign-in's authentication method. Every
 /// failed logon does (the captures: `UserLoginFailed` + `Failed` holds one on ~96% of the
 /// rows); a successful one does when it is the user's first sign-in of that day, the
 /// fresh-authentication case (the captures hold one on 0-57% of `UserLoggedIn` + `Success`
 /// rows, depending on the tenant), and not on the later same-day sign-ins the session it
-/// opened let through.
+/// opened let through. An interrupt is an interactive attempt that stopped at the method, so it
+/// carries the method too (an inference: the captures' aggregates cover the `Failed` rows only).
 pub fn sts_logon(
     w: &World,
     rng: &mut Rng,
     user: &User,
     time: DateTime<Utc>,
-    ok: bool,
+    outcome: LogonOutcome,
     ip: IpAddr,
     user_agent: &str,
     app_id: Uuid,
@@ -694,12 +765,8 @@ pub fn sts_logon(
         time,
         Head {
             record_type: RecordType::AzureActiveDirectoryStsLogon,
-            operation: if ok {
-                "UserLoggedIn"
-            } else {
-                "UserLoginFailed"
-            },
-            result_status: Some(if ok { "Success" } else { "Failed" }),
+            operation: outcome.operation(),
+            result_status: Some(outcome.result_status()),
             user_key: user.object_id.to_string(),
             user_type: 0,
             workload: "AzureActiveDirectory",
@@ -727,17 +794,14 @@ pub fn sts_logon(
         &mut u,
         "ExtendedProperties",
         name_value(&[
-            (
-                "ResultStatusDetail",
-                if ok { "Success" } else { "UserError" },
-            ),
+            ("ResultStatusDetail", outcome.result_status_detail()),
             ("UserAgent", user_agent),
             ("RequestType", request_type),
         ]),
     );
     put(&mut u, "InterSystemsId", json!(rng.uuid().to_string()));
     put(&mut u, "IntraSystemId", json!(rng.uuid().to_string()));
-    if !ok {
+    if outcome.has_logon_error() {
         put(&mut u, "LogonError", json!(logon_error(error)));
     }
     put(&mut u, "ModifiedProperties", json!([]));
@@ -770,7 +834,7 @@ pub fn sts_logon(
             "UserAuthenticationMethod",
             json!(*p.pick(USER_AUTH_METHOD_CODES)),
         );
-        if ok && p.chance(KEEP_ME_SIGNED_IN_SHARE) {
+        if outcome.keeps_session() && p.chance(KEEP_ME_SIGNED_IN_SHARE) {
             put(&mut u, "KeepMeSignedIn", json!(*p.pick(&[true, false])));
         } else {
             put(&mut u, "KeepMeSignedIn", json!(""));

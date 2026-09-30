@@ -225,6 +225,89 @@ fn place_at(
     }
 }
 
+/// Share of the interactive sign-ins that carry a **sign-in interrupt** (an
+/// `UserLoginFailed` + `ResultStatus: Success` record a few seconds earlier) when the sign-in
+/// required multi-factor authentication.
+const INTERRUPT_SHARE_MFA: f64 = 0.25;
+/// The same share for a sign-in that did not require MFA. The captures measure interrupts as
+/// 20-85% of all `UserLoginFailed` rows; the generator's own failed logons are a 5% slice of the
+/// sign-ins, so a smaller share of the successful sign-ins lands inside that band (asserted by
+/// `interrupts_are_a_share_of_the_sign_ins_and_of_the_failed_logons`).
+const INTERRUPT_SHARE_PLAIN: f64 = 0.06;
+/// How long before the sign-in the interrupt was recorded. The captures show a prompt and its
+/// answer a few seconds apart; nothing here waits minutes.
+const INTERRUPT_GAP_SECONDS: std::ops::RangeInclusive<i64> = 3..=25;
+/// The interrupt error codes, in the order they are weighted. 50076 (MFA required) is what a
+/// tenant with MFA on its users sees; 50074 (strong auth and client auth) is the same prompt
+/// seen through the client-auth policy; 50079 (enrollment required) is the rarer case of a user
+/// who has no method yet. See `ual::logon_error` for the Microsoft Learn reference.
+const INTERRUPT_ERRORS: [i64; 7] = [50076, 50076, 50076, 50076, 50076, 50074, 50079];
+
+/// The sign-in interrupt that precedes an interactive sign-in `s`, when that sign-in had one,
+/// and the time it was recorded at.
+///
+/// A real capture holds many of these: an interactive sign-in stops at the MFA or "Stay signed
+/// in?" prompt, the audit log records the attempt as `UserLoginFailed` with a `ResultStatus` of
+/// `Success` and a `LogonError` naming the interrupt, and the user answers the prompt and the
+/// sign-in completes a few seconds later. It is the same user, address, application and client
+/// as the sign-in it precedes, in the same session (the audit log ties the two by user, address,
+/// application, client and time, not by a session id, which a `StsLogon` record does not carry).
+///
+/// The record carries the address the user is at **when the interrupt happened** (`address`,
+/// a few seconds before the sign-in), so it is not pinned to the sign-in's own address. A trip
+/// boundary falling in those few seconds would put the two records at different addresses, so
+/// such a sign-in gets no interrupt rather than one that contradicts the sign-in it precedes.
+///
+/// Whether a given sign-in has one is decided from a side stream keyed by **the sign-in's own
+/// id**, and the record is built from a side stream keyed by that id too, so adding interrupts
+/// moves no other record's bytes.
+fn signin_interrupt(
+    w: &World,
+    user: &User,
+    s: &SignIn,
+    address: &dyn Fn(DateTime<Utc>) -> IpAddr,
+) -> Option<(Ual, DateTime<Utc>)> {
+    let mut sstream = stream(w.seed, &format!("interrupt/{}", s.id));
+    // Admins, and any sign-in the world made an MFA sign-in, are the ones that meet a strong
+    // authentication prompt; they get one more often.
+    let share = if s.mfa.is_some() || s.auth_requirement == "multiFactorAuthentication" {
+        INTERRUPT_SHARE_MFA
+    } else {
+        INTERRUPT_SHARE_PLAIN
+    };
+    if !sstream.chance(share) {
+        return None;
+    }
+    let error = *sstream.pick(&INTERRUPT_ERRORS);
+    let gap = sstream.range(*INTERRUPT_GAP_SECONDS.start(), *INTERRUPT_GAP_SECONDS.end());
+    let at = s.time - Duration::seconds(gap);
+    let ip = address(at);
+    if ip != s.ip {
+        // The user crossed into or out of a trip between the interrupt and the sign-in: the two
+        // records would show different addresses on one session.
+        return None;
+    }
+    // A stream of its own, keyed by the sign-in: the record's own id and the two cross-system
+    // ids would otherwise come out of the day's `ual` stream and shift every later record.
+    let mut rstream = stream(w.seed, &format!("interrupt-record/{}", s.id));
+    let u = ual::sts_logon(
+        w,
+        &mut rstream,
+        user,
+        at,
+        ual::LogonOutcome::Interrupt,
+        ip,
+        &s.user_agent,
+        s.app_id,
+        // The prompt is shown inside the authorization request the sign-in goes on to complete.
+        "OAuth2:Authorize",
+        error,
+        // The attempt stopped at the authentication method, so the method is recorded.
+        true,
+    );
+    Some((u, at))
+}
+
 /// One person's day.
 struct Plan<'a> {
     user: &'a User,
@@ -667,13 +750,27 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
             let s = &signins[i];
             if ual_logged(w, s.time) {
                 let ok = s.error_code == 0;
+                // A sign-in interrupt, a few seconds before the interactive sign-in it stopped
+                // (see `signin_interrupt`). It is only emitted where the `UserLoggedIn` it
+                // precedes is, and it goes through the same in-flight gate at its **own** time,
+                // so an interrupt made while the user is in the air is dropped like every other
+                // record of theirs.
+                if ok {
+                    if let Some((u, at)) = signin_interrupt(w, user, s, &address) {
+                        log(u, at);
+                    }
+                }
                 log(
                     ual::sts_logon(
                         w,
                         &mut urng,
                         user,
                         s.time,
-                        ok,
+                        if ok {
+                            ual::LogonOutcome::Success
+                        } else {
+                            ual::LogonOutcome::Failure
+                        },
                         s.ip,
                         &s.user_agent,
                         s.app_id,

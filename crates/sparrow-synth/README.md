@@ -617,6 +617,53 @@ cargo test -p sparrow-synth --release --test perf -- --ignored --nocapture
 The fast, non-ignored `scale_knobs_add_exact_filler_and_stay_checkable` test verifies that the
 knobs add exactly the requested rows and stay checkable.
 
+## Sign-in interrupts
+
+An `AzureActiveDirectoryStsLogon` record does not only come in two flavours. Real captures hold
+many `UserLoginFailed` rows whose `ResultStatus` is **`Success`** (roughly 20-85% of all
+`UserLoginFailed` rows per capture, and ~97% of them carry a non-empty `LogonError`): the
+interactive sign-in stopped at the MFA or "Stay signed in?" prompt, the audit log recorded the
+attempt, the user answered and the sign-in went on to complete. These are **interrupts, not
+failures**, and the generator emits them (`baseline::signin_interrupt`).
+
+- They precede a `UserLoggedIn` by 3-25 seconds, with the same user, address, application and
+  client. (A `StsLogon` record carries no `SessionId`, so the audit log ties the two by user,
+  address, application, client and time rather than by session id.)
+- The `LogonError` names the interrupt with a documented Entra sign-in error code from Microsoft
+  Learn, "Microsoft Entra authentication and authorization error codes"
+  (<https://learn.microsoft.com/en-us/entra/identity/authentication/concept-authentication-errors>):
+  `50076` `UserStrongAuthMFARequiredInterrupt` (the usual one), `50074`
+  `UserStrongAuthClientAuthNRequiredInterrupt` and `50079` `UserStrongAuthEnrollmentRequiredInterrupt`.
+  Note `50074` is also used as a *hard* failure, which a real capture holds too, so the
+  `ResultStatus` — not the code name — is what separates an interrupt from a failure.
+- Admins, and any sign-in the world made an MFA sign-in, get one more often.
+- A genuine failed logon still reads `ResultStatus: Failed` with its own `LogonError` and the
+  same codes it always did.
+- The "Stay signed in?" answer (`KeepMeSignedIn`) stays on the `UserLoggedIn` only, as the
+  captures hold it: the prompt an interrupt stopped at is the one being answered, so the answer
+  lands on the sign-in that completes.
+- The share is decided from a side stream keyed by **the sign-in's own id**, and the record is
+  built from a side stream keyed by that id too, so adding interrupts moves no other record's
+  bytes. Storyline sign-ins do not get one: their evidence is the storyline's own.
+- **An interrupt follows the traveller like every other record of theirs.** It carries the address
+  the user is at when the interrupt happened, not the sign-in's, and it goes through the same
+  in-flight gate at its own time, so a user in the air has no interrupt either and one made after
+  an arrival comes from the destination. A trip boundary falling inside the few seconds between
+  the two would put them at different addresses on one session, so such a sign-in gets no
+  interrupt.
+
+**Detection safety.** An interrupt must never read as a completed sign-in or as a burst of
+failures, so **no built-in rule mentions the `UserLoginFailed` operation at all** — every rule
+that reads a logon operation from the audit log names `UserLoggedIn` exactly, and every rule that
+reads the sign-in table filters on `error_code = 0`. Two tests pin this
+(`a_sign_in_interrupt_never_reaches_a_finding`, `no_built_in_rule_reads_a_failed_logon`), and the
+detection gate is unchanged on every built-in scenario × collector.
+
+One view does report an interrupt as unsuccessful: `auth_events.succeeded` is
+`operation <> 'UserLoginFailed'` for a UAL row, so an interrupt reads `false` there. No rule reads
+`auth_events`, so nothing detects on it, but it is a known inaccuracy for the analyst-facing
+query (Phase 7 territory).
+
 ## Deviations from the original plan
 
 Documented here because the code, not the plan, is the reference:
@@ -637,6 +684,10 @@ Documented here because the code, not the plan, is the reference:
   stripped; a missing Message-ID falls back to the file's SHA-256).
 - **`applications` gives a `UserApplications` row its own key** by appending
   `|<lower AssociationType>|<lower AssociatedUser>` to the app id.
+- **A `StsLogon` record has three outcomes, not two** (`ual::LogonOutcome`): `Success` and
+  `Failure` are what the operation names already, and `Interrupt` is the `UserLoginFailed` +
+  `ResultStatus: Success` row an interactive sign-in leaves when it stops at a prompt. See
+  *Sign-in interrupts*.
 - **`inbox_rules.source`** is `hawk` for Hawk's files and `graph`/`exo` for the
   Microsoft-Extractor-Suite Graph/Exchange cmdlets.
 - **`source_derived` in the manifest means "this file was derived from another file of the

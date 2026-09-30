@@ -501,3 +501,90 @@ fn a_correlated_storyline_with_a_lost_half_is_incomplete() {
         .unwrap();
     assert!(o.complete, "{o:?}");
 }
+
+/// Detection safety for **sign-in interrupts** (F10). An interrupt is an `UserLoginFailed` row
+/// whose `ResultStatus` is `Success`: the audit log records the attempt that stopped at the MFA
+/// or "Stay signed in?" prompt, and the user then completes the sign-in. It must never read as a
+/// completed sign-in, and never as a burst of failures.
+#[test]
+fn a_sign_in_interrupt_never_reaches_a_finding() {
+    for (name, c) in [
+        ("bec-aitm", Collector::Hawk4),
+        ("bec-aitm", Collector::Invictus),
+    ] {
+        let (dir, m) = tree(name, c);
+        let case = ingest_generated_detected(dir.path(), &m);
+        let interrupts: i64 = case
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM ual_events WHERE operation = 'UserLoginFailed' \
+                 AND CAST(result_status AS VARCHAR) = 'Success'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(interrupts > 0, "{name} {c:?}: no interrupts in the tree");
+
+        // No finding's trigger evidence may cite one, and no rule may be `error`.
+        let cited: i64 = case
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM finding_evidence e \
+                 JOIN ual_events u ON lower(CAST(u.record_id AS VARCHAR)) = e.record_key \
+                 JOIN findings f ON f.finding_id = e.finding_id \
+                 WHERE e.source_table = 'ual_events' AND u.operation = 'UserLoginFailed' \
+                   AND CAST(u.result_status AS VARCHAR) = 'Success'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            cited, 0,
+            "{name} {c:?}: a finding cites a sign-in interrupt"
+        );
+
+        let errors: i64 = case
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM detection_runs WHERE CAST(status AS VARCHAR) = 'error'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(errors, 0, "{name} {c:?}: a rule failed");
+    }
+}
+
+/// The same safety, stated over the rules themselves rather than over one tree: no built-in rule
+/// may mention the `UserLoginFailed` operation, so an interrupt is invisible to every rule and
+/// cannot be read as a completed sign-in or counted as a failure.
+#[test]
+fn no_built_in_rule_reads_a_failed_logon() {
+    let set = builtin_set();
+    assert!(set.rules.len() > 20, "{} rules", set.rules.len());
+    for lr in &set.rules {
+        // The whole rule, serialized, so a `match:` leaf cannot slip past a `sql:`-only check.
+        let text = serde_json::to_string(&lr.rule).unwrap().to_lowercase();
+        assert!(
+            !text.contains("userloginfailed"),
+            "{}: reads the UserLoginFailed operation",
+            lr.rule.id
+        );
+    }
+    // And the logon-reading rules name the completed operation, so their intent is explicit.
+    let readers: Vec<&str> = set
+        .rules
+        .iter()
+        .filter(|lr| {
+            serde_json::to_string(&lr.rule)
+                .unwrap()
+                .to_lowercase()
+                .contains("userloggedin")
+        })
+        .map(|lr| lr.rule.id.as_str())
+        .collect();
+    assert!(
+        readers.contains(&"SPW-ID-002") && readers.contains(&"SPW-ID-003"),
+        "the sign-in rules name UserLoggedIn: {readers:?}"
+    );
+}

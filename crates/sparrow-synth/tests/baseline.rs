@@ -248,6 +248,7 @@ fn sts_logon_session_properties_are_typed_like_the_real_records() {
     let mut failed = 0;
     let mut first = 0;
     let mut later = 0;
+    let mut interrupts = 0;
     let mut kept_yes = 0;
     let mut kept_no = 0;
     let mut seen = 0;
@@ -257,11 +258,12 @@ fn sts_logon_session_properties_are_typed_like_the_real_records() {
         let days = (world.collected_at().date_naive() - start).num_days();
         for d in 0..=days {
             let recs = sts_records_on(&world, start + Duration::days(d));
-            // The first *successful* interactive sign-in of each user that day, as the baseline
-            // counts it: a failed first attempt does not count, and carries a code as a failed
-            // logon.
+            // The first *completed* sign-in of each user that day, as the baseline counts it: a
+            // failed first attempt does not count, and carries a code as a failed logon. A sign-in
+            // interrupt (`UserLoginFailed` + `Success`) is not a completed sign-in either, so it
+            // is left out of "first" — it is its own case below.
             let mut earliest: BTreeMap<&str, DateTime<Utc>> = BTreeMap::new();
-            for u in recs.iter().filter(|u| u.audit["ResultStatus"] != "Failed") {
+            for u in recs.iter().filter(|u| u.operation == "UserLoggedIn") {
                 earliest
                     .entry(u.user_id.as_str())
                     .and_modify(|t| *t = (*t).min(u.time))
@@ -276,17 +278,20 @@ fn sts_logon_session_properties_are_typed_like_the_real_records() {
                 assert_eq!(u.audit["ZipCode"], "");
                 let is_first = earliest[u.user_id.as_str()] == u.time;
                 let failed_logon = u.audit["ResultStatus"] == "Failed";
+                let interrupt = u.operation == "UserLoginFailed" && !failed_logon;
                 // Every failed logon carries the method, and so does every successful
                 // first-of-day sign-in; the later same-day sign-ins carry none.
                 match u.audit["UserAuthenticationMethod"].as_i64() {
                     Some(code) => {
                         assert!(CODES.contains(&code), "{name}: code {code}");
                         assert!(
-                            failed_logon || is_first,
+                            failed_logon || interrupt || is_first,
                             "{name}: a code on a later sign-in"
                         );
                         if failed_logon {
                             failed += 1;
+                        } else if interrupt {
+                            interrupts += 1;
                         } else {
                             first += 1;
                         }
@@ -294,25 +299,26 @@ fn sts_logon_session_properties_are_typed_like_the_real_records() {
                     None => {
                         assert_eq!(u.audit["UserAuthenticationMethod"], "");
                         assert!(
-                            !failed_logon && !is_first,
+                            !failed_logon && !interrupt && !is_first,
                             "{name}: a failed or first sign-in without a code"
                         );
                         later += 1;
                     }
                 }
-                // The "Stay signed in?" prompt only follows a successful authentication, and the
-                // user answers it either way.
+                // The "Stay signed in?" prompt only follows a completed sign-in, and the
+                // user answers it either way. An interrupt is not one: the prompt it stopped
+                // at is the one being answered, so it never carries the answer.
                 match &u.audit["KeepMeSignedIn"] {
                     Value::Bool(true) => {
                         assert!(
-                            !failed_logon,
+                            !failed_logon && !interrupt,
                             "{name}: a failed logon that kept the session"
                         );
                         kept_yes += 1;
                     }
                     Value::Bool(false) => {
                         assert!(
-                            !failed_logon,
+                            !failed_logon && !interrupt,
                             "{name}: a failed logon that kept the session"
                         );
                         kept_no += 1;
@@ -327,8 +333,8 @@ fn sts_logon_session_properties_are_typed_like_the_real_records() {
     // Every failed logon and every successful first-of-day sign-in carries the method, and
     // there are later same-day sign-ins that do not.
     assert!(
-        failed > 0 && first > 0 && later > 0,
-        "{failed} failed, {first} first of day, {later} later"
+        failed > 0 && first > 0 && later > 0 && interrupts > 0,
+        "{failed} failed, {interrupts} interrupted, {first} first of day, {later} later"
     );
     // Both answers to the prompt occur, on a small share of the records.
     assert!(kept_yes > 0 && kept_no > 0, "{kept_yes} yes, {kept_no} no");
@@ -697,5 +703,207 @@ fn mailbox_activity_follows_the_traveller() {
     assert!(
         away_total > 50,
         "only {away_total} records were checked after an arrival"
+    );
+}
+
+/// A sign-in interrupt of a day: the `UserLoginFailed` records whose `ResultStatus` is
+/// `Success`. The captures hold many of them (roughly 20-85% of all `UserLoginFailed` rows per
+/// capture): the MFA / "Stay signed in?" prompt an interactive sign-in passes through, not a
+/// failure.
+fn interrupts_on(w: &World, date: NaiveDate) -> Vec<sparrow_synth::events::Ual> {
+    sts_records_on(w, date)
+        .into_iter()
+        .filter(|u| u.operation == "UserLoginFailed" && u.audit["ResultStatus"] == "Success")
+        .collect()
+}
+
+fn span(w: &World) -> impl Iterator<Item = NaiveDate> + '_ {
+    let start = w.window_start().date_naive();
+    let days = (w.collected_at().date_naive() - start).num_days();
+    (0..=days).map(move |d| start + Duration::days(d))
+}
+
+#[test]
+fn sign_in_interrupts_are_named_and_precede_the_sign_in_they_interrupt() {
+    let mut seen = 0;
+    for name in ["bec-aitm", "volume", "hawk-investigate"] {
+        let world = w(name);
+        for date in span(&world) {
+            let recs = sts_records_on(&world, date);
+            for i in interrupts_on(&world, date) {
+                seen += 1;
+                // An interrupt always names why it interrupted, with a documented Entra sign-in
+                // error code (Microsoft Learn, "Microsoft Entra authentication and authorization
+                // error codes", linked from `ual::logon_error`).
+                let error = i.audit["LogonError"].as_str().unwrap_or_default();
+                assert!(error.ends_with("Interrupt"), "{name}: {error:?}");
+                assert!(
+                    matches!(
+                        error,
+                        "UserStrongAuthMFARequiredInterrupt"
+                            | "UserStrongAuthClientAuthNRequiredInterrupt"
+                            | "UserStrongAuthEnrollmentRequiredInterrupt"
+                    ),
+                    "{name}: {error:?}"
+                );
+                let number: i64 = i.audit["ErrorNumber"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .parse()
+                    .unwrap_or_default();
+                assert!(number > 0, "{name}: ErrorNumber {number}");
+                // The "Stay signed in?" answer lives on the `UserLoggedIn`, never on the
+                // interrupt that led to it.
+                assert_eq!(i.audit["KeepMeSignedIn"], "");
+
+                // It precedes a `UserLoggedIn` Success of the same user, from the same address,
+                // for the same application and client, a few seconds later.
+                let gap = recs
+                    .iter()
+                    .filter(|u| {
+                        u.operation == "UserLoggedIn"
+                            && u.user_id == i.user_id
+                            && u.audit["ClientIP"] == i.audit["ClientIP"]
+                            && u.audit["ObjectId"] == i.audit["ObjectId"]
+                            && u.audit["ExtendedProperties"]["UserAgent"]
+                                == i.audit["ExtendedProperties"]["UserAgent"]
+                    })
+                    .map(|u| (u.time - i.time).num_seconds())
+                    .filter(|s| (1..=60).contains(s))
+                    .min();
+                assert!(
+                    gap.is_some(),
+                    "{name}: no UserLoggedIn 1..60 s after the {error} of {} at {}",
+                    i.user_id,
+                    i.time
+                );
+            }
+        }
+    }
+    assert!(seen > 20, "only {seen} sign-in interrupts");
+}
+
+#[test]
+fn interrupts_are_a_share_of_the_sign_ins_and_of_the_failed_logons() {
+    // The captures measure two things: interrupts are a share of the interactive sign-ins, and
+    // 20-85% of all `UserLoginFailed` rows (the brief's band). Both are asserted, over scenarios
+    // and seeds, so a share that drifts out of the measured range fails here.
+    for name in ["bec-aitm", "volume", "hawk-investigate"] {
+        for seed in [42u64, 7] {
+            let world = sparrow_synth::world::World::build(&load(name).unwrap(), seed).unwrap();
+            let (mut interrupts, mut failed, mut signins) = (0u64, 0u64, 0u64);
+            for date in span(&world) {
+                for u in sts_records_on(&world, date) {
+                    match (
+                        u.operation.as_str(),
+                        u.audit["ResultStatus"].as_str().unwrap_or_default(),
+                    ) {
+                        ("UserLoginFailed", "Success") => interrupts += 1,
+                        ("UserLoginFailed", "Failed") => failed += 1,
+                        ("UserLoggedIn", "Success") => signins += 1,
+                        _ => {}
+                    }
+                }
+            }
+            assert!(
+                interrupts > 0 && failed > 0 && signins > 0,
+                "{name} seed {seed}: {interrupts} interrupts, {failed} failed, {signins} sign-ins"
+            );
+            // A share of the sign-ins the interactive users make, small but not vanishing.
+            let share = interrupts as f64 / (interrupts + signins) as f64;
+            assert!(
+                (0.02..0.35).contains(&share),
+                "{name} seed {seed}: interrupts are {share:.3} of the successful sign-ins"
+            );
+            // The measured band: 20-85% of all UserLoginFailed rows.
+            let of_failed = interrupts as f64 / (interrupts + failed) as f64;
+            assert!(
+                (0.20..0.85).contains(&of_failed),
+                "{name} seed {seed}: interrupts are {of_failed:.3} of the UserLoginFailed rows"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_real_failed_logon_keeps_its_own_result_status() {
+    // The interrupt must not swallow the failure: a genuine failed logon still reads
+    // ResultStatus Failed, keeps its own LogonError, and keeps no session to keep. 50074 is
+    // shared (the generator uses it as a hard failure too, and a real capture holds it both
+    // ways), so what separates the two is the ResultStatus, not the name.
+    const FAILURE_CODES: [i64; 2] = [50126, 50074];
+    let world = w("bec-aitm");
+    let mut failed = 0;
+    for date in span(&world) {
+        for u in sts_records_on(&world, date)
+            .into_iter()
+            .filter(|u| u.audit["ResultStatus"] == "Failed")
+        {
+            failed += 1;
+            assert_eq!(u.operation, "UserLoginFailed");
+            let error = u.audit["LogonError"].as_str().unwrap_or_default();
+            assert!(
+                !error.is_empty(),
+                "{date}: a failed logon with no LogonError"
+            );
+            let number: i64 = u.audit["ErrorNumber"]
+                .as_str()
+                .unwrap_or_default()
+                .parse::<i64>()
+                .unwrap();
+            assert!(
+                FAILURE_CODES.contains(&number),
+                "{date}: a failure with the interrupt-only code {number}"
+            );
+            assert_eq!(u.audit["KeepMeSignedIn"], "");
+        }
+    }
+    assert!(failed > 0, "no failed logons");
+}
+
+/// A sign-in interrupt follows the traveller like every other record of theirs: none exists in
+/// the flight window, and from the arrival the address is the destination's. An interrupt is a
+/// `StsLogon` record (record type 15), which `mailbox_activity_follows_the_traveller` skips, so
+/// the property is asserted here.
+#[test]
+fn a_sign_in_interrupt_follows_the_traveller() {
+    let mut away_total = 0;
+    for name in builtin_names() {
+        for seed in [7u64, 21, 42] {
+            let mut world = World::build(&load(name).unwrap(), seed).unwrap();
+            sparrow_synth::story::apply(&mut world).unwrap();
+            for trip in world.trips.clone() {
+                let days = (world.collected_at().date_naive() - world.window_start().date_naive())
+                    .num_days();
+                let mut away = 0;
+                for d in 0..=days {
+                    let date = world.window_start().date_naive() + Duration::days(d);
+                    for u in interrupts_on(&world, date) {
+                        if u.user_id != trip.user {
+                            continue;
+                        }
+                        assert!(
+                            u.time < trip.departure || u.time >= trip.arrival,
+                            "{name} seed {seed}: an interrupt in the air at {}",
+                            u.time
+                        );
+                        if u.time >= trip.arrival {
+                            away += 1;
+                            assert_eq!(
+                                u.audit["ClientIP"].as_str().unwrap_or_default(),
+                                trip.ip.to_string(),
+                                "{name} seed {seed}: an interrupt at {} is not from the destination",
+                                u.time
+                            );
+                        }
+                    }
+                }
+                away_total += away;
+            }
+        }
+    }
+    assert!(
+        away_total > 0,
+        "no sign-in interrupt was checked after an arrival"
     );
 }
