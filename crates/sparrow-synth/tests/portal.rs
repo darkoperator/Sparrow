@@ -1,6 +1,6 @@
 use sparrow_synth::check::check;
 use sparrow_synth::generate::{generate, generate_to_dir, generate_zip};
-use sparrow_synth::options::{Collector, GenerateOptions, SigninExport};
+use sparrow_synth::options::{Collector, Culture, GenerateOptions, SigninExport};
 use sparrow_synth::reserved::scan_text;
 use sparrow_synth::scenario::{builtin_names, load};
 use sparrow_synth::testing::ingest_generated;
@@ -139,7 +139,10 @@ fn portal_files_follow_the_export_encodings() {
             .unwrap_or_else(|| panic!("{prefix}"));
         (rel.clone(), bytes.clone())
     };
-    // Purview: UTF-8 without BOM, CRLF, 7-digit CreationDate, numeric RecordType.
+    // Purview: UTF-8 without BOM, CRLF, numeric RecordType, and a `CreationDate` the tree's
+    // export version wrote (the 7-digit ISO string or the host culture's form, one form
+    // throughout -- `purview_creation_date_follows_the_export_version_of_the_tree` covers the
+    // two forms and the choice).
     let purview = sink
         .files
         .iter()
@@ -153,7 +156,19 @@ fn portal_files_follow_the_export_encodings() {
     );
     let row = lines.next().unwrap();
     let date = row.split(',').nth(1).unwrap();
-    assert_eq!(date.len(), "2026-08-01T10:20:30.0000000Z".len(), "{row}");
+    assert!(
+        date.len() == "2026-08-01T10:20:30.0000000Z".len() || date.contains(':'),
+        "{date}"
+    );
+    let iso = purview
+        .lines()
+        .skip(1)
+        .all(|l| l.split(',').nth(1).unwrap().len() == "2026-08-01T10:20:30.0000000Z".len());
+    let culture = purview
+        .lines()
+        .skip(1)
+        .all(|l| l.split(',').nth(1).unwrap().contains(':'));
+    assert!(iso || culture, "the export mixes both CreationDate forms");
     assert!(
         row.split(',').nth(2).unwrap().parse::<u32>().is_ok(),
         "{row}"
@@ -388,4 +403,88 @@ fn message_trace_summary_is_windows_1252_and_decodes_back() {
         0,
         "a subject holds a replacement character"
     );
+}
+
+/// Task F9.3: the Purview audit search export renders `CreationDate` the way its own version
+/// does -- the downloading machine's culture in the older export (`M/d/yyyy h:mm:ss tt` on
+/// en-US, survey §3 capture A), an ISO 8601 string with seven fraction digits in the newer one
+/// (captures B and D) -- so the form is a per-tree choice, and one file never mixes the two.
+#[test]
+fn purview_creation_date_follows_the_export_version_of_the_tree() {
+    let dates = |seed: u64, culture: Culture| {
+        let mut o = opts(seed);
+        o.culture = culture;
+        let mut sink = MemSink::default();
+        let m = generate(&load("bec-aitm").unwrap(), &o, &mut sink).unwrap();
+        let (_, bytes) = sink
+            .files
+            .iter()
+            .find(|(rel, b)| rel.contains(&m.root) && b.starts_with(b"RecordId,"))
+            .expect("the Purview export");
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        let rows: Vec<&str> = text.trim_end().split("\r\n").skip(1).collect();
+        assert!(rows.len() > 10, "only {} rows", rows.len());
+        let field = |row: &str| row.split(',').nth(1).unwrap().to_string();
+        rows.iter().map(|r| field(r)).collect::<Vec<String>>()
+    };
+
+    // One form per file, whichever the tree's export version writes, and both forms across
+    // seeds.
+    let mut iso = 0;
+    let mut culture_form = 0;
+    for seed in 1..=8u64 {
+        let dates = dates(seed, Culture::EnUs);
+        let is_iso =
+            dates[0].ends_with('Z') && dates[0].len() == "2026-08-01T10:20:30.0000000Z".len();
+        assert!(
+            dates.iter().all(|d| d.ends_with('Z') == is_iso),
+            "seed {seed} mixes both forms: {:?}",
+            &dates[..3]
+        );
+        if is_iso {
+            iso += 1;
+        } else {
+            // `M/d/yyyy h:mm:ss tt`, the capture-A rendering.
+            assert!(
+                dates[0].split('/').count() == 3 && dates[0].contains(":"),
+                "seed {seed}: {}",
+                dates[0]
+            );
+            culture_form += 1;
+        }
+    }
+    assert!(
+        iso > 0 && culture_form > 0,
+        "{iso} ISO, {culture_form} culture"
+    );
+
+    // A day-first host on a culture-form tree renders its own form, and the file is still one
+    // form throughout.
+    let gb = dates(1, Culture::EnGb);
+    if !gb[0].ends_with('Z') {
+        assert!(
+            gb.iter()
+                .all(|d| d.split('/').count() == 3 && d.split('/').next().unwrap().len() == 2),
+            "en-GB: {:?}",
+            &gb[..3]
+        );
+    }
+    let de = dates(1, Culture::DeDe);
+    if !de[0].ends_with('Z') {
+        assert!(
+            de.iter()
+                .all(|d| d.contains('.') && d.split(' ').count() == 2),
+            "de-DE: {:?}",
+            &de[..3]
+        );
+    }
+
+    // The instant survives either form: the case loads the record times the manifest records,
+    // so the check is green on a tree of each form.
+    for seed in 1..=8u64 {
+        let dir = tempfile::tempdir().unwrap();
+        let m = generate_to_dir(&load("bec-aitm").unwrap(), &opts(seed), dir.path()).unwrap();
+        let report = check(&m, &ingest_generated(dir.path(), &m)).unwrap();
+        assert!(report.ok, "seed {seed}: {:#?}", report.problems);
+    }
 }

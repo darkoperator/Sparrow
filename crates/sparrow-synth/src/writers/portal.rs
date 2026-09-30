@@ -7,7 +7,7 @@
 use crate::events::{SignIn, SignInType, TraceMsg, Ual};
 use crate::keys;
 use crate::options::{GenerateOptions, SigninExport};
-use crate::ps::Encoding;
+use crate::ps::{DtKind, Encoding, Host};
 use crate::reserved::WELL_KNOWN_GUIDS;
 use crate::rng::stream;
 use crate::story::Evidence;
@@ -118,6 +118,11 @@ const MT_HEADER: &[&str] = &[
 
 /// Writes the portal exports of the collection window into `tree`.
 pub fn write(world: &World, opts: &GenerateOptions, tree: &mut Tree<'_>) -> Result<()> {
+    let host = Host::new(
+        opts.ps,
+        opts.culture,
+        world.scenario.tenant.host_utc_offset_minutes,
+    );
     let days = window_days(world);
     let mut ual: Vec<&Ual> = days.iter().flat_map(|d| &d.ual).collect();
     let mut signins: Vec<&SignIn> = days
@@ -131,7 +136,7 @@ pub fn write(world: &World, opts: &GenerateOptions, tree: &mut Tree<'_>) -> Resu
     signins.sort_by_key(|s| Reverse((s.time, s.id)));
     trace.sort_by_key(|t| Reverse((t.received, t.trace_id)));
 
-    write_purview(world, &ual, tree)?;
+    write_purview(world, &host, &ual, tree)?;
     match opts.signin_export {
         SigninExport::Csv => write_signins_csv(world, &signins, tree)?,
         SigninExport::Xlsx => write_signins_xlsx(world, &signins, tree)?,
@@ -171,10 +176,14 @@ fn iso7(t: DateTime<Utc>) -> String {
     )
 }
 
-fn purview_row(u: &Ual) -> Vec<String> {
+fn purview_row(u: &Ual, host: &Host, culture_dates: bool) -> Vec<String> {
     vec![
         u.id.to_string(),
-        iso7(u.time),
+        if culture_dates {
+            host.culture_date(u.time, DtKind::Utc)
+        } else {
+            iso7(u.time)
+        },
         u.record_type.number().to_string(),
         u.operation.clone(),
         u.user_id.clone(),
@@ -184,8 +193,10 @@ fn purview_row(u: &Ual) -> Vec<String> {
     ]
 }
 
-/// `<guid>.csv` files of at most `PURVIEW_EXPORT_CAP` rows: UTF-8 without BOM, CRLF.
-fn write_purview(world: &World, ual: &[&Ual], tree: &mut Tree<'_>) -> Result<()> {
+/// `<guid>.csv` files of at most `PURVIEW_EXPORT_CAP` rows: UTF-8 without BOM, CRLF. The
+/// `CreationDate` form is the tree's export version's (`World::purview_culture_dates`), one form
+/// for every row and every file of the tree.
+fn write_purview(world: &World, host: &Host, ual: &[&Ual], tree: &mut Tree<'_>) -> Result<()> {
     let mut rng = stream(world.seed, "portal/purview");
     let header: Vec<String> = PURVIEW_HEADER.iter().map(|h| h.to_string()).collect();
     for chunk in ual.chunks(PURVIEW_EXPORT_CAP) {
@@ -193,7 +204,10 @@ fn write_purview(world: &World, ual: &[&Ual], tree: &mut Tree<'_>) -> Result<()>
         let spec = FileSpec::new(&rel, Some("portal.ual"), Encoding::Utf8);
         let mut text = csv_line(&header, "\r\n");
         for u in chunk {
-            text.push_str(&csv_line(&purview_row(u), "\r\n"));
+            text.push_str(&csv_line(
+                &purview_row(u, host, world.purview_culture_dates),
+                "\r\n",
+            ));
         }
         tree.write(&spec, &text)?;
         for (i, u) in chunk.iter().enumerate() {

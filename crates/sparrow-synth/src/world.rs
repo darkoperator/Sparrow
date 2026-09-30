@@ -105,6 +105,13 @@ pub struct World {
     pub licence: &'static LicenceProfile,
     pub audit_profile: &'static AuditProfile,
     pub attacker: Attacker,
+    /// The Purview audit search export version this tree was "pulled" with: `true` renders
+    /// `CreationDate` the way the older downloader does, in the downloading host's culture
+    /// (`M/d/yyyy h:mm:ss tt` on en-US, survey §3 capture A), `false` the ISO 8601 string with
+    /// seven fraction digits the newer one does (captures B and D). A per-tree choice, the
+    /// survey's two exports being two versions of the same download, so one export never
+    /// mixes the two forms.
+    pub purview_culture_dates: bool,
     pub victims: BTreeSet<u32>,
     /// Task 25 scale: effective benign UAL filler rows over the window (`apply_scale`).
     pub scale_ual: u64,
@@ -202,6 +209,7 @@ impl World {
             licence,
             audit_profile: audit,
             attacker,
+            purview_culture_dates: stream(seed, &format!("purview/{}", scenario.name)).chance(0.5),
             victims,
             scale_ual: 0,
             scale_signins: 0,

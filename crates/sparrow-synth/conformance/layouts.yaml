@@ -240,10 +240,15 @@ artifacts:
     columns:
       - [RecordId, CreationDate, RecordType, Operation, UserId, AuditData, AssociatedAdminUnits, AssociatedAdminUnitsNames]
     dates:
-      # A fixed ISO-8601 service string (`iso7`, writers/portal.rs:177), so the host culture
-      # does not apply: no per-culture keys. `culture_mdy` is capture A's rendering.
+      # The export version is a per-tree choice (`World::purview_culture_dates`): capture A's
+      # downloader renders `CreationDate` in the downloading host's culture, the B/D one a
+      # fixed ISO-8601 string with seven fraction digits (`iso7`). A culture-form tree on a
+      # day-first host therefore shows that host's form, and the ISO form is the same
+      # everywhere, so it is the `any` entry.
       CreationDate:
         any: [culture_mdy, iso_z]
+        en-gb: [culture_dmy]
+        de-de: [culture_dmy_de]
     embedded_json: {AuditData: [CreationTime, Id, Operation, OrganizationId, RecordType, UserId, Workload]}
   - artifact: portal.entra_signins
     collector: portal
