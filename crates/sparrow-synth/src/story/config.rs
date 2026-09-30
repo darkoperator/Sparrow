@@ -28,11 +28,16 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
             push_ual(w, ctx, u);
         }
         StoryKind::AuditTamper => audit_tamper(w, ctx)?,
+        StoryKind::OrgAuditDisabledState => ctx.ev.push(Evidence::AuditConfig),
         StoryKind::AuditConfigBenign => audit_config_benign(w, ctx)?,
         _ => return Ok(false),
     }
     Ok(true)
 }
+
+// `OrgAuditDisabledState`: the tenant's audit profile leaves organization auditing disabled
+// (SPW-CFG-001 reads collected state `audit_disabled true`). No event: the storyline owns the
+// organization-level `audit_config` row, so the state rule's hit has an explicit owner.
 
 /// An admin account creates, runs and exports a content search from the attacker's address.
 fn ediscovery_search(w: &mut World, ctx: &mut Ctx) -> Result<()> {

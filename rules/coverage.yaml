@@ -595,5 +595,7 @@ rules:
     requires_evidence: []
     needs_geoip: false
     collectors: [hawk3, hawk4, invictus, portal]
-    positives: [audit_tamper]
+    # org_audit_disabled_state: a scenario whose audit profile leaves organization auditing
+    # disabled; the collected audit_config row (audit_disabled true) is the hit.
+    positives: [audit_tamper, org_audit_disabled_state]
     lookalikes: [audit_config_benign]

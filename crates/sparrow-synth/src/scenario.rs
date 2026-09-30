@@ -237,6 +237,7 @@ story_kind! {
         AnonymousLink => "anonymous_link",
         LureShare => "lure_share",
         AuditTamper => "audit_tamper",
+        OrgAuditDisabledState => "org_audit_disabled_state",
     }
     lookalike {
         RiskDismissed => "risk_dismissed",

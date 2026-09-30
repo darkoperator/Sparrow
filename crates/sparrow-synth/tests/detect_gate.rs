@@ -645,3 +645,19 @@ fn a_collected_rule_that_does_not_meet_the_rule_is_no_evidence() {
         .unwrap();
     assert_eq!(o.outcome, RuleOutcome::Hit, "{o:?}");
 }
+
+/// A scenario whose audit profile leaves organization auditing off owns the collected
+/// `audit_config` row through an explicit state storyline, and SPW-CFG-001 must hit it.
+#[test]
+fn an_org_audit_disabled_profile_is_an_explicit_cfg_hit() {
+    for c in [Collector::Hawk3, Collector::Hawk4, Collector::Invictus] {
+        let (r, m, _case) = gate("business-basic", c);
+        assert!(r.ok, "{c:?}: {:#?}", r.problems);
+        let o = m
+            .rules
+            .iter()
+            .find(|r| r.rule_id == "SPW-CFG-001" && r.storyline == "s-orgaudit")
+            .unwrap_or_else(|| panic!("{c:?}: no expectation for the state storyline"));
+        assert_eq!(o.outcome, RuleOutcome::Hit, "{c:?}: {o:?}");
+    }
+}

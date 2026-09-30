@@ -24,6 +24,8 @@ storylines:
   - {kind: forwarding_mailbox, id: s-fwd, actor: 1, at: {after: s-aitm, minutes: 50}}
   # Not logged: organization mailbox auditing is off.
   - {kind: mia_burst, id: s-mia, actor: 1, at: {after: s-aitm, minutes: 60}}
+  # The audit profile itself: organization auditing is off (a true SPW-CFG-001 state hit).
+  - {kind: org_audit_disabled_state, id: s-orgaudit, actor: 1, at: {day: 1, hour: 8}}
 lookalikes:
   - {kind: vendor_filing_rule, id: l-vendor, actor: 3, at: {day: 4, hour: 10}}
   - {kind: plausible_travel, id: l-travel, actor: 4, at: {day: 5, hour: 7}}
