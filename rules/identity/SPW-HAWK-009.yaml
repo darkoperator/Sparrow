@@ -1,0 +1,65 @@
+# SPW-HAWK-009 — Hawk H10/H11 parity. Logic source: coverage.yaml ("risk_detections row with
+# risk_state atRisk or confirmedCompromised and risk_level low, medium or high"). Reads the
+# collected risk_detections state.
+id: SPW-HAWK-009
+title: Entra ID Protection risk detection
+version: 1
+status: stable
+severity: high
+confidence: medium
+mitre: [T1078.004]
+tags: [identity, identity-protection]
+requires: [identity_protection]
+requires_evidence: []
+source: risk_detections
+match:
+  all:
+    - risk_state: {in: [atRisk, confirmedCompromised]}
+    - risk_level: {in: [low, medium, high]}
+group_by: [actor_upn]
+analyst_guidance: |
+  An Identity Protection detection classified at risk or confirmed compromised, at a level of
+  low or above. Check the risk event type, the IP and location against the user's normal
+  sign-ins, and the sign-ins and tokens that follow it.
+false_positives:
+  - A detection an admin later dismissed or remediated (the row would then show that state).
+references:
+  - https://learn.microsoft.com/en-us/entra/identity-protection/concept-risk-detection
+author: Sparrow
+tests:
+  - name: an anomalous token is at risk and high
+    records:
+      - table: risk_detections
+        user_upn: victim@contoso.example
+        risk_state: atRisk
+        risk_level: high
+        risk_event_type: anomalousToken
+        detection_id: "d-1"
+    expect_hits: 1
+  - name: an admin confirmed the user compromised
+    records:
+      - table: risk_detections
+        user_upn: victim@contoso.example
+        risk_state: confirmedCompromised
+        risk_level: high
+        risk_event_type: adminConfirmedUserCompromised
+        detection_id: "d-2"
+    expect_hits: 1
+  - name: a dismissed low detection is not a hit
+    records:
+      - table: risk_detections
+        user_upn: quiet@contoso.example
+        risk_state: dismissed
+        risk_level: low
+        risk_event_type: unfamiliarFeatures
+        detection_id: "d-3"
+    expect_hits: 0
+  - name: at risk with hidden level is not a hit
+    records:
+      - table: risk_detections
+        user_upn: quiet@contoso.example
+        risk_state: atRisk
+        risk_level: hidden
+        risk_event_type: unfamiliarFeatures
+        detection_id: "d-4"
+    expect_hits: 0

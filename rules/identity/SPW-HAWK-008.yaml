@@ -1,0 +1,60 @@
+# SPW-HAWK-008 — Hawk H08/H09 parity. Logic source: coverage.yaml ("risky_users row with
+# risk_state confirmedCompromised, or risk_state atRisk and risk_level low, medium or high.
+# Dismissed, remediated or none are not hits"). Reads the collected risky_users state.
+id: SPW-HAWK-008
+title: Risky or confirmed-compromised user
+version: 1
+status: stable
+severity: high
+confidence: medium
+mitre: [T1078.004]
+tags: [identity, identity-protection]
+requires: [identity_protection]
+requires_evidence: []
+source: risky_users
+match:
+  any:
+    - risk_state: {eq: confirmedCompromised}
+    - all:
+        - risk_state: {eq: atRisk}
+        - risk_level: {in: [low, medium, high]}
+group_by: [actor_upn]
+analyst_guidance: |
+  Identity Protection flagged the account at risk or an admin confirmed it compromised. Check
+  the sign-ins and tokens around the flag, the risk detail, and whether a mailbox rule,
+  forwarding or app consent was added at the same time.
+false_positives:
+  - A sign-in from an unfamiliar network an admin confirmed as legitimate.
+  - A user whose risk has since been remediated but the row still shows at risk.
+references:
+  - https://learn.microsoft.com/en-us/entra/identity-protection/concept-risk-detection
+author: Sparrow
+tests:
+  - name: a risky sign-in leaves the user at risk
+    records:
+      - table: risky_users
+        upn: victim@contoso.example
+        risk_state: atRisk
+        risk_level: high
+    expect_hits: 1
+  - name: an admin confirms the user compromised
+    records:
+      - table: risky_users
+        upn: victim@contoso.example
+        risk_state: confirmedCompromised
+        risk_level: high
+    expect_hits: 1
+  - name: a dismissed low risk is not a hit
+    records:
+      - table: risky_users
+        upn: quiet@contoso.example
+        risk_state: dismissed
+        risk_level: none
+    expect_hits: 0
+  - name: at risk with no level is not a hit
+    records:
+      - table: risky_users
+        upn: quiet@contoso.example
+        risk_state: atRisk
+        risk_level: none
+    expect_hits: 0

@@ -1,0 +1,93 @@
+# SPW-HAWK-014 — Logic source: coverage.yaml ("email_artifacts row whose From address (inside
+# <>) differs from Return-Path, or whose Authentication-Results show spf/dkim/dmarc fail, or
+# X-MS-Exchange-Organization-AuthAs is Anonymous with an internal From domain; Hawk
+# Message_Header_Findings rows 'P1 P2 Match' with 'don't Match' count too"). The first and last
+# arms are the same signal, collected from both routes: `p1_p2_match` is true when the From
+# address (inside <>) equals Return-Path, so a mismatch is a false `p1_p2_match`, whichever file
+# the value came from. The `sql:` form is needed because the third arm compares the From domain
+# with the tenant's own `tenant_domains`, which `match:` cannot reach.
+id: SPW-HAWK-014
+title: Message header sender mismatch (P1/P2) or failed / anonymous authentication
+version: 1
+status: stable
+severity: medium
+confidence: medium
+mitre: [T1566.002]
+tags: [mail, spoofing, bec]
+requires: []
+requires_evidence: []
+sql: |
+  WITH dom AS (
+    SELECT DISTINCT lower(rtrim(trim(d.domain), '.')) AS domain
+    FROM tenant_domains d
+    WHERE d.tenant_key = $tenant
+  )
+  SELECT e.record_key, 'email_artifacts' AS source_table,
+         COALESCE(e.sent, e.collected_at) AS event_time,
+         e.from_address AS actor_upn, e.originating_ip AS ip
+  FROM email_artifacts e
+  WHERE e.p1_p2_match = false
+     OR lower(COALESCE(e.auth_results, '')) ~ '(spf|dkim|dmarc)=fail'
+     OR (lower(COALESCE(e.auth_as, '')) = 'anonymous'
+         AND lower(split_part(COALESCE(e.from_address, ''), '@', 2)) IN (SELECT domain FROM dom))
+group_by: [actor_upn]
+analyst_guidance: |
+  A message whose From address does not match Return-Path, whose authentication results fail
+  spf, dkim or dmarc, or which claims an internal sender but authenticated as anonymous, is
+  either a spoofed message or one relayed from outside. Check the hops, the originating IP and
+  whether the internal mailbox it names had a rule, forwarding or consent added around the time.
+false_positives:
+  - A legitimate mailing list or a vendor whose sending domain fails dmarc alignment.
+  - A forwarded internal message whose Return-Path is the forwarding service.
+references:
+  - https://learn.microsoft.com/en-us/microsoft-365/security/office-365-security/message-security-email-authentication-about
+author: Sparrow
+tests:
+  - name: a spoofed internal sender that fails authentication
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: contoso.example
+      - table: email_artifacts
+        from_address: admin@contoso.example
+        return_path: "<bounce@spoof-mail.test>"
+        auth_results: "spf=fail smtp.mailfrom=spoof-mail.test; dkim=none; dmarc=fail action=quarantine"
+        auth_as: Anonymous
+        sent: "2026-03-01T10:00:00Z"
+    expect_hits: 1
+  - name: a clean vendor message with matching return path and passing auth
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: contoso.example
+      - table: email_artifacts
+        from_address: "billing@newsdigest.example"
+        return_path: "<billing@newsdigest.example>"
+        auth_results: "spf=pass; dkim=pass; dmarc=pass action=none"
+        auth_as: Anonymous
+        sent: "2026-03-01T11:00:00Z"
+    expect_hits: 0
+  - name: an anonymous external sender is not flagged without a fail
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: contoso.example
+      - table: email_artifacts
+        from_address: "billing@newsdigest.example"
+        return_path: "<billing@newsdigest.example>"
+        auth_results: "spf=pass; dkim=pass; dmarc=pass action=none"
+        auth_as: Anonymous
+        sent: "2026-03-01T11:30:00Z"
+    expect_hits: 0
+  - name: an anonymous internal sender is flagged even when auth passes
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: contoso.example
+      - table: email_artifacts
+        from_address: cfo@contoso.example
+        return_path: "<cfo@contoso.example>"
+        auth_results: "spf=pass; dkim=pass; dmarc=pass action=none"
+        auth_as: Anonymous
+        sent: "2026-03-01T12:00:00Z"
+    expect_hits: 1

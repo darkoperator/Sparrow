@@ -1,0 +1,68 @@
+# SPW-HAWK-004 — Hawk H01 parity. Logic source: coverage.yaml ("RecordType Discovery (24) with
+# Operation in SearchCreated, SearchStarted, SearchExported, SearchExportDownloaded,
+# SearchPreviewed, CaseAdded, HoldCreated; viewing a search, SearchViewed, is not enough; Hawk
+# flags any Discovery record"). The logic is expressed on the UAL record's numeric
+# `record_type` (24 = Discovery) and its `operation`, exactly as coverage states.
+id: SPW-HAWK-004
+title: eDiscovery search created, run or exported
+version: 1
+status: stable
+severity: medium
+confidence: medium
+mitre: [T1213]
+tags: [config, ediscovery, discovery]
+requires: []
+requires_evidence: [ual]
+source: ual_events
+match:
+  all:
+    - record_type: {in: [24]}
+    - operation: {in: [SearchCreated, SearchStarted, SearchExported, SearchExportDownloaded, SearchPreviewed, CaseAdded, HoldCreated]}
+group_by: [actor_upn]
+analyst_guidance: |
+  A Discovery record that creates, starts, previews or exports a content search, or adds a
+  case or hold, is how an investigator - or an attacker holding a mailbox - reaches tenant
+  content. Check who ran it, the case and the time range, and whether a hold or export followed
+  mass collection. Viewing an existing search is not a hit on its own.
+false_positives:
+  - A legitimate eDiscovery or compliance investigation with a case and a documented custodian.
+references:
+  - https://learn.microsoft.com/en-us/purview/audit-log-events
+author: Sparrow
+tests:
+  - name: an admin creates a compliance search
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-040000000001"
+        record_type: 24
+        operation: SearchCreated
+        user_upn: admin@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 1
+  - name: the search is exported
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-040000000002"
+        record_type: 24
+        operation: SearchExported
+        user_upn: admin@contoso.example
+        event_time: "2026-03-01T10:30:00Z"
+    expect_hits: 1
+  - name: viewing a search is not enough
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-040000000003"
+        record_type: 24
+        operation: SearchViewed
+        user_upn: admin@contoso.example
+        event_time: "2026-03-01T11:00:00Z"
+    expect_hits: 0
+  - name: a non Discovery record with a search operation is not a hit
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-040000000004"
+        record_type: 1
+        operation: SearchCreated
+        user_upn: admin@contoso.example
+        event_time: "2026-03-01T11:30:00Z"
+    expect_hits: 0

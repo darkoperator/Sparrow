@@ -1,0 +1,83 @@
+# SPW-HAWK-013 — Hawk H15 parity. Logic source: coverage.yaml ("mobile_devices row whose
+# first_sync is inside the collection window (collections.window_start .. window_end)").
+# `sql:` because the window lives on `collections`, not on the device row, so `match:` cannot
+# express it. The rule connection already scopes `collections` to the tenant, and the
+# `tenant_key = $tenant` predicate makes that scoping explicit (and satisfies the lint that a
+# `sql:` rule use the parameter). A device whose collection has no recorded window is not a hit:
+# the rule cannot prove the sync fell inside it.
+id: SPW-HAWK-013
+title: Mobile device first synced inside the investigation window
+version: 1
+status: stable
+severity: medium
+confidence: medium
+mitre: [T1078]
+tags: [identity, mobile]
+requires: []
+requires_evidence: []
+sql: |
+  SELECT m.record_key, 'mobile_devices' AS source_table,
+         COALESCE(m.first_sync, m.collected_at) AS event_time,
+         m.mailbox AS actor_upn, CAST(NULL AS VARCHAR) AS ip
+  FROM mobile_devices m
+  JOIN collections c ON c.collection_id = m.collection_id
+  WHERE c.tenant_key = $tenant
+    AND c.window_start IS NOT NULL AND c.window_end IS NOT NULL
+    AND m.first_sync IS NOT NULL
+    AND m.first_sync >= c.window_start
+    AND m.first_sync < c.window_end
+group_by: [actor_upn]
+analyst_guidance: |
+  A mobile device whose first sync falls inside the investigation window is a device that
+  appeared during it - the shape a stolen mailbox enrolling a new phone leaves. Check the
+  device model, the sync time against the sign-in and the mailbox rule that follow, and whether
+  the same device is shared or stolen hardware.
+false_positives:
+  - A user replacing a phone or re-enrolling a device during the window.
+references:
+  - https://learn.microsoft.com/en-us/powershell/module/exchange/get-mobile-device
+author: Sparrow
+tests:
+  - name: a device first syncs inside the window
+    records:
+      - table: collections
+        collection_id: 77
+        root_path: /test/test
+        sparrow_version: test
+        tenant_key: test
+        window_start: "2026-03-01T00:00:00Z"
+        window_end: "2026-04-01T00:00:00Z"
+      - table: mobile_devices
+        collection_id: 77
+        mailbox: alice@contoso.example
+        device_id: dev-1
+        first_sync: "2026-03-05T09:00:00Z"
+    expect_hits: 1
+  - name: a device that synced long before the window is not a hit
+    records:
+      - table: collections
+        collection_id: 78
+        root_path: /test/test
+        sparrow_version: test
+        tenant_key: test
+        window_start: "2026-03-01T00:00:00Z"
+        window_end: "2026-04-01T00:00:00Z"
+      - table: mobile_devices
+        collection_id: 78
+        mailbox: bob@contoso.example
+        device_id: dev-2
+        first_sync: "2025-06-01T09:00:00Z"
+    expect_hits: 0
+  - name: a collection with no window cannot prove a hit
+    records:
+      - table: collections
+        collection_id: 79
+        root_path: /test/test
+        sparrow_version: test
+        tenant_key: test
+      - table: mobile_devices
+        collection_id: 79
+        mailbox: carol@contoso.example
+        device_id: dev-3
+        first_sync: "2026-03-05T09:00:00Z"
+    expect_hits: 0

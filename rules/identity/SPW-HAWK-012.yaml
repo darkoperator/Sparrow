@@ -1,0 +1,65 @@
+# SPW-HAWK-012 — Hawk H14 parity. Logic source: coverage.yaml ("signins row with
+# risk_level_during or risk_level_aggregated in low, medium, high; none and hidden are not
+# hits"). Reads the collected signins table.
+id: SPW-HAWK-012
+title: Risky Entra sign-in
+version: 1
+status: stable
+severity: high
+confidence: medium
+mitre: [T1078.004]
+tags: [identity, identity-protection]
+requires: [identity_protection]
+requires_evidence: [signins]
+source: signins
+match:
+  any:
+    - risk_level_during: {in: [low, medium, high]}
+    - risk_level_aggregated: {in: [low, medium, high]}
+group_by: [actor_upn, ip]
+analyst_guidance: |
+  Identity Protection scored the sign-in itself, either as it happened or as part of the
+  session's aggregate. Check the risk detail and event types, the IP and location, and whether
+  the session led to a mailbox rule, forwarding or an app consent.
+false_positives:
+  - A sign-in from a corporate network or a new country the user confirms.
+references:
+  - https://learn.microsoft.com/en-us/entra/identity-protection/concept-sign-in-risk
+author: Sparrow
+tests:
+  - name: a replayed token is risky during the sign-in
+    records:
+      - table: signins
+        user_upn: victim@contoso.example
+        risk_level_during: high
+        risk_level_aggregated: high
+        ip: 203.0.113.9
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 1
+  - name: only the aggregate score is risky
+    records:
+      - table: signins
+        user_upn: victim@contoso.example
+        risk_level_during: none
+        risk_level_aggregated: medium
+        ip: 203.0.113.9
+        event_time: "2026-03-01T10:05:00Z"
+    expect_hits: 1
+  - name: a plausible sign-in with no risk is not a hit
+    records:
+      - table: signins
+        user_upn: quiet@contoso.example
+        risk_level_during: none
+        risk_level_aggregated: none
+        ip: 198.51.100.4
+        event_time: "2026-03-01T10:10:00Z"
+    expect_hits: 0
+  - name: hidden risk is not a hit
+    records:
+      - table: signins
+        user_upn: quiet@contoso.example
+        risk_level_during: none
+        risk_level_aggregated: hidden
+        ip: 198.51.100.4
+        event_time: "2026-03-01T10:15:00Z"
+    expect_hits: 0
