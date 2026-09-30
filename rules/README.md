@@ -6,15 +6,19 @@ references through `@list:`.
 ```text
 rules/
   mail/       SPW-MAIL-*, SPW-HAWK-014.yaml
-  identity/   SPW-ID-*, SPW-HAWK-008..013
+  identity/   SPW-ID-*, SPW-HAWK-008, SPW-HAWK-009, SPW-HAWK-012, SPW-HAWK-013
   apps/       SPW-APP-*, SPW-HAWK-006, SPW-HAWK-007
   config/     SPW-CFG-*, SPW-HAWK-004, SPW-HAWK-005
   # files/ does not exist yet: the three SPW-FILE-* rules have no rule file.
-  hawk/       SPW-HAWK-001..003, 010, 011, 015
+  hawk/       SPW-HAWK-001..003, SPW-HAWK-010, SPW-HAWK-011, SPW-HAWK-015
   lists/      finance_keywords, hiding_folders, hosting_asns, risky_scopes, suspicious_user_agents
   schema/     rule.schema.json
   coverage.yaml   the rule ↔ storyline test matrix (embedded; `sparrow synth coverage`)
 ```
+
+The six `hawk/` files are the Hawk-parity rules, which span categories (H01-H15 are investigate
+conditions, not an evidence kind), so they are grouped by their source rather than by the table
+they read.
 
 The **built-in** rules and lists are embedded in the binary by `build.rs`, like `data/`, so a
 release `sparrow` needs no `rules/` folder. A checkout keeps them in the tree so they are edited,
@@ -165,8 +169,11 @@ stops a rule from claiming "the value is not X" about a row that never had an X.
 | `operation` absent / NULL | no | no | **match** | no |
 | `operation = ''` (empty text) | match | no | **match** | no |
 
-Both halves of that table are pinned by `sparrow rules test`; the last row is worth noting because
-the inline-test inserter defaults an omitted `VARCHAR` to `''`, and `exists: false` matches it.
+The first three rows are pinned by the compiler tests in
+`crates/sparrow-core/tests/detect_compile.rs` (`match_leaf_operators_compile_and_run`), where a
+`neq` on a missing `parameters.ForwardTo` matches nothing and `exists: false` matches the rows
+that lack it. The last row is worth noting because the inline-test inserter defaults an omitted
+`VARCHAR` to `''`, and `exists: false` matches it.
 
 ### Field paths
 
@@ -197,7 +204,7 @@ constant, and both sides are lower-cased:
 
 ```yaml
 match:
-  user_upn: {eq_field: workload}   # the actor signed the operation themselves
+  user_upn: {eq_field: mailbox_upn}   # the actor is the mailbox owner
 ```
 
 A `NULL` on either side makes it NULL, so it is not a match — the same three-valued rule as
@@ -470,7 +477,6 @@ detection: run 1, 27 rule runs (0 not applicable, 0 errors), 33 new findings, 0 
 $ sparrow detect --case case.duckdb
 detection: run 2, 27 rule runs (0 not applicable, 0 errors), 0 new findings, 0 updated, 0 evidence rows
 ```
-
 ## Coverage cross-check
 
 `rules/coverage.yaml` is the matrix of which storyline must (and must not) trigger which rule.
@@ -514,6 +520,8 @@ activity:
 
 `kind` is a storyline kind, or the literal `baseline` for background activity no storyline
 produced. `reason` is required, and every entry needs an architect ruling reported to the user.
+`SPW-ID-003` (impossible travel) is the one entry in the matrix today; read
+`rules/coverage.yaml` for the current list.
 
 **`SPW-ID-003` (impossible travel) is the one real example.** The rule pairs two sign-ins of one
 user that imply more than 900 km/h. The `aitm_signin` storyline deliberately includes the
@@ -524,7 +532,9 @@ pair, so the rule correctly fires on it. The other far-from-home sign-ins
 listed as `positives` instead, because in every scenario the hosting end of their pair is the one
 the rule hits.
 
-`rules lint` lists every exception.
+`rules lint` does **not** list these exceptions; the list is read out of `rules/coverage.yaml` and
+surfaced by the `sparrow synth check` detection gate, which is where an exception is actually
+enforced.
 
 ## Custom rule directories
 
@@ -548,10 +558,13 @@ marks the existing findings `rule_updated` instead of silently re-baselining the
 
 ```console
 $ sparrow detect --case case.duckdb --rules ./rules --rule SPW-MAIL-003
-detection: run 10, 1 rule runs (0 not applicable, 0 errors), 0 new findings, 1 updated, 0 evidence rows
+detection: run 2, 1 rule runs (0 not applicable, 0 errors), 0 new findings, 1 updated, 0 evidence rows
   warning: custom rule SPW-MAIL-003 replaces the built-in rule
-  SPW-MAIL-003   91de958c-…  ran  0 hits
+  SPW-MAIL-003   91de958c-e6a3-4936-a34d-e68332c57c1d ran             0 hits
 ```
+
+(the case was ingested with the built-in rules, which produced that rule's findings; the run above
+is the first with the replacement, so it updates one finding and adds none).
 
 Custom rules take part in everything: they run in `sparrow detect`, their inline tests run in
 `sparrow rules test`, they are compiled and checked in `sparrow rules lint`, and the detection gate

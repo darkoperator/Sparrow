@@ -121,17 +121,29 @@ Every attempt of every rule is recorded in `detection_runs`, one row per (tenant
 
 ```console
 $ sparrow detect --case case.duckdb
-detection: run 1, 27 rule runs (0 not applicable, 0 errors), 33 new findings, 0 updated, 71 evidence rows
+detection: run 2, 27 rule runs (4 not applicable, 0 errors), 0 new findings, 0 updated, 0 evidence rows
   SPW-APP-001    91de958c-…  ran              2 hits
+  SPW-APP-002    91de958c-…  not_applicable   0 hits  (no GeoIP data)
   SPW-CFG-001    91de958c-…  ran              0 hits
+  SPW-ID-002     91de958c-…  not_applicable   0 hits  (no GeoIP data)
+  SPW-ID-003     91de958c-…  not_applicable   0 hits  (no GeoIP data)
+  SPW-ID-010     91de958c-…  not_applicable   0 hits  (no GeoIP data)
+  SPW-MAIL-003   91de958c-…  ran              2 hits
+  SPW-MAIL-005   91de958c-…  ran              12 hits
 ```
 
-and, on a `business-basic` tree (organization mailbox auditing disabled, ingested without
-`--geoip-dir`):
+(that run is a `bec-aitm` Hawk 4 tree ingested **without** `--geoip-dir`, so the four rules that
+read `ip_intel` are not applicable; the same run with `--geoip-dir` reports
+`27 rule runs (0 not applicable, 0 errors)`. The listing is an excerpt: `sparrow detect` prints
+one line per (rule, tenant), so a case with several tenants prints several lines per rule, and the
+tenant key is shown in full.)
+
+The other two reasons come from a `business-basic` tree, where organization mailbox auditing is
+disabled and there is no GeoIP either:
 
 ```console
-  SPW-HAWK-008   91de958c-…  not_applicable   0 hits  (capability identity_protection is not_licensed)
-  SPW-ID-003     91de958c-…  not_applicable   0 hits  (no GeoIP data)
+$ sparrow detect --case case.duckdb
+detection: run 2, 27 rule runs (6 not applicable, 0 errors), 0 new findings, 0 updated, 0 evidence rows
   SPW-MAIL-005   91de958c-…  not_applicable   0 hits  (evidence mail_items_accessed is not_enabled)
   SPW-MAIL-006   91de958c-…  not_applicable   0 hits  (evidence mail_send is not_enabled)
 ```
@@ -179,11 +191,17 @@ sparrow rules list [--requires CAP] [--tag TAG] # id, severity, status, title, r
 `@list:case_iocs.<type>` (`ip`, `upn`, `app_id`, `domain`, `user_agent`, `rule_name`, `email`, `url`,
 `hash`). Only `malicious` and `suspicious` indicators reach a rule.
 
-```bash
-sparrow ioc add --case case.duckdb --type ip --value 203.0.113.50 --verdict malicious --note "…"
-sparrow ioc list --case case.duckdb
-sparrow ioc remove --case case.duckdb --id a4d22a34c6847a00
+```console
+$ sparrow ioc add --case case.duckdb --type ip --value 203.0.113.50 --verdict malicious --note "attacker proxy"
+a4d22a34c6847a00  ip 203.0.113.50  malicious
+$ sparrow ioc list --case case.duckdb
+a4d22a34c6847a00  ip         malicious  203.0.113.50  by analyst:docs@example.invalid  (attacker proxy)
+1 indicators
+$ sparrow ioc remove --case case.duckdb --id a4d22a34c6847a00
+removed a4d22a34c6847a00
 ```
+
+(the `id` is derived from the indicator, so it differs per case and value).
 
 `--analyst NAME` (or `$SPARROW_ANALYST`) is **required** for `add` and `remove`: an indicator changes
 what rules find, so it is never anonymous. `--tenant KEY` scopes an indicator to one tenant; without

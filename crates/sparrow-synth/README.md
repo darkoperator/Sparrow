@@ -460,7 +460,7 @@ A passing tree, run end to end:
 ```console
 $ sparrow synth --scenario hawk-investigate --collector hawk4 --out /tmp/tree
 $ sparrow ingest /tmp/tree --case /tmp/case.duckdb --geoip-dir /tmp/tree/geoip
-profile: 11 capabilities, 1 tenants, 20 identities
+profile: 11 capabilities, 1 tenants, 19 identities
 detection: run 1, 27 rule runs (0 not applicable, 0 errors), 25 new findings, 0 updated, 49 evidence rows
 $ sparrow synth check --manifest /tmp/tree/manifest.json --case /tmp/case.duckdb
 ok: collection 1 matches /tmp/tree/manifest.json
@@ -555,12 +555,12 @@ every known difference from a real capture is then either fixed or documented wi
 The target is **zero unexplained findings**.
 
 ```console
-$ sparrow synth conformance --tree /tmp/tree --collector hawk
+$ sparrow synth conformance --tree /tmp/tree --collector hawk        # a bec-aitm Hawk 4 tree
 ok: true
 checked: 30, not checked: 10
 findings: none
 
-$ sparrow synth conformance --tree /tmp/tree --collector portal
+$ sparrow synth conformance --tree /tmp/portal --collector portal    # a portal-export tree
 ok: true
 checked: 3, not checked: 0
 findings: none
