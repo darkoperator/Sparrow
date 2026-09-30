@@ -115,7 +115,8 @@ is expected to reject exactly those rows.
 ### Exit codes
 
 - `sparrow synth` generation: 0, or 1 on a bad scenario/flag.
-- `sparrow synth check`: 0 when the manifest matches, 2 when there are problems, 1 on errors.
+- `sparrow synth check`: 0 when the manifest and the detection gate match, 2 when there are
+  problems (either half), 1 on errors.
 - `sparrow synth coverage`: 0, or 2 when any rule has a gap.
 - `sparrow synth conformance`: 0, or 2 when there are findings.
 
@@ -386,7 +387,10 @@ profile.
 
 `RuleExpect { rule_id, storyline, outcome, reason, tables }` with `outcome` one of `hit`,
 `no_hit`, `not_applicable` or `no_evidence`, and `tables` the rule tables the storyline's
-evidence reached.
+evidence reached. `no_evidence` means the tree did not deliver the evidence at all (the storyline
+fell in a logging gap, or `restrict_to_collector` demoted it because the collector cannot supply
+that attribute), so the rule is not expected to fire; it is the one outcome the detection gate
+skips.
 
 ### `sparrow synth check`
 
@@ -406,8 +410,88 @@ diffs it against the manifest, one line per difference, at most 20 example keys 
 7. For every delivered storyline sighting, a `record_sources` row with the table, key, file id
    and line span.
 
-Rule expectations are not checked until Phase 6 (the detection engine); the report counts them
-in `rules_unchecked`.
+### The detection gate
+
+After the manifest diff, `check` runs the **detection gate** (Addendum C.5) over the case's
+findings. It is the exact gate — no tolerance, no thresholds. For every rule that has a rule
+file, against the **latest** `detection_runs` of the tenant:
+
+1. **Every `hit` storyline produces a finding of its rule**, and that finding's trigger evidence
+   cites one of the storyline's own delivered records, in one of the rule's tables
+   (`RuleExpect.tables`).
+2. **No `no_hit` (look-alike) storyline produces a finding of its rule** citing its records.
+3. **Every `not_applicable` storyline is honoured**, with the right kind of cause (below).
+4. **The baseline produces no findings**: every finding of a rule must cite the records of a `hit`
+   storyline of that rule. A finding citing only records of a kind listed in that rule's
+   `baseline_allow`, or of no storyline at all (`kind: baseline`), is tolerated; anything else is
+   reported as an extra finding. This is the rule that says *the benign background must be quiet*.
+5. **`no_evidence` is skipped** — a storyline that did not reach its evidence tests nothing.
+
+A rule that failed (`detection_runs.status = 'error'`) is reported, not counted.
+
+Rule 3 distinguishes two causes, because "the rule did not run" and "the rule ran and correctly
+found nothing" are different failures:
+
+- **Tenant-wide `not_applicable`** — a `requires` capability is `not_licensed`, or a
+  `requires_evidence` source is only ever `not_licensed` / `not_enabled` in this manifest. The
+  run log **must** carry `not_applicable` for the rule, with that reason.
+- **A logging gap** — the evidence exists but the tenant never logged it (an `audit-tamper`
+  storyline that turns unified audit log ingestion off mid-window). The rule is *not* expected to
+  be `not_applicable`; the storyline is treated like `no_evidence`, **plus** no finding of the rule
+  may cite its records.
+
+Note that the gate reads only what the case holds: ingest the tree **with `--geoip-dir`** or the
+four `needs_geoip` rules are `not_applicable` ("no GeoIP data") and every positive that depends on
+them is reported as a missing hit. That is the gate working, not a false alarm.
+
+Any difference is a `problems` entry prefixed `detection:` and makes `sparrow synth check` exit
+**2**. With `--json` the same data is in `detection`: `rules_checked`, `missing_hits`,
+`unexpected_hits`, `applicability`, and `skipped` (a string when the gate did not run at all,
+e.g. `the case holds no detection run for the tenant` — which is what `ingest --no-detect` leaves
+behind).
+
+`rules_unchecked` counts the manifest rule expectations that have **no rule file yet**; their
+expectations are not checked and the `ok` line says how many.
+
+A passing tree, run end to end:
+
+```console
+$ sparrow synth --scenario hawk-investigate --collector hawk4 --out /tmp/tree
+$ sparrow ingest /tmp/tree --case /tmp/case.duckdb --geoip-dir /tmp/tree/geoip
+profile: 11 capabilities, 1 tenants, 20 identities
+detection: run 1, 27 rule runs (0 not applicable, 0 errors), 25 new findings, 0 updated, 49 evidence rows
+$ sparrow synth check --manifest /tmp/tree/manifest.json --case /tmp/case.duckdb
+ok: collection 1 matches /tmp/tree/manifest.json
+0 rule expectations not checked (detection engine: Phase 6)
+```
+
+`hawk-investigate` is also the tree that exercises `baseline_allow`: its one `SPW-ID-003`
+(impossible travel) finding is the documented `oauth_consent` exception. See
+[`../../rules/README.md`](../../rules/README.md).
+
+A failing tree, and what it says:
+
+```console
+$ sparrow ingest /tmp/tree --case /tmp/case.duckdb          # no --geoip-dir
+detection: run 1, 27 rule runs (5 not applicable, 0 errors), 11 new findings, 0 updated, 15 evidence rows
+$ sparrow synth check --manifest /tmp/tree/manifest.json --case /tmp/case.duckdb
+4 problems:
+  detection: SPW-ID-002: storyline s-aitm (aitm_signin) should hit but no finding cites its records in signins, ual_events
+  detection: SPW-ID-003: storyline s-aitm (aitm_signin) should hit but no finding cites its records in signins, ual_events
+  detection: SPW-ID-010: storyline s-rule (inbox_rule_finance) should hit but no finding cites its records in ual_events, signins
+  detection: SPW-MAIL-003: storyline s-admrule (admin_inbox_rule) should hit but no finding cites its records in inbox_rules
+```
+
+### `restrict_to_collector`
+
+A tree can carry the *row* a rule reads without carrying the *attribute* it matches on: the
+Microsoft-Extractor-Suite mailbox list has every mailbox but no forwarding address. `expect::
+restrict_to_collector` therefore demotes a `hit` / `no_hit` outcome to **`no_evidence`** when the
+collector is not in the coverage entry's `collectors` (for a positive) or `lookalike_collectors`
+(for a look-alike), and says so in `RuleExpect.reason`. The decision comes from
+`rules/coverage.yaml` only — never from Sparrow's output — and `no_evidence` is skipped by the
+gate, so a collector that structurally cannot supply the evidence never fails the gate for it.
+
 
 ## `sparrow synth coverage` and `rules/coverage.yaml`
 
@@ -421,7 +505,11 @@ rule ↔ storyline map for the spec §8.5 seed-rule pack (31 rules). Per rule it
 and `lookalikes` storyline kinds, and optional `evidence_all_of`: a list of groups where each
 group is a list of tables and reaching **any** table in a group satisfies that group. A rule that
 correlates two kinds of evidence sets `evidence_all_of`; absent, it defaults to one group equal
-to `tables`.
+to `tables`. A rule with `evidence_all_of` must also list `correlation_negatives`: look-alike
+kinds (also under `lookalikes`) whose storyline delivers **both** evidence halves but fails the
+rule's time or actor condition, and which the rule must not fire on. That is what proves the
+correlation itself and not just the presence of the second half. `baseline_allow` lists the
+documented exceptions to the detection gate's baseline rule.
 
 `sparrow synth coverage [--seed N]` generates every built-in scenario (except `volume`) for
 every collector into memory and aggregates the manifests' rule outcomes into a report with, per
@@ -430,7 +518,8 @@ rule, the `hit`, `no_hit`, `not_applicable` and `no_evidence` exercises and any 
 - no hit in any tree, or no look-alike `no_hit` in any tree;
 - no hit through any `collectors` entry, or no `no_hit` through any `lookalike_collectors` entry;
 - `requires`/`requires_evidence` set but no `not_applicable` anywhere;
-- `needs_geoip` but its hits all come from trees without GeoIP.
+- `needs_geoip` but its hits all come from trees without GeoIP;
+- `evidence_all_of` set but no `correlation_negatives`.
 
 A hit/`no_hit` is only counted when the storyline reached every `evidence_all_of` group; a
 correlated rule that reached only part of its evidence is reported as `no_evidence`.
@@ -455,6 +544,54 @@ per column/key (`inferred: true` marks an inferred form). No values.
 The profile masks a column or key name containing `@` or matching an IPv4/IPv6 address as
 `<masked>`, because a real export can put a value in a dynamic column name. Reports never
 contain a path, a file name or a value.
+
+### The fidelity measure
+
+`conformance` is **how realism is measured** (Addendum C.6). Its goal is that the generated Hawk
+and Microsoft-Extractor-Suite trees are realistic enough that no testing depends on customer data;
+every known difference from a real capture is then either fixed or documented with a reason.
+The target is **zero unexplained findings**.
+
+```console
+$ sparrow synth conformance --tree /tmp/tree --collector hawk
+ok: true
+checked: 30, not checked: 10
+findings: none
+
+$ sparrow synth conformance --tree /tmp/tree --collector portal
+ok: true
+checked: 3, not checked: 0
+findings: none
+```
+
+`checked` is the number of recorded layouts the tree was compared against; `not checked` is the
+artifacts with no recorded real layout (see *Source-derived artifacts* below). A finding names the
+artifact and the difference.
+
+Two modes:
+
+- **`--tree DIR --collector C`** — the CI mode. Deterministic, uses no customer data, runs
+  everywhere. A change that makes a generated tree stop matching its recorded layout fails here
+  first.
+- **`--real DIR --collector C [--seed N]`** — profiles a real capture and compares it with the
+  generated trees for that collector (both PS editions, three cultures, every built-in scenario).
+  **Only the architect runs this, only against approved captures, and the report is aggregates
+  only** — artifact ids, masked column/key names, encodings, JSON shapes, date-form classes and
+  counts. It never contains a path, a file name or a value, and the report is scanned for
+  addresses, IPs, paths and GUIDs before it is read. For Hawk, `--real` also generates the
+  Microsoft-Extractor-Suite portal exports that sit beside a real Hawk capture.
+
+Each fidelity fix records a **before/after conformance count**, and generated bytes that change
+on purpose are re-recorded with a reason. The backlog of known differences (the date-form
+classifier, the JSON shapes that are arrays in reality, the Hawk 3.1 17-column Search-AdminAuditLog
+files, the full optional column sets, the Microsoft-Extractor-Suite content gaps) is Addendum C.6;
+every fix lands here with its counts.
+
+**Microsoft-Extractor-Suite has an evidence standard, not a sample.** No real customer capture
+exists, so its fidelity is judged against the collector source and the `SNUS_TEST` test tenant;
+artifacts with no real sample stay marked *source-derived*, and the remaining inferences (no-P1
+behaviour, PowerShell 5.1 REST dates) stay documented as inferences. Hawk is judged against real
+captures, through `--real` only.
 
 ## Scale
 

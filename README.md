@@ -100,6 +100,95 @@ After loading, `sparrow ingest` runs the profile step (again at any time with `s
 `--data DIR` (or `SPARROW_DATA`) and `--rules DIR` (or `SPARROW_RULES`) override the embedded
 `capabilities.yaml`, `operation_catalog.yaml`, `ms365_ip_ranges.json` and `lists/hosting_asns.yaml`.
 
+## Detection
+
+`rules/` holds the detection rules; [`rules/README.md`](rules/README.md) is the rule format (operators,
+`@list:`, the `sql:` contract, `threshold:`, `baseline_allow`, custom rule directories). Detection runs
+**automatically as the last step of `sparrow ingest` and `sparrow profile`**, and on demand with
+`sparrow detect`.
+
+```bash
+sparrow detect --case case.duckdb                   # every rule, every tenant
+sparrow detect --case case.duckdb --rule SPW-MAIL-003   # one rule (repeatable)
+sparrow detect --case case.duckdb --tag correlation     # rules with a tag (repeatable)
+```
+
+`--data DIR` / `--rules DIR` (repeatable, or `$SPARROW_DATA` / `$SPARROW_RULES`) override the embedded
+data files and add or replace rules. `--no-detect` on `ingest` and `profile` skips the detection run
+that follows the profile step.
+
+Every attempt of every rule is recorded in `detection_runs`, one row per (tenant, rule):
+
+```console
+$ sparrow detect --case case.duckdb
+detection: run 1, 27 rule runs (0 not applicable, 0 errors), 33 new findings, 0 updated, 71 evidence rows
+  SPW-APP-001    91de958c-…  ran              2 hits
+  SPW-CFG-001    91de958c-…  ran              0 hits
+```
+
+and, on a `business-basic` tree (organization mailbox auditing disabled, ingested without
+`--geoip-dir`):
+
+```console
+  SPW-HAWK-008   91de958c-…  not_applicable   0 hits  (capability identity_protection is not_licensed)
+  SPW-ID-003     91de958c-…  not_applicable   0 hits  (no GeoIP data)
+  SPW-MAIL-005   91de958c-…  not_applicable   0 hits  (evidence mail_items_accessed is not_enabled)
+  SPW-MAIL-006   91de958c-…  not_applicable   0 hits  (evidence mail_send is not_enabled)
+```
+
+A rule is never silently empty. It is `not_applicable` with a **reason** when a `requires` capability
+is `not_licensed`, a `requires_evidence` source is `not_licensed` / `not_enabled`, or a
+`needs_geoip` rule has no GeoIP data for the tenant; `error` with the message when it fails to run
+(the other rules still run). Rules run per tenant on a locked, read-only instance scoped to that
+tenant, so two tenants' evidence never combines into one finding.
+
+### Findings
+
+`findings` holds one row per finding, with its trigger records in `finding_evidence`.
+
+- **`fingerprint`** = `sha256(rule_id 0x1f tenant_key 0x1f <group_by values>)`, where `group_by`
+  defaults to `record_key`. **`finding_id`** is the first 16 hex characters of the fingerprint.
+- **Findings are stable across re-runs.** Re-running adds new evidence to the existing finding,
+  widens `first_seen` / `last_seen`, refreshes `severity` and `title`, and **never deletes** a
+  finding. Re-running unchanged rules on unchanged evidence is a no-op:
+
+```console
+$ sparrow detect --case case.duckdb
+detection: run 2, 27 rule runs (0 not applicable, 0 errors), 0 new findings, 0 updated, 0 evidence rows
+```
+
+- **`rule_updated`** — when a rule's hash changes under a finding (its text, or a static list it
+  references, or the case indicators a `@list:case_iocs.*` list read), the finding is flagged
+  `rule_updated = true` for re-review, even if the run did not hit it again.
+- **The analyst's columns are never written by detection**: `status` (which detection always inserts
+  as `new`), `disposition_reason` and `assigned_to`. Phase 7 owns every analyst write.
+- The `timeline` view gained `finding_count` and `finding_ids`: for each event row, the findings
+  whose evidence cites it.
+
+### Rule tooling
+
+```bash
+sparrow rules lint                              # compile, shape, tests and the coverage cross-check
+sparrow rules test [--rule SPW-MAIL-003]        # the rules' own inline fixtures
+sparrow rules list [--requires CAP] [--tag TAG] # id, severity, status, title, requires
+```
+
+### Case indicators
+
+`sparrow ioc add|list|remove` manages the `case_indicators` that a rule reads through
+`@list:case_iocs.<type>` (`ip`, `upn`, `app_id`, `domain`, `user_agent`, `rule_name`, `email`, `url`,
+`hash`). Only `malicious` and `suspicious` indicators reach a rule.
+
+```bash
+sparrow ioc add --case case.duckdb --type ip --value 203.0.113.50 --verdict malicious --note "…"
+sparrow ioc list --case case.duckdb
+sparrow ioc remove --case case.duckdb --id a4d22a34c6847a00
+```
+
+`--analyst NAME` (or `$SPARROW_ANALYST`) is **required** for `add` and `remove`: an indicator changes
+what rules find, so it is never anonymous. `--tenant KEY` scopes an indicator to one tenant; without
+it it applies to every tenant of the case.
+
 ## Build
 
 ```bash
@@ -129,6 +218,10 @@ sparrow tenant domains list --case case.duckdb    # also add|remove <domain> [--
 sparrow schema --case case.duckdb                 # tables and column descriptions
 sparrow upgrade --case case.duckdb                # bring a case made by an older sparrow up to date
 sparrow verify ual_events <record-id> --case case.duckdb [--root /moved/Hawk_folder]
+sparrow detect --case case.duckdb                 # run the rules (also the last step of ingest/profile;
+                                                  # --rule ID / --tag TAG to narrow, --no-detect to skip
+sparrow rules lint | test | list                   # check, test and list the rules in rules/
+sparrow ioc list --case case.duckdb               # also add|remove (--analyst NAME required)
 ```
 
 Add `--json` to any command for machine-readable output. `ingest` exits with code 2 when it completed but a file
@@ -138,17 +231,21 @@ a record no longer matches its source. With `--json`, fatal errors (exit code 1)
 ## Synthetic data
 
 `sparrow synth` generates deterministic collector trees from a scenario and a seed, each with a ground-truth
-`manifest.json`, so parsing, provenance, dedup, supersession and profiling can be tested end to end without any
-customer data. It writes reserved values only (RFC 5737/RFC 3849 addresses, `*.example`/`*.test` domains,
-seed-derived GUIDs) and never reads a real capture except in the aggregates-only `conformance --real` run:
+`manifest.json`, so parsing, provenance, dedup, supersession, profiling **and detection coverage** can be tested
+end to end without any customer data. It writes reserved values only (RFC 5737/RFC 3849 addresses, `*.example`/`*.test`
+domains, seed-derived GUIDs) and never reads a real capture except in the aggregates-only `conformance --real` run:
 
 ```bash
 sparrow synth --scenario bec-aitm --collector hawk4 --out tree       # also hawk3, invictus, portal
-sparrow ingest tree --case case.duckdb --geoip-dir tree/geoip
-sparrow synth check --manifest tree/manifest.json --case case.duckdb
+sparrow ingest tree --case case.duckdb --geoip-dir tree/geoip         # ingest also runs detection
+sparrow synth check --manifest tree/manifest.json --case case.duckdb # manifest diff + the detection gate
 sparrow synth coverage                                               # seed-rule coverage report
 sparrow synth conformance --tree tree --collector hawk              # structure vs the recorded layouts
 ```
+
+`sparrow synth check` closes the loop: besides diffing the case against the manifest, it runs the **detection
+gate** over the case's findings, so every storyline the manifest expects to trigger its rule does, every
+look-alike does not, and the benign baseline produces no finding at all. It exits 2 on any difference.
 
 See [`crates/sparrow-synth/README.md`](crates/sparrow-synth/README.md) for the flags, the scenario and manifest
 formats, the storyline kinds, the licence and audit profiles, coverage (`rules/coverage.yaml`) and conformance.
