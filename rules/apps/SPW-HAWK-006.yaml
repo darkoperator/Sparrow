@@ -1,0 +1,70 @@
+# SPW-HAWK-006 — Hawk H06 parity. Logic source: coverage.yaml ("UAL "Consent to application."
+# or "Add delegated permission grant." / "Add OAuth2PermissionGrant.", or directory audit
+# Consent to application / Add delegated permission grant, in the window. A sign-in to an app
+# consented to before the window does not count."). The grant itself is not the hit - the
+# consent *event* is, which is why this reads the two event sources and not oauth_grants (a
+# grant row alone carries no window; a sign-in to a long-consented app is a look-alike, and it
+# has no consent event).
+id: SPW-HAWK-006
+title: OAuth consent granted
+version: 1
+status: stable
+severity: medium
+confidence: medium
+mitre: [T1098.003]
+tags: [apps, oauth-consent, persistence]
+requires: []
+requires_evidence: []
+sources:
+  - source: ual_events
+    match:
+      all:
+        - operation: {in: ["Consent to application.", "Add delegated permission grant.", "Add OAuth2PermissionGrant."]}
+  - source: directory_audits
+    match:
+      activity: {in: ["Consent to application", "Add delegated permission grant"]}
+group_by: [actor_upn]
+analyst_guidance: |
+  A consent grants an app standing access to the user's mail, files or directory without a
+  further prompt. Check which app, which scopes, whether the publisher is verified, and whether
+  the consent came from the office or from a new address. A consent right before a mailbox rule
+  or a forwarding change is the BEC pattern.
+false_positives:
+  - A user consenting to a known first-party or line-of-business app from the office.
+references:
+  - https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/manage-application-consent-permissions
+author: Sparrow
+tests:
+  - name: a user consents to an app in the UAL
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-060000000001"
+        operation: "Consent to application."
+        workload: AzureActiveDirectory
+        user_upn: victim@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-060000000002"
+        operation: "Add delegated permission grant."
+        workload: AzureActiveDirectory
+        user_upn: victim@contoso.example
+        event_time: "2026-03-01T10:01:00Z"
+    expect_hits: 2
+  - name: a consent recorded as a directory audit
+    records:
+      - table: directory_audits
+        audit_id: "00000000-0000-0000-0000-060000000010"
+        activity: "Consent to application"
+        category: ApplicationManagement
+        initiated_by_upn: victim@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 1
+  - name: a sign-in to an app consented before the window has no consent event
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-060000000003"
+        operation: "UserLoggedIn"
+        workload: AzureActiveDirectory
+        user_upn: victim@contoso.example
+        event_time: "2026-03-01T11:00:00Z"
+    expect_hits: 0

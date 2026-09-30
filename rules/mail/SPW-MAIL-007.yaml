@@ -1,0 +1,93 @@
+# SPW-MAIL-007 — Logic source: coverage.yaml ("search_queries (or UAL
+# SearchQueryInitiatedExchange / SearchQueryInitiatedSharePoint) whose query_text hits
+# @list:finance_keywords."). `sql:` because the UAL arm reads QueryText out of the audit_data
+# JSON, which a `match:` cannot address (it only reaches real columns and MAP keys); the
+# `search_queries` side table is read directly. `contains_any` is a substring test, which is
+# what "hits" means for a search box: "invoice" inside "vendor invoices 2026" is a hit. The UAL
+# spelling of a search is the flattened, first-record's-keys CSV, so the AuditData field is
+# read with the same case-insensitive JSON lookup the normalizer uses.
+id: SPW-MAIL-007
+title: Mailbox or SharePoint search for finance keywords
+version: 1
+status: stable
+severity: medium
+confidence: medium
+mitre: [T1114.002, T1114.003]
+tags: [bec, search, data-exfiltration]
+requires: []
+requires_evidence: [search_queries]
+sql: |
+  -- A mailbox or SharePoint search whose text hits a finance keyword. The query text is read
+  -- from the UAL AuditData (QueryText) and from the derived `search_queries` row, so a capture
+  -- carrying either one is covered; each hit is keyed on the UAL record id, the key the side
+  -- table joins on and the key a storyline attests. Substring matching is what "hits" means for
+  -- a search box: "invoice" inside "vendor invoices 2026" is a hit.
+  SELECT lower(CAST(u.record_id AS VARCHAR)) AS record_key, 'search_queries' AS source_table,
+         u.event_time, u.user_upn AS actor_upn, u.client_ip AS ip
+  FROM ual_events u
+  JOIN search_queries s ON s.record_id = u.record_id
+  WHERE lower(u.operation) IN ('searchqueryinitiatedexchange', 'searchqueryinitiatedsharepoint')
+    AND len(list_filter(@list:finance_keywords,
+          k -> k <> '' AND strpos(lower(coalesce(s.query_text, '')), lower(k)) > 0)) > 0
+  UNION ALL
+  SELECT lower(CAST(u.record_id AS VARCHAR)), 'ual_events', u.event_time, u.user_upn, u.client_ip
+  FROM ual_events u
+  WHERE lower(u.operation) IN ('searchqueryinitiatedexchange', 'searchqueryinitiatedsharepoint')
+    AND len(list_filter(@list:finance_keywords,
+          k -> k <> '' AND strpos(lower(coalesce(json_extract_string(u.audit_data, '$.QueryText'), '')), lower(k)) > 0)) > 0
+group_by: [actor_upn]
+analyst_guidance: |
+  A user (or an actor using their session) searching the mailbox or SharePoint for invoice,
+  payment, wire, bank and similar terms is the reconnaissance or the collection step of a BEC
+  thread: the actor is looking for the thread to hijack or the money to redirect. Check who ran
+  the search, from where, and what followed - a reply, a rule, a forward.
+false_positives:
+  - A finance or payroll user searching for the same terms as part of their job.
+references:
+  - https://learn.microsoft.com/en-us/purview/audit-mail-search
+author: Sparrow
+tests:
+  - name: the derived search_queries row of an invoice search is a hit
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000070001"
+        operation: SearchQueryInitiatedExchange
+        workload: Exchange
+        user_upn: victim@contoso.example
+        event_time: "2026-03-05T08:00:00Z"
+      - table: search_queries
+        record_id: "00000000-0000-0000-0000-000000070001"
+        workload: exchange
+        query_text: "invoice payment wire transfer"
+    expect_hits: 1
+  - name: a UAL SearchQueryInitiatedExchange for bank details is a hit
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000070002"
+        operation: SearchQueryInitiatedExchange
+        workload: exchange
+        user_upn: victim@contoso.example
+        audit_data: {QueryText: "bank details"}
+        event_time: "2026-03-05T09:00:00Z"
+    expect_hits: 1
+  - name: a benign search for a team offsite is not a hit
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000070003"
+        operation: SearchQueryInitiatedExchange
+        workload: Exchange
+        user_upn: quiet@contoso.example
+        audit_data: {QueryText: "team offsite agenda"}
+        event_time: "2026-03-05T11:00:00Z"
+      - table: search_queries
+        record_id: "00000000-0000-0000-0000-000000070003"
+        workload: exchange
+        query_text: "team offsite agenda"
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000070004"
+        operation: SearchQueryInitiatedExchange
+        workload: exchange
+        user_upn: quiet@contoso.example
+        audit_data: {QueryText: "team offsite agenda"}
+        event_time: "2026-03-05T10:00:00Z"
+    expect_hits: 0

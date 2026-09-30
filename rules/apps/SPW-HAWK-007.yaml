@@ -1,0 +1,183 @@
+# SPW-HAWK-007 — Hawk H07 parity, the risky consent categories. Logic source: coverage.yaml
+# ("oauth_grants row where consent_type is AllPrincipals granted in the window, or the
+# permission ends in .All, or is AppRoleAssignment.ReadWrite.All / RoleManagement.ReadWrite.Directory
+# (extremely dangerous), or is one of BitlockerKey.Read.All, Chat.*, Directory.ReadWrite.All,
+# eDiscovery.*, Files.*, MailboxSettings.ReadWrite, Mail.ReadWrite, Mail.Send, Sites.*,
+# User.ReadWrite*, User.Read.All (high risk). Unlike Hawk, User.Read / User.ReadBasic.All
+# alone are not high risk; grants that existed before the window (first-party apps,
+# AllPrincipals Microsoft Office) are context, not hits.").
+# `sql:` because a grant only counts when it was created inside the collection window, which
+# lives on `collections`, and because the "ends in .All" arm is a suffix test. The
+# `oauth_grants` arm joins the window; the event arms (a consent UAL record or directory audit)
+# are in the window by construction - the collectors only fetch the window - so they need no
+# window predicate. The rule connection scopes every table to the tenant, and `tenant_key =
+# $tenant` makes that explicit.
+id: SPW-HAWK-007
+title: Consent grant in a risky category (broad scope, extremely dangerous, high risk)
+version: 1
+status: stable
+severity: high
+confidence: medium
+mitre: [T1098.003, T1528]
+tags: [apps, oauth-consent, privilege-escalation]
+requires: []
+requires_evidence: []
+sql: |
+  -- A grant of a broad or extremely dangerous scope. Two independent paths:
+  --   1. a grant row whose `created` falls inside the collection window and whose permission is
+  --      AllPrincipals, ends in .All, or is one of the named high-risk scopes. Hawk's
+  --      Consent_Grants has no Created column (survey §2c), so `oauth_grants.created` is only
+  --      populated by Microsoft-Extractor-Suite; a grant with no window is context (a first-party
+  --      AllPrincipals Microsoft Office grant), not a hit.
+  --   2. a consent event (UAL / directory audit) whose granted scopes - the
+  --      ConsentAction.Permissions entry of its ModifiedProperties - include a high-risk scope.
+  --      Testing the granted scope and not merely that a consent happened is what keeps a consent
+  --      for openid/profile/User.Read only - the low-risk look-alike - out of the findings.
+  -- Unlike Hawk, User.Read and User.ReadBasic.All alone are not high risk, so the blanket `.All`
+  -- suffix excludes them. Every non-alphanumeric run is a separator, so each scope is matched as
+  -- a whole token. The rule connection scopes every table to the tenant; `tenant_key = $tenant`
+  -- makes that explicit.
+  WITH win AS (
+    SELECT c.collection_id, c.window_start, c.window_end
+    FROM collections c
+    WHERE c.tenant_key = $tenant
+  )
+  SELECT lower(g.record_key) AS record_key, 'oauth_grants' AS source_table, g.collected_at AS event_time,
+         g.principal_upn AS actor_upn, CAST(NULL AS VARCHAR) AS ip
+  FROM oauth_grants g
+  JOIN win w ON w.collection_id = g.collection_id
+  WHERE w.window_start IS NOT NULL AND w.window_end IS NOT NULL
+    AND g.created IS NOT NULL
+    AND g.created >= w.window_start AND g.created < w.window_end
+    AND (
+      lower(COALESCE(g.consent_type, '')) = 'allprincipals'
+      -- The blanket `.All` suffix, minus the two scopes coverage.yaml names as NOT high risk on
+      -- their own (unlike Hawk): User.Read and User.ReadBasic.All.
+      OR (lower(COALESCE(g.permission, '')) LIKE '%.all'
+          AND lower(COALESCE(g.permission, '')) NOT IN ('user.read', 'user.readbasic.all'))
+      OR lower(COALESCE(g.permission, '')) IN (
+           'approleassignment.readwrite.all', 'rolemanagement.readwrite.directory',
+           'bitlockerkey.read.all', 'directory.readwrite.all', 'user.read.all',
+           'mailboxsettings.readwrite', 'mail.readwrite', 'mail.send')
+      OR lower(COALESCE(g.permission, '')) LIKE 'chat.%'
+      OR lower(COALESCE(g.permission, '')) LIKE 'ediscovery.%'
+      OR lower(COALESCE(g.permission, '')) LIKE 'files.%'
+      OR lower(COALESCE(g.permission, '')) LIKE 'sites.%'
+      OR lower(COALESCE(g.permission, '')) LIKE 'user.readwrite%'
+    )
+  UNION ALL
+  SELECT lower(CAST(u.record_id AS VARCHAR)), 'ual_events', u.event_time, u.user_upn, u.client_ip
+  FROM ual_events u
+  WHERE lower(u.operation) IN ('consent to application.', 'add delegated permission grant.',
+                               'add oauth2permissiongrant.')
+    AND regexp_matches(
+          regexp_replace(lower(CAST(u.audit_data AS VARCHAR)), '[^a-z0-9._]+', ' ', 'g'),
+          ' approleassignment\.readwrite\.all| rolemanagement\.readwrite\.directory'
+          '| bitlockerkey\.read\.all| directory\.readwrite\.all| user\.read\.all'
+          '| mailboxsettings\.readwrite| mail\.readwrite| mail\.send'
+          '| chat\.[a-z]+| ediscovery\.[a-z]+| files\.[a-z]+| sites\.[a-z]+| user\.readwrite[a-z]*')
+  UNION ALL
+  SELECT lower(a.record_key), 'directory_audits', a.event_time, a.initiated_by_upn, a.initiated_by_ip
+  FROM directory_audits a
+  WHERE lower(a.activity) IN ('consent to application', 'add delegated permission grant')
+    AND regexp_matches(
+          regexp_replace(lower(CAST(a.modified_properties AS VARCHAR)), '[^a-z0-9._]+', ' ', 'g'),
+          ' approleassignment\.readwrite\.all| rolemanagement\.readwrite\.directory'
+          '| bitlockerkey\.read\.all| directory\.readwrite\.all| user\.read\.all'
+          '| mailboxsettings\.readwrite| mail\.readwrite| mail\.send'
+          '| chat\.[a-z]+| ediscovery\.[a-z]+| files\.[a-z]+| sites\.[a-z]+| user\.readwrite[a-z]*')
+group_by: [actor_upn]
+analyst_guidance: |
+  The consent is a grant of standing access, so the scopes matter more than the app. An
+  AllPrincipals consent or a directory-wide `.All` scope lets whoever holds the app's secret
+  read the whole tenant; Mail.ReadWrite / Files.* / User.ReadWrite are the classic mail-theft
+  and persistence scopes. Check the publisher, who consented, from where, and whether the app
+  was used immediately afterwards.
+false_positives:
+  - A first-party Microsoft app consented by an admin for the whole tenant (context, not an
+    intrusion) - the consent predates the window.
+  - A line-of-business app that legitimately needs Files.* or Mail.ReadWrite.
+references:
+  - https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/manage-application-consent-permissions
+author: Sparrow
+tests:
+  - name: a Mail.ReadWrite grant created in the window is high risk
+    records:
+      - table: collections
+        collection_id: 60
+        root_path: /test/test
+        sparrow_version: test
+        tenant_key: test
+        window_start: "2026-03-01T00:00:00Z"
+        window_end: "2026-04-01T00:00:00Z"
+      - table: oauth_grants
+        collection_id: 60
+        permission: Mail.ReadWrite
+        consent_type: Principal
+        principal_upn: victim@contoso.example
+        created: "2026-03-05T09:00:00Z"
+    expect_hits: 1
+  - name: a Files broad .All grant is high risk
+    records:
+      - table: collections
+        collection_id: 61
+        root_path: /test/test
+        sparrow_version: test
+        tenant_key: test
+        window_start: "2026-03-01T00:00:00Z"
+        window_end: "2026-04-01T00:00:00Z"
+      - table: oauth_grants
+        collection_id: 61
+        permission: Files.ReadWrite.All
+        consent_type: Principal
+        principal_upn: victim@contoso.example
+        created: "2026-03-05T09:00:00Z"
+    expect_hits: 1
+  - name: User.Read and ReadBasic.All alone are not high risk
+    records:
+      - table: collections
+        collection_id: 62
+        root_path: /test/test
+        sparrow_version: test
+        tenant_key: test
+        window_start: "2026-03-01T00:00:00Z"
+        window_end: "2026-04-01T00:00:00Z"
+      - table: oauth_grants
+        collection_id: 62
+        permission: User.Read
+        consent_type: Principal
+        principal_upn: quiet@contoso.example
+        created: "2026-03-05T09:00:00Z"
+      - table: oauth_grants
+        collection_id: 62
+        permission: User.ReadBasic.All
+        consent_type: Principal
+        principal_upn: quiet@contoso.example
+        created: "2026-03-05T09:00:00Z"
+    expect_hits: 0
+  - name: a high-risk grant created before the window is context, not a hit
+    records:
+      - table: collections
+        collection_id: 63
+        root_path: /test/test
+        sparrow_version: test
+        tenant_key: test
+        window_start: "2026-03-01T00:00:00Z"
+        window_end: "2026-04-01T00:00:00Z"
+      - table: oauth_grants
+        collection_id: 63
+        permission: Mail.ReadWrite
+        consent_type: Principal
+        principal_upn: quiet@contoso.example
+        created: "2025-11-01T09:00:00Z"
+    expect_hits: 0
+  - name: a consent UAL event is a hit even without a grant row
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-070000000001"
+        operation: "Consent to application."
+        workload: AzureActiveDirectory
+        user_upn: victim@contoso.example
+        audit_data: '{"ModifiedProperties":[{"Name":"ConsentAction.Permissions","NewValue":"\"Mail.ReadWrite Files.ReadWrite.All\""}]}'
+        event_time: "2026-03-05T09:00:00Z"
+    expect_hits: 1

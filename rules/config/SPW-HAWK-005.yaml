@@ -1,0 +1,77 @@
+# SPW-HAWK-005 — Hawk H05 parity. Logic source: coverage.yaml ("UAL AzureActiveDirectory
+# Operation in "Add domain to company.", "Verify domain.", "Set domain authentication.", "Set
+# federation settings on domain.", or directory audit activity in Add unverified domain, Verify
+# domain, Set domain authentication, Set federation settings on domain. "Update domain."
+# alone does not count"). Two sources because the domain lifecycle is recorded twice: as a
+# UAL record (Operation carries the trailing dot) and as a directory audit (activity has no
+# dot). A property-only "Update domain." is a look-alike, so neither source matches it.
+id: SPW-HAWK-005
+title: Domain added, verified or federated
+version: 1
+status: stable
+severity: high
+confidence: medium
+mitre: [T1583.001, T1606.002]
+tags: [config, domain-takeover, persistence]
+requires: []
+requires_evidence: []
+sources:
+  - source: ual_events
+    match:
+      all:
+        - operation: {in: ["Add domain to company.", "Verify domain.", "Set domain authentication.", "Set federation settings on domain."]}
+  - source: directory_audits
+    match:
+      activity: {in: ["Add unverified domain", "Verify domain", "Set domain authentication", "Set federation settings on domain"]}
+group_by: [actor_upn]
+analyst_guidance: |
+  Adding, verifying, authenticating or federating a domain hands control of mail flow (or of
+  the tenant's identity) to whoever owns it. Check which actor did it, from where, and whether a
+  federated domain or a mail-flow rule followed. Verifying a domain someone else registered is
+  the classic tenant-takeover step.
+false_positives:
+  - A planned domain migration, where the add/verify is documented and the domain is owned by
+    the tenant.
+references:
+  - https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/manage-application-consent-permissions
+author: Sparrow
+tests:
+  - name: a domain is added and verified in the UAL
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-050000000001"
+        operation: "Add domain to company."
+        workload: AzureActiveDirectory
+        user_upn: admin@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-050000000002"
+        operation: "Verify domain."
+        workload: AzureActiveDirectory
+        user_upn: admin@contoso.example
+        event_time: "2026-03-01T10:05:00Z"
+    expect_hits: 2
+  - name: a domain is verified as a directory audit
+    records:
+      - table: directory_audits
+        audit_id: "00000000-0000-0000-0000-050000000010"
+        activity: "Verify domain"
+        category: DirectoryManagement
+        initiated_by_upn: admin@contoso.example
+        event_time: "2026-03-01T10:05:00Z"
+    expect_hits: 1
+  - name: a property-only domain update is not a hit
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-050000000003"
+        operation: "Update domain."
+        workload: AzureActiveDirectory
+        user_upn: admin@contoso.example
+        event_time: "2026-03-01T11:00:00Z"
+      - table: directory_audits
+        audit_id: "00000000-0000-0000-0000-050000000011"
+        activity: "Update domain"
+        category: DirectoryManagement
+        initiated_by_upn: admin@contoso.example
+        event_time: "2026-03-01T11:00:00Z"
+    expect_hits: 0

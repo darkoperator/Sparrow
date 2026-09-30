@@ -1,0 +1,138 @@
+# SPW-APP-001 — Logic source: coverage.yaml ("A consent in the window (oauth_grants created in
+# the window, directory audit Consent to application, or UAL "Consent to application.") whose
+# permissions include Mail.*, Files.*, or offline_access together with any Mail.* / Files.*
+# scope."). A consent is only a hit when it actually carries mail or file access: the grant
+# rows name the granted scope, the consent event names the app. `sql:` because a grant only
+# counts when it was created inside the collection window, which lives on `collections`, and
+# because the scope test is a prefix match. The event arms are in the window by construction (the
+# collectors only fetch the window), so they need no window predicate. The rule connection
+# scopes every table to the tenant; `tenant_key = $tenant` makes that explicit.
+id: SPW-APP-001
+title: Consent to an app with Mail.*, Files.* or offline_access
+version: 1
+status: stable
+severity: high
+confidence: medium
+mitre: [T1098.003]
+tags: [apps, oauth-consent, bec]
+requires: []
+requires_evidence: []
+sql: |
+  -- A consent that carries mail or file access (or offline_access) is the grant an attacker
+  -- uses to read mail and stage data. Two independent paths:
+  --   1. a grant row whose `created` falls inside the collection window, whose `permission` is
+  --      a Mail.* / Files.* / offline_access scope. Hawk's Consent_Grants has no Created column
+  --      (survey §2c), so `oauth_grants.created` is only populated by Microsoft-Extractor-Suite;
+  --      a grant with no window is context (a first-party AllPrincipals grant), not a hit.
+  --   2. a consent event (UAL "Consent to application." / directory audit), whose granted scopes
+  --      are the ConsentAction.Permissions entry of its ModifiedProperties. Testing the granted
+  --      scope and not merely the fact that a consent happened is what keeps a consent for
+  --      openid/profile only - the low-risk look-alike - out of the findings.
+  -- Every non-alphanumeric run in the event text is a separator, so each scope is matched as a
+  -- whole token (Microsoft wraps the value in JSON quotes). The rule connection scopes every
+  -- table to the tenant; `tenant_key = $tenant` makes that explicit.
+  WITH win AS (
+    SELECT c.collection_id, c.window_start, c.window_end
+    FROM collections c
+    WHERE c.tenant_key = $tenant
+  )
+  SELECT lower(g.record_key) AS record_key, 'oauth_grants' AS source_table, g.collected_at AS event_time,
+         g.principal_upn AS actor_upn, CAST(NULL AS VARCHAR) AS ip
+  FROM oauth_grants g
+  JOIN win w ON w.collection_id = g.collection_id
+  WHERE w.window_start IS NOT NULL AND w.window_end IS NOT NULL
+    AND g.created IS NOT NULL
+    AND g.created >= w.window_start AND g.created < w.window_end
+    AND (lower(COALESCE(g.permission, '')) LIKE 'mail.%'
+      OR lower(COALESCE(g.permission, '')) LIKE 'files.%'
+      OR lower(COALESCE(g.permission, '')) = 'offline_access')
+  UNION ALL
+  SELECT lower(CAST(u.record_id AS VARCHAR)), 'ual_events', u.event_time, u.user_upn, u.client_ip
+  FROM ual_events u
+  WHERE lower(u.operation) = 'consent to application.'
+    AND regexp_matches(
+          regexp_replace(lower(CAST(u.audit_data AS VARCHAR)), '[^a-z0-9._]+', ' ', 'g'),
+          ' mail\.| files\.| offline_access')
+  UNION ALL
+  SELECT lower(a.record_key), 'directory_audits', a.event_time, a.initiated_by_upn, a.initiated_by_ip
+  FROM directory_audits a
+  WHERE lower(a.activity) = 'consent to application'
+    AND regexp_matches(
+          regexp_replace(lower(CAST(a.modified_properties AS VARCHAR)), '[^a-z0-9._]+', ' ', 'g'),
+          ' mail\.| files\.| offline_access')
+group_by: [actor_upn]
+analyst_guidance: |
+  A consent that carries mail or file access (or offline_access, which keeps a refresh token
+  usable while the user is offline) is the consent an attacker uses to read mail and stage data.
+  Check the app's publisher and whether the grant sits next to a mailbox rule, a forwarding
+  change or a risky sign-in.
+false_positives:
+  - A user consenting to a known first-party or line-of-business app from the office.
+references:
+  - https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/manage-application-consent-permissions
+author: Sparrow
+tests:
+  - name: a consent grant carrying Mail.ReadWrite is a hit
+    records:
+      - table: collections
+        collection_id: 70
+        root_path: /test/test
+        sparrow_version: test
+        tenant_key: test
+        window_start: "2026-03-01T00:00:00Z"
+        window_end: "2026-04-01T00:00:00Z"
+      - table: oauth_grants
+        collection_id: 70
+        permission: Mail.ReadWrite
+        consent_type: Principal
+        principal_upn: victim@contoso.example
+        created: "2026-03-05T09:00:00Z"
+    expect_hits: 1
+  - name: a consent UAL event is a hit
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-0a00000000a1"
+        operation: "Consent to application."
+        workload: AzureActiveDirectory
+        user_upn: victim@contoso.example
+        audit_data: '{"ModifiedProperties":[{"Name":"ConsentAction.Permissions","NewValue":"\"Mail.ReadWrite Mail.Send offline_access\""}]}'
+        event_time: "2026-03-05T09:00:00Z"
+    expect_hits: 1
+  - name: a consent with only openid/profile scopes is not a hit
+    records:
+      - table: collections
+        collection_id: 71
+        root_path: /test/test
+        sparrow_version: test
+        tenant_key: test
+        window_start: "2026-03-01T00:00:00Z"
+        window_end: "2026-04-01T00:00:00Z"
+      - table: oauth_grants
+        collection_id: 71
+        permission: openid
+        consent_type: Principal
+        principal_upn: quiet@contoso.example
+        created: "2026-03-05T09:00:00Z"
+      - table: oauth_grants
+        collection_id: 71
+        permission: User.Read
+        consent_type: Principal
+        principal_upn: quiet@contoso.example
+        created: "2026-03-05T09:00:00Z"
+    expect_hits: 0
+  - name: a mail-scope grant created before the window is context, not a hit
+    records:
+      - table: collections
+        collection_id: 72
+        root_path: /test/test
+        sparrow_version: test
+        tenant_key: test
+        window_start: "2026-03-01T00:00:00Z"
+        window_end: "2026-04-01T00:00:00Z"
+      - table: oauth_grants
+        collection_id: 72
+        permission: Files.ReadWrite.All
+        consent_type: Principal
+        principal_upn: quiet@contoso.example
+        created: "2025-11-01T09:00:00Z"
+    expect_hits: 0
