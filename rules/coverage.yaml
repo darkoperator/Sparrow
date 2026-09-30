@@ -299,7 +299,8 @@ rules:
     requires_evidence: []
     needs_geoip: false
     collectors: [hawk3, hawk4, invictus, portal]
-    positives: [inbox_rule_finance]
+    # admin_inbox_rule: its throw-away rule moves mail to Deleted Items, a hiding folder.
+    positives: [inbox_rule_finance, admin_inbox_rule]
     lookalikes: [vendor_filing_rule]
   - id: SPW-MAIL-004
     title: External forwarding through the mailbox, an inbox rule or a transport rule
@@ -420,6 +421,9 @@ rules:
     # hit is the later endpoint); mfa_after_stale_risk and oauth_consent pair only in some.
     positives: [aitm_signin, inbox_rule_after_stale_risk, anonymous_link_after_stale_risk]
     lookalikes: [plausible_travel]
+    baseline_allow:
+      - kind: oauth_consent
+        reason: "in hawk-investigate the consenting attacker sign-in from a far hosting location follows the victim's home sign-in; it pairs only in that scenario"
   - id: SPW-ID-004
     title: Adversary-in-the-middle indicators
     category: identity
