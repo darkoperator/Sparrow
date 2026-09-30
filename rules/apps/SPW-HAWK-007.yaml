@@ -121,6 +121,9 @@ sql: |
          e.event_time, e.actor_upn, e.ip
   FROM events e
   WHERE e.consent_type = 'allprincipals'
+     -- In the UAL consent record ConsentType sits inside the ConsentAction.Permissions value
+     -- ('[] => [[Id: .., ClientId: .., ConsentType: AllPrincipals, Scope: Calendars.Read openid, ..]]').
+     OR regexp_matches(lower(e.scopes), 'consenttype:\s*allprincipals')
      OR (
        -- at least one .All token other than User.ReadBasic.All (User.Read and
        -- User.ReadBasic.All alone are not high risk; other tokens do not veto the event)
@@ -305,3 +308,23 @@ tests:
         modified_properties: '[{"target":"App","property":"ConsentAction.Permissions","old":null,"new":"Mail.ReadWrite"}]'
         event_time: "2026-03-05T09:00:00Z"
     expect_hits: 1
+  - name: a UAL consent whose permissions value carries ConsentType AllPrincipals is a hit
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-070000000022"
+        operation: "Consent to application."
+        workload: AzureActiveDirectory
+        user_upn: admin@contoso.example
+        audit_data: '{"ModifiedProperties":[{"Name":"ConsentAction.Permissions","NewValue":"[] => [[Id: 6cd1, ClientId: 4b8e, PrincipalId: , ConsentType: AllPrincipals, Scope: Calendars.Read openid, ExpiryTime: 2099-01-01]]"}]}'
+        event_time: "2026-03-05T09:00:00Z"
+    expect_hits: 1
+  - name: a UAL consent for one principal with only low-risk scopes is not a hit
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-070000000023"
+        operation: "Consent to application."
+        workload: AzureActiveDirectory
+        user_upn: quiet@contoso.example
+        audit_data: '{"ModifiedProperties":[{"Name":"ConsentAction.Permissions","NewValue":"[] => [[Id: 6cd1, ClientId: 4b8e, PrincipalId: 91ab, ConsentType: Principal, Scope: openid User.Read, ExpiryTime: 2099-01-01]]"}]}'
+        event_time: "2026-03-05T09:00:00Z"
+    expect_hits: 0
