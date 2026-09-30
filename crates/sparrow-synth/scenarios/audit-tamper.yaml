@@ -31,4 +31,4 @@ storylines:
   - {kind: anonymous_link, id: s-anon, actor: 1, at: {after: s-tamper, minutes: 60}}
   - {kind: lure_share, id: s-lure, actor: 1, at: {after: s-tamper, minutes: 65}}
 lookalikes:
-  - {kind: audit_config_benign, id: l-auditok, at: {day: 3, hour: 10}}
+  - {kind: audit_config_benign, id: l-auditok, actor: 2, at: {day: 3, hour: 10}}

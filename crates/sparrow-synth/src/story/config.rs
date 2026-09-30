@@ -178,6 +178,8 @@ fn audit_config_benign(w: &mut World, ctx: &mut Ctx) -> Result<()> {
         }
         mb.when_changed = at;
     }
+    // The mailbox row is this actor's own only when no other storyline touches the same
+    // mailbox (a scenario gives the look-alike its own user): the row shows one user's state.
     ctx.ev.push(Evidence::Mailbox(a.upn));
     Ok(())
 }
