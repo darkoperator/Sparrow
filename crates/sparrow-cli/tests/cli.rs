@@ -1,6 +1,7 @@
 use assert_cmd::Command;
 use predicates::str::contains;
 use serde_json::Value;
+use sparrow_core::data::DataDirs;
 use sparrow_core::fixtures;
 
 fn sparrow() -> Command {
@@ -1086,6 +1087,38 @@ fn rules_test_runs_every_inline_test() {
         .args(["rules", "test", "--rule", "SPW-NOPE-999"])
         .assert()
         .code(1);
+}
+
+/// The seed rule pack is complete: `sparrow rules list` shows a file for every id in
+/// `rules/coverage.yaml`, and `rules lint` says so too. The expected ids are derived from the
+/// matrix, so a new seed rule needs no edit here -- only a file.
+#[test]
+fn rules_list_shows_a_file_for_every_coverage_id() {
+    let cov = sparrow_core::detect::coverage::CoverageMatrix::builtin().unwrap();
+    let expected: Vec<String> = cov.rules.iter().map(|r| r.id.clone()).collect();
+    assert_eq!(expected.len(), 31, "the seed pack is 31 rules");
+
+    let v = json_out(sparrow().args(["--json", "rules", "list"]), 0);
+    let ids: Vec<String> = v["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_string())
+        .collect();
+    let mut sorted = ids.clone();
+    sorted.sort();
+    let mut expected_sorted = expected.clone();
+    expected_sorted.sort();
+    assert_eq!(
+        sorted, expected_sorted,
+        "rules list does not match the coverage matrix"
+    );
+
+    // Every coverage id has a file, which is what the lint now errors on.
+    let set = sparrow_core::detect::load::load_rules(&DataDirs::default()).unwrap();
+    let mut loaded: Vec<String> = set.rules.iter().map(|r| r.rule.id.clone()).collect();
+    loaded.sort();
+    assert_eq!(loaded, expected_sorted, "a coverage id has no rule file");
 }
 
 #[test]

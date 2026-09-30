@@ -88,11 +88,18 @@ fn gate_passes_for_the_sample_rules() {
 #[test]
 #[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn gate_passes_for_the_sample_rules_on_every_scenario_and_collector() {
-    // Every scenario and collector is checked and ALL failures are reported at once.
+    // Every scenario and collector is checked and ALL failures are reported at once, and the
+    // seed pack is complete on every one of them.
     let mut failed = Vec::new();
     for name in builtin_names().iter().filter(|n| **n != "volume") {
         for c in Collector::ALL {
             let (r, ..) = gate(name, *c);
+            if r.rules_unchecked != 0 {
+                failed.push(format!(
+                    "{name} {c:?}: {} rule expectations have no rule file",
+                    r.rules_unchecked
+                ));
+            }
             if !r.ok {
                 failed.push(format!("{name} {c:?}: {:#?}", r.problems));
             }

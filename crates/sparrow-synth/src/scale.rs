@@ -8,6 +8,8 @@ use crate::scenario::Scenario;
 use crate::{Error, Result};
 use chrono::Duration;
 use sparrow_core::Case;
+use sparrow_core::data::DataDirs;
+use sparrow_core::detect;
 use sparrow_core::ingest::FileStatus;
 use sparrow_core::ingest::parser::ParserRegistry;
 use sparrow_core::ingest::{IngestOptions, ingest_path};
@@ -16,6 +18,9 @@ use sparrow_core::profile::{ProfileOptions, refresh};
 use std::path::Path;
 use std::time::{Duration as StdDuration, Instant};
 
+/// How many of the slowest detect rules the harness reports.
+const SLOWEST_RULES: usize = 8;
+
 /// Wall-clock time each stage of a large-tree run took, with the row counts it produced.
 #[derive(Debug, Clone)]
 pub struct Timings {
@@ -23,6 +28,15 @@ pub struct Timings {
     pub ingest: StdDuration,
     pub profile: StdDuration,
     pub capabilities: StdDuration,
+    /// Detection over the whole seed pack (Task 12: all 31 rules; the plan budgets this at
+    /// under 10 s for the 1M-row volume case).
+    pub detect: StdDuration,
+    /// Rules the run planned for, and how many of them errored.
+    pub detect_rules: usize,
+    pub detect_errors: usize,
+    /// The slowest rules of the detect run, (rule id, duration_ms), longest first: what to read
+    /// when the detect time is over budget.
+    pub detect_slowest: Vec<(String, u64)>,
     pub ual_rows: u64,
     pub signins: u64,
     pub mia_rows: u64,
@@ -38,6 +52,7 @@ impl Timings {
              ingest:       {}\n\
              profile:      {}\n\
              capabilities: {}\n\
+             detect:       {} ({} rules, {} errored; slowest: {})\n\
              ual_events:   {}\n\
              signins:      {}\n\
              mia:          {}",
@@ -45,6 +60,14 @@ impl Timings {
             secs(self.ingest),
             secs(self.profile),
             secs(self.capabilities),
+            secs(self.detect),
+            self.detect_rules,
+            self.detect_errors,
+            self.detect_slowest
+                .iter()
+                .map(|(r, ms)| format!("{r} {ms}ms"))
+                .collect::<Vec<_>>()
+                .join(", "),
             self.ual_rows,
             self.signins,
             self.mia_rows,
@@ -118,6 +141,21 @@ pub fn run_perf(scenario: &Scenario, opts: &GenerateOptions, dir: &Path) -> Resu
     ))?;
     let capabilities = t.elapsed();
 
+    // The whole seed pack over the case (Task 12). The plan budgets this at under 10 s for the
+    // 1M-row volume case; when it is over, the per-rule `duration_ms` in `detection_runs` is
+    // what to read, and the architect decides what to do about it.
+    let t = Instant::now();
+    let detected = core(detect::run::run_with_dirs(
+        &mut case,
+        &DataDirs::default(),
+        &detect::DetectOptions {
+            rule_ids: Vec::new(),
+            tags: Vec::new(),
+            now: Some(manifest.collected_at),
+        },
+    ))?;
+    let detect = t.elapsed();
+
     let count = |sql: &str| -> Result<u64> {
         let n = case
             .conn()
@@ -130,6 +168,23 @@ pub fn run_perf(scenario: &Scenario, opts: &GenerateOptions, dir: &Path) -> Resu
         ingest,
         profile,
         capabilities,
+        detect,
+        detect_rules: detected.rules.len(),
+        detect_errors: detected
+            .rules
+            .iter()
+            .filter(|r| r.status == "error")
+            .count(),
+        detect_slowest: {
+            let mut slow: Vec<(String, u64)> = detected
+                .rules
+                .iter()
+                .map(|r| (r.rule_id.clone(), r.duration_ms))
+                .collect();
+            slow.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            slow.truncate(SLOWEST_RULES);
+            slow
+        },
         ual_rows: count("SELECT count(*) FROM ual_events")?,
         signins: count("SELECT count(*) FROM signins")?,
         mia_rows: count("SELECT count(*) FROM mail_items_accessed")?,

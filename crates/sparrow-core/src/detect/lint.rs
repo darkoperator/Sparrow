@@ -201,7 +201,7 @@ fn cross_check(set: &RuleSet, schema: &CaseSchema, cov: &CoverageMatrix, out: &m
         if !ids.contains(def.id.as_str()) {
             out.push(issue(
                 &def.id,
-                LintSeverity::Warning,
+                LintSeverity::Error,
                 "coverage entry has no rule file yet",
             ));
         }

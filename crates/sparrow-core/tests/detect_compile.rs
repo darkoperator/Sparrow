@@ -718,14 +718,17 @@ fn lint_cross_checks_the_coverage_matrix() {
     has("SPW-T-002", "first");
     has("SPW-T-003", "requires");
     has("SPW-T-004", "no coverage entry");
+    // A coverage entry with no rule file is an error, not a warning: the seed pack is
+    // complete, so a gap is a mistake to fix, not a note for later.
     let warn: Vec<_> = issues
         .iter()
         .filter(|i| i.severity == LintSeverity::Warning)
         .collect();
     assert!(
-        warn.iter()
-            .any(|i| i.rule_id == "SPW-T-099" && i.message.contains("no rule file"))
+        !warn.iter().any(|i| i.rule_id == "SPW-T-099"),
+        "a coverage entry without a rule file is still only a warning"
     );
+    has("SPW-T-099", "no rule file");
 }
 
 #[test]

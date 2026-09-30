@@ -22,7 +22,11 @@ pub struct CheckReport {
     pub ok: bool,
     pub collection_id: Option<i64>,
     pub problems: Vec<String>,
-    /// Manifest rules that have no rule file yet: their expectations are not checked.
+    /// Distinct rules the manifest carries expectations for (the seed pack, one expectation
+    /// line per rule and storyline).
+    pub rules_expected: usize,
+    /// Manifest rules that have no rule file yet: their expectations are not checked. Zero for
+    /// every built-in scenario: the pack is complete, so a non-zero count is a problem.
     pub rules_unchecked: usize,
     /// The detection gate (`check_detection`).
     pub detection: DetectionCheck,
@@ -129,6 +133,12 @@ fn check_inner(
         ok: problems.is_empty(),
         collection_id: collection.map(|(cid, _)| cid),
         problems,
+        rules_expected: manifest
+            .rules
+            .iter()
+            .map(|r| r.rule_id.as_str())
+            .collect::<BTreeSet<_>>()
+            .len(),
         rules_unchecked: manifest
             .rules
             .iter()

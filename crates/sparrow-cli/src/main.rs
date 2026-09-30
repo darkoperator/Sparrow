@@ -1345,8 +1345,8 @@ fn cmd_synth_check(manifest_path: &Path, case_path: &Path, json: bool) -> Result
             }
         }
         println!(
-            "{} rule expectations not checked (detection engine: Phase 6)",
-            report.rules_unchecked
+            "{} of {} rules checked, {} rule expectations not checked (no rule file)",
+            report.detection.rules_checked, report.rules_expected, report.rules_unchecked
         );
     }
     Ok(if report.ok {
