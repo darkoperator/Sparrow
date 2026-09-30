@@ -618,36 +618,40 @@ fn a_purview_export_upgrades_hawk_partial_rows() {
     let geoip = hawk.dir.join(hawk.manifest.geoip_dir.clone().unwrap());
     let as_of = hawk.manifest.collected_at + Duration::days(1);
 
-    // Hawk alone: a partial MailItemsAccessed row exists, its key is attested by the manifest
-    // (the key set hash above 5000), and it has its window's single synthetic child.
+    // Hawk alone: partial MailItemsAccessed rows exist, their keys are attested by the manifest
+    // (the key set hash above 5000), and each has its window's single synthetic child. Record
+    // the partial rows and their child counts now, because only a Bind access carries
+    // Folders[].FolderItems - a Sync access lists the folder alone, so it legitimately has no
+    // per-item message id. The access type of a partial row is unknown until the full copy
+    // arrives (the audit-data-only window drops OperationProperties), so which partial row the
+    // export turns into a Bind record can only be decided after the upgrade.
     let mut case = ingest_tree(&hawk);
     assert_keys_match_manifest(&case, &hawk.manifest, "ual_events");
-    let key: String = case
-        .conn()
-        .query_row(
-            "SELECT CAST(record_id AS VARCHAR) FROM ual_events
-             WHERE operation = 'MailItemsAccessed' AND data_completeness = 'partial'
-             ORDER BY record_id LIMIT 1",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    let children_before = count(
-        &case,
-        &format!("SELECT count(*) FROM mail_items_accessed WHERE record_id = '{key}'"),
-    );
-    assert!(children_before > 0, "the partial row has no child");
-    assert_eq!(
-        text(
-            &case,
-            &format!(
-                "SELECT CAST(data_completeness AS VARCHAR) FROM ual_events WHERE record_id = '{key}'"
+    let partial_before: BTreeMap<String, i64> = {
+        let mut st = case
+            .conn()
+            .prepare(
+                "SELECT CAST(u.record_id AS VARCHAR),
+                        (SELECT count(*) FROM mail_items_accessed x WHERE x.record_id = u.record_id)
+                 FROM ual_events u
+                 WHERE u.operation = 'MailItemsAccessed' AND u.data_completeness = 'partial'",
             )
-        ),
-        "partial"
+            .unwrap();
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    };
+    assert!(
+        !partial_before.is_empty(),
+        "the partial capture has no MailItemsAccessed row"
+    );
+    assert!(
+        partial_before.values().all(|n| *n > 0),
+        "a partial row has no child: {partial_before:?}"
     );
 
-    // The full export replaces the partial row and its synthetic child with the real children.
+    // The full export replaces the partial rows and their synthetic children with the real ones.
     let report = ingest_path(
         &mut case,
         &portal.dir,
@@ -679,6 +683,31 @@ fn a_purview_export_upgrades_hawk_partial_rows() {
         },
     )
     .unwrap();
+    // Pick a row the full copy upgraded to a Bind access with real per-item children - the
+    // only kind that has a message id to find. Assert one exists, so the checks below are
+    // never vacuous.
+    let mut st = case
+        .conn()
+        .prepare(
+            "SELECT CAST(u.record_id AS VARCHAR) FROM ual_events u
+             JOIN mail_items_accessed a ON a.record_id = u.record_id
+             WHERE u.operation = 'MailItemsAccessed' AND a.access_type = 'bind'
+               AND a.internet_message_id IS NOT NULL
+             ORDER BY u.record_id",
+        )
+        .unwrap();
+    let upgraded_bind: Vec<String> = st
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .filter(|k| partial_before.contains_key(k))
+        .collect();
+    assert!(
+        !upgraded_bind.is_empty(),
+        "the full export upgraded no partial MailItemsAccessed row to a Bind access"
+    );
+    let key = upgraded_bind[0].clone();
+    let children_before = partial_before[&key];
     assert_eq!(
         text(
             &case,
