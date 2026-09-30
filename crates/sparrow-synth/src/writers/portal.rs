@@ -451,15 +451,28 @@ fn trace_row(t: &TraceMsg) -> Vec<String> {
 }
 
 /// `MTSummary_Message trace report - _<yyyy-MM-ddTHHmmss.fffZ>__<guid>.csv`: the Exchange admin
-/// center's summary download, a Windows-1252 file with CRLF and every field quoted. The captures
-/// read as that encoding (survey §3: A/B are UTF-16LE without a BOM, D is neither valid UTF-8,
-/// UTF-16 nor cp1252 -- an Excel re-save -- so the reader's Windows-1252 fallback is what the
-/// analyst's ingest sees), and a subject with a non-ASCII character exercises it.
+/// center's summary download, UTF-16LE without a byte-order mark, every field quoted, CRLF
+/// (survey §3, captures A and B) -- unless the analyst re-saved it through Excel, which about
+/// one tree in four is: a single-byte file with an unquoted header, which the reader decodes
+/// with its Windows-1252 fallback (capture D, "not valid UTF-8, UTF-16 or cp1252 ... unquoted
+/// header ... probably re-saved by Excel"). A subject with a non-ASCII character exercises the
+/// single-byte path.
 fn write_message_trace(world: &World, trace: &[&TraceMsg], tree: &mut Tree<'_>) -> Result<()> {
     let mut rng = stream(world.seed, "portal/message_trace");
     let ts = world.collected_at().format("%Y-%m-%dT%H%M%S%.3fZ");
     let rel = format!("MTSummary_Message trace report - _{ts}__{}.csv", rng.uuid());
-    let spec = FileSpec::new(&rel, Some("portal.message_trace"), Encoding::Cp1252);
+    let resaved = world.message_trace_excel_resave;
+    let spec = FileSpec::new(
+        &rel,
+        Some("portal.message_trace"),
+        if resaved {
+            Encoding::Cp1252
+        } else {
+            Encoding::Utf16LeNoBom
+        },
+    );
+    // The download quotes every field; an Excel re-save writes the header bare and quotes a
+    // data field only when it has to.
     let all_quoted = |fields: &[String]| {
         let mut line = fields
             .iter()
@@ -470,9 +483,26 @@ fn write_message_trace(world: &World, trace: &[&TraceMsg], tree: &mut Tree<'_>) 
         line
     };
     let header: Vec<String> = MT_HEADER.iter().map(|h| h.to_string()).collect();
-    let mut text = all_quoted(&header);
+    let mut text = if resaved {
+        let mut line = header.join(",");
+        line.push_str("\r\n");
+        line
+    } else {
+        all_quoted(&header)
+    };
     for t in trace {
-        text.push_str(&all_quoted(&trace_row(t)));
+        let row = trace_row(t);
+        text.push_str(&if resaved {
+            let mut line = row
+                .iter()
+                .map(|f| csv_field(f))
+                .collect::<Vec<_>>()
+                .join(",");
+            line.push_str("\r\n");
+            line
+        } else {
+            all_quoted(&row)
+        });
     }
     tree.write(&spec, &text)?;
     for (i, t) in trace.iter().enumerate() {

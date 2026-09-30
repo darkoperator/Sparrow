@@ -256,22 +256,37 @@ artifacts:
     formats: [csv, xlsx]
     encodings: {any: [utf-8-bom]}
     line_ends: lf
-    # The 57 columns of the 4.x export (the 3.x one has 49), after the header cleanup the
-    # reader applies to a CSV header and a workbook header alike: trimmed, inner spaces
-    # collapsed, a repeated column suffixed `_2`. The files themselves carry the portal's own
-    # spellings -- `Application ID ` and `Resource ID ` with a trailing space,
-    # `Autonomous system  number` with two, `Incoming token type` twice (survey §3).
+    # The 57 columns of the 4.x export and the 49 of the 3.x one (capture A: the same list
+    # without the eight the survey brackets as optional, survey §3, InteractiveSignIns), after
+    # the header cleanup the reader applies to a CSV header and a workbook header alike:
+    # trimmed, inner spaces collapsed, a repeated column suffixed `_2`. The files themselves
+    # carry the portal's own spellings in both versions -- `Application ID ` and `Resource ID `
+    # with a trailing space, `Autonomous system  number` with two, `Incoming token type` twice
+    # -- and the survey records no version with clean spellings, the 3.x workbook being the
+    # same 57 headers. The generator writes the 57-column export.
     columns:
       - ["Date (UTC)", "Request ID", "User agent", "Correlation ID", "User ID", "User", "Username", "User type", "Cross tenant access type", "Incoming token type", "Authentication Protocol", "Unique token identifier", "Original transfer method", "Client credential type", "Token Protection - Sign In Session", "Token Protection - Sign In Session StatusCode", "Application", "Application ID", "App owner tenant ID", "Resource", "Resource ID", "Resource tenant ID", "Resource owner tenant ID", "Home tenant ID", "Home tenant name", "IP address", "Location", "Status", "Sign-in error code", "Failure reason", "Client app", "Device ID", "Browser", "Operating System", "Compliant", "Managed", "Join Type", "Multifactor authentication result", "Multifactor authentication auth method", "Multifactor authentication auth detail", "Authentication requirement", "Sign-in identifier", "Session ID", "IP address (seen by resource)", "Through Global Secure Access", "Global Secure Access IP address", "Autonomous system number", "Flagged for review", "Token issuer type", "Incoming token type_2", "Token issuer name", "Latency", "Conditional Access", "Managed Identity type", "Associated Resource Id", "Federated Token Id", "Federated Token Issuer"]
+      - ["Date (UTC)", "Request ID", "User agent", "Correlation ID", "User ID", "User", "Username", "User type",
+         "Cross tenant access type", "Incoming token type", "Authentication Protocol", "Unique token identifier",
+         "Original transfer method", "Client credential type", "Token Protection - Sign In Session", "Application",
+         "Application ID", "Resource", "Resource ID", "Resource tenant ID", "Home tenant ID", "Home tenant name",
+         "IP address", "Location", "Status", "Sign-in error code", "Failure reason", "Client app", "Device ID",
+         "Browser", "Operating System", "Compliant", "Managed", "Join Type", "Multifactor authentication result",
+         "Multifactor authentication auth method", "Multifactor authentication auth detail",
+         "Authentication requirement", "Sign-in identifier", "IP address (seen by resource)", "Autonomous system number",
+         "Flagged for review", "Token issuer type", "Incoming token type_2", "Token issuer name", "Latency",
+         "Conditional Access", "Managed Identity type", "Associated Resource Id"]
     dates: {"Date (UTC)": [iso_z]}
   - artifact: portal.message_trace
     collector: portal
     source: hawk survey §3 (Exchange message trace summary)
     formats: [csv]
-    # The summary download is a Windows-1252 file: A/B are UTF-16LE without a byte-order mark
-    # and D is neither valid UTF-8, UTF-16 nor cp1252 (an Excel re-save), so the reader's
-    # Windows-1252 fallback is what an analyst's ingest sees of the real captures.
-    encodings: {any: [utf-16le, utf-8, windows-1252]}
+    # The download is UTF-16LE without a byte-order mark with a quoted header and CRLF
+    # (captures A and B). The single-byte file is the one the analyst re-saved through Excel:
+    # capture D is "not valid UTF-8, UTF-16 or cp1252 ... unquoted header ... probably re-saved
+    # by Excel", which the reader decodes with its Windows-1252 fallback, and the generator
+    # writes it on about one tree in four.
+    encodings: {any: [utf-16le, windows-1252]}
     columns:
       - [origin_timestamp_utc, sender_address, recipient_status, message_subject, total_bytes, message_id, network_message_id, original_client_ip, directionality, connector_id, delivery_priority]
     dates: {origin_timestamp_utc: [iso_z]}

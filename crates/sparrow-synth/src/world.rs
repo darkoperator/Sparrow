@@ -131,6 +131,12 @@ pub struct World {
     /// survey's two exports being two versions of the same download, so one export never
     /// mixes the two forms.
     pub purview_culture_dates: bool,
+    /// The message-trace summary as the analyst left it: `true` is the single-byte file an
+    /// analyst re-saved through Excel (survey §3 capture D, "not valid UTF-8, UTF-16 or cp1252
+    /// ... unquoted header ... probably re-saved by Excel"), which the reader decodes with its
+    /// Windows-1252 fallback; `false` is the download itself, UTF-16LE without a byte-order mark
+    /// with a quoted header (captures A and B). About one tree in four, the download only.
+    pub message_trace_excel_resave: bool,
     pub victims: BTreeSet<u32>,
     /// Task 25 scale: effective benign UAL filler rows over the window (`apply_scale`).
     pub scale_ual: u64,
@@ -230,6 +236,9 @@ impl World {
             attacker,
             trips: Vec::new(),
             purview_culture_dates: stream(seed, &format!("purview/{}", scenario.name)).chance(0.5),
+            message_trace_excel_resave: stream(seed, &format!("trace_resave/{}", scenario.name))
+                .below(4)
+                == 0,
             victims,
             scale_ual: 0,
             scale_signins: 0,
