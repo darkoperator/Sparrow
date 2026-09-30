@@ -441,8 +441,8 @@ fn message_trace_summary_is_utf16_by_default_and_cp1252_after_an_excel_resave() 
         let (encoding, quoted, bytes, text) = summary(seed);
         match encoding {
             sparrow_core::readers::text::TextEncoding::Utf16Le => {
-                // No BOM, the header quoted, and a subject with a non-ASCII character as a
-                // surrogate pair.
+                // No BOM, the header quoted, and the non-ASCII character in the subject as
+                // its own UTF-16 code unit (0x00E9), not a UTF-8 sequence.
                 assert!(!bytes.starts_with(&[0xFF, 0xFE]), "seed {seed}: a BOM");
                 assert!(quoted, "seed {seed}: an unquoted header");
                 assert_eq!(&bytes[..4], &[b'"', 0, b'o', 0], "seed {seed}");
@@ -488,7 +488,8 @@ fn decoded_has_non_ascii_subject(seed: u64) -> bool {
         .iter()
         .find(|(rel, _)| rel.contains(&format!("{}/MTSummary_", m.root)))
         .expect("the message-trace summary");
-    // A cp1252 subject byte: 0xA0-0xFF outside ASCII, which UTF-16 would hold as a surrogate.
+    // A cp1252 subject byte: 0xA0-0xFF outside ASCII, which in the UTF-16 file is the single
+    // code unit 0x00E9 rather than the byte the single-byte file carries.
     bytes.iter().any(|b| (0xA0..=0xFF).contains(b))
 }
 
@@ -614,14 +615,41 @@ fn purview_creation_date_follows_the_export_version_of_the_tree() {
         &de[..3]
     );
 
-    // The parser reads the day-first form back as the day and month it was written as: a
-    // month-first reading of `dd/MM` would move every record whose day is above 12.
+    // The day-first `CreationDate` is only the *fallback* for the event time: AuditData's
+    // ISO `CreationTime` is what a Purview row normally carries, so the row below is the one
+    // that exercises the fallback -- it has no `CreationTime`, which is where a month-first
+    // misread of `dd/MM` would show. `purview_creation_date_falls_back_to_a_day_first_value`
+    // tests that path on its own.
     let dir = tempfile::tempdir().unwrap();
     let mut o = opts(seed);
     o.culture = Culture::EnGb;
     let m = generate_to_dir(&load("bec-aitm").unwrap(), &o, dir.path()).unwrap();
-    let case = ingest_generated(dir.path(), &m);
-    let path = std::fs::read_dir(dir.path().join(&m.root))
+    assert!(check(&m, &ingest_generated(dir.path(), &m)).unwrap().ok);
+
+    // And the instant survives either form: the check is green on a tree of each kind.
+    for seed in 1..=8u64 {
+        let dir = tempfile::tempdir().unwrap();
+        let m = generate_to_dir(&load("bec-aitm").unwrap(), &opts(seed), dir.path()).unwrap();
+        let report = check(&m, &ingest_generated(dir.path(), &m)).unwrap();
+        assert!(report.ok, "seed {seed}: {:#?}", report.problems);
+    }
+}
+
+/// The day-first Purview `CreationDate` is the event time only when the row's AuditData has no
+/// `CreationTime` of its own (`normalize::ual::event_time_text`), so this is the case it takes:
+/// the mailbox-activity rows of a day-first export, whose AuditData carries no ISO time. Their
+/// event time is the `dd/MM` cell, and a month-first reading of it would move the month of
+/// every row whose day is above 12 -- so the test takes one of those and asks for the instant it
+/// was written as. (A generated row with a `CreationTime` proves nothing here: the event time
+/// would come from that instead.)
+#[test]
+fn purview_creation_date_falls_back_to_a_day_first_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut o = opts(2);
+    o.culture = Culture::EnGb;
+    let m = generate_to_dir(&load("bec-aitm").unwrap(), &o, dir.path()).unwrap();
+    let root = dir.path().join(&m.root);
+    let export = std::fs::read_dir(&root)
         .unwrap()
         .map(|e| e.unwrap().path())
         .find(|p| {
@@ -630,33 +658,81 @@ fn purview_creation_date_follows_the_export_version_of_the_tree() {
                 .unwrap_or(false)
         })
         .expect("the export");
-    let text = String::from_utf8(std::fs::read(&path).unwrap()).unwrap();
-    // The first row whose day is above 12: the file itself then proves it is day-first, so a
-    // month-first reading cannot pass unnoticed.
-    let (id, cell) = text
-        .trim_end()
-        .split("\r\n")
-        .skip(1)
-        .filter_map(|row| {
-            let mut f = row.split(',');
-            let id = f.next()?.to_string();
-            let cell = f.next()?.to_string();
-            let day: u32 = cell.split('/').next()?.parse().ok()?;
-            (day > 12).then_some((id, cell))
-        })
-        .next()
-        .expect("a row with a day above 12");
-    // `dd/MM/yyyy HH:mm:ss`
-    let (day, rest) = cell.split_once('/').unwrap();
-    let (month, rest) = rest.split_once('/').unwrap();
-    let (year, hms) = rest.split_once(' ').unwrap();
-    let mut parts = hms.split(':');
-    let (h, mi, sec) = (
-        parts.next().unwrap(),
-        parts.next().unwrap(),
-        parts.next().unwrap(),
+    let text = String::from_utf8(std::fs::read(&export).unwrap()).unwrap();
+    assert!(
+        !text
+            .lines()
+            .nth(1)
+            .unwrap()
+            .split(',')
+            .nth(1)
+            .unwrap()
+            .ends_with('Z'),
+        "this seed wrote the ISO form, not the culture form"
     );
-    let want = format!("{year}-{month}-{day}T{h}:{mi}:{sec}");
+
+    // A row whose day is above 12 (so a month-first reading is impossible) with the ISO
+    // `CreationTime` taken out of its AuditData, so the event time can only be the cell.
+    let mut lines: Vec<String> = text.trim_end().split("\r\n").map(String::from).collect();
+    let mut picked = None;
+    for (i, row) in lines.iter().enumerate().skip(1) {
+        // id, CreationDate, RecordType, Operation, UserId, then the quoted AuditData and the
+        // two empty trailing columns.
+        let mut f = row.splitn(6, ',');
+        let head: Vec<&str> = (0..5).map(|_| f.next().unwrap()).collect();
+        let (id, cell) = (head[0].to_string(), head[1].to_string());
+        if cell.contains('T') || cell.split('/').next().unwrap().parse::<u32>().unwrap_or(0) <= 12 {
+            continue;
+        }
+        let audit = f
+            .next()
+            .unwrap()
+            .trim_end_matches(',')
+            .trim_matches('"')
+            .replace("\"\"", "\"");
+        let mut value: serde_json::Value =
+            serde_json::from_str(&audit).expect("the AuditData is JSON");
+        if value.get("CreationTime").is_none() {
+            continue;
+        }
+        value
+            .as_object_mut()
+            .expect("an object")
+            .remove("CreationTime");
+        let escaped = serde_json::to_string(&value)
+            .expect("JSON")
+            .replace('"', "\"\"");
+        let (d, r) = cell.split_once('/').unwrap();
+        let (mo, r) = r.split_once('/').unwrap();
+        let (y, hms) = r.split_once(' ').unwrap();
+        let want = format!("{y}-{mo}-{d}T{hms}");
+        // The same row, the same five leading fields, the ISO key gone from the AuditData.
+        lines[i] = format!("{},\"{escaped}\",,", head.join(","));
+        {
+            let back: serde_json::Value = serde_json::from_str(
+                &lines[i]
+                    .splitn(6, ',')
+                    .nth(5)
+                    .unwrap()
+                    .trim_end_matches(',')
+                    .trim_matches('"')
+                    .replace("\"\"", "\""),
+            )
+            .expect("the rewritten AuditData is JSON");
+            assert!(
+                back.get("CreationTime").is_none(),
+                "the ISO key is still there: {back}"
+            );
+        }
+        picked = Some((id, want));
+        break;
+    }
+    let (id, want) = picked.expect("a row with a day above 12");
+    std::fs::write(&export, format!("{}\r\n", lines.join("\r\n"))).unwrap();
+
+    // The tree is edited on purpose, so it is ingested and not `check`ed: what is asked here is
+    // the instant one row lands on, with the manifest's culture as the analyst's `--culture`.
+    let case = ingest_generated(dir.path(), &m);
     let got: Option<String> = case
         .conn()
         .query_row(
@@ -669,14 +745,6 @@ fn purview_creation_date_follows_the_export_version_of_the_tree() {
     assert_eq!(
         got.as_deref(),
         Some(want.as_str()),
-        "the day-first CreationDate {cell} was read as another date"
+        "the fallback CreationDate was read as another date (or the row was lost)"
     );
-
-    // And the instant survives either form: the check is green on a tree of each kind.
-    for seed in 1..=8u64 {
-        let dir = tempfile::tempdir().unwrap();
-        let m = generate_to_dir(&load("bec-aitm").unwrap(), &opts(seed), dir.path()).unwrap();
-        let report = check(&m, &ingest_generated(dir.path(), &m)).unwrap();
-        assert!(report.ok, "seed {seed}: {:#?}", report.problems);
-    }
 }
