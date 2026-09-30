@@ -152,7 +152,10 @@ fn audit_config_benign(w: &mut World, ctx: &mut Ctx) -> Result<()> {
         session,
     );
     w.audit.admin_audit_log_age_limit = "180.00:00:00".to_string();
-    ctx.ev.push(Evidence::AuditConfig);
+    // No `Evidence::AuditConfig`: the organization-level state row is one row for the whole
+    // tenant, and what it shows to SPW-CFG-001 (ingestion, auditing on or off) is set by the
+    // tamper, not by this change. A shared state row cannot identify a storyline; the cmdlet's
+    // own UAL record is this look-alike's evidence.
 
     let at = t + Duration::minutes(2);
     push_cmdlet(

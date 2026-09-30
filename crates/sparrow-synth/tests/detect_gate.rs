@@ -331,3 +331,52 @@ fn a_tenant_wide_not_applicable_must_be_in_the_run_log() {
         r.detection
     );
 }
+
+fn manifest_of(name: &str, c: Collector) -> Manifest {
+    tree(name, c).1
+}
+
+/// The organization-level `audit_config` state row cannot identify a storyline: the benign
+/// audit-config change (a look-alike of SPW-CFG-001) must not own the row the tamper sets.
+#[test]
+fn a_shared_org_state_row_belongs_to_no_lookalike() {
+    for c in [Collector::Hawk4, Collector::Invictus] {
+        let m = manifest_of("audit-tamper", c);
+        let benign = m.storylines.iter().find(|s| s.id == "l-auditok").unwrap();
+        assert!(
+            benign.evidence.iter().all(|e| e.what != "AuditConfig"),
+            "{c:?}: the benign change owns the shared audit_config row: {:?}",
+            benign.evidence
+        );
+        let o = m
+            .rules
+            .iter()
+            .find(|r| r.rule_id == "SPW-CFG-001" && r.storyline == "l-auditok");
+        // Its own cmdlet records still make it a look-alike of the rule.
+        assert!(
+            o.is_some_and(|o| o.outcome == RuleOutcome::NoHit),
+            "{c:?}: {o:?}"
+        );
+    }
+}
+
+/// Invictus's mailbox files carry no forwarding field, and the Set-Mailbox record falls in the
+/// UAL-off window: nothing of the forwarding storyline landed, so the outcome is NoEvidence.
+#[test]
+fn forwarding_in_the_ual_off_window_has_no_evidence_on_invictus() {
+    let inv = manifest_of("audit-tamper", Collector::Invictus);
+    let o = inv
+        .rules
+        .iter()
+        .find(|r| r.rule_id == "SPW-MAIL-004" && r.storyline == "s-fwd")
+        .unwrap();
+    assert_eq!(o.outcome, RuleOutcome::NoEvidence, "{o:?}");
+    // A collector whose mailbox files carry the forwarding address still expects the hit.
+    let h4 = manifest_of("audit-tamper", Collector::Hawk4);
+    let o = h4
+        .rules
+        .iter()
+        .find(|r| r.rule_id == "SPW-MAIL-004" && r.storyline == "s-fwd")
+        .unwrap();
+    assert_eq!(o.outcome, RuleOutcome::Hit, "{o:?}");
+}

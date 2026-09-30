@@ -303,11 +303,15 @@ fn collector_name(out: &TreeOutcome) -> &'static str {
 /// delivered to `admin_audit_events` by the writer itself).
 fn delivered_tables(
     e: &Evidence,
+    rule: &RuleDef,
     ual: &BTreeMap<Uuid, &Ual>,
     out: &TreeOutcome,
 ) -> BTreeSet<String> {
     let mut set = BTreeSet::new();
-    for (table, _) in out.delivered.get(e).into_iter().flatten() {
+    for (table, sighting) in out.delivered.get(e).into_iter().flatten() {
+        if table == "mailboxes" && !mailbox_file_carries(rule, &sighting.rel_path, out) {
+            continue;
+        }
         if let (Evidence::Ual(id), "ual_events") = (e, table.as_str()) {
             if let Some(u) = ual.get(id) {
                 set.extend(ual_tables(u).iter().map(|t| t.to_string()));
@@ -316,6 +320,23 @@ fn delivered_tables(
         set.insert(table.clone());
     }
     set
+}
+
+/// Forwarding rules read a forwarding attribute of the mailbox row. The Microsoft-Extractor-Suite
+/// mailbox files (permissions, audit status) list every mailbox but carry no forwarding field, so
+/// a mailbox row delivered from them is not evidence for these rules.
+const FORWARDING_RULES: [&str; 2] = ["SPW-HAWK-011", "SPW-MAIL-004"];
+
+fn mailbox_file_carries(rule: &RuleDef, rel_path: &str, out: &TreeOutcome) -> bool {
+    if !FORWARDING_RULES.contains(&rule.id.as_str()) {
+        return true;
+    }
+    let artifact = out
+        .files
+        .iter()
+        .find(|f| f.rel_path == rel_path)
+        .and_then(|f| f.artifact_id.as_deref());
+    !artifact.is_some_and(|a| a.starts_with("inv."))
 }
 
 /// The outcome of every rule on every storyline record whose kind it lists (positive or
@@ -402,7 +423,7 @@ fn outcome(
     let got: BTreeSet<String> = r
         .evidence
         .iter()
-        .flat_map(|e| delivered_tables(e, ual, out))
+        .flat_map(|e| delivered_tables(e, rule, ual, out))
         .collect();
     let hit: Vec<String> = rule
         .tables
