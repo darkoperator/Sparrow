@@ -214,13 +214,14 @@ COMMENT ON COLUMN timeline.finding_ids IS 'The finding_id of each such finding, 
 -- row admitted by `record_type_name` under another operation name. All three columns now come
 -- from ONE classification, computed once per row in a CTE, so a row is a success exactly when its
 -- result is 'success' and cannot disagree with it:
---   interrupt  UserLoginFailed + ResultStatus Success + a non-empty LogonError
---   failure    ResultStatus Failed
---   success    otherwise
--- `operation` is consulted only for the interrupt test, because that is the one case where the
--- operation and the ResultStatus deliberately differ. A `UserLoginFailed` whose ResultStatus is
--- neither (the captures hold a few with no LogonError) therefore reads as a success, which is the
--- "success otherwise" rule applied literally.
+--   failure    ResultStatus Failed           (tested first, so it holds whatever the operation)
+--   interrupt  UserLoginFailed + ResultStatus Success
+--   success    otherwise, i.e. a UserLoggedIn with ResultStatus Success
+-- The branches are in that order because "ResultStatus Failed is a failure" is unconditional,
+-- while the operation only separates the two kinds of `UserLoginFailed` row that share the
+-- ResultStatus Success: the user answered the prompt (an interrupt) rather than completing the
+-- sign-in. A `LogonError` is *not* required for an interrupt -- the captures hold a few such rows
+-- with an empty one, and an unanswered prompt is still an interrupt, not a successful logon.
 CREATE OR REPLACE VIEW auth_events AS
 WITH classified AS (
   SELECT s.event_time, s.time_tz_assumed, 'signins' AS source_table, s.record_key,
@@ -235,12 +236,11 @@ WITH classified AS (
   SELECT u.event_time, u.time_tz_assumed, 'ual_events', CAST(u.record_id AS VARCHAR), 'ual_logon', u.user_upn,
          NULL,
          CASE
-           WHEN u.operation = 'UserLoginFailed'
-             AND lower(coalesce(u.result_status, '')) = 'success'
-             AND coalesce(u.audit_data->>'$.LogonError', '') <> ''
-             THEN 'interrupt'
            WHEN lower(coalesce(u.result_status, '')) IN ('failed', 'false')
              THEN 'failure'
+           WHEN u.operation = 'UserLoginFailed'
+             AND lower(coalesce(u.result_status, '')) = 'success'
+             THEN 'interrupt'
            ELSE 'success'
          END,
          TRY_CAST(u.audit_data->>'$.ErrorNumber' AS INTEGER), u.audit_data->>'$.LogonError', u.client_ip,
@@ -264,8 +264,8 @@ COMMENT ON COLUMN auth_events.event_type IS 'signins.event_type (interactive, no
 COMMENT ON COLUMN auth_events.user_upn IS 'signins.user_upn or ual_events.user_upn.';
 COMMENT ON COLUMN auth_events.user_id IS 'signins.user_id; NULL for a UAL row (UAL carries no Entra object id).';
 COMMENT ON COLUMN auth_events.succeeded IS 'True exactly when `result` is ''success'', which is how it is derived (one classification, so the two can never disagree). A sign-ins row succeeds when its error_code is 0 or absent; a UAL row succeeds unless its ResultStatus is Failed or it is an interrupt. False on both a failure and an interrupt -- read `result` for which.';
-COMMENT ON COLUMN auth_events.interrupt IS 'True exactly when `result` is ''interrupt'', which is how it is derived: a UAL UserLoginFailed row whose ResultStatus is Success and whose LogonError is non-empty, i.e. the credential prompt the user answered. Always false for a signins row (a signins export holds no interrupted attempt) and for a successful logon.';
-COMMENT ON COLUMN auth_events.result IS 'Which of the three the row is -- the single classification `succeeded` and `interrupt` are both derived from, so all three always agree. ''interrupt'': a UAL row that is UserLoginFailed with ResultStatus Success and a non-empty LogonError (a prompt the user answered). ''failure'': a signins row with a non-zero error_code, else a UAL row whose ResultStatus is Failed (or False). ''success'': everything else, including a UserLoginFailed row whose ResultStatus is neither.';
+COMMENT ON COLUMN auth_events.interrupt IS 'True exactly when `result` is ''interrupt'', which is how it is derived: a UAL UserLoginFailed row whose ResultStatus is Success, i.e. the credential prompt the user answered. The LogonError may be empty and is not consulted. Always false for a signins row (a sign-in export holds no interrupted attempt) and for a successful logon.';
+COMMENT ON COLUMN auth_events.result IS 'Which of the three the row is -- the single classification `succeeded` and `interrupt` are both derived from, so all three always agree. ''failure'': a signins row with a non-zero error_code, else a UAL row whose ResultStatus is Failed (or False), whatever its operation. ''interrupt'': a UAL row that is UserLoginFailed with ResultStatus Success, i.e. a credential prompt the user answered and the sign-in went on to complete; the LogonError may be empty and is not consulted. ''success'': everything else -- a UserLoggedIn with ResultStatus Success, and a UAL row whose ResultStatus is neither Failed nor Success.';
 COMMENT ON COLUMN auth_events.error_code IS 'signins.error_code, or the UAL AuditData ErrorNumber when present and numeric.';
 COMMENT ON COLUMN auth_events.failure_reason IS 'signins.failure_reason, or the UAL AuditData LogonError.';
 COMMENT ON COLUMN auth_events.ip IS 'signins.ip or ual_events.client_ip.';

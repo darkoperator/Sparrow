@@ -636,30 +636,45 @@ fn timeline_view_is_the_phase_5_definition_plus_findings() {
 fn auth_events_never_contradicts_itself() {
     let (_dir, mut case) = case_with_events();
     // (id, operation, result_status, LogonError)
-    let rows = [
+    let rows: [(&str, &str, &str, Option<&str>); 4] = [
         // A UserLoggedIn that nevertheless carries ResultStatus Failed.
         (
             "b3333333-3333-4333-8333-333333333331",
             "UserLoggedIn",
             "Failed",
-            "Invalid user name or password",
+            Some("Invalid user name or password"),
         ),
         // An STS-logon row admitted by its record type, under another operation name.
         (
             "b3333333-3333-4333-8333-333333333332",
             "StsLogonSomethingElse",
             "Failed",
-            "Invalid user name or password",
+            Some("Invalid user name or password"),
         ),
         // The same, with a ResultStatus that is neither, to pin the "success otherwise" rule.
         (
             "b3333333-3333-4333-8333-333333333333",
             "StsLogonSomethingElse",
             "Weird",
-            "Whatever",
+            Some("Whatever"),
+        ),
+        // An interrupt whose row carries no LogonError at all: still an interrupt, not a success
+        // and not a failure. The architect's ruling makes the LogonError optional.
+        (
+            "b3333333-3333-4333-8333-333333333334",
+            "UserLoginFailed",
+            "Success",
+            None,
         ),
     ];
     for (id, operation, status, error) in rows {
+        let error = error.unwrap_or_default();
+        // A row with no LogonError has no such key, as a real one would.
+        let logon_error = if error.is_empty() {
+            String::new()
+        } else {
+            format!(r#""LogonError":"{error}","#)
+        };
         insert_record(
             &case,
             "contoso.example",
@@ -676,7 +691,7 @@ fn auth_events_never_contradicts_itself() {
                 "audit_data": format!(
                     "{{\"CreationTime\":\"2026-09-14T11:00:00\",\"Id\":\"{id}\",\
                       \"Operation\":\"{operation}\",\"ResultStatus\":\"{status}\",\
-                      \"Workload\":\"AzureActiveDirectory\",\"LogonError\":\"{error}\",\
+                      \"Workload\":\"AzureActiveDirectory\",{logon_error}\
                       \"ErrorNumber\":50126,\"ClientIP\":\"203.0.113.10\",\
                       \"UserId\":\"alice@contoso.example\"}}"
                 ),
@@ -743,4 +758,26 @@ fn auth_events_never_contradicts_itself() {
         "an unknown ResultStatus should fall through to success"
     );
     assert_eq!(result, "success");
+
+    // A UserLoginFailed + Success whose row carries no LogonError at all is still an interrupt:
+    // the user answered a prompt (or the row records one), which is neither a completed sign-in
+    // nor a failure.
+    let (succeeded, result, interrupt): (bool, String, bool) = case
+        .conn()
+        .query_row(
+            "SELECT succeeded, result, interrupt FROM auth_events \
+             WHERE source_table = 'ual_events' AND record_key = $1",
+            ["b3333333-3333-4333-8333-333333333334"],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert!(
+        !succeeded,
+        "a UserLoginFailed + Success with no LogonError was a successful logon"
+    );
+    assert_eq!(
+        result, "interrupt",
+        "no LogonError must not make it a failure"
+    );
+    assert!(interrupt, "the interrupt flag is not set");
 }
