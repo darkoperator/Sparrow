@@ -424,15 +424,21 @@ rules:
     requires_evidence: []
     needs_geoip: true
     collectors: [hawk3, hawk4, invictus, portal]
-    # The correlation negatives each carry a successful sign-in of the attacker's proxy address (a
-    # hosting ASN, far from the user's home), which pairs with a neighbouring home sign-in on
-    # either side: the hit is the hosting end of the pair, else the later sign-in. oauth_consent
-    # is not listed (its replay sign-in pairs only in some scenarios; see baseline_allow).
-    positives: [aitm_signin, inbox_rule_after_stale_risk, mfa_after_stale_risk, anonymous_link_after_stale_risk]
+    # Only aitm_signin always meets the logic (its proxy sign-in pairs with the user's home sign-in
+    # on every seed). The stale-risk negatives and oauth_consent each carry a hosting sign-in far
+    # from home too, but whether it is over 500 km and 900 km/h from the user's seeded home
+    # location depends on the seed and the scenario, so they are exceptions, not positives.
+    positives: [aitm_signin]
     lookalikes: [plausible_travel]
     baseline_allow:
       - kind: oauth_consent
         reason: "in hawk-investigate the consenting attacker sign-in from a far hosting location follows the victim's home sign-in; it pairs only in that scenario"
+      - kind: inbox_rule_after_stale_risk
+        reason: "the storyline carries a successful hosting sign-in from the attacker's address that is an impossible-travel pair with a neighbouring home sign-in only on some seeds and scenarios (the user's home location is seeded and the address is not always over 500 km and 900 km/h away), so it cannot be a per-kind positive"
+      - kind: mfa_after_stale_risk
+        reason: "the storyline carries a successful hosting sign-in from the attacker's address that is an impossible-travel pair with a neighbouring home sign-in only on some seeds and scenarios (the user's home location is seeded and the address is not always over 500 km and 900 km/h away), so it cannot be a per-kind positive"
+      - kind: anonymous_link_after_stale_risk
+        reason: "the storyline carries a successful hosting sign-in from the attacker's address that is an impossible-travel pair with a neighbouring home sign-in only on some seeds and scenarios (the user's home location is seeded and the address is not always over 500 km and 900 km/h away), so it cannot be a per-kind positive"
   - id: SPW-ID-004
     title: Adversary-in-the-middle indicators
     category: identity
