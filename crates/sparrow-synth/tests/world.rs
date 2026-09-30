@@ -1,5 +1,5 @@
 use sparrow_synth::reserved::{is_reserved_domain, is_reserved_ip};
-use sparrow_synth::scenario::load;
+use sparrow_synth::scenario::{builtin_names, load};
 use sparrow_synth::world::World;
 use std::collections::BTreeSet;
 
@@ -116,4 +116,54 @@ fn every_state_collection_is_populated() {
     assert!(w.mfa.values().any(|m| !m.is_mfa_registered));
     let rule = w.inbox_rules.first().unwrap();
     assert!(rule.description().starts_with("If the message:\r\n\t"));
+}
+
+/// A normal tenant of any built-in plan has auditing on: the organisation's mailbox auditing,
+/// the Unified audit log ingestion and the admin audit log. Mailbox auditing has been on by
+/// default for Microsoft 365 tenants since January 2019
+/// (https://learn.microsoft.com/purview/audit-mailboxes) and the audit log is collected
+/// (https://learn.microsoft.com/purview/audit-new-search), so a scenario only opts out by
+/// naming an audit profile that says so. `business-basic` does, deliberately: it is the tenant
+/// where those events are never logged, the counterpart of the benign look-alikes.
+#[test]
+fn auditing_is_on_unless_the_scenario_opts_out() {
+    // The profile a scenario gets without saying anything: auditing on.
+    let mut quiet = load("bec-aitm").unwrap();
+    quiet.tenant.audit_profile = "default".into();
+    let w = World::build(&quiet, 42).unwrap();
+    assert!(
+        !w.audit.org_audit_disabled,
+        "the default disables mailbox auditing"
+    );
+    assert!(
+        w.audit.ual_ingestion_enabled,
+        "the default disables the audit log"
+    );
+    assert!(
+        w.audit.admin_audit_log_enabled,
+        "the default disables the admin log"
+    );
+
+    for name in builtin_names() {
+        let s = load(name).unwrap();
+        let w = World::build(&s, 42).unwrap();
+        let declared = s.tenant.audit_profile.as_str();
+        // No profile turns the organisation's mailbox auditing or the audit log off except the
+        // one named after it, and none turns the admin audit log off (a tamper storyline does,
+        // at runtime, which is what the `audit-tamper` scenario is for).
+        assert_eq!(
+            w.audit.org_audit_disabled,
+            declared == "org_audit_disabled",
+            "{name}: mailbox auditing under the {declared} profile"
+        );
+        assert_eq!(
+            w.audit.ual_ingestion_enabled,
+            declared != "ual_disabled",
+            "{name}: the audit log under the {declared} profile"
+        );
+        assert!(
+            w.audit.admin_audit_log_enabled,
+            "{name}: the admin audit log is off under {declared}"
+        );
+    }
 }
