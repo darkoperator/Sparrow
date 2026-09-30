@@ -1,0 +1,302 @@
+//! The AuditData properties of the flattened-UAL fidelity work (Task F4 part B): each follows the
+//! record's own client, user, message or operation instead of being one constant, and nothing is
+//! there only to produce a column name.
+
+use serde_json::Value;
+use sparrow_synth::generate::generate_to_dir;
+use sparrow_synth::options::{Collector, GenerateOptions};
+use sparrow_synth::scenario::load;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+
+const OFFICE: &str = "d3590ed6-52b3-4102-aeff-aad2292ab01c";
+
+fn json_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    for e in std::fs::read_dir(dir).unwrap() {
+        let p = e.unwrap().path();
+        if p.is_dir() {
+            json_files(&p, out);
+        } else if p.extension().is_some_and(|x| x == "json") {
+            out.push(p);
+        }
+    }
+}
+
+/// Every AuditData object of the tree's raw `*_Logs` / expanded UAL files (the flattened
+/// `Simple_*` files are derived from these).
+fn audit_records(name: &str) -> Vec<Value> {
+    let dir = tempfile::tempdir().unwrap();
+    generate_to_dir(
+        &load(name).unwrap(),
+        &GenerateOptions::new(Collector::Hawk4, 1),
+        dir.path(),
+    )
+    .unwrap();
+    let mut files = Vec::new();
+    json_files(dir.path(), &mut files);
+    let mut out = Vec::new();
+    for f in files {
+        let n = f.file_name().unwrap().to_string_lossy().to_string();
+        let expanded = [
+            "ExchangeItem_Logs",
+            "ExchangeItemGroup_Logs",
+            "MailItemsAccessed",
+            "SendActivity",
+        ]
+        .iter()
+        .any(|p| n.starts_with(p));
+        let raw = [
+            "Raw_Authentication_Logs",
+            "UAL",
+            "Mailbox_Permission",
+            "Admin_Inbox",
+            "eDiscovery",
+            "RBAC",
+            "Forwarding",
+            "Domain",
+            "User_Changes",
+            "Entra",
+            "Azure",
+        ]
+        .iter()
+        .any(|p| n.contains(p));
+        if !(expanded || raw) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&f) else {
+            continue;
+        };
+        let Ok(Value::Array(items)) =
+            serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}'))
+        else {
+            continue;
+        };
+        for it in items {
+            let Some(o) = it.as_object() else { continue };
+            match o.get("AuditData") {
+                Some(Value::String(s)) => {
+                    if let Ok(v) = serde_json::from_str::<Value>(s) {
+                        out.push(v);
+                    }
+                }
+                Some(v @ Value::Object(_)) => out.push(v.clone()),
+                _ => {
+                    if o.contains_key("Operation") && o.contains_key("RecordType") {
+                        out.push(it.clone());
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn text<'a>(r: &'a Value, k: &str) -> &'a str {
+    r.get(k).and_then(Value::as_str).unwrap_or("")
+}
+
+#[test]
+fn client_details_follow_the_records_client() {
+    let recs = audit_records("bec-aitm");
+    let mailbox: Vec<&Value> = recs
+        .iter()
+        .filter(|r| r.get("ClientInfoString").is_some())
+        .collect();
+    assert!(mailbox.len() > 100, "{} mailbox records", mailbox.len());
+    let mut desktop = 0;
+    let mut other = 0;
+    for r in &mailbox {
+        let is_desktop = text(r, "ClientInfoString").contains("MSExchangeRPC");
+        for k in [
+            "ClientProcessName",
+            "ClientVersion",
+            "ClientRequestId",
+            "HostAppId",
+        ] {
+            assert_eq!(
+                r.get(k).is_some(),
+                is_desktop,
+                "{k} on {}",
+                text(r, "ClientInfoString")
+            );
+        }
+        if is_desktop {
+            desktop += 1;
+            assert_eq!(text(r, "ClientProcessName"), "OUTLOOK.EXE");
+            assert_eq!(text(r, "HostAppId"), OFFICE);
+        } else {
+            other += 1;
+        }
+    }
+    assert!(
+        desktop > 0 && other > 0,
+        "both desktop ({desktop}) and other ({other}) clients"
+    );
+}
+
+#[test]
+fn save_to_sent_items_is_only_on_send_operations() {
+    let recs = audit_records("bec-aitm");
+    let mut sends = 0;
+    for r in recs.iter().filter(|r| r.get("ClientInfoString").is_some()) {
+        let op = text(r, "Operation");
+        let has = r.get("SaveToSentItems").is_some();
+        assert_eq!(
+            has,
+            matches!(op, "Send" | "SendAs" | "SendOnBehalf"),
+            "{op}"
+        );
+        sends += usize::from(has);
+    }
+    assert!(sends > 0);
+}
+
+#[test]
+fn client_app_id_varies_as_in_reality() {
+    let recs = audit_records("bec-aitm");
+    let apps: BTreeSet<&str> = recs
+        .iter()
+        .filter(|r| text(r, "Operation") == "MailItemsAccessed")
+        .map(|r| text(r, "ClientAppId"))
+        .collect();
+    assert!(
+        apps.len() >= 2,
+        "MailItemsAccessed ClientAppId values: {apps:?}"
+    );
+    // The context repeats the app that made the call, and the host app is never a constant for
+    // every record.
+    for r in recs
+        .iter()
+        .filter(|r| text(r, "Operation") == "MailItemsAccessed")
+    {
+        assert_eq!(
+            r["AppAccessContext"]["ClientAppId"].as_str().unwrap(),
+            text(r, "ClientAppId")
+        );
+    }
+    let hosts: BTreeSet<&str> = recs.iter().map(|r| text(r, "HostAppId")).collect();
+    assert!(hosts.contains("") && hosts.len() >= 2, "{hosts:?}");
+}
+
+#[test]
+fn token_subject_is_the_stable_user_object_id() {
+    let recs = audit_records("bec-aitm");
+    let mut by_user: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for r in recs.iter().filter(|r| r.get("TokenObjectId").is_some()) {
+        by_user
+            .entry(text(r, "UserId"))
+            .or_default()
+            .insert(text(r, "TokenObjectId"));
+        assert_ne!(text(r, "TokenObjectId"), text(r, "UserId"));
+        assert_eq!(text(r, "TokenTenantId"), text(r, "OrganizationId"));
+        if r.get("ActorInfoString").is_some() {
+            assert_ne!(text(r, "ActorInfoString"), text(r, "UserId"));
+            assert_eq!(text(r, "ActorInfoString"), text(r, "ClientInfoString"));
+        }
+    }
+    assert!(by_user.len() > 3);
+    assert!(
+        by_user.values().all(|s| s.len() == 1),
+        "one token subject per user: {by_user:?}"
+    );
+}
+
+#[test]
+fn attachments_come_from_the_message_and_most_messages_have_none() {
+    let recs = audit_records("bec-aitm");
+    let mut by_msg: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let (mut items, mut with) = (0, 0);
+    for r in &recs {
+        let Some(item) = r
+            .get("Item")
+            .filter(|i| i.get("InternetMessageId").is_some())
+        else {
+            continue;
+        };
+        items += 1;
+        let a = item
+            .get("Attachments")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        with += usize::from(!a.is_empty());
+        by_msg
+            .entry(item["InternetMessageId"].as_str().unwrap().to_string())
+            .or_default()
+            .insert(a);
+        // ExchangeItem properties per the schema; no invented property list on an item operation.
+        assert!(r.get("ModifiedProperties").is_none());
+        assert!(item["ParentFolder"].get("Name").is_some());
+        assert_eq!(item["IsRecord"], false);
+    }
+    assert!(items > 50);
+    assert!(
+        with * 4 < items,
+        "{with} of {items} items carry attachments"
+    );
+    assert!(
+        by_msg.values().all(|s| s.len() == 1),
+        "one attachment list per message"
+    );
+}
+
+#[test]
+fn nothing_is_there_only_to_produce_a_column_name() {
+    let recs = audit_records("bec-aitm");
+    for r in &recs {
+        let op = text(r, "Operation");
+        let wl = text(r, "Workload");
+        // A consent record grants scopes; no other Entra ID record carries one.
+        if wl == "AzureActiveDirectory" {
+            assert!(r.get("Scope").is_none(), "Scope on {op}");
+            assert!(r.get("DeviceId").is_none(), "DeviceId on {op}");
+        }
+        // Locations belong to compliance-search records.
+        if r.get("ExchangeLocations").is_some() {
+            assert_eq!(text(r, "ObjectType"), "ComplianceSearch", "{op}");
+        }
+        for k in ["SharepointLocations", "PublicFolderLocations"] {
+            assert!(r.get(k).is_none(), "{k} on {op}");
+        }
+        // No repeated name just to get a `_1` suffix.
+        if let Some(Value::Array(ext)) = r.get("ExtendedProperties") {
+            let names: Vec<&str> = ext.iter().filter_map(|e| e["Name"].as_str()).collect();
+            let set: BTreeSet<&&str> = names.iter().collect();
+            assert_eq!(
+                set.len(),
+                names.len(),
+                "{op}: repeated ExtendedProperties names {names:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn mail_items_accessed_items_carry_their_own_detail() {
+    let recs = audit_records("bec-aitm");
+    let mut n = 0;
+    let mut subjects = 0;
+    for r in recs
+        .iter()
+        .filter(|r| text(r, "Operation") == "MailItemsAccessed")
+    {
+        let Some(Value::Array(folders)) = r.get("Folders") else {
+            continue;
+        };
+        for f in folders {
+            let Some(Value::Array(items)) = f.get("FolderItems") else {
+                continue;
+            };
+            for it in items {
+                n += 1;
+                assert!(it.get("CreationTime").is_some() && it.get("ImmutableId").is_some());
+                subjects += usize::from(it.get("Subject").is_some());
+            }
+        }
+    }
+    assert!(n > 50);
+    assert!(
+        subjects * 2 > n,
+        "world-defined subjects on most items ({subjects}/{n})"
+    );
+}

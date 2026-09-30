@@ -796,14 +796,14 @@ artifacts:
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
     file_pattern: "Exchange_UAL_Audit"
-    columns_required: [CreationTime, Id, Operation, OrganizationId, RecordType, ResultStatus, UserKey, UserType, Version, Workload, ClientIP, UserId, ClientIPAddress, ClientInfoString, ExternalAccess, InternalLogonType, LogonType, MailboxOwnerUPN, OriginatingServer]
+    columns_required: [CreationTime, Id, Operation, OrganizationId, RecordType, ResultStatus, UserKey, UserType, Version, Workload, ClientIP, UserId, ClientIPAddress, ClientInfoString, ExternalAccess, InternalLogonType, LogonType, MailboxOwnerUPN, OriginatingServer, TokenObjectId, TokenTenantId]
   - artifact: hawk.user.raw_ual
     collector: hawk
     source: hawk survey §2e (MailItemsAccessed / SendActivity / ExchangeSearchQueries / SharePointSearches expanded)
     formats: [csv, json]
     encodings: {"5.1": [utf-8-bom, utf-16le-bom], "7": [utf-8]}
     file_pattern: "(MailItemsAccessed|SendActivity)"
-    columns_required: [CreationTime, Id, Operation, OrganizationId, RecordType, ResultStatus, UserKey, UserType, Version, Workload, ClientIP, UserId, OperationProperties]
+    columns_required: [CreationTime, Id, Operation, OrganizationId, RecordType, ResultStatus, UserKey, UserType, Version, Workload, ClientIP, UserId, OperationProperties, TokenObjectId, TokenTenantId]
   - artifact: hawk.user.raw_ual
     collector: hawk
     source: hawk survey §2e (ExchangeSearchQueries / SharePointSearches expanded)

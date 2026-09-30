@@ -710,11 +710,17 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
             if !mailbox_logged(w, &user.upn, 0, "MailItemsAccessed", t) {
                 continue;
             }
-            let mut folders: Vec<(String, Vec<(String, u64)>)> = Vec::new();
+            let mut folders: Vec<(String, Vec<ual::MiaItem>)> = Vec::new();
             for m in chunk {
+                let item = ual::MiaItem {
+                    internet_message_id: m.imid.clone(),
+                    size: m.size,
+                    subject: Some(m.subject.clone()),
+                    created: Some(m.time),
+                };
                 match folders.iter_mut().find(|(p, _)| *p == m.folder) {
-                    Some((_, items)) => items.push((m.imid.clone(), m.size)),
-                    None => folders.push((m.folder.clone(), vec![(m.imid.clone(), m.size)])),
+                    Some((_, items)) => items.push(item),
+                    None => folders.push((m.folder.clone(), vec![item])),
                 }
             }
             ual_out.push(ual::mail_items_accessed(
@@ -845,6 +851,10 @@ pub fn day(w: &World, date: NaiveDate) -> Day {
                         ("InternalMessage", "Out of office"),
                         ("ExternalMessage", "Out of office"),
                         ("ExternalAudience", "None"),
+                        // Set-MailboxAutoReplyConfiguration parameters (cmdlet reference) that
+                        // Outlook sends with every change.
+                        ("AutoDeclineFutureRequestsWhenOOF", "False"),
+                        ("CreateOOFEvent", "False"),
                     ],
                     ip,
                     session,
@@ -1094,7 +1104,7 @@ fn scale_filler(
                     user,
                     t,
                     "Bind",
-                    &[("\\Inbox".to_string(), vec![(item, size)])],
+                    &[("\\Inbox".to_string(), vec![ual::MiaItem::new(item, size)])],
                     ip,
                     OUTLOOK_DESKTOP,
                     apps.office,

@@ -12,7 +12,7 @@ use crate::events::{RecordType, Ual};
 use crate::reserved::WELL_KNOWN_GUIDS;
 use crate::rng::{Rng, stream};
 use crate::world::{User, World};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde_json::{Map, Value, json};
 use std::net::IpAddr;
 use uuid::Uuid;
@@ -73,6 +73,34 @@ pub fn unique_token_id(rng: &mut Rng) -> String {
     chars(rng, B64URL, 22)
 }
 
+/// A per-record stream for properties that must not disturb the generator's main random
+/// stream (so the detection-relevant values of every scenario stay byte-identical): seeded by
+/// the world seed, a purpose label and a key.
+fn side_stream(w: &World, purpose: &str, key: &str) -> Rng {
+    stream(w.seed, &format!("ual-extra/{purpose}/{key}"))
+}
+
+/// The id of a well-known Microsoft application by display name.
+fn well_known_id(name: &str) -> Option<Uuid> {
+    WELL_KNOWN_GUIDS
+        .iter()
+        .find(|(_, d)| *d == name)
+        .and_then(|(g, _)| g.parse().ok())
+}
+
+/// The Outlook desktop build recorded as `ClientVersion`.
+const OUTLOOK_VERSION: &str = "16.0.17928.20114";
+
+/// Whether the record's client is Outlook desktop over MAPI (`Client=MSExchangeRPC`). The
+/// mailbox-audit client properties `ClientProcessName`, `ClientVersion`, `ClientRequestId`
+/// and `HostAppId` describe a desktop client and are recorded for it only (Management
+/// Activity API schema, Exchange mailbox properties: "ClientProcessName: The email client that
+/// was used to access the mailbox", "HostAppId: The executing service/protocol identifier");
+/// OWA, REST and other sessions do not carry them.
+fn is_outlook_desktop(client_info: &str) -> bool {
+    client_info.contains("MSExchangeRPC")
+}
+
 /// A mailbox folder's opaque id, stable per mailbox and folder path.
 pub fn folder_id(w: &World, owner: &str, path: &str) -> String {
     let mut r = stream(w.seed, &format!("folder/{owner}/{path}"));
@@ -83,6 +111,44 @@ pub fn folder_id(w: &World, owner: &str, path: &str) -> String {
 pub fn item_id(w: &World, owner: &str, internet_message_id: &str) -> String {
     let mut r = stream(w.seed, &format!("item/{owner}/{internet_message_id}"));
     format!("RgAAAAA{}AAAJ", chars(&mut r, B64, 100))
+}
+
+/// A mailbox item's immutable id (`Item.ImmutableId`, Management Activity API schema: "A
+/// permanent, unchanging identifier for the item"), stable per mailbox and message.
+pub fn immutable_id(w: &World, owner: &str, internet_message_id: &str) -> String {
+    let mut r = stream(w.seed, &format!("immutable/{owner}/{internet_message_id}"));
+    format!("LgAAAAA{}", chars(&mut r, B64, 64))
+}
+
+/// `Item.Attachments` of a message: "a list of the names and file size of all items that are
+/// attached to the message" (Management Activity API schema, ExchangeItem). Derived from the
+/// message alone, so every record of one message (any mailbox, any operation) lists the same
+/// attachments; most messages have none, and only a message big enough to hold them has any.
+pub fn attachments_of(w: &World, internet_message_id: &str, size: u64) -> Option<String> {
+    const NAMES: &[&str] = &[
+        "report.pdf",
+        "notes.docx",
+        "figures.xlsx",
+        "agenda.pptx",
+        "photo.jpg",
+    ];
+    if size < 30_000 {
+        return None;
+    }
+    let mut r = side_stream(w, "attachments", internet_message_id);
+    if !r.chance(0.12) {
+        return None;
+    }
+    let n = 1 + r.below(2) as usize;
+    let each = size / (2 * n as u64);
+    let parts: Vec<String> = (0..n)
+        .map(|_| {
+            let name = *r.pick(NAMES);
+            let bytes = each * r.range(50, 95) as u64 / 100;
+            format!("{name} ({bytes}b)")
+        })
+        .collect();
+    Some(parts.join("; "))
 }
 
 /// The display name of application `id`: a tenant app, else a well-known Microsoft app, else
@@ -103,6 +169,8 @@ pub fn app_name(w: &World, id: Uuid) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemRef {
     pub id: String,
+    pub immutable_id: String,
+    pub attachments: Option<String>,
     pub internet_message_id: String,
     pub folder_id: String,
     pub folder_path: String,
@@ -123,6 +191,8 @@ impl ItemRef {
     ) -> ItemRef {
         ItemRef {
             id: item_id(w, owner, internet_message_id),
+            immutable_id: immutable_id(w, owner, internet_message_id),
+            attachments: attachments_of(w, internet_message_id, size),
             internet_message_id: internet_message_id.to_string(),
             folder_id: folder_id(w, owner, folder_path),
             folder_path: folder_path.to_string(),
@@ -222,6 +292,9 @@ pub fn exchange_admin(
     put(&mut u, "AppId", json!(""));
     put(&mut u, "ClientAppId", json!(""));
     put(&mut u, "ExternalAccess", json!(false));
+    // Mandatory on ExchangeAdmin (schema): the token's `oid` / `tid` claims.
+    put(&mut u, "TokenObjectId", json!(actor.object_id.to_string()));
+    put(&mut u, "TokenTenantId", json!(w.org_id().to_string()));
     put(
         &mut u,
         "OrganizationName",
@@ -263,6 +336,22 @@ fn mailbox_keys(
 ) {
     put(u, "ClientIPAddress", json!(ip.to_string()));
     put(u, "ClientInfoString", json!(client_info));
+    // Management Activity API schema, Exchange mailbox properties.
+    // `ActorInfoString` is the acting session's client info string.
+    put(u, "ActorInfoString", json!(client_info));
+    if is_outlook_desktop(client_info) {
+        let mut r = side_stream(w, "client", &u.id.to_string());
+        put(u, "ClientProcessName", json!("OUTLOOK.EXE"));
+        put(u, "ClientRequestId", json!(r.uuid().to_string()));
+        put(u, "ClientVersion", json!(OUTLOOK_VERSION));
+        if let Some(office) = well_known_id("Microsoft Office") {
+            put(u, "HostAppId", json!(office.to_string()));
+        }
+    }
+    // The token's subject and tenant (`oid` / `tid` claims): the user who performed the
+    // operation, stable per user.
+    put(u, "TokenObjectId", json!(logon.object_id.to_string()));
+    put(u, "TokenTenantId", json!(w.org_id().to_string()));
     put(u, "ExternalAccess", json!(false));
     put(u, "InternalLogonType", json!(0));
     put(u, "LogonType", json!(logon_type(owner, logon)));
@@ -276,6 +365,11 @@ fn mailbox_keys(
         json!(w.tenant.initial_domain.clone()),
     );
     put(u, "OriginatingServer", json!(server_name(rng)));
+}
+
+/// A folder path's name: `\Sent Items` -> `Sent Items` (`ExchangeFolder.Name`).
+pub fn folder_name(path: &str) -> String {
+    path.rsplit('\\').next().unwrap_or(path).to_string()
 }
 
 /// A mailbox item operation: `ExchangeItem` for Create / Update / Send / SendAs / SendOnBehalf /
@@ -318,6 +412,10 @@ pub fn mailbox_item(
         },
     );
     mailbox_keys(w, rng, &mut u, owner, logon, ip, client_info);
+    // `SaveToSentItems` belongs to the send operations only.
+    if matches!(op, "Send" | "SendAs" | "SendOnBehalf") {
+        put(&mut u, "SaveToSentItems", json!(true));
+    }
     put(&mut u, "SessionId", json!(session.to_string()));
     if let Some(i) = item {
         let parent = json!({"Id": i.folder_id, "Path": i.folder_path});
@@ -331,36 +429,63 @@ pub fn mailbox_item(
                     json!({"Id": folder_id(w, &owner.upn, dest), "Path": dest}),
                 );
             }
-            put(
-                &mut u,
-                "AffectedItems",
-                json!([{
-                    "Id": i.id,
-                    "InternetMessageId": i.internet_message_id,
-                    "ParentFolder": parent,
-                    "Subject": i.subject,
-                }]),
-            );
+            let mut affected = Map::new();
+            affected.insert("Id".into(), json!(i.id));
+            if let Some(a) = &i.attachments {
+                affected.insert("Attachments".into(), json!(a));
+            }
+            affected.insert("InternetMessageId".into(), json!(i.internet_message_id));
+            affected.insert("ParentFolder".into(), parent);
+            affected.insert("Subject".into(), json!(i.subject));
+            put(&mut u, "AffectedItems", json!([Value::Object(affected)]));
         } else {
-            put(
-                &mut u,
-                "Item",
-                json!({
-                    "Id": i.id,
-                    "InternetMessageId": i.internet_message_id,
-                    "ParentFolder": parent,
-                    "Subject": i.subject,
-                    "SizeInBytes": i.size,
-                }),
+            // ExchangeItem (schema): Id, Subject, ParentFolder (Id, Path, Name), Attachments,
+            // ImmutableId, InternetMessageId, IsRecord, SizeInBytes.
+            let mut item_obj = Map::new();
+            if let Some(a) = &i.attachments {
+                item_obj.insert("Attachments".into(), json!(a));
+            }
+            item_obj.insert("Id".into(), json!(i.id));
+            item_obj.insert("ImmutableId".into(), json!(i.immutable_id));
+            item_obj.insert("InternetMessageId".into(), json!(i.internet_message_id));
+            item_obj.insert("IsRecord".into(), json!(false));
+            item_obj.insert(
+                "ParentFolder".into(),
+                json!({"Id": i.folder_id, "Name": folder_name(&i.folder_path), "Path": i.folder_path}),
             );
+            item_obj.insert("Subject".into(), json!(i.subject));
+            item_obj.insert("SizeInBytes".into(), json!(i.size));
+            put(&mut u, "Item", Value::Object(item_obj));
         }
     }
     u
 }
 
+/// One message a `MailItemsAccessed` record lists under a folder (`ExchangeFolderItem`).
+#[derive(Debug, Clone)]
+pub struct MiaItem {
+    pub internet_message_id: String,
+    pub size: u64,
+    /// The message subject, when the world defines the message.
+    pub subject: Option<String>,
+    /// When the message was created (delivered), when the world defines the message.
+    pub created: Option<DateTime<Utc>>,
+}
+
+impl MiaItem {
+    /// A message the world does not otherwise describe: no subject, a derived creation time.
+    pub fn new(internet_message_id: String, size: u64) -> MiaItem {
+        MiaItem {
+            internet_message_id,
+            size,
+            subject: None,
+            created: None,
+        }
+    }
+}
+
 /// `MailItemsAccessed` (`ExchangeItemAggregated`): `access` is `Bind` (with the items read)
-/// or `Sync` (one folder per record, no items). `folders` is (path, [(Internet message id,
-/// size)]).
+/// or `Sync` (one folder per record, no items). `folders` is (path, items).
 #[allow(clippy::too_many_arguments)]
 pub fn mail_items_accessed(
     w: &World,
@@ -368,7 +493,7 @@ pub fn mail_items_accessed(
     owner: &User,
     time: DateTime<Utc>,
     access: &str,
-    folders: &[(String, Vec<(String, u64)>)],
+    folders: &[(String, Vec<MiaItem>)],
     ip: IpAddr,
     client_info: &str,
     app_id: Uuid,
@@ -393,17 +518,25 @@ pub fn mail_items_accessed(
     );
     let correlation = rng.uuid();
     let token = unique_token_id(rng);
-    put(
-        &mut u,
-        "AppAccessContext",
-        json!({
-            "AADSessionId": session.to_string(),
-            "ClientAppId": app_id.to_string(),
-            "ClientAppName": app_name(w, app_id),
-            "CorrelationId": correlation.to_string(),
-            "UniqueTokenId": token,
-        }),
-    );
+    // AppAccessContext (Management Activity API schema): `IssuedAtTime` is when the Entra token
+    // was issued (a token lives about an hour, so within the hour before the access) and
+    // `APIId` the API pathway, set for access through the Graph / REST API.
+    let mut aside = side_stream(w, "aac", &u.id.to_string());
+    let issued =
+        time - Duration::minutes(aside.range(1, 60)) - Duration::seconds(aside.range(0, 59));
+    let mut aac = Map::new();
+    aac.insert("AADSessionId".into(), json!(session.to_string()));
+    if client_info.contains("REST") {
+        if let Some(graph) = well_known_id("Microsoft Graph") {
+            aac.insert("APIId".into(), json!(graph.to_string()));
+        }
+    }
+    aac.insert("ClientAppId".into(), json!(app_id.to_string()));
+    aac.insert("ClientAppName".into(), json!(app_name(w, app_id)));
+    aac.insert("CorrelationId".into(), json!(correlation.to_string()));
+    aac.insert("IssuedAtTime".into(), json!(creation_time(issued)));
+    aac.insert("UniqueTokenId".into(), json!(token));
+    put(&mut u, "AppAccessContext", Value::Object(aac));
     put(&mut u, "ClientAppId", json!(app_id.to_string()));
     mailbox_keys(w, rng, &mut u, owner, owner, ip, client_info);
     put(
@@ -425,17 +558,32 @@ pub fn mail_items_accessed(
             f.insert("Path".into(), json!(path));
             if bind {
                 count += items.len();
+                // ExchangeFolderItem (schema): Id, ImmutableId, InternetMessageId, CreationTime,
+                // Subject, SizeInBytes.
                 f.insert(
                     "FolderItems".into(),
                     Value::Array(
                         items
                             .iter()
-                            .map(|(imid, size)| {
-                                json!({
-                                    "Id": item_id(w, &owner.upn, imid),
-                                    "InternetMessageId": imid,
-                                    "SizeInBytes": size,
-                                })
+                            .map(|it| {
+                                let imid = &it.internet_message_id;
+                                let created = it.created.unwrap_or_else(|| {
+                                    let mut r = side_stream(w, "created", imid);
+                                    time - Duration::hours(r.range(1, 72))
+                                });
+                                let mut o = Map::new();
+                                o.insert("CreationTime".into(), json!(creation_time(created)));
+                                o.insert("Id".into(), json!(item_id(w, &owner.upn, imid)));
+                                o.insert(
+                                    "ImmutableId".into(),
+                                    json!(immutable_id(w, &owner.upn, imid)),
+                                );
+                                o.insert("InternetMessageId".into(), json!(imid));
+                                o.insert("SizeInBytes".into(), json!(it.size));
+                                if let Some(s) = &it.subject {
+                                    o.insert("Subject".into(), json!(s));
+                                }
+                                Value::Object(o)
                             })
                             .collect(),
                     ),
@@ -912,5 +1060,8 @@ pub fn discovery(
     put(&mut u, "Case", json!(case));
     put(&mut u, "ObjectType", json!("ComplianceSearch"));
     put(&mut u, "Query", json!("kind:email"));
+    // A compliance search over every mailbox (`New-ComplianceSearch -ExchangeLocation All`):
+    // the mailbox locations searched. Only compliance-search records carry the locations.
+    put(&mut u, "ExchangeLocations", json!(["All"]));
     u
 }

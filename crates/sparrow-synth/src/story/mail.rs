@@ -242,6 +242,10 @@ fn inbox_rule_finance(w: &mut World, ctx: &mut Ctx) {
             ("MoveToFolder", "RSS Feeds"),
             ("MarkAsRead", "True"),
             ("StopProcessingRules", "True"),
+            // New-InboxRule parameters (cmdlet reference) that Exchange Online PowerShell
+            // logs beside the ones the attacker sets; not read by any rule.
+            ("AlwaysDeleteOutlookRulesBlob", "False"),
+            ("Force", "False"),
         ],
         ip,
         session,
@@ -281,6 +285,8 @@ fn admin_inbox_rule(w: &mut World, ctx: &mut Ctx) -> Result<()> {
             ("Name", "Sync"),
             ("ForwardTo", fwd.as_str()),
             ("DeleteMessage", "True"),
+            ("AlwaysDeleteOutlookRulesBlob", "False"),
+            ("Force", "False"),
         ],
         ip,
         session,
@@ -586,7 +592,7 @@ fn permission_system_discovery(w: &mut World, ctx: &mut Ctx) -> Result<()> {
 
 /// Messages `user` received in the 14 days before `t` (baseline and storyline trace rows
 /// delivered to them), oldest first: (Internet message id, size).
-fn received_mail(w: &World, user: &User, t: DateTime<Utc>) -> Vec<(String, u64)> {
+fn received_mail(w: &World, user: &User, t: DateTime<Utc>) -> Vec<ual::MiaItem> {
     let first = (t - Duration::days(14)).max(w.window_start()).date_naive();
     let mut out = Vec::new();
     let mut date = first;
@@ -597,7 +603,12 @@ fn received_mail(w: &World, user: &User, t: DateTime<Utc>) -> Vec<(String, u64)>
                 .iter()
                 .any(|(r, s)| r == &user.upn && s == "Delivered");
             if delivered && m.received < t {
-                out.push((m.internet_message_id, m.size));
+                out.push(ual::MiaItem {
+                    internet_message_id: m.internet_message_id,
+                    size: m.size,
+                    subject: Some(m.subject),
+                    created: Some(m.received),
+                });
             }
         }
         date = date.succ_opt().expect("date in range");
@@ -637,7 +648,7 @@ fn mia_burst(w: &mut World, ctx: &mut Ctx) -> Result<()> {
         for path in ["\\Inbox", "\\Finance"].iter().take(n_folders) {
             let want = (ctx.rng.range(8, 20) as usize).min(pool.len());
             let start = ctx.rng.below(pool.len() as u64) as usize;
-            let items: Vec<(String, u64)> = (0..want)
+            let items: Vec<ual::MiaItem> = (0..want)
                 .map(|k| pool[(start + k) % pool.len()].clone())
                 .collect();
             folders.push((path.to_string(), items));
