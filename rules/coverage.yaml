@@ -153,7 +153,13 @@ rules:
     requires: []
     requires_evidence: []
     needs_geoip: false
-    collectors: [hawk3, hawk4, invictus]
+    # portal included (architect-ruled contract correction): the Purview audit export
+    # (portal.ual) carries the consent event with its granted scopes in the record's
+    # ModifiedProperties (e.g. ConsentAction.Permissions = "Mail.ReadWrite Mail.Send
+    # Files.ReadWrite.All offline_access User.Read"), so the rule works there even though
+    # portal contributes no oauth_grants rows. Its low-risk consent
+    # (openid profile email User.Read) is still not high risk.
+    collectors: [hawk3, hawk4, invictus, portal]
     positives: [oauth_consent]
     lookalikes: [low_risk_consent]
   - id: SPW-HAWK-008
