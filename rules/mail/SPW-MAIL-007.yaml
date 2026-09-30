@@ -1,11 +1,14 @@
 # SPW-MAIL-007 — Logic source: coverage.yaml ("search_queries (or UAL
 # SearchQueryInitiatedExchange / SearchQueryInitiatedSharePoint) whose query_text hits
-# @list:finance_keywords."). `sql:` because the UAL arm reads QueryText out of the audit_data
-# JSON, which a `match:` cannot address (it only reaches real columns and MAP keys); the
-# `search_queries` side table is read directly. `contains_any` is a substring test, which is
+# @list:finance_keywords."). `sql:` because the UAL arm reads the query text out of the
+# audit_data JSON, which a `match:` cannot address (it only reaches real columns and MAP keys);
+# the `search_queries` side table is read directly. `contains_any` is a substring test, which is
 # what "hits" means for a search box: "invoice" inside "vendor invoices 2026" is a hit. The UAL
-# spelling of a search is the flattened, first-record's-keys CSV, so the AuditData field is
-# read with the same case-insensitive JSON lookup the normalizer uses.
+# side reads the query text the way the normalizer reads it (the QueryText, SearchQuery or Query
+# property, whatever its case) and accepts every operation name the normalizer recognises as a
+# search (SearchQueryInitiated, SearchQueryInitiatedExchange, SearchQueryInitiatedSharePoint,
+# SharepointSearchQueryInitiated), so a record the normalizer called a search is one here too.
+# A record that has a `search_queries` row is read from that row only, so one search is one hit.
 id: SPW-MAIL-007
 title: Mailbox or SharePoint search for finance keywords
 version: 1
@@ -22,19 +25,39 @@ sql: |
   -- carrying either one is covered; each hit is keyed on the UAL record id, the key the side
   -- table joins on and the key a storyline attests. Substring matching is what "hits" means for
   -- a search box: "invoice" inside "vendor invoices 2026" is a hit.
-  SELECT lower(CAST(u.record_id AS VARCHAR)) AS record_key, 'search_queries' AS source_table,
-         u.event_time, u.user_upn AS actor_upn, u.client_ip AS ip
-  FROM ual_events u
-  JOIN search_queries s ON s.record_id = u.record_id
-  WHERE lower(u.operation) IN ('searchqueryinitiatedexchange', 'searchqueryinitiatedsharepoint')
-    AND len(list_filter(@list:finance_keywords,
-          k -> k <> '' AND strpos(lower(coalesce(s.query_text, '')), lower(k)) > 0)) > 0
-  UNION ALL
-  SELECT lower(CAST(u.record_id AS VARCHAR)), 'ual_events', u.event_time, u.user_upn, u.client_ip
-  FROM ual_events u
-  WHERE lower(u.operation) IN ('searchqueryinitiatedexchange', 'searchqueryinitiatedsharepoint')
-    AND len(list_filter(@list:finance_keywords,
-          k -> k <> '' AND strpos(lower(coalesce(json_extract_string(u.audit_data, '$.QueryText'), '')), lower(k)) > 0)) > 0
+  -- One search, one hit, on one table. The query text is the side table's reading of the record
+  -- where it has one (the normalizer's own), read the way the normalizer reads it: the
+  -- QueryText, SearchQuery or Query property, whatever its case. A record whose side-table row
+  -- carries no text is read from its own AuditData and attributed to the side table, the one
+  -- table the rule consults for it.
+  WITH searches AS (
+    -- The side table has the text: the hit is on the record itself, the table the record was
+    -- delivered as.
+    SELECT u.record_id, u.event_time, u.user_upn, u.client_ip, s.query_text, 'ual_events' AS src
+    FROM ual_events u
+    JOIN search_queries s ON s.record_id = u.record_id
+    WHERE nullif(trim(coalesce(s.query_text, '')), '') IS NOT NULL
+    UNION ALL
+    -- No side-table text: the operations the normalizer recognises as a search (normalize/ual.rs:
+    -- search), read out of the record's own AuditData.
+    SELECT u.record_id, u.event_time, u.user_upn, u.client_ip,
+           coalesce((SELECT string_agg(j.value, ' ') FROM json_each(u.audit_data) j
+                     WHERE lower(j.key) IN ('querytext', 'searchquery', 'query')), ''),
+           'search_queries' AS src
+    FROM ual_events u
+    WHERE lower(u.operation) IN ('searchqueryinitiated', 'searchqueryinitiatedexchange',
+                                 'searchqueryinitiatedsharepoint',
+                                 'sharepointsearchqueryinitiated')
+      AND NOT EXISTS (SELECT 1 FROM search_queries s
+                      WHERE s.record_id = u.record_id
+                        AND nullif(trim(coalesce(s.query_text, '')), '') IS NOT NULL)
+  )
+  SELECT lower(CAST(q.record_id AS VARCHAR)) AS record_key,
+         CASE WHEN q.src = 'ual_events' THEN 'ual_events' ELSE 'search_queries' END AS source_table,
+         q.event_time, q.user_upn AS actor_upn, q.client_ip AS ip
+  FROM searches q
+  WHERE len(list_filter(@list:finance_keywords,
+          k -> k <> '' AND strpos(lower(coalesce(q.query_text, '')), lower(k)) > 0)) > 0
 group_by: [actor_upn]
 analyst_guidance: |
   A user (or an actor using their session) searching the mailbox or SharePoint for invoice,
@@ -91,3 +114,62 @@ tests:
         audit_data: {QueryText: "team offsite agenda"}
         event_time: "2026-03-05T10:00:00Z"
     expect_hits: 0
+  - name: a UAL SearchQueryInitiated with no suffix is a hit
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000070003"
+        operation: SearchQueryInitiated
+        workload: exchange
+        user_upn: victim@contoso.example
+        audit_data: {QueryText: "invoice payment"}
+        event_time: "2026-03-05T08:00:00Z"
+    expect_hits: 1
+  - name: a UAL SharepointSearchQueryInitiated is a hit
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000070004"
+        operation: SharepointSearchQueryInitiated
+        workload: sharepoint
+        user_upn: victim@contoso.example
+        audit_data: {QueryText: "bank details"}
+        event_time: "2026-03-05T08:00:00Z"
+    expect_hits: 1
+  - name: a search is one hit, from the side table when it has one
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000070005"
+        operation: SearchQueryInitiatedExchange
+        workload: exchange
+        user_upn: victim@contoso.example
+        audit_data: {QueryText: "invoice payment"}
+        event_time: "2026-03-05T08:00:00Z"
+      - table: search_queries
+        record_id: "00000000-0000-0000-0000-000000070005"
+        workload: exchange
+        query_text: "invoice payment"
+    expect_hits: 1
+  - name: the query text is read the way the normalizer reads it
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000070006"
+        operation: SearchQueryInitiatedExchange
+        workload: exchange
+        user_upn: victim@contoso.example
+        # A lower-case key and the SearchQuery spelling, both of which the normalizer accepts.
+        audit_data: '{"searchquery":"invoice payment"}'
+        event_time: "2026-03-05T08:00:00Z"
+    expect_hits: 1
+  - name: a search whose side-table row has no text is still one hit
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-000000070007"
+        operation: SearchQueryInitiatedExchange
+        workload: exchange
+        user_upn: victim@contoso.example
+        audit_data: {QueryText: "invoice payment"}
+        event_time: "2026-03-05T08:00:00Z"
+      - table: search_queries
+        record_id: "00000000-0000-0000-0000-000000070007"
+        workload: exchange
+        query_text: ""
+    expect_hits: 1

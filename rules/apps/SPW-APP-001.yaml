@@ -2,11 +2,15 @@
 # the window, directory audit Consent to application, or UAL "Consent to application.") whose
 # permissions include Mail.*, Files.*, or offline_access together with any Mail.* / Files.*
 # scope."). A consent is only a hit when it actually carries mail or file access: the grant
-# rows name the granted scope, the consent event names the app. `sql:` because a grant only
-# counts when it was created inside the collection window, which lives on `collections`, and
-# because the scope test is a prefix match. The event arms are in the window by construction (the
-# collectors only fetch the window), so they need no window predicate. The rule connection
-# scopes every table to the tenant; `tenant_key = $tenant` makes that explicit.
+# rows name the granted scope, the consent event names the app. `offline_access` is a condition of
+# the consent, not a capability on its own, so it counts only together with a Mail.* / Files.*
+# scope in the same grant or event - which is the same thing as requiring mail or file access.
+# `sql:` because a grant only counts when it was created inside the collection window, which
+# lives on `collections`, and because the scope test is a token match. The event arms are in the
+# window by construction (the collectors only fetch the window), so they need no window
+# predicate, and they read the *granted* scopes (the ConsentAction.Permissions entry) rather
+# than the whole record, so a mail address or a file URL in another property is not a scope. The
+# rule connection scopes every table to the tenant; `tenant_key = $tenant` makes that explicit.
 id: SPW-APP-001
 title: Consent to an app with Mail.*, Files.* or offline_access
 version: 1
@@ -18,25 +22,57 @@ tags: [apps, oauth-consent, bec]
 requires: []
 requires_evidence: []
 sql: |
-  -- A consent that carries mail or file access (or offline_access) is the grant an attacker
-  -- uses to read mail and stage data. Two independent paths:
+  -- A consent that carries mail or file access is the grant an attacker uses to read mail and
+  -- stage data. `offline_access` alone is not: coverage.yaml counts it only together with a
+  -- Mail.* / Files.* scope, so the test is those two on their own. Two independent paths:
   --   1. a grant row whose `created` falls inside the collection window, whose `permission` is
-  --      a Mail.* / Files.* / offline_access scope. Hawk's Consent_Grants has no Created column
-  --      (survey §2c), so `oauth_grants.created` is only populated by Microsoft-Extractor-Suite;
-  --      a grant with no window is context (a first-party AllPrincipals grant), not a hit.
+  --      a Mail.* / Files.* scope. Hawk's Consent_Grants has no Created column (survey §2c), so
+  --      `oauth_grants.created` is only populated by Microsoft-Extractor-Suite; a grant with no
+  --      window is context (a first-party AllPrincipals grant), not a hit.
   --   2. a consent event (UAL "Consent to application." / directory audit), whose granted scopes
   --      are the ConsentAction.Permissions entry of its ModifiedProperties. Testing the granted
   --      scope and not merely the fact that a consent happened is what keeps a consent for
   --      openid/profile only - the low-risk look-alike - out of the findings.
-  -- Every non-alphanumeric run in the event text is a separator, so each scope is matched as a
-  -- whole token (Microsoft wraps the value in JSON quotes). The rule connection scopes every
+  -- Every non-alphanumeric run in the granted value is a separator, so each scope is matched as
+  -- a whole token (Microsoft wraps the value in JSON quotes). The rule connection scopes every
   -- table to the tenant; `tenant_key = $tenant` makes that explicit.
   WITH win AS (
     SELECT c.collection_id, c.window_start, c.window_end
     FROM collections c
     WHERE c.tenant_key = $tenant
+  ),
+  -- The granted scopes of a consent event: the ConsentAction.Permissions entry of its
+  -- ModifiedProperties, or the permission property itself when the event has no such entry.
+  -- Only that value is tested -- a mail address or a file URL in another property of the same
+  -- record is not a scope the user granted, and scanning the whole record finds both.
+  events AS (
+    SELECT lower(CAST(u.record_id AS VARCHAR)) AS record_key, 'ual_events' AS src,
+           u.event_time, u.user_upn AS actor_upn, u.client_ip AS ip,
+           coalesce(nullif(trim(array_to_string(list_transform(
+             list_filter(from_json(json_extract(u.audit_data, '$.ModifiedProperties'),
+                                  '[{"Name":"VARCHAR","OldValue":"VARCHAR","NewValue":"VARCHAR"}]'),
+             e -> lower(coalesce(e.Name, '')) IN ('consentaction.permissions', 'permissions')),
+             e -> coalesce(e.NewValue, '')), ' ')), ''),
+             coalesce(json_extract_string(u.audit_data, '$.ConsentAction.Permissions'),
+                      json_extract_string(u.audit_data, '$.Permissions'), '')) AS scopes
+    FROM ual_events u
+    WHERE lower(u.operation) = 'consent to application.'
+    UNION ALL
+    SELECT lower(a.record_key), 'directory_audits' AS src, a.event_time, a.initiated_by_upn,
+           a.initiated_by_ip,
+           coalesce(nullif(trim(array_to_string(list_transform(
+             list_filter(from_json(a.modified_properties,
+                                  '[{"Name":"VARCHAR","OldValue":"VARCHAR","NewValue":"VARCHAR"}]'),
+             e -> lower(coalesce(e.Name, '')) IN ('consentaction.permissions', 'permissions')),
+             e -> coalesce(e.NewValue, '')), ' ')), ''),
+             coalesce(json_extract_string(a.modified_properties, '$.Permissions'), '')) AS scopes
+    FROM directory_audits a
+    WHERE lower(a.activity) = 'consent to application'
   )
-  SELECT lower(g.record_key) AS record_key, 'oauth_grants' AS source_table, g.collected_at AS event_time,
+  -- A consent that carries mail or file access is the grant an attacker uses to read mail and
+  -- stage data. `offline_access` on its own is not: it only counts together with a Mail or
+  -- Files scope, which the first two conditions already cover.
+  SELECT lower(g.record_key) AS record_key, 'oauth_grants' AS source_table, g.created AS event_time,
          g.principal_upn AS actor_upn, CAST(NULL AS VARCHAR) AS ip
   FROM oauth_grants g
   JOIN win w ON w.collection_id = g.collection_id
@@ -44,26 +80,21 @@ sql: |
     AND g.created IS NOT NULL
     AND g.created >= w.window_start AND g.created < w.window_end
     AND (lower(COALESCE(g.permission, '')) LIKE 'mail.%'
-      OR lower(COALESCE(g.permission, '')) LIKE 'files.%'
-      OR lower(COALESCE(g.permission, '')) = 'offline_access')
+      OR lower(COALESCE(g.permission, '')) LIKE 'files.%')
   UNION ALL
-  SELECT lower(CAST(u.record_id AS VARCHAR)), 'ual_events', u.event_time, u.user_upn, u.client_ip
-  FROM ual_events u
-  WHERE lower(u.operation) = 'consent to application.'
-    AND regexp_matches(
-          regexp_replace(lower(CAST(u.audit_data AS VARCHAR)), '[^a-z0-9._]+', ' ', 'g'),
-          ' mail\.| files\.| offline_access')
-  UNION ALL
-  SELECT lower(a.record_key), 'directory_audits', a.event_time, a.initiated_by_upn, a.initiated_by_ip
-  FROM directory_audits a
-  WHERE lower(a.activity) = 'consent to application'
-    AND regexp_matches(
-          regexp_replace(lower(CAST(a.modified_properties AS VARCHAR)), '[^a-z0-9._]+', ' ', 'g'),
-          ' mail\.| files\.| offline_access')
+  SELECT e.record_key,
+         CASE WHEN e.src = 'ual_events' THEN 'ual_events' ELSE 'directory_audits' END AS source_table,
+         e.event_time, e.actor_upn, e.ip
+  FROM events e
+  WHERE regexp_matches(
+          regexp_replace(lower(e.scopes), '[^a-z0-9._-]+', ' ', 'g'),
+          '(^| )(mail|files)\.[a-z0-9.]+( |$)')
 group_by: [actor_upn]
 analyst_guidance: |
-  A consent that carries mail or file access (or offline_access, which keeps a refresh token
-  usable while the user is offline) is the consent an attacker uses to read mail and stage data.
+  A consent that carries mail or file access is the consent an attacker uses to read mail and
+  stage data. `offline_access` alone is not a hit: it keeps a refresh token usable while the user
+  is offline, and matters here only together with the mail or file access that makes the consent
+  worth anything.
   Check the app's publisher and whether the grant sits next to a mailbox rule, a forwarding
   change or a risky sign-in.
 false_positives:
@@ -135,4 +166,50 @@ tests:
         consent_type: Principal
         principal_upn: quiet@contoso.example
         created: "2025-11-01T09:00:00Z"
+    expect_hits: 0
+  - name: offline_access alone is not a hit
+    records:
+      - table: collections
+        collection_id: 73
+        root_path: /test/test
+        sparrow_version: test
+        tenant_key: test
+        window_start: "2026-03-01T00:00:00Z"
+        window_end: "2026-04-01T00:00:00Z"
+      - table: oauth_grants
+        collection_id: 73
+        permission: offline_access
+        consent_type: Principal
+        principal_upn: quiet@contoso.example
+        created: "2026-03-05T09:00:00Z"
+    expect_hits: 0
+  - name: a consent for openid, profile, offline_access and User.Read is not a hit
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-0a00000000a2"
+        operation: "Consent to application."
+        workload: AzureActiveDirectory
+        user_upn: quiet@contoso.example
+        audit_data: '{"ModifiedProperties":[{"Name":"ConsentAction.Permissions","NewValue":"\"openid profile offline_access User.Read\""}]}'
+        event_time: "2026-03-05T09:00:00Z"
+    expect_hits: 0
+  - name: a mail address in another property is not a granted mail scope
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-0a00000000a3"
+        operation: "Consent to application."
+        workload: AzureActiveDirectory
+        user_upn: quiet@contoso.example
+        audit_data: '{"AppIdentifier":"x@mail.contoso.example","ModifiedProperties":[{"Name":"ConsentAction.Permissions","NewValue":"\"openid profile\""}]}'
+        event_time: "2026-03-05T09:00:00Z"
+    expect_hits: 0
+  - name: a file URL in another property is not a granted files scope
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-0a00000000a4"
+        operation: "Consent to application."
+        workload: AzureActiveDirectory
+        user_upn: quiet@contoso.example
+        audit_data: '{"ResourceAppName":"https://portal.example/files.aspx","ModifiedProperties":[{"Name":"ConsentAction.Permissions","NewValue":"\"openid profile\""}]}'
+        event_time: "2026-03-05T09:00:00Z"
     expect_hits: 0

@@ -33,7 +33,8 @@ false_positives:
   - A planned domain migration, where the add/verify is documented and the domain is owned by
     the tenant.
 references:
-  - https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/manage-application-consent-permissions
+  - https://learn.microsoft.com/en-us/office/office-365-management-api/office-365-management-activity-api-schema
+  - https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/manage-domains
 author: Sparrow
 tests:
   - name: a domain is added and verified in the UAL

@@ -10,7 +10,11 @@
 # lives on `collections`, and because the "ends in .All" arm is a suffix test. The
 # `oauth_grants` arm joins the window; the event arms (a consent UAL record or directory audit)
 # are in the window by construction - the collectors only fetch the window - so they need no
-# window predicate. The rule connection scopes every table to the tenant, and `tenant_key =
+# window predicate. The event arms apply the *same* test as the grant arm - a tenant-wide
+# (AllPrincipals) consent, a broad `.All` scope, the extremely dangerous and high-risk names, and
+# the User.Read / User.ReadBasic.All exclusion - to the scopes the event actually granted
+# (the ConsentAction.Permissions entry), so a scope-shaped string in another property of the
+# record is not a grant. The rule connection scopes every table to the tenant, and `tenant_key =
 # $tenant` makes that explicit.
 id: SPW-HAWK-007
 title: Consent grant in a risky category (broad scope, extremely dangerous, high risk)
@@ -29,10 +33,11 @@ sql: |
   --      Consent_Grants has no Created column (survey §2c), so `oauth_grants.created` is only
   --      populated by Microsoft-Extractor-Suite; a grant with no window is context (a first-party
   --      AllPrincipals Microsoft Office grant), not a hit.
-  --   2. a consent event (UAL / directory audit) whose granted scopes - the
-  --      ConsentAction.Permissions entry of its ModifiedProperties - include a high-risk scope.
-  --      Testing the granted scope and not merely that a consent happened is what keeps a consent
-  --      for openid/profile/User.Read only - the low-risk look-alike - out of the findings.
+  --   2. a consent event (UAL / directory audit) that is tenant-wide (AllPrincipals) or whose
+  --      granted scopes - the ConsentAction.Permissions entry of its ModifiedProperties - are a
+  --      broad `.All` or one of the named high-risk scopes. Testing the granted scope and not
+  --      merely that a consent happened is what keeps a consent for openid/profile/User.Read only
+  --      - the low-risk look-alike - out of the findings.
   -- Unlike Hawk, User.Read and User.ReadBasic.All alone are not high risk, so the blanket `.All`
   -- suffix excludes them. Every non-alphanumeric run is a separator, so each scope is matched as
   -- a whole token. The rule connection scopes every table to the tenant; `tenant_key = $tenant`
@@ -41,8 +46,49 @@ sql: |
     SELECT c.collection_id, c.window_start, c.window_end
     FROM collections c
     WHERE c.tenant_key = $tenant
+  ),
+  -- The granted scopes of a consent event and whether it was a tenant-wide (AllPrincipals) one:
+  -- the ConsentAction.Permissions entry of its ModifiedProperties and the consent type beside
+  -- it, read out of the event's own properties. Only that value is tested, so a mail address or
+  -- a file URL in another property of the same record is not a scope the user granted.
+  events AS (
+    SELECT lower(CAST(u.record_id AS VARCHAR)) AS record_key, 'ual_events' AS src,
+           u.event_time, u.user_upn AS actor_upn, u.client_ip AS ip,
+           coalesce(nullif(trim(array_to_string(list_transform(
+             list_filter(from_json(json_extract(u.audit_data, '$.ModifiedProperties'),
+                                  '[{"Name":"VARCHAR","OldValue":"VARCHAR","NewValue":"VARCHAR"}]'),
+             e -> lower(coalesce(e.Name, '')) IN ('consentaction.permissions', 'permissions')),
+             e -> coalesce(e.NewValue, '')), ' ')), ''),
+             coalesce(json_extract_string(u.audit_data, '$.ConsentAction.Permissions'),
+                      json_extract_string(u.audit_data, '$.Permissions'), '')) AS scopes,
+           coalesce(nullif(lower(json_extract_string(u.audit_data, '$.ConsentType')), ''),
+                    CASE WHEN list_contains(list_transform(
+                           from_json(json_extract(u.audit_data, '$.ModifiedProperties'),
+                                     '[{"Name":"VARCHAR","NewValue":"VARCHAR"}]'),
+                           e -> lower(coalesce(e.NewValue, ''))), 'allprincipals')
+                         THEN 'allprincipals' END) AS consent_type
+    FROM ual_events u
+    WHERE lower(u.operation) IN ('consent to application.', 'add delegated permission grant.',
+                                 'add oauth2permissiongrant.')
+    UNION ALL
+    SELECT lower(a.record_key), 'directory_audits', a.event_time, a.initiated_by_upn,
+           a.initiated_by_ip,
+           coalesce(nullif(trim(array_to_string(list_transform(
+             list_filter(from_json(a.modified_properties,
+                                  '[{"Name":"VARCHAR","OldValue":"VARCHAR","NewValue":"VARCHAR"}]'),
+             e -> lower(coalesce(e.Name, '')) IN ('consentaction.permissions', 'permissions')),
+             e -> coalesce(e.NewValue, '')), ' ')), ''),
+             coalesce(json_extract_string(a.modified_properties, '$.Permissions'), '')),
+           coalesce(nullif(lower(json_extract_string(a.modified_properties, '$.ConsentType')), ''),
+                    CASE WHEN list_contains(list_transform(
+                           from_json(a.modified_properties,
+                                     '[{"Name":"VARCHAR","NewValue":"VARCHAR"}]'),
+                           e -> lower(coalesce(e.NewValue, ''))), 'allprincipals')
+                         THEN 'allprincipals' END)
+    FROM directory_audits a
+    WHERE lower(a.activity) IN ('consent to application', 'add delegated permission grant')
   )
-  SELECT lower(g.record_key) AS record_key, 'oauth_grants' AS source_table, g.collected_at AS event_time,
+  SELECT lower(g.record_key) AS record_key, 'oauth_grants' AS source_table, g.created AS event_time,
          g.principal_upn AS actor_upn, CAST(NULL AS VARCHAR) AS ip
   FROM oauth_grants g
   JOIN win w ON w.collection_id = g.collection_id
@@ -66,26 +112,25 @@ sql: |
       OR lower(COALESCE(g.permission, '')) LIKE 'user.readwrite%'
     )
   UNION ALL
-  SELECT lower(CAST(u.record_id AS VARCHAR)), 'ual_events', u.event_time, u.user_upn, u.client_ip
-  FROM ual_events u
-  WHERE lower(u.operation) IN ('consent to application.', 'add delegated permission grant.',
-                               'add oauth2permissiongrant.')
-    AND regexp_matches(
-          regexp_replace(lower(CAST(u.audit_data AS VARCHAR)), '[^a-z0-9._]+', ' ', 'g'),
-          ' approleassignment\.readwrite\.all| rolemanagement\.readwrite\.directory'
+  -- The same test as the grant arm, over the granted scopes of the event: a tenant-wide consent
+  -- counts on its own, a broad `.All` scope counts unless it is one of the two coverage.yaml
+  -- names as not high risk on its own, and the named extremely dangerous and high-risk scopes
+  -- count.
+  SELECT e.record_key,
+         CASE WHEN e.src = 'ual_events' THEN 'ual_events' ELSE 'directory_audits' END AS source_table,
+         e.event_time, e.actor_upn, e.ip
+  FROM events e
+  WHERE e.consent_type = 'allprincipals'
+     OR (
+       regexp_matches(regexp_replace(lower(e.scopes), '[^a-z0-9._-]+', ' ', 'g'), '(^| )[a-z0-9.]+\.all( |$)')
+       AND NOT regexp_matches(regexp_replace(lower(e.scopes), '[^a-z0-9._-]+', ' ', 'g'),
+                              '(^| )(user\.read|user\.readbasic\.all)( |$)')
+     )
+     OR regexp_matches(regexp_replace(lower(e.scopes), '[^a-z0-9._-]+', ' ', 'g'),
+          '(^| )(approleassignment\.readwrite\.all| rolemanagement\.readwrite\.directory'
           '| bitlockerkey\.read\.all| directory\.readwrite\.all| user\.read\.all'
           '| mailboxsettings\.readwrite| mail\.readwrite| mail\.send'
-          '| chat\.[a-z]+| ediscovery\.[a-z]+| files\.[a-z]+| sites\.[a-z]+| user\.readwrite[a-z]*')
-  UNION ALL
-  SELECT lower(a.record_key), 'directory_audits', a.event_time, a.initiated_by_upn, a.initiated_by_ip
-  FROM directory_audits a
-  WHERE lower(a.activity) IN ('consent to application', 'add delegated permission grant')
-    AND regexp_matches(
-          regexp_replace(lower(CAST(a.modified_properties AS VARCHAR)), '[^a-z0-9._]+', ' ', 'g'),
-          ' approleassignment\.readwrite\.all| rolemanagement\.readwrite\.directory'
-          '| bitlockerkey\.read\.all| directory\.readwrite\.all| user\.read\.all'
-          '| mailboxsettings\.readwrite| mail\.readwrite| mail\.send'
-          '| chat\.[a-z]+| ediscovery\.[a-z]+| files\.[a-z]+| sites\.[a-z]+| user\.readwrite[a-z]*')
+          '| chat\.[a-z]+| ediscovery\.[a-z]+| files\.[a-z]+| sites\.[a-z]+| user\.readwrite[a-z]*)( |$)')
 group_by: [actor_upn]
 analyst_guidance: |
   The consent is a grant of standing access, so the scopes matter more than the app. An
@@ -181,3 +226,52 @@ tests:
         audit_data: '{"ModifiedProperties":[{"Name":"ConsentAction.Permissions","NewValue":"\"Mail.ReadWrite Files.ReadWrite.All\""}]}'
         event_time: "2026-03-05T09:00:00Z"
     expect_hits: 1
+  - name: a consent event granting a broad .All scope is a hit
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-070000000002"
+        operation: "Consent to application."
+        workload: AzureActiveDirectory
+        user_upn: victim@contoso.example
+        audit_data: '{"ModifiedProperties":[{"Name":"ConsentAction.Permissions","NewValue":"\"Group.ReadWrite.All Calendars.ReadWrite\""}]}'
+        event_time: "2026-03-05T09:00:00Z"
+    expect_hits: 1
+  - name: a tenant-wide consent by an admin is a hit even without a broad scope
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-070000000003"
+        operation: "Consent to application."
+        workload: AzureActiveDirectory
+        user_upn: admin@contoso.example
+        audit_data: '{"ConsentType":"AllPrincipals","TargetResources":[{"type":"App","modifiedProperties":[{"Name":"ConsentAction.Permissions","NewValue":"\"Mail.Read\""}]}]}'
+        event_time: "2026-03-05T09:00:00Z"
+    expect_hits: 1
+  - name: a directory audit of a tenant-wide consent is a hit too
+    records:
+      - table: directory_audits
+        record_key: 00000000-0000-0000-0000-07000000000d
+        activity: Consent to application
+        initiated_by_upn: admin@contoso.example
+        modified_properties: '[{"Name":"ConsentType","NewValue":"AllPrincipals"},{"Name":"ConsentAction.Permissions","NewValue":"\"Mail.Read\""}]'
+        event_time: "2026-03-05T09:00:00Z"
+    expect_hits: 1
+  - name: a consent event for User.Read and User.ReadBasic.All alone is not a hit
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-070000000004"
+        operation: "Consent to application."
+        workload: AzureActiveDirectory
+        user_upn: quiet@contoso.example
+        audit_data: '{"ModifiedProperties":[{"Name":"ConsentAction.Permissions","NewValue":"\"openid User.Read User.ReadBasic.All\""}]}'
+        event_time: "2026-03-05T09:00:00Z"
+    expect_hits: 0
+  - name: a file URL in another property is not a granted files scope
+    records:
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-070000000005"
+        operation: "Consent to application."
+        workload: AzureActiveDirectory
+        user_upn: quiet@contoso.example
+        audit_data: '{"ResourceAppName":"https://portal.example/files.aspx","ModifiedProperties":[{"Name":"ConsentAction.Permissions","NewValue":"\"openid profile\""}]}'
+        event_time: "2026-03-05T09:00:00Z"
+    expect_hits: 0
