@@ -31,7 +31,10 @@ const BUILTIN: &[(&str, &str)] = &[
         "hawk-investigate",
         include_str!("../scenarios/hawk-investigate.yaml"),
     ),
-    ("password-spray", include_str!("../scenarios/password-spray.yaml")),
+    (
+        "password-spray",
+        include_str!("../scenarios/password-spray.yaml"),
+    ),
     ("volume", include_str!("../scenarios/volume.yaml")),
 ];
 

@@ -79,7 +79,14 @@ fn a_source_fails_against_five_users_and_is_not_regular_egress() {
     }
     // An address that also signs one user in successfully is still a source.
     spray(&case, T1, "198.51.100.5", 6, 50053);
-    signin(&case, T1, "u0@contoso.example", "198.51.100.5", 0, "2026-03-02T10:00:00Z");
+    signin(
+        &case,
+        T1,
+        "u0@contoso.example",
+        "198.51.100.5",
+        0,
+        "2026-03-02T10:00:00Z",
+    );
     // A sign-in without a result code is not a failure.
     for u in 0..6 {
         insert_row(
@@ -112,7 +119,14 @@ fn a_tenants_spray_sources_are_invisible_to_another_tenants_rules() {
     tenant(&case, T2);
     spray(&case, T1, "198.51.100.1", 6, 50126);
     // Tenant B: one successful user from the same address, no failures.
-    signin(&case, T2, "b@fabrikam.example", "198.51.100.1", 0, "2026-03-01T10:00:00Z");
+    signin(
+        &case,
+        T2,
+        "b@fabrikam.example",
+        "198.51.100.1",
+        0,
+        "2026-03-01T10:00:00Z",
+    );
     spray::rebuild(case.conn()).unwrap();
     assert_eq!(sources(&case).len(), 1);
 

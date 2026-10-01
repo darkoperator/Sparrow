@@ -965,7 +965,10 @@ fn mail_005_groups_per_mailbox_and_day() {
     let report = run(&mut case, &set, &opts(5)).unwrap();
     assert_eq!(report.rules[0].hits, 15, "{report:#?}");
     assert_eq!(
-        count(&case, "SELECT count(*) FROM findings WHERE rule_id = 'SPW-MAIL-005'"),
+        count(
+            &case,
+            "SELECT count(*) FROM findings WHERE rule_id = 'SPW-MAIL-005'"
+        ),
         2
     );
 }

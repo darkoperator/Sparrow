@@ -14,7 +14,7 @@ lookalikes:
 
 #[test]
 fn builtins_load_and_validate() {
-    assert_eq!(builtin_names().len(), 7);
+    assert_eq!(builtin_names().len(), 8);
     for name in builtin_names() {
         let s = load(name).unwrap();
         assert_eq!(&s.name, name);

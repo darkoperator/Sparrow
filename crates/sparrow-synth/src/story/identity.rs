@@ -873,8 +873,8 @@ fn distributed_spray(w: &mut World, ctx: &mut Ctx) {
         for (v, user) in victims.iter().enumerate() {
             let attempts = if (src + v) % 3 == 0 { 2 } else { 1 };
             for attempt in 0..attempts {
-                let time = ctx.t
-                    + Duration::minutes(src as i64 * 17 + v as i64 * 2 + attempt as i64 * 31);
+                let time =
+                    ctx.t + Duration::minutes(src as i64 * 17 + v as i64 * 2 + attempt as i64 * 31);
                 let code = if attempt == 0 { 50126 } else { 50053 };
                 let s = failed_signin(w, ctx, user, time, ip, &location, code, Some(agent));
                 push_signin(w, ctx, user, s, false);

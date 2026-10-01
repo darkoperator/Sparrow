@@ -26,6 +26,7 @@ const MATRIX: &[&str] = &[
     "bec-o365-no-p1",
     "business-basic",
     "hawk-investigate",
+    "password-spray",
 ];
 
 #[test]
@@ -72,6 +73,9 @@ green_matrix! {
     hawk_investigate_ps51_en_us: "hawk-investigate", PsEdition::Ps51, Culture::EnUs;
     hawk_investigate_ps7_en_us: "hawk-investigate", PsEdition::Ps7, Culture::EnUs;
     hawk_investigate_ps51_en_gb: "hawk-investigate", PsEdition::Ps51, Culture::EnGb;
+    password_spray_ps51_en_us: "password-spray", PsEdition::Ps51, Culture::EnUs;
+    password_spray_ps7_en_us: "password-spray", PsEdition::Ps7, Culture::EnUs;
+    password_spray_ps51_en_gb: "password-spray", PsEdition::Ps51, Culture::EnGb;
 }
 
 #[test]
