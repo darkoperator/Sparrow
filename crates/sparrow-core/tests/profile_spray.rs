@@ -166,3 +166,85 @@ fn unknown_results_neither_fail_nor_excuse() {
     assert_eq!(spray::rebuild(case.conn()).unwrap(), 1);
     assert_eq!(sources(&case)[0].1, "198.51.100.7");
 }
+
+fn app_signin(case: &Case, t: &str, upn: &str, ip: &str, app: &str, day: &str, code: Option<i64>) {
+    let mut row = json!({"user_upn": upn, "ip": ip, "app_id": app,
+                         "event_time": format!("2026-02-{day}T09:00:00Z")});
+    if let Some(c) = code {
+        row["error_code"] = json!(c);
+    }
+    insert_row(case, "signins", t, row);
+}
+
+fn services(case: &Case) -> Vec<(String, String)> {
+    let mut st = case
+        .conn()
+        .prepare("SELECT tenant_key, app_id FROM cloud_services ORDER BY 1, 2")
+        .unwrap();
+    st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// A tenant-wide cloud service: at least 5 users on at least 3 days from hosting ASNs, and the
+/// hosting sign-ins are at least 80% of the application's successful sign-ins. Per tenant: the same
+/// application is judged on each tenant's own sign-ins.
+#[test]
+fn a_cloud_service_is_five_users_three_days_and_eighty_percent_hosting() {
+    let case = Case::in_memory().unwrap();
+    tenant(&case, T1);
+    tenant(&case, T2);
+    insert_row(
+        &case,
+        "ip_intel",
+        T1,
+        json!({"ip": "203.0.113.1", "asn": 14061, "is_hosting": true, "is_microsoft": false,
+               "is_private": false}),
+    );
+    insert_row(
+        &case,
+        "ip_intel",
+        T1,
+        json!({"ip": "198.51.100.5", "asn": 7922, "is_hosting": false, "is_microsoft": false,
+               "is_private": false}),
+    );
+    let svc = "C0C0C0C0-0000-4000-8000-0000000000C1";
+    let (four, two, mixed, unknown) = (
+        "c0c0c0c0-0000-4000-8000-0000000000c2",
+        "c0c0c0c0-0000-4000-8000-0000000000c3",
+        "c0c0c0c0-0000-4000-8000-0000000000c4",
+        "c0c0c0c0-0000-4000-8000-0000000000c5",
+    );
+    for day in ["01", "02", "03"] {
+        for u in 0..6 {
+            let upn = format!("u{u}@contoso.example");
+            // The service, in both tenants (an upper-case id is stored lower-case).
+            app_signin(&case, T1, &upn, "203.0.113.1", svc, day, Some(0));
+            app_signin(&case, T2, &upn, "203.0.113.1", svc, day, Some(0));
+            // Only four users: not a service.
+            if u < 4 {
+                app_signin(&case, T1, &upn, "203.0.113.1", four, day, Some(0));
+            }
+            // Only two days: not a service.
+            if day != "03" {
+                app_signin(&case, T1, &upn, "203.0.113.1", two, day, Some(0));
+            }
+            // One hosting sign-in against three from an ordinary ISP: below 80%.
+            app_signin(&case, T1, &upn, "203.0.113.1", mixed, day, Some(0));
+            for _ in 0..3 {
+                app_signin(&case, T1, &upn, "198.51.100.5", mixed, day, Some(0));
+            }
+            // An unknown result is never a known success.
+            app_signin(&case, T1, &upn, "203.0.113.1", unknown, day, None);
+        }
+    }
+    assert_eq!(sparrow_core::profile::cloud_services::rebuild(case.conn()).unwrap(), 2);
+    assert_eq!(
+        services(&case),
+        vec![
+            (T1.to_string(), svc.to_lowercase()),
+            (T2.to_string(), svc.to_lowercase()),
+        ]
+    );
+}

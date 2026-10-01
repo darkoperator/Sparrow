@@ -60,6 +60,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "spray_sources",
         sql: include_str!("../../migrations/0010_spray_sources.sql"),
     },
+    Migration {
+        version: 11,
+        name: "cloud_services",
+        sql: include_str!("../../migrations/0011_cloud_services.sql"),
+    },
 ];
 
 pub fn latest_version() -> u32 {

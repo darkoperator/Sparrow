@@ -5,6 +5,7 @@
 pub mod availability;
 pub mod capabilities;
 pub mod catalog;
+pub mod cloud_services;
 pub mod identities;
 pub mod spray;
 pub mod tenant;
@@ -38,6 +39,8 @@ pub struct ProfileReport {
     pub identities: usize,
     /// Password-spray source addresses (`spray_sources`).
     pub spray_sources: usize,
+    /// Tenant-wide cloud services (`cloud_services`).
+    pub cloud_services: usize,
     pub ip_intel: Option<IpIntelReport>,
     pub warnings: Vec<String>,
 }
@@ -85,6 +88,7 @@ pub fn refresh(case: &mut Case, opts: &ProfileOptions) -> Result<ProfileReport> 
     report.warnings.extend(ip_intel.warnings.clone());
     report.ip_intel = Some(ip_intel);
     report.spray_sources = spray::rebuild(&tx)?;
+    report.cloud_services = cloud_services::rebuild(&tx)?;
     let ids = identities::rebuild(&tx)?;
     report.identities = ids.identities;
     if ids.conflicts > 0 {
