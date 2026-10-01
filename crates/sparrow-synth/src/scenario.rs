@@ -253,6 +253,7 @@ story_kind! {
         SprayProxyTakeover => "spray_proxy_takeover",
         SprayVpsLogin => "spray_vps_login",
         CloudConnectorOnboarding => "cloud_connector_onboarding",
+        ConnectorAppOtherAsn => "connector_app_other_asn",
     }
     lookalike {
         RiskDismissed => "risk_dismissed",
@@ -290,6 +291,7 @@ story_kind! {
         Ipv6Rotation => "ipv6_rotation",
         SendNewIsp => "send_new_isp",
         OfficeNatMistypes => "office_nat_mistypes",
+        OfficeStaleAccounts => "office_stale_accounts",
         PhoneStalePassword => "phone_stale_password",
         CloudConnector => "cloud_connector",
         CarrierGeoJitter => "carrier_geo_jitter",

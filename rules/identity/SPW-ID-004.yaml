@@ -15,7 +15,7 @@
 #     - the country differs; or
 #     - the ASN differs AND the use comes from a hosting ASN (ip_intel.is_hosting), or the creating
 #       sign-in did, or either end is a password-spray source of the tenant (spray_sources: an
-#       address that failed against at least 5 distinct users and is not regular egress; compromised
+#       address whose failed-only users, at least 5, outnumber its users with a success; compromised
 #       ISP routers and residential proxies are not hosting ASNs), or the use is a sign-in Entra
 #       rated risk medium/high;
 #     - an address on either side that is a Microsoft service front end (ip_intel.is_microsoft:

@@ -666,11 +666,15 @@ pub fn restrict_to_collector(
         if let Some(n) = def.min_signin_users {
             if signin_users < n as usize {
                 r.outcome = RuleOutcome::NoEvidence;
-                r.reason = format!(
-                    "{} sign-ins cover {signin_users} users, fewer than the {n} {}'s population threshold needs",
-                    collector.as_str(),
-                    r.rule_id
-                );
+                r.reason = if signin_users == 0 {
+                    format!("{} collects no sign-ins for the tenant", collector.as_str())
+                } else {
+                    format!(
+                        "{} sign-ins cover {signin_users} users, fewer than the {n} {}'s population threshold needs",
+                        collector.as_str(),
+                        r.rule_id
+                    )
+                };
                 continue;
             }
         }

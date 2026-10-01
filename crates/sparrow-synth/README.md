@@ -278,18 +278,20 @@ Look-alikes:
 | `ipv6_rotation` | An interactive sign-in and two refreshes of the same session from three IPv6 privacy addresses of one ASN and city. |
 | `spray_after_phish` | Phished credentials first: a compromised router in the victim's city signs the victim in, an hour later it tries six other users. |
 | `spray_success_foreign` | A foreign residential source sprays six users, and the first signs in from it after their own home sign-in (an impossible-travel pair too). |
-| `spray_proxy_takeover` | A compromised router sprays six colleagues, then signs five of them in on each of three later days. |
-| `spray_vps_login` | A router sprays six colleagues; five of the accounts then sign in interactively to Microsoft Teams from a hosting-ASN VPS of the same city over three days. |
-| `cloud_connector_onboarding` | A new SaaS connector's backend (three cloud-region addresses on a cloud ASN apart from the attacker's) refreshes eight users' tokens on its first three days. |
+| `spray_proxy_takeover` | A compromised router sprays 18 users (13 failed-only), then signs five of them in on each of three later days. |
+| `spray_vps_login` | A router sprays six colleagues; five of the accounts then sign in interactively to Microsoft Teams from a hosting-ASN VPS (not the connector's ASN) of the same city over three days. |
+| `connector_app_other_asn` | An attacker's VPS on a hosting ASN other than the connector's signs the actor in to the connector's application after it was established. |
+| `cloud_connector_onboarding` | A new SaaS connector's backend (three cloud-region addresses on a cloud ASN apart from the attacker's) signs eight users in on its first three days (interactive rows, as the portal export records a connector's backend). |
 | `gateway_egress` | A secure web gateway egress shared by eight users blocks them by Conditional Access (53003) and breaks refreshes (70043, 50173); one success. |
 | `conference_network` | Three attendees mistype a password once or twice from a shared conference address. |
 | `replay_other_country` | The victim's interactive MFA sign-in from home, then the same session 20 minutes later from a residential attacker-pool address of another country (non-hosting, the user's own browser agent). |
 | `mia_burst_residential` | The mailbox-read burst of `mia_burst` from a residential attacker-pool address in a country the victim was never in. |
 | `send_residential` | A payment-fraud message sent from a residential attacker-pool address in a new country. |
 | `spray_replay` | A compromised router (attacker-pool address, the victim's city on another ISP) sprays six users, then replays the victim's session 25 minutes after their MFA sign-in from home. |
-| `cloud_connector` | A third-party SaaS connector (a new app) signing eight users in from a public-cloud ASN near each user, daily for four days, with a scripted client (non-interactive refreshes). |
+| `cloud_connector` | A third-party SaaS connector (a new app) signing eight users in from a public-cloud ASN near each user, daily for four days, with a scripted client (interactive rows, as the portal export records them). |
 | `carrier_geo_jitter` | A home sign-in, then a sign-in from a carrier IPv6 address that geolocates about 2,000 km away in the same country eight minutes later, then home again. |
-| `office_nat_mistypes` | Six users of one city share one office egress address, sign in from it on three days, and each mistypes a password once on the third. |
+| `office_nat_mistypes` | Six users of one city share one office egress address, sign in from it on three days, and each mistypes a password once on the third and then succeeds. |
+| `office_stale_accounts` | Five departed or disabled accounts keep failing (50057, 50034, 50055) behind an office egress address that the ten users of the city sign in from. |
 | `phone_stale_password` | One user's phone retries a stale password twelve times in an hour from the mobile carrier. |
 | `password_spray` (real spray below the 5-user threshold) | One hosting address tries three passwords at each of four users with the BAV2ROPC and python-requests clients; every attempt fails (50126, one 50053). |
 | `outlook_client_filing_rule` | The user files a project list's mail into a Projects folder from Outlook on their own computer (`UpdateInboxRules`, office address, own session). |

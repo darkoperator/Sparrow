@@ -1086,5 +1086,11 @@ fn a_population_threshold_is_not_applicable_below_five_signin_users() {
             .is_some_and(|r| r.contains("4 distinct users") && r.contains("5")),
         "{reason:?}"
     );
+    // No sign-ins at all is a collection gap, not a per-user collection.
+    let (status, reason) = run_for(0);
+    assert_eq!(status, "not_applicable");
+    let reason = reason.unwrap();
+    assert!(reason.contains("no sign-ins were collected"), "{reason}");
+    assert!(!reason.contains("per-user"), "{reason}");
     assert_eq!(run_for(5).0, "ran");
 }

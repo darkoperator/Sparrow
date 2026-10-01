@@ -235,10 +235,16 @@ pub fn run(case: &mut Case, set: &RuleSet, opts: &DetectOptions) -> Result<Detec
                 .min_signin_users
                 .filter(|n| signin_users.get(tenant).copied().unwrap_or(0) < *n)
             {
-                Plan::NotApplicable(format!(
-                    "sign-ins cover {} distinct users, fewer than the {n} the rule's population threshold needs (a per-user collection such as Hawk's cannot show it)",
-                    signin_users.get(tenant).copied().unwrap_or(0)
-                ))
+                let have = signin_users.get(tenant).copied().unwrap_or(0);
+                Plan::NotApplicable(if have == 0 {
+                    format!(
+                        "no sign-ins were collected for the tenant (the rule's population threshold needs {n} distinct users)"
+                    )
+                } else {
+                    format!(
+                        "sign-ins cover {have} distinct users, fewer than the {n} the rule's population threshold needs (a per-user collection such as Hawk's cannot show it)"
+                    )
+                })
             } else if let Some(c) = not_licensed {
                 Plan::NotApplicable(format!("capability {c} is not_licensed"))
             } else if let Some((e, s)) = missing_evidence {

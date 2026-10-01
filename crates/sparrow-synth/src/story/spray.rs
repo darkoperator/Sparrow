@@ -35,6 +35,7 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
         StoryKind::SprayProxyTakeover => spray_proxy_takeover(w, ctx)?,
         StoryKind::SprayVpsLogin => spray_vps_login(w, ctx)?,
         StoryKind::OfficeNatMistypes => office_nat_mistypes(w, ctx)?,
+        StoryKind::OfficeStaleAccounts => office_stale_accounts(w, ctx)?,
         StoryKind::PhoneStalePassword => phone_stale_password(w, ctx),
         StoryKind::GatewayEgress => gateway_egress(w, ctx)?,
         StoryKind::ConferenceNetwork => conference_network(w, ctx),
@@ -103,6 +104,9 @@ pub(super) fn failed_signin(
     s.error_code = code;
     s.failure_reason = match code {
         50053 => "The user account is locked out.".to_string(),
+        50057 => "The user account is disabled.".to_string(),
+        50034 => "The user account does not exist in the directory.".to_string(),
+        50055 => "The password is expired.".to_string(),
         _ => "Invalid username or password or Invalid on-premise username or password.".to_string(),
     };
     if let Some(a) = agent {
@@ -315,8 +319,8 @@ fn replay(w: &mut World, ctx: &mut Ctx, a: &User, ip: IpAddr, location: &Locatio
 
 /// An office NAT: about ten users of one city share one egress address, sign in from it on the four
 /// weekdays before and on the day, and on the last day each mistypes a password once before getting
-/// it right. Ordinary days of an ordinary office, so the address is regular tenant egress, not a
-/// spray.
+/// it right. The mistyping users succeed from the address, so none of them is failed-only and the
+/// address is not a spray source.
 fn office_nat_mistypes(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     let a: User = ctx.a.clone();
     let staff: Vec<User> = w
@@ -490,26 +494,35 @@ fn spray_success_foreign(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     Ok(())
 }
 
-/// A proxy that sprays, takes five accounts and uses them on three later days: a compromised router
-/// in the office city fails twice against each of six colleagues, then signs five of them in on each
-/// of the next three days. The address stays a spray source (its regular-egress history must come
-/// BEFORE its first failure), and every success from it is the takeover.
+/// A proxy that sprays many accounts and takes a few: a compromised router in the actor's city fails
+/// twice against each of 18 users (five colleagues of the city and 13 others), then signs the five
+/// colleagues in on each of the next three days. The 13 failed-only users outnumber the 5 taken
+/// accounts, so the address stays a spray source, and every success from it is the takeover.
 fn spray_proxy_takeover(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     let a: User = ctx.a.clone();
-    let staff = city_staff(w, &a, 6);
-    if staff.len() < 6 {
+    let taken = city_staff(w, &a, 5);
+    let others: Vec<User> = w
+        .users
+        .iter()
+        .filter(|u| u.home.city != a.home.city)
+        .take(13)
+        .cloned()
+        .collect();
+    if taken.len() < 5 || others.len() < 13 {
         return Err(Error::Scenario(format!(
-            "{}: a proxy takeover needs 6 users in {}, the tenant has {}",
+            "{}: a proxy takeover needs 5 users in {} and 13 others, the tenant has {} and {}",
             ctx.spec.id,
             a.home.city,
-            staff.len()
+            taken.len(),
+            others.len()
         )));
     }
+    let sprayed: Vec<User> = taken.iter().chain(others.iter()).cloned().collect();
     let location = router_location(&a);
     let ip = attacker_ip(w, ctx, &location)?;
-    spray_from(w, ctx, &staff, ip, &location);
+    spray_from(w, ctx, &sprayed, ip, &location);
     for day in 1..=3i64 {
-        for (k, user) in staff.iter().take(5).enumerate() {
+        for (k, user) in taken.iter().enumerate() {
             let time = ctx.t + Duration::days(day) + Duration::minutes(k as i64 * 4);
             let ok = password_signin(w, ctx, user, time, ip, &location, well_known("OfficeHome"));
             push_signin(w, ctx, user, ok, true);
@@ -622,4 +635,55 @@ fn conference_network(w: &mut World, ctx: &mut Ctx) {
             fail(w, ctx, user, when, ip, &location, 50126, None);
         }
     }
+}
+
+/// An office whose departed and disabled accounts keep failing: five users with stale devices (a
+/// laptop that still syncs, a phone mail profile) fail with 50057 (disabled), 50034 (no such account) and
+/// 50055 (expired password) behind the office egress address that the ten users of the city sign in
+/// from successfully. Five failed-only users, but ten users succeed from the address, so it is not a
+/// spray source. (A real office is bigger; the tenant has ten users per city, and what counts is
+/// that the successes outnumber the failed-only users.)
+fn office_stale_accounts(w: &mut World, ctx: &mut Ctx) -> Result<()> {
+    const CODES: [i64; 5] = [50057, 50034, 50055, 50057, 50034];
+    let a: User = ctx.a.clone();
+    let staff = city_staff(w, &a, 10);
+    let others: Vec<User> = w
+        .users
+        .iter()
+        .filter(|u| u.home.city != a.home.city)
+        .take(CODES.len())
+        .cloned()
+        .collect();
+    if staff.len() < 8 || others.len() < CODES.len() {
+        return Err(Error::Scenario(format!(
+            "{}: stale accounts behind an office need 8 users in {} and {} others, the tenant has {} and {}",
+            ctx.spec.id,
+            a.home.city,
+            CODES.len(),
+            staff.len(),
+            others.len()
+        )));
+    }
+    let nat = ctx.shared.next_egress();
+    let location = a.home.clone();
+    for (k, user) in staff.iter().enumerate() {
+        let s = password_signin(
+            w,
+            ctx,
+            user,
+            ctx.t + Duration::minutes(k as i64 * 5),
+            nat,
+            &location,
+            well_known("OfficeHome"),
+        );
+        push_signin(w, ctx, user, s, true);
+    }
+    for (k, user) in others.iter().enumerate() {
+        for attempt in 0..3i64 {
+            let when = ctx.t + Duration::minutes(k as i64 * 11 + attempt * 60);
+            let s = failed_signin(w, ctx, user, when, nat, &location, CODES[k], None);
+            push_signin(w, ctx, user, s, true);
+        }
+    }
+    Ok(())
 }

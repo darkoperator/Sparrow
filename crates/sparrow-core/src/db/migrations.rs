@@ -70,6 +70,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "cloud_services_established",
         sql: include_str!("../../migrations/0012_cloud_services_established.sql"),
     },
+    Migration {
+        version: 13,
+        name: "spray_failed_only_cloud_asn",
+        sql: include_str!("../../migrations/0013_spray_failed_only_cloud_asn.sql"),
+    },
 ];
 
 pub fn latest_version() -> u32 {

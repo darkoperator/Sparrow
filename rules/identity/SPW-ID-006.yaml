@@ -3,8 +3,8 @@
 # scripted client, mostly 50053 smart lockout and 50126 invalid password) hits almost every tenant
 # that still exposes password authentication, so the finding is the picture of the day, not an
 # incident. SPW-ID-005 is the escalation: a source that later signed in. The sources are the
-# tenant's `spray_sources` relation (an address that failed against at least 5 distinct users and
-# is not regular egress; any network type), derived once by the profile step. The failed sign-ins
+# tenant's `spray_sources` relation (an address whose failed-only users, at least 5, outnumber its
+# users with a success; any network type), derived once by the profile step. The failed sign-ins
 # that count are the interactive rows with a code of the shared `credential_failure_codes` list (the
 # same list as the relation and SPW-ID-005; Conditional Access blocks, token-refresh errors, MFA
 # prompts and non-interactive rows are not spray). A hit is the first failed sign-in of each source on the
@@ -76,7 +76,7 @@ analyst_guidance: |
   `any_source_later_succeeded` flag: when true, SPW-ID-005 has the successful sign-in; otherwise
   confirm legacy authentication is blocked and smart lockout is on.
 false_positives:
-  - A tenant office whose egress sprays itself (a misconfigured sync client retrying a stale password for many accounts) when fewer than 5 users sign in from it on 3 days.
+  - A tenant office whose egress sprays itself (a misconfigured sync client retrying a stale password for many accounts) while fewer users succeed from it than fail there.
   - A vulnerability scanner or a penetration test the tenant authorised.
 references:
   - https://attack.mitre.org/techniques/T1110/003/

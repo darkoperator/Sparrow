@@ -22,12 +22,14 @@
 #   routine), so a same-country pair between ordinary networks is not evidence. A pair across
 #   countries counts as before, and so does a pair where either country is unknown. Missed on
 #   purpose: a same-country attacker on an ordinary ISP with no spray history.
-# - Skipped on purpose: the NON-interactive sign-ins of a tenant-wide cloud service after it was
-#   established (the tenant's `cloud_services` relation, the same definition SPW-ID-002 uses: an
-#   application whose non-interactive refreshes come from hosting ASNs for 5 or more users on 3 or more
-#   days, 80% of them), because its backend refreshes users' tokens from a cloud region on their behalf
-#   and a connector's cloud sign-in is not the user travelling; an interactive sign-in, a UAL
-#   UserLoggedIn and a sign-in from a password-spray source always count. Microsoft addresses (ip_intel.is_microsoft): Exchange Online, a Cloud PC
+# - Skipped on purpose: the sign-ins of a tenant-wide cloud service after it was established, to that
+#   application from that hosting ASN (the tenant's `cloud_services` relation, one row per
+#   application and ASN, the same definition SPW-ID-002 uses: 5 or more users with known successes from
+#   the ASN on 3 or more days, 80% of the application's successes; interactive and non-interactive both
+#   count, the portal export records a connector's backend as interactive), because its backend signs
+#   users in from a cloud region on their behalf and that is not the user travelling; the same
+#   application from another ASN, a UAL UserLoggedIn and a sign-in from a password-spray source always
+#   count. Microsoft addresses (ip_intel.is_microsoft): Exchange Online, a Cloud PC
 #   or a Microsoft relay geolocate to a datacentre unrelated to the user. Addresses with no
 #   location are ignored, not treated as far.
 # - Known false positives: VPNs and mobile-carrier egress (the address geolocates to the
@@ -59,11 +61,10 @@ sql: |
     FROM signins s JOIN ip_intel i ON i.ip = s.ip
     WHERE (s.error_code IS NULL OR s.error_code = 0) AND s.user_upn IS NOT NULL AND s.event_time IS NOT NULL
       AND i.latitude IS NOT NULL AND i.longitude IS NOT NULL AND NOT coalesce(i.is_microsoft, false)
-      AND (coalesce(s.is_interactive, true)
-           OR NOT EXISTS (SELECT 1 FROM cloud_services c
-                          WHERE c.app_id = lower(coalesce(s.app_id, ''))
-                            AND epoch_ms(s.event_time) // 86400000 > c.established_day)
-           OR EXISTS (SELECT 1 FROM spray_sources p WHERE p.ip = s.ip))
+      AND NOT EXISTS (SELECT 1 FROM cloud_services c
+                      WHERE c.app_id = lower(coalesce(s.app_id, '')) AND c.asn = i.asn
+                        AND epoch_ms(s.event_time) // 86400000 > c.established_day
+                        AND NOT EXISTS (SELECT 1 FROM spray_sources p WHERE p.ip = s.ip))
     UNION ALL
     SELECT lower(CAST(u.record_id AS VARCHAR)), 'ual_events', u.event_time, lower(u.user_upn),
            u.user_upn, u.client_ip, i.latitude, i.longitude, coalesce(i.is_hosting, false),
@@ -541,7 +542,7 @@ tests:
         event_time: "2026-03-01T09:10:00Z"
         error_code: 0
     expect_hits: 1
-  - name: a cloud service's non-interactive cross-country hosting sign-in forms no impossible-travel pair
+  - name: a cloud service's cross-country hosting sign-in forms no impossible-travel pair
     records:
       - table: ip_intel
         ip: 198.51.100.1
@@ -553,6 +554,7 @@ tests:
         is_private: false
       - table: ip_intel
         ip: 203.0.113.2
+        asn: 14061
         latitude: 50.1
         longitude: 8.7
         country_iso: DE
@@ -566,6 +568,7 @@ tests:
         hosting_days: 3
         signins: 18
         hosting_signins: 18
+        asn: 14061
         established_day: 0
       - table: signins
         user_upn: alice@contoso.example
@@ -580,7 +583,7 @@ tests:
         event_time: "2026-03-01T09:10:00Z"
         error_code: 0
     expect_hits: 0
-  - name: an interactive sign-in to the same app is a hit
+  - name: an interactive sign-in to the connector app from its own ASN is excused too (the portal export records the backend as interactive)
     records:
       - table: ip_intel
         ip: 198.51.100.1
@@ -592,6 +595,7 @@ tests:
         is_private: false
       - table: ip_intel
         ip: 203.0.113.2
+        asn: 14061
         latitude: 50.1
         longitude: 8.7
         country_iso: DE
@@ -605,6 +609,48 @@ tests:
         hosting_days: 3
         signins: 18
         hosting_signins: 18
+        asn: 14061
+        established_day: 0
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-03-01T09:00:00Z"
+        error_code: 0
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.2
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        is_interactive: true
+        event_time: "2026-03-01T09:10:00Z"
+        error_code: 0
+    expect_hits: 0
+  - name: the same app from another hosting ASN is a hit
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        latitude: 41.88
+        longitude: -87.63
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 203.0.113.2
+        asn: 16509
+        latitude: 50.1
+        longitude: 8.7
+        country_iso: DE
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: cloud_services
+        tenant_key: test
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        hosting_users: 6
+        hosting_days: 3
+        signins: 18
+        hosting_signins: 18
+        asn: 14061
         established_day: 0
       - table: signins
         user_upn: alice@contoso.example
@@ -619,7 +665,7 @@ tests:
         event_time: "2026-03-01T09:10:00Z"
         error_code: 0
     expect_hits: 1
-  - name: the same non-interactive hosting sign-in to another app is a hit
+  - name: the same hosting sign-in to another app is a hit
     records:
       - table: ip_intel
         ip: 198.51.100.1
@@ -631,6 +677,7 @@ tests:
         is_private: false
       - table: ip_intel
         ip: 203.0.113.2
+        asn: 14061
         latitude: 50.1
         longitude: 8.7
         country_iso: DE
@@ -644,6 +691,7 @@ tests:
         hosting_days: 3
         signins: 18
         hosting_signins: 18
+        asn: 14061
         established_day: 0
       - table: signins
         user_upn: alice@contoso.example

@@ -23,6 +23,7 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
         StoryKind::CertRotation => cert_rotation(w, ctx)?,
         StoryKind::CloudConnector => cloud_connector(w, ctx)?,
         StoryKind::CloudConnectorOnboarding => cloud_connector_onboarding(w, ctx)?,
+        StoryKind::ConnectorAppOtherAsn => connector_app_other_asn(w, ctx)?,
         _ => return Ok(false),
     }
     Ok(true)
@@ -434,8 +435,10 @@ fn connector_backend(
     (ip, region)
 }
 
-/// `days` days of non-interactive token refreshes (python-httpx) by eight users of one city, from the
-/// connector's backend, starting `first_day` days after the storyline's time.
+/// `days` days of sign-ins by eight users of one city, from the connector's backend, starting
+/// `first_day` days after the storyline's time. The portal's interactive export (what investigators
+/// pull) records a connector's backend sign-ins as INTERACTIVE rows with the user's client app
+/// ("Mobile Apps and Desktop clients"), so that is the shape generated (python-httpx agent).
 fn connector_days(
     w: &mut World,
     ctx: &mut Ctx,
@@ -472,12 +475,13 @@ fn connector_days(
                 ctx.t + Duration::days(day) + Duration::minutes(k as i64 * 3),
                 ip,
                 &region,
-                SignInType::NonInteractive,
+                SignInType::Interactive,
                 app.app_id,
                 well_known("Microsoft Graph"),
                 session,
             );
             s.user_agent = "python-httpx/0.27.0".to_string();
+            s.client_app = "Mobile Apps and Desktop clients".to_string();
             push_signin(w, ctx, user, s, false);
         }
     }
@@ -507,4 +511,31 @@ fn cloud_connector_onboarding(w: &mut World, ctx: &mut Ctx) -> Result<()> {
 fn cloud_connector(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     let app = w.apps[app_index(w, |n| n == CONNECTOR_APP, CONNECTOR_APP)?].clone();
     connector_days(w, ctx, &app, 0, 4)
+}
+
+/// The connector's application used by an attacker from another hosting ASN: a VPS on a cloud ASN that
+/// is not the connector's signs the actor in to the connector's app, on a day after the connector was
+/// established. The profile excuses the connector's own ASN only, so the sign-in counts.
+fn connector_app_other_asn(w: &mut World, ctx: &mut Ctx) -> Result<()> {
+    let app = w.apps[app_index(w, |n| n == CONNECTOR_APP, CONNECTOR_APP)?].clone();
+    let a: User = ctx.a.clone();
+    let mut vps = a.home.clone();
+    vps.asn = HOSTING_ASNS[1].0;
+    vps.asn_org = HOSTING_ASNS[1].1.to_string();
+    let ip = super::spray::attacker_ip(w, ctx, &vps)?;
+    let session = ctx.rng.uuid();
+    let s = signin(
+        w,
+        &mut ctx.rng,
+        &a,
+        ctx.t,
+        ip,
+        &vps,
+        SignInType::Interactive,
+        app.app_id,
+        well_known("Microsoft Graph"),
+        session,
+    );
+    push_signin(w, ctx, &a, s, true);
+    Ok(())
 }

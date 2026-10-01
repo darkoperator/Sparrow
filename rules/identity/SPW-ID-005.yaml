@@ -2,16 +2,16 @@
 # internet-wide background noise on its own (SPW-ID-006 reports it at tenant level); the sign-in
 # that SUCCEEDS from an address that sprayed the tenant is the account takeover. The spray sources
 # are the tenant's `spray_sources` relation, derived once by the profile step: an address that
-# failed against at least 5 distinct users of the tenant and is not regular egress (an office NAT
-# where at least 5 users sign in on 3 or more days). The address type does not matter: attackers
+# failed against at least 5 distinct users of the tenant who never succeed from it (failed-only users)
+# and those outnumber the users that do succeed from it (an office NAT or VPN egress is not a source:
+# its mistyping users succeed and many more users sign in). The address type does not matter: attackers
 # spray from compromised ISP routers and residential proxies as much as from hosting providers, and
 # no GeoIP is needed. A success is a signins row with error_code 0 (a NULL result is unknown and is
 # deliberately ignored) or a UAL UserLoggedIn record. The sources themselves need KNOWN failures. The context says how many users and failures the
 # source had, its first and last failure, and whether this user was one of the sprayed users (a
 # credential failure from the same address: the shared `credential_failure_codes` list, interactive
 # rows only, so an MFA interrupt never marks a user as sprayed); a success by a user the source never
-# failed against is the stronger tell (a credential obtained elsewhere). A success from a non-egress
-# spray source is attacker infrastructure whether it comes before or after the failures (phished
+# failed against is the stronger tell (a credential obtained elsewhere). A success from a spray source is attacker infrastructure whether it comes before or after the failures (phished
 # credentials first, then spraying the rest), so there is no time filter: the context says
 # `before_first_failure`. Only a KNOWN success (error_code 0) counts: a NULL result could be a failure,
 # and this is a high-severity rule, so an unknown result never escalates (deliberate; the coverage text
@@ -60,7 +60,7 @@ analyst_guidance: |
   failed against means the credential came from somewhere else.
 false_positives:
   - An address shared with a legitimate user after the spray (a carrier-grade NAT or a mobile pool whose address was reassigned), so check that the user's usual network and device match.
-  - A tenant office whose egress is also a spray source because fewer than 5 users sign in from it on 3 days (a small office).
+  - A small office or VPN egress where at least 5 users fail and never succeed (stale devices) while fewer users succeed from it than fail there, so it is a source until more users succeed.
 references:
   - https://attack.mitre.org/techniques/T1110/003/
   - https://learn.microsoft.com/en-us/entra/identity/monitoring-health/reference-sign-ins-error-codes
