@@ -5,9 +5,19 @@
 # on the list. `sql:` because the hit joins the event to `ip_intel`. `needs_geoip`: without an
 # ASN database no address is ever hosting, so the runner reports not_applicable instead of an
 # empty result.
+# Tuning: a cloud-hosted SaaS connector is not an attacker. Third-party SaaS products that read a
+# tenant on the users' behalf sign in from their own public-cloud backend (an Azure or AWS ASN,
+# scripted user agents such as python-httpx or an Azure SDK), for many users, every day. An
+# application is treated as a tenant-wide cloud service when, in this tenant, at least 5 distinct
+# users have successful sign-ins to it from hosting ASNs on at least 3 distinct UTC days AND those
+# hosting sign-ins are at least 80% of the application's successful sign-ins. Its hosting sign-ins
+# do not count. No application name or id is involved: the profile of the application decides.
+# A sign-in from a password-spray source of the tenant (spray_sources) always counts. Missed on
+# purpose: an attacker's consent-phished application used by 5 or more users from a cloud ASN
+# (SPW-APP-001 and SPW-APP-002 cover the consent).
 id: SPW-ID-002
 title: Sign-in from a hosting-provider ASN
-version: 1
+version: 2
 status: stable
 severity: medium
 confidence: medium
@@ -17,16 +27,35 @@ requires: []
 requires_evidence: []
 needs_geoip: true
 sql: |
+  WITH app_stats AS (
+    SELECT lower(s.app_id) AS app,
+           count(*) AS signins,
+           count(*) FILTER (WHERE coalesce(i.is_hosting, false)) AS hosting_signins,
+           count(DISTINCT lower(s.user_upn)) FILTER (WHERE coalesce(i.is_hosting, false)) AS hosting_users,
+           count(DISTINCT epoch_ms(s.event_time) // 86400000)
+             FILTER (WHERE coalesce(i.is_hosting, false)) AS hosting_days
+    FROM signins s LEFT JOIN ip_intel i ON i.ip = s.ip
+    WHERE s.error_code = 0 AND s.app_id IS NOT NULL AND s.app_id <> '' AND s.event_time IS NOT NULL
+    GROUP BY lower(s.app_id)
+  ),
+  connectors AS (
+    SELECT app FROM app_stats
+    WHERE hosting_users >= 5 AND hosting_days >= 3 AND hosting_signins * 10 >= signins * 8
+  )
   SELECT s.record_key, 'signins' AS source_table, s.event_time, s.user_upn AS actor_upn,
          s.ip AS ip,
          json_object('asn', i.asn, 'asn_org', i.asn_org, 'hosting_provider', i.hosting_provider) AS context
   FROM signins s JOIN ip_intel i ON i.ip = s.ip
   WHERE s.error_code = 0 AND coalesce(i.is_hosting, false)
+    AND (lower(coalesce(s.app_id, '')) NOT IN (SELECT app FROM connectors)
+         OR EXISTS (SELECT 1 FROM spray_sources p WHERE p.ip = s.ip))
   UNION ALL
   SELECT lower(CAST(u.record_id AS VARCHAR)), 'ual_events', u.event_time, u.user_upn, u.client_ip,
          json_object('asn', i.asn, 'asn_org', i.asn_org, 'hosting_provider', i.hosting_provider)
   FROM ual_events u JOIN ip_intel i ON i.ip = u.client_ip
   WHERE lower(u.operation) = 'userloggedin' AND coalesce(i.is_hosting, false)
+    AND (lower(coalesce(u.client_app_id, '')) NOT IN (SELECT app FROM connectors)
+         OR EXISTS (SELECT 1 FROM spray_sources p WHERE p.ip = u.client_ip))
 group_by: [actor_upn]
 analyst_guidance: |
   Employees sign in from homes, offices and mobile networks; a sign-in from a data-centre or
@@ -36,6 +65,7 @@ analyst_guidance: |
 false_positives:
   - A user on a commercial VPN or a cloud-hosted desktop (VPN egress is often a hosting ASN).
   - A remote worker on a corporate proxy hosted at a cloud provider.
+  - A tenant-wide cloud service signing in from its own backend is excluded when 5 or more users use it from hosting ASNs on 3 or more days (80% of its sign-ins).
 references:
   - https://learn.microsoft.com/en-us/entra/identity/monitoring-health/reference-sign-ins-error-codes
   - https://learn.microsoft.com/en-us/purview/audit-log-activities
@@ -123,3 +153,577 @@ tests:
         ip: 203.0.113.77
         error_code: 0
     expect_hits: 0
+  - name: a cloud connector used by many users on many days from a hosting ASN is not an attacker
+    records:
+      - table: ip_intel
+        ip: 203.0.113.1
+        asn: 14061
+        is_hosting: true
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-03T09:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-03T09:00:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-03T09:00:00Z"
+      - table: signins
+        user_upn: u3@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u3@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u3@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-03T09:00:00Z"
+      - table: signins
+        user_upn: u4@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u4@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u4@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-03T09:00:00Z"
+      - table: signins
+        user_upn: u5@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u5@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u5@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-03T09:00:00Z"
+    expect_hits: 0
+  - name: the same app with only four users is not a connector
+    records:
+      - table: ip_intel
+        ip: 203.0.113.1
+        asn: 14061
+        is_hosting: true
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-03T09:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-03T09:00:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-03T09:00:00Z"
+      - table: signins
+        user_upn: u3@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u3@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u3@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-03T09:00:00Z"
+    expect_hits: 12
+  - name: the same app on only two days is not a connector
+    records:
+      - table: ip_intel
+        ip: 203.0.113.1
+        asn: 14061
+        is_hosting: true
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u3@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u3@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u4@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u4@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u5@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u5@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+    expect_hits: 12
+  - name: an app whose sign-ins are mostly from ordinary ISPs is not a connector
+    records:
+      - table: ip_intel
+        ip: 203.0.113.1
+        asn: 14061
+        is_hosting: true
+      - table: ip_intel
+        ip: 198.51.100.5
+        asn: 7922
+        is_hosting: false
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-03T09:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-03T09:00:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-03T09:00:00Z"
+      - table: signins
+        user_upn: u3@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u3@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u3@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-03T09:00:00Z"
+      - table: signins
+        user_upn: u4@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u4@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u4@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-03T09:00:00Z"
+      - table: signins
+        user_upn: u5@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u5@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u5@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-03T09:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 198.51.100.5
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T10:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 198.51.100.5
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T10:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 198.51.100.5
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-03T10:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 198.51.100.5
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-04T10:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 198.51.100.5
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-05T10:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 198.51.100.5
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-06T10:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 198.51.100.5
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-07T10:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 198.51.100.5
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-08T10:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 198.51.100.5
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-09T10:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 198.51.100.5
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-10T10:00:00Z"
+    expect_hits: 18
+  - name: a connector's sign-in from a password-spray source still counts
+    records:
+      - table: ip_intel
+        ip: 203.0.113.1
+        asn: 14061
+        is_hosting: true
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-03T09:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-03T09:00:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-03T09:00:00Z"
+      - table: signins
+        user_upn: u3@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u3@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u3@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-03T09:00:00Z"
+      - table: signins
+        user_upn: u4@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u4@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u4@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-03T09:00:00Z"
+      - table: signins
+        user_upn: u5@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-01T09:00:00Z"
+      - table: signins
+        user_upn: u5@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-02T09:00:00Z"
+      - table: signins
+        user_upn: u5@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        error_code: 0
+        event_time: "2026-02-03T09:00:00Z"
+      - table: spray_sources
+        tenant_key: test
+        ip: 203.0.113.1
+        users_targeted: 9
+        failures: 40
+        first_failure: "2026-01-20T00:00:00Z"
+        last_failure: "2026-01-28T00:00:00Z"
+    expect_hits: 18
