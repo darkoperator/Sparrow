@@ -178,7 +178,7 @@ fn unknown_results_neither_fail_nor_excuse() {
 }
 
 fn app_signin(case: &Case, t: &str, upn: &str, ip: &str, app: &str, day: &str, code: Option<i64>) {
-    let mut row = json!({"user_upn": upn, "ip": ip, "app_id": app,
+    let mut row = json!({"user_upn": upn, "ip": ip, "app_id": app, "is_interactive": false,
                          "event_time": format!("2026-02-{day}T09:00:00Z")});
     if let Some(c) = code {
         row["error_code"] = json!(c);
@@ -186,12 +186,12 @@ fn app_signin(case: &Case, t: &str, upn: &str, ip: &str, app: &str, day: &str, c
     insert_row(case, "signins", t, row);
 }
 
-fn services(case: &Case) -> Vec<(String, String)> {
+fn services(case: &Case) -> Vec<(String, String, i64)> {
     let mut st = case
         .conn()
-        .prepare("SELECT tenant_key, app_id FROM cloud_services ORDER BY 1, 2")
+        .prepare("SELECT tenant_key, app_id, established_day FROM cloud_services ORDER BY 1, 2")
         .unwrap();
-    st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+    st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .unwrap()
         .map(Result::unwrap)
         .collect()
@@ -253,13 +253,45 @@ fn a_cloud_service_is_five_users_three_days_and_eighty_percent_hosting() {
         sparrow_core::profile::cloud_services::rebuild(case.conn()).unwrap(),
         2
     );
+    // Established at the end of the third day (2026-02-03): epoch day 20487.
+    let day = 20487;
     assert_eq!(
         services(&case),
         vec![
-            (T1.to_string(), svc.to_lowercase()),
-            (T2.to_string(), svc.to_lowercase()),
+            (T1.to_string(), svc.to_lowercase(), day),
+            (T2.to_string(), svc.to_lowercase(), day),
         ]
     );
+}
+
+/// Only NON-interactive known successes establish a connector: an attacker's interactive sign-ins to a
+/// low-volume first-party client from a cloud VPS (5+ accounts, 3+ days) never make the app one, and
+/// the profile is established from a prefix: it holds from the day it was first met.
+#[test]
+fn interactive_sign_ins_never_establish_a_cloud_service() {
+    let case = Case::in_memory().unwrap();
+    tenant(&case, T1);
+    insert_row(
+        &case,
+        "ip_intel",
+        T1,
+        json!({"ip": "203.0.113.1", "asn": 14061, "is_hosting": true, "is_microsoft": false,
+               "is_private": false}),
+    );
+    let app = "c0c0c0c0-0000-4000-8000-0000000000d1";
+    for day in ["01", "02", "03"] {
+        for u in 0..6 {
+            let upn = format!("u{u}@contoso.example");
+            insert_row(
+                &case,
+                "signins",
+                T1,
+                json!({"user_upn": upn, "ip": "203.0.113.1", "app_id": app, "is_interactive": true,
+                       "error_code": 0, "event_time": format!("2026-02-{day}T09:00:00Z")}),
+            );
+        }
+    }
+    assert_eq!(sparrow_core::profile::cloud_services::rebuild(case.conn()).unwrap(), 0);
 }
 
 /// A proxy that sprays, takes five accounts and uses them on three later days stays a spray source:

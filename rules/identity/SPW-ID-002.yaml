@@ -11,15 +11,18 @@
 # Tuning: a cloud-hosted SaaS connector is not an attacker. Third-party SaaS products that read a
 # tenant on the users' behalf sign in from their own public-cloud backend (an Azure or AWS ASN,
 # scripted user agents such as python-httpx or an Azure SDK), for many users, every day. An
-# application is treated as a tenant-wide cloud service when, in this tenant, at least 5 distinct
-# users have successful sign-ins to it from hosting ASNs on at least 3 distinct UTC days AND those
-# hosting sign-ins are at least 80% of the application's successful sign-ins. That definition is
-# the tenant's `cloud_services` relation, derived once by the profile step and shared with
-# SPW-ID-003 (an unknown result never excuses an application). Its hosting sign-ins do not count.
-# No application name or id is involved: the profile of the application decides.
+# application is treated as a tenant-wide cloud service when, counting its NON-interactive successful
+# sign-ins in this tenant, at least 5 distinct users signed in from hosting ASNs on at least 3
+# distinct UTC days AND those hosting sign-ins are at least 80% of the application's non-interactive
+# successes. That definition is the tenant's `cloud_services` relation, derived once by the profile
+# step and shared with SPW-ID-003, and it is ESTABLISHED from a prefix of the history: only the
+# non-interactive hosting sign-ins of a day AFTER the one at whose end the profile was first met are
+# excused (cold start: a connector's first days still count). An INTERACTIVE sign-in always counts, so
+# an attacker in a browser never rides a connector profile; the UAL arm cannot tell interactive from
+# non-interactive and never excuses. No application name or id is involved: the profile decides.
 # A sign-in from a password-spray source of the tenant (spray_sources) always counts. Missed on
-# purpose: an attacker's consent-phished application used by 5 or more users from a cloud ASN
-# (SPW-APP-001 and SPW-APP-002 cover the consent).
+# purpose: an attacker's consent-phished application whose non-interactive refreshes come from a
+# cloud ASN for 5 or more users (SPW-APP-001 and SPW-APP-002 cover the consent), after its first days.
 id: SPW-ID-002
 title: Sign-in from a hosting-provider ASN
 version: 2
@@ -37,15 +40,19 @@ sql: |
          json_object('asn', i.asn, 'asn_org', i.asn_org, 'hosting_provider', i.hosting_provider) AS context
   FROM signins s JOIN ip_intel i ON i.ip = s.ip
   WHERE (s.error_code IS NULL OR s.error_code = 0) AND coalesce(i.is_hosting, false)
-    AND (lower(coalesce(s.app_id, '')) NOT IN (SELECT app_id FROM cloud_services)
+    -- A tenant-wide cloud service's NON-interactive sign-ins of a day after the service was
+    -- established are not an attacker; an interactive sign-in (or one of unknown kind) always counts,
+    -- and so does one from a password-spray source.
+    AND (coalesce(s.is_interactive, true)
+         OR NOT EXISTS (SELECT 1 FROM cloud_services c
+                        WHERE c.app_id = lower(coalesce(s.app_id, ''))
+                          AND epoch_ms(s.event_time) // 86400000 > c.established_day)
          OR EXISTS (SELECT 1 FROM spray_sources p WHERE p.ip = s.ip))
   UNION ALL
   SELECT lower(CAST(u.record_id AS VARCHAR)), 'ual_events', u.event_time, u.user_upn, u.client_ip,
          json_object('asn', i.asn, 'asn_org', i.asn_org, 'hosting_provider', i.hosting_provider)
   FROM ual_events u JOIN ip_intel i ON i.ip = u.client_ip
   WHERE lower(u.operation) = 'userloggedin' AND coalesce(i.is_hosting, false)
-    AND (lower(coalesce(u.client_app_id, '')) NOT IN (SELECT app_id FROM cloud_services)
-         OR EXISTS (SELECT 1 FROM spray_sources p WHERE p.ip = u.client_ip))
 group_by: [actor_upn]
 analyst_guidance: |
   Employees sign in from homes, offices and mobile networks; a sign-in from a data-centre or
@@ -150,7 +157,7 @@ tests:
         ip: 203.0.113.77
         error_code: 0
     expect_hits: 0
-  - name: a tenant-wide cloud service's hosting sign-ins are not an attacker
+  - name: a connector's non-interactive hosting sign-ins after it was established are not an attacker
     records:
       - table: ip_intel
         ip: 203.0.113.1
@@ -163,43 +170,115 @@ tests:
         hosting_days: 3
         signins: 18
         hosting_signins: 18
+        established_day: 0
       - table: signins
         user_upn: u0@contoso.example
         ip: 203.0.113.1
         app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        is_interactive: false
         error_code: 0
-        event_time: "2026-02-01T09:00:00Z"
+        event_time: "2026-02-05T09:00:00Z"
       - table: signins
         user_upn: u1@contoso.example
         ip: 203.0.113.1
         app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        is_interactive: false
         error_code: 0
-        event_time: "2026-02-01T09:00:00Z"
+        event_time: "2026-02-05T09:00:00Z"
       - table: signins
         user_upn: u2@contoso.example
         ip: 203.0.113.1
         app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        is_interactive: false
         error_code: 0
-        event_time: "2026-02-01T09:00:00Z"
+        event_time: "2026-02-05T09:00:00Z"
       - table: signins
         user_upn: u3@contoso.example
         ip: 203.0.113.1
         app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        is_interactive: false
         error_code: 0
-        event_time: "2026-02-01T09:00:00Z"
+        event_time: "2026-02-05T09:00:00Z"
       - table: signins
         user_upn: u4@contoso.example
         ip: 203.0.113.1
         app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        is_interactive: false
         error_code: 0
-        event_time: "2026-02-01T09:00:00Z"
+        event_time: "2026-02-05T09:00:00Z"
       - table: signins
         user_upn: u5@contoso.example
         ip: 203.0.113.1
         app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        is_interactive: false
         error_code: 0
-        event_time: "2026-02-01T09:00:00Z"
+        event_time: "2026-02-05T09:00:00Z"
     expect_hits: 0
+  - name: an interactive hosting sign-in to a connector app always counts
+    records:
+      - table: ip_intel
+        ip: 203.0.113.1
+        asn: 14061
+        is_hosting: true
+      - table: cloud_services
+        tenant_key: test
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        hosting_users: 6
+        hosting_days: 3
+        signins: 18
+        hosting_signins: 18
+        established_day: 0
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        is_interactive: true
+        error_code: 0
+        event_time: "2026-02-05T09:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        is_interactive: true
+        error_code: 0
+        event_time: "2026-02-05T09:00:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        is_interactive: true
+        error_code: 0
+        event_time: "2026-02-05T09:00:00Z"
+    expect_hits: 3
+  - name: the connector's own establishing days are not excused
+    records:
+      - table: ip_intel
+        ip: 203.0.113.1
+        asn: 14061
+        is_hosting: true
+      - table: cloud_services
+        tenant_key: test
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        hosting_users: 6
+        hosting_days: 3
+        signins: 18
+        hosting_signins: 18
+        established_day: 20500
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        is_interactive: false
+        error_code: 0
+        event_time: "2026-02-05T09:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.1
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        is_interactive: false
+        error_code: 0
+        event_time: "2026-02-05T09:00:00Z"
+    expect_hits: 2
   - name: another app's hosting sign-ins still count
     records:
       - table: ip_intel
@@ -213,26 +292,30 @@ tests:
         hosting_days: 3
         signins: 18
         hosting_signins: 18
+        established_day: 0
       - table: signins
         user_upn: u0@contoso.example
         ip: 203.0.113.1
         app_id: c0c0c0c0-0000-4000-8000-0000000000c2
+        is_interactive: false
         error_code: 0
-        event_time: "2026-02-01T09:00:00Z"
+        event_time: "2026-02-05T09:00:00Z"
       - table: signins
         user_upn: u1@contoso.example
         ip: 203.0.113.1
         app_id: c0c0c0c0-0000-4000-8000-0000000000c2
+        is_interactive: false
         error_code: 0
-        event_time: "2026-02-01T09:00:00Z"
+        event_time: "2026-02-05T09:00:00Z"
       - table: signins
         user_upn: u2@contoso.example
         ip: 203.0.113.1
         app_id: c0c0c0c0-0000-4000-8000-0000000000c2
+        is_interactive: false
         error_code: 0
-        event_time: "2026-02-01T09:00:00Z"
+        event_time: "2026-02-05T09:00:00Z"
     expect_hits: 3
-  - name: a cloud service's sign-in from a password-spray source still counts
+  - name: a connector's non-interactive sign-in from a password-spray source still counts
     records:
       - table: ip_intel
         ip: 203.0.113.1
@@ -245,18 +328,21 @@ tests:
         hosting_days: 3
         signins: 18
         hosting_signins: 18
+        established_day: 0
       - table: signins
         user_upn: u0@contoso.example
         ip: 203.0.113.1
         app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        is_interactive: false
         error_code: 0
-        event_time: "2026-02-01T09:00:00Z"
+        event_time: "2026-02-05T09:00:00Z"
       - table: signins
         user_upn: u1@contoso.example
         ip: 203.0.113.1
         app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        is_interactive: false
         error_code: 0
-        event_time: "2026-02-01T09:00:00Z"
+        event_time: "2026-02-05T09:00:00Z"
       - table: spray_sources
         tenant_key: test
         ip: 203.0.113.1
@@ -265,7 +351,7 @@ tests:
         first_failure: "2026-01-20T00:00:00Z"
         last_failure: "2026-01-28T00:00:00Z"
     expect_hits: 2
-  - name: a cloud service's UserLoggedIn is excluded by the client application id
+  - name: a UserLoggedIn from a hosting address is never excused (it cannot be shown non-interactive)
     records:
       - table: ip_intel
         ip: 203.0.113.1
@@ -278,9 +364,10 @@ tests:
         hosting_days: 3
         signins: 18
         hosting_signins: 18
+        established_day: 0
       - table: ual_events
         operation: UserLoggedIn
         user_upn: alice@contoso.example
         client_ip: 203.0.113.1
         client_app_id: c0c0c0c0-0000-4000-8000-0000000000c1
-    expect_hits: 0
+    expect_hits: 1

@@ -1,0 +1,6 @@
+-- Migration 12: cloud_services is established from a prefix of the history (Phase 6 tuning).
+
+ALTER TABLE cloud_services ADD COLUMN established_day BIGINT;
+
+COMMENT ON COLUMN cloud_services.established_day IS 'The UTC day number (epoch days) at the end of which the application first met the tenant-wide cloud service profile, counting only NON-interactive successful sign-ins up to that day. A rule excuses only non-interactive hosting sign-ins of a later day: an interactive sign-in always counts, and sign-ins of the establishing days themselves are not excused (the profile must be established from sign-ins BEFORE the one being judged).';
+COMMENT ON TABLE cloud_services IS 'Tenant-wide cloud services per tenant, rewritten by every profile run: an application whose NON-interactive successful sign-ins in this tenant come from hosting ASNs (ip_intel.is_hosting) for at least 5 distinct users on at least 3 distinct UTC days AND at least 80% of its non-interactive successful sign-ins are from hosting ASNs, established from a prefix of the history (established_day). Typical case: a third-party SaaS connector whose public-cloud backend refreshes tokens for users. Only known successes (error_code 0) count. No application name or id is involved. Rules read it through the tenant scope like any tenant-aware table.';
