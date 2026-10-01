@@ -22,6 +22,7 @@ mitre: [T1110.003]
 tags: [bec, sign-in, password-spray]
 requires: []
 requires_evidence: []
+min_signin_users: 5
 sql: |
   WITH f AS (
     SELECT s.record_key, s.event_time AS t, lower(s.user_upn) AS usr, s.ip, s.error_code,

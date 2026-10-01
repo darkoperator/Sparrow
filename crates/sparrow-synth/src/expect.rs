@@ -651,6 +651,7 @@ pub fn restrict_to_collector(
     rules: &mut [RuleExpect],
     collector: Collector,
     kind_of: &BTreeMap<String, String>,
+    signin_users: usize,
 ) {
     for r in rules {
         if !matches!(r.outcome, RuleOutcome::Hit | RuleOutcome::NoHit) {
@@ -659,6 +660,20 @@ pub fn restrict_to_collector(
         let Some(def) = crate::coverage::rule(&r.rule_id) else {
             continue;
         };
+        // A rule with a population threshold needs the sign-in source to cover enough users: a
+        // per-user collection (Hawk's investigated users) cannot show a spray, and the runner says so
+        // (`not_applicable`), so there is nothing to hit or miss.
+        if let Some(n) = def.min_signin_users {
+            if signin_users < n as usize {
+                r.outcome = RuleOutcome::NoEvidence;
+                r.reason = format!(
+                    "{} sign-ins cover {signin_users} users, fewer than the {n} {}'s population threshold needs",
+                    collector.as_str(),
+                    r.rule_id
+                );
+                continue;
+            }
+        }
         let supplied = if r.outcome == RuleOutcome::Hit {
             // A kind may be supplied by fewer collectors than the rule's others (`kind_collectors`).
             kind_of

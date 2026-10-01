@@ -26,6 +26,7 @@ mitre: [T1110.003, T1078]
 tags: [bec, sign-in, password-spray]
 requires: []
 requires_evidence: []
+min_signin_users: 5
 sql: |
   SELECT s.record_key, 'signins' AS source_table, s.event_time, s.user_upn AS actor_upn, s.ip AS ip,
          json_object('users_targeted', p.users_targeted, 'failures', p.failures,

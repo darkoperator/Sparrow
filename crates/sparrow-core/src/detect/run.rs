@@ -135,6 +135,17 @@ fn tenants_with_geoip(case: &Case) -> Result<BTreeSet<String>> {
     Ok(rows.collect::<std::result::Result<_, _>>()?)
 }
 
+/// Distinct users (lower-cased UPN) in each tenant's sign-ins.
+fn signin_users_by_tenant(case: &Case) -> Result<std::collections::BTreeMap<String, u32>> {
+    let mut st = case.conn().prepare(
+        "SELECT c.tenant_key, CAST(count(DISTINCT lower(s.user_upn)) AS INTEGER) \
+         FROM signins s JOIN collections c ON c.collection_id = s.collection_id \
+         WHERE c.tenant_key IS NOT NULL AND s.user_upn IS NOT NULL GROUP BY c.tenant_key",
+    )?;
+    let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?)))?;
+    Ok(rows.collect::<std::result::Result<_, _>>()?)
+}
+
 /// Run the rules of `set` over every tenant of the case and merge the hits into the findings.
 pub fn run(case: &mut Case, set: &RuleSet, opts: &DetectOptions) -> Result<DetectReport> {
     case.ensure_usable()?;
@@ -179,6 +190,11 @@ pub fn run(case: &mut Case, set: &RuleSet, opts: &DetectOptions) -> Result<Detec
         BTreeSet::new()
     };
 
+    let signin_users = if rules.iter().any(|r| r.rule.min_signin_users.is_some()) {
+        signin_users_by_tenant(case)?
+    } else {
+        std::collections::BTreeMap::new()
+    };
     phase::record("geoip tenants", t);
     // 2. The plan.
     let t = Instant::now();
@@ -215,6 +231,14 @@ pub fn run(case: &mut Case, set: &RuleSet, opts: &DetectOptions) -> Result<Detec
             });
             let plan = if r.needs_geoip && !geo_tenants.contains(tenant) {
                 Plan::NotApplicable("no GeoIP data".to_string())
+            } else if let Some(n) = r
+                .min_signin_users
+                .filter(|n| signin_users.get(tenant).copied().unwrap_or(0) < *n)
+            {
+                Plan::NotApplicable(format!(
+                    "sign-ins cover {} distinct users, fewer than the {n} the rule's population threshold needs (a per-user collection such as Hawk's cannot show it)",
+                    signin_users.get(tenant).copied().unwrap_or(0)
+                ))
             } else if let Some(c) = not_licensed {
                 Plan::NotApplicable(format!("capability {c} is not_licensed"))
             } else if let Some((e, s)) = missing_evidence {

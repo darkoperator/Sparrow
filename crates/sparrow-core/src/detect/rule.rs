@@ -31,6 +31,12 @@ pub struct Rule {
     /// data") for a tenant none of whose event IPs has an ASN, a country or a location.
     #[serde(default, skip_serializing_if = "is_false")]
     pub needs_geoip: bool,
+    /// The rule's population threshold (e.g. a spray source needs failures against 5 distinct users):
+    /// the runner records `not_applicable` for a tenant whose sign-ins cover fewer distinct users,
+    /// which a per-user collection (Hawk's few investigated users) cannot reach, so the silence says
+    /// why instead of looking like a clean result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_signin_users: Option<u32>,
     #[serde(flatten)]
     pub body: RuleBody,
     #[serde(default)]

@@ -145,6 +145,16 @@ fn cross_check(set: &RuleSet, schema: &CaseSchema, cov: &CoverageMatrix, out: &m
                 ),
             ));
         }
+        if r.min_signin_users != def.min_signin_users {
+            out.push(issue(
+                &r.id,
+                LintSeverity::Error,
+                format!(
+                    "min_signin_users {:?} differs from coverage {:?}",
+                    r.min_signin_users, def.min_signin_users
+                ),
+            ));
+        }
         match hit_table(r) {
             Some(t) => {
                 if !def.tables.iter().any(|x| x == t) {

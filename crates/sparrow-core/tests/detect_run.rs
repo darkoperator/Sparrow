@@ -1034,3 +1034,47 @@ fn id_005_context_uses_the_credential_failure_list_and_the_timing() {
     assert_eq!(ctx("a@contoso.example"), (true, false));
     assert_eq!(ctx("b@contoso.example"), (false, true));
 }
+
+/// A rule with a population threshold (SPW-ID-005 / SPW-ID-006 need sign-ins of 5 distinct users) is
+/// `not_applicable` for a tenant whose sign-ins cover fewer, and says why: a per-user collection (Hawk's
+/// investigated users) cannot show a spray, and the silence must not look like a clean result.
+#[test]
+fn a_population_threshold_is_not_applicable_below_five_signin_users() {
+    let run_for = |users: usize| -> (String, Option<String>) {
+        let mut case = Case::in_memory().unwrap();
+        tenant(&case, T1);
+        for u in 0..users {
+            insert_row(
+                &case,
+                "signins",
+                T1,
+                json!({"user_upn": format!("u{u}@contoso.example"), "ip": "198.51.100.1",
+                       "error_code": 0, "event_time": "2026-03-01T10:00:00Z"}),
+            );
+        }
+        let rules = sparrow_core::detect::load::load_rules(&DataDirs::default()).unwrap();
+        let rule = rules
+            .rules
+            .into_iter()
+            .find(|r| r.rule.id == "SPW-ID-005")
+            .unwrap();
+        let set = RuleSet {
+            rules: vec![rule],
+            lists: rules.lists,
+            list_meta: rules.list_meta,
+            warnings: vec![],
+        };
+        let report = run(&mut case, &set, &opts(20)).unwrap();
+        let r = &report.rules[0];
+        (r.status.clone(), r.reason.clone())
+    };
+    let (status, reason) = run_for(4);
+    assert_eq!(status, "not_applicable");
+    assert!(
+        reason
+            .as_deref()
+            .is_some_and(|r| r.contains("4 distinct users") && r.contains("5")),
+        "{reason:?}"
+    );
+    assert_eq!(run_for(5).0, "ran");
+}

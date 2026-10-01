@@ -30,6 +30,9 @@ pub struct RuleDef<C = String, S = String> {
     /// Evidence ids (`profile::availability`).
     pub requires_evidence: Vec<String>,
     pub needs_geoip: bool,
+    /// The population threshold the rule needs from the sign-in source (distinct users).
+    #[serde(default)]
+    pub min_signin_users: Option<u32>,
     pub collectors: Vec<C>,
     /// Collectors that can supply a look-alike's evidence; the same as `collectors` when the
     /// file leaves it out.

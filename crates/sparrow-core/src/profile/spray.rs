@@ -33,7 +33,9 @@ pub fn credential_failure_codes(dirs: &crate::data::DataDirs) -> Result<Vec<i64>
         .iter()
         .map(|v| {
             v.parse::<i64>().map_err(|_| {
-                crate::Error::Invalid(format!("credential_failure_codes: {v:?} is not an error code"))
+                crate::Error::Invalid(format!(
+                    "credential_failure_codes: {v:?} is not an error code"
+                ))
             })
         })
         .collect()
@@ -48,7 +50,11 @@ pub fn rebuild(conn: &Connection, codes: &[i64]) -> Result<usize> {
         .map(i64::to_string)
         .collect::<Vec<_>>()
         .join(", ");
-    let codes = if codes.is_empty() { "NULL".to_string() } else { codes };
+    let codes = if codes.is_empty() {
+        "NULL".to_string()
+    } else {
+        codes
+    };
     let n = conn.execute(
         &format!(
             "INSERT INTO spray_sources

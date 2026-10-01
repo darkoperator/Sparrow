@@ -291,7 +291,10 @@ fn interactive_sign_ins_never_establish_a_cloud_service() {
             );
         }
     }
-    assert_eq!(sparrow_core::profile::cloud_services::rebuild(case.conn()).unwrap(), 0);
+    assert_eq!(
+        sparrow_core::profile::cloud_services::rebuild(case.conn()).unwrap(),
+        0
+    );
 }
 
 /// A proxy that sprays, takes five accounts and uses them on three later days stays a spray source:
@@ -326,10 +329,31 @@ fn only_interactive_credential_failures_count() {
     let case = Case::in_memory().unwrap();
     tenant(&case, T1);
     // A web gateway: CA blocks and token-refresh errors for many users, few successes.
-    for (u, code) in [(0, 53003), (1, 70043), (2, 50173), (3, 53003), (4, 70043), (5, 50173)] {
-        signin(&case, T1, &format!("g{u}@contoso.example"), "198.51.100.20", code, "2026-03-01T10:00:00Z");
+    for (u, code) in [
+        (0, 53003),
+        (1, 70043),
+        (2, 50173),
+        (3, 53003),
+        (4, 70043),
+        (5, 50173),
+    ] {
+        signin(
+            &case,
+            T1,
+            &format!("g{u}@contoso.example"),
+            "198.51.100.20",
+            code,
+            "2026-03-01T10:00:00Z",
+        );
     }
-    signin(&case, T1, "g0@contoso.example", "198.51.100.20", 0, "2026-03-01T11:00:00Z");
+    signin(
+        &case,
+        T1,
+        "g0@contoso.example",
+        "198.51.100.20",
+        0,
+        "2026-03-01T11:00:00Z",
+    );
     // Credential failures that are not interactive.
     for u in 0..6 {
         insert_row(
@@ -344,8 +368,22 @@ fn only_interactive_credential_failures_count() {
     // A conference network: three users mistype.
     spray(&case, T1, "198.51.100.22", 3, 50126);
     // A real spray, with the allow-list's other codes (unknown user, invalid password, lockout).
-    for (u, code) in [(0, 50034), (1, 50126), (2, 50053), (3, 50056), (4, 50064), (5, 50126)] {
-        signin(&case, T1, &format!("s{u}@contoso.example"), "198.51.100.23", code, "2026-03-01T10:00:00Z");
+    for (u, code) in [
+        (0, 50034),
+        (1, 50126),
+        (2, 50053),
+        (3, 50056),
+        (4, 50064),
+        (5, 50126),
+    ] {
+        signin(
+            &case,
+            T1,
+            &format!("s{u}@contoso.example"),
+            "198.51.100.23",
+            code,
+            "2026-03-01T10:00:00Z",
+        );
     }
     assert_eq!(rebuild(&case), 1);
     assert_eq!(sources(&case)[0].1, "198.51.100.23");

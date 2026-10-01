@@ -71,7 +71,8 @@ pub fn rebuild(conn: &Connection) -> Result<usize> {
          VALUES (?, ?, ?, ?, ?, ?, ?)",
     )?;
     for ((tenant, app), days) in &by_app {
-        let (mut users, mut hosting_days, mut hosting, mut all) = (BTreeSet::new(), 0usize, 0i64, 0i64);
+        let (mut users, mut hosting_days, mut hosting, mut all) =
+            (BTreeSet::new(), 0usize, 0i64, 0i64);
         for (day, (u, h, a)) in days {
             users.extend(u.iter().cloned());
             if *h > 0 {

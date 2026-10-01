@@ -9,6 +9,8 @@
 #   requires_evidence evidence ids (profile::availability): `not_licensed` / `not_enabled`
 #                     there also gives `not_applicable`
 #   needs_geoip       the rule needs ip_intel ASN / geo (ingest with --geoip-dir)
+#   min_signin_users  the rule needs sign-ins of at least this many distinct users (a population
+#                     threshold); fewer gives `not_applicable` with the reason
 #   collectors        collectors that can supply the evidence of a positive (sparrow synth
 #                     coverage flags a listed collector no built-in scenario exercises)
 #   kind_collectors   per positive kind, the collectors that can supply THAT kind's evidence when
@@ -523,6 +525,9 @@ rules:
     requires: []
     requires_evidence: []
     needs_geoip: false
+    # The population threshold of the spray definition: a per-user collection (Hawk's few
+    # investigated users) covers fewer than 5 users and the run says so (not_applicable).
+    min_signin_users: 5
     # The spray (failed sign-ins) and the success. Hawk 3.1 exports no Entra sign-in log, so no
     # source can exist there and the evidence is incomplete.
     evidence_all_of: [[signins], [signins, ual_events]]
@@ -545,6 +550,9 @@ rules:
     requires: []
     requires_evidence: []
     needs_geoip: false
+    # The population threshold of the spray definition: a per-user collection (Hawk's few
+    # investigated users) covers fewer than 5 users and the run says so (not_applicable).
+    min_signin_users: 5
     collectors: [hawk4, invictus, portal]
     positives: [distributed_spray, spray_success, spray_replay]
     lookalikes: [office_nat_mistypes, phone_stale_password, password_spray]

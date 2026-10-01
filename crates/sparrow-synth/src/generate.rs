@@ -95,7 +95,14 @@ pub fn generate_with_policy(
                 .iter()
                 .map(|r| (r.id.clone(), r.kind.as_str().to_string()))
                 .collect();
-            expect::restrict_to_collector(&mut rules, opts.collector, &kinds);
+            // The users the collector's sign-in source covers: Hawk 4 only the investigated users
+            // (Hawk 3 exports no sign-in log), the tenant-wide exports every person.
+            let signin_users = match opts.collector {
+                Collector::Hawk3 => 0,
+                Collector::Hawk4 => crate::writers::hawk::hawk_users(&world).len(),
+                _ => world.all_people().count(),
+            };
+            expect::restrict_to_collector(&mut rules, opts.collector, &kinds, signin_users);
             rules
         },
         storylines: manifest::story_expects(&world, &records, &out),
