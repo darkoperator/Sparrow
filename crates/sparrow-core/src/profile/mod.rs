@@ -6,6 +6,7 @@ pub mod availability;
 pub mod capabilities;
 pub mod catalog;
 pub mod identities;
+pub mod spray;
 pub mod tenant;
 
 use crate::data::DataDirs;
@@ -35,6 +36,8 @@ pub struct ProfileReport {
     pub capabilities: usize,
     pub tenants: usize,
     pub identities: usize,
+    /// Password-spray source addresses (`spray_sources`).
+    pub spray_sources: usize,
     pub ip_intel: Option<IpIntelReport>,
     pub warnings: Vec<String>,
 }
@@ -57,7 +60,7 @@ pub fn unprofiled_collections(conn: &duckdb::Connection) -> Result<Vec<i64>> {
 /// 1. data tables: capabilities (Task 2), operation_catalog (Task 9);
 /// 2. tenants, collections.tenant_key, tenant_domains (Task 3);
 /// 3. ip_intel (Task 7);
-/// 4. identities (Task 8);
+/// 4. spray_sources (after ip_intel, before identities), identities (Task 8);
 /// 5. tenant_capabilities (Task 5);
 /// 6. evidence_availability snapshot (Task 6).
 pub fn refresh(case: &mut Case, opts: &ProfileOptions) -> Result<ProfileReport> {
@@ -81,6 +84,7 @@ pub fn refresh(case: &mut Case, opts: &ProfileOptions) -> Result<ProfileReport> 
     let ip_intel = crate::enrich::ip::refresh_ip_intel(&tx, &opts.dirs, opts.geoip_dir.as_deref())?;
     report.warnings.extend(ip_intel.warnings.clone());
     report.ip_intel = Some(ip_intel);
+    report.spray_sources = spray::rebuild(&tx)?;
     let ids = identities::rebuild(&tx)?;
     report.identities = ids.identities;
     if ids.conflicts > 0 {

@@ -81,6 +81,7 @@ fn fresh_case_has_provenance_tables() {
             "sharing_events",
             "signins",
             "source_files",
+            "spray_sources",
             "tenant",
             "tenant_capabilities",
             "tenant_domain_overrides",
@@ -293,7 +294,7 @@ fn describe_lists_views_with_their_kind() {
 #[test]
 fn state_table_specs_match_the_schema() {
     let case = Case::in_memory().unwrap();
-    assert_eq!(case.schema_version().unwrap(), 9);
+    assert_eq!(case.schema_version().unwrap(), 10);
     for spec in ALL {
         for common in [
             "record_key",
