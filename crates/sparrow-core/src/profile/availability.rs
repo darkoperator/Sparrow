@@ -831,6 +831,11 @@ struct TenantFacts {
     hawk_log: Vec<String>,
     /// The tenant's known users (lower-case UPNs from the `users` table).
     users: BTreeSet<String>,
+    /// Sign-in rows in the case, and those with no result (`error_code` NULL): a Hawk 4
+    /// `Entra_Sign_In_Log` CSV without its JSON twin (the Status cell holds a type name), or a
+    /// portal row with an unknown Status.
+    signins_total: i64,
+    signins_unknown_result: i64,
 }
 
 struct CapDef {
@@ -1118,6 +1123,29 @@ fn load_tenant_facts(
         .iter()
         .map(|t| (t.clone(), TenantFacts::default()))
         .collect();
+
+    // Sign-ins with no result.
+    {
+        let mut stmt = conn.prepare(
+            "SELECT c.tenant_key, count(*), count(*) FILTER (WHERE x.error_code IS NULL)
+             FROM signins x JOIN collections c ON c.collection_id = x.collection_id
+             WHERE c.tenant_key IS NOT NULL GROUP BY c.tenant_key",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (tenant, total, unknown) = row?;
+            if let Some(tf) = map.get_mut(&tenant) {
+                tf.signins_total = total;
+                tf.signins_unknown_result = unknown;
+            }
+        }
+    }
 
     // Collections: window, first collection time, tools.
     {
@@ -1726,7 +1754,15 @@ fn evaluate(
     {
         notes.push("Graph downloads need Entra ID P1/P2; use the Entra portal download.");
     }
-    for n in notes {
+    let result_note = (def.id == "signins" && tf.signins_unknown_result > 0).then(|| {
+        format!(
+            "{} of {} sign-in rows have no result (error code): a Hawk 4 Entra_Sign_In_Log CSV \
+             without its JSON twin holds a type name in Status; keep the JSON twin, or use the \
+             Entra portal download",
+            tf.signins_unknown_result, tf.signins_total
+        )
+    });
+    for n in notes.iter().copied().chain(result_note.as_deref()) {
         reason.push_str("; ");
         reason.push_str(n);
     }

@@ -161,3 +161,73 @@ fn trees_are_deterministic_and_clean() {
         assert!(found.is_empty(), "{rel}: {found:?}");
     }
 }
+
+/// In a Hawk 4 `Entra_Sign_In_Log_*.csv` the Status cell holds a .NET type name, so a sign-in read
+/// from the CSV has no result. Every Hawk 4 user folder carries the JSON twin, which supersedes the
+/// CSV (its rows hold the Status object); when only the CSV exists, the parser must not pretend and
+/// the evidence availability says the sign-in result was not collected.
+#[test]
+fn a_csv_only_hawk4_sign_in_folder_says_the_result_was_not_collected() {
+    use sparrow_synth::testing::ingest_generated;
+    let scenario = load("bec-aitm").unwrap();
+    let signin_note = |case: &sparrow_core::Case| -> String {
+        case.conn()
+            .query_row(
+                "SELECT reason FROM evidence_availability WHERE evidence = 'signins'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let counts = |case: &sparrow_core::Case| -> (i64, i64) {
+        case.conn()
+            .query_row(
+                "SELECT count(*), count(*) FILTER (WHERE error_code IS NULL) FROM signins",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+    };
+    let json_twins = |dir: &std::path::Path| -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("Entra_Sign_In_Log_") && n.ends_with(".json"))
+                {
+                    out.push(p);
+                }
+            }
+        }
+        out
+    };
+
+    // With the JSON twins: the result is known and the availability note is absent.
+    let dir = tempfile::tempdir().unwrap();
+    let m = generate_to_dir(&scenario, &opts(5), dir.path()).unwrap();
+    assert!(!json_twins(dir.path()).is_empty(), "the tree has JSON twins");
+    let case = ingest_generated(dir.path(), &m);
+    let (total, unknown) = counts(&case);
+    assert!(total > 0);
+    assert_eq!(unknown, 0, "the JSON twin supersedes the CSV");
+    assert!(!signin_note(&case).contains("no result"), "{}", signin_note(&case));
+
+    // CSV only: every sign-in is unknown, and the availability says so.
+    let dir = tempfile::tempdir().unwrap();
+    let m = generate_to_dir(&scenario, &opts(5), dir.path()).unwrap();
+    for p in json_twins(dir.path()) {
+        std::fs::remove_file(p).unwrap();
+    }
+    let case = ingest_generated(dir.path(), &m);
+    let (total, unknown) = counts(&case);
+    assert!(total > 0);
+    assert_eq!(unknown, total, "a CSV row has no result and says so");
+    let note = signin_note(&case);
+    assert!(note.contains("no result"), "{note}");
+}
