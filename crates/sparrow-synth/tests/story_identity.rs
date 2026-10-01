@@ -12,7 +12,7 @@ fn world(name: &str) -> (World, Vec<sparrow_synth::story::StoryRecord>) {
 #[test]
 fn coverage_matrix_is_complete_and_consistent() {
     let rs = rules();
-    assert_eq!(rs.len(), 31);
+    assert_eq!(rs.len(), 33);
     for r in rs {
         assert!(
             !r.positives.is_empty() && !r.lookalikes.is_empty(),

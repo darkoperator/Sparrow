@@ -477,6 +477,47 @@ rules:
         reason: *stolen_session
       - kind: mia_burst
         reason: *stolen_session
+  - id: SPW-ID-005
+    title: Successful sign-in from a password-spray source
+    category: identity
+    severity: high
+    hawk: null
+    logic: >-
+      A successful sign-in (signins error_code 0, or UAL UserLoggedIn) of a user from an address
+      in the tenant's spray_sources (an address with failed sign-ins against at least 5 distinct
+      users of the tenant, not regular egress: at least 5 users signed in from it successfully on
+      at least 3 days; any network type, no GeoIP needed), at or after the source's first failure.
+      Context: users and failures of the source, its first and last failure, whether the user was
+      one of the sprayed users.
+    tables: [signins, ual_events]
+    requires: []
+    requires_evidence: []
+    needs_geoip: false
+    # The spray (failed sign-ins) and the success. Hawk 3.1 exports no Entra sign-in log, so no
+    # source can exist there and the evidence is incomplete.
+    evidence_all_of: [[signins], [signins, ual_events]]
+    collectors: [hawk4, invictus, portal]
+    positives: [spray_success]
+    lookalikes: [distributed_spray, office_nat_mistypes, phone_stale_password, password_spray]
+    correlation_negatives: [office_nat_mistypes]
+  - id: SPW-ID-006
+    title: Password spray against the tenant
+    category: identity
+    severity: low
+    hawk: null
+    logic: >-
+      One finding per tenant per UTC day on which an address in the tenant's spray_sources (see
+      SPW-ID-005) had failed sign-ins (the rejected-password and lockout codes, not the prompt
+      interrupts). The finding has no actor; its context holds the sources, users targeted,
+      failures, top error codes, the hosting versus other-network source counts and whether any
+      source later succeeded.
+    tables: [signins]
+    requires: []
+    requires_evidence: []
+    needs_geoip: false
+    collectors: [hawk4, invictus, portal]
+    positives: [distributed_spray, spray_success]
+    lookalikes: [office_nat_mistypes, phone_stale_password, password_spray]
   - id: SPW-ID-010
     title: Inbox rule created within 60 minutes of a risky or hosting-ASN sign-in
     category: identity

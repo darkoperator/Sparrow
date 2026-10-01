@@ -1,0 +1,348 @@
+# SPW-ID-006 — password spray against the tenant. One finding per tenant per UTC day of spray
+# activity, low severity and high confidence: an internet-wide spray (legacy-auth BAV2ROPC or a
+# scripted client, mostly 50053 smart lockout and 50126 invalid password) hits almost every tenant
+# that still exposes password authentication, so the finding is the picture of the day, not an
+# incident. SPW-ID-005 is the escalation: a source that later signed in. The sources are the
+# tenant's `spray_sources` relation (an address that failed against at least 5 distinct users and
+# is not regular egress; any network type), derived once by the profile step. The failed sign-ins
+# that count are the rejected-password and lockout codes, not the interrupts a normal prompt
+# produces (the same list as the relation). A hit is the first failed sign-in of each source on the
+# day (one record per source and day keeps the evidence small); the finding's context carries the
+# tenant-level picture: sources, users targeted, failures, the top error codes, how many sources
+# were hosting addresses versus other networks, and whether any source later succeeded (see
+# SPW-ID-005). The finding has no actor: it is about the tenant, and group_by is the day.
+id: SPW-ID-006
+title: Password spray against the tenant
+version: 1
+status: stable
+severity: low
+confidence: high
+mitre: [T1110.003]
+tags: [bec, sign-in, password-spray]
+requires: []
+requires_evidence: []
+sql: |
+  WITH f AS (
+    SELECT s.record_key, s.event_time AS t, lower(s.user_upn) AS usr, s.ip, s.error_code,
+           epoch_ms(s.event_time) // 86400000 AS day
+    FROM signins s JOIN spray_sources p ON p.ip = s.ip
+    WHERE s.error_code IS NOT NULL AND s.error_code <> 0
+      AND s.error_code NOT IN (50055, 50072, 50074, 50076, 50079, 50125, 50140, 50158)
+      AND s.event_time IS NOT NULL AND s.user_upn IS NOT NULL
+  ),
+  codes AS (
+    SELECT day, error_code, count(*) AS n,
+           row_number() OVER (PARTITION BY day ORDER BY count(*) DESC, error_code) AS rk
+    FROM f GROUP BY day, error_code
+  ),
+  top_codes AS (
+    SELECT day, string_agg(CAST(error_code AS VARCHAR) || ':' || CAST(n AS VARCHAR), ', ' ORDER BY rk) AS top
+    FROM codes WHERE rk <= 3 GROUP BY day
+  ),
+  per_day AS (
+    SELECT f.day, count(DISTINCT f.ip) AS sources, count(DISTINCT f.usr) AS users,
+           count(*) AS failures,
+           count(DISTINCT f.ip) FILTER (WHERE coalesce(i.is_hosting, false)) AS hosting_sources
+    FROM f LEFT JOIN ip_intel i ON i.ip = f.ip
+    GROUP BY f.day
+  ),
+  later AS (
+    SELECT DISTINCT p.ip
+    FROM spray_sources p JOIN signins s ON s.ip = p.ip
+    WHERE s.error_code = 0 AND s.event_time >= p.first_failure
+  ),
+  first_of AS (
+    SELECT day, ip, arg_min(record_key, t) AS record_key, min(t) AS t
+    FROM f GROUP BY day, ip
+  )
+  SELECT o.record_key, 'signins' AS source_table, o.t AS event_time,
+         CAST(NULL AS VARCHAR) AS actor_upn, o.ip AS ip,
+         json_object('day', strftime(epoch_ms(d.day * 86400000), '%Y-%m-%d'),
+                     'sources', d.sources, 'users_targeted', d.users, 'failures', d.failures,
+                     'top_error_codes', c.top,
+                     'hosting_sources', d.hosting_sources,
+                     'other_network_sources', d.sources - d.hosting_sources,
+                     'any_source_later_succeeded',
+                       EXISTS (SELECT 1 FROM later l WHERE l.ip IN (SELECT ip FROM first_of x WHERE x.day = d.day))) AS context
+  FROM first_of o JOIN per_day d ON d.day = o.day JOIN top_codes c ON c.day = o.day
+group_by: [day]
+analyst_guidance: |
+  Failed sign-ins from addresses that tried several of the tenant's users: a password spray. It is
+  background noise on the internet, so the finding is the day's picture: how many sources and
+  users, the dominant error codes (50053 lockout, 50126 invalid password) and whether the sources
+  were hosting providers or ordinary ISPs (compromised routers and residential proxies). Check the
+  `any_source_later_succeeded` flag: when true, SPW-ID-005 has the successful sign-in; otherwise
+  confirm legacy authentication is blocked and smart lockout is on.
+false_positives:
+  - A tenant office whose egress sprays itself (a misconfigured sync client retrying a stale password for many accounts) when fewer than 5 users sign in from it on 3 days.
+  - A vulnerability scanner or a penetration test the tenant authorised.
+references:
+  - https://attack.mitre.org/techniques/T1110/003/
+  - https://learn.microsoft.com/en-us/entra/identity/monitoring-health/reference-sign-ins-error-codes
+author: Sparrow
+tests:
+  - name: a spray source gives one hit per source and day
+    records:
+      - table: spray_sources
+        tenant_key: test
+        ip: 203.0.113.9
+        users_targeted: 6
+        failures: 12
+        first_failure: "2026-02-20T00:00:00Z"
+        last_failure: "2026-02-28T00:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:01:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:02:00Z"
+      - table: signins
+        user_upn: u3@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:03:00Z"
+      - table: signins
+        user_upn: u4@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:04:00Z"
+      - table: signins
+        user_upn: u5@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:05:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-22T10:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-22T10:01:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-22T10:02:00Z"
+      - table: signins
+        user_upn: u3@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-22T10:03:00Z"
+      - table: signins
+        user_upn: u4@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-22T10:04:00Z"
+      - table: signins
+        user_upn: u5@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-22T10:05:00Z"
+    expect_hits: 2
+  - name: two sources on one day are two hits of one finding
+    records:
+      - table: spray_sources
+        tenant_key: test
+        ip: 203.0.113.9
+        users_targeted: 6
+        failures: 12
+        first_failure: "2026-02-20T00:00:00Z"
+        last_failure: "2026-02-28T00:00:00Z"
+      - table: spray_sources
+        tenant_key: test
+        ip: 203.0.113.10
+        users_targeted: 6
+        failures: 12
+        first_failure: "2026-02-20T00:00:00Z"
+        last_failure: "2026-02-28T00:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:01:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:02:00Z"
+      - table: signins
+        user_upn: u3@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:03:00Z"
+      - table: signins
+        user_upn: u4@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:04:00Z"
+      - table: signins
+        user_upn: u5@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:05:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.10
+        error_code: 50126
+        event_time: "2026-02-21T10:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.10
+        error_code: 50126
+        event_time: "2026-02-21T10:01:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.10
+        error_code: 50126
+        event_time: "2026-02-21T10:02:00Z"
+      - table: signins
+        user_upn: u3@contoso.example
+        ip: 203.0.113.10
+        error_code: 50126
+        event_time: "2026-02-21T10:03:00Z"
+      - table: signins
+        user_upn: u4@contoso.example
+        ip: 203.0.113.10
+        error_code: 50126
+        event_time: "2026-02-21T10:04:00Z"
+      - table: signins
+        user_upn: u5@contoso.example
+        ip: 203.0.113.10
+        error_code: 50126
+        event_time: "2026-02-21T10:05:00Z"
+    expect_hits: 2
+  - name: interrupt codes are not spray failures
+    records:
+      - table: spray_sources
+        tenant_key: test
+        ip: 203.0.113.9
+        users_targeted: 6
+        failures: 12
+        first_failure: "2026-02-20T00:00:00Z"
+        last_failure: "2026-02-28T00:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.9
+        error_code: 50074
+        event_time: "2026-02-21T10:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.9
+        error_code: 50074
+        event_time: "2026-02-21T10:01:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.9
+        error_code: 50074
+        event_time: "2026-02-21T10:02:00Z"
+      - table: signins
+        user_upn: u3@contoso.example
+        ip: 203.0.113.9
+        error_code: 50074
+        event_time: "2026-02-21T10:03:00Z"
+      - table: signins
+        user_upn: u4@contoso.example
+        ip: 203.0.113.9
+        error_code: 50074
+        event_time: "2026-02-21T10:04:00Z"
+      - table: signins
+        user_upn: u5@contoso.example
+        ip: 203.0.113.9
+        error_code: 50074
+        event_time: "2026-02-21T10:05:00Z"
+    expect_hits: 0
+  - name: an address that is not a spray source is not reported
+    records:
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:01:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:02:00Z"
+      - table: signins
+        user_upn: u3@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:03:00Z"
+      - table: signins
+        user_upn: u4@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:04:00Z"
+      - table: signins
+        user_upn: u5@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:05:00Z"
+    expect_hits: 0
+  - name: a source with a later success is still reported here
+    records:
+      - table: spray_sources
+        tenant_key: test
+        ip: 203.0.113.9
+        users_targeted: 6
+        failures: 12
+        first_failure: "2026-02-20T00:00:00Z"
+        last_failure: "2026-02-28T00:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:01:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:02:00Z"
+      - table: signins
+        user_upn: u3@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:03:00Z"
+      - table: signins
+        user_upn: u4@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:04:00Z"
+      - table: signins
+        user_upn: u5@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:05:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.9
+        error_code: 0
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 1

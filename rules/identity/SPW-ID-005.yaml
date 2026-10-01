@@ -1,0 +1,189 @@
+# SPW-ID-005 — successful sign-in from a password-spray source. A password spray (T1110.003) is
+# internet-wide background noise on its own (SPW-ID-006 reports it at tenant level); the sign-in
+# that SUCCEEDS from an address that sprayed the tenant is the account takeover. The spray sources
+# are the tenant's `spray_sources` relation, derived once by the profile step: an address that
+# failed against at least 5 distinct users of the tenant and is not regular egress (an office NAT
+# where at least 5 users sign in on 3 or more days). The address type does not matter: attackers
+# spray from compromised ISP routers and residential proxies as much as from hosting providers, and
+# no GeoIP is needed. A success is a signins row with error_code 0 (a NULL result is unknown and
+# does not count) or a UAL UserLoggedIn record. The context says how many users and failures the
+# source had, its first and last failure, and whether this user was one of the sprayed users (a
+# failed sign-in from the same address); a success by a user the source never failed against is the
+# stronger tell (a credential obtained elsewhere). The success must not precede the spray: a
+# sign-in earlier than the source's first failure is not the spray's success.
+id: SPW-ID-005
+title: Successful sign-in from a password-spray source
+version: 1
+status: stable
+severity: high
+confidence: medium
+mitre: [T1110.003, T1078]
+tags: [bec, sign-in, password-spray]
+requires: []
+requires_evidence: []
+sql: |
+  SELECT s.record_key, 'signins' AS source_table, s.event_time, s.user_upn AS actor_upn, s.ip AS ip,
+         json_object('users_targeted', p.users_targeted, 'failures', p.failures,
+                     'first_failure', p.first_failure, 'last_failure', p.last_failure,
+                     'was_sprayed_user', EXISTS (
+                       SELECT 1 FROM signins f
+                       WHERE f.ip = s.ip AND lower(f.user_upn) = lower(s.user_upn)
+                         AND f.error_code IS NOT NULL AND f.error_code <> 0)) AS context
+  FROM signins s JOIN spray_sources p ON p.ip = s.ip
+  WHERE s.error_code = 0 AND s.user_upn IS NOT NULL AND s.event_time IS NOT NULL
+    AND s.event_time >= p.first_failure
+  UNION ALL
+  SELECT lower(CAST(u.record_id AS VARCHAR)), 'ual_events', u.event_time, u.user_upn, u.client_ip,
+         json_object('users_targeted', p.users_targeted, 'failures', p.failures,
+                     'first_failure', p.first_failure, 'last_failure', p.last_failure,
+                     'was_sprayed_user', EXISTS (
+                       SELECT 1 FROM signins f
+                       WHERE f.ip = u.client_ip AND lower(f.user_upn) = lower(u.user_upn)
+                         AND f.error_code IS NOT NULL AND f.error_code <> 0))
+  FROM ual_events u JOIN spray_sources p ON p.ip = u.client_ip
+  WHERE lower(u.operation) = 'userloggedin' AND u.user_upn IS NOT NULL AND u.event_time IS NOT NULL
+    AND u.event_time >= p.first_failure
+group_by: [actor_upn]
+analyst_guidance: |
+  The address failed to sign in against several users of the tenant (a password spray) and one of
+  them has now signed in from it. Treat the account as compromised until proven otherwise: read the
+  session (mailbox logon, inbox rules, MFA changes), reset the credential and revoke tokens. The
+  context says whether this user was one of the sprayed ones; a success for a user the address never
+  failed against means the credential came from somewhere else.
+false_positives:
+  - An address shared with a legitimate user after the spray (a carrier-grade NAT or a mobile pool whose address was reassigned), so check that the user's usual network and device match.
+  - A tenant office whose egress is also a spray source because fewer than 5 users sign in from it on 3 days (a small office).
+references:
+  - https://attack.mitre.org/techniques/T1110/003/
+  - https://learn.microsoft.com/en-us/entra/identity/monitoring-health/reference-sign-ins-error-codes
+author: Sparrow
+tests:
+  - name: a success from a spray source after the spray is a hit
+    records:
+      - table: spray_sources
+        tenant_key: test
+        ip: 203.0.113.9
+        users_targeted: 6
+        failures: 12
+        first_failure: "2026-02-20T00:00:00Z"
+        last_failure: "2026-02-28T00:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.9
+        error_code: 0
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 1
+  - name: a success by a user the source never failed against is a hit
+    records:
+      - table: spray_sources
+        tenant_key: test
+        ip: 203.0.113.9
+        users_targeted: 6
+        failures: 12
+        first_failure: "2026-02-20T00:00:00Z"
+        last_failure: "2026-02-28T00:00:00Z"
+      - table: signins
+        user_upn: bob@contoso.example
+        ip: 203.0.113.9
+        error_code: 0
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 1
+  - name: a UserLoggedIn from a spray source is a hit
+    records:
+      - table: spray_sources
+        tenant_key: test
+        ip: 203.0.113.9
+        users_targeted: 6
+        failures: 12
+        first_failure: "2026-02-20T00:00:00Z"
+        last_failure: "2026-02-28T00:00:00Z"
+      - table: ual_events
+        operation: UserLoggedIn
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 1
+  - name: failures alone are not a success
+    records:
+      - table: spray_sources
+        tenant_key: test
+        ip: 203.0.113.9
+        users_targeted: 6
+        failures: 12
+        first_failure: "2026-02-20T00:00:00Z"
+        last_failure: "2026-02-28T00:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.9
+        error_code: 50053
+        event_time: "2026-02-21T10:05:00Z"
+    expect_hits: 0
+  - name: a success from an address that is not a spray source is not a hit
+    records:
+      - table: spray_sources
+        tenant_key: test
+        ip: 203.0.113.9
+        users_targeted: 6
+        failures: 12
+        first_failure: "2026-02-20T00:00:00Z"
+        last_failure: "2026-02-28T00:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        error_code: 0
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 0
+  - name: a sign-in before the spray began is not its success
+    records:
+      - table: spray_sources
+        tenant_key: test
+        ip: 203.0.113.9
+        users_targeted: 6
+        failures: 12
+        first_failure: "2026-02-20T00:00:00Z"
+        last_failure: "2026-02-28T00:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.9
+        error_code: 0
+        event_time: "2026-02-01T10:00:00Z"
+    expect_hits: 0
+  - name: a sign-in without a result is not a success
+    records:
+      - table: spray_sources
+        tenant_key: test
+        ip: 203.0.113.9
+        users_targeted: 6
+        failures: 12
+        first_failure: "2026-02-20T00:00:00Z"
+        last_failure: "2026-02-28T00:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.9
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 0
+  - name: another operation from a spray source is not a sign-in
+    records:
+      - table: spray_sources
+        tenant_key: test
+        ip: 203.0.113.9
+        users_targeted: 6
+        failures: 12
+        first_failure: "2026-02-20T00:00:00Z"
+        last_failure: "2026-02-28T00:00:00Z"
+      - table: ual_events
+        operation: MailboxLogin
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 0

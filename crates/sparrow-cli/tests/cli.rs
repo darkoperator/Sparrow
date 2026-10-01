@@ -998,7 +998,7 @@ fn synth_refuses_scale_knobs_until_they_land() {
 #[test]
 fn synth_coverage_reports_every_rule() {
     let v = json_out(sparrow().args(["--json", "synth", "coverage"]), 0);
-    assert_eq!(v["rules"].as_array().unwrap().len(), 31);
+    assert_eq!(v["rules"].as_array().unwrap().len(), 33);
     assert_eq!(v["ok"], true);
 }
 
@@ -1096,7 +1096,7 @@ fn rules_test_runs_every_inline_test() {
 fn rules_list_shows_a_file_for_every_coverage_id() {
     let cov = sparrow_core::detect::coverage::CoverageMatrix::builtin().unwrap();
     let expected: Vec<String> = cov.rules.iter().map(|r| r.id.clone()).collect();
-    assert_eq!(expected.len(), 31, "the seed pack is 31 rules");
+    assert_eq!(expected.len(), 33, "the seed pack is 33 rules");
 
     let v = json_out(sparrow().args(["--json", "rules", "list"]), 0);
     let ids: Vec<String> = v["rules"]
