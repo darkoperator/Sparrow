@@ -49,7 +49,7 @@ sql: |
   later AS (
     SELECT DISTINCT p.ip
     FROM spray_sources p JOIN signins s ON s.ip = p.ip
-    WHERE s.error_code = 0 AND s.event_time >= p.first_failure
+    WHERE (s.error_code IS NULL OR s.error_code = 0) AND s.event_time >= p.first_failure
   ),
   first_of AS (
     SELECT day, ip, arg_min(record_key, t) AS record_key, min(t) AS t

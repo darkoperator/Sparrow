@@ -3,7 +3,8 @@
 # 500 km from each other").
 #
 # How it is decided:
-# - Events: successful sign-ins (signins error_code 0) and UAL UserLoggedIn of one user (case
+# - Events: successful sign-ins (signins error_code 0, or NULL: an unknown result is not a failure
+#   and is kept rather than silently dropped) and UAL UserLoggedIn of one user (case
 #   insensitive), located through ip_intel (latitude and longitude both known).
 # - Consecutive: per user in time order (ties by table and record key), each event is compared
 #   with the event just before it, and only when the address changed. Duplicates of one sign-in
@@ -51,7 +52,7 @@ sql: |
            coalesce(i.is_hosting, false) AS host, i.country_iso AS cc,
            EXISTS (SELECT 1 FROM spray_sources p WHERE p.ip = s.ip) AS spray
     FROM signins s JOIN ip_intel i ON i.ip = s.ip
-    WHERE s.error_code = 0 AND s.user_upn IS NOT NULL AND s.event_time IS NOT NULL
+    WHERE (s.error_code IS NULL OR s.error_code = 0) AND s.user_upn IS NOT NULL AND s.event_time IS NOT NULL
       AND i.latitude IS NOT NULL AND i.longitude IS NOT NULL AND NOT coalesce(i.is_microsoft, false)
     UNION ALL
     SELECT lower(CAST(u.record_id AS VARCHAR)), 'ual_events', u.event_time, lower(u.user_upn),

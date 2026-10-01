@@ -144,3 +144,25 @@ fn a_tenants_spray_sources_are_invisible_to_another_tenants_rules() {
     let b = run(&mut case, &compiled, T2, &BTreeMap::new()).unwrap();
     assert!(b.is_empty(), "{b:?}");
 }
+
+/// An unknown result (NULL error_code) is never a failure and never excuses a source as regular
+/// egress: the exemption needs KNOWN successes.
+#[test]
+fn unknown_results_neither_fail_nor_excuse() {
+    let case = Case::in_memory().unwrap();
+    tenant(&case, T1);
+    spray(&case, T1, "198.51.100.7", 6, 50126);
+    for day in ["01", "02", "03"] {
+        for u in 0..5 {
+            insert_row(
+                &case,
+                "signins",
+                T1,
+                json!({"user_upn": format!("u{u}@contoso.example"), "ip": "198.51.100.7",
+                       "event_time": format!("2026-02-{day}T09:00:00Z")}),
+            );
+        }
+    }
+    assert_eq!(spray::rebuild(case.conn()).unwrap(), 1);
+    assert_eq!(sources(&case)[0].1, "198.51.100.7");
+}

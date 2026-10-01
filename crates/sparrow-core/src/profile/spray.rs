@@ -9,6 +9,10 @@
 //! compromised ISP routers and residential proxies as much as from hosting providers, and an
 //! address with sign-ins but no `ip_intel` row can be a source, so no GeoIP is needed.
 //!
+//! Only KNOWN results are judged: a failure is a non-zero `error_code` (a NULL result is never a
+//! failure) and the egress exemption needs KNOWN successes (`error_code = 0`; an unknown result must
+//! never excuse a source).
+//!
 //! A failure is a sign-in with a non-zero `error_code` other than the interrupt codes a normal
 //! prompt produces (Microsoft Entra authentication and authorization error codes: 50055 password
 //! expired, 50072 / 50074 / 50076 / 50079 MFA required or enrolment, 50125 sign-in interrupted by

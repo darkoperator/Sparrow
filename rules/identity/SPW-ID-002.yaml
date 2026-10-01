@@ -5,6 +5,9 @@
 # on the list. `sql:` because the hit joins the event to `ip_intel`. `needs_geoip`: without an
 # ASN database no address is ever hosting, so the runner reports not_applicable instead of an
 # empty result.
+# Success side: error_code 0 or NULL. A NULL result is unknown, not a failure, and an unknown result
+# from a hosting address is kept rather than silently dropped (a known failure, a non-zero code,
+# never counts).
 # Tuning: a cloud-hosted SaaS connector is not an attacker. Third-party SaaS products that read a
 # tenant on the users' behalf sign in from their own public-cloud backend (an Azure or AWS ASN,
 # scripted user agents such as python-httpx or an Azure SDK), for many users, every day. An
@@ -35,7 +38,7 @@ sql: |
            count(DISTINCT epoch_ms(s.event_time) // 86400000)
              FILTER (WHERE coalesce(i.is_hosting, false)) AS hosting_days
     FROM signins s LEFT JOIN ip_intel i ON i.ip = s.ip
-    WHERE s.error_code = 0 AND s.app_id IS NOT NULL AND s.app_id <> '' AND s.event_time IS NOT NULL
+    WHERE (s.error_code IS NULL OR s.error_code = 0) AND s.app_id IS NOT NULL AND s.app_id <> '' AND s.event_time IS NOT NULL
     GROUP BY lower(s.app_id)
   ),
   connectors AS (
@@ -46,7 +49,7 @@ sql: |
          s.ip AS ip,
          json_object('asn', i.asn, 'asn_org', i.asn_org, 'hosting_provider', i.hosting_provider) AS context
   FROM signins s JOIN ip_intel i ON i.ip = s.ip
-  WHERE s.error_code = 0 AND coalesce(i.is_hosting, false)
+  WHERE (s.error_code IS NULL OR s.error_code = 0) AND coalesce(i.is_hosting, false)
     AND (lower(coalesce(s.app_id, '')) NOT IN (SELECT app FROM connectors)
          OR EXISTS (SELECT 1 FROM spray_sources p WHERE p.ip = s.ip))
   UNION ALL
@@ -121,7 +124,7 @@ tests:
         ip: 198.51.100.5
         error_code: 0
     expect_hits: 0
-  - name: a failed sign-in from a hosting address is not a successful one
+  - name: a known failure from a hosting address is not a successful sign-in
     records:
       - table: ip_intel
         ip: 203.0.113.1
@@ -131,10 +134,17 @@ tests:
         user_upn: alice@contoso.example
         ip: 203.0.113.1
         error_code: 50126
+    expect_hits: 0
+  - name: an unknown result from a hosting address is kept, not silently dropped
+    records:
+      - table: ip_intel
+        ip: 203.0.113.1
+        asn: 14061
+        is_hosting: true
       - table: signins
         user_upn: alice@contoso.example
         ip: 203.0.113.1
-    expect_hits: 0
+    expect_hits: 1
   - name: another operation from a hosting address is not a sign-in
     records:
       - table: ip_intel
