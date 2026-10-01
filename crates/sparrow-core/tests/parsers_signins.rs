@@ -374,6 +374,57 @@ fn portal_row_fills_the_graph_row_and_adds_a_sighting() {
     assert_eq!(v.sightings.len(), 2);
 }
 
+/// The Entra portal export leaves "Sign-in error code" empty on Success (Failure and Interrupted
+/// carry a non-zero integer): an empty code on a Success row is stored as 0, an empty code on any
+/// other status stays unknown.
+#[test]
+fn portal_success_with_an_empty_error_code_stores_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    let with = |id: &str, status: &str, code: &str| {
+        let mut r = portal_row(id, "2026-09-01T09:30:00Z", "Seattle, Washington, US", "Yes", "s");
+        r[13] = status.to_string();
+        r[14] = code.to_string();
+        r
+    };
+    fixtures::write(
+        &root,
+        PORTAL_CSV,
+        &portal_csv(&[
+            with(S1, "Success", ""),
+            with(S2, "success", ""),
+            with(S3, "Failure", "50126"),
+            with("c0c0c0c0-0000-4000-8000-0000000000a4", "Interrupted", "50074"),
+            with("c0c0c0c0-0000-4000-8000-0000000000a5", "Failure", ""),
+            with("c0c0c0c0-0000-4000-8000-0000000000a6", "", ""),
+            with("c0c0c0c0-0000-4000-8000-0000000000a7", "Pending", ""),
+        ]),
+    );
+    let (case, report) = ingest(dir.path());
+    assert!(!report.has_errors(), "{report:#?}");
+    assert_eq!(count(&case, "SELECT count(*) FROM signins"), 7);
+    assert_eq!(
+        text(
+            &case,
+            "SELECT string_agg(coalesce(CAST(error_code AS VARCHAR), 'NULL'), ',' ORDER BY record_key) FROM signins"
+        ),
+        {
+            // Ordered by record_key (the lower-cased sign-in ids).
+            let mut v = [
+                (S1.to_lowercase(), "0"),
+                (S2.to_lowercase(), "0"),
+                (S3.to_lowercase(), "50126"),
+                ("c0c0c0c0-0000-4000-8000-0000000000a4".to_string(), "50074"),
+                ("c0c0c0c0-0000-4000-8000-0000000000a5".to_string(), "NULL"),
+                ("c0c0c0c0-0000-4000-8000-0000000000a6".to_string(), "NULL"),
+                ("c0c0c0c0-0000-4000-8000-0000000000a7".to_string(), "NULL"),
+            ];
+            v.sort();
+            v.iter().map(|(_, c)| *c).collect::<Vec<_>>().join(",")
+        }
+    );
+}
+
 #[test]
 fn portal_xlsx_rows_load_with_sheet_row_provenance() {
     let dir = tempfile::tempdir().unwrap();

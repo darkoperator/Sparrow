@@ -403,6 +403,18 @@ fn graph_row(rec: &Rec) -> Vec<Cell> {
     c.into_cells()
 }
 
+/// The portal export's "Sign-in error code". The Entra admin center leaves it EMPTY on Success
+/// (Failure and Interrupted carry a non-zero integer), so an empty code on a Success row means 0;
+/// an empty code on any other, missing or unrecognised status stays unknown (NULL).
+fn portal_error_code(rec: &Rec) -> Option<i64> {
+    if rec.text("Sign-in error code").is_some() {
+        return rec.int("Sign-in error code");
+    }
+    rec.text("Status")
+        .filter(|s| s.trim().eq_ignore_ascii_case("success"))
+        .map(|_| 0)
+}
+
 /// Portal export columns (after header cleanup: trimmed, inner spaces collapsed, a repeated
 /// `Incoming token type` becomes `Incoming token type_2`).
 fn portal_row(rec: &Rec, event_type: Option<&'static str>) -> Vec<Cell> {
@@ -434,7 +446,7 @@ fn portal_row(rec: &Rec, event_type: Option<&'static str>) -> Vec<Cell> {
         .set("client_app", Cell::text(rec.text("Client app")))
         .set("is_interactive", Cell::bool(interactive))
         .set("status", Cell::text(rec.text("Status")))
-        .set("error_code", Cell::int(rec.int("Sign-in error code")))
+        .set("error_code", Cell::int(portal_error_code(rec)))
         .set("failure_reason", Cell::text(rec.text("Failure reason")))
         .set("ca_status", Cell::text(rec.text("Conditional Access")))
         .set(
