@@ -166,6 +166,8 @@ pub struct SignIn {
     pub device_compliant: Option<bool>,
     pub device_managed: Option<bool>,
     pub trust_type: Option<String>,
+    /// The sign-in session; the nil UUID means none (a credential failure issues no token, so a
+    /// ROPC / password failure carries no session id).
     pub session_id: Uuid,
     pub correlation_id: Uuid,
     pub unique_token_id: String,
@@ -271,4 +273,15 @@ pub struct Day {
     pub ual: Vec<Ual>,
     pub signins: Vec<SignIn>,
     pub trace: Vec<TraceMsg>,
+}
+
+impl SignIn {
+    /// The session id as the exports write it: empty when the sign-in has none.
+    pub fn session_text(&self) -> String {
+        if self.session_id.is_nil() {
+            String::new()
+        } else {
+            self.session_id.to_string()
+        }
+    }
 }

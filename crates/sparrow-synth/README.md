@@ -235,7 +235,7 @@ Positives:
 | --- | --- |
 | `aitm_signin` | The user's own sign-in, a proxied MFA sign-in from a hosting ASN, a token replay by a script from another hosting ASN, a mailbox logon, and an Identity Protection detection. |
 | `distributed_spray` | A low-and-slow spray: eight residential-ISP addresses in several countries each try six users once or twice (BAV2ROPC / python-requests, mostly 50126, some 50053); every attempt fails. |
-| `spray_success` | One residential-ISP address fails twice against each of six users, then signs the first in three hours later (password only, no second factor). |
+| `spray_success` | A compromised router in the victim's own ISP (attacker-pool address) fails twice against each of six users, signs the first in three hours later (password only), reads the mailbox ten minutes after and sends a message ten minutes later. |
 | `confirmed_compromised` | An admin confirming the user compromised in Identity Protection. |
 | `mfa_method_added` | The Authenticator app registered for the user from the attacker's replay address. |
 | `oauth_consent` | An unverified mail app granted mail, files and offline access, then used a minute later. |
@@ -276,6 +276,10 @@ Look-alikes:
 | `same_ip_token_use` | An interactive sign-in and its token refresh 20 minutes later, same IP and client. |
 | `wifi_to_cellular` | An interactive MFA sign-in from the home address, then the same session's refresh 25 minutes later from a mobile-carrier address (other ASN, same city, not hosting). |
 | `ipv6_rotation` | An interactive sign-in and two refreshes of the same session from three IPv6 privacy addresses of one ASN and city. |
+| `replay_other_country` | The victim's interactive MFA sign-in from home, then the same session 20 minutes later from a residential attacker-pool address of another country (non-hosting, the user's own browser agent). |
+| `mia_burst_residential` | The mailbox-read burst of `mia_burst` from a residential attacker-pool address in a country the victim was never in. |
+| `send_residential` | A payment-fraud message sent from a residential attacker-pool address in a new country. |
+| `spray_replay` | A compromised router (attacker-pool address, the victim's city on another ISP) sprays six users, then replays the victim's session 25 minutes after their MFA sign-in from home. |
 | `cloud_connector` | A third-party SaaS connector (a new app) signing eight users in from a public-cloud ASN near each user, daily for four days, with a scripted client (non-interactive refreshes). |
 | `carrier_geo_jitter` | A home sign-in, then a sign-in from a carrier IPv6 address that geolocates about 2,000 km away in the same country eight minutes later, then home again. |
 | `office_nat_mistypes` | Six users of one city share one office egress address, sign in from it on three days, and each mistypes a password once on the third. |

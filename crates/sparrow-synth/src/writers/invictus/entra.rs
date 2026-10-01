@@ -126,7 +126,7 @@ fn signin_row(s: &SignIn) -> Row {
             "authenticationDetails",
             Val::Raw(Value::Array(auth_details)),
         ),
-        r("sessionId", Val::Str(s.session_id.to_string())),
+        r("sessionId", Val::Str(s.session_text())),
         r("uniqueTokenIdentifier", Val::Str(s.unique_token_id.clone())),
         r("incomingTokenType", Val::Str(s.incoming_token_type.clone())),
         r("homeTenantId", Val::Str(s.home_tenant_id.to_string())),

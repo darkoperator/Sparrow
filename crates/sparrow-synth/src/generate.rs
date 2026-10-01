@@ -91,7 +91,11 @@ pub fn generate_with_policy(
         evidence: expect::evidence(&world, opts, &out),
         rules: {
             let mut rules = expect::rule_outcomes(&world, &records, &caps, &out);
-            expect::restrict_to_collector(&mut rules, opts.collector);
+            let kinds: std::collections::BTreeMap<String, String> = records
+                .iter()
+                .map(|r| (r.id.clone(), r.kind.as_str().to_string()))
+                .collect();
+            expect::restrict_to_collector(&mut rules, opts.collector, &kinds);
             rules
         },
         storylines: manifest::story_expects(&world, &records, &out),

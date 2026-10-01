@@ -4,7 +4,7 @@
 
 use crate::{Error, Result};
 use serde::Deserialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The embedded `rules/coverage.yaml`.
 pub const BUILTIN_COVERAGE_YAML: &str = include_str!(concat!(
@@ -40,6 +40,11 @@ pub struct RuleDef<C = String, S = String> {
     /// it out the rule has one group equal to `tables`.
     #[serde(default = "Vec::new")]
     pub evidence_all_of: Vec<Vec<String>>,
+    /// Per positive kind, the collectors that can supply THAT kind's evidence when it is fewer than
+    /// `collectors` (e.g. a session replay is visible only where the sign-in rows carry a session
+    /// id). Absent kinds use `collectors`.
+    #[serde(default = "BTreeMap::new")]
+    pub kind_collectors: BTreeMap<String, Vec<C>>,
     pub positives: Vec<S>,
     pub lookalikes: Vec<S>,
     /// Look-alike kinds (also in `lookalikes`) that deliver both evidence halves of a

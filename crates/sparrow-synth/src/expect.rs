@@ -647,7 +647,11 @@ fn outcome(
 /// a row for the evidence (Microsoft-Extractor-Suite lists every mailbox) without the attribute
 /// the rule reads (its mailbox list has no forwarding address); the outcome there is
 /// `no_evidence`, not `hit` / `no_hit`. Decided from the coverage file, never from Sparrow.
-pub fn restrict_to_collector(rules: &mut [RuleExpect], collector: Collector) {
+pub fn restrict_to_collector(
+    rules: &mut [RuleExpect],
+    collector: Collector,
+    kind_of: &BTreeMap<String, String>,
+) {
     for r in rules {
         if !matches!(r.outcome, RuleOutcome::Hit | RuleOutcome::NoHit) {
             continue;
@@ -656,7 +660,12 @@ pub fn restrict_to_collector(rules: &mut [RuleExpect], collector: Collector) {
             continue;
         };
         let supplied = if r.outcome == RuleOutcome::Hit {
-            def.collectors.contains(&collector)
+            // A kind may be supplied by fewer collectors than the rule's others (`kind_collectors`).
+            kind_of
+                .get(&r.storyline)
+                .and_then(|k| def.kind_collectors.get(k))
+                .unwrap_or(&def.collectors)
+                .contains(&collector)
         } else {
             def.lookalike_collectors.contains(&collector)
         };

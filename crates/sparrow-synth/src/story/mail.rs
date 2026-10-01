@@ -44,7 +44,9 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
         StoryKind::MailboxPermissionGrant => mailbox_permission_grant(w, ctx)?,
         StoryKind::MiaBurst => mia_burst(w, ctx)?,
         StoryKind::SendNewIp => {
-            let ip = w.attacker.send_ip;
+            // The attacker signs in from the replay address and sends from the SAME address in
+            // the same session: its own earlier activity must not make the address look normal.
+            let ip = w.attacker.replay_ip;
             let a = ctx.a.clone();
             let session = attacker_session(w, ctx, &a, ctx.t);
             send(
@@ -691,11 +693,31 @@ fn received_mail(w: &World, user: &User, t: DateTime<Utc>) -> Vec<ual::MiaItem> 
 /// its mailbox-access address: 12 `Bind` records over ten minutes, each over one or two
 /// folders of 8-20 messages the victim received.
 fn mia_burst(w: &mut World, ctx: &mut Ctx) -> Result<()> {
+    let ip = w.attacker.mailbox_ip;
+    mia_burst_from(w, ctx, ip, true)
+}
+
+/// The same burst from another attacker address: a residential address of the attacker's pool in a
+/// country the victim was never in (non-hosting), reading the mailbox through Outlook on the web.
+pub(super) fn mia_burst_residential(w: &mut World, ctx: &mut Ctx) -> Result<()> {
+    let location = super::spray::residential_location(2);
+    let ip = super::spray::attacker_ip(w, ctx, &location)?;
+    mia_burst_from(w, ctx, ip, false)
+}
+
+/// The burst itself: 12 `Bind` records over ten minutes from `ip`. With `via_consent`, the
+/// consented app's Graph client is used when the victim consented to one.
+pub(super) fn mia_burst_from(
+    w: &mut World,
+    ctx: &mut Ctx,
+    ip: IpAddr,
+    via_consent: bool,
+) -> Result<()> {
     let a = ctx.a.clone();
     let t = ctx.t;
-    let ip = w.attacker.mailbox_ip;
     let consented = w.apps.iter().find(|app| {
-        app.display_name == "Mail Organizer Plus"
+        via_consent
+            && app.display_name == "Mail Organizer Plus"
             && w.grants
                 .iter()
                 .any(|g| g.client_app_id == app.app_id && g.principal.as_deref() == Some(&a.upn))
@@ -1088,4 +1110,29 @@ fn send_new_isp(w: &mut World, ctx: &mut Ctx) {
         session,
     );
     push_signin(w, ctx, &a, later, false);
+}
+
+/// A message sent from `ip` through Outlook on the web: the attacker's payment-fraud mail.
+pub(super) fn send_from(w: &mut World, ctx: &mut Ctx, ip: IpAddr) {
+    let a = ctx.a.clone();
+    let t = ctx.t;
+    let session = attacker_session(w, ctx, &a, t);
+    send(
+        w,
+        ctx,
+        ip,
+        OWA,
+        session,
+        PARTNER_PAYMENTS,
+        "Updated bank details for invoice 4471",
+    );
+}
+
+/// A message sent from a residential address of the attacker's pool in a country the victim was
+/// never in (non-hosting): a new network in a new country.
+pub(super) fn send_residential(w: &mut World, ctx: &mut Ctx) -> Result<()> {
+    let location = super::spray::residential_location(3);
+    let ip = super::spray::attacker_ip(w, ctx, &location)?;
+    send_from(w, ctx, ip);
+    Ok(())
 }

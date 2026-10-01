@@ -239,7 +239,10 @@ fn a_cloud_service_is_five_users_three_days_and_eighty_percent_hosting() {
             app_signin(&case, T1, &upn, "203.0.113.1", unknown, day, None);
         }
     }
-    assert_eq!(sparrow_core::profile::cloud_services::rebuild(case.conn()).unwrap(), 2);
+    assert_eq!(
+        sparrow_core::profile::cloud_services::rebuild(case.conn()).unwrap(),
+        2
+    );
     assert_eq!(
         services(&case),
         vec![

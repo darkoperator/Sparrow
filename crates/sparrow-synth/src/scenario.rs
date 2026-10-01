@@ -244,6 +244,10 @@ story_kind! {
         OrgAuditDisabledState => "org_audit_disabled_state",
         DistributedSpray => "distributed_spray",
         SpraySuccess => "spray_success",
+        ReplayOtherCountry => "replay_other_country",
+        MiaBurstResidential => "mia_burst_residential",
+        SendResidential => "send_residential",
+        SprayReplay => "spray_replay",
     }
     lookalike {
         RiskDismissed => "risk_dismissed",

@@ -1093,6 +1093,9 @@ pub struct StoryEvents {
     pub audits: Vec<DirAudit>,
     pub trace: Vec<TraceMsg>,
     pub risk: Vec<RiskDetection>,
+    /// Addresses a storyline locates itself (attacker infrastructure that only ever appears in
+    /// records without a location, such as a UAL `Send`): the GeoIP databases carry them.
+    pub located: Vec<(IpAddr, Location)>,
 }
 
 #[derive(Debug, Clone)]
@@ -1124,6 +1127,10 @@ pub struct Attacker {
     pub replay_ip: IpAddr,
     pub send_ip: IpAddr,
     pub mailbox_ip: IpAddr,
+    /// Further attacker addresses (TEST-NET-3 hosts after the four above), handed out one per use
+    /// by `Shared::next_attacker`: attacker infrastructure never draws from the roaming pool that
+    /// means a benign traveller or mobile user.
+    pub pool: Vec<IpAddr>,
     pub location: Location,
     pub replay_location: Location,
     pub external_domain: String,
@@ -2732,6 +2739,9 @@ fn build_attacker(tenant: &Tenant) -> Attacker {
     let replay_ip = IpAddr::V4(alloc.v4(Net::Attacker));
     let send_ip = IpAddr::V4(alloc.v4(Net::Attacker));
     let mailbox_ip = IpAddr::V4(alloc.v4(Net::Attacker));
+    let pool: Vec<IpAddr> = (0..32)
+        .map(|_| IpAddr::V4(alloc.v4(Net::Attacker)))
+        .collect();
 
     let locs = &*LOCATIONS;
     let n = locs.len();
@@ -2754,6 +2764,7 @@ fn build_attacker(tenant: &Tenant) -> Attacker {
         replay_ip,
         send_ip,
         mailbox_ip,
+        pool,
         location,
         replay_location,
         external_domain: "exfil-mail.test".to_string(),

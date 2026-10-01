@@ -33,6 +33,9 @@ fn locations(w: &World) -> BTreeMap<IpAddr, Location> {
     for s in &w.story.signins {
         m.entry(s.ip).or_insert_with(|| s.location.clone());
     }
+    for (ip, loc) in &w.story.located {
+        m.entry(*ip).or_insert_with(|| loc.clone());
+    }
     for r in &w.story.risk {
         if let (Some(ip), Some(loc)) = (r.ip, &r.location) {
             m.entry(ip).or_insert_with(|| loc.clone());

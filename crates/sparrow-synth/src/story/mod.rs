@@ -14,6 +14,7 @@ mod files;
 mod identity;
 mod mail;
 mod negatives;
+mod spray;
 
 use crate::events::{
     Actor, DirAudit, RecordType, RiskDetection, SignIn, SignInType, Target, TraceMsg, Ual,
@@ -112,6 +113,8 @@ pub(crate) struct Ctx<'a> {
 pub(crate) struct Shared {
     alloc: IpAllocator,
     used: u32,
+    /// Attacker pool addresses already handed out.
+    attacker_used: usize,
     /// (UPN, day) of the sign-ins the storylines have already recorded.
     signed_today: BTreeSet<(String, NaiveDate)>,
 }
@@ -127,6 +130,17 @@ impl Shared {
         } else {
             IpAddr::V6(self.alloc.v6(Net::Roaming))
         }
+    }
+
+    /// The next attacker-pool address (`Attacker::pool`): attacker infrastructure never uses
+    /// `next_ip`, which stands for a benign traveller or mobile user.
+    pub fn next_attacker(&mut self, pool: &[IpAddr]) -> Result<IpAddr> {
+        let ip = pool
+            .get(self.attacker_used)
+            .copied()
+            .ok_or_else(|| Error::Scenario("the attacker address pool is exhausted".to_string()))?;
+        self.attacker_used += 1;
+        Ok(ip)
     }
 
     /// The next RFC 3849 address of the roaming role (a rotating IPv6 privacy address).
@@ -163,6 +177,7 @@ pub fn apply(world: &mut World) -> Result<Vec<StoryRecord>> {
         };
         let handled = identity::apply_one(world, &mut ctx)?
             || apps::apply_one(world, &mut ctx)?
+            || spray::apply_one(world, &mut ctx)?
             || mail::apply_one(world, &mut ctx)?
             || files::apply_one(world, &mut ctx)?
             || negatives::apply_one(world, &mut ctx)?
@@ -420,7 +435,8 @@ pub(crate) fn push_correlated_signin(w: &World, ctx: &mut Ctx, user: &User, t: D
     }
 }
 
-/// Records a sign-in; with `logon`, also its UAL `UserLoggedIn` record (`request_type`
+/// Records a sign-in; with `logon`, also its UAL `UserLoggedIn` record (a `UserLoginFailed` one for a
+/// failed sign-in; `request_type`
 /// `OAuth2:Authorize` for interactive sign-ins, `OAuth2:Token` otherwise).
 pub(crate) fn push_signin(w: &mut World, ctx: &mut Ctx, user: &User, s: SignIn, logon: bool) {
     if logon {
@@ -434,17 +450,23 @@ pub(crate) fn push_signin(w: &mut World, ctx: &mut Ctx, user: &User, s: SignIn, 
             &mut ctx.rng,
             user,
             s.time,
-            ual::LogonOutcome::Success,
+            if s.error_code == 0 {
+                ual::LogonOutcome::Success
+            } else {
+                ual::LogonOutcome::Failure
+            },
             s.ip,
             &s.user_agent,
             s.app_id,
             request_type,
-            0,
+            s.error_code,
             // A successful logon carries the sign-in's authentication method when it is the
             // user's first sign-in of that day; the later same-day ones were let through by
-            // the session it opened.
-            ctx.shared
-                .first_sign_in_of_day(&s.user, s.time.date_naive()),
+            // the session it opened. Every failed logon carries one.
+            s.error_code != 0
+                || ctx
+                    .shared
+                    .first_sign_in_of_day(&s.user, s.time.date_naive()),
         );
         push_ual(w, ctx, u);
     }

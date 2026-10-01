@@ -11,6 +11,8 @@
 #   needs_geoip       the rule needs ip_intel ASN / geo (ingest with --geoip-dir)
 #   collectors        collectors that can supply the evidence of a positive (sparrow synth
 #                     coverage flags a listed collector no built-in scenario exercises)
+#   kind_collectors   per positive kind, the collectors that can supply THAT kind's evidence when
+#                     fewer than `collectors` (e.g. a session replay needs a session id)
 #   lookalike_collectors  collectors that can supply a look-alike's evidence, when fewer
 #                     (Hawk only sees activity from the IPs and users the analyst searched)
 #   evidence_all_of   evidence halves a storyline must reach for a hit/no_hit to count: an
@@ -342,7 +344,10 @@ rules:
     requires_evidence: [mail_items_accessed]
     needs_geoip: false
     collectors: [hawk4, invictus, portal]
-    positives: [mia_burst]
+    # mia_burst_residential: a non-hosting residential address in a country the user was never in (the
+    # foreign-network path alone). spray_success: the spray source sits in the user's own ISP, so only
+    # the spray-source path sees it.
+    positives: [mia_burst, mia_burst_residential, spray_success]
     lookalikes: [mia_sync, mia_heavy_desktop]
   - id: SPW-MAIL-006
     title: Mail sent from an IP address the user never used before
@@ -360,7 +365,10 @@ rules:
     requires_evidence: [mail_send]
     needs_geoip: false
     collectors: [hawk4, invictus, portal]
-    positives: [send_new_ip]
+    # send_new_ip sends from the replay address it signed in from the same day (same-day activity never
+    # makes an address known). send_residential: a non-hosting residential address in a new country (the
+    # new-network path alone). spray_success: the spray-source path alone.
+    positives: [send_new_ip, send_residential, spray_success]
     lookalikes: [send_known_ip, send_new_isp]
   - id: SPW-MAIL-007
     title: Mailbox or SharePoint search for finance keywords
@@ -435,7 +443,7 @@ rules:
     # on every seed). The stale-risk negatives and oauth_consent each carry a hosting sign-in far
     # from home too, but whether it is over 500 km and 900 km/h from the user's seeded home
     # location depends on the seed and the scenario, so they are exceptions, not positives.
-    positives: [aitm_signin]
+    positives: [aitm_signin, replay_other_country]
     lookalikes: [plausible_travel, carrier_geo_jitter]
     baseline_allow:
       - kind: oauth_consent
@@ -468,7 +476,15 @@ rules:
     requires_evidence: []
     needs_geoip: false
     collectors: [hawk3, hawk4, invictus, portal]
-    positives: [aitm_signin]
+    # Hawk sign-in rows carry no session id, so the two UA-less replays are visible only where the
+    # collector delivers it.
+    kind_collectors:
+      replay_other_country: [invictus, portal]
+      spray_replay: [invictus, portal]
+    # replay_other_country keeps the user's own browser agent (no scripted-agent arm) and replays from a
+    # residential address of another country: only session_moved sees it. spray_replay replays from a
+    # same-country spray source: only the spray-source infrastructure test sees it.
+    positives: [aitm_signin, replay_other_country, spray_replay]
     lookalikes: [same_ip_token_use, wifi_to_cellular, ipv6_rotation, password_spray]
     baseline_allow:
       - kind: inbox_rule_finance
@@ -497,7 +513,7 @@ rules:
     # source can exist there and the evidence is incomplete.
     evidence_all_of: [[signins], [signins, ual_events]]
     collectors: [hawk4, invictus, portal]
-    positives: [spray_success]
+    positives: [spray_success, spray_replay]
     lookalikes: [distributed_spray, office_nat_mistypes, phone_stale_password, password_spray]
     correlation_negatives: [office_nat_mistypes]
   - id: SPW-ID-006
@@ -516,7 +532,7 @@ rules:
     requires_evidence: []
     needs_geoip: false
     collectors: [hawk4, invictus, portal]
-    positives: [distributed_spray, spray_success]
+    positives: [distributed_spray, spray_success, spray_replay]
     lookalikes: [office_nat_mistypes, phone_stale_password, password_spray]
   - id: SPW-ID-010
     title: Inbox rule created within 60 minutes of a risky or hosting-ASN sign-in

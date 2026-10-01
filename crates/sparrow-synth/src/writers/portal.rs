@@ -356,7 +356,7 @@ fn signin_cells(world: &World, s: &SignIn) -> Vec<String> {
         mfa_detail,
         portal_auth_requirement(&s.auth_requirement),
         s.user.clone(),
-        s.session_id.to_string(),
+        s.session_text(),
         ip,
         "No".to_string(),
         String::new(),
