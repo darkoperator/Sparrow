@@ -61,7 +61,11 @@ fn perf_large_invictus_tree() {
 #[test]
 #[ignore]
 fn perf_detect_on_kept_case() {
-    let keep = PathBuf::from(std::env::var_os("SPARROW_PERF_KEEP").expect("SPARROW_PERF_KEEP"));
+    // A measurement aid, not a check: without a kept case there is nothing to time.
+    let Some(keep) = std::env::var_os("SPARROW_PERF_KEEP").map(PathBuf::from) else {
+        println!("perf_detect_on_kept_case: SPARROW_PERF_KEEP is not set; nothing to time");
+        return;
+    };
     let dir = tempfile::tempdir().unwrap();
     let copy = dir.path().join("case.duckdb");
     std::fs::copy(keep.join("case.duckdb"), &copy).unwrap();

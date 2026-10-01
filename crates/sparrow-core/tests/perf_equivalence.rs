@@ -48,6 +48,12 @@ fn availability_is_unchanged_by_the_grouped_pass() {
             "{}/tests/golden/availability_{name}.json",
             env!("CARGO_MANIFEST_DIR")
         );
+        // SPARROW_RECORD_GOLDEN=1 re-records the goldens: a deliberate step whose diff is reviewed
+        // and whose reason goes in the commit message.
+        if std::env::var_os("SPARROW_RECORD_GOLDEN").is_some() {
+            std::fs::write(&path, &golden).unwrap();
+            continue;
+        }
         let expected =
             std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("record {path} first"));
         assert_eq!(golden, expected, "{name}");
