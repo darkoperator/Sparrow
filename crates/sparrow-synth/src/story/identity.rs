@@ -10,7 +10,7 @@ use crate::events::{RiskDetection, SignInType, Target};
 use crate::scenario::StoryKind;
 use crate::ual;
 use crate::world::{
-    LOCATIONS, Location, MICROSOFT_ASN, MfaRegistration, MobileDevice, RiskyUser, User, World,
+    HOSTING_ASNS, LOCATIONS, Location, MICROSOFT_ASN, MfaRegistration, MobileDevice, RiskyUser, User, World,
 };
 use crate::{Error, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -37,6 +37,7 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
         StoryKind::SameIpTokenUse => same_ip_token_use(w, ctx),
         StoryKind::WifiToCellular => wifi_to_cellular(w, ctx),
         StoryKind::Ipv6Rotation => ipv6_rotation(w, ctx),
+        StoryKind::PasswordSpray => password_spray(w, ctx),
         _ => return Ok(false),
     }
     Ok(true)
@@ -789,5 +790,60 @@ fn ipv6_rotation(w: &mut World, ctx: &mut Ctx) {
             session,
         );
         push_signin(w, ctx, &a, refresh, false);
+    }
+}
+
+/// Internet-wide legacy-authentication password spray: one hosting address tries three passwords
+/// at each of four users of the tenant, with the BAV2ROPC (ROPC) client and a scripted one. Every
+/// attempt fails (50126 invalid credentials, 50053 once an account locks out): a scripted client
+/// that never gets a token is background noise on any tenant that still exposes legacy
+/// authentication, not a replayed session. A credential failure issues no token, so it is
+/// recorded in the interactive sign-in report.
+fn password_spray(w: &mut World, ctx: &mut Ctx) {
+    let ip = ctx.shared.next_ip();
+    let n = w.users.len();
+    let first = w.users.iter().position(|u| u.upn == ctx.a.upn).unwrap_or(0);
+    let victims: Vec<User> = (0..4.min(n))
+        .map(|k| w.users[(first + k) % n].clone())
+        .collect();
+    let mut location = LOCATIONS[LOCATIONS.len() - 3].clone();
+    location.asn = HOSTING_ASNS[2].0;
+    location.asn_org = HOSTING_ASNS[2].1.to_string();
+    for (v, user) in victims.iter().enumerate() {
+        let agent = if v % 2 == 0 {
+            "BAV2ROPC"
+        } else {
+            "python-requests/2.31.0"
+        };
+        for attempt in 0..3i64 {
+            let time = ctx.t + Duration::minutes(v as i64 * 7 + attempt * 3);
+            let session = ctx.rng.uuid();
+            let mut s = signin(
+                w,
+                &mut ctx.rng,
+                user,
+                time,
+                ip,
+                &location,
+                SignInType::Interactive,
+                well_known("Microsoft Office"),
+                well_known("Office 365 Exchange Online"),
+                session,
+            );
+            let (code, reason) = if v == 3 && attempt == 2 {
+                (50053, "The user account is locked out.")
+            } else {
+                (50126, "Invalid username or password or Invalid on-premise username or password.")
+            };
+            s.error_code = code;
+            s.failure_reason = reason.to_string();
+            s.user_agent = agent.to_string();
+            s.client_app = "Other clients".to_string();
+            s.auth_requirement = "singleFactorAuthentication".to_string();
+            s.mfa = None;
+            s.auth_methods = vec!["Password".to_string()];
+            s.ca_status = "notApplied".to_string();
+            push_signin(w, ctx, user, s, false);
+        }
     }
 }

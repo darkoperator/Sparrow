@@ -275,6 +275,7 @@ story_kind! {
         Ipv6Rotation => "ipv6_rotation",
         SendNewIsp => "send_new_isp",
         MiaHeavyDesktop => "mia_heavy_desktop",
+        PasswordSpray => "password_spray",
     }
 }
 

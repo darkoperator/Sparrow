@@ -332,7 +332,11 @@ rules:
     hawk: null
     logic: >-
       At least 5 MailItemsAccessed records with MailAccessType Bind, or at least 100 accessed
-      items, for one mailbox from one client IP within 30 minutes. Sync records never count.
+      items, for one mailbox from one client IP within 30 minutes, counted only when the address
+      is a hosting ASN (ip_intel.is_hosting) or its network (ASN, else the address) is not one
+      the accessing user signed in from on at least 3 distinct days (a user with no such
+      sign-in history is judged by the hosting test alone). Sync records and Microsoft service
+      addresses never count.
     tables: [ual_events, mail_items_accessed]
     requires: []
     requires_evidence: [mail_items_accessed]
@@ -346,8 +350,11 @@ rules:
     severity: medium
     hawk: null
     logic: >-
-      UAL Send / SendAs / SendOnBehalf whose client_ip appears in no earlier ual_events or
-      signins row of the same user in the case.
+      UAL Send / SendAs / SendOnBehalf by a user with activity on at least 3 earlier days, from a
+      hosting ASN address the user was never seen on, or from a network (ASN, else the address)
+      the user was never seen on that also meets one of: a country the user was never seen in, a
+      medium/high risk sign-in of the user in the previous 24 hours, or no ip_intel data (no
+      GeoIP: the qualifier is waived). Microsoft service addresses never count.
     tables: [ual_events]
     requires: []
     requires_evidence: [mail_send]
@@ -445,17 +452,24 @@ rules:
     severity: high
     hawk: null
     logic: >-
-      A session (session_id / AADSessionId) used from an IP or ASN different from the
-      interactive MFA sign-in that created it within 1 hour, or a sign-in / mailbox access
-      whose user agent is in @list:suspicious_user_agents (axios, python-requests, curl,
-      Go-http-client, node-fetch).
+      A session (session_id / AADSessionId) used, within 1 hour of the interactive MFA sign-in
+      that created it, from a different NETWORK: the country differs (ip_intel), or the ASN
+      differs and the use or the creating sign-in is a hosting ASN or the use is a sign-in rated
+      medium/high risk. A Microsoft service address (ip_intel.is_microsoft) on either side never
+      counts, and a plain address change inside one ASN (IPv6 privacy rotation, carrier pools, a
+      Wi-Fi to cellular switch in one country) is not a move. When ip_intel has neither an ASN nor
+      a country for one of the two addresses (no GeoIP data) the address difference alone counts.
+      Or a SUCCESSFUL sign-in (error_code 0 or unknown) or UAL UserLoggedIn / MailboxLogin /
+      MailItemsAccessed whose user agent is in @list:suspicious_user_agents (axios,
+      python-requests, curl, Go-http-client, node-fetch); a failed scripted sign-in (a legacy-auth
+      password spray) is not reported.
     tables: [signins, ual_events]
     requires: []
     requires_evidence: []
     needs_geoip: false
     collectors: [hawk3, hawk4, invictus, portal]
     positives: [aitm_signin]
-    lookalikes: [same_ip_token_use, wifi_to_cellular, ipv6_rotation]
+    lookalikes: [same_ip_token_use, wifi_to_cellular, ipv6_rotation, password_spray]
     baseline_allow:
       - kind: inbox_rule_finance
         reason: &stolen_session "the storyline reuses the AiTM sign-in session from another hosting address (a true session_moved signal); it is visible only where UAL rows carry the session id and the creator sign-in exists (not Hawk UAL, not scenarios without an AiTM sign-in), so it cannot be a per-kind positive"

@@ -274,6 +274,7 @@ Look-alikes:
 | `same_ip_token_use` | An interactive sign-in and its token refresh 20 minutes later, same IP and client. |
 | `wifi_to_cellular` | An interactive MFA sign-in from the home address, then the same session's refresh 25 minutes later from a mobile-carrier address (other ASN, same city, not hosting). |
 | `ipv6_rotation` | An interactive sign-in and two refreshes of the same session from three IPv6 privacy addresses of one ASN and city. |
+| `password_spray` | One hosting address tries three passwords at each of four users with the BAV2ROPC and python-requests clients; every attempt fails (50126, one 50053). |
 | `outlook_client_filing_rule` | The user files a project list's mail into a Projects folder from Outlook on their own computer (`UpdateInboxRules`, office address, own session). |
 | `vendor_filing_rule` | The user files a vendor's mail into a folder. |
 | `admin_benign_rule` | The admin files processed mail on a shared mailbox with `DeleteMessage False`. |
