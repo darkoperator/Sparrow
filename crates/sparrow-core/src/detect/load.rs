@@ -151,6 +151,16 @@ fn yaml_files(dir: &Path) -> Result<Vec<PathBuf>> {
 /// The built-in lists, overlaid by `<dir>/lists/*.yaml` of each rule directory in order.
 type Lists = (BTreeMap<String, Vec<String>>, BTreeMap<String, ListMeta>);
 
+/// The values of the built-in or custom list `name` (rules/lists), for code that must share a rule
+/// list's definition (the profile step's derived relations read the same list the rules do).
+pub fn list_values(dirs: &DataDirs, name: &str) -> Result<Vec<String>> {
+    let (lists, _) = load_lists(dirs)?;
+    lists
+        .get(name)
+        .cloned()
+        .ok_or_else(|| Error::Invalid(format!("list {name} not found")))
+}
+
 fn load_lists(dirs: &DataDirs) -> Result<Lists> {
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut meta: BTreeMap<String, ListMeta> = BTreeMap::new();

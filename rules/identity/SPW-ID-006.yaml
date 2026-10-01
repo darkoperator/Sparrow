@@ -5,8 +5,9 @@
 # incident. SPW-ID-005 is the escalation: a source that later signed in. The sources are the
 # tenant's `spray_sources` relation (an address that failed against at least 5 distinct users and
 # is not regular egress; any network type), derived once by the profile step. The failed sign-ins
-# that count are the rejected-password and lockout codes, not the interrupts a normal prompt
-# produces (the same list as the relation). A hit is the first failed sign-in of each source on the
+# that count are the interactive rows with a code of the shared `credential_failure_codes` list (the
+# same list as the relation and SPW-ID-005; Conditional Access blocks, token-refresh errors, MFA
+# prompts and non-interactive rows are not spray). A hit is the first failed sign-in of each source on the
 # day (one record per source and day keeps the evidence small); the finding's context carries the
 # tenant-level picture: sources, users targeted, failures, the top error codes, how many sources
 # were hosting addresses versus other networks, and whether any source later succeeded (see
@@ -26,8 +27,8 @@ sql: |
     SELECT s.record_key, s.event_time AS t, lower(s.user_upn) AS usr, s.ip, s.error_code,
            epoch_ms(s.event_time) // 86400000 AS day
     FROM signins s JOIN spray_sources p ON p.ip = s.ip
-    WHERE s.error_code IS NOT NULL AND s.error_code <> 0
-      AND s.error_code NOT IN (50055, 50072, 50074, 50076, 50079, 50125, 50140, 50158)
+    WHERE list_contains(@list:credential_failure_codes, CAST(s.error_code AS VARCHAR))
+      AND coalesce(s.is_interactive, false)
       AND s.event_time IS NOT NULL AND s.user_upn IS NOT NULL
   ),
   codes AS (
@@ -94,61 +95,73 @@ tests:
         user_upn: u0@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:00:00Z"
       - table: signins
         user_upn: u1@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:01:00Z"
       - table: signins
         user_upn: u2@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:02:00Z"
       - table: signins
         user_upn: u3@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:03:00Z"
       - table: signins
         user_upn: u4@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:04:00Z"
       - table: signins
         user_upn: u5@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:05:00Z"
       - table: signins
         user_upn: u0@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-22T10:00:00Z"
       - table: signins
         user_upn: u1@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-22T10:01:00Z"
       - table: signins
         user_upn: u2@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-22T10:02:00Z"
       - table: signins
         user_upn: u3@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-22T10:03:00Z"
       - table: signins
         user_upn: u4@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-22T10:04:00Z"
       - table: signins
         user_upn: u5@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-22T10:05:00Z"
     expect_hits: 2
   - name: two sources on one day are two hits of one finding
@@ -171,64 +184,76 @@ tests:
         user_upn: u0@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:00:00Z"
       - table: signins
         user_upn: u1@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:01:00Z"
       - table: signins
         user_upn: u2@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:02:00Z"
       - table: signins
         user_upn: u3@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:03:00Z"
       - table: signins
         user_upn: u4@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:04:00Z"
       - table: signins
         user_upn: u5@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:05:00Z"
       - table: signins
         user_upn: u0@contoso.example
         ip: 203.0.113.10
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:00:00Z"
       - table: signins
         user_upn: u1@contoso.example
         ip: 203.0.113.10
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:01:00Z"
       - table: signins
         user_upn: u2@contoso.example
         ip: 203.0.113.10
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:02:00Z"
       - table: signins
         user_upn: u3@contoso.example
         ip: 203.0.113.10
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:03:00Z"
       - table: signins
         user_upn: u4@contoso.example
         ip: 203.0.113.10
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:04:00Z"
       - table: signins
         user_upn: u5@contoso.example
         ip: 203.0.113.10
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:05:00Z"
     expect_hits: 2
-  - name: interrupt codes are not spray failures
+  - name: an MFA prompt is not a credential failure
     records:
       - table: spray_sources
         tenant_key: test
@@ -241,31 +266,37 @@ tests:
         user_upn: u0@contoso.example
         ip: 203.0.113.9
         error_code: 50074
+        is_interactive: true
         event_time: "2026-02-21T10:00:00Z"
       - table: signins
         user_upn: u1@contoso.example
         ip: 203.0.113.9
         error_code: 50074
+        is_interactive: true
         event_time: "2026-02-21T10:01:00Z"
       - table: signins
         user_upn: u2@contoso.example
         ip: 203.0.113.9
         error_code: 50074
+        is_interactive: true
         event_time: "2026-02-21T10:02:00Z"
       - table: signins
         user_upn: u3@contoso.example
         ip: 203.0.113.9
         error_code: 50074
+        is_interactive: true
         event_time: "2026-02-21T10:03:00Z"
       - table: signins
         user_upn: u4@contoso.example
         ip: 203.0.113.9
         error_code: 50074
+        is_interactive: true
         event_time: "2026-02-21T10:04:00Z"
       - table: signins
         user_upn: u5@contoso.example
         ip: 203.0.113.9
         error_code: 50074
+        is_interactive: true
         event_time: "2026-02-21T10:05:00Z"
     expect_hits: 0
   - name: an address that is not a spray source is not reported
@@ -274,31 +305,37 @@ tests:
         user_upn: u0@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:00:00Z"
       - table: signins
         user_upn: u1@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:01:00Z"
       - table: signins
         user_upn: u2@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:02:00Z"
       - table: signins
         user_upn: u3@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:03:00Z"
       - table: signins
         user_upn: u4@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:04:00Z"
       - table: signins
         user_upn: u5@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:05:00Z"
     expect_hits: 0
   - name: a source with a later success is still reported here
@@ -314,35 +351,179 @@ tests:
         user_upn: u0@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:00:00Z"
       - table: signins
         user_upn: u1@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:01:00Z"
       - table: signins
         user_upn: u2@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:02:00Z"
       - table: signins
         user_upn: u3@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:03:00Z"
       - table: signins
         user_upn: u4@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:04:00Z"
       - table: signins
         user_upn: u5@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:05:00Z"
       - table: signins
         user_upn: u0@contoso.example
         ip: 203.0.113.9
         error_code: 0
         event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 1
+  - name: Conditional Access blocks and token-refresh errors are not spray
+    records:
+      - table: spray_sources
+        tenant_key: test
+        ip: 203.0.113.9
+        users_targeted: 6
+        failures: 12
+        first_failure: "2026-02-20T00:00:00Z"
+        last_failure: "2026-02-28T00:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.9
+        error_code: 53003
+        is_interactive: true
+        event_time: "2026-02-21T10:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.9
+        error_code: 70043
+        is_interactive: true
+        event_time: "2026-02-21T10:01:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        is_interactive: true
+        event_time: "2026-02-21T10:02:00Z"
+      - table: signins
+        user_upn: u3@contoso.example
+        ip: 203.0.113.9
+        error_code: 53003
+        is_interactive: true
+        event_time: "2026-02-21T10:03:00Z"
+      - table: signins
+        user_upn: u4@contoso.example
+        ip: 203.0.113.9
+        error_code: 70043
+        is_interactive: true
+        event_time: "2026-02-21T10:04:00Z"
+      - table: signins
+        user_upn: u5@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        is_interactive: true
+        event_time: "2026-02-21T10:05:00Z"
+    expect_hits: 0
+  - name: non-interactive credential failures are not spray
+    records:
+      - table: spray_sources
+        tenant_key: test
+        ip: 203.0.113.9
+        users_targeted: 6
+        failures: 12
+        first_failure: "2026-02-20T00:00:00Z"
+        last_failure: "2026-02-28T00:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        is_interactive: false
+        event_time: "2026-02-21T10:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        is_interactive: false
+        event_time: "2026-02-21T10:01:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        is_interactive: false
+        event_time: "2026-02-21T10:02:00Z"
+      - table: signins
+        user_upn: u3@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        is_interactive: false
+        event_time: "2026-02-21T10:03:00Z"
+      - table: signins
+        user_upn: u4@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        is_interactive: false
+        event_time: "2026-02-21T10:04:00Z"
+      - table: signins
+        user_upn: u5@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        is_interactive: false
+        event_time: "2026-02-21T10:05:00Z"
+    expect_hits: 0
+  - name: the credential-failure list's other codes count
+    records:
+      - table: spray_sources
+        tenant_key: test
+        ip: 203.0.113.9
+        users_targeted: 6
+        failures: 12
+        first_failure: "2026-02-20T00:00:00Z"
+        last_failure: "2026-02-28T00:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.9
+        error_code: 50034
+        is_interactive: true
+        event_time: "2026-02-21T10:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        is_interactive: true
+        event_time: "2026-02-21T10:01:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.9
+        error_code: 50053
+        is_interactive: true
+        event_time: "2026-02-21T10:02:00Z"
+      - table: signins
+        user_upn: u3@contoso.example
+        ip: 203.0.113.9
+        error_code: 50056
+        is_interactive: true
+        event_time: "2026-02-21T10:03:00Z"
+      - table: signins
+        user_upn: u4@contoso.example
+        ip: 203.0.113.9
+        error_code: 50064
+        is_interactive: true
+        event_time: "2026-02-21T10:04:00Z"
+      - table: signins
+        user_upn: u5@contoso.example
+        ip: 203.0.113.9
+        error_code: 50057
+        is_interactive: true
+        event_time: "2026-02-21T10:05:00Z"
     expect_hits: 1

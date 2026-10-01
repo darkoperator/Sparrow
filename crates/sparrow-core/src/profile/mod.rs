@@ -87,7 +87,7 @@ pub fn refresh(case: &mut Case, opts: &ProfileOptions) -> Result<ProfileReport> 
     let ip_intel = crate::enrich::ip::refresh_ip_intel(&tx, &opts.dirs, opts.geoip_dir.as_deref())?;
     report.warnings.extend(ip_intel.warnings.clone());
     report.ip_intel = Some(ip_intel);
-    report.spray_sources = spray::rebuild(&tx)?;
+    report.spray_sources = spray::rebuild(&tx, &spray::credential_failure_codes(&opts.dirs)?)?;
     report.cloud_services = cloud_services::rebuild(&tx)?;
     let ids = identities::rebuild(&tx)?;
     report.identities = ids.identities;

@@ -9,9 +9,13 @@
 # kept, not silently dropped; the context says `result_known`) or a UAL UserLoggedIn record. The
 # sources themselves need KNOWN failures (a NULL is never a failure). The context says how many users and failures the
 # source had, its first and last failure, and whether this user was one of the sprayed users (a
-# failed sign-in from the same address); a success by a user the source never failed against is the
-# stronger tell (a credential obtained elsewhere). The success must not precede the spray: a
-# sign-in earlier than the source's first failure is not the spray's success.
+# credential failure from the same address: the shared `credential_failure_codes` list, interactive
+# rows only, so an MFA interrupt never marks a user as sprayed); a success by a user the source never
+# failed against is the stronger tell (a credential obtained elsewhere). A success from a non-egress
+# spray source is attacker infrastructure whether it comes before or after the failures (phished
+# credentials first, then spraying the rest), so there is no time filter: the context says
+# `before_first_failure`. A NULL-result success is kept (result_known false) in this rule only; the
+# coverage text says why: a NULL could be a failure, so ID-005 flags it rather than dropping it.
 id: SPW-ID-005
 title: Successful sign-in from a password-spray source
 version: 1
@@ -27,24 +31,26 @@ sql: |
          json_object('users_targeted', p.users_targeted, 'failures', p.failures,
                      'first_failure', p.first_failure, 'last_failure', p.last_failure,
                      'result_known', s.error_code IS NOT NULL,
+                     'before_first_failure', s.event_time < p.first_failure,
                      'was_sprayed_user', EXISTS (
                        SELECT 1 FROM signins f
                        WHERE f.ip = s.ip AND lower(f.user_upn) = lower(s.user_upn)
-                         AND f.error_code IS NOT NULL AND f.error_code <> 0)) AS context
+                         AND coalesce(f.is_interactive, false)
+                         AND list_contains(@list:credential_failure_codes, CAST(f.error_code AS VARCHAR)))) AS context
   FROM signins s JOIN spray_sources p ON p.ip = s.ip
   WHERE (s.error_code IS NULL OR s.error_code = 0) AND s.user_upn IS NOT NULL AND s.event_time IS NOT NULL
-    AND s.event_time >= p.first_failure
   UNION ALL
   SELECT lower(CAST(u.record_id AS VARCHAR)), 'ual_events', u.event_time, u.user_upn, u.client_ip,
          json_object('users_targeted', p.users_targeted, 'failures', p.failures,
                      'first_failure', p.first_failure, 'last_failure', p.last_failure,
+                     'before_first_failure', u.event_time < p.first_failure,
                      'was_sprayed_user', EXISTS (
                        SELECT 1 FROM signins f
                        WHERE f.ip = u.client_ip AND lower(f.user_upn) = lower(u.user_upn)
-                         AND f.error_code IS NOT NULL AND f.error_code <> 0))
+                         AND coalesce(f.is_interactive, false)
+                         AND list_contains(@list:credential_failure_codes, CAST(f.error_code AS VARCHAR))))
   FROM ual_events u JOIN spray_sources p ON p.ip = u.client_ip
   WHERE lower(u.operation) = 'userloggedin' AND u.user_upn IS NOT NULL AND u.event_time IS NOT NULL
-    AND u.event_time >= p.first_failure
 group_by: [actor_upn]
 analyst_guidance: |
   The address failed to sign in against several users of the tenant (a password spray) and one of
@@ -73,6 +79,7 @@ tests:
         user_upn: alice@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:00:00Z"
       - table: signins
         user_upn: alice@contoso.example
@@ -123,11 +130,13 @@ tests:
         user_upn: alice@contoso.example
         ip: 203.0.113.9
         error_code: 50126
+        is_interactive: true
         event_time: "2026-02-21T10:00:00Z"
       - table: signins
         user_upn: alice@contoso.example
         ip: 203.0.113.9
         error_code: 50053
+        is_interactive: true
         event_time: "2026-02-21T10:05:00Z"
     expect_hits: 0
   - name: a success from an address that is not a spray source is not a hit
@@ -145,7 +154,7 @@ tests:
         error_code: 0
         event_time: "2026-03-01T10:00:00Z"
     expect_hits: 0
-  - name: a sign-in before the spray began is not its success
+  - name: a success before the spray began is attacker infrastructure too (phished credentials first)
     records:
       - table: spray_sources
         tenant_key: test
@@ -159,7 +168,7 @@ tests:
         ip: 203.0.113.9
         error_code: 0
         event_time: "2026-02-01T10:00:00Z"
-    expect_hits: 0
+    expect_hits: 1
   - name: a sign-in with an unknown result from a spray source is kept (result_known false)
     records:
       - table: spray_sources

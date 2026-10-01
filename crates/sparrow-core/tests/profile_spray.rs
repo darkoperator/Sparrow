@@ -7,6 +7,7 @@ mod detect;
 use detect::{insert_row, run};
 use serde_json::json;
 use sparrow_core::Case;
+use sparrow_core::data::DataDirs;
 use sparrow_core::detect::compile::{CaseSchema, compile};
 use sparrow_core::detect::rule::Rule;
 use sparrow_core::profile::spray;
@@ -20,12 +21,19 @@ fn tenant(case: &Case, key: &str) {
     detect::collection_of(case, key);
 }
 
+fn rebuild(case: &Case) -> usize {
+    let codes = spray::credential_failure_codes(&DataDirs::default()).unwrap();
+    spray::rebuild(case.conn(), &codes).unwrap()
+}
+
+/// An interactive sign-in (the credential failures a spray produces are interactive).
 fn signin(case: &Case, t: &str, upn: &str, ip: &str, code: i64, time: &str) {
     insert_row(
         case,
         "signins",
         t,
-        json!({"user_upn": upn, "ip": ip, "error_code": code, "event_time": time}),
+        json!({"user_upn": upn, "ip": ip, "error_code": code, "event_time": time,
+               "is_interactive": true}),
     );
 }
 
@@ -60,10 +68,12 @@ fn a_source_fails_against_five_users_and_is_not_regular_egress() {
     // Five users failing: a source; four: not. No ip_intel row exists for any address.
     spray(&case, T1, "198.51.100.1", 5, 50126);
     spray(&case, T1, "198.51.100.2", 4, 50126);
-    // Interrupts (an MFA prompt) are not failures, however many users see them.
+    // An MFA prompt (50074) or a Conditional Access block (53003) is not a credential failure,
+    // however many users see it.
     spray(&case, T1, "198.51.100.3", 8, 50074);
+    spray(&case, T1, "198.51.100.8", 8, 53003);
     // The office NAT: several users mistype a password on ordinary days, and the same address is
-    // where at least five users signed in successfully on three distinct days.
+    // where at least five users signed in successfully on three distinct days BEFORE the failures.
     spray(&case, T1, "198.51.100.4", 6, 50126);
     for day in ["01", "02", "03"] {
         for u in 0..5 {
@@ -97,7 +107,7 @@ fn a_source_fails_against_five_users_and_is_not_regular_egress() {
                    "event_time": "2026-03-01T10:00:00Z"}),
         );
     }
-    assert_eq!(spray::rebuild(case.conn()).unwrap(), 2);
+    assert_eq!(rebuild(&case), 2);
     assert_eq!(
         sources(&case),
         vec![
@@ -106,7 +116,7 @@ fn a_source_fails_against_five_users_and_is_not_regular_egress() {
         ]
     );
     // A rebuild replaces, never appends.
-    spray::rebuild(case.conn()).unwrap();
+    rebuild(&case);
     assert_eq!(sources(&case).len(), 2);
 }
 
@@ -127,7 +137,7 @@ fn a_tenants_spray_sources_are_invisible_to_another_tenants_rules() {
         0,
         "2026-03-01T10:00:00Z",
     );
-    spray::rebuild(case.conn()).unwrap();
+    rebuild(&case);
     assert_eq!(sources(&case).len(), 1);
 
     let rule: Rule = serde_norway::from_str(
@@ -163,7 +173,7 @@ fn unknown_results_neither_fail_nor_excuse() {
             );
         }
     }
-    assert_eq!(spray::rebuild(case.conn()).unwrap(), 1);
+    assert_eq!(rebuild(&case), 1);
     assert_eq!(sources(&case)[0].1, "198.51.100.7");
 }
 
@@ -250,4 +260,61 @@ fn a_cloud_service_is_five_users_three_days_and_eighty_percent_hosting() {
             (T2.to_string(), svc.to_lowercase()),
         ]
     );
+}
+
+/// A proxy that sprays, takes five accounts and uses them on three later days stays a spray source:
+/// regular egress is established BEFORE the address's first credential failure.
+#[test]
+fn successes_after_the_spray_never_excuse_the_source() {
+    let case = Case::in_memory().unwrap();
+    tenant(&case, T1);
+    spray(&case, T1, "198.51.100.9", 6, 50126);
+    for day in ["02", "03", "04"] {
+        for u in 0..5 {
+            signin(
+                &case,
+                T1,
+                &format!("u{u}@contoso.example"),
+                "198.51.100.9",
+                0,
+                &format!("2026-03-{day}T09:00:00Z"),
+            );
+        }
+    }
+    assert_eq!(rebuild(&case), 1);
+    assert_eq!(sources(&case)[0].1, "198.51.100.9");
+}
+
+/// Only INTERACTIVE rows with a code of the shared credential-failure list are spray failures:
+/// token-refresh errors (70043, 50173), a Conditional Access block (53003), and non-interactive rows
+/// are not, so a secure web gateway or VPN egress with many of them is no spray source, and a
+/// conference network with two or three mistyped passwords stays under the threshold.
+#[test]
+fn only_interactive_credential_failures_count() {
+    let case = Case::in_memory().unwrap();
+    tenant(&case, T1);
+    // A web gateway: CA blocks and token-refresh errors for many users, few successes.
+    for (u, code) in [(0, 53003), (1, 70043), (2, 50173), (3, 53003), (4, 70043), (5, 50173)] {
+        signin(&case, T1, &format!("g{u}@contoso.example"), "198.51.100.20", code, "2026-03-01T10:00:00Z");
+    }
+    signin(&case, T1, "g0@contoso.example", "198.51.100.20", 0, "2026-03-01T11:00:00Z");
+    // Credential failures that are not interactive.
+    for u in 0..6 {
+        insert_row(
+            &case,
+            "signins",
+            T1,
+            json!({"user_upn": format!("n{u}@contoso.example"), "ip": "198.51.100.21",
+                   "error_code": 50126, "event_time": "2026-03-01T10:00:00Z",
+                   "is_interactive": false}),
+        );
+    }
+    // A conference network: three users mistype.
+    spray(&case, T1, "198.51.100.22", 3, 50126);
+    // A real spray, with the allow-list's other codes (unknown user, invalid password, lockout).
+    for (u, code) in [(0, 50034), (1, 50126), (2, 50053), (3, 50056), (4, 50064), (5, 50126)] {
+        signin(&case, T1, &format!("s{u}@contoso.example"), "198.51.100.23", code, "2026-03-01T10:00:00Z");
+    }
+    assert_eq!(rebuild(&case), 1);
+    assert_eq!(sources(&case)[0].1, "198.51.100.23");
 }

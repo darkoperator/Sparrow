@@ -972,3 +972,65 @@ fn mail_005_groups_per_mailbox_and_day() {
         2
     );
 }
+
+/// SPW-ID-005 context: whether the user was sprayed uses the shared credential-failure list (an MFA
+/// interrupt does not mark a user as sprayed), and the timing against the first failure is in the
+/// context (a success before the spray is a hit too).
+#[test]
+fn id_005_context_uses_the_credential_failure_list_and_the_timing() {
+    let mut case = Case::in_memory().unwrap();
+    tenant(&case, T1);
+    insert_row(
+        &case,
+        "spray_sources",
+        T1,
+        json!({"tenant_key": T1, "ip": "203.0.113.9", "users_targeted": 6, "failures": 12,
+               "first_failure": "2026-03-10T00:00:00Z", "last_failure": "2026-03-11T00:00:00Z"}),
+    );
+    let sign = |upn: &str, code: i64, time: &str| {
+        insert_row(
+            &case,
+            "signins",
+            T1,
+            json!({"user_upn": upn, "ip": "203.0.113.9", "error_code": code, "event_time": time,
+                   "is_interactive": true}),
+        );
+    };
+    // a: failed with a credential code, then succeeded after the spray started: sprayed, after.
+    sign("a@contoso.example", 50126, "2026-03-10T10:00:00Z");
+    sign("a@contoso.example", 0, "2026-03-12T10:00:00Z");
+    // b: only an MFA interrupt (50074) from the address, then a success BEFORE the spray: not sprayed.
+    sign("b@contoso.example", 50074, "2026-03-01T10:00:00Z");
+    sign("b@contoso.example", 0, "2026-03-01T10:05:00Z");
+    let rules = sparrow_core::detect::load::load_rules(&DataDirs::default()).unwrap();
+    let rule = rules
+        .rules
+        .into_iter()
+        .find(|r| r.rule.id == "SPW-ID-005")
+        .unwrap();
+    let set = RuleSet {
+        rules: vec![rule],
+        lists: rules.lists,
+        list_meta: rules.list_meta,
+        warnings: vec![],
+    };
+    run(&mut case, &set, &opts(20)).unwrap();
+    let ctx = |upn: &str| -> (bool, bool) {
+        let c: String = case
+            .conn()
+            .query_row(
+                "SELECT CAST(e.context AS VARCHAR) FROM findings f JOIN finding_evidence e USING (finding_id)
+                 WHERE f.actor_upn = ? AND e.role = 'trigger'",
+                [upn],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&c).unwrap();
+        (
+            v["was_sprayed_user"].as_bool().unwrap(),
+            v["before_first_failure"].as_bool().unwrap(),
+        )
+    };
+    assert_eq!(ctx("a@contoso.example"), (true, false));
+    assert_eq!(ctx("b@contoso.example"), (false, true));
+}
