@@ -1,13 +1,30 @@
-# SPW-MAIL-006 — mail sent from an IP address the user never used before. Logic source:
-# coverage.yaml ("UAL Send / SendAs / SendOnBehalf whose client_ip appears in no earlier
-# ual_events or signins row of the same user in the case").
-# "Earlier" is strictly earlier in time, so the first send from an address is the hit and later
-# sends from it are not. The first send from an address the case has never seen the user on is a
-# hit even when it is also the first event of the user in the case: the rule only knows the case.
-# `sql:` because the history is a correlated lookup over two tables.
+# SPW-MAIL-006 — mail sent from a network the user has not been seen on. Logic source:
+# coverage.yaml ("UAL Send / SendAs / SendOnBehalf whose client_ip appears in no earlier ual_events
+# or signins row of the same user in the case", tuned: see below).
+# Tuning, because a plain "new address" is background for most users (a new phone, a rotating
+# IPv6 privacy address, a carrier pool, a new home connection; Microsoft Learn,
+# audit-log-activities: the ClientIPAddress of a Send is simply the client's address):
+#   1. History: the user must have activity (ual_events or signins) on at least 3 distinct days
+#      BEFORE the send's day. A short or partial capture, or a user first seen today, has no
+#      baseline to deviate from; their first sends are not judged (not a miss we can tell from
+#      normal use).
+#   2. Network, not address: "earlier" compares the network of the send's address - the ASN from
+#      ip_intel, else the address itself when ip_intel has no ASN - with the networks of the
+#      user's earlier events. A different address in a network the user has used is not new.
+#   3. Qualifier: a new network alone still means little, so the send must also come from a hosting
+#      ASN (ip_intel.is_hosting), or a country the user has not been seen in, or follow a sign-in
+#      of the same user rated medium/high risk by Entra in the previous 24 hours, or the address has
+#      no ip_intel data at all (no GeoIP: the qualifier cannot be tested and is waived; the context
+#      says nothing more, the analyst reads the address).
+#   4. Microsoft service front ends (ip_intel.is_microsoft: Outlook mobile / Exchange egress) never
+#      count as the user's network.
+# Missed on purpose: an attacker send from an ordinary-ISP network in the user's own country with no
+# risk rating - the user's other signals (SPW-ID-004, SPW-ID-010, SPW-MAIL-003) cover that.
+# "Earlier" is strictly earlier in time, so only the first send from a new network is the hit.
+# `sql:` because the history is a lookup over two tables.
 id: SPW-MAIL-006
 title: Mail sent from an IP address the user never used before
-version: 1
+version: 2
 status: stable
 severity: medium
 confidence: low
@@ -16,40 +33,76 @@ tags: [bec, mail-send]
 requires: []
 requires_evidence: [mail_send]
 sql: |
-  SELECT lower(CAST(u.record_id AS VARCHAR)) AS record_key, 'ual_events' AS source_table,
-         u.event_time, u.user_upn AS actor_upn, u.client_ip AS ip
-  FROM ual_events u
-  WHERE lower(u.operation) IN ('send', 'sendas', 'sendonbehalf')
-    AND u.client_ip IS NOT NULL AND u.client_ip <> '' AND u.user_upn IS NOT NULL
-    AND NOT EXISTS (
-      SELECT 1 FROM ual_events p
-      WHERE lower(p.user_upn) = lower(u.user_upn) AND p.client_ip = u.client_ip
-        AND p.record_id <> u.record_id AND epoch_ms(p.event_time) < epoch_ms(u.event_time))
-    AND NOT EXISTS (
-      SELECT 1 FROM signins s
-      WHERE lower(s.user_upn) = lower(u.user_upn) AND s.ip = u.client_ip
-        AND epoch_ms(s.event_time) < epoch_ms(u.event_time))
+  WITH act AS (
+    SELECT lower(u.user_upn) AS upn, u.event_time AS t, u.client_ip AS ip
+    FROM ual_events u
+    WHERE u.client_ip IS NOT NULL AND u.client_ip <> '' AND u.user_upn IS NOT NULL
+    UNION ALL
+    SELECT lower(s.user_upn), s.event_time, s.ip
+    FROM signins s
+    WHERE s.ip IS NOT NULL AND s.ip <> '' AND s.user_upn IS NOT NULL
+  ),
+  actn AS (
+    SELECT a.upn, a.t, coalesce(CAST(i.asn AS VARCHAR), a.ip) AS net, i.country_iso AS cc
+    FROM act a LEFT JOIN ip_intel i ON i.ip = a.ip
+  ),
+  first_net AS (SELECT upn, net, min(epoch_ms(t)) AS first_t FROM actn GROUP BY upn, net),
+  first_cc AS (SELECT upn, cc, min(epoch_ms(t)) AS first_t FROM actn WHERE cc IS NOT NULL GROUP BY upn, cc),
+  days AS (SELECT upn, epoch_ms(t) // 86400000 AS d FROM actn GROUP BY upn, epoch_ms(t) // 86400000),
+  sends AS (
+    SELECT lower(CAST(u.record_id AS VARCHAR)) AS record_key, u.event_time, lower(u.user_upn) AS upn,
+           u.user_upn AS actor_upn, u.client_ip AS ip,
+           coalesce(CAST(i.asn AS VARCHAR), u.client_ip) AS net, i.country_iso AS cc,
+           coalesce(i.is_hosting, false) AS hosting,
+           (i.asn IS NULL AND i.country_iso IS NULL) AS no_intel
+    FROM ual_events u LEFT JOIN ip_intel i ON i.ip = u.client_ip
+    WHERE lower(u.operation) IN ('send', 'sendas', 'sendonbehalf')
+      AND u.client_ip IS NOT NULL AND u.client_ip <> '' AND u.user_upn IS NOT NULL
+      AND NOT coalesce(i.is_microsoft, false)
+  )
+  SELECT s.record_key, 'ual_events' AS source_table, s.event_time, s.actor_upn, s.ip
+  FROM sends s
+  WHERE (SELECT count(*) FROM days d WHERE d.upn = s.upn AND d.d < epoch_ms(s.event_time) // 86400000) >= 3
+    AND NOT EXISTS (SELECT 1 FROM first_net f WHERE f.upn = s.upn AND f.net = s.net
+                    AND f.first_t < epoch_ms(s.event_time))
+    AND (s.hosting OR s.no_intel
+         OR (s.cc IS NOT NULL
+             AND NOT EXISTS (SELECT 1 FROM first_cc c WHERE c.upn = s.upn AND c.cc = s.cc
+                             AND c.first_t < epoch_ms(s.event_time)))
+         OR EXISTS (SELECT 1 FROM signins r
+                    WHERE lower(r.user_upn) = s.upn
+                      AND lower(coalesce(r.risk_level_during, '')) IN ('medium', 'high')
+                      AND epoch_ms(r.event_time) <= epoch_ms(s.event_time)
+                      AND epoch_ms(r.event_time) >= epoch_ms(s.event_time) - 86400000))
 group_by: [actor_upn]
 analyst_guidance: |
-  A message sent from an address the user has not been seen on before, within this case. It
-  means little on its own (a new network, a new phone); it matters when the address is a hosting
-  provider or the address of the sign-in the session is suspected of, or when the send follows a
-  new inbox rule or an MFA change. Check the recipients and subject through the message trace.
+  A message sent from a network the user has not been seen on, within this case, and that is a
+  hosting provider, a new country, the follow-up of a risky sign-in, or an address GeoIP could not
+  place. It matters most when the address is the one of the sign-in the session is suspected of,
+  or when the send follows a new inbox rule or an MFA change. Check the recipients and subject
+  through the message trace.
 false_positives:
-  - A user on a new network (travel, a new home connection, a mobile carrier).
-  - The first send of the collection window from any user's usual address (the case has no earlier history).
+  - A user travelling to a new country or using a VPN (a hosting ASN) for the first time.
+  - A tenant captured without GeoIP data, where every new address is judged on history alone.
 references:
   - https://learn.microsoft.com/en-us/purview/audit-mailboxes
   - https://learn.microsoft.com/en-us/purview/audit-log-activities
 author: Sparrow
 tests:
-  - name: a send from an address the user was never seen on
+  - name: a send from an address the user was never seen on, no GeoIP data
     records:
-      - table: ual_events
-        operation: MailboxLogin
+      - table: signins
         user_upn: alice@contoso.example
-        client_ip: 198.51.100.1
-        event_time: "2026-03-01T08:00:00Z"
+        ip: 198.51.100.1
+        event_time: "2026-02-26T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-27T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-28T09:00:00Z"
       - table: ual_events
         operation: Send
         user_upn: alice@contoso.example
@@ -58,6 +111,30 @@ tests:
     expect_hits: 1
   - name: SendAs and SendOnBehalf count
     records:
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-26T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-27T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-28T09:00:00Z"
+      - table: signins
+        user_upn: bob@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-26T09:00:00Z"
+      - table: signins
+        user_upn: bob@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-27T09:00:00Z"
+      - table: signins
+        user_upn: bob@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-28T09:00:00Z"
       - table: ual_events
         operation: SendAs
         user_upn: alice@contoso.example
@@ -71,6 +148,18 @@ tests:
     expect_hits: 2
   - name: only the first send from a new address is a hit
     records:
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-26T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-27T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-28T09:00:00Z"
       - table: ual_events
         operation: Send
         user_upn: alice@contoso.example
@@ -84,15 +173,27 @@ tests:
     expect_hits: 1
   - name: the address was used earlier in the UAL
     records:
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-26T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-27T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-28T09:00:00Z"
       - table: ual_events
         operation: MailItemsAccessed
         user_upn: Alice@contoso.example
-        client_ip: 198.51.100.1
+        client_ip: 203.0.113.9
         event_time: "2026-03-01T08:00:00Z"
       - table: ual_events
         operation: Send
         user_upn: alice@contoso.example
-        client_ip: 198.51.100.1
+        client_ip: 203.0.113.9
         event_time: "2026-03-01T10:00:00Z"
     expect_hits: 0
   - name: the address was used earlier in a sign-in
@@ -100,23 +201,47 @@ tests:
       - table: signins
         user_upn: alice@contoso.example
         ip: 198.51.100.1
+        event_time: "2026-02-26T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-27T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-28T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.9
         event_time: "2026-03-01T08:00:00Z"
       - table: ual_events
         operation: Send
         user_upn: alice@contoso.example
-        client_ip: 198.51.100.1
+        client_ip: 203.0.113.9
         event_time: "2026-03-01T10:00:00Z"
     expect_hits: 0
   - name: another user's use of the address does not count
     records:
       - table: signins
-        user_upn: bob@contoso.example
+        user_upn: alice@contoso.example
         ip: 198.51.100.1
+        event_time: "2026-02-26T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-27T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-28T09:00:00Z"
+      - table: signins
+        user_upn: bob@contoso.example
+        ip: 203.0.113.9
         event_time: "2026-03-01T08:00:00Z"
       - table: ual_events
         operation: Send
         user_upn: alice@contoso.example
-        client_ip: 198.51.100.1
+        client_ip: 203.0.113.9
         event_time: "2026-03-01T10:00:00Z"
     expect_hits: 1
   - name: a use of the address only after the send does not count as earlier
@@ -124,15 +249,39 @@ tests:
       - table: signins
         user_upn: alice@contoso.example
         ip: 198.51.100.1
+        event_time: "2026-02-26T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-27T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-28T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.9
         event_time: "2026-03-01T12:00:00Z"
       - table: ual_events
         operation: Send
         user_upn: alice@contoso.example
-        client_ip: 198.51.100.1
+        client_ip: 203.0.113.9
         event_time: "2026-03-01T10:00:00Z"
     expect_hits: 1
   - name: another operation from a new address is not a send
     records:
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-26T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-27T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-28T09:00:00Z"
       - table: ual_events
         operation: MailboxLogin
         user_upn: alice@contoso.example
@@ -141,8 +290,245 @@ tests:
     expect_hits: 0
   - name: a send without a client address
     records:
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-26T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-27T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-28T09:00:00Z"
       - table: ual_events
         operation: Send
         user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 0
+  - name: a user's first sends, with fewer than three earlier days, are not judged
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-26T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-27T09:00:00Z"
+      - table: ual_events
+        operation: Send
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 0
+  - name: a rotating address inside the user's own ASN is not new
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.7
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-26T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-27T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-28T09:00:00Z"
+      - table: ual_events
+        operation: Send
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.7
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 0
+  - name: a new ordinary ISP in the user's country is not enough
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 64500
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-26T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-27T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-28T09:00:00Z"
+      - table: ual_events
+        operation: Send
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 0
+  - name: a new hosting ASN is a hit
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 64500
+        country_iso: US
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-26T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-27T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-28T09:00:00Z"
+      - table: ual_events
+        operation: Send
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 1
+  - name: a country the user was never seen in is a hit
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 64501
+        country_iso: DE
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-26T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-27T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-28T09:00:00Z"
+      - table: ual_events
+        operation: Send
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 1
+  - name: a new network after a risky sign-in in the previous 24 hours is a hit
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 64500
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-26T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-27T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-28T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        risk_level_during: medium
+        event_time: "2026-03-01T09:00:00Z"
+      - table: ual_events
+        operation: Send
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 1
+  - name: a Microsoft service address is not the user's network
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 8075
+        country_iso: IE
+        is_hosting: false
+        is_microsoft: true
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-26T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-27T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-28T09:00:00Z"
+      - table: ual_events
+        operation: Send
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.9
         event_time: "2026-03-01T10:00:00Z"
     expect_hits: 0
