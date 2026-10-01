@@ -115,6 +115,8 @@ pub(crate) struct Shared {
     used: u32,
     /// Attacker pool addresses already handed out.
     attacker_used: usize,
+    /// Shared office / gateway egress addresses already handed out.
+    egress_used: u8,
     /// (UPN, day) of the sign-ins the storylines have already recorded.
     signed_today: BTreeSet<(String, NaiveDate)>,
 }
@@ -130,6 +132,15 @@ impl Shared {
         } else {
             IpAddr::V6(self.alloc.v6(Net::Roaming))
         }
+    }
+
+    /// The next shared egress address of an office, a secure web gateway or a conference network
+    /// (RFC 5737 TEST-NET-1 hosts 200 and up, above every person's office and home address): a
+    /// benign pool of its own, apart from the roaming one (a traveller or mobile user) and the
+    /// attacker's.
+    pub fn next_egress(&mut self) -> IpAddr {
+        self.egress_used += 1;
+        IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 200 + self.egress_used))
     }
 
     /// The next attacker-pool address (`Attacker::pool`): attacker infrastructure never uses

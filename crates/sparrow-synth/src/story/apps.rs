@@ -21,7 +21,8 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
         StoryKind::AppSigninExistingConsent => app_signin_existing_consent(w, ctx)?,
         StoryKind::AppCredentialAdded => app_credential_added(w, ctx)?,
         StoryKind::CertRotation => cert_rotation(w, ctx)?,
-        StoryKind::CloudConnector => cloud_connector(w, ctx),
+        StoryKind::CloudConnector => cloud_connector(w, ctx)?,
+        StoryKind::CloudConnectorOnboarding => cloud_connector_onboarding(w, ctx)?,
         _ => return Ok(false),
     }
     Ok(true)
@@ -407,31 +408,62 @@ fn cert_rotation(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     Ok(())
 }
 
-/// A third-party SaaS connector whose backend signs in on behalf of eight users from a public-cloud
-/// ASN, every day for four days, with a scripted client (`python-httpx`): the cloud address of each
-/// user is in the user's own city (a nearby cloud region), the sign-ins are non-interactive
-/// token refreshes. Tenant-wide cloud service, not an attacker.
-fn cloud_connector(w: &mut World, ctx: &mut Ctx) {
-    let app = new_app(
-        ctx,
-        "Calendar Sync Cloud",
-        "Sync Vendor Ltd",
-        true,
-        "https://app.syncvendor.example/signin",
-        ctx.t - Duration::days(90),
-    );
-    w.apps.push(app.clone());
-    let n = w.users.len();
-    let first = w.users.iter().position(|u| u.upn == ctx.a.upn).unwrap_or(0);
-    let staff: Vec<User> = (0..8usize.min(n))
-        .map(|k| w.users[(first + k) % n].clone())
+/// The connector app of this tenant (created by the onboarding storyline).
+const CONNECTOR_APP: &str = "Calendar Sync Cloud";
+
+/// The connector's backend: three addresses of one cloud region (RFC 3849 documentation space, a pool
+/// of its own), on a cloud ASN that is NOT the attacker's. Every user of the connector signs in from
+/// one of them (shared by all users, not one address per user).
+fn connector_backend(
+    user_k: usize,
+    home: &crate::world::Location,
+) -> (IpAddr, crate::world::Location) {
+    let ip = IpAddr::V6(std::net::Ipv6Addr::new(
+        0x2001,
+        0x0db8,
+        4,
+        0,
+        0,
+        0,
+        0,
+        1 + (user_k % 3) as u16,
+    ));
+    let mut region = home.clone();
+    region.asn = HOSTING_ASNS[2].0;
+    region.asn_org = HOSTING_ASNS[2].1.to_string();
+    (ip, region)
+}
+
+/// `days` days of non-interactive token refreshes (python-httpx) by eight users of one city, from the
+/// connector's backend, starting `first_day` days after the storyline's time.
+fn connector_days(
+    w: &mut World,
+    ctx: &mut Ctx,
+    app: &App,
+    first_day: i64,
+    days: i64,
+) -> Result<()> {
+    let a: User = ctx.a.clone();
+    let staff: Vec<User> = std::iter::once(a.clone())
+        .chain(
+            w.users
+                .iter()
+                .filter(|u| u.home.city == a.home.city && u.upn != a.upn)
+                .take(7)
+                .cloned(),
+        )
         .collect();
+    if staff.len() < 6 {
+        return Err(crate::Error::Scenario(format!(
+            "{}: a cloud connector needs 6 users in {}, the tenant has {}",
+            ctx.spec.id,
+            a.home.city,
+            staff.len()
+        )));
+    }
     for (k, user) in staff.iter().enumerate() {
-        let ip = ctx.shared.next_ip();
-        let mut location = user.home.clone();
-        location.asn = HOSTING_ASNS[0].0;
-        location.asn_org = HOSTING_ASNS[0].1.to_string();
-        for day in 0..4i64 {
+        let (ip, region) = connector_backend(k, &a.home);
+        for day in first_day..first_day + days {
             let session = ctx.rng.uuid();
             let mut s = signin(
                 w,
@@ -439,7 +471,7 @@ fn cloud_connector(w: &mut World, ctx: &mut Ctx) {
                 user,
                 ctx.t + Duration::days(day) + Duration::minutes(k as i64 * 3),
                 ip,
-                &location,
+                &region,
                 SignInType::NonInteractive,
                 app.app_id,
                 well_known("Microsoft Graph"),
@@ -449,4 +481,30 @@ fn cloud_connector(w: &mut World, ctx: &mut Ctx) {
             push_signin(w, ctx, user, s, false);
         }
     }
+    Ok(())
+}
+
+/// A new third-party SaaS connector onboards: its cloud backend refreshes tokens for the users of one
+/// city every day for the first three days. The profile cannot know the connector yet, so a hosting
+/// sign-in is a hosting sign-in (SPW-ID-002 hits); the steady state that follows is
+/// `cloud_connector`.
+fn cloud_connector_onboarding(w: &mut World, ctx: &mut Ctx) -> Result<()> {
+    let app = new_app(
+        ctx,
+        CONNECTOR_APP,
+        "Sync Vendor Ltd",
+        true,
+        "https://app.syncvendor.example/signin",
+        ctx.t - Duration::days(90),
+    );
+    w.apps.push(app.clone());
+    connector_days(w, ctx, &app, 0, 3)
+}
+
+/// The established connector: the same backend refreshes the same users' tokens on the days after its
+/// onboarding. A tenant-wide cloud service is not an attacker, and its non-interactive cloud sign-ins
+/// form no travel pair either.
+fn cloud_connector(w: &mut World, ctx: &mut Ctx) -> Result<()> {
+    let app = w.apps[app_index(w, |n| n == CONNECTOR_APP, CONNECTOR_APP)?].clone();
+    connector_days(w, ctx, &app, 0, 4)
 }

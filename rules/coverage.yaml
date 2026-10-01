@@ -350,6 +350,10 @@ rules:
     # mia_burst_residential: a non-hosting residential address in a country the user was never in (the
     # foreign-network path alone). spray_success: the spray source sits in the user's own ISP, so only
     # the spray-source path sees it.
+    # spray_success is seen only through the spray-source relation, which needs the tenant-wide
+    # sign-in export (a spray source is an address that failed against 5 distinct users).
+    kind_collectors:
+      spray_success: [invictus, portal]
     positives: [mia_burst, mia_burst_residential, spray_success]
     lookalikes: [mia_sync, mia_heavy_desktop]
   - id: SPW-MAIL-006
@@ -373,6 +377,10 @@ rules:
     # send_new_ip sends from the replay address it signed in from the same day (same-day activity never
     # makes an address known). send_residential: a non-hosting residential address in a new country (the
     # new-network path alone). spray_success: the spray-source path alone.
+    # spray_success is seen only through the spray-source relation, which needs the tenant-wide
+    # sign-in export (a spray source is an address that failed against 5 distinct users).
+    kind_collectors:
+      spray_success: [invictus, portal]
     positives: [send_new_ip, send_residential, spray_success]
     lookalikes: [send_known_ip, send_new_isp]
     baseline_allow:
@@ -435,7 +443,9 @@ rules:
     collectors: [hawk3, hawk4, invictus, portal]
     # The correlation negatives and the illicit consent each carry a successful sign-in of the
     # attacker's proxy or replay address (a hosting ASN, far from the user's home): the logic hits.
-    positives: [aitm_signin, inbox_rule_after_stale_risk, mfa_after_stale_risk, anonymous_link_after_stale_risk, oauth_consent]
+    # cloud_connector_onboarding: a connector's first days are hosting sign-ins the profile cannot know yet
+    # (cold start). spray_vps_login: sprayed accounts used INTERACTIVELY from a cloud VPS always count.
+    positives: [aitm_signin, inbox_rule_after_stale_risk, mfa_after_stale_risk, anonymous_link_after_stale_risk, oauth_consent, cloud_connector_onboarding, spray_vps_login]
     lookalikes: [microsoft_asn_signin, cloud_connector]
   - id: SPW-ID-003
     title: Impossible travel
@@ -458,7 +468,8 @@ rules:
     # on every seed). The stale-risk negatives and oauth_consent each carry a hosting sign-in far
     # from home too, but whether it is over 500 km and 900 km/h from the user's seeded home
     # location depends on the seed and the scenario, so they are exceptions, not positives.
-    positives: [aitm_signin, replay_other_country]
+    # replay_other_country: a cross-country pair between two ORDINARY ISPs (no hosting end).
+    positives: [aitm_signin, replay_other_country, spray_success_foreign]
     lookalikes: [plausible_travel, carrier_geo_jitter]
     baseline_allow:
       - kind: oauth_consent
@@ -532,8 +543,12 @@ rules:
     # source can exist there and the evidence is incomplete.
     evidence_all_of: [[signins], [signins, ual_events]]
     collectors: [hawk4, invictus, portal]
-    positives: [spray_success, spray_replay]
-    lookalikes: [distributed_spray, office_nat_mistypes, phone_stale_password, password_spray]
+    # spray_after_phish: the success comes BEFORE the first failure and the victim was not sprayed.
+    # spray_success_foreign: a foreign residential source. spray_proxy_takeover: a proxy that took
+    # accounts and used them on later days stays a spray source. password_spray is real spray below the
+    # 5-user threshold (a threshold look-alike).
+    positives: [spray_success, spray_replay, spray_after_phish, spray_success_foreign, spray_proxy_takeover]
+    lookalikes: [distributed_spray, office_nat_mistypes, phone_stale_password, password_spray, gateway_egress, conference_network]
     correlation_negatives: [office_nat_mistypes]
   - id: SPW-ID-006
     title: Password spray against the tenant
@@ -554,8 +569,8 @@ rules:
     # investigated users) covers fewer than 5 users and the run says so (not_applicable).
     min_signin_users: 5
     collectors: [hawk4, invictus, portal]
-    positives: [distributed_spray, spray_success, spray_replay]
-    lookalikes: [office_nat_mistypes, phone_stale_password, password_spray]
+    positives: [distributed_spray, spray_success, spray_replay, spray_after_phish, spray_success_foreign, spray_proxy_takeover, spray_vps_login]
+    lookalikes: [office_nat_mistypes, phone_stale_password, password_spray, gateway_egress, conference_network]
   - id: SPW-ID-010
     title: Inbox rule created within 60 minutes of a risky or hosting-ASN sign-in
     category: identity

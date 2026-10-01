@@ -30,8 +30,14 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
         StoryKind::ReplayOtherCountry => replay_other_country(w, ctx)?,
         StoryKind::MiaBurstResidential => mail::mia_burst_residential(w, ctx)?,
         StoryKind::SendResidential => mail::send_residential(w, ctx)?,
+        StoryKind::SprayAfterPhish => spray_after_phish(w, ctx)?,
+        StoryKind::SpraySuccessForeign => spray_success_foreign(w, ctx)?,
+        StoryKind::SprayProxyTakeover => spray_proxy_takeover(w, ctx)?,
+        StoryKind::SprayVpsLogin => spray_vps_login(w, ctx)?,
         StoryKind::OfficeNatMistypes => office_nat_mistypes(w, ctx)?,
         StoryKind::PhoneStalePassword => phone_stale_password(w, ctx),
+        StoryKind::GatewayEgress => gateway_egress(w, ctx)?,
+        StoryKind::ConferenceNetwork => conference_network(w, ctx),
         _ => return Ok(false),
     }
     Ok(true)
@@ -150,29 +156,51 @@ fn password_spray(w: &mut World, ctx: &mut Ctx) -> Result<()> {
 }
 
 /// A distributed, low-and-slow password spray: eight residential-ISP addresses of the attacker's
-/// pool in several countries (compromised routers and residential proxies, not hosting
-/// providers) each try the same six users once or twice over a few hours with BAV2ROPC and a
-/// scripted client, mostly invalid-password (50126) and a smart-lockout (50053) after a second
-/// attempt. Every attempt fails.
+/// pool in several countries (compromised routers and residential proxies, not hosting providers),
+/// each trying its own rotating subset of 14 users (overlapping, not identical; five to twelve users
+/// per source, the median about six) one to three times with BAV2ROPC or a scripted client.
+/// Smart lockout is PER ACCOUNT across every source: Microsoft Entra locks an account after 10 failed
+/// attempts by default (Azure public cloud; the lockout state is synchronized across data centers),
+/// so 50053 appears from an account's cumulative failures, whichever source made them, and every
+/// attempt fails (https://learn.microsoft.com/entra/identity/authentication/howto-password-smart-lockout).
 fn distributed_spray(w: &mut World, ctx: &mut Ctx) -> Result<()> {
-    let victims = users_from(w, &ctx.a.upn, 6);
-    for src in 0..8usize {
+    const SIZES: [usize; 8] = [5, 7, 12, 6, 9, 5, 6, 8];
+    const LOCKOUT_THRESHOLD: usize = 10;
+    let targets = users_from(w, &ctx.a.upn, 14);
+    let mut ips = Vec::new();
+    for src in 0..SIZES.len() {
         let location = residential_location(src);
-        let ip = attacker_ip(w, ctx, &location)?;
+        ips.push((attacker_ip(w, ctx, &location)?, location));
+    }
+    // Every attempt (source, target, time), in time order across all sources.
+    let mut attempts: Vec<(DateTime<Utc>, usize, usize)> = Vec::new();
+    for (src, size) in SIZES.iter().enumerate() {
+        let start = (src * 5) % targets.len();
+        for k in 0..*size {
+            let u = (start + k) % targets.len();
+            for a in 0..(1 + (src + u) % 3) {
+                let time =
+                    ctx.t + Duration::minutes(src as i64 * 17 + k as i64 * 2 + a as i64 * 31);
+                attempts.push((time, src, u));
+            }
+        }
+    }
+    attempts.sort();
+    let mut failed = vec![0usize; targets.len()];
+    for (time, src, u) in attempts {
+        let code = if failed[u] >= LOCKOUT_THRESHOLD {
+            50053
+        } else {
+            50126
+        };
+        failed[u] += 1;
         let agent = if src % 2 == 0 {
             "BAV2ROPC"
         } else {
             "python-requests/2.31.0"
         };
-        for (v, user) in victims.iter().enumerate() {
-            let attempts = if (src + v) % 3 == 0 { 2 } else { 1 };
-            for attempt in 0..attempts {
-                let time =
-                    ctx.t + Duration::minutes(src as i64 * 17 + v as i64 * 2 + attempt as i64 * 31);
-                let code = if attempt == 0 { 50126 } else { 50053 };
-                fail(w, ctx, user, time, ip, &location, code, Some(agent));
-            }
-        }
+        let (ip, location) = &ips[src];
+        fail(w, ctx, &targets[u], time, *ip, location, code, Some(agent));
     }
     Ok(())
 }
@@ -306,7 +334,7 @@ fn office_nat_mistypes(w: &mut World, ctx: &mut Ctx) -> Result<()> {
             staff.len()
         )));
     }
-    let nat = ctx.shared.next_ip();
+    let nat = ctx.shared.next_egress();
     let location = a.home.clone();
     for (k, user) in staff.iter().enumerate() {
         for day in [4i64, 3, 2, 1] {
@@ -362,5 +390,236 @@ fn phone_stale_password(w: &mut World, ctx: &mut Ctx) {
             50126,
             None,
         );
+    }
+}
+
+/// Users of the actor's home city, the actor first (up to `take`): a shared office egress, a
+/// connector's cloud region or a compromised router all sit in one city.
+fn city_staff(w: &World, actor: &User, take: usize) -> Vec<User> {
+    let mut out = vec![actor.clone()];
+    out.extend(
+        w.users
+            .iter()
+            .filter(|u| u.home.city == actor.home.city && u.upn != actor.upn)
+            .take(take.saturating_sub(1))
+            .cloned(),
+    );
+    out
+}
+
+/// A password-only interactive sign-in of `user` from `ip` (no second factor registered).
+fn password_signin(
+    w: &World,
+    ctx: &mut Ctx,
+    user: &User,
+    time: DateTime<Utc>,
+    ip: IpAddr,
+    location: &Location,
+    app: uuid::Uuid,
+) -> SignIn {
+    let session = ctx.rng.uuid();
+    let mut s = signin(
+        w,
+        &mut ctx.rng,
+        user,
+        time,
+        ip,
+        location,
+        SignInType::Interactive,
+        app,
+        well_known("Office 365 Exchange Online"),
+        session,
+    );
+    s.auth_requirement = "singleFactorAuthentication".to_string();
+    s.mfa = None;
+    s.auth_methods = vec!["Password".to_string()];
+    s
+}
+
+/// Phished credentials first, then a spray: a compromised router in the victim's city signs the
+/// victim in, and an hour later tries six other users. The success comes BEFORE the source's first
+/// failure and the victim was never one of the sprayed users.
+fn spray_after_phish(w: &mut World, ctx: &mut Ctx) -> Result<()> {
+    let a: User = ctx.a.clone();
+    let location = router_location(&a);
+    let ip = attacker_ip(w, ctx, &location)?;
+    let ok = password_signin(w, ctx, &a, ctx.t, ip, &location, well_known("OfficeHome"));
+    push_signin(w, ctx, &a, ok, true);
+    let victims: Vec<User> = users_from(w, &a.upn, 7).into_iter().skip(1).collect();
+    let start = ctx.t;
+    ctx.t = start + Duration::hours(1);
+    spray_from(w, ctx, &victims, ip, &location);
+    ctx.t = start;
+    Ok(())
+}
+
+/// A spray that works from a FOREIGN residential address (another country, not the victim's own
+/// carrier): the source fails twice against each of six users, and three hours later the first of
+/// them signs in from it, thirty minutes after their own sign-in from home (an impossible-travel pair
+/// as well).
+fn spray_success_foreign(w: &mut World, ctx: &mut Ctx) -> Result<()> {
+    let a: User = ctx.a.clone();
+    let victims = users_from(w, &a.upn, 6);
+    let location = residential_location(4);
+    let ip = attacker_ip(w, ctx, &location)?;
+    spray_from(w, ctx, &victims, ip, &location);
+    let session = ctx.rng.uuid();
+    let home = signin(
+        w,
+        &mut ctx.rng,
+        &a,
+        ctx.t + Duration::hours(2) + Duration::minutes(30),
+        a.home_ip,
+        &a.home,
+        SignInType::Interactive,
+        well_known("OfficeHome"),
+        well_known("Office 365 Exchange Online"),
+        session,
+    );
+    push_signin(w, ctx, &a, home, true);
+    let ok = password_signin(
+        w,
+        ctx,
+        &a,
+        ctx.t + Duration::hours(3),
+        ip,
+        &location,
+        well_known("OfficeHome"),
+    );
+    push_signin(w, ctx, &a, ok, true);
+    Ok(())
+}
+
+/// A proxy that sprays, takes five accounts and uses them on three later days: a compromised router
+/// in the office city fails twice against each of six colleagues, then signs five of them in on each
+/// of the next three days. The address stays a spray source (its regular-egress history must come
+/// BEFORE its first failure), and every success from it is the takeover.
+fn spray_proxy_takeover(w: &mut World, ctx: &mut Ctx) -> Result<()> {
+    let a: User = ctx.a.clone();
+    let staff = city_staff(w, &a, 6);
+    if staff.len() < 6 {
+        return Err(Error::Scenario(format!(
+            "{}: a proxy takeover needs 6 users in {}, the tenant has {}",
+            ctx.spec.id,
+            a.home.city,
+            staff.len()
+        )));
+    }
+    let location = router_location(&a);
+    let ip = attacker_ip(w, ctx, &location)?;
+    spray_from(w, ctx, &staff, ip, &location);
+    for day in 1..=3i64 {
+        for (k, user) in staff.iter().take(5).enumerate() {
+            let time = ctx.t + Duration::days(day) + Duration::minutes(k as i64 * 4);
+            let ok = password_signin(w, ctx, user, time, ip, &location, well_known("OfficeHome"));
+            push_signin(w, ctx, user, ok, true);
+        }
+    }
+    Ok(())
+}
+
+/// Sprayed accounts used interactively from a cloud VPS: a compromised router sprays six colleagues
+/// (a spray source), and over the next three days five of the accounts sign in interactively to a
+/// low-volume first-party client (Microsoft Teams) from a hosting-ASN VPS in the same city. The VPS is
+/// not a spray source, so the hosting sign-ins are SPW-ID-002's alone, and an interactive sign-in
+/// always counts.
+fn spray_vps_login(w: &mut World, ctx: &mut Ctx) -> Result<()> {
+    let a: User = ctx.a.clone();
+    let staff = city_staff(w, &a, 6);
+    if staff.len() < 6 {
+        return Err(Error::Scenario(format!(
+            "{}: a VPS login needs 6 users in {}, the tenant has {}",
+            ctx.spec.id,
+            a.home.city,
+            staff.len()
+        )));
+    }
+    let router = router_location(&a);
+    let router_ip = attacker_ip(w, ctx, &router)?;
+    spray_from(w, ctx, &staff, router_ip, &router);
+    let mut vps = a.home.clone();
+    vps.asn = crate::world::HOSTING_ASNS[1].0;
+    vps.asn_org = crate::world::HOSTING_ASNS[1].1.to_string();
+    let vps_ip = attacker_ip(w, ctx, &vps)?;
+    for day in 1..=3i64 {
+        for (k, user) in staff.iter().take(5).enumerate() {
+            let time = ctx.t + Duration::days(day) + Duration::minutes(k as i64 * 4);
+            let ok = password_signin(
+                w,
+                ctx,
+                user,
+                time,
+                vps_ip,
+                &vps,
+                well_known("Microsoft Teams"),
+            );
+            push_signin(w, ctx, user, ok, true);
+        }
+    }
+    Ok(())
+}
+
+/// A secure web gateway or VPN egress: eight users of one city share one egress address that blocks
+/// their sign-ins by Conditional Access (53003, interactive) and breaks their token refreshes (70043
+/// and 50173, non-interactive), with a single success. None of these codes is a rejected credential, so
+/// the address is not a spray source.
+fn gateway_egress(w: &mut World, ctx: &mut Ctx) -> Result<()> {
+    let a: User = ctx.a.clone();
+    let staff = city_staff(w, &a, 8);
+    let egress = ctx.shared.next_egress();
+    let location = a.home.clone();
+    for (k, user) in staff.iter().enumerate() {
+        let when = ctx.t + Duration::minutes(k as i64 * 5);
+        let s = failed_signin(w, ctx, user, when, egress, &location, 53003, None);
+        push_signin(w, ctx, user, s, true);
+        for (j, code) in [70043, 50173].into_iter().enumerate() {
+            let mut r = failed_signin(
+                w,
+                ctx,
+                user,
+                when + Duration::minutes(10 + j as i64),
+                egress,
+                &location,
+                code,
+                None,
+            );
+            r.event_type = SignInType::NonInteractive;
+            r.failure_reason = match code {
+                70043 => "The refresh token has expired due to inactivity.".to_string(),
+                _ => "The user must provide fresh authentication.".to_string(),
+            };
+            push_signin(w, ctx, user, r, false);
+        }
+    }
+    let session = ctx.rng.uuid();
+    let ok = signin(
+        w,
+        &mut ctx.rng,
+        &a,
+        ctx.t + Duration::hours(2),
+        egress,
+        &location,
+        SignInType::Interactive,
+        well_known("OfficeHome"),
+        well_known("Office 365 Exchange Online"),
+        session,
+    );
+    push_signin(w, ctx, &a, ok, true);
+    Ok(())
+}
+
+/// A conference or hotel network: three attendees of the tenant mistype their password once or twice
+/// from the shared address on the same morning. Three users is far under the five a spray source
+/// needs.
+fn conference_network(w: &mut World, ctx: &mut Ctx) {
+    let a: User = ctx.a.clone();
+    let attendees = users_from(w, &a.upn, 3);
+    let ip = ctx.shared.next_ip();
+    let location = super::identity::cellular_location(&a.home);
+    for (k, user) in attendees.iter().enumerate() {
+        for attempt in 0..(1 + k % 2) as i64 {
+            let when = ctx.t + Duration::minutes(k as i64 * 9 + attempt * 2);
+            fail(w, ctx, user, when, ip, &location, 50126, None);
+        }
     }
 }

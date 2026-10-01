@@ -248,6 +248,11 @@ story_kind! {
         MiaBurstResidential => "mia_burst_residential",
         SendResidential => "send_residential",
         SprayReplay => "spray_replay",
+        SprayAfterPhish => "spray_after_phish",
+        SpraySuccessForeign => "spray_success_foreign",
+        SprayProxyTakeover => "spray_proxy_takeover",
+        SprayVpsLogin => "spray_vps_login",
+        CloudConnectorOnboarding => "cloud_connector_onboarding",
     }
     lookalike {
         RiskDismissed => "risk_dismissed",
@@ -289,6 +294,8 @@ story_kind! {
         CloudConnector => "cloud_connector",
         CarrierGeoJitter => "carrier_geo_jitter",
         MiaHeavyDesktop => "mia_heavy_desktop",
+        GatewayEgress => "gateway_egress",
+        ConferenceNetwork => "conference_network",
         PasswordSpray => "password_spray",
     }
 }

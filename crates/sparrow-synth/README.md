@@ -276,6 +276,13 @@ Look-alikes:
 | `same_ip_token_use` | An interactive sign-in and its token refresh 20 minutes later, same IP and client. |
 | `wifi_to_cellular` | An interactive MFA sign-in from the home address, then the same session's refresh 25 minutes later from a mobile-carrier address (other ASN, same city, not hosting). |
 | `ipv6_rotation` | An interactive sign-in and two refreshes of the same session from three IPv6 privacy addresses of one ASN and city. |
+| `spray_after_phish` | Phished credentials first: a compromised router in the victim's city signs the victim in, an hour later it tries six other users. |
+| `spray_success_foreign` | A foreign residential source sprays six users, and the first signs in from it after their own home sign-in (an impossible-travel pair too). |
+| `spray_proxy_takeover` | A compromised router sprays six colleagues, then signs five of them in on each of three later days. |
+| `spray_vps_login` | A router sprays six colleagues; five of the accounts then sign in interactively to Microsoft Teams from a hosting-ASN VPS of the same city over three days. |
+| `cloud_connector_onboarding` | A new SaaS connector's backend (three cloud-region addresses on a cloud ASN apart from the attacker's) refreshes eight users' tokens on its first three days. |
+| `gateway_egress` | A secure web gateway egress shared by eight users blocks them by Conditional Access (53003) and breaks refreshes (70043, 50173); one success. |
+| `conference_network` | Three attendees mistype a password once or twice from a shared conference address. |
 | `replay_other_country` | The victim's interactive MFA sign-in from home, then the same session 20 minutes later from a residential attacker-pool address of another country (non-hosting, the user's own browser agent). |
 | `mia_burst_residential` | The mailbox-read burst of `mia_burst` from a residential attacker-pool address in a country the victim was never in. |
 | `send_residential` | A payment-fraud message sent from a residential attacker-pool address in a new country. |
@@ -284,7 +291,7 @@ Look-alikes:
 | `carrier_geo_jitter` | A home sign-in, then a sign-in from a carrier IPv6 address that geolocates about 2,000 km away in the same country eight minutes later, then home again. |
 | `office_nat_mistypes` | Six users of one city share one office egress address, sign in from it on three days, and each mistypes a password once on the third. |
 | `phone_stale_password` | One user's phone retries a stale password twelve times in an hour from the mobile carrier. |
-| `password_spray` | One hosting address tries three passwords at each of four users with the BAV2ROPC and python-requests clients; every attempt fails (50126, one 50053). |
+| `password_spray` (real spray below the 5-user threshold) | One hosting address tries three passwords at each of four users with the BAV2ROPC and python-requests clients; every attempt fails (50126, one 50053). |
 | `outlook_client_filing_rule` | The user files a project list's mail into a Projects folder from Outlook on their own computer (`UpdateInboxRules`, office address, own session). |
 | `vendor_filing_rule` | The user files a vendor's mail into a folder. |
 | `admin_benign_rule` | The admin files processed mail on a shared mailbox with `DeleteMessage False`. |
