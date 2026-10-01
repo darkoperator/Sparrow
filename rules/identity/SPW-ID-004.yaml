@@ -13,14 +13,17 @@
 #   judged from ip_intel (MaxMind GeoLite2 ASN / City, the same enrichment SPW-ID-010 uses):
 #     - the country differs; or
 #     - the ASN differs AND the use comes from a hosting ASN (ip_intel.is_hosting), or the creating
-#       sign-in did, or the use is a sign-in Entra rated risk medium/high;
+#       sign-in did, or either end is a password-spray source of the tenant (spray_sources: an
+#       address that failed against at least 5 distinct users and is not regular egress; compromised
+#       ISP routers and residential proxies are not hosting ASNs), or the use is a sign-in Entra
+#       rated risk medium/high;
 #     - an address on either side that is a Microsoft service front end (ip_intel.is_microsoft:
 #       Outlook mobile / Exchange egress, Office 365 endpoint ranges) never counts;
 #     - when ip_intel has neither an ASN nor a country for one of the two addresses (no GeoIP
 #       data), the network cannot be compared and the address difference stands, as before. That
 #       is a deliberate, documented fallback: the context says `network: unknown`.
-#   Missed on purpose: a same-country replay from a non-hosting residential proxy with no risk
-#   rating on the use.
+#   Missed on purpose: a same-country replay from an ordinary ISP address that never sprayed the
+#   tenant, with no risk rating on the use.
 # - suspicious_user_agent: a SUCCESSFUL signins row (error_code 0, or NULL when the result is
 #   unknown: fail closed), or a UAL UserLoggedIn / MailboxLogin / MailItemsAccessed record (successful
 #   by definition), whose user agent contains an entry of @list:suspicious_user_agents (substring,
@@ -66,7 +69,8 @@ sql: |
             AND ix.country_iso <> ic.country_iso) AS country_changed,
            ((ix.asn IS NULL OR ic.asn IS NULL)
             AND (ix.country_iso IS NULL OR ic.country_iso IS NULL)) AS unknown,
-           (coalesce(ix.is_hosting, false) OR coalesce(ic.is_hosting, false)) AS hosting
+           (coalesce(ix.is_hosting, false) OR coalesce(ic.is_hosting, false)
+            OR EXISTS (SELECT 1 FROM spray_sources p WHERE p.ip IN (x.ip, c.ip))) AS infra
     FROM uses x JOIN creators c ON c.session_id = x.session_id
     LEFT JOIN ip_intel ix ON ix.ip = x.ip
     LEFT JOIN ip_intel ic ON ic.ip = c.ip
@@ -80,7 +84,7 @@ sql: |
            CASE WHEN n.unknown THEN 'session_moved (network: unknown)'
                 ELSE 'session_moved' END AS indicator
     FROM net n
-    WHERE n.unknown OR n.country_changed OR (n.asn_changed AND (n.hosting OR n.risky))
+    WHERE n.unknown OR n.country_changed OR (n.asn_changed AND (n.infra OR n.risky))
   ),
   agents AS (
     SELECT s.record_key, 'signins' AS src, s.event_time AS t, s.user_upn AS actor, s.ip,
@@ -525,3 +529,41 @@ tests:
         ip: 198.51.100.3
         user_agent: axios/1.7.7
     expect_hits: 2
+  - name: a different ASN from a password-spray source is a stolen session even if it is an ordinary ISP
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.2
+        asn: 64500
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: spray_sources
+        tenant_key: test
+        ip: 198.51.100.2
+        users_targeted: 6
+        failures: 12
+        first_failure: "2026-02-20T00:00:00Z"
+        last_failure: "2026-02-28T00:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        is_interactive: true
+        error_code: 0
+        auth_requirement: multiFactorAuthentication
+        session_id: s-1
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.2
+        is_interactive: false
+        session_id: s-1
+        event_time: "2026-03-01T09:30:00Z"
+    expect_hits: 1

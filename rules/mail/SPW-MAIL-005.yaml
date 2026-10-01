@@ -12,11 +12,14 @@
 #   - the accessing user must have sign-in history in the case (successful sign-ins on at least 3
 #     distinct days) and the burst's network - the ASN from ip_intel, else the address itself when
 #     ip_intel has no ASN - must not be one the user signed in from on at least 3 distinct days;
-#   - or the address is a hosting ASN (ip_intel.is_hosting), whatever the user's history;
+#   - or the address is a hosting ASN (ip_intel.is_hosting) or a password-spray source of the tenant
+#     (spray_sources: compromised ISP routers and residential proxies are not hosting ASNs),
+#     whatever the user's history;
 #   - a Microsoft service front end (ip_intel.is_microsoft) never counts as a foreign network.
 # A user with no sign-in history in the case is judged by the hosting test alone (their normal
-# networks cannot be known); that is deliberate and documented. One finding per (mailbox, address),
-# so one attacker session is one finding however long it runs. Missed on purpose: a token thief
+# networks cannot be known); that is deliberate and documented. One finding per (mailbox, UTC day),
+# so an attacker reading one mailbox from several addresses on a day is one finding (the context
+# lists the addresses). Missed on purpose: a token thief
 # reading mail from a residential or business ISP the user has also signed in from on 3 or more days
 # (SPW-ID-004, SPW-MAIL-003 and the other session rules cover the session itself).
 id: SPW-MAIL-005
@@ -45,6 +48,7 @@ sql: |
     LEFT JOIN ip_intel i ON i.ip = u.client_ip
     WHERE m.access_type = 'bind' AND NOT coalesce(i.is_microsoft, false)
       AND (coalesce(i.is_hosting, false)
+           OR EXISTS (SELECT 1 FROM spray_sources p WHERE p.ip = u.client_ip)
            OR (lower(u.user_upn) IN (SELECT upn FROM history)
                AND NOT EXISTS (SELECT 1 FROM regular r
                                WHERE r.upn = lower(u.user_upn)
@@ -59,7 +63,10 @@ sql: |
   ),
   burst AS (SELECT * FROM windowed WHERE records >= 5 OR total_items >= 100)
   SELECT lower(CAST(b.record_id AS VARCHAR)) AS record_key, 'ual_events' AS source_table,
-         b.event_time, b.mailbox AS actor_upn, b.ip AS ip
+         b.event_time, b.mailbox AS actor_upn, b.ip AS ip,
+         json_object('day', strftime(epoch_ms(epoch_ms(b.event_time)), '%Y-%m-%d'),
+                     'addresses', list(DISTINCT b.ip) OVER (
+                       PARTITION BY b.mailbox, epoch_ms(b.event_time) // 86400000)) AS context
   FROM bind b
   WHERE EXISTS (
     SELECT 1 FROM burst q
@@ -67,7 +74,7 @@ sql: |
       AND epoch_ms(b.event_time) <= epoch_ms(q.event_time)
       AND epoch_ms(b.event_time) >= epoch_ms(q.event_time) - 1800000
   )
-group_by: [actor_upn, ip]
+group_by: [actor_upn, day]
 analyst_guidance: |
   A burst of MailItemsAccessed Bind records from one address is what a token thief reading a
   mailbox through Graph or EWS looks like. Compare the client IP and app id with the user's
@@ -1049,3 +1056,70 @@ tests:
         record_id: "00000000-0000-0000-0000-e00000000048"
         access_type: bind
     expect_hits: 7
+  - name: a burst from a password-spray source counts even from an ordinary ISP with no history
+    records:
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 64500
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: spray_sources
+        tenant_key: test
+        ip: 203.0.113.9
+        users_targeted: 8
+        failures: 30
+        first_failure: "2026-02-20T00:00:00Z"
+        last_failure: "2026-02-28T00:00:00Z"
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-f00100000000"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:00:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-f00100000000"
+        access_type: bind
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-f00100000001"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:01:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-f00100000001"
+        access_type: bind
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-f00100000002"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:02:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-f00100000002"
+        access_type: bind
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-f00100000003"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:03:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-f00100000003"
+        access_type: bind
+      - table: ual_events
+        record_id: "00000000-0000-0000-0000-f00100000004"
+        operation: MailItemsAccessed
+        user_upn: victim@contoso.example
+        mailbox_upn: victim@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:04:00Z"
+      - table: mail_items_accessed
+        record_id: "00000000-0000-0000-0000-f00100000004"
+        access_type: bind
+    expect_hits: 5

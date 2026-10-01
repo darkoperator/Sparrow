@@ -911,3 +911,61 @@ fn many_hits_merge_once_and_the_run_reports_its_phases() {
     );
     assert_eq!((findings_dump(&case), evidence_dump(&case)), before);
 }
+
+/// SPW-MAIL-005 raises one finding per (mailbox, UTC day): an attacker reading one mailbox from
+/// several addresses on a day is one finding, and the next day is another.
+#[test]
+fn mail_005_groups_per_mailbox_and_day() {
+    let mut case = Case::in_memory().unwrap();
+    tenant(&case, T1);
+    let mut n = 0;
+    // (address, day): two spray-source addresses on 2026-03-01, one on 2026-03-02, five binds each.
+    for (ip, day) in [
+        ("203.0.113.9", "01"),
+        ("203.0.113.10", "01"),
+        ("203.0.113.9", "02"),
+    ] {
+        insert_row(
+            &case,
+            "spray_sources",
+            T1,
+            json!({"tenant_key": T1, "ip": ip, "users_targeted": 6, "failures": 12,
+                   "first_failure": "2026-02-20T00:00:00Z", "last_failure": "2026-02-28T00:00:00Z"}),
+        );
+        for i in 0..5 {
+            n += 1;
+            let id = format!("00000000-0000-0000-0000-{n:012}");
+            insert_ual(
+                &case,
+                T1,
+                json!({"record_id": id, "operation": "MailItemsAccessed",
+                       "user_upn": "victim@contoso.example", "mailbox_upn": "victim@contoso.example",
+                       "client_ip": ip, "event_time": format!("2026-03-{day}T10:0{i}:00Z")}),
+            );
+            insert_row(
+                &case,
+                "mail_items_accessed",
+                T1,
+                json!({"record_id": id, "item_ordinal": 0, "access_type": "bind"}),
+            );
+        }
+    }
+    let rules = sparrow_core::detect::load::load_rules(&DataDirs::default()).unwrap();
+    let rule = rules
+        .rules
+        .into_iter()
+        .find(|r| r.rule.id == "SPW-MAIL-005")
+        .unwrap();
+    let set = RuleSet {
+        rules: vec![rule],
+        lists: BTreeMap::new(),
+        list_meta: BTreeMap::new(),
+        warnings: vec![],
+    };
+    let report = run(&mut case, &set, &opts(5)).unwrap();
+    assert_eq!(report.rules[0].hits, 15, "{report:#?}");
+    assert_eq!(
+        count(&case, "SELECT count(*) FROM findings WHERE rule_id = 'SPW-MAIL-005'"),
+        2
+    );
+}

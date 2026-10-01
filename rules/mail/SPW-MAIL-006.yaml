@@ -11,11 +11,13 @@
 #   2. Network, not address: "earlier" compares the network of the send's address - the ASN from
 #      ip_intel, else the address itself when ip_intel has no ASN - with the networks of the
 #      user's earlier events. A different address in a network the user has used is not new.
-#      The one exception is a hosting ASN (ip_intel.is_hosting): there the exact address decides
+#      The one exception is a hosting ASN (ip_intel.is_hosting) or a password-spray source of the
+#      tenant (spray_sources: compromised ISP routers and residential proxies are not hosting ASNs):
+#      there the exact address decides
 #      (a first send from an address the user was never seen on is the hit), because a hosting
 #      network the user was seen on only through the attacker's own earlier sign-ins (one
 #      provider, several addresses) must not hide the attacker's send.
-#   3. Qualifier: a new non-hosting network alone still means little, so the send must also come
+#   3. Qualifier: a new network that is neither hosting nor a spray source still means little, so the send must also come
 #      from a country the user has not been seen in, or follow a sign-in of the same user rated
 #      medium/high risk by Entra in the previous 24 hours, or the address has no ip_intel data at
 #      all (no GeoIP: the qualifier cannot be tested and is waived; the analyst reads the address).
@@ -69,7 +71,7 @@ sql: |
   WHERE (SELECT count(*) FROM days d WHERE d.upn = s.upn AND d.d < epoch_ms(s.event_time) // 86400000) >= 3
     AND NOT EXISTS (SELECT 1 FROM first_ip f WHERE f.upn = s.upn AND f.ip = s.ip
                     AND f.first_t < epoch_ms(s.event_time))
-    AND (s.hosting
+    AND (s.hosting OR EXISTS (SELECT 1 FROM spray_sources p WHERE p.ip = s.ip)
          OR (NOT EXISTS (SELECT 1 FROM first_net f WHERE f.upn = s.upn AND f.net = s.net
                          AND f.first_t < epoch_ms(s.event_time))
              AND (s.no_intel
@@ -578,6 +580,47 @@ tests:
         user_upn: alice@contoso.example
         ip: 203.0.113.8
         event_time: "2026-03-01T09:00:00Z"
+      - table: ual_events
+        operation: Send
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 1
+  - name: a send from a password-spray source counts even from an ordinary ISP in the user's country
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 64500
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: spray_sources
+        tenant_key: test
+        ip: 203.0.113.9
+        users_targeted: 8
+        failures: 30
+        first_failure: "2026-02-20T00:00:00Z"
+        last_failure: "2026-02-28T00:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-26T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-27T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-28T09:00:00Z"
       - table: ual_events
         operation: Send
         user_upn: alice@contoso.example
