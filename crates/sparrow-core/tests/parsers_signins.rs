@@ -382,7 +382,13 @@ fn portal_success_with_an_empty_error_code_stores_zero() {
     let dir = tempfile::tempdir().unwrap();
     let root = capture(dir.path());
     let with = |id: &str, status: &str, code: &str| {
-        let mut r = portal_row(id, "2026-09-01T09:30:00Z", "Seattle, Washington, US", "Yes", "s");
+        let mut r = portal_row(
+            id,
+            "2026-09-01T09:30:00Z",
+            "Seattle, Washington, US",
+            "Yes",
+            "s",
+        );
         r[13] = status.to_string();
         r[14] = code.to_string();
         r
@@ -394,7 +400,11 @@ fn portal_success_with_an_empty_error_code_stores_zero() {
             with(S1, "Success", ""),
             with(S2, "success", ""),
             with(S3, "Failure", "50126"),
-            with("c0c0c0c0-0000-4000-8000-0000000000a4", "Interrupted", "50074"),
+            with(
+                "c0c0c0c0-0000-4000-8000-0000000000a4",
+                "Interrupted",
+                "50074",
+            ),
             with("c0c0c0c0-0000-4000-8000-0000000000a5", "Failure", ""),
             with("c0c0c0c0-0000-4000-8000-0000000000a6", "", ""),
             with("c0c0c0c0-0000-4000-8000-0000000000a7", "Pending", ""),

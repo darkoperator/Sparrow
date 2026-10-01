@@ -435,25 +435,30 @@ fn portal_success_rows_have_an_empty_error_code_cell() {
                 {
                     continue;
                 }
-                let text =
-                    sparrow_core::readers::text::decode(&std::fs::read(&path).unwrap()).text;
+                let text = sparrow_core::readers::text::decode(&std::fs::read(&path).unwrap()).text;
                 found += text.matches(",Success,,").count();
                 assert_eq!(text.matches(",Success,0,").count(), 0, "{path:?}");
             }
-            assert!(found > 0, "no Success row with an empty code in the CSV export");
+            assert!(
+                found > 0,
+                "no Success row with an empty code in the CSV export"
+            );
         }
         // Through the parser: every Success row has error_code 0, none is unknown, and a
         // failure keeps its code.
         let case = ingest_generated(dir.path(), &m);
-        let n = |sql: &str| -> i64 {
-            case.conn().query_row(sql, [], |r| r.get(0)).unwrap()
-        };
+        let n = |sql: &str| -> i64 { case.conn().query_row(sql, [], |r| r.get(0)).unwrap() };
         assert!(n("SELECT count(*) FROM signins WHERE status = 'Success'") > 0);
         assert_eq!(
-            n("SELECT count(*) FROM signins WHERE status = 'Success' AND error_code IS DISTINCT FROM 0"),
+            n(
+                "SELECT count(*) FROM signins WHERE status = 'Success' AND error_code IS DISTINCT FROM 0"
+            ),
             0
         );
-        assert_eq!(n("SELECT count(*) FROM signins WHERE error_code IS NULL"), 0);
+        assert_eq!(
+            n("SELECT count(*) FROM signins WHERE error_code IS NULL"),
+            0
+        );
         assert!(n("SELECT count(*) FROM signins WHERE error_code > 0") > 0);
     }
 }

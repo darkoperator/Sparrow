@@ -10,7 +10,8 @@ use crate::events::{RiskDetection, SignInType, Target};
 use crate::scenario::StoryKind;
 use crate::ual;
 use crate::world::{
-    HOSTING_ASNS, LOCATIONS, Location, MICROSOFT_ASN, MfaRegistration, MobileDevice, RiskyUser, User, World,
+    HOSTING_ASNS, LOCATIONS, Location, MICROSOFT_ASN, MfaRegistration, MobileDevice, RiskyUser,
+    User, World,
 };
 use crate::{Error, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -833,7 +834,10 @@ fn password_spray(w: &mut World, ctx: &mut Ctx) {
             let (code, reason) = if v == 3 && attempt == 2 {
                 (50053, "The user account is locked out.")
             } else {
-                (50126, "Invalid username or password or Invalid on-premise username or password.")
+                (
+                    50126,
+                    "Invalid username or password or Invalid on-premise username or password.",
+                )
             };
             s.error_code = code;
             s.failure_reason = reason.to_string();
