@@ -72,8 +72,8 @@ sql: |
   SELECT lower(CAST(b.record_id AS VARCHAR)) AS record_key, 'ual_events' AS source_table,
          b.event_time, b.mailbox AS actor_upn, b.ip AS ip,
          json_object('day', strftime(epoch_ms(epoch_ms(b.event_time)), '%Y-%m-%d'),
-                     'addresses', list(DISTINCT b.ip) OVER (
-                       PARTITION BY b.mailbox, epoch_ms(b.event_time) // 86400000)) AS context
+                     'addresses', list_sort(list(DISTINCT b.ip) OVER (
+                       PARTITION BY b.mailbox, epoch_ms(b.event_time) // 86400000))) AS context
   FROM bind b
   WHERE EXISTS (
     SELECT 1 FROM burst q

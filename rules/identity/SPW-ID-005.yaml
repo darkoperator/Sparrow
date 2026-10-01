@@ -5,17 +5,17 @@
 # failed against at least 5 distinct users of the tenant and is not regular egress (an office NAT
 # where at least 5 users sign in on 3 or more days). The address type does not matter: attackers
 # spray from compromised ISP routers and residential proxies as much as from hosting providers, and
-# no GeoIP is needed. A success is a signins row with error_code 0 or NULL (an unknown result is
-# kept, not silently dropped; the context says `result_known`) or a UAL UserLoggedIn record. The
-# sources themselves need KNOWN failures (a NULL is never a failure). The context says how many users and failures the
+# no GeoIP is needed. A success is a signins row with error_code 0 (a NULL result is unknown and is
+# deliberately ignored) or a UAL UserLoggedIn record. The sources themselves need KNOWN failures. The context says how many users and failures the
 # source had, its first and last failure, and whether this user was one of the sprayed users (a
 # credential failure from the same address: the shared `credential_failure_codes` list, interactive
 # rows only, so an MFA interrupt never marks a user as sprayed); a success by a user the source never
 # failed against is the stronger tell (a credential obtained elsewhere). A success from a non-egress
 # spray source is attacker infrastructure whether it comes before or after the failures (phished
 # credentials first, then spraying the rest), so there is no time filter: the context says
-# `before_first_failure`. A NULL-result success is kept (result_known false) in this rule only; the
-# coverage text says why: a NULL could be a failure, so ID-005 flags it rather than dropping it.
+# `before_first_failure`. Only a KNOWN success (error_code 0) counts: a NULL result could be a failure,
+# and this is a high-severity rule, so an unknown result never escalates (deliberate; the coverage text
+# says so).
 id: SPW-ID-005
 title: Successful sign-in from a password-spray source
 version: 1
@@ -31,7 +31,6 @@ sql: |
   SELECT s.record_key, 'signins' AS source_table, s.event_time, s.user_upn AS actor_upn, s.ip AS ip,
          json_object('users_targeted', p.users_targeted, 'failures', p.failures,
                      'first_failure', p.first_failure, 'last_failure', p.last_failure,
-                     'result_known', s.error_code IS NOT NULL,
                      'before_first_failure', s.event_time < p.first_failure,
                      'was_sprayed_user', EXISTS (
                        SELECT 1 FROM signins f
@@ -39,7 +38,7 @@ sql: |
                          AND coalesce(f.is_interactive, false)
                          AND list_contains(@list:credential_failure_codes, CAST(f.error_code AS VARCHAR)))) AS context
   FROM signins s JOIN spray_sources p ON p.ip = s.ip
-  WHERE (s.error_code IS NULL OR s.error_code = 0) AND s.user_upn IS NOT NULL AND s.event_time IS NOT NULL
+  WHERE s.error_code = 0 AND s.user_upn IS NOT NULL AND s.event_time IS NOT NULL
   UNION ALL
   SELECT lower(CAST(u.record_id AS VARCHAR)), 'ual_events', u.event_time, u.user_upn, u.client_ip,
          json_object('users_targeted', p.users_targeted, 'failures', p.failures,
@@ -170,7 +169,7 @@ tests:
         error_code: 0
         event_time: "2026-02-01T10:00:00Z"
     expect_hits: 1
-  - name: a sign-in with an unknown result from a spray source is kept (result_known false)
+  - name: a sign-in with an unknown result from a spray source is ignored (a NULL could be a failure)
     records:
       - table: spray_sources
         tenant_key: test
@@ -183,7 +182,7 @@ tests:
         user_upn: alice@contoso.example
         ip: 203.0.113.9
         event_time: "2026-03-01T10:00:00Z"
-    expect_hits: 1
+    expect_hits: 0
   - name: another operation from a spray source is not a sign-in
     records:
       - table: spray_sources
