@@ -276,6 +276,8 @@ Look-alikes:
 | `same_ip_token_use` | An interactive sign-in and its token refresh 20 minutes later, same IP and client. |
 | `wifi_to_cellular` | An interactive MFA sign-in from the home address, then the same session's refresh 25 minutes later from a mobile-carrier address (other ASN, same city, not hosting). |
 | `ipv6_rotation` | An interactive sign-in and two refreshes of the same session from three IPv6 privacy addresses of one ASN and city. |
+| `cloud_connector` | A third-party SaaS connector (a new app) signing eight users in from a public-cloud ASN near each user, daily for four days, with a scripted client (non-interactive refreshes). |
+| `carrier_geo_jitter` | A home sign-in, then a sign-in from a carrier IPv6 address that geolocates about 2,000 km away in the same country eight minutes later, then home again. |
 | `office_nat_mistypes` | Six users of one city share one office egress address, sign in from it on three days, and each mistypes a password once on the third. |
 | `phone_stale_password` | One user's phone retries a stale password twelve times in an hour from the mobile carrier. |
 | `password_spray` | One hosting address tries three passwords at each of four users with the BAV2ROPC and python-requests clients; every attempt fails (50126, one 50053). |

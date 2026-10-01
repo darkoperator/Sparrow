@@ -282,6 +282,8 @@ story_kind! {
         SendNewIsp => "send_new_isp",
         OfficeNatMistypes => "office_nat_mistypes",
         PhoneStalePassword => "phone_stale_password",
+        CloudConnector => "cloud_connector",
+        CarrierGeoJitter => "carrier_geo_jitter",
         MiaHeavyDesktop => "mia_heavy_desktop",
         PasswordSpray => "password_spray",
     }

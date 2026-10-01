@@ -417,7 +417,7 @@ rules:
     # The correlation negatives and the illicit consent each carry a successful sign-in of the
     # attacker's proxy or replay address (a hosting ASN, far from the user's home): the logic hits.
     positives: [aitm_signin, inbox_rule_after_stale_risk, mfa_after_stale_risk, anonymous_link_after_stale_risk, oauth_consent]
-    lookalikes: [microsoft_asn_signin]
+    lookalikes: [microsoft_asn_signin, cloud_connector]
   - id: SPW-ID-003
     title: Impossible travel
     category: identity
@@ -436,7 +436,7 @@ rules:
     # from home too, but whether it is over 500 km and 900 km/h from the user's seeded home
     # location depends on the seed and the scenario, so they are exceptions, not positives.
     positives: [aitm_signin]
-    lookalikes: [plausible_travel]
+    lookalikes: [plausible_travel, carrier_geo_jitter]
     baseline_allow:
       - kind: oauth_consent
         reason: "in hawk-investigate the consenting attacker sign-in from a far hosting location follows the victim's home sign-in; it pairs only in that scenario"

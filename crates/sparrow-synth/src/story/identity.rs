@@ -39,6 +39,7 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
         StoryKind::WifiToCellular => wifi_to_cellular(w, ctx),
         StoryKind::Ipv6Rotation => ipv6_rotation(w, ctx),
         StoryKind::PasswordSpray => password_spray(w, ctx),
+        StoryKind::CarrierGeoJitter => carrier_geo_jitter(w, ctx),
         StoryKind::DistributedSpray => distributed_spray(w, ctx),
         StoryKind::SpraySuccess => spray_success(w, ctx)?,
         StoryKind::OfficeNatMistypes => office_nat_mistypes(w, ctx)?,
@@ -1054,5 +1055,42 @@ fn password_spray(w: &mut World, ctx: &mut Ctx) {
             s.ca_status = "notApplied".to_string();
             push_signin(w, ctx, user, s, false);
         }
+    }
+}
+
+/// Carrier and IPv6 geolocation jitter: the user opens Outlook on the phone minutes after a
+/// sign-in from the home network, and the carrier's IPv6 address geolocates about 2,000 km away
+/// inside the same country (city-level GeoIP of mobile carriers and IPv6 space is unreliable
+/// within a country); the next sign-in is the home network again. Same country, ordinary ISP and
+/// carrier, no hosting ASN: not travel.
+fn carrier_geo_jitter(w: &mut World, ctx: &mut Ctx) {
+    let a: User = ctx.a.clone();
+    let carrier_ip = IpAddr::V6(ctx.shared.next_v6());
+    let mut carrier = cellular_location(&a.home);
+    carrier.city = "Carrier Gateway".to_string();
+    carrier.lat = if a.home.lat > 0.0 {
+        a.home.lat - 18.0
+    } else {
+        a.home.lat + 18.0
+    };
+    for (minutes, ip, location) in [
+        (0i64, a.home_ip, a.home.clone()),
+        (8, carrier_ip, carrier.clone()),
+        (20, a.home_ip, a.home.clone()),
+    ] {
+        let session = ctx.rng.uuid();
+        let s = signin(
+            w,
+            &mut ctx.rng,
+            &a,
+            ctx.t + Duration::minutes(minutes),
+            ip,
+            &location,
+            SignInType::Interactive,
+            well_known("OfficeHome"),
+            well_known("Office 365 Exchange Online"),
+            session,
+        );
+        push_signin(w, ctx, &a, s, true);
     }
 }

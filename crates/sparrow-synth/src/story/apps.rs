@@ -9,7 +9,7 @@ use super::{
 use crate::Result;
 use crate::events::{SignInType, Target};
 use crate::scenario::StoryKind;
-use crate::world::{App, CredKind, Credential, Grant, GrantKind, User, World};
+use crate::world::{App, CredKind, Credential, Grant, GrantKind, HOSTING_ASNS, User, World};
 use chrono::{DateTime, Duration, Utc};
 use std::net::IpAddr;
 
@@ -21,6 +21,7 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
         StoryKind::AppSigninExistingConsent => app_signin_existing_consent(w, ctx)?,
         StoryKind::AppCredentialAdded => app_credential_added(w, ctx)?,
         StoryKind::CertRotation => cert_rotation(w, ctx)?,
+        StoryKind::CloudConnector => cloud_connector(w, ctx),
         _ => return Ok(false),
     }
     Ok(true)
@@ -404,4 +405,48 @@ fn cert_rotation(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     );
     push_audit_and_ual(w, ctx, audit, Some(ACTIVITY));
     Ok(())
+}
+
+/// A third-party SaaS connector whose backend signs in on behalf of eight users from a public-cloud
+/// ASN, every day for four days, with a scripted client (`python-httpx`): the cloud address of each
+/// user is in the user's own city (a nearby cloud region), the sign-ins are non-interactive
+/// token refreshes. Tenant-wide cloud service, not an attacker.
+fn cloud_connector(w: &mut World, ctx: &mut Ctx) {
+    let app = new_app(
+        ctx,
+        "Calendar Sync Cloud",
+        "Sync Vendor Ltd",
+        true,
+        "https://app.syncvendor.example/signin",
+        ctx.t - Duration::days(90),
+    );
+    w.apps.push(app.clone());
+    let n = w.users.len();
+    let first = w.users.iter().position(|u| u.upn == ctx.a.upn).unwrap_or(0);
+    let staff: Vec<User> = (0..8usize.min(n))
+        .map(|k| w.users[(first + k) % n].clone())
+        .collect();
+    for (k, user) in staff.iter().enumerate() {
+        let ip = ctx.shared.next_ip();
+        let mut location = user.home.clone();
+        location.asn = HOSTING_ASNS[0].0;
+        location.asn_org = HOSTING_ASNS[0].1.to_string();
+        for day in 0..4i64 {
+            let session = ctx.rng.uuid();
+            let mut s = signin(
+                w,
+                &mut ctx.rng,
+                user,
+                ctx.t + Duration::days(day) + Duration::minutes(k as i64 * 3),
+                ip,
+                &location,
+                SignInType::NonInteractive,
+                app.app_id,
+                well_known("Microsoft Graph"),
+                session,
+            );
+            s.user_agent = "python-httpx/0.27.0".to_string();
+            push_signin(w, ctx, user, s, false);
+        }
+    }
 }

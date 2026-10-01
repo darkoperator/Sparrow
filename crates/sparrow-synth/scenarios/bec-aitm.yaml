@@ -65,6 +65,7 @@ lookalikes:
   - {kind: mia_heavy_desktop, id: l-heavy, actor: 7, at: {day: 30, hour: 10}}
   # Legacy-auth password spray (all failures); inside the last 14 days for Hawk's sign-in range.
   - {kind: password_spray, id: l-spray, actor: 8, at: {day: 33, hour: 3}}
+  - {kind: carrier_geo_jitter, id: l-jitter, actor: 7, at: {day: 36, hour: 9}}
   - {kind: vendor_filing_rule, id: l-vendor, actor: 3, at: {day: 12, hour: 10}}
   - {kind: outlook_client_filing_rule, id: l-owa-filing, actor: 11, at: {day: 13, hour: 11}}
   - {kind: internal_forwarding, id: l-intfwd, actor: 4, at: {day: 13, hour: 16}}
