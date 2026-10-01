@@ -11,11 +11,14 @@
 #   2. Network, not address: "earlier" compares the network of the send's address - the ASN from
 #      ip_intel, else the address itself when ip_intel has no ASN - with the networks of the
 #      user's earlier events. A different address in a network the user has used is not new.
-#   3. Qualifier: a new network alone still means little, so the send must also come from a hosting
-#      ASN (ip_intel.is_hosting), or a country the user has not been seen in, or follow a sign-in
-#      of the same user rated medium/high risk by Entra in the previous 24 hours, or the address has
-#      no ip_intel data at all (no GeoIP: the qualifier cannot be tested and is waived; the context
-#      says nothing more, the analyst reads the address).
+#      The one exception is a hosting ASN (ip_intel.is_hosting): there the exact address decides
+#      (a first send from an address the user was never seen on is the hit), because a hosting
+#      network the user was seen on only through the attacker's own earlier sign-ins (one
+#      provider, several addresses) must not hide the attacker's send.
+#   3. Qualifier: a new non-hosting network alone still means little, so the send must also come
+#      from a country the user has not been seen in, or follow a sign-in of the same user rated
+#      medium/high risk by Entra in the previous 24 hours, or the address has no ip_intel data at
+#      all (no GeoIP: the qualifier cannot be tested and is waived; the analyst reads the address).
 #   4. Microsoft service front ends (ip_intel.is_microsoft: Outlook mobile / Exchange egress) never
 #      count as the user's network.
 # Missed on purpose: an attacker send from an ordinary-ISP network in the user's own country with no
@@ -46,6 +49,7 @@ sql: |
     SELECT a.upn, a.t, coalesce(CAST(i.asn AS VARCHAR), a.ip) AS net, i.country_iso AS cc
     FROM act a LEFT JOIN ip_intel i ON i.ip = a.ip
   ),
+  first_ip AS (SELECT upn, ip, min(epoch_ms(t)) AS first_t FROM act GROUP BY upn, ip),
   first_net AS (SELECT upn, net, min(epoch_ms(t)) AS first_t FROM actn GROUP BY upn, net),
   first_cc AS (SELECT upn, cc, min(epoch_ms(t)) AS first_t FROM actn WHERE cc IS NOT NULL GROUP BY upn, cc),
   days AS (SELECT upn, epoch_ms(t) // 86400000 AS d FROM actn GROUP BY upn, epoch_ms(t) // 86400000),
@@ -63,17 +67,20 @@ sql: |
   SELECT s.record_key, 'ual_events' AS source_table, s.event_time, s.actor_upn, s.ip
   FROM sends s
   WHERE (SELECT count(*) FROM days d WHERE d.upn = s.upn AND d.d < epoch_ms(s.event_time) // 86400000) >= 3
-    AND NOT EXISTS (SELECT 1 FROM first_net f WHERE f.upn = s.upn AND f.net = s.net
+    AND NOT EXISTS (SELECT 1 FROM first_ip f WHERE f.upn = s.upn AND f.ip = s.ip
                     AND f.first_t < epoch_ms(s.event_time))
-    AND (s.hosting OR s.no_intel
-         OR (s.cc IS NOT NULL
-             AND NOT EXISTS (SELECT 1 FROM first_cc c WHERE c.upn = s.upn AND c.cc = s.cc
-                             AND c.first_t < epoch_ms(s.event_time)))
-         OR EXISTS (SELECT 1 FROM signins r
-                    WHERE lower(r.user_upn) = s.upn
-                      AND lower(coalesce(r.risk_level_during, '')) IN ('medium', 'high')
-                      AND epoch_ms(r.event_time) <= epoch_ms(s.event_time)
-                      AND epoch_ms(r.event_time) >= epoch_ms(s.event_time) - 86400000))
+    AND (s.hosting
+         OR (NOT EXISTS (SELECT 1 FROM first_net f WHERE f.upn = s.upn AND f.net = s.net
+                         AND f.first_t < epoch_ms(s.event_time))
+             AND (s.no_intel
+                  OR (s.cc IS NOT NULL
+                      AND NOT EXISTS (SELECT 1 FROM first_cc c WHERE c.upn = s.upn AND c.cc = s.cc
+                                      AND c.first_t < epoch_ms(s.event_time)))
+                  OR EXISTS (SELECT 1 FROM signins r
+                             WHERE lower(r.user_upn) = s.upn
+                               AND lower(coalesce(r.risk_level_during, '')) IN ('medium', 'high')
+                               AND epoch_ms(r.event_time) <= epoch_ms(s.event_time)
+                               AND epoch_ms(r.event_time) >= epoch_ms(s.event_time) - 86400000))))
 group_by: [actor_upn]
 analyst_guidance: |
   A message sent from a network the user has not been seen on, within this case, and that is a
@@ -532,3 +539,48 @@ tests:
         client_ip: 203.0.113.9
         event_time: "2026-03-01T10:00:00Z"
     expect_hits: 0
+  - name: a send from a new address of a hosting ASN the user was seen on earlier is still a hit
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 203.0.113.8
+        asn: 64500
+        country_iso: US
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 64500
+        country_iso: US
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-26T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-27T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-28T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.8
+        event_time: "2026-03-01T09:00:00Z"
+      - table: ual_events
+        operation: Send
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 1
