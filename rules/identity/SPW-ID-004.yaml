@@ -21,9 +21,13 @@
 #       is a deliberate, documented fallback: the context says `network: unknown`.
 #   Missed on purpose: a same-country replay from a non-hosting residential proxy with no risk
 #   rating on the use.
-# - suspicious_user_agent: a signins row, or a UAL UserLoggedIn / MailboxLogin / MailItemsAccessed
-#   record, whose user agent contains an entry of @list:suspicious_user_agents (substring, case
-#   insensitive: `axios/1.7.7` matches `axios`).
+# - suspicious_user_agent: a SUCCESSFUL signins row (error_code 0, or NULL when the result is
+#   unknown: fail closed), or a UAL UserLoggedIn / MailboxLogin / MailItemsAccessed record (successful
+#   by definition), whose user agent contains an entry of @list:suspicious_user_agents (substring,
+#   case insensitive: `axios/1.7.7` matches `axios`). A scripted client that FAILS to sign in
+#   (BAV2ROPC / python-requests / go-http-client with 50126 or 50053) is internet-wide legacy-auth
+#   password spray, not a replayed session, and is not reported here (a candidate for a future
+#   spray rule).
 # A record that matches both is one hit; the context lists the indicators.
 id: SPW-ID-004
 title: Adversary-in-the-middle indicators
@@ -82,7 +86,8 @@ sql: |
     SELECT s.record_key, 'signins' AS src, s.event_time AS t, s.user_upn AS actor, s.ip,
            'suspicious_user_agent' AS indicator
     FROM signins s
-    WHERE len(list_filter(@list:suspicious_user_agents,
+    WHERE coalesce(s.error_code, 0) = 0
+      AND len(list_filter(@list:suspicious_user_agents,
                           a -> a <> '' AND strpos(lower(coalesce(s.user_agent, '')), lower(a)) > 0)) > 0
     UNION ALL
     SELECT lower(CAST(u.record_id AS VARCHAR)), 'ual_events', u.event_time, u.user_upn, u.client_ip,
@@ -109,7 +114,7 @@ analyst_guidance: |
 false_positives:
   - A user whose phone moves from Wi-Fi to cellular inside one hour on a long-lived session, when no
     GeoIP data is loaded (with it, a same-country move between ordinary ISPs is not reported).
-  - Legitimate automation or a monitoring tool that uses a scripted client (okhttp, curl).
+  - Legitimate automation or a monitoring tool that uses a scripted client (okhttp, curl) and succeeds.
 references:
   - https://learn.microsoft.com/en-us/entra/id-protection/concept-identity-protection-risks
   - https://learn.microsoft.com/en-us/purview/audit-log-activities
@@ -495,3 +500,28 @@ tests:
         session_id: s-1
         event_time: "2026-03-01T09:30:00Z"
     expect_hits: 0
+  - name: a scripted user agent that failed to sign in is a password spray, not a replay
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.2
+        user_agent: BAV2ROPC
+        error_code: 50126
+      - table: signins
+        user_upn: bob@contoso.example
+        ip: 198.51.100.2
+        user_agent: python-requests/2.31.0
+        error_code: 50053
+    expect_hits: 0
+  - name: a scripted user agent that signed in is a hit, and so is an unknown result
+    records:
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.2
+        user_agent: python-requests/2.31.0
+        error_code: 0
+      - table: signins
+        user_upn: bob@contoso.example
+        ip: 198.51.100.3
+        user_agent: axios/1.7.7
+    expect_hits: 2
