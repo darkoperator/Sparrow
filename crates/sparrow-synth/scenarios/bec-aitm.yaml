@@ -57,6 +57,12 @@ lookalikes:
   # 14-day Get-HawkUserEntraIDSignInLog range still collects it (Task 23 ruling 1).
   - {kind: plausible_travel, id: l-travel-recent, actor: 2, at: {day: 35, hour: 7}}
   - {kind: same_ip_token_use, id: l-sameip, actor: 9, at: {day: 15, hour: 9}}
+  # Benign network changes and a busy Outlook user (tuning of SPW-ID-004 / MAIL-005 / MAIL-006); the
+  # sign-in based ones sit in the last 14 days so Hawk's sign-in range still collects them.
+  - {kind: wifi_to_cellular, id: l-cell, actor: 3, at: {day: 34, hour: 10}}
+  - {kind: ipv6_rotation, id: l-v6, actor: 4, at: {day: 34, hour: 14}}
+  - {kind: send_new_isp, id: l-newisp, actor: 6, at: {day: 36, hour: 10}}
+  - {kind: mia_heavy_desktop, id: l-heavy, actor: 7, at: {day: 30, hour: 10}}
   - {kind: vendor_filing_rule, id: l-vendor, actor: 3, at: {day: 12, hour: 10}}
   - {kind: outlook_client_filing_rule, id: l-owa-filing, actor: 11, at: {day: 13, hour: 11}}
   - {kind: internal_forwarding, id: l-intfwd, actor: 4, at: {day: 13, hour: 16}}

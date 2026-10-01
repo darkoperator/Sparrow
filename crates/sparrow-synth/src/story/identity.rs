@@ -35,6 +35,8 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
         StoryKind::MicrosoftAsnSignin => microsoft_asn_signin(w, ctx),
         StoryKind::PlausibleTravel => plausible_travel(w, ctx)?,
         StoryKind::SameIpTokenUse => same_ip_token_use(w, ctx),
+        StoryKind::WifiToCellular => wifi_to_cellular(w, ctx),
+        StoryKind::Ipv6Rotation => ipv6_rotation(w, ctx),
         _ => return Ok(false),
     }
     Ok(true)
@@ -703,4 +705,89 @@ fn same_ip_token_use(w: &mut World, ctx: &mut Ctx) {
         session,
     );
     push_signin(w, ctx, &a, refresh, false);
+}
+
+/// A documentation-range mobile carrier (RFC 5398 AS number, never a hosting provider): the user's
+/// home city, a different ASN.
+pub(super) fn cellular_location(home: &Location) -> Location {
+    Location {
+        asn: 64508,
+        asn_org: "Documentation Mobile Carrier".to_string(),
+        ..home.clone()
+    }
+}
+
+/// A phone that leaves the office Wi-Fi for cellular inside one session: an interactive MFA
+/// sign-in from the user's home address, then the same session's token refresh 25 minutes later
+/// from a mobile-carrier address (different ASN, same city, not a hosting provider). The address
+/// changes but the network is an ordinary one (Microsoft Entra session tokens are bound to the
+/// user, not to the address).
+fn wifi_to_cellular(w: &mut World, ctx: &mut Ctx) {
+    let a: User = ctx.a.clone();
+    let session = ctx.rng.uuid();
+    let first = signin(
+        w,
+        &mut ctx.rng,
+        &a,
+        ctx.t,
+        a.home_ip,
+        &a.home,
+        SignInType::Interactive,
+        well_known("OfficeHome"),
+        well_known("Office 365 Exchange Online"),
+        session,
+    );
+    push_signin(w, ctx, &a, first, true);
+    let cell_ip = ctx.shared.next_ip();
+    let refresh = signin(
+        w,
+        &mut ctx.rng,
+        &a,
+        ctx.t + Duration::minutes(25),
+        cell_ip,
+        &cellular_location(&a.home),
+        SignInType::NonInteractive,
+        well_known("Microsoft Office"),
+        well_known("Office 365 Exchange Online"),
+        session,
+    );
+    push_signin(w, ctx, &a, refresh, false);
+}
+
+/// IPv6 privacy addresses rotate inside one provider (RFC 8981: temporary addresses change at
+/// most daily, and a new one is used for new connections): an interactive MFA sign-in from one
+/// address and the same session's refreshes from two other addresses of the same ASN and city.
+fn ipv6_rotation(w: &mut World, ctx: &mut Ctx) {
+    let a: User = ctx.a.clone();
+    let session = ctx.rng.uuid();
+    let first_ip = IpAddr::V6(ctx.shared.next_v6());
+    let first = signin(
+        w,
+        &mut ctx.rng,
+        &a,
+        ctx.t,
+        first_ip,
+        &a.home,
+        SignInType::Interactive,
+        well_known("OfficeHome"),
+        well_known("Office 365 Exchange Online"),
+        session,
+    );
+    push_signin(w, ctx, &a, first, true);
+    for minutes in [20, 40] {
+        let ip = IpAddr::V6(ctx.shared.next_v6());
+        let refresh = signin(
+            w,
+            &mut ctx.rng,
+            &a,
+            ctx.t + Duration::minutes(minutes),
+            ip,
+            &a.home,
+            SignInType::NonInteractive,
+            well_known("Microsoft Office"),
+            well_known("Office 365 Exchange Online"),
+            session,
+        );
+        push_signin(w, ctx, &a, refresh, false);
+    }
 }

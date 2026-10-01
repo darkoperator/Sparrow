@@ -339,7 +339,7 @@ rules:
     needs_geoip: false
     collectors: [hawk4, invictus, portal]
     positives: [mia_burst]
-    lookalikes: [mia_sync]
+    lookalikes: [mia_sync, mia_heavy_desktop]
   - id: SPW-MAIL-006
     title: Mail sent from an IP address the user never used before
     category: mail
@@ -354,7 +354,7 @@ rules:
     needs_geoip: false
     collectors: [hawk4, invictus, portal]
     positives: [send_new_ip]
-    lookalikes: [send_known_ip]
+    lookalikes: [send_known_ip, send_new_isp]
   - id: SPW-MAIL-007
     title: Mailbox or SharePoint search for finance keywords
     category: mail
@@ -455,7 +455,7 @@ rules:
     needs_geoip: false
     collectors: [hawk3, hawk4, invictus, portal]
     positives: [aitm_signin]
-    lookalikes: [same_ip_token_use]
+    lookalikes: [same_ip_token_use, wifi_to_cellular, ipv6_rotation]
     baseline_allow:
       - kind: inbox_rule_finance
         reason: &stolen_session "the storyline reuses the AiTM sign-in session from another hosting address (a true session_moved signal); it is visible only where UAL rows carry the session id and the creator sign-in exists (not Hawk UAL, not scenarios without an AiTM sign-in), so it cannot be a per-kind positive"

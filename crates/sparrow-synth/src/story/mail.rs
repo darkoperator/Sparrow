@@ -3,10 +3,10 @@
 //! finance searches, an automatic reply, a spoofed message, and their look-alikes.
 
 use super::{
-    Ctx, Evidence, attacker_session, first_admin, push_cmdlet, push_correlated_signin, push_trace,
-    push_ual, target,
+    Ctx, Evidence, attacker_session, first_admin, push_cmdlet, push_correlated_signin, push_signin,
+    push_trace, push_ual, signin, target, well_known,
 };
-use crate::events::TraceMsg;
+use crate::events::{SignInType, TraceMsg};
 use crate::rng::stream;
 use crate::scenario::StoryKind;
 use crate::ual::{self, ItemRef};
@@ -134,6 +134,8 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
         }
         StoryKind::PermissionSystemDiscovery => permission_system_discovery(w, ctx)?,
         StoryKind::MiaSync => mia_sync(w, ctx),
+        StoryKind::MiaHeavyDesktop => mia_heavy_desktop(w, ctx),
+        StoryKind::SendNewIsp => send_new_isp(w, ctx),
         StoryKind::SendKnownIp => {
             let a = ctx.a.clone();
             let session = ctx.rng.uuid();
@@ -740,6 +742,43 @@ fn mia_burst(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     Ok(())
 }
 
+/// A heavy Outlook desktop user at the office: twelve `Bind` records over ten minutes, each one
+/// to three items of the user's own recent mail, from the office address. Outlook binds every
+/// item it opens or previews, so a busy user crosses five binds in half an hour on any ordinary
+/// day (Microsoft Learn, audit-mailitemsaccessed).
+fn mia_heavy_desktop(w: &mut World, ctx: &mut Ctx) {
+    let a = ctx.a.clone();
+    let t = ctx.t;
+    let pool = received_mail(w, &a, t);
+    if pool.is_empty() {
+        return;
+    }
+    let office = well_known("Microsoft Office");
+    let session = ctx.rng.uuid();
+    for i in 0..12i64 {
+        let time = t + Duration::seconds(i * 50);
+        let want = (ctx.rng.range(1, 3) as usize).min(pool.len());
+        let start = ctx.rng.below(pool.len() as u64) as usize;
+        let items: Vec<ual::MiaItem> = (0..want)
+            .map(|k| pool[(start + k) % pool.len()].clone())
+            .collect();
+        let u = ual::mail_items_accessed(
+            w,
+            &mut ctx.rng,
+            &a,
+            time,
+            "Bind",
+            &[("\\Inbox".to_string(), items)],
+            a.office_ip,
+            OUTLOOK_DESKTOP,
+            office,
+            session,
+            false,
+        );
+        push_ual(w, ctx, u);
+    }
+}
+
 /// Outlook desktop synchronizing twelve folders over ten minutes from the office.
 fn mia_sync(w: &mut World, ctx: &mut Ctx) {
     const FOLDERS: [&str; 12] = [
@@ -1018,4 +1057,35 @@ fn admin_benign_rule(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     rule.move_to_folder = Some("Processed".to_string());
     add_rule(w, ctx, rule);
     Ok(())
+}
+
+/// A message sent from a new ordinary network: the user's phone on a mobile carrier of their own
+/// city (a different ASN, not a hosting provider). The user's sign-in from that address follows
+/// three hours later, so the address is new at the time of the send.
+fn send_new_isp(w: &mut World, ctx: &mut Ctx) {
+    let a = ctx.a.clone();
+    let ip = ctx.shared.next_ip();
+    let session = ctx.rng.uuid();
+    send(
+        w,
+        ctx,
+        ip,
+        OWA,
+        session,
+        "projects@partner.example",
+        "Re: Project timeline",
+    );
+    let later = signin(
+        w,
+        &mut ctx.rng,
+        &a,
+        ctx.t + Duration::hours(3),
+        ip,
+        &super::identity::cellular_location(&a.home),
+        SignInType::NonInteractive,
+        well_known("Microsoft Office"),
+        well_known("Office 365 Exchange Online"),
+        session,
+    );
+    push_signin(w, ctx, &a, later, false);
 }

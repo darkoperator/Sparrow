@@ -129,6 +129,11 @@ impl Shared {
         }
     }
 
+    /// The next RFC 3849 address of the roaming role (a rotating IPv6 privacy address).
+    pub fn next_v6(&mut self) -> std::net::Ipv6Addr {
+        self.alloc.v6(Net::Roaming)
+    }
+
     /// Records this sign-in and answers whether it is the user's first of that day among the
     /// storylines' sign-ins (the fresh-authentication case a `UserAuthenticationMethod` code
     /// marks). The baseline counts its own sign-ins separately: it is a pure function of the

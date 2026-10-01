@@ -271,6 +271,10 @@ story_kind! {
         InboxRuleAfterStaleRisk => "inbox_rule_after_stale_risk",
         AnonymousLinkAfterStaleRisk => "anonymous_link_after_stale_risk",
         LureSharedLate => "lure_shared_late",
+        WifiToCellular => "wifi_to_cellular",
+        Ipv6Rotation => "ipv6_rotation",
+        SendNewIsp => "send_new_isp",
+        MiaHeavyDesktop => "mia_heavy_desktop",
     }
 }
 

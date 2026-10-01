@@ -272,6 +272,8 @@ Look-alikes:
 | `microsoft_asn_signin` | A sign-in from a Cloud PC: a Microsoft address at the user's home. |
 | `plausible_travel` | A flight home 14 hours before, then a far city a plane could reach in the time. |
 | `same_ip_token_use` | An interactive sign-in and its token refresh 20 minutes later, same IP and client. |
+| `wifi_to_cellular` | An interactive MFA sign-in from the home address, then the same session's refresh 25 minutes later from a mobile-carrier address (other ASN, same city, not hosting). |
+| `ipv6_rotation` | An interactive sign-in and two refreshes of the same session from three IPv6 privacy addresses of one ASN and city. |
 | `outlook_client_filing_rule` | The user files a project list's mail into a Projects folder from Outlook on their own computer (`UpdateInboxRules`, office address, own session). |
 | `vendor_filing_rule` | The user files a vendor's mail into a folder. |
 | `admin_benign_rule` | The admin files processed mail on a shared mailbox with `DeleteMessage False`. |
@@ -280,7 +282,9 @@ Look-alikes:
 | `set_mailbox_other_param` | `Set-Mailbox` changing an unrelated parameter. |
 | `permission_system_discovery` | Exchange's own FullAccess grant on the discovery mailbox for Discovery Management. |
 | `mia_sync` | Outlook desktop synchronising twelve folders over ten minutes from the office. |
+| `mia_heavy_desktop` | A busy Outlook desktop user: twelve Bind records of one to three items each over ten minutes from the office. |
 | `send_known_ip` | The user sends mail from the office via Outlook desktop. |
+| `send_new_isp` | The user sends from a new mobile-carrier address of their own city (other ASN, not hosting); their sign-in from it follows three hours later. |
 | `search_benign` | A harmless Exchange search from the office. |
 | `autoreply_disabled` | The user's automatic reply is disabled. |
 | `header_clean` | A vendor newsletter that passes SPF, DKIM and DMARC. |
