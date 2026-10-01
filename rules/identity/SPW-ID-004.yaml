@@ -5,7 +5,8 @@
 # Two indicators, both `sql:` (a session join, and a list matched inside the text):
 # - session_moved: a signins row or UAL record carrying a session id that was created by an
 #   interactive sign-in that satisfied MFA (auth_requirement starting "multifactor", or
-#   mfa_result "MFA successfully completed"), used at a different IP address within one hour after
+#   mfa_result "MFA successfully completed"; error_code 0 or NULL: an unknown result is kept, the
+#   MFA condition already implies the sign-in completed), used at a different IP address within one hour after
 #   it, from a different NETWORK. Only the later use is the hit, never the creating sign-in.
 #   A different address alone is not enough: a phone moving between Wi-Fi and cellular, a rotating
 #   IPv6 privacy address or a carrier NAT pool changes the address inside one session all day
@@ -19,9 +20,11 @@
 #       rated risk medium/high;
 #     - an address on either side that is a Microsoft service front end (ip_intel.is_microsoft:
 #       Outlook mobile / Exchange egress, Office 365 endpoint ranges) never counts;
-#     - when ip_intel has neither an ASN nor a country for one of the two addresses (no GeoIP
-#       data), the network cannot be compared and the address difference stands, as before. That
-#       is a deliberate, documented fallback: the context says `network: unknown`.
+#     - when the ASN is missing on either side (no GeoIP data, or a partial record) the networks
+#       cannot be compared and the address difference stands, as before, UNLESS both countries are
+#       known and differ (then the country test above counts it). That is a deliberate, documented
+#       fallback so partial GeoIP never suppresses a session move: the context says
+#       `network: unknown`.
 #   Missed on purpose: a same-country replay from an ordinary ISP address that never sprayed the
 #   tenant, with no risk rating on the use.
 # - suspicious_user_agent: a SUCCESSFUL signins row (error_code 0, or NULL when the result is
@@ -34,7 +37,7 @@
 # A record that matches both is one hit; the context lists the indicators.
 id: SPW-ID-004
 title: Adversary-in-the-middle indicators
-version: 1
+version: 2
 status: stable
 severity: high
 confidence: medium
@@ -46,7 +49,8 @@ sql: |
   WITH creators AS (
     SELECT s.record_key, s.session_id, s.event_time AS t, s.ip
     FROM signins s
-    WHERE s.session_id IS NOT NULL AND s.session_id <> '' AND s.error_code = 0
+    WHERE s.session_id IS NOT NULL AND s.session_id <> ''
+      AND (s.error_code IS NULL OR s.error_code = 0)
       AND coalesce(s.is_interactive, false)
       AND (lower(coalesce(s.auth_requirement, '')) LIKE 'multifactor%'
            OR lower(coalesce(s.mfa_result, '')) LIKE '%mfa successfully completed%')
@@ -68,7 +72,8 @@ sql: |
            (ix.country_iso IS NOT NULL AND ic.country_iso IS NOT NULL
             AND ix.country_iso <> ic.country_iso) AS country_changed,
            ((ix.asn IS NULL OR ic.asn IS NULL)
-            AND (ix.country_iso IS NULL OR ic.country_iso IS NULL)) AS unknown,
+            AND NOT (ix.country_iso IS NOT NULL AND ic.country_iso IS NOT NULL
+                     AND ix.country_iso <> ic.country_iso)) AS unknown,
            (coalesce(ix.is_hosting, false) OR coalesce(ic.is_hosting, false)
             OR EXISTS (SELECT 1 FROM spray_sources p WHERE p.ip IN (x.ip, c.ip))) AS infra
     FROM uses x JOIN creators c ON c.session_id = x.session_id
@@ -564,6 +569,189 @@ tests:
         user_upn: alice@contoso.example
         ip: 198.51.100.2
         is_interactive: false
+        session_id: s-1
+        event_time: "2026-03-01T09:30:00Z"
+    expect_hits: 1
+  - name: the ASN missing on one side with the same known country stays an unknown network and counts
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.2
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        is_interactive: true
+        error_code: 0
+        auth_requirement: multiFactorAuthentication
+        session_id: s-1
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.2
+        is_interactive: false
+        session_id: s-1
+        event_time: "2026-03-01T09:30:00Z"
+    expect_hits: 1
+  - name: the ASN missing on one side with different known countries counts as a country change
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.2
+        country_iso: DE
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        is_interactive: true
+        error_code: 0
+        auth_requirement: multiFactorAuthentication
+        session_id: s-1
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.2
+        is_interactive: false
+        session_id: s-1
+        event_time: "2026-03-01T09:30:00Z"
+    expect_hits: 1
+  - name: the country missing on one side with different ASNs and no infrastructure is a network change without a tell
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.2
+        asn: 64500
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        is_interactive: true
+        error_code: 0
+        auth_requirement: multiFactorAuthentication
+        session_id: s-1
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.2
+        is_interactive: false
+        session_id: s-1
+        event_time: "2026-03-01T09:30:00Z"
+    expect_hits: 0
+  - name: a creating sign-in with an unknown result that satisfied MFA is still a creator
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.2
+        asn: 64500
+        country_iso: DE
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        is_interactive: true
+        auth_requirement: multiFactorAuthentication
+        session_id: s-1
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.2
+        is_interactive: false
+        session_id: s-1
+        event_time: "2026-03-01T09:30:00Z"
+    expect_hits: 1
+  - name: a failed creating sign-in is not a creator
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.2
+        asn: 64500
+        country_iso: DE
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        is_interactive: true
+        error_code: 50074
+        auth_requirement: multiFactorAuthentication
+        session_id: s-1
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.2
+        is_interactive: false
+        session_id: s-1
+        event_time: "2026-03-01T09:30:00Z"
+    expect_hits: 0
+  - name: a replay that keeps the user's own browser agent from another country hits through session_moved alone
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.2
+        asn: 64500
+        country_iso: DE
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        is_interactive: true
+        error_code: 0
+        auth_requirement: multiFactorAuthentication
+        session_id: s-1
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.2
+        is_interactive: false
+        user_agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0
         session_id: s-1
         event_time: "2026-03-01T09:30:00Z"
     expect_hits: 1
