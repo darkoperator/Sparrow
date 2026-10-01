@@ -414,6 +414,50 @@ fn signin_export_headers_clean_the_same_in_csv_and_xlsx() {
     );
 }
 
+/// The Entra portal export leaves "Sign-in error code" EMPTY on Success and writes the integer
+/// for Failure and Interrupted (real captures); the CSV and the workbook both follow, and the
+/// parser reads the empty Success cell back as error code 0.
+#[test]
+fn portal_success_rows_have_an_empty_error_code_cell() {
+    for export in [SigninExport::Csv, SigninExport::Xlsx] {
+        let mut o = opts(3);
+        o.signin_export = export;
+        let dir = tempfile::tempdir().unwrap();
+        let m = generate_to_dir(&load("bec-aitm").unwrap(), &o, dir.path()).unwrap();
+        if export == SigninExport::Csv {
+            let mut found = 0;
+            for entry in std::fs::read_dir(dir.path().join(&m.root)).unwrap() {
+                let path = entry.unwrap().path();
+                if !path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.to_lowercase().contains("signins_"))
+                {
+                    continue;
+                }
+                let text =
+                    sparrow_core::readers::text::decode(&std::fs::read(&path).unwrap()).text;
+                found += text.matches(",Success,,").count();
+                assert_eq!(text.matches(",Success,0,").count(), 0, "{path:?}");
+            }
+            assert!(found > 0, "no Success row with an empty code in the CSV export");
+        }
+        // Through the parser: every Success row has error_code 0, none is unknown, and a
+        // failure keeps its code.
+        let case = ingest_generated(dir.path(), &m);
+        let n = |sql: &str| -> i64 {
+            case.conn().query_row(sql, [], |r| r.get(0)).unwrap()
+        };
+        assert!(n("SELECT count(*) FROM signins WHERE status = 'Success'") > 0);
+        assert_eq!(
+            n("SELECT count(*) FROM signins WHERE status = 'Success' AND error_code IS DISTINCT FROM 0"),
+            0
+        );
+        assert_eq!(n("SELECT count(*) FROM signins WHERE error_code IS NULL"), 0);
+        assert!(n("SELECT count(*) FROM signins WHERE error_code > 0") > 0);
+    }
+}
+
 /// Task F9.2: the Exchange message-trace summary download is UTF-16LE without a BOM with a
 /// quoted header and CRLF (survey §3, captures A and B), and about one tree in four is the
 /// single-byte file an analyst re-saved through Excel: cp1252, unquoted header, CRLF (capture

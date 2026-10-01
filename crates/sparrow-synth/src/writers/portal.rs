@@ -337,7 +337,12 @@ fn signin_cells(world: &World, s: &SignIn) -> Vec<String> {
         ip.clone(),
         location,
         signin_status(s.error_code).to_string(),
-        s.error_code.to_string(),
+        // The portal leaves the code empty on Success; Failure and Interrupted carry it.
+        if s.error_code == 0 {
+            String::new()
+        } else {
+            s.error_code.to_string()
+        },
         failure,
         s.client_app.clone(),
         device_id,
