@@ -14,6 +14,13 @@
 #   (tens to a few hundred km) and neighbouring-metro egress from counting.
 # - Time floor: the gap is taken as at least 60 seconds, so two sign-ins in the same second from
 #   far apart are a very high speed, never a division by zero.
+# - Same country: a pair whose two addresses both geolocate to the same country counts only when
+#   one end is a hosting address (ip_intel.is_hosting) or a password-spray source of the tenant
+#   (spray_sources). City-level geolocation of national ISPs, mobile carriers and IPv6 space is
+#   unreliable inside a country (distances of 1,000-3,000 km between a home ISP and a carrier are
+#   routine), so a same-country pair between ordinary networks is not evidence. A pair across
+#   countries counts as before, and so does a pair where either country is unknown. Missed on
+#   purpose: a same-country attacker on an ordinary ISP with no spray history.
 # - Skipped on purpose: Microsoft addresses (ip_intel.is_microsoft): Exchange Online, a Cloud PC
 #   or a Microsoft relay geolocate to a datacentre unrelated to the user. Addresses with no
 #   location are ignored, not treated as far.
@@ -28,7 +35,7 @@
 # `sql:` because the pair needs a window over the user's sign-ins joined to ip_intel.
 id: SPW-ID-003
 title: Impossible travel
-version: 1
+version: 2
 status: stable
 severity: medium
 confidence: low
@@ -41,13 +48,15 @@ sql: |
   WITH ev AS (
     SELECT s.record_key, 'signins' AS src, s.event_time AS t, lower(s.user_upn) AS usr,
            s.user_upn AS actor, s.ip AS ip, i.latitude AS lat, i.longitude AS lon,
-           coalesce(i.is_hosting, false) AS host
+           coalesce(i.is_hosting, false) AS host, i.country_iso AS cc,
+           EXISTS (SELECT 1 FROM spray_sources p WHERE p.ip = s.ip) AS spray
     FROM signins s JOIN ip_intel i ON i.ip = s.ip
     WHERE s.error_code = 0 AND s.user_upn IS NOT NULL AND s.event_time IS NOT NULL
       AND i.latitude IS NOT NULL AND i.longitude IS NOT NULL AND NOT coalesce(i.is_microsoft, false)
     UNION ALL
     SELECT lower(CAST(u.record_id AS VARCHAR)), 'ual_events', u.event_time, lower(u.user_upn),
-           u.user_upn, u.client_ip, i.latitude, i.longitude, coalesce(i.is_hosting, false)
+           u.user_upn, u.client_ip, i.latitude, i.longitude, coalesce(i.is_hosting, false),
+           i.country_iso, EXISTS (SELECT 1 FROM spray_sources p WHERE p.ip = u.client_ip)
     FROM ual_events u JOIN ip_intel i ON i.ip = u.client_ip
     WHERE lower(u.operation) = 'userloggedin' AND u.user_upn IS NOT NULL
       AND i.latitude IS NOT NULL AND i.longitude IS NOT NULL AND NOT coalesce(i.is_microsoft, false)
@@ -56,7 +65,8 @@ sql: |
     SELECT *,
            lag(record_key) OVER w AS p_key, lag(src) OVER w AS p_src, lag(t) OVER w AS p_t,
            lag(actor) OVER w AS p_actor, lag(ip) OVER w AS p_ip,
-           lag(lat) OVER w AS p_lat, lag(lon) OVER w AS p_lon, lag(host) OVER w AS p_host
+           lag(lat) OVER w AS p_lat, lag(lon) OVER w AS p_lon, lag(host) OVER w AS p_host,
+           lag(cc) OVER w AS p_cc, lag(spray) OVER w AS p_spray
     FROM ev
     WINDOW w AS (PARTITION BY usr ORDER BY epoch_ms(t), src, record_key)
   ),
@@ -71,7 +81,12 @@ sql: |
     WHERE p_key IS NOT NULL AND p_ip <> ip
   ),
   flagged AS (
-    SELECT *, (p_host AND NOT host) AS swap FROM pairs WHERE km >= 500 AND km / hours > 900
+    SELECT *, (p_host AND NOT host) AS swap FROM pairs
+    WHERE km >= 500 AND km / hours > 900
+      -- A same-country pair is GeoIP jitter unless an end is attacker infrastructure: city-level
+      -- geolocation of national ISPs, mobile carriers and IPv6 space is unreliable inside a
+      -- country. An unknown country on either end cannot be called the same country.
+      AND (host OR p_host OR spray OR p_spray OR cc IS NULL OR p_cc IS NULL OR cc <> p_cc)
   ),
   -- The trigger is the later sign-in, except when only the earlier one is a hosting address: the
   -- hosting side is then the odd one out (the other is where the user normally is), and it is the
@@ -118,7 +133,7 @@ analyst_guidance: |
   a hosting-provider address, a risk detection, or a mailbox logon from the far address.
 false_positives:
   - VPN or mobile-carrier egress geolocating far from the user.
-  - Two devices of one user on different networks (home broadband and a phone on cellular).
+  - Two devices of one user on different networks (home broadband and a phone on cellular), when their countries are unknown or differ.
 references:
   - https://learn.microsoft.com/en-us/entra/id-protection/concept-identity-protection-risks
   - https://learn.microsoft.com/en-us/purview/audit-log-activities
@@ -392,3 +407,126 @@ tests:
         event_time: "2026-03-01T09:10:00Z"
         error_code: 0
     expect_hits: 0
+  - name: a US user alternating a home ISP and a carrier that geolocate 1,500 km apart is GeoIP jitter
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        latitude: 41.88
+        longitude: -87.63
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 203.0.113.2
+        latitude: 39.74
+        longitude: -104.99
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-03-01T09:00:00Z"
+        error_code: 0
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.2
+        event_time: "2026-03-01T09:10:00Z"
+        error_code: 0
+    expect_hits: 0
+  - name: a same-country pair with a hosting end is a hit
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        latitude: 41.88
+        longitude: -87.63
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 203.0.113.2
+        latitude: 39.74
+        longitude: -104.99
+        country_iso: US
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-03-01T09:00:00Z"
+        error_code: 0
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.2
+        event_time: "2026-03-01T09:10:00Z"
+        error_code: 0
+    expect_hits: 1
+  - name: a same-country pair with a password-spray source end is a hit
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        latitude: 41.88
+        longitude: -87.63
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 203.0.113.2
+        latitude: 39.74
+        longitude: -104.99
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: spray_sources
+        tenant_key: test
+        ip: 203.0.113.2
+        users_targeted: 7
+        failures: 20
+        first_failure: "2026-02-20T00:00:00Z"
+        last_failure: "2026-02-28T00:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-03-01T09:00:00Z"
+        error_code: 0
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.2
+        event_time: "2026-03-01T09:10:00Z"
+        error_code: 0
+    expect_hits: 1
+  - name: the same distance across two countries is a hit
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        latitude: 41.88
+        longitude: -87.63
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 203.0.113.2
+        latitude: 39.74
+        longitude: -104.99
+        country_iso: CA
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-03-01T09:00:00Z"
+        error_code: 0
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.2
+        event_time: "2026-03-01T09:10:00Z"
+        error_code: 0
+    expect_hits: 1
