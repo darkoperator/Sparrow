@@ -110,6 +110,7 @@ pub(super) fn failed_signin(
     s
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fail(
     w: &mut World,
     ctx: &mut Ctx,
