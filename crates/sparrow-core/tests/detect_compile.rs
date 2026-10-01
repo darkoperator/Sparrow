@@ -1028,6 +1028,14 @@ fn mia_item_volume_alone_is_a_burst() {
         .rule;
     for (items, want) in [(99, 0), (100, 1)] {
         let mut case = Case::in_memory().unwrap();
+        // The burst must come from a foreign network: a hosting ASN needs no sign-in history.
+        insert_row(
+            &case,
+            "ip_intel",
+            T1,
+            json!({"ip": "203.0.113.9", "asn": 64500, "is_hosting": true,
+                   "is_microsoft": false, "is_private": false}),
+        );
         insert_ual(
             &case,
             T1,
