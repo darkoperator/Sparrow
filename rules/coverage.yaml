@@ -547,7 +547,10 @@ rules:
     # The spray (failed sign-ins) and the success. Hawk 3.1 exports no Entra sign-in log, so no
     # source can exist there and the evidence is incomplete.
     evidence_all_of: [[signins], [signins, ual_events]]
-    collectors: [hawk4, invictus, portal]
+    # Hawk 4 collects sign-ins for the few investigated users only (fewer than 5): the spray rules are
+    # not_applicable there, so no positive can hit; its look-alikes still can (a tenant with 5+ users).
+    collectors: [invictus, portal]
+    lookalike_collectors: [hawk4, invictus, portal]
     # spray_after_phish: the success comes BEFORE the first failure and the victim was not sprayed.
     # spray_success_foreign: a foreign residential source. spray_proxy_takeover: a proxy that took
     # accounts and used them on later days stays a spray source. password_spray is real spray below the
@@ -574,7 +577,10 @@ rules:
     # The population threshold of the spray definition: a per-user collection (Hawk's few
     # investigated users) covers fewer than 5 users and the run says so (not_applicable).
     min_signin_users: 5
-    collectors: [hawk4, invictus, portal]
+    # Hawk 4 collects sign-ins for the few investigated users only (fewer than 5): the spray rules are
+    # not_applicable there, so no positive can hit; its look-alikes still can (a tenant with 5+ users).
+    collectors: [invictus, portal]
+    lookalike_collectors: [hawk4, invictus, portal]
     positives: [distributed_spray, spray_success, spray_replay, spray_after_phish, spray_success_foreign, spray_proxy_takeover, spray_vps_login]
     lookalikes: [office_nat_mistypes, phone_stale_password, password_spray, gateway_egress, conference_network]
   - id: SPW-ID-010

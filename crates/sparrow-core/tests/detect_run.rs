@@ -996,6 +996,16 @@ fn id_005_context_uses_the_credential_failure_list_and_the_timing() {
                    "is_interactive": true}),
         );
     };
+    // Three more users elsewhere: the rule needs sign-ins of at least five distinct users.
+    for u in 0..3 {
+        insert_row(
+            &case,
+            "signins",
+            T1,
+            json!({"user_upn": format!("p{u}@contoso.example"), "ip": "198.51.100.77",
+                   "error_code": 0, "event_time": "2026-03-01T09:00:00Z"}),
+        );
+    }
     // a: failed with a credential code, then succeeded after the spray started: sprayed, after.
     sign("a@contoso.example", 50126, "2026-03-10T10:00:00Z");
     sign("a@contoso.example", 0, "2026-03-12T10:00:00Z");
