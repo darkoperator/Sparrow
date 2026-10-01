@@ -201,7 +201,51 @@ pub fn apply(world: &mut World) -> Result<Vec<StoryRecord>> {
             },
         });
     }
+    attribute_trips(world, &mut out);
     Ok(out)
+}
+
+/// The baseline keeps a traveller at the destination from the arrival to the end of the window (a
+/// `Trip`): the sends and every other event from the trip address on the trip days are part of the
+/// `plausible_travel` storyline's trip, not background. They are the storyline's evidence, so the
+/// gate sees their kind (a traveller's first send on arrival day in a new country is a new network
+/// and a new country by SPW-MAIL-006's logic, a documented limitation).
+fn attribute_trips(world: &World, records: &mut [StoryRecord]) {
+    for r in records
+        .iter_mut()
+        .filter(|r| r.kind == StoryKind::PlausibleTravel)
+    {
+        let Some(trip) = world
+            .trips
+            .iter()
+            .find(|t| t.user == r.actor && t.arrival == r.time)
+        else {
+            continue;
+        };
+        let mut date = trip.arrival.date_naive();
+        let last = world.window_end().date_naive();
+        while date <= last {
+            let day = crate::baseline::day(world, date);
+            for u in day.ual.iter().filter(|u| world.logged(u)) {
+                let ip = u.client_ip().and_then(|t| t.parse::<IpAddr>().ok());
+                // Exchange admin cmdlets render as admin-audit rows in Hawk 3, which key them from the
+                // cmdlet record the storylines build: the trip's baseline never carries one.
+                if u.record_type != RecordType::ExchangeAdmin
+                    && u.time >= trip.arrival
+                    && ip == Some(trip.ip)
+                    && u.user_id.eq_ignore_ascii_case(&trip.user)
+                {
+                    r.evidence.push(Evidence::Ual(u.id));
+                }
+            }
+            for s in &day.signins {
+                if s.time >= trip.arrival && s.ip == trip.ip && s.user == trip.user {
+                    r.evidence.push(Evidence::SignIn(s.id));
+                }
+            }
+            date = date.succ_opt().expect("date in range");
+        }
+    }
 }
 
 pub(crate) fn well_known(desc: &str) -> Uuid {

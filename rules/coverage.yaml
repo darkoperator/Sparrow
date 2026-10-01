@@ -373,6 +373,9 @@ rules:
     # new-network path alone). spray_success: the spray-source path alone.
     positives: [send_new_ip, send_residential, spray_success]
     lookalikes: [send_known_ip, send_new_isp]
+    baseline_allow:
+      - kind: plausible_travel
+        reason: "a traveller's first send on arrival day in a new country is a new network and country by the rule's logic, and cannot be told from an attacker's same-day send after a replay; documented limitation"
   - id: SPW-MAIL-007
     title: Mailbox or SharePoint search for finance keywords
     category: mail
