@@ -6,8 +6,21 @@
 # - session_moved: a signins row or UAL record carrying a session id that was created by an
 #   interactive sign-in that satisfied MFA (auth_requirement starting "multifactor", or
 #   mfa_result "MFA successfully completed"), used at a different IP address within one hour after
-#   it. A different ASN implies a different address, so the address test covers both. Only the
-#   later use is the hit, never the creating sign-in.
+#   it, from a different NETWORK. Only the later use is the hit, never the creating sign-in.
+#   A different address alone is not enough: a phone moving between Wi-Fi and cellular, a rotating
+#   IPv6 privacy address or a carrier NAT pool changes the address inside one session all day
+#   (Microsoft Entra: a session token is bound to the user, not to the address). The network is
+#   judged from ip_intel (MaxMind GeoLite2 ASN / City, the same enrichment SPW-ID-010 uses):
+#     - the country differs; or
+#     - the ASN differs AND the use comes from a hosting ASN (ip_intel.is_hosting), or the creating
+#       sign-in did, or the use is a sign-in Entra rated risk medium/high;
+#     - an address on either side that is a Microsoft service front end (ip_intel.is_microsoft:
+#       Outlook mobile / Exchange egress, Office 365 endpoint ranges) never counts;
+#     - when ip_intel has neither an ASN nor a country for one of the two addresses (no GeoIP
+#       data), the network cannot be compared and the address difference stands, as before. That
+#       is a deliberate, documented fallback: the context says `network: unknown`.
+#   Missed on purpose: a same-country replay from a non-hosting residential proxy with no risk
+#   rating on the use.
 # - suspicious_user_agent: a signins row, or a UAL UserLoggedIn / MailboxLogin / MailItemsAccessed
 #   record, whose user agent contains an entry of @list:suspicious_user_agents (substring, case
 #   insensitive: `axios/1.7.7` matches `axios`).
@@ -32,21 +45,38 @@ sql: |
            OR lower(coalesce(s.mfa_result, '')) LIKE '%mfa successfully completed%')
   ),
   uses AS (
-    SELECT s.record_key, 'signins' AS src, s.event_time AS t, s.user_upn AS actor, s.ip, s.session_id
+    SELECT s.record_key, 'signins' AS src, s.event_time AS t, s.user_upn AS actor, s.ip, s.session_id,
+           lower(coalesce(s.risk_level_during, '')) IN ('medium', 'high') AS risky
     FROM signins s
     WHERE s.session_id IS NOT NULL AND s.session_id <> ''
     UNION ALL
     SELECT lower(CAST(u.record_id AS VARCHAR)), 'ual_events', u.event_time, u.user_upn, u.client_ip,
-           u.session_id
+           u.session_id, false
     FROM ual_events u
     WHERE u.session_id IS NOT NULL AND u.session_id <> ''
   ),
-  moved AS (
-    SELECT x.record_key, x.src, x.t, x.actor, x.ip, 'session_moved' AS indicator
+  net AS (
+    SELECT x.record_key, x.src, x.t, x.actor, x.ip, x.risky,
+           (ix.asn IS NOT NULL AND ic.asn IS NOT NULL AND ix.asn <> ic.asn) AS asn_changed,
+           (ix.country_iso IS NOT NULL AND ic.country_iso IS NOT NULL
+            AND ix.country_iso <> ic.country_iso) AS country_changed,
+           ((ix.asn IS NULL OR ic.asn IS NULL)
+            AND (ix.country_iso IS NULL OR ic.country_iso IS NULL)) AS unknown,
+           (coalesce(ix.is_hosting, false) OR coalesce(ic.is_hosting, false)) AS hosting
     FROM uses x JOIN creators c ON c.session_id = x.session_id
+    LEFT JOIN ip_intel ix ON ix.ip = x.ip
+    LEFT JOIN ip_intel ic ON ic.ip = c.ip
     WHERE x.record_key <> c.record_key AND x.ip IS NOT NULL AND x.ip <> '' AND c.ip IS NOT NULL
       AND x.ip <> c.ip AND x.t IS NOT NULL AND c.t IS NOT NULL
       AND epoch_ms(x.t) > epoch_ms(c.t) AND epoch_ms(x.t) <= epoch_ms(c.t) + 3600000
+      AND NOT coalesce(ix.is_microsoft, false) AND NOT coalesce(ic.is_microsoft, false)
+  ),
+  moved AS (
+    SELECT n.record_key, n.src, n.t, n.actor, n.ip,
+           CASE WHEN n.unknown THEN 'session_moved (network: unknown)'
+                ELSE 'session_moved' END AS indicator
+    FROM net n
+    WHERE n.unknown OR n.country_changed OR (n.asn_changed AND (n.hosting OR n.risky))
   ),
   agents AS (
     SELECT s.record_key, 'signins' AS src, s.event_time AS t, s.user_upn AS actor, s.ip,
@@ -77,7 +107,8 @@ analyst_guidance: |
   or mailbox logon is the replay tool itself. Read the two addresses, whether the second one is
   a hosting provider, the risk detections, and what the session did next (mailbox logon, rules).
 false_positives:
-  - A user whose phone moves from Wi-Fi to cellular inside one hour on a long-lived session.
+  - A user whose phone moves from Wi-Fi to cellular inside one hour on a long-lived session, when no
+    GeoIP data is loaded (with it, a same-country move between ordinary ISPs is not reported).
   - Legitimate automation or a monitoring tool that uses a scripted client (okhttp, curl).
 references:
   - https://learn.microsoft.com/en-us/entra/id-protection/concept-identity-protection-risks
@@ -276,4 +307,191 @@ tests:
         user_upn: alice@contoso.example
         client_ip: 198.51.100.1
         user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0 Safari/537.36"
+    expect_hits: 0
+  - name: Wi-Fi to cellular in one country is not a stolen session
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.2
+        asn: 64500
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        is_interactive: true
+        error_code: 0
+        auth_requirement: multiFactorAuthentication
+        session_id: s-1
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.2
+        is_interactive: false
+        session_id: s-1
+        event_time: "2026-03-01T09:30:00Z"
+    expect_hits: 0
+  - name: a rotating IPv6 privacy address inside one ASN is not a stolen session
+    records:
+      - table: ip_intel
+        ip: 2001:db8::1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 2001:db8::2
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 2001:db8::1
+        is_interactive: true
+        error_code: 0
+        auth_requirement: multiFactorAuthentication
+        session_id: s-1
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 2001:db8::2
+        is_interactive: false
+        session_id: s-1
+        event_time: "2026-03-01T09:30:00Z"
+    expect_hits: 0
+  - name: a different ASN that is a hosting provider is a stolen session
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.2
+        asn: 64500
+        country_iso: US
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        is_interactive: true
+        error_code: 0
+        auth_requirement: multiFactorAuthentication
+        session_id: s-1
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.2
+        is_interactive: false
+        session_id: s-1
+        event_time: "2026-03-01T09:30:00Z"
+    expect_hits: 1
+  - name: a different country is a stolen session even from an ordinary ASN
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.2
+        asn: 64501
+        country_iso: DE
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        is_interactive: true
+        error_code: 0
+        auth_requirement: multiFactorAuthentication
+        session_id: s-1
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.2
+        is_interactive: false
+        session_id: s-1
+        event_time: "2026-03-01T09:30:00Z"
+    expect_hits: 1
+  - name: a different ASN with a risky use is a stolen session
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.2
+        asn: 64500
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        is_interactive: true
+        error_code: 0
+        auth_requirement: multiFactorAuthentication
+        session_id: s-1
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.2
+        is_interactive: false
+        session_id: s-1
+        risk_level_during: high
+        event_time: "2026-03-01T09:30:00Z"
+    expect_hits: 1
+  - name: a Microsoft service address is never a session move
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.2
+        asn: 8075
+        country_iso: IE
+        is_hosting: false
+        is_microsoft: true
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        is_interactive: true
+        error_code: 0
+        auth_requirement: multiFactorAuthentication
+        session_id: s-1
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.2
+        is_interactive: false
+        session_id: s-1
+        event_time: "2026-03-01T09:30:00Z"
     expect_hits: 0
