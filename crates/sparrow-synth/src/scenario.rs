@@ -31,6 +31,7 @@ const BUILTIN: &[(&str, &str)] = &[
         "hawk-investigate",
         include_str!("../scenarios/hawk-investigate.yaml"),
     ),
+    ("password-spray", include_str!("../scenarios/password-spray.yaml")),
     ("volume", include_str!("../scenarios/volume.yaml")),
 ];
 
@@ -238,6 +239,8 @@ story_kind! {
         LureShare => "lure_share",
         AuditTamper => "audit_tamper",
         OrgAuditDisabledState => "org_audit_disabled_state",
+        DistributedSpray => "distributed_spray",
+        SpraySuccess => "spray_success",
     }
     lookalike {
         RiskDismissed => "risk_dismissed",
@@ -274,6 +277,8 @@ story_kind! {
         WifiToCellular => "wifi_to_cellular",
         Ipv6Rotation => "ipv6_rotation",
         SendNewIsp => "send_new_isp",
+        OfficeNatMistypes => "office_nat_mistypes",
+        PhoneStalePassword => "phone_stale_password",
         MiaHeavyDesktop => "mia_heavy_desktop",
         PasswordSpray => "password_spray",
     }

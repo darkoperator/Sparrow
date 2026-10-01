@@ -234,6 +234,8 @@ Positives:
 | Kind | Emits |
 | --- | --- |
 | `aitm_signin` | The user's own sign-in, a proxied MFA sign-in from a hosting ASN, a token replay by a script from another hosting ASN, a mailbox logon, and an Identity Protection detection. |
+| `distributed_spray` | A low-and-slow spray: eight residential-ISP addresses in several countries each try six users once or twice (BAV2ROPC / python-requests, mostly 50126, some 50053); every attempt fails. |
+| `spray_success` | One residential-ISP address fails twice against each of six users, then signs the first in three hours later (password only, no second factor). |
 | `confirmed_compromised` | An admin confirming the user compromised in Identity Protection. |
 | `mfa_method_added` | The Authenticator app registered for the user from the attacker's replay address. |
 | `oauth_consent` | An unverified mail app granted mail, files and offline access, then used a minute later. |
@@ -274,6 +276,8 @@ Look-alikes:
 | `same_ip_token_use` | An interactive sign-in and its token refresh 20 minutes later, same IP and client. |
 | `wifi_to_cellular` | An interactive MFA sign-in from the home address, then the same session's refresh 25 minutes later from a mobile-carrier address (other ASN, same city, not hosting). |
 | `ipv6_rotation` | An interactive sign-in and two refreshes of the same session from three IPv6 privacy addresses of one ASN and city. |
+| `office_nat_mistypes` | Six users of one city share one office egress address, sign in from it on three days, and each mistypes a password once on the third. |
+| `phone_stale_password` | One user's phone retries a stale password twelve times in an hour from the mobile carrier. |
 | `password_spray` | One hosting address tries three passwords at each of four users with the BAV2ROPC and python-requests clients; every attempt fails (50126, one 50053). |
 | `outlook_client_filing_rule` | The user files a project list's mail into a Projects folder from Outlook on their own computer (`UpdateInboxRules`, office address, own session). |
 | `vendor_filing_rule` | The user files a vendor's mail into a folder. |
@@ -503,7 +507,7 @@ gate, so a collector that structurally cannot supply the evidence never fails th
 ## `sparrow synth coverage` and `rules/coverage.yaml`
 
 `rules/coverage.yaml` (committed, embedded at compile time) is the single source of the
-rule ↔ storyline map for the spec §8.5 seed-rule pack (31 rules). Per rule it holds `id`,
+rule ↔ storyline map for the spec §8.5 seed-rule pack (33 rules). Per rule it holds `id`,
 `title`, `category`, `severity`, the Hawk investigate condition it covers (`hawk`), the intended
 `logic` Phase 6 must implement, the `tables` it reads (the first is where a hit lands), the
 `requires` capability ids and `requires_evidence` evidence ids that make it `not_applicable`,
