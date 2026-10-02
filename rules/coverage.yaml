@@ -564,7 +564,7 @@ rules:
     # accounts and used them on later days stays a spray source. password_spray is real spray below the
     # 5-user threshold (a threshold look-alike).
     positives: [spray_success, spray_replay, spray_after_phish, spray_success_foreign, spray_proxy_takeover]
-    lookalikes: [distributed_spray, office_nat_mistypes, office_stale_accounts, phone_stale_password, password_spray, gateway_egress, conference_network]
+    lookalikes: [distributed_spray, office_nat_mistypes, office_stale_accounts, office_window_mistypes, phone_stale_password, password_spray, gateway_egress, conference_network]
     correlation_negatives: [office_nat_mistypes]
   - id: SPW-ID-006
     title: Password spray against the tenant
@@ -590,7 +590,7 @@ rules:
     collectors: [invictus, portal]
     lookalike_collectors: [hawk4, invictus, portal]
     positives: [distributed_spray, spray_success, spray_replay, spray_after_phish, spray_success_foreign, spray_proxy_takeover, spray_vps_login]
-    lookalikes: [office_nat_mistypes, office_stale_accounts, phone_stale_password, password_spray, gateway_egress, conference_network]
+    lookalikes: [office_nat_mistypes, office_stale_accounts, office_window_mistypes, phone_stale_password, password_spray, gateway_egress, conference_network]
   - id: SPW-ID-010
     title: Inbox rule created within 60 minutes of a risky or hosting-ASN sign-in
     category: identity
