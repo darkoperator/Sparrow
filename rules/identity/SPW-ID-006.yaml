@@ -3,8 +3,9 @@
 # scripted client, mostly 50053 smart lockout and 50126 invalid password) hits almost every tenant
 # that still exposes password authentication, so the finding is the picture of the day, not an
 # incident. SPW-ID-005 is the escalation: a source that later signed in. The sources are the
-# tenant's `spray_sources` relation (an address whose failed-only users, at least 5, outnumber its
-# users with a success; any network type), derived once by the profile step. The failed sign-ins
+# tenant's `spray_sources` relation (an address with at least 5 sprayed users, who outnumber its excusing
+# users: a success before a user's first failure there or within 30 minutes after one is an excuse, a later one is a
+# takeover and is not; any network type), derived once by the profile step. The failed sign-ins
 # that count are the interactive rows with a code of the shared `credential_failure_codes` list (the
 # same list as the relation and SPW-ID-005; Conditional Access blocks, token-refresh errors, MFA
 # prompts and non-interactive rows are not spray). A hit is the first failed sign-in of each source on the

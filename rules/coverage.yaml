@@ -440,6 +440,9 @@ rules:
       application, a UAL UserLoggedIn and a sign-in from a password-spray source always count. Residual:
       an attacker using the same application from the same cloud ASN as an established connector is
       excused, and a connector's first days are too (no cold start; SPW-ID-005 and the consent rules remain).
+      An (application, ASN) with a sprayed user (a credential failure from a spray source) or a credential
+      failure from that ASN is not a service; 5+ PHISHED accounts used from one VPS on one application for 3+
+      days with no failures are excused (residual).
     tables: [signins, ual_events]
     requires: []
     requires_evidence: []
@@ -448,12 +451,21 @@ rules:
     # The correlation negatives and the illicit consent each carry a successful sign-in of the
     # attacker's proxy or replay address (a hosting ASN, far from the user's home): the logic hits.
     # The cloud-service profile is established from the whole case (no prefix), so a connector's first
-    # days are excused too and cloud_connector_onboarding is a look-alike. spray_vps_login: sprayed accounts used from a cloud VPS on another hosting ASN than
-    # the connector's always count. connector_app_other_asn: the connector's own application from a
+    # days are excused too and cloud_connector_onboarding is a look-alike. An (app, ASN) is NOT a cloud
+    # service when one of its users was sprayed (a credential failure from a spray source) or when a
+    # credential failure to the app comes from that ASN. spray_vps_login: accounts taken from a spray
+    # and used from a cloud VPS (its sprayed users disqualify the pair; the hit cites a sign-in record,
+    # the storyline has no UAL logon); vps_password_failures: wrong passwords first on the VPS, no spray
+    # (the failures from the ASN disqualify it). Residual: 5+ PHISHED accounts used from one VPS on one
+    # app for 3+ days with no failures look like a connector and are excused. connector_app_other_asn: the connector's own application from a
     # different hosting ASN. Known limit: a per-user collection (Hawk 4, a few users) cannot establish a
     # connector, so a connector's sign-ins of its investigated users hit there; the scenario's connector
     # users are not Hawk 4's.
-    positives: [aitm_signin, inbox_rule_after_stale_risk, mfa_after_stale_risk, anonymous_link_after_stale_risk, oauth_consent, spray_vps_login, connector_app_other_asn]
+    # The VPS positives are sign-ins only (no UAL logon): Hawk 3 delivers no sign-in log, so it cannot supply them.
+    kind_collectors:
+      spray_vps_login: [hawk4, invictus, portal]
+      vps_password_failures: [hawk4, invictus, portal]
+    positives: [aitm_signin, inbox_rule_after_stale_risk, mfa_after_stale_risk, anonymous_link_after_stale_risk, oauth_consent, spray_vps_login, vps_password_failures, connector_app_other_asn]
     lookalikes: [microsoft_asn_signin, cloud_connector, cloud_connector_onboarding, cloud_connector_longstanding]
   - id: SPW-ID-003
     title: Impossible travel
@@ -466,7 +478,7 @@ rules:
       pair whose two addresses are in the same country counts only when an end is a hosting address or a
       password-spray source of the tenant; a cross-country pair, or a pair with an unknown country, counts
       as before. The sign-ins of a tenant-wide cloud service (established from the whole case) to its application from its
-      hosting ASN (cloud_services, per application and ASN; interactive or not) form no pair; another
+      hosting ASN (cloud_services, per application and ASN, interactive or not; not a service when a user was sprayed or a credential failure comes from the ASN) form no pair; another
       ASN, UAL records and spray-source sign-ins always do.
     tables: [signins, ual_events]
     requires: []
@@ -537,9 +549,11 @@ rules:
     logic: >-
       A successful sign-in (signins error_code 0, or UAL UserLoggedIn) of a user from an address
       in the tenant's spray_sources (an address with credential failures - the shared
-      credential_failure_codes list, interactive rows only, an unknown kind counting as interactive; 50055, an expired password, is in the list, so an expired-password user behind a shared address counts as a failed user - from at least 5 distinct users who NEVER
-      succeed from it in the case, and more of those failed-only users than users that do succeed from
-      it, so an office NAT or VPN egress is not a source; any network type, no GeoIP needed; the sign-ins must cover at
+      credential_failure_codes list, interactive rows only, an unknown kind counting as interactive; 50055, an expired password, is in the list, so an expired-password user behind a shared address counts as a failed user - from at least 5 SPRAYED users (a failed user is
+      excused only by a known success from the address before their first failure there, or within 30 minutes
+      after one of their failures there; a later success is a takeover and does not excuse) who outnumber the
+      excusing users (users with a success there minus the late takeovers), so an office NAT or VPN egress is
+      not a source and a proxy that takes accounts over stays one; any network type, no GeoIP needed; the sign-ins must cover at
       least 5 users, else the rule is not_applicable), before or after the source's first failure
       (attacker infrastructure either way). A NULL-result sign-in is ignored on purpose: a NULL could
       be a failure and this rule is high severity. Context: users and failures of the source, its

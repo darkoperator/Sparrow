@@ -19,7 +19,11 @@
 # days that precede its "establishment") and shared with SPW-ID-003. Every sign-in to that application
 # from that same ASN is excused. The same application from another hosting ASN, any other application,
 # a UAL UserLoggedIn (no application evidence) and a sign-in from a password-spray source of the tenant
-# (spray_sources) always count. Residual, documented: an attacker using the same application from the
+# (spray_sources) always count. An (application, ASN) is NOT a service when any of its users was sprayed (a
+# credential failure from a spray source of the tenant) or when any credential failure to the application
+# comes from that ASN, so accounts taken from a spray, or typed wrongly on a VPS first, are never excused.
+# Residual, documented: 5 or more PHISHED (not sprayed) accounts used from one VPS on the same application for
+# 3 or more days with no failures look exactly like a connector and are excused. Residual, documented: an attacker using the same application from the
 # same cloud ASN as an established connector is excused, and a connector's first days (cold start) are
 # excused too (SPW-ID-005 and the consent rules, SPW-APP-001/002, remain). No application name or id is
 # involved: the profile decides.

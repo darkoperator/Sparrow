@@ -9,6 +9,14 @@
 //! hosting ASN on at least [`MIN_DAYS`] distinct UTC days, and those sign-ins are at least
 //! [`SHARE_PERCENT`] percent of the application's known successes.
 //!
+//! An (application, ASN) pair does NOT qualify when either holds: any of its users (a user with a known
+//! success to the application from that ASN) has a credential failure (interactive or of unknown kind,
+//! the shared `credential_failure_codes` list) from a spray source of the tenant, or any credential
+//! failure to the application comes from that ASN. Accounts taken from a spray, or typed wrongly on a
+//! VPS first, never make their VPS a connector. Residual, documented: five or more PHISHED (not
+//! sprayed) accounts used from one VPS on the same application for three days with no failures look
+//! exactly like a connector and are excused.
+//!
 //! The profile is established from the WHOLE case, no prefix: a capture is a window, and a connector in
 //! use since before it starts would only be "established" a few days before the window ends, leaving
 //! every earlier day counting. A rule excuses every sign-in to that application from that same ASN; a
@@ -26,8 +34,9 @@ pub const MIN_USERS: usize = 5;
 pub const MIN_DAYS: usize = 3;
 pub const SHARE_PERCENT: i64 = 80;
 
-/// Rewrite `cloud_services` from `signins` and `ip_intel`; returns the number of services.
-pub fn rebuild(conn: &Connection) -> Result<usize> {
+/// Rewrite `cloud_services` from `signins`, `ip_intel` and `spray_sources` (rebuilt first), where a
+/// credential failure is one of `codes`; returns the number of services.
+pub fn rebuild(conn: &Connection, codes: &[i64]) -> Result<usize> {
     conn.execute_batch("DELETE FROM cloud_services")?;
     // Per (tenant, app): day -> all known successes; per (tenant, app, hosting asn): day -> (users, n).
     type Totals = BTreeMap<i64, i64>;
@@ -74,6 +83,51 @@ pub fn rebuild(conn: &Connection) -> Result<usize> {
             }
         }
     }
+    let codes = codes
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let codes = if codes.is_empty() {
+        "NULL".to_string()
+    } else {
+        codes
+    };
+    // Disqualifiers. Users with a credential failure from a spray source of their tenant (sprayed).
+    let mut sprayed: BTreeSet<(String, String)> = BTreeSet::new();
+    {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT DISTINCT c.tenant_key, lower(g.user_upn)
+             FROM signins g JOIN collections c ON c.collection_id = g.collection_id
+             JOIN spray_sources p ON p.tenant_key = c.tenant_key AND p.ip = g.ip
+             WHERE c.tenant_key IS NOT NULL AND g.user_upn IS NOT NULL
+               AND coalesce(g.is_interactive, true) AND g.error_code IN ({codes})"
+        ))?;
+        for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+            sprayed.insert(row?);
+        }
+    }
+    // (tenant, app, asn) with a credential failure to the app from an address of that ASN.
+    let mut failed_from: BTreeSet<(String, String, i64)> = BTreeSet::new();
+    {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT DISTINCT c.tenant_key, lower(g.app_id), i.asn
+             FROM signins g JOIN collections c ON c.collection_id = g.collection_id
+             JOIN ip_intel i ON i.ip = g.ip
+             WHERE c.tenant_key IS NOT NULL AND g.app_id IS NOT NULL AND g.app_id <> ''
+               AND i.asn IS NOT NULL
+               AND coalesce(g.is_interactive, true) AND g.error_code IN ({codes})"
+        ))?;
+        for row in stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })? {
+            failed_from.insert(row?);
+        }
+    }
     let mut n = 0;
     let mut stmt = conn.prepare(
         "INSERT INTO cloud_services
@@ -84,7 +138,12 @@ pub fn rebuild(conn: &Connection) -> Result<usize> {
         let users: BTreeSet<&String> = days.values().flat_map(|(u, _)| u.iter()).collect();
         let hosting: i64 = days.values().map(|(_, n)| n).sum();
         let all: i64 = totals[&(tenant.clone(), app.clone())].values().sum();
-        if users.len() >= MIN_USERS
+        let disqualified = failed_from.contains(&(tenant.clone(), app.clone(), *asn))
+            || users
+                .iter()
+                .any(|u| sprayed.contains(&(tenant.clone(), (*u).clone())));
+        if !disqualified
+            && users.len() >= MIN_USERS
             && days.len() >= MIN_DAYS
             && hosting * 100 >= all * SHARE_PERCENT
         {

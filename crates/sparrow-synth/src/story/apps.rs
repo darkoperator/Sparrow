@@ -438,7 +438,7 @@ fn connector_backend(
     (ip, region)
 }
 
-/// `days` days of sign-ins by eight users of one city, from the connector's backend, starting
+/// `days` days of sign-ins by eight users, from the connector's backend, starting
 /// `first_day` days after the storyline's time. The portal's interactive export (what investigators
 /// pull) records a connector's backend sign-ins as INTERACTIVE rows with the user's client app
 /// ("Mobile Apps and Desktop clients"), so that is the shape generated (python-httpx agent).
@@ -451,20 +451,16 @@ fn connector_days(
     lat_shift: f64,
 ) -> Result<()> {
     let a: User = ctx.a.clone();
-    let staff: Vec<User> = std::iter::once(a.clone())
-        .chain(
-            w.users
-                .iter()
-                .filter(|u| u.home.city == a.home.city && u.upn != a.upn)
-                .take(7)
-                .cloned(),
-        )
+    // Eight consecutive users of the tenant starting at the actor (a connector serves whoever
+    // installed it, in any city; the backend is one cloud region).
+    let first = w.users.iter().position(|u| u.upn == a.upn).unwrap_or(0);
+    let staff: Vec<User> = (0..8.min(w.users.len()))
+        .map(|k| w.users[(first + k) % w.users.len()].clone())
         .collect();
     if staff.len() < 6 {
         return Err(crate::Error::Scenario(format!(
-            "{}: a cloud connector needs 6 users in {}, the tenant has {}",
+            "{}: a cloud connector needs 6 users, the tenant has {}",
             ctx.spec.id,
-            a.home.city,
             staff.len()
         )));
     }

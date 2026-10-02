@@ -29,7 +29,10 @@
 #   the portal export records a connector's backend as interactive), because its backend signs users in
 #   from a cloud region on their behalf and that is not the user travelling; the same application from
 #   another ASN, a UAL UserLoggedIn and a sign-in from a password-spray source always count. Residual:
-#   an attacker on the same application from the same ASN as an established connector is excused.
+#   an attacker on the same application from the same ASN as an established connector is excused, and so
+#   are 5 or more PHISHED (not sprayed) accounts used from one VPS on one application for 3 or more days
+#   with no failures. An application and ASN whose users were sprayed, or with a credential failure from
+#   that ASN, is not a service.
 #   Microsoft addresses (ip_intel.is_microsoft): Exchange Online, a Cloud PC
 #   or a Microsoft relay geolocate to a datacentre unrelated to the user. Addresses with no
 #   location are ignored, not treated as far.

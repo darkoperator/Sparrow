@@ -252,6 +252,7 @@ story_kind! {
         SpraySuccessForeign => "spray_success_foreign",
         SprayProxyTakeover => "spray_proxy_takeover",
         SprayVpsLogin => "spray_vps_login",
+        VpsPasswordFailures => "vps_password_failures",
         ConnectorAppOtherAsn => "connector_app_other_asn",
     }
     lookalike {

@@ -114,21 +114,26 @@ fn a_source_fails_five_users_who_never_succeed_from_it_and_outnumber_the_success
             (T1.to_string(), "198.51.100.5".to_string(), 6, 6),
         ]
     );
-    // The new columns: 198.51.100.5 has five failed-only users (u0 also succeeded) and one success user.
+    // The columns: 198.51.100.5 has six sprayed users, five failed-only and one taken over a day later.
     let mut st = case
         .conn()
-        .prepare("SELECT ip, failed_only_users, success_users FROM spray_sources ORDER BY ip")
+        .prepare(
+            "SELECT ip, failed_only_users, success_users, sprayed_users, takeover_users
+             FROM spray_sources ORDER BY ip",
+        )
         .unwrap();
-    let cols: Vec<(String, i64, i64)> = st
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+    let cols: Vec<(String, i64, i64, i64, i64)> = st
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
         .unwrap()
         .map(Result::unwrap)
         .collect();
     assert_eq!(
         cols,
         vec![
-            ("198.51.100.1".to_string(), 5, 0),
-            ("198.51.100.5".to_string(), 5, 1)
+            ("198.51.100.1".to_string(), 5, 0, 5, 0),
+            ("198.51.100.5".to_string(), 5, 1, 6, 1)
         ]
     );
     // A rebuild replaces, never appends.
@@ -221,6 +226,13 @@ fn services(case: &Case) -> Vec<(String, String, i64)> {
         .collect()
 }
 
+/// Rebuild the spray sources first (the cloud-service disqualification reads them), then the services.
+fn cloud(case: &Case) -> usize {
+    rebuild(case);
+    let codes = spray::credential_failure_codes(&DataDirs::default()).unwrap();
+    sparrow_core::profile::cloud_services::rebuild(case.conn(), &codes).unwrap()
+}
+
 fn intel(case: &Case, t: &str, ip: &str, asn: i64, hosting: bool) {
     insert_row(
         case,
@@ -291,10 +303,7 @@ fn a_cloud_service_is_five_users_three_days_and_eighty_percent_from_one_hosting_
             app_signin(&case, T1, &upn, ip, split, day, true, Some(0));
         }
     }
-    assert_eq!(
-        sparrow_core::profile::cloud_services::rebuild(case.conn()).unwrap(),
-        2
-    );
+    assert_eq!(cloud(&case), 2);
     // Established from the whole case (no prefix), for ASN 14061.
     assert_eq!(
         services(&case),
@@ -339,10 +348,7 @@ fn a_service_is_established_for_its_own_asn_only() {
             Some(0),
         );
     }
-    assert_eq!(
-        sparrow_core::profile::cloud_services::rebuild(case.conn()).unwrap(),
-        1
-    );
+    assert_eq!(cloud(&case), 1);
     assert_eq!(services(&case)[0].2, 14061);
 }
 
@@ -368,10 +374,7 @@ fn a_hosting_asn_with_few_users_is_no_service() {
             );
         }
     }
-    assert_eq!(
-        sparrow_core::profile::cloud_services::rebuild(case.conn()).unwrap(),
-        0
-    );
+    assert_eq!(cloud(&case), 0);
 }
 
 /// A proxy that sprays 20 users and takes over five of them (successes on three later days) stays a
@@ -555,10 +558,7 @@ fn a_connector_in_use_since_before_the_window_is_established_from_the_whole_case
             );
         }
     }
-    assert_eq!(
-        sparrow_core::profile::cloud_services::rebuild(case.conn()).unwrap(),
-        1
-    );
+    assert_eq!(cloud(&case), 1);
     assert_eq!(
         services(&case),
         vec![(T1.to_string(), app.to_string(), 14061)]
@@ -636,4 +636,242 @@ fn mistypes_spread_across_the_window_do_not_make_an_office_a_source() {
         }
     }
     assert_eq!(rebuild(&case), 0);
+}
+
+/// A source of the real median size: six sprayed users, two of them taken over hours later. Each taken
+/// account moves a user from failed-only to success, but a takeover is not an excuse: the sprayed
+/// users stay six and the excusing users (successes minus the late takeovers) none.
+#[test]
+fn takeovers_hours_later_do_not_remove_a_source() {
+    let case = Case::in_memory().unwrap();
+    tenant(&case, T1);
+    spray(&case, T1, "198.51.100.70", 6, 50126);
+    for u in 0..2 {
+        signin(
+            &case,
+            T1,
+            &format!("u{u}@contoso.example"),
+            "198.51.100.70",
+            0,
+            "2026-03-01T13:00:00Z",
+        );
+    }
+    assert_eq!(rebuild(&case), 1);
+    let (fo, su, sp, tk): (i64, i64, i64, i64) = case
+        .conn()
+        .query_row(
+            "SELECT failed_only_users, success_users, sprayed_users, takeover_users FROM spray_sources",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!((fo, su, sp, tk), (4, 2, 6, 2));
+}
+
+/// A typo user (a failure, then a success two minutes later) is excused, and so is a user who signed in
+/// from the address days before the failure (it was already theirs). Neither is a sprayed user, so six
+/// such users make no source.
+#[test]
+fn typo_corrections_and_earlier_successes_excuse_a_user() {
+    let case = Case::in_memory().unwrap();
+    tenant(&case, T1);
+    for u in 0..3 {
+        let upn = format!("u{u}@contoso.example");
+        signin(
+            &case,
+            T1,
+            &upn,
+            "198.51.100.71",
+            50126,
+            "2026-03-05T10:00:00Z",
+        );
+        signin(&case, T1, &upn, "198.51.100.71", 0, "2026-03-05T10:02:00Z");
+    }
+    for u in 3..6 {
+        let upn = format!("u{u}@contoso.example");
+        signin(&case, T1, &upn, "198.51.100.71", 0, "2026-03-01T10:00:00Z");
+        signin(
+            &case,
+            T1,
+            &upn,
+            "198.51.100.71",
+            50126,
+            "2026-03-05T10:00:00Z",
+        );
+    }
+    assert_eq!(rebuild(&case), 0);
+    // The same six failing without those successes are a spray.
+    spray(&case, T1, "198.51.100.72", 6, 50126);
+    assert_eq!(rebuild(&case), 1);
+    // A success 31 minutes after the failure is not a typo correction.
+    signin(
+        &case,
+        T1,
+        "u0@contoso.example",
+        "198.51.100.72",
+        0,
+        "2026-03-01T10:31:00Z",
+    );
+    assert_eq!(rebuild(&case), 1);
+    let tk: i64 = case
+        .conn()
+        .query_row("SELECT takeover_users FROM spray_sources", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(tk, 1);
+}
+
+/// The new relation columns are per tenant: another tenant's takeover successes from the same address
+/// neither excuse nor count.
+#[test]
+fn sprayed_and_takeover_users_are_counted_per_tenant() {
+    let case = Case::in_memory().unwrap();
+    tenant(&case, T1);
+    tenant(&case, T2);
+    spray(&case, T1, "198.51.100.73", 6, 50126);
+    spray(&case, T2, "198.51.100.73", 6, 50126);
+    for u in 0..6 {
+        signin(
+            &case,
+            T2,
+            &format!("u{u}@contoso.example"),
+            "198.51.100.73",
+            0,
+            "2026-03-01T10:02:00Z",
+        );
+    }
+    // Tenant 2's users all typo-corrected: no source there. Tenant 1 keeps its six sprayed users.
+    assert_eq!(rebuild(&case), 1);
+    let (t, sp, tk, su): (String, i64, i64, i64) = case
+        .conn()
+        .query_row(
+            "SELECT tenant_key, sprayed_users, takeover_users, success_users FROM spray_sources",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!((t.as_str(), sp, tk, su), (T1, 6, 0, 0));
+}
+
+/// Five accounts taken from a spray and used from one VPS to one application on three days would
+/// qualify as a cloud service by the counts alone. They do not: their users were sprayed (a credential
+/// failure from a spray source of the tenant), so the (app, ASN) is disqualified.
+#[test]
+fn accounts_taken_from_a_spray_do_not_make_a_cloud_service() {
+    let case = Case::in_memory().unwrap();
+    tenant(&case, T1);
+    intel(&case, T1, "203.0.113.1", 14061, true);
+    let app = "c0c0c0c0-0000-4000-8000-0000000000f1";
+    // The spray: a router fails against the six users (a source), the VPS then uses five of them.
+    spray(&case, T1, "198.51.100.80", 6, 50126);
+    for day in ["03", "04", "05"] {
+        for u in 0..5 {
+            app_signin(
+                &case,
+                T1,
+                &format!("u{u}@contoso.example"),
+                "203.0.113.1",
+                app,
+                day,
+                true,
+                Some(0),
+            );
+        }
+    }
+    assert_eq!(cloud(&case), 0);
+    // The same sign-ins by users nobody sprayed (a connector) qualify.
+    for day in ["03", "04", "05"] {
+        for u in 0..5 {
+            app_signin(
+                &case,
+                T1,
+                &format!("c{u}@contoso.example"),
+                "203.0.113.1",
+                "c0c0c0c0-0000-4000-8000-0000000000f2",
+                day,
+                true,
+                Some(0),
+            );
+        }
+    }
+    assert_eq!(cloud(&case), 1);
+    assert_eq!(services(&case)[0].1, "c0c0c0c0-0000-4000-8000-0000000000f2");
+}
+
+/// A credential failure to the application from the ASN disqualifies it, with no spray anywhere: wrong
+/// passwords typed on the VPS before the accounts worked. An interactive row and a row of unknown kind
+/// count; a Conditional Access block (not a credential failure), a failure to another application and
+/// a failure from another ASN do not.
+#[test]
+fn a_credential_failure_from_the_asn_disqualifies_the_service() {
+    let case = Case::in_memory().unwrap();
+    tenant(&case, T1);
+    intel(&case, T1, "203.0.113.1", 14061, true);
+    intel(&case, T1, "203.0.113.2", 14061, true);
+    intel(&case, T1, "203.0.113.3", 16509, true);
+    let (a1, a2, a3, a4) = (
+        "c0c0c0c0-0000-4000-8000-0000000000a1",
+        "c0c0c0c0-0000-4000-8000-0000000000a2",
+        "c0c0c0c0-0000-4000-8000-0000000000a3",
+        "c0c0c0c0-0000-4000-8000-0000000000a4",
+    );
+    for day in ["03", "04", "05"] {
+        for u in 0..5 {
+            for app in [a1, a2, a3, a4] {
+                app_signin(
+                    &case,
+                    T1,
+                    &format!("u{u}@contoso.example"),
+                    "203.0.113.1",
+                    app,
+                    day,
+                    true,
+                    Some(0),
+                );
+            }
+        }
+    }
+    // a1: an interactive wrong password from the same ASN (another address of it).
+    app_signin(
+        &case,
+        T1,
+        "x@contoso.example",
+        "203.0.113.2",
+        a1,
+        "02",
+        true,
+        Some(50126),
+    );
+    // a2: a row of unknown kind (NULL is_interactive) counts as interactive.
+    insert_row(
+        &case,
+        "signins",
+        T1,
+        json!({"user_upn": "x@contoso.example", "ip": "203.0.113.2", "app_id": a2,
+               "error_code": 50126, "event_time": "2026-02-02T09:00:00Z"}),
+    );
+    // a3: a Conditional Access block is not a credential failure.
+    app_signin(
+        &case,
+        T1,
+        "x@contoso.example",
+        "203.0.113.2",
+        a3,
+        "02",
+        true,
+        Some(53003),
+    );
+    // a4: a credential failure from ANOTHER ASN.
+    app_signin(
+        &case,
+        T1,
+        "x@contoso.example",
+        "203.0.113.3",
+        a4,
+        "02",
+        true,
+        Some(50126),
+    );
+    assert_eq!(cloud(&case), 2);
+    let got: Vec<String> = services(&case).into_iter().map(|r| r.1).collect();
+    assert_eq!(got, vec![a3.to_string(), a4.to_string()]);
 }

@@ -34,6 +34,7 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
         StoryKind::SpraySuccessForeign => spray_success_foreign(w, ctx)?,
         StoryKind::SprayProxyTakeover => spray_proxy_takeover(w, ctx)?,
         StoryKind::SprayVpsLogin => spray_vps_login(w, ctx)?,
+        StoryKind::VpsPasswordFailures => vps_password_failures(w, ctx)?,
         StoryKind::OfficeNatMistypes => office_nat_mistypes(w, ctx)?,
         StoryKind::OfficeStaleAccounts => office_stale_accounts(w, ctx)?,
         StoryKind::OfficeWindowMistypes => office_window_mistypes(w, ctx)?,
@@ -495,23 +496,24 @@ fn spray_success_foreign(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     Ok(())
 }
 
-/// A proxy that sprays many accounts and takes a few: a compromised router in the actor's city fails
-/// twice against each of 18 users (five colleagues of the city and 13 others), then signs the five
-/// colleagues in on each of the next three days. The 13 failed-only users outnumber the 5 taken
-/// accounts, so the address stays a spray source, and every success from it is the takeover.
+/// A proxy that sprays and takes accounts over: a compromised router in the actor's city fails twice
+/// against each of eight users (three colleagues of the city and five others, the real median size),
+/// then signs the three colleagues in on each of the next three days. A takeover is not an excuse: the
+/// eight sprayed users stay sprayed, the address stays a spray source, and every success from it is the
+/// takeover.
 fn spray_proxy_takeover(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     let a: User = ctx.a.clone();
-    let taken = city_staff(w, &a, 5);
+    let taken = city_staff(w, &a, 3);
     let others: Vec<User> = w
         .users
         .iter()
         .filter(|u| u.home.city != a.home.city)
-        .take(13)
+        .take(5)
         .cloned()
         .collect();
-    if taken.len() < 5 || others.len() < 13 {
+    if taken.len() < 3 || others.len() < 5 {
         return Err(Error::Scenario(format!(
-            "{}: a proxy takeover needs 5 users in {} and 13 others, the tenant has {} and {}",
+            "{}: a proxy takeover needs 3 users in {} and 5 others, the tenant has {} and {}",
             ctx.spec.id,
             a.home.city,
             taken.len(),
@@ -535,8 +537,9 @@ fn spray_proxy_takeover(w: &mut World, ctx: &mut Ctx) -> Result<()> {
 /// Sprayed accounts used interactively from a cloud VPS: a compromised router sprays six colleagues
 /// (a spray source), and over the next three days five of the accounts sign in interactively to a
 /// low-volume first-party client (Microsoft Teams) from a hosting-ASN VPS in the same city. The VPS is
-/// not a spray source, so the hosting sign-ins are SPW-ID-002's alone, and an interactive sign-in
-/// always counts.
+/// not a spray source, so the hosting sign-ins are SPW-ID-002's alone; five users on three days would
+/// qualify the (app, ASN) as a cloud service by the counts, but their users were sprayed, so it does
+/// not. No UAL logon is written: the hit is the sign-in arm's.
 fn spray_vps_login(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     let a: User = ctx.a.clone();
     let staff = city_staff(w, &a, 6);
@@ -567,7 +570,53 @@ fn spray_vps_login(w: &mut World, ctx: &mut Ctx) -> Result<()> {
                 &vps,
                 well_known("Microsoft Teams"),
             );
-            push_signin(w, ctx, user, ok, true);
+            push_signin(w, ctx, user, ok, false);
+        }
+    }
+    Ok(())
+}
+
+/// Wrong passwords first, no spray: five colleagues' accounts are tried from a cloud VPS (a hosting ASN
+/// of its own: not the connector's and not the spray VPS's) to Microsoft Teams, two of them fail once with an invalid password (50126)
+/// before the right one works, then all five sign in on each of three days. No spray source exists, but a
+/// credential failure to the application comes from that ASN, so the (application, ASN) is not a cloud
+/// service. No UAL logon is written: the hit is the sign-in arm's.
+fn vps_password_failures(w: &mut World, ctx: &mut Ctx) -> Result<()> {
+    let a: User = ctx.a.clone();
+    let staff = city_staff(w, &a, 5);
+    if staff.len() < 5 {
+        return Err(Error::Scenario(format!(
+            "{}: a VPS login needs 5 users in {}, the tenant has {}",
+            ctx.spec.id,
+            a.home.city,
+            staff.len()
+        )));
+    }
+    let mut vps = a.home.clone();
+    vps.asn = crate::world::HOSTING_ASNS[0].0;
+    vps.asn_org = crate::world::HOSTING_ASNS[0].1.to_string();
+    let ip = attacker_ip(w, ctx, &vps)?;
+    let teams = well_known("Microsoft Teams");
+    for (k, user) in staff.iter().take(2).enumerate() {
+        let mut f = failed_signin(
+            w,
+            ctx,
+            user,
+            ctx.t + Duration::minutes(k as i64 * 3),
+            ip,
+            &vps,
+            50126,
+            None,
+        );
+        f.app_id = teams;
+        f.app_name = crate::ual::app_name(w, teams);
+        push_signin(w, ctx, user, f, false);
+    }
+    for day in 1..=3i64 {
+        for (k, user) in staff.iter().enumerate() {
+            let time = ctx.t + Duration::days(day) + Duration::minutes(k as i64 * 4);
+            let ok = password_signin(w, ctx, user, time, ip, &vps, teams);
+            push_signin(w, ctx, user, ok, false);
         }
     }
     Ok(())

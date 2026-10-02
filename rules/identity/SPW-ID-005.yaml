@@ -2,13 +2,15 @@
 # internet-wide background noise on its own (SPW-ID-006 reports it at tenant level); the sign-in
 # that SUCCEEDS from an address that sprayed the tenant is the account takeover. The spray sources
 # are the tenant's `spray_sources` relation, derived once by the profile step: an address that
-# failed against at least 5 distinct users of the tenant who never succeed from it (failed-only users)
-# and those outnumber the users that do succeed from it (an office NAT or VPN egress is not a source:
-# its mistyping users succeed and many more users sign in). The address type does not matter: attackers
+# failed against at least 5 SPRAYED users of the tenant (a failed user is excused only by a success from the
+# address before their first failure there, or within 30 minutes after one of their failures there, a typo)
+# and the sprayed users outnumber the excusing users (an office NAT or VPN egress is not a source: its
+# mistyping users succeed within minutes and many more users sign in; a proxy that takes accounts over later
+# stays a source, however many it takes). The address type does not matter: attackers
 # spray from compromised ISP routers and residential proxies as much as from hosting providers, and
 # no GeoIP is needed. A success is a signins row with error_code 0 (a NULL result is unknown and is
 # deliberately ignored) or a UAL UserLoggedIn record. The sources themselves need KNOWN failures. The context says how many users and failures the
-# source had, its first and last failure, and whether this user was one of the sprayed users (a
+# source had, its first and last failure, whether the success was a takeover (after this user's own credential failure from the address, `takeover`), and whether this user was one of the sprayed users (a
 # credential failure from the same address: the shared `credential_failure_codes` list, interactive
 # rows only, so an MFA interrupt never marks a user as sprayed); a success by a user the source never
 # failed against is the stronger tell (a credential obtained elsewhere). A success from a spray source is attacker infrastructure whether it comes before or after the failures (phished
@@ -32,6 +34,12 @@ sql: |
          json_object('users_targeted', p.users_targeted, 'failures', p.failures,
                      'first_failure', p.first_failure, 'last_failure', p.last_failure,
                      'before_first_failure', s.event_time < p.first_failure,
+                     'takeover', EXISTS (
+                       SELECT 1 FROM signins f
+                       WHERE f.ip = s.ip AND lower(f.user_upn) = lower(s.user_upn)
+                         AND f.event_time < s.event_time
+                         AND coalesce(f.is_interactive, true)
+                         AND list_contains(@list:credential_failure_codes, CAST(f.error_code AS VARCHAR))),
                      'was_sprayed_user', EXISTS (
                        SELECT 1 FROM signins f
                        WHERE f.ip = s.ip AND lower(f.user_upn) = lower(s.user_upn)
@@ -44,6 +52,12 @@ sql: |
          json_object('users_targeted', p.users_targeted, 'failures', p.failures,
                      'first_failure', p.first_failure, 'last_failure', p.last_failure,
                      'before_first_failure', u.event_time < p.first_failure,
+                     'takeover', EXISTS (
+                       SELECT 1 FROM signins f
+                       WHERE f.ip = u.client_ip AND lower(f.user_upn) = lower(u.user_upn)
+                         AND f.event_time < u.event_time
+                         AND coalesce(f.is_interactive, true)
+                         AND list_contains(@list:credential_failure_codes, CAST(f.error_code AS VARCHAR))),
                      'was_sprayed_user', EXISTS (
                        SELECT 1 FROM signins f
                        WHERE f.ip = u.client_ip AND lower(f.user_upn) = lower(u.user_upn)

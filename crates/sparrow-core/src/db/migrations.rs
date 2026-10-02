@@ -80,6 +80,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "cloud_services_whole_case",
         sql: include_str!("../../migrations/0014_cloud_services_whole_case.sql"),
     },
+    Migration {
+        version: 15,
+        name: "spray_takeover_resistant",
+        sql: include_str!("../../migrations/0015_spray_takeover_resistant.sql"),
+    },
 ];
 
 pub fn latest_version() -> u32 {

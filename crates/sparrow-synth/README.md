@@ -278,8 +278,9 @@ Look-alikes:
 | `ipv6_rotation` | An interactive sign-in and two refreshes of the same session from three IPv6 privacy addresses of one ASN and city. |
 | `spray_after_phish` | Phished credentials first: a compromised router in the victim's city signs the victim in, an hour later it tries six other users. |
 | `spray_success_foreign` | A foreign residential source sprays six users, and the first signs in from it after their own home sign-in (an impossible-travel pair too). |
-| `spray_proxy_takeover` | A compromised router sprays 18 users (13 failed-only), then signs five of them in on each of three later days. |
-| `spray_vps_login` | A router sprays six colleagues; five of the accounts then sign in interactively to Microsoft Teams from a hosting-ASN VPS (not the connector's ASN) of the same city over three days. |
+| `spray_proxy_takeover` | A compromised router sprays eight users (three colleagues and five others), then signs the three colleagues in on each of three later days; the takeovers do not excuse them. |
+| `spray_vps_login` | A router sprays six colleagues; five of the accounts then sign in interactively to Microsoft Teams from a hosting-ASN VPS (not the connector's ASN) of the same city over three days; their users were sprayed, so the (app, ASN) is no cloud service. No UAL logon. |
+| `vps_password_failures` | Five colleagues' accounts used from a hosting VPS of its own to Microsoft Teams for three days, two with a wrong password first; no spray, no UAL logon. The failures from the ASN disqualify it as a cloud service. |
 | `connector_app_other_asn` | An attacker's VPS on a hosting ASN other than the connector's signs the actor in to the connector's application after it was established. |
 | `cloud_connector_onboarding` | A new SaaS connector's backend (three cloud-region addresses on a cloud ASN apart from the attacker's) signs eight users in on its first three days (interactive rows, as the portal export records a connector's backend); the whole-case profile excuses them, so it is a look-alike. |
 | `gateway_egress` | A secure web gateway egress shared by eight users blocks them by Conditional Access (53003) and breaks refreshes (70043, 50173); one success. |

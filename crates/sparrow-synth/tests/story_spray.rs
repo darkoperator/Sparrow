@@ -55,7 +55,7 @@ fn the_connectors_backend_is_recorded_as_interactive_rows() {
 }
 
 #[test]
-fn a_taken_over_proxy_sprays_more_failed_only_users_than_it_takes() {
+fn a_taken_over_proxy_keeps_eight_sprayed_users_and_takes_three_hours_later() {
     let (w, recs) = world();
     let all = signins_of(&w, &recs, "s-takeover");
     let failed: BTreeSet<_> = all
@@ -68,12 +68,56 @@ fn a_taken_over_proxy_sprays_more_failed_only_users_than_it_takes() {
         .filter(|s| s.error_code == 0)
         .map(|s| s.user.clone())
         .collect();
-    assert_eq!(taken.len(), 5);
-    assert!(failed.len() >= 15, "{}", failed.len());
+    assert_eq!(taken.len(), 3);
+    assert_eq!(failed.len(), 8);
     assert!(taken.is_subset(&failed));
-    assert!(failed.len() - taken.len() > taken.len());
+    // Every success comes more than 30 minutes after the user's last failure: a takeover, not a typo.
+    for s in all.iter().filter(|s| s.error_code == 0) {
+        let last_fail = all
+            .iter()
+            .filter(|f| f.user == s.user && f.error_code != 0)
+            .map(|f| f.time)
+            .max()
+            .unwrap();
+        assert!(s.time - last_fail > chrono::Duration::minutes(30));
+    }
     let ips: BTreeSet<_> = all.iter().map(|s| s.ip).collect();
     assert_eq!(ips.len(), 1);
+}
+
+#[test]
+fn the_vps_storylines_carry_no_ual_logon_and_use_their_own_asn() {
+    let (w, recs) = world();
+    for id in ["s-vps", "s-vpspw"] {
+        let rec = recs.iter().find(|r| r.id == id).unwrap();
+        let logons = rec
+            .evidence
+            .iter()
+            .filter_map(|e| match e {
+                Evidence::Ual(u) => w.story.ual.iter().find(|x| x.id == *u),
+                _ => None,
+            })
+            .filter(|u| u.operation.eq_ignore_ascii_case("UserLoggedIn"))
+            .count();
+        assert_eq!(logons, 0, "{id} has a UserLoggedIn record");
+    }
+    let vps = signins_of(&w, &recs, "s-vps");
+    let pw = signins_of(&w, &recs, "s-vpspw");
+    let asn_of = |v: &Vec<&SignIn>| -> BTreeSet<u32> {
+        v.iter()
+            .filter(|s| s.error_code == 0)
+            .map(|s| s.asn)
+            .collect()
+    };
+    assert_eq!(asn_of(&pw).len(), 1);
+    assert!(asn_of(&pw).is_disjoint(&asn_of(&vps)));
+    // The password variant: two accounts fail first to the same application from its VPS, and no spray.
+    let fails: Vec<_> = pw.iter().filter(|s| s.error_code == 50126).collect();
+    assert_eq!(fails.len(), 2);
+    let ok_app = pw.iter().find(|s| s.error_code == 0).unwrap().app_id;
+    assert!(fails.iter().all(|f| f.app_id == ok_app));
+    let users: BTreeSet<_> = pw.iter().map(|s| s.user.clone()).collect();
+    assert_eq!(users.len(), 5);
 }
 
 #[test]
@@ -133,13 +177,14 @@ fn a_longstanding_connector_signs_in_from_day_one_from_a_far_region_of_the_users
         .time
         .date_naive();
     assert_eq!(days.iter().next().copied(), Some(first));
+    // One cloud region of the organiser's country, about 670 km north of the organiser (6 degrees of
+    // latitude), on a hosting ASN of its own, for every user.
+    let organiser = &w.users.iter().find(|u| u.upn == all[0].user).unwrap().home;
     for s in &all {
         assert_eq!(s.event_type, SignInType::Interactive);
-        let home = &w.users.iter().find(|u| u.upn == s.user).unwrap().home;
-        assert_eq!(s.location.country_iso, home.country_iso);
-        // About 670 km north of the user (6 degrees of latitude), on a hosting ASN of its own.
-        assert!((s.location.lat - home.lat - 6.0).abs() < 1e-9);
-        assert_ne!(s.asn, home.asn);
+        assert_eq!(s.location.country_iso, organiser.country_iso);
+        assert!((s.location.lat - organiser.lat - 6.0).abs() < 1e-9);
+        assert_ne!(s.asn, organiser.asn);
     }
     // A different application than the onboarded connector.
     let onboarded = signins_of(&w, &recs, "s-onboard");

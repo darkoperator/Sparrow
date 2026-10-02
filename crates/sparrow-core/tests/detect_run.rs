@@ -1025,7 +1025,7 @@ fn id_005_context_uses_the_credential_failure_list_and_the_timing() {
         warnings: vec![],
     };
     run(&mut case, &set, &opts(20)).unwrap();
-    let ctx = |upn: &str| -> (bool, bool) {
+    let ctx = |upn: &str| -> (bool, bool, bool) {
         let c: String = case
             .conn()
             .query_row(
@@ -1039,10 +1039,12 @@ fn id_005_context_uses_the_credential_failure_list_and_the_timing() {
         (
             v["was_sprayed_user"].as_bool().unwrap(),
             v["before_first_failure"].as_bool().unwrap(),
+            v["takeover"].as_bool().unwrap(),
         )
     };
-    assert_eq!(ctx("a@contoso.example"), (true, false));
-    assert_eq!(ctx("b@contoso.example"), (false, true));
+    // a: a success after the user's own failure there (a takeover); b: no failure of their own.
+    assert_eq!(ctx("a@contoso.example"), (true, false, true));
+    assert_eq!(ctx("b@contoso.example"), (false, true, false));
 }
 
 /// A rule with a population threshold (SPW-ID-005 / SPW-ID-006 need sign-ins of 5 distinct users) is
