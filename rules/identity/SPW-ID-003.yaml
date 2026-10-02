@@ -22,14 +22,15 @@
 #   routine), so a same-country pair between ordinary networks is not evidence. A pair across
 #   countries counts as before, and so does a pair where either country is unknown. Missed on
 #   purpose: a same-country attacker on an ordinary ISP with no spray history.
-# - Skipped on purpose: the sign-ins of a tenant-wide cloud service after it was established, to that
-#   application from that hosting ASN (the tenant's `cloud_services` relation, one row per
-#   application and ASN, the same definition SPW-ID-002 uses: 5 or more users with known successes from
-#   the ASN on 3 or more days, 80% of the application's successes; interactive and non-interactive both
-#   count, the portal export records a connector's backend as interactive), because its backend signs
-#   users in from a cloud region on their behalf and that is not the user travelling; the same
-#   application from another ASN, a UAL UserLoggedIn and a sign-in from a password-spray source always
-#   count. Microsoft addresses (ip_intel.is_microsoft): Exchange Online, a Cloud PC
+# - Skipped on purpose: the sign-ins of a tenant-wide cloud service to its application from its hosting
+#   ASN (the tenant's `cloud_services` relation, one row per application and ASN, established from the
+#   WHOLE case, the same definition SPW-ID-002 uses: 5 or more users with known successes from the ASN
+#   on 3 or more days, 80% of the application's successes; interactive and non-interactive both count,
+#   the portal export records a connector's backend as interactive), because its backend signs users in
+#   from a cloud region on their behalf and that is not the user travelling; the same application from
+#   another ASN, a UAL UserLoggedIn and a sign-in from a password-spray source always count. Residual:
+#   an attacker on the same application from the same ASN as an established connector is excused.
+#   Microsoft addresses (ip_intel.is_microsoft): Exchange Online, a Cloud PC
 #   or a Microsoft relay geolocate to a datacentre unrelated to the user. Addresses with no
 #   location are ignored, not treated as far.
 # - Known false positives: VPNs and mobile-carrier egress (the address geolocates to the
@@ -63,7 +64,6 @@ sql: |
       AND i.latitude IS NOT NULL AND i.longitude IS NOT NULL AND NOT coalesce(i.is_microsoft, false)
       AND NOT EXISTS (SELECT 1 FROM cloud_services c
                       WHERE c.app_id = lower(coalesce(s.app_id, '')) AND c.asn = i.asn
-                        AND epoch_ms(s.event_time) // 86400000 > c.established_day
                         AND NOT EXISTS (SELECT 1 FROM spray_sources p WHERE p.ip = s.ip))
     UNION ALL
     SELECT lower(CAST(u.record_id AS VARCHAR)), 'ual_events', u.event_time, lower(u.user_upn),
@@ -569,7 +569,6 @@ tests:
         signins: 18
         hosting_signins: 18
         asn: 14061
-        established_day: 0
       - table: signins
         user_upn: alice@contoso.example
         ip: 198.51.100.1
@@ -610,7 +609,6 @@ tests:
         signins: 18
         hosting_signins: 18
         asn: 14061
-        established_day: 0
       - table: signins
         user_upn: alice@contoso.example
         ip: 198.51.100.1
@@ -651,7 +649,6 @@ tests:
         signins: 18
         hosting_signins: 18
         asn: 14061
-        established_day: 0
       - table: signins
         user_upn: alice@contoso.example
         ip: 198.51.100.1
@@ -692,7 +689,6 @@ tests:
         signins: 18
         hosting_signins: 18
         asn: 14061
-        established_day: 0
       - table: signins
         user_upn: alice@contoso.example
         ip: 198.51.100.1

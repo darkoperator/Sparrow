@@ -24,6 +24,7 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
         StoryKind::CloudConnector => cloud_connector(w, ctx)?,
         StoryKind::CloudConnectorOnboarding => cloud_connector_onboarding(w, ctx)?,
         StoryKind::ConnectorAppOtherAsn => connector_app_other_asn(w, ctx)?,
+        StoryKind::CloudConnectorLongstanding => cloud_connector_longstanding(w, ctx)?,
         _ => return Ok(false),
     }
     Ok(true)
@@ -418,6 +419,7 @@ const CONNECTOR_APP: &str = "Calendar Sync Cloud";
 fn connector_backend(
     user_k: usize,
     home: &crate::world::Location,
+    lat_shift: f64,
 ) -> (IpAddr, crate::world::Location) {
     let ip = IpAddr::V6(std::net::Ipv6Addr::new(
         0x2001,
@@ -430,6 +432,7 @@ fn connector_backend(
         1 + (user_k % 3) as u16,
     ));
     let mut region = home.clone();
+    region.lat += lat_shift;
     region.asn = HOSTING_ASNS[2].0;
     region.asn_org = HOSTING_ASNS[2].1.to_string();
     (ip, region)
@@ -445,6 +448,7 @@ fn connector_days(
     app: &App,
     first_day: i64,
     days: i64,
+    lat_shift: f64,
 ) -> Result<()> {
     let a: User = ctx.a.clone();
     let staff: Vec<User> = std::iter::once(a.clone())
@@ -465,7 +469,7 @@ fn connector_days(
         )));
     }
     for (k, user) in staff.iter().enumerate() {
-        let (ip, region) = connector_backend(k, &a.home);
+        let (ip, region) = connector_backend(k, &a.home, lat_shift);
         for day in first_day..first_day + days {
             let session = ctx.rng.uuid();
             let mut s = signin(
@@ -502,7 +506,7 @@ fn cloud_connector_onboarding(w: &mut World, ctx: &mut Ctx) -> Result<()> {
         ctx.t - Duration::days(90),
     );
     w.apps.push(app.clone());
-    connector_days(w, ctx, &app, 0, 3)
+    connector_days(w, ctx, &app, 0, 3, 0.0)
 }
 
 /// The established connector: the same backend refreshes the same users' tokens on the days after its
@@ -510,7 +514,7 @@ fn cloud_connector_onboarding(w: &mut World, ctx: &mut Ctx) -> Result<()> {
 /// form no travel pair either.
 fn cloud_connector(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     let app = w.apps[app_index(w, |n| n == CONNECTOR_APP, CONNECTOR_APP)?].clone();
-    connector_days(w, ctx, &app, 0, 4)
+    connector_days(w, ctx, &app, 0, 4, 0.0)
 }
 
 /// The connector's application used by an attacker from another hosting ASN: a VPS on a cloud ASN that
@@ -538,4 +542,22 @@ fn connector_app_other_asn(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     );
     push_signin(w, ctx, &a, s, true);
     Ok(())
+}
+
+/// A connector already in use when the capture starts: another third-party application whose backend
+/// (a cloud region in the users' own country, about 670 km from them) signs eight users of one city in
+/// every day for two weeks from day one of the window. The capture holds a slice of its history, so
+/// "established" cannot depend on days before the window: every sign-in is the connector's, and its
+/// cross-city pairs with the users' home sign-ins are not travel.
+fn cloud_connector_longstanding(w: &mut World, ctx: &mut Ctx) -> Result<()> {
+    let app = new_app(
+        ctx,
+        "Mail Archive Cloud",
+        "Archive Vendor Ltd",
+        true,
+        "https://app.archivevendor.example/signin",
+        ctx.t - Duration::days(400),
+    );
+    w.apps.push(app.clone());
+    connector_days(w, ctx, &app, 0, 14, 6.0)
 }

@@ -210,14 +210,12 @@ fn app_signin(
     insert_row(case, "signins", t, row);
 }
 
-fn services(case: &Case) -> Vec<(String, String, i64, i64)> {
+fn services(case: &Case) -> Vec<(String, String, i64)> {
     let mut st = case
         .conn()
-        .prepare(
-            "SELECT tenant_key, app_id, asn, established_day FROM cloud_services ORDER BY 1, 2, 3",
-        )
+        .prepare("SELECT tenant_key, app_id, asn FROM cloud_services ORDER BY 1, 2, 3")
         .unwrap();
-    st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+    st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .unwrap()
         .map(Result::unwrap)
         .collect()
@@ -297,13 +295,12 @@ fn a_cloud_service_is_five_users_three_days_and_eighty_percent_from_one_hosting_
         sparrow_core::profile::cloud_services::rebuild(case.conn()).unwrap(),
         2
     );
-    // Established at the end of the third day (2026-02-03): epoch day 20487, for ASN 14061.
-    let day = 20487;
+    // Established from the whole case (no prefix), for ASN 14061.
     assert_eq!(
         services(&case),
         vec![
-            (T1.to_string(), svc.to_lowercase(), 14061, day),
-            (T2.to_string(), svc.to_lowercase(), 14061, day),
+            (T1.to_string(), svc.to_lowercase(), 14061),
+            (T2.to_string(), svc.to_lowercase(), 14061),
         ]
     );
 }
@@ -346,8 +343,7 @@ fn a_service_is_established_for_its_own_asn_only() {
         sparrow_core::profile::cloud_services::rebuild(case.conn()).unwrap(),
         1
     );
-    let rows = services(&case);
-    assert_eq!(rows[0].2, 14061);
+    assert_eq!(services(&case)[0].2, 14061);
 }
 
 /// A few interactive sign-ins from a hosting ASN do not make a service: below five users it is a VPS
@@ -534,4 +530,110 @@ fn only_interactive_credential_failures_count() {
     }
     assert_eq!(rebuild(&case), 1);
     assert_eq!(sources(&case)[0].1, "198.51.100.23");
+}
+
+/// No prefix: a connector that was already in use when the capture started is established from the
+/// whole case, exactly the three days it was seen (the capture window cuts its history), and the
+/// relation carries no establishing day.
+#[test]
+fn a_connector_in_use_since_before_the_window_is_established_from_the_whole_case() {
+    let case = Case::in_memory().unwrap();
+    tenant(&case, T1);
+    intel(&case, T1, "203.0.113.1", 14061, true);
+    let app = "c0c0c0c0-0000-4000-8000-0000000000e1";
+    for day in ["01", "02", "03"] {
+        for u in 0..5 {
+            app_signin(
+                &case,
+                T1,
+                &format!("u{u}@contoso.example"),
+                "203.0.113.1",
+                app,
+                day,
+                true,
+                Some(0),
+            );
+        }
+    }
+    assert_eq!(
+        sparrow_core::profile::cloud_services::rebuild(case.conn()).unwrap(),
+        1
+    );
+    assert_eq!(
+        services(&case),
+        vec![(T1.to_string(), app.to_string(), 14061)]
+    );
+    let columns: i64 = case
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM duckdb_columns() WHERE table_name = 'cloud_services'
+               AND column_name = 'established_day'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(columns, 0);
+}
+
+/// A portal sign-in file whose name does not say interactive or non-interactive leaves
+/// `is_interactive` NULL. A credential failure with an unknown kind counts as interactive (a ROPC spray
+/// is interactive), and an explicit non-interactive row still does not.
+#[test]
+fn a_credential_failure_of_unknown_kind_counts_as_interactive() {
+    let case = Case::in_memory().unwrap();
+    tenant(&case, T1);
+    for u in 0..6 {
+        insert_row(
+            &case,
+            "signins",
+            T1,
+            json!({"user_upn": format!("u{u}@contoso.example"), "ip": "198.51.100.50",
+                   "error_code": 50126, "event_time": "2026-03-01T10:00:00Z"}),
+        );
+        insert_row(
+            &case,
+            "signins",
+            T1,
+            json!({"user_upn": format!("u{u}@contoso.example"), "ip": "198.51.100.51",
+                   "error_code": 50126, "event_time": "2026-03-01T10:00:00Z",
+                   "is_interactive": false}),
+        );
+    }
+    assert_eq!(rebuild(&case), 1);
+    assert_eq!(sources(&case)[0].1, "198.51.100.50");
+}
+
+/// An office whose mistypes are spread over the whole window, day one included: ten users sign in on
+/// many days and eight of them mistype once or twice on various days and then succeed. None is
+/// failed-only, so the address is not a source however the failures are spread.
+#[test]
+fn mistypes_spread_across_the_window_do_not_make_an_office_a_source() {
+    let case = Case::in_memory().unwrap();
+    tenant(&case, T1);
+    for day in 1..=20 {
+        for u in 0..10 {
+            signin(
+                &case,
+                T1,
+                &format!("u{u}@contoso.example"),
+                "198.51.100.60",
+                0,
+                &format!("2026-03-{day:02}T09:{u:02}:00Z"),
+            );
+        }
+    }
+    for u in 0..8 {
+        for k in 0..(1 + u % 2) {
+            let day = 1 + (u * 3 + k * 7) % 20;
+            signin(
+                &case,
+                T1,
+                &format!("u{u}@contoso.example"),
+                "198.51.100.60",
+                50126,
+                &format!("2026-03-{day:02}T08:30:00Z"),
+            );
+        }
+    }
+    assert_eq!(rebuild(&case), 0);
 }

@@ -36,6 +36,7 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
         StoryKind::SprayVpsLogin => spray_vps_login(w, ctx)?,
         StoryKind::OfficeNatMistypes => office_nat_mistypes(w, ctx)?,
         StoryKind::OfficeStaleAccounts => office_stale_accounts(w, ctx)?,
+        StoryKind::OfficeWindowMistypes => office_window_mistypes(w, ctx)?,
         StoryKind::PhoneStalePassword => phone_stale_password(w, ctx),
         StoryKind::GatewayEgress => gateway_egress(w, ctx)?,
         StoryKind::ConferenceNetwork => conference_network(w, ctx),
@@ -622,19 +623,53 @@ fn gateway_egress(w: &mut World, ctx: &mut Ctx) -> Result<()> {
 }
 
 /// A conference or hotel network: three attendees of the tenant mistype their password once or twice
-/// from the shared address on the same morning. Three users is far under the five a spray source
-/// needs.
+/// from the shared venue address (a benign egress-pool address on the attendees' own home ISP network,
+/// not the mobile carrier) on the same morning. Three users is far under the five a spray source needs.
 fn conference_network(w: &mut World, ctx: &mut Ctx) {
     let a: User = ctx.a.clone();
     let attendees = users_from(w, &a.upn, 3);
-    let ip = ctx.shared.next_ip();
-    let location = super::identity::cellular_location(&a.home);
+    let ip = ctx.shared.next_egress();
+    let location = a.home.clone();
     for (k, user) in attendees.iter().enumerate() {
         for attempt in 0..(1 + k % 2) as i64 {
             let when = ctx.t + Duration::minutes(k as i64 * 9 + attempt * 2);
             fail(w, ctx, user, when, ip, &location, 50126, None);
         }
     }
+}
+
+/// An office whose mistypes are spread over the whole window, its first day included: the ten users of
+/// one city sign in from the office egress address on 20 weekday-spaced days, and eight of them mistype
+/// once or twice on various days, then succeed a minute later. Nobody is failed-only, so however the
+/// failures are spread (a capture is a window: mistypes start on day one) the address is not a spray
+/// source. (A real office is bigger; the tenant has ten users per city.)
+fn office_window_mistypes(w: &mut World, ctx: &mut Ctx) -> Result<()> {
+    let a: User = ctx.a.clone();
+    let staff = city_staff(w, &a, 10);
+    if staff.len() < 8 {
+        return Err(Error::Scenario(format!(
+            "{}: an office needs at least 8 users in {}, the tenant has {}",
+            ctx.spec.id,
+            a.home.city,
+            staff.len()
+        )));
+    }
+    let nat = ctx.shared.next_egress();
+    let location = a.home.clone();
+    for day in 0..20i64 {
+        for (k, user) in staff.iter().enumerate() {
+            let when = ctx.t + Duration::days(day) + Duration::minutes(k as i64 * 6);
+            let mistypes = k < 8 && (day * 3 + k as i64) % 10 == 0;
+            let mut at = when;
+            if mistypes || (k < 8 && day == 0) {
+                fail(w, ctx, user, at, nat, &location, 50126, None);
+                at = when + Duration::minutes(1);
+            }
+            let ok = password_signin(w, ctx, user, at, nat, &location, well_known("OfficeHome"));
+            push_signin(w, ctx, user, ok, true);
+        }
+    }
+    Ok(())
 }
 
 /// An office whose departed and disabled accounts keep failing: five users with stale devices (a

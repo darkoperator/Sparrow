@@ -9,13 +9,14 @@
 //! hosting ASN on at least [`MIN_DAYS`] distinct UTC days, and those sign-ins are at least
 //! [`SHARE_PERCENT`] percent of the application's known successes.
 //!
-//! The profile is ESTABLISHED from a prefix of the history: `established_day` is the first UTC day at
-//! whose end the counts up to and including that day meet the thresholds. A rule excuses only sign-ins
-//! to that application from that same ASN on a later day, so an attacker's later volume never excuses
-//! the earlier sign-ins, a VPS on another ASN (or the same application from another hosting ASN)
-//! always counts, and a spray source is never excused. Residual, documented: an attacker who uses the
-//! same application from the same cloud ASN as an established connector is excused. No application
-//! name or id is involved, and an unknown result never helps establish a connector.
+//! The profile is established from the WHOLE case, no prefix: a capture is a window, and a connector in
+//! use since before it starts would only be "established" a few days before the window ends, leaving
+//! every earlier day counting. A rule excuses every sign-in to that application from that same ASN; a
+//! spray source and a UAL UserLoggedIn always count, and the key is (application, ASN), so the same
+//! application from another hosting ASN counts. Residual, documented: an attacker who uses the same
+//! application from the same cloud ASN as an established connector is excused, and a connector's first
+//! days (cold start) are excused too. No application name or id is involved, and an unknown result
+//! never helps establish a connector.
 
 use crate::Result;
 use duckdb::Connection;
@@ -76,35 +77,27 @@ pub fn rebuild(conn: &Connection) -> Result<usize> {
     let mut n = 0;
     let mut stmt = conn.prepare(
         "INSERT INTO cloud_services
-         (tenant_key, app_id, asn, hosting_users, hosting_days, signins, hosting_signins,
-          established_day)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         (tenant_key, app_id, asn, hosting_users, hosting_days, signins, hosting_signins)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )?;
     for ((tenant, app, asn), days) in &by_asn {
-        let all_days = &totals[&(tenant.clone(), app.clone())];
-        let (mut users, mut hosting_days, mut hosting) = (BTreeSet::new(), 0usize, 0i64);
-        for (day, (u, h)) in days {
-            users.extend(u.iter().cloned());
-            hosting_days += 1;
-            hosting += h;
-            let all: i64 = all_days.range(..=*day).map(|(_, n)| n).sum();
-            if users.len() >= MIN_USERS
-                && hosting_days >= MIN_DAYS
-                && hosting * 100 >= all * SHARE_PERCENT
-            {
-                stmt.execute(duckdb::params![
-                    tenant,
-                    app,
-                    asn,
-                    users.len() as i64,
-                    hosting_days as i64,
-                    all,
-                    hosting,
-                    day
-                ])?;
-                n += 1;
-                break;
-            }
+        let users: BTreeSet<&String> = days.values().flat_map(|(u, _)| u.iter()).collect();
+        let hosting: i64 = days.values().map(|(_, n)| n).sum();
+        let all: i64 = totals[&(tenant.clone(), app.clone())].values().sum();
+        if users.len() >= MIN_USERS
+            && days.len() >= MIN_DAYS
+            && hosting * 100 >= all * SHARE_PERCENT
+        {
+            stmt.execute(duckdb::params![
+                tenant,
+                app,
+                asn,
+                users.len() as i64,
+                days.len() as i64,
+                all,
+                hosting
+            ])?;
+            n += 1;
         }
     }
     Ok(n)

@@ -29,7 +29,7 @@ sql: |
            epoch_ms(s.event_time) // 86400000 AS day
     FROM signins s JOIN spray_sources p ON p.ip = s.ip
     WHERE list_contains(@list:credential_failure_codes, CAST(s.error_code AS VARCHAR))
-      AND coalesce(s.is_interactive, false)
+      AND coalesce(s.is_interactive, true)
       AND s.event_time IS NOT NULL AND s.user_upn IS NOT NULL
   ),
   codes AS (
@@ -482,6 +482,46 @@ tests:
         is_interactive: false
         event_time: "2026-02-21T10:05:00Z"
     expect_hits: 0
+  - name: a credential failure of unknown kind (a portal file that does not say) counts as interactive
+    records:
+      - table: spray_sources
+        tenant_key: test
+        ip: 203.0.113.9
+        users_targeted: 6
+        failures: 12
+        first_failure: "2026-02-20T00:00:00Z"
+        last_failure: "2026-02-28T00:00:00Z"
+      - table: signins
+        user_upn: u0@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:00:00Z"
+      - table: signins
+        user_upn: u1@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:01:00Z"
+      - table: signins
+        user_upn: u2@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:02:00Z"
+      - table: signins
+        user_upn: u3@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:03:00Z"
+      - table: signins
+        user_upn: u4@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:04:00Z"
+      - table: signins
+        user_upn: u5@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-02-21T10:05:00Z"
+    expect_hits: 1
   - name: the credential-failure list's other codes count
     records:
       - table: spray_sources

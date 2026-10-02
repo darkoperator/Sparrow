@@ -117,3 +117,78 @@ fn the_other_asn_positive_uses_the_connectors_app_from_a_different_hosting_asn()
         assert_ne!(s.asn, asn);
     }
 }
+
+#[test]
+fn a_longstanding_connector_signs_in_from_day_one_from_a_far_region_of_the_users_country() {
+    let (w, recs) = world();
+    let all = signins_of(&w, &recs, "l-longstanding");
+    let users: BTreeSet<_> = all.iter().map(|s| s.user.clone()).collect();
+    assert!(users.len() >= 6);
+    let days: BTreeSet<_> = all.iter().map(|s| s.time.date_naive()).collect();
+    assert!(days.len() >= 14);
+    let first = recs
+        .iter()
+        .find(|r| r.id == "l-longstanding")
+        .unwrap()
+        .time
+        .date_naive();
+    assert_eq!(days.iter().next().copied(), Some(first));
+    for s in &all {
+        assert_eq!(s.event_type, SignInType::Interactive);
+        let home = &w.users.iter().find(|u| u.upn == s.user).unwrap().home;
+        assert_eq!(s.location.country_iso, home.country_iso);
+        // About 670 km north of the user (6 degrees of latitude), on a hosting ASN of its own.
+        assert!((s.location.lat - home.lat - 6.0).abs() < 1e-9);
+        assert_ne!(s.asn, home.asn);
+    }
+    // A different application than the onboarded connector.
+    let onboarded = signins_of(&w, &recs, "s-onboard");
+    assert_ne!(all[0].app_id, onboarded[0].app_id);
+}
+
+#[test]
+fn window_mistypes_include_day_one_and_every_mistyper_succeeds() {
+    let (w, recs) = world();
+    let all = signins_of(&w, &recs, "l-window");
+    let start = recs
+        .iter()
+        .find(|r| r.id == "l-window")
+        .unwrap()
+        .time
+        .date_naive();
+    let failed: BTreeSet<_> = all
+        .iter()
+        .filter(|s| s.error_code != 0)
+        .map(|s| s.user.clone())
+        .collect();
+    let ok: BTreeSet<_> = all
+        .iter()
+        .filter(|s| s.error_code == 0)
+        .map(|s| s.user.clone())
+        .collect();
+    assert!(failed.len() >= 5 && failed.len() <= 8, "{}", failed.len());
+    assert!(failed.is_subset(&ok));
+    assert!(ok.len() >= 8);
+    let fail_days: BTreeSet<_> = all
+        .iter()
+        .filter(|s| s.error_code != 0)
+        .map(|s| s.time.date_naive())
+        .collect();
+    assert!(fail_days.contains(&start), "mistypes on the first day");
+    assert!(fail_days.len() >= 5, "spread over the window");
+}
+
+#[test]
+fn the_conference_network_is_not_a_mobile_carrier() {
+    let (w, recs) = world();
+    let all = signins_of(&w, &recs, "l-conf");
+    assert!(all.len() >= 3);
+    // One venue address on the organiser's own (residential) ISP network, the same for every attendee.
+    let organiser = &w.users.iter().find(|u| u.upn == all[0].user).unwrap().home;
+    let ips: BTreeSet<_> = all.iter().map(|s| s.ip).collect();
+    assert_eq!(ips.len(), 1);
+    for s in all {
+        assert_eq!(s.asn, organiser.asn);
+        assert!(!s.location.asn_org.to_lowercase().contains("mobile"));
+    }
+}

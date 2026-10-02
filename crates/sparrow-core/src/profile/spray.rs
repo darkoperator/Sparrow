@@ -16,7 +16,8 @@
 //! part of the definition (compromised ISP routers and residential proxies spray as much as hosting
 //! providers) and no GeoIP is needed.
 //!
-//! A failure is an INTERACTIVE sign-in whose `error_code` is in the shared `credential_failure_codes`
+//! A failure is an INTERACTIVE sign-in (a row of unknown kind counts as interactive: a portal file whose
+//! name says neither leaves `is_interactive` NULL, and a ROPC spray is interactive) whose `error_code` is in the shared `credential_failure_codes`
 //! list (rules/lists: rejected credentials, 50126 / 50053 / 50034 / ...), the same list SPW-ID-005 and
 //! SPW-ID-006 read. Conditional Access blocks, token-refresh errors, Seamless SSO errors, MFA prompts
 //! and non-interactive rows are not credential failures. Only KNOWN results are judged: a NULL result
@@ -61,7 +62,7 @@ pub fn rebuild(conn: &Connection, codes: &[i64]) -> Result<usize> {
             "INSERT INTO spray_sources
              WITH s AS (
                SELECT c.tenant_key, lower(g.user_upn) AS upn, g.ip, g.error_code, g.event_time,
-                      coalesce(g.is_interactive, false) AS interactive
+                      coalesce(g.is_interactive, true) AS interactive
                FROM signins g JOIN collections c ON c.collection_id = g.collection_id
                WHERE c.tenant_key IS NOT NULL AND g.ip IS NOT NULL AND g.ip <> ''
                  AND g.user_upn IS NOT NULL AND g.user_upn <> '' AND g.event_time IS NOT NULL

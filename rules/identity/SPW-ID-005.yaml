@@ -35,7 +35,7 @@ sql: |
                      'was_sprayed_user', EXISTS (
                        SELECT 1 FROM signins f
                        WHERE f.ip = s.ip AND lower(f.user_upn) = lower(s.user_upn)
-                         AND coalesce(f.is_interactive, false)
+                         AND coalesce(f.is_interactive, true)
                          AND list_contains(@list:credential_failure_codes, CAST(f.error_code AS VARCHAR)))) AS context
   FROM signins s JOIN spray_sources p ON p.ip = s.ip
   WHERE s.error_code = 0 AND s.user_upn IS NOT NULL AND s.event_time IS NOT NULL
@@ -47,7 +47,7 @@ sql: |
                      'was_sprayed_user', EXISTS (
                        SELECT 1 FROM signins f
                        WHERE f.ip = u.client_ip AND lower(f.user_upn) = lower(u.user_upn)
-                         AND coalesce(f.is_interactive, false)
+                         AND coalesce(f.is_interactive, true)
                          AND list_contains(@list:credential_failure_codes, CAST(f.error_code AS VARCHAR))))
   FROM ual_events u JOIN spray_sources p ON p.ip = u.client_ip
   WHERE lower(u.operation) = 'userloggedin' AND u.user_upn IS NOT NULL AND u.event_time IS NOT NULL

@@ -252,7 +252,6 @@ story_kind! {
         SpraySuccessForeign => "spray_success_foreign",
         SprayProxyTakeover => "spray_proxy_takeover",
         SprayVpsLogin => "spray_vps_login",
-        CloudConnectorOnboarding => "cloud_connector_onboarding",
         ConnectorAppOtherAsn => "connector_app_other_asn",
     }
     lookalike {
@@ -294,6 +293,9 @@ story_kind! {
         OfficeStaleAccounts => "office_stale_accounts",
         PhoneStalePassword => "phone_stale_password",
         CloudConnector => "cloud_connector",
+        CloudConnectorOnboarding => "cloud_connector_onboarding",
+        CloudConnectorLongstanding => "cloud_connector_longstanding",
+        OfficeWindowMistypes => "office_window_mistypes",
         CarrierGeoJitter => "carrier_geo_jitter",
         MiaHeavyDesktop => "mia_heavy_desktop",
         GatewayEgress => "gateway_egress",

@@ -14,14 +14,15 @@
 # rows as interactive. A tenant-wide cloud service is an (application, hosting ASN) pair: at least 5
 # distinct users with known successes to the application from that ASN on at least 3 distinct UTC days,
 # at least 80% of the application's known successes (interactive and non-interactive both count). That
-# is the tenant's `cloud_services` relation, derived once by the profile step and shared with
-# SPW-ID-003, ESTABLISHED from a prefix of the history: only sign-ins to that application from that
-# same ASN on a day AFTER the one at whose end the profile was first met are excused (cold start: a
-# connector's first days still count). The same application from another hosting ASN, any other
-# application, a UAL UserLoggedIn (no application evidence) and a sign-in from a password-spray source
-# of the tenant (spray_sources) always count. Residual, documented: an attacker using the same
-# application from the same cloud ASN as an established connector is excused (SPW-ID-005 and the
-# consent rules, SPW-APP-001/002, remain). No application name or id is involved: the profile decides.
+# is the tenant's `cloud_services` relation, derived once by the profile step from the WHOLE case (no
+# prefix: a capture is a window, so a connector in use since before it starts must not count on the
+# days that precede its "establishment") and shared with SPW-ID-003. Every sign-in to that application
+# from that same ASN is excused. The same application from another hosting ASN, any other application,
+# a UAL UserLoggedIn (no application evidence) and a sign-in from a password-spray source of the tenant
+# (spray_sources) always count. Residual, documented: an attacker using the same application from the
+# same cloud ASN as an established connector is excused, and a connector's first days (cold start) are
+# excused too (SPW-ID-005 and the consent rules, SPW-APP-001/002, remain). No application name or id is
+# involved: the profile decides.
 id: SPW-ID-002
 title: Sign-in from a hosting-provider ASN
 version: 2
@@ -40,12 +41,10 @@ sql: |
   FROM signins s JOIN ip_intel i ON i.ip = s.ip
   WHERE (s.error_code IS NULL OR s.error_code = 0) AND coalesce(i.is_hosting, false)
     -- A tenant-wide cloud service's sign-ins (interactive or not: the portal export records a
-    -- connector's backend as interactive) to that application from that same hosting ASN, on a day
-    -- after the service was established, are not an attacker; another ASN, another application and a
-    -- password-spray source always count.
+    -- connector's backend as interactive) to that application from that same hosting ASN are not an
+    -- attacker; another ASN, another application and a password-spray source always count.
     AND NOT EXISTS (SELECT 1 FROM cloud_services c
                     WHERE c.app_id = lower(coalesce(s.app_id, '')) AND c.asn = i.asn
-                      AND epoch_ms(s.event_time) // 86400000 > c.established_day
                       AND NOT EXISTS (SELECT 1 FROM spray_sources p WHERE p.ip = s.ip))
   UNION ALL
   SELECT lower(CAST(u.record_id AS VARCHAR)), 'ual_events', u.event_time, u.user_upn, u.client_ip,
@@ -156,7 +155,7 @@ tests:
         ip: 203.0.113.77
         error_code: 0
     expect_hits: 0
-  - name: a connector's hosting sign-ins after it was established are not an attacker
+  - name: a connector's hosting sign-ins are not an attacker, whatever the day
     records:
       - table: ip_intel
         ip: 203.0.113.1
@@ -170,7 +169,6 @@ tests:
         signins: 18
         hosting_signins: 18
         asn: 14061
-        established_day: 0
       - table: signins
         user_upn: u0@contoso.example
         ip: 203.0.113.1
@@ -228,7 +226,6 @@ tests:
         signins: 18
         hosting_signins: 18
         asn: 14061
-        established_day: 0
       - table: signins
         user_upn: u0@contoso.example
         ip: 203.0.113.1
@@ -265,7 +262,6 @@ tests:
         signins: 18
         hosting_signins: 18
         asn: 14061
-        established_day: 0
       - table: signins
         user_upn: u0@contoso.example
         ip: 203.0.113.1
@@ -288,36 +284,6 @@ tests:
         error_code: 0
         event_time: "2026-02-05T09:00:00Z"
     expect_hits: 3
-  - name: the connector's own establishing days are not excused
-    records:
-      - table: ip_intel
-        ip: 203.0.113.1
-        asn: 14061
-        is_hosting: true
-      - table: cloud_services
-        tenant_key: test
-        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
-        hosting_users: 6
-        hosting_days: 3
-        signins: 18
-        hosting_signins: 18
-        asn: 14061
-        established_day: 20500
-      - table: signins
-        user_upn: u0@contoso.example
-        ip: 203.0.113.1
-        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
-        is_interactive: false
-        error_code: 0
-        event_time: "2026-02-05T09:00:00Z"
-      - table: signins
-        user_upn: u1@contoso.example
-        ip: 203.0.113.1
-        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
-        is_interactive: false
-        error_code: 0
-        event_time: "2026-02-05T09:00:00Z"
-    expect_hits: 2
   - name: another app's hosting sign-ins still count
     records:
       - table: ip_intel
@@ -332,7 +298,6 @@ tests:
         signins: 18
         hosting_signins: 18
         asn: 14061
-        established_day: 0
       - table: signins
         user_upn: u0@contoso.example
         ip: 203.0.113.1
@@ -369,7 +334,6 @@ tests:
         signins: 18
         hosting_signins: 18
         asn: 14061
-        established_day: 0
       - table: signins
         user_upn: u0@contoso.example
         ip: 203.0.113.1
@@ -406,7 +370,6 @@ tests:
         signins: 18
         hosting_signins: 18
         asn: 14061
-        established_day: 0
       - table: ual_events
         operation: UserLoggedIn
         user_upn: alice@contoso.example

@@ -1756,9 +1756,11 @@ fn evaluate(
     }
     let result_note = (def.id == "signins" && tf.signins_unknown_result > 0).then(|| {
         format!(
-            "{} of {} sign-in rows have no result (error code): a Hawk 4 Entra_Sign_In_Log CSV \
-             without its JSON twin holds a type name in Status; keep the JSON twin, or use the \
-             Entra portal download",
+            "{} of {} sign-in rows have no result (error code), for one of two causes: a Hawk 4 \
+             Entra_Sign_In_Log CSV without its JSON twin holds a .NET type name in Status (keep the \
+             JSON twin, or use the Entra portal download), or a portal row has a Status the parser \
+             does not recognise (an unknown status leaves the result unknown, never a failure or a \
+             success)",
             tf.signins_unknown_result, tf.signins_total
         )
     });

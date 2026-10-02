@@ -281,13 +281,15 @@ Look-alikes:
 | `spray_proxy_takeover` | A compromised router sprays 18 users (13 failed-only), then signs five of them in on each of three later days. |
 | `spray_vps_login` | A router sprays six colleagues; five of the accounts then sign in interactively to Microsoft Teams from a hosting-ASN VPS (not the connector's ASN) of the same city over three days. |
 | `connector_app_other_asn` | An attacker's VPS on a hosting ASN other than the connector's signs the actor in to the connector's application after it was established. |
-| `cloud_connector_onboarding` | A new SaaS connector's backend (three cloud-region addresses on a cloud ASN apart from the attacker's) signs eight users in on its first three days (interactive rows, as the portal export records a connector's backend). |
+| `cloud_connector_onboarding` | A new SaaS connector's backend (three cloud-region addresses on a cloud ASN apart from the attacker's) signs eight users in on its first three days (interactive rows, as the portal export records a connector's backend); the whole-case profile excuses them, so it is a look-alike. |
 | `gateway_egress` | A secure web gateway egress shared by eight users blocks them by Conditional Access (53003) and breaks refreshes (70043, 50173); one success. |
-| `conference_network` | Three attendees mistype a password once or twice from a shared conference address. |
+| `conference_network` | Three attendees mistype a password once or twice from a shared venue address on a residential ISP network (not the mobile carrier). |
 | `replay_other_country` | The victim's interactive MFA sign-in from home, then the same session 20 minutes later from a residential attacker-pool address of another country (non-hosting, the user's own browser agent). |
 | `mia_burst_residential` | The mailbox-read burst of `mia_burst` from a residential attacker-pool address in a country the victim was never in. |
 | `send_residential` | A payment-fraud message sent from a residential attacker-pool address in a new country. |
 | `spray_replay` | A compromised router (attacker-pool address, the victim's city on another ISP) sprays six users, then replays the victim's session 25 minutes after their MFA sign-in from home. |
+| `cloud_connector_longstanding` | A connector already in use on day one of the window: its backend (a cloud region of the users' own country, about 670 km away, on a hosting ASN) signs eight users in every day for two weeks. No hit for ID-002 or ID-003 (the cloud-service profile is established from the whole case). |
+| `office_window_mistypes` | Ten users of one city sign in from an office egress address on 20 days, eight of them mistype a password once or twice on various days (day one included) and then succeed. |
 | `cloud_connector` | A third-party SaaS connector (a new app) signing eight users in from a public-cloud ASN near each user, daily for four days, with a scripted client (interactive rows, as the portal export records them). |
 | `carrier_geo_jitter` | A home sign-in, then a sign-in from a carrier IPv6 address that geolocates about 2,000 km away in the same country eight minutes later, then home again. |
 | `office_nat_mistypes` | Six users of one city share one office egress address, sign in from it on three days, and each mistypes a password once on the third and then succeeds. |

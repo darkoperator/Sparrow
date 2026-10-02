@@ -76,6 +76,45 @@ fn assert_gate_ok(name: &str, c: Collector) -> CheckReport {
     r
 }
 
+/// A password-spray tree with `hawk_users: [2, 3, 20]`: Hawk 4's per-user sign-ins cover 3 users, so
+/// the spray rules, which need sign-ins of 5 distinct users, are recorded `not_applicable` in
+/// `detection_runs` with the "fewer than the 5" reason, while the tenant-wide Portal export (all users)
+/// runs them. Asserted on the stored detection runs, not on the gate's verdict.
+#[test]
+fn hawk4_records_the_spray_rules_as_not_applicable_in_a_password_spray_tree() {
+    let runs = |c: Collector| -> Vec<(String, String, Option<String>)> {
+        let (_, _, case) = gate("password-spray", c);
+        let mut st = case
+            .conn()
+            .prepare(
+                "SELECT rule_id, CAST(status AS VARCHAR), reason FROM detection_runs
+                 WHERE rule_id IN ('SPW-ID-005', 'SPW-ID-006') ORDER BY rule_id",
+            )
+            .unwrap();
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    let hawk4 = runs(Collector::Hawk4);
+    assert_eq!(hawk4.len(), 2, "{hawk4:?}");
+    for (rule, status, reason) in &hawk4 {
+        assert_eq!(status, "not_applicable", "{rule}");
+        let reason = reason.as_deref().unwrap_or_default();
+        assert!(
+            reason.contains("sign-ins cover 3 distinct users"),
+            "{rule}: {reason}"
+        );
+        assert!(reason.contains("fewer than the 5"), "{rule}: {reason}");
+    }
+    let portal = runs(Collector::Portal);
+    assert_eq!(portal.len(), 2, "{portal:?}");
+    assert!(
+        portal.iter().all(|(_, status, _)| status == "ran"),
+        "{portal:?}"
+    );
+}
+
 #[test]
 fn gate_passes_for_the_sample_rules() {
     // bec-aitm exercises every sample rule and every collector; the full matrix is the ignored job.

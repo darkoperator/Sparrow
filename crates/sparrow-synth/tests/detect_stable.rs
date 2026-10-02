@@ -58,17 +58,17 @@ fn detection_results_are_stable() {
         (
             "bec-aitm",
             Collector::Hawk4,
-            "bc0ab762f86dc08ce6c89b738e727697fa93756f3a5e2495b188d79736aa40bc",
+            "d38147d6e97c3f12bab2d84172412a463a08cf2254aed5d8cd2952f15a5c7574",
         ),
         (
             "audit-tamper",
             Collector::Invictus,
-            "69cd4d2261e441a73ac695215c6be87dcfb165b8f40574529b9b73495177686d",
+            "9df391b05ecad11c9d9c1beda2fbaf63b842ae6b520eb508521c27ede5689d07",
         ),
         (
             "hawk-investigate",
             Collector::Hawk3,
-            "b4106ea78ae943a17588c593ac85d852ccea8b15ab4bfff138bf9d9cfee542be",
+            "d79fe834f1e1a4a4ca92921e0f4340d23c94d4076c91e725ef2b2a5f98f37f1b",
         ),
     ] {
         let got = digest(scenario, c);
