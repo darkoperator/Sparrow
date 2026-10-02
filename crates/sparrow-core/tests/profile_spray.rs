@@ -191,6 +191,7 @@ fn unknown_results_neither_fail_nor_excuse() {
     assert_eq!(sources(&case)[0].1, "198.51.100.7");
 }
 
+#[allow(clippy::too_many_arguments)]
 fn app_signin(
     case: &Case,
     t: &str,
