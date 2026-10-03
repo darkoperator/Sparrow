@@ -154,6 +154,9 @@ pub fn set_finding_status(
     reason: Option<&str>,
 ) -> Result<AuditEntry> {
     let reason = reason.map(str::trim).filter(|r| !r.is_empty());
+    if let Some(r) = reason {
+        crate::case::text::check_text("a reason", r)?;
+    }
     if status.closes() && reason.is_none() {
         return Err(Error::Decision(format!(
             "a reason is required to set {}",

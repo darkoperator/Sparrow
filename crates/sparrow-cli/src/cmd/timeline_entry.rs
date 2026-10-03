@@ -61,8 +61,11 @@ pub enum TimelineEntryCommand {
         time: Option<String>,
         #[arg(long)]
         title: Option<String>,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "clear_narrative")]
         narrative: Option<String>,
+        /// Remove the narrative
+        #[arg(long)]
+        clear_narrative: bool,
         #[arg(long)]
         phase: Option<String>,
         /// Replaces the evidence (repeatable)
@@ -135,6 +138,7 @@ pub fn run(command: TimelineEntryCommand, json: bool) -> Result<ExitCode> {
             time: t,
             title,
             narrative,
+            clear_narrative,
             phase,
             evidence: refs,
             case,
@@ -144,7 +148,11 @@ pub fn run(command: TimelineEntryCommand, json: bool) -> Result<ExitCode> {
             let edit = EntryEdit {
                 event_time: t.as_deref().map(time).transpose()?,
                 title,
-                narrative,
+                narrative: if clear_narrative {
+                    Some(None)
+                } else {
+                    narrative.map(Some)
+                },
                 phase: phase.as_deref().map(Phase::parse).transpose()?,
                 evidence: if refs.is_empty() {
                     None

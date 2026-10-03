@@ -2134,3 +2134,115 @@ fn audit_verify_detects_and_acknowledges_a_truncated_chain() {
         0,
     );
 }
+
+#[test]
+fn plain_output_escapes_control_characters_and_narratives_can_be_cleared() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = case_with_evidence(dir.path());
+    // An ESC in agent text never reaches the terminal raw.
+    let out = sparrow()
+        .args([
+            "ioc",
+            "add",
+            "--type",
+            "domain",
+            "--value",
+            "evil\u{1b}[2J.example",
+            "--verdict",
+            "malicious",
+            "--note",
+        ])
+        .arg("x\u{7}y")
+        .arg("--case")
+        .arg(&case)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(!text.contains('\u{1b}'), "{text:?}");
+    assert!(text.contains("evil\\u{001B}[2J.example"), "{text:?}");
+    let out = sparrow()
+        .args(["ioc", "list", "--case"])
+        .arg(&case)
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        !text.contains('\u{1b}') && !text.contains('\u{7}'),
+        "{text:?}"
+    );
+    assert!(text.contains("x\\u{0007}y"), "{text:?}");
+    // The stored value is untouched.
+    let v = json_out(
+        sparrow()
+            .args(["--json", "ioc", "list", "--case"])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(v["indicators"][0]["value"], "evil\u{1b}[2J.example");
+    // --clear-narrative removes it and conflicts with --narrative.
+    let p = json_out(
+        sparrow()
+            .args([
+                "--json",
+                "timeline-entry",
+                "propose",
+                "--time",
+                "2026-08-03T09:00:00Z",
+                "--title",
+                "t",
+                "--phase",
+                "recon",
+                "--narrative",
+                "n",
+                "--case",
+            ])
+            .arg(&case),
+        0,
+    );
+    let id = p["object_id"].as_str().unwrap().to_string();
+    sparrow()
+        .args([
+            "timeline-entry",
+            "edit",
+            &id,
+            "--clear-narrative",
+            "--narrative",
+            "x",
+            "--case",
+        ])
+        .arg(&case)
+        .assert()
+        .failure();
+    let e = json_out(
+        sparrow()
+            .args([
+                "--json",
+                "timeline-entry",
+                "edit",
+                &id,
+                "--clear-narrative",
+                "--case",
+            ])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(e["before"]["narrative"], "n");
+    assert!(e["after"]["narrative"].is_null());
+    // Over-long text is an invalid decision.
+    let long = "x".repeat(16 * 1024 + 1);
+    json_out(
+        sparrow()
+            .args([
+                "--json",
+                "note",
+                "add",
+                "signins:k1",
+                "--text",
+                &long,
+                "--case",
+            ])
+            .arg(&case),
+        5,
+    );
+}

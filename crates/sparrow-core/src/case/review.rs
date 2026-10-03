@@ -135,6 +135,9 @@ pub fn review_accept(
     comment: Option<&str>,
 ) -> Result<AuditEntry> {
     let comment = comment.map(str::trim).filter(|c| !c.is_empty());
+    if let Some(c) = comment {
+        crate::case::text::check_text("a review comment", c)?;
+    }
     in_tx(conn, |tx| {
         check_fresh(
             tx,
@@ -179,6 +182,9 @@ pub fn review_discard(
     comment: Option<&str>,
 ) -> Result<AuditEntry> {
     let comment = comment.map(str::trim).filter(|c| !c.is_empty());
+    if let Some(c) = comment {
+        crate::case::text::check_text("a review comment", c)?;
+    }
     in_tx(conn, |tx| {
         let (d, before) = check_fresh(
             tx,

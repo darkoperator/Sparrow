@@ -4,6 +4,7 @@ use crate::ActorArgs;
 use anyhow::Result;
 use clap::Subcommand;
 use sparrow_core::case::notes::{NoteTarget, add_note};
+use sparrow_core::case::text::display_safe;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -36,7 +37,11 @@ pub fn run(command: NoteCommand, json: bool) -> Result<ExitCode> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&e)?);
             } else {
-                println!("note {id} on {target} by {}", e.actor);
+                println!(
+                    "note {id} on {} by {}",
+                    display_safe(&target),
+                    display_safe(&e.actor)
+                );
             }
         }
     }

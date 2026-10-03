@@ -116,6 +116,7 @@ pub fn add_note(
     if text.trim().is_empty() {
         return Err(Error::Decision("a note must not be empty".into()));
     }
+    crate::case::text::check_text("a note", text)?;
     in_tx(conn, |tx| {
         target.check_exists(tx)?;
         let (object_type, object_id, source_table) = target.columns();

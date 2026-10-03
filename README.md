@@ -254,7 +254,8 @@ sparrow ioc list --case case.duckdb               # also add|set-verdict|remove 
                                                   # --include-removed lists removed ones too
 sparrow finding set-status ID STATUS [--reason R] --case case.duckdb   # also assign ID NAME, ack-rule-update ID
 sparrow timeline-entry propose --time T --title X --phase P --evidence TABLE:KEY... --case case.duckdb
-                                                  # also verify ID, reject ID --reason R, edit ID [--title ...]
+                                                  # also verify ID, reject ID --reason R,
+                                                  # edit ID [--title ...] [--clear-narrative]
 sparrow note add finding:ID|entry:ID|ioc:ID|TABLE:KEY --text "..." --case case.duckdb
 sparrow audit verify --case case.duckdb           # check the audit chain (exit 3 when broken;
                                                   # --acknowledge [--agent ID] records a break)
@@ -270,7 +271,11 @@ Add `--json` to any command for machine-readable output. Exit codes:
 - 3: the audit chain is broken (`audit verify`, and any write refused because of it);
 - 4: the case is open by another writer;
 - 5: an invalid agent decision (a bad status, verdict, phase or time, a missing reason, an unknown object, an
-  evidence reference not in the case); nothing was written.
+  evidence reference not in the case, text over its cap: 16 KiB for notes, narratives, reasons and comments, 500
+  characters for titles); nothing was written.
+
+Agent text is stored as given. Plain (non-`--json`) output shows control characters other than newline and tab as
+`\u{XXXX}`.
 
 With `--json`, errors are also printed to stdout as `{"error": "..."}`.
 

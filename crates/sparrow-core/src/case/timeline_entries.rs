@@ -7,6 +7,7 @@
 
 use crate::case::actor::Actor;
 use crate::case::audit::{self, AuditEntry};
+use crate::case::text::{check_text, check_title};
 use crate::case::write::{DECISION_TAGS, in_tx};
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
@@ -43,12 +44,13 @@ impl EvidenceRef {
 /// Fails unless every reference has a `record_sources` row (the record exists as evidence).
 pub(crate) fn check_evidence_exists(conn: &Connection, refs: &[EvidenceRef]) -> Result<()> {
     for r in refs {
-        let n: i64 = conn
-            .prepare_cached(
-                "SELECT count(*) FROM record_sources WHERE table_name = ? AND record_key = ?",
-            )?
-            .query_row(params![r.source_table, r.record_key], |row| row.get(0))?;
-        if n == 0 {
+        // Not cached: DuckDB keeps a cached plan's statistics (see audit::head).
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM record_sources WHERE table_name = ? AND record_key = ?)",
+            params![r.source_table, r.record_key],
+            |row| row.get(0),
+        )?;
+        if !exists {
             return Err(Error::Decision(format!(
                 "no evidence record {} (not in record_sources)",
                 r.text()
@@ -126,7 +128,8 @@ pub struct NewEntry {
 pub struct EntryEdit {
     pub event_time: Option<DateTime<Utc>>,
     pub title: Option<String>,
-    pub narrative: Option<String>,
+    /// `Some(None)` clears the narrative.
+    pub narrative: Option<Option<String>>,
     pub phase: Option<Phase>,
     pub evidence: Option<Vec<EvidenceRef>>,
 }
@@ -189,6 +192,12 @@ fn set_evidence(conn: &Connection, id: &str, refs: &[EvidenceRef]) -> Result<()>
         "DELETE FROM timeline_entry_evidence WHERE entry_id = ?",
         params![id],
     )?;
+    #[cfg(any(test, feature = "test-fixtures"))]
+    if test_hooks::FAIL_AFTER_EVIDENCE_DELETE.with(std::cell::Cell::get) {
+        return Err(Error::Invalid(
+            "injected failure after the evidence delete".into(),
+        ));
+    }
     let mut refs = refs.to_vec();
     refs.sort();
     refs.dedup();
@@ -294,6 +303,10 @@ fn insert_proposed(
     supersedes: Option<&str>,
 ) -> Result<(String, AuditEntry)> {
     non_empty("a title", &e.title)?;
+    check_title(&e.title)?;
+    if let Some(n) = &e.narrative {
+        check_text("a narrative", n)?;
+    }
     check_evidence_exists(tx, &e.evidence)?;
     let ts = audit::now();
     let ts_text = audit::ts_text(&ts);
@@ -424,7 +437,8 @@ pub fn verify(conn: &Connection, actor: &Actor, entry_id: &str) -> Result<AuditE
             let old_state = existing(tx, old)?;
             if status_of(&old_state) != "verified" {
                 return Err(Error::Decision(format!(
-                    "timeline entry {entry_id} supersedes {old}, which is {} (not verified any more)",
+                    "timeline entry {entry_id} can no longer supersede {old}: {old} is {}, not verified; edit the \
+                     current verified entry instead",
                     status_of(&old_state)
                 )));
             }
@@ -445,6 +459,7 @@ pub fn reject(
     reason: &str,
 ) -> Result<AuditEntry> {
     non_empty("a reason", reason)?;
+    check_text("a reason", reason)?;
     decide(
         conn,
         actor,
@@ -478,6 +493,10 @@ pub fn edit(
 ) -> Result<(String, AuditEntry)> {
     if let Some(t) = &edit.title {
         non_empty("a title", t)?;
+        check_title(t)?;
+    }
+    if let Some(Some(n)) = &edit.narrative {
+        check_text("a narrative", n)?;
     }
     in_tx(conn, |tx| {
         let before = existing(tx, entry_id)?;
@@ -494,7 +513,10 @@ pub fn edit(
             tenant_key: current.tenant_key.clone(),
             event_time: edit.event_time.unwrap_or(current.event_time),
             title: edit.title.clone().unwrap_or_else(|| current.title.clone()),
-            narrative: edit.narrative.clone().or_else(|| current.narrative.clone()),
+            narrative: edit
+                .narrative
+                .clone()
+                .unwrap_or_else(|| current.narrative.clone()),
             phase: match edit.phase {
                 Some(p) => p,
                 None => Phase::parse(&current.phase)?,
@@ -681,4 +703,18 @@ pub fn list(
         args.push(s);
     }
     list_where(conn, &filter.join(" AND "), &args)
+}
+
+/// Test-only failure injection (never compiled into a normal build).
+#[cfg(any(test, feature = "test-fixtures"))]
+#[doc(hidden)]
+pub mod test_hooks {
+    thread_local! {
+        pub(super) static FAIL_AFTER_EVIDENCE_DELETE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Make every evidence replacement on this thread fail right after its DELETE.
+    pub fn fail_after_evidence_delete(on: bool) {
+        FAIL_AFTER_EVIDENCE_DELETE.with(|c| c.set(on));
+    }
 }

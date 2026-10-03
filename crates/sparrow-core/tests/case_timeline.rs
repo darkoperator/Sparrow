@@ -305,7 +305,7 @@ fn discarding_a_verify_that_superseded_restores_the_old_entry() {
         &agent(),
         &old,
         EntryEdit {
-            narrative: Some("from a VPS".into()),
+            narrative: Some(Some("from a VPS".into())),
             ..Default::default()
         },
     )
@@ -361,7 +361,7 @@ fn discarding_an_edit_restores_fields_and_evidence() {
     let edit = EntryEdit {
         title: Some("changed".into()),
         event_time: Some(Utc.with_ymd_and_hms(2026, 8, 4, 10, 30, 0).unwrap()),
-        narrative: Some("other".into()),
+        narrative: Some(Some("other".into())),
         evidence: Some(vec![
             EvidenceRef::parse("signins:k2").unwrap(),
             EvidenceRef::parse("signins:k1").unwrap(),
@@ -534,4 +534,280 @@ fn notes_on_every_kind_of_target() {
         None
     );
     assert!(audit::verify(c.conn()).unwrap().ok);
+}
+
+fn edit_title(t: &str) -> EntryEdit {
+    EntryEdit {
+        title: Some(t.into()),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_chain_of_three_discards_back_to_the_middle() {
+    let c = case_with_evidence();
+    let (x, _) = te::propose(c.conn(), &agent(), new_entry(ev())).unwrap();
+    te::verify(c.conn(), &agent(), &x).unwrap();
+    let (b, _) = te::edit(c.conn(), &agent(), &x, edit_title("B")).unwrap();
+    te::verify(c.conn(), &agent(), &b).unwrap();
+    let (cc, _) = te::edit(c.conn(), &agent(), &b, edit_title("C")).unwrap();
+    let vc = te::verify(c.conn(), &agent(), &cc).unwrap();
+    assert_eq!(
+        (one(&c, &x).status, one(&c, &b).status, one(&c, &cc).status),
+        (
+            "superseded".to_string(),
+            "superseded".to_string(),
+            "verified".to_string()
+        )
+    );
+    // B is reviewed only through C while superseded.
+    let b_seq = review::latest_decision_seq(c.conn(), "timeline_entry", &b)
+        .unwrap()
+        .unwrap();
+    let err =
+        review::review_accept(c.conn(), &carlos(), "timeline_entry", &b, b_seq, None).unwrap_err();
+    assert!(err.to_string().contains("superseded"), "{err}");
+    review::review_discard(c.conn(), &carlos(), "timeline_entry", &cc, vc.seq, None).unwrap();
+    assert_eq!(
+        (one(&c, &x).status, one(&c, &b).status, one(&c, &cc).status),
+        (
+            "superseded".to_string(),
+            "verified".to_string(),
+            "proposed".to_string()
+        )
+    );
+    // B is reviewable again.
+    review::review_accept(c.conn(), &carlos(), "timeline_entry", &b, b_seq, None).unwrap();
+    assert!(audit::verify(c.conn()).unwrap().ok);
+}
+
+#[test]
+fn discarding_a_reject_restores_the_verified_entry() {
+    let c = case_with_evidence();
+    let two = vec![
+        EvidenceRef::parse("signins:k1").unwrap(),
+        EvidenceRef::parse("signins:k2").unwrap(),
+    ];
+    let (id, _) = te::propose(c.conn(), &agent(), new_entry(two.clone())).unwrap();
+    te::verify(c.conn(), &agent(), &id).unwrap();
+    let r = te::reject(c.conn(), &agent(), &id, "duplicate").unwrap();
+    review::review_discard(c.conn(), &carlos(), "timeline_entry", &id, r.seq, None).unwrap();
+    let e = one(&c, &id);
+    assert_eq!(e.status, "verified");
+    assert_eq!(e.evidence, two);
+}
+
+#[test]
+fn discarding_a_successor_propose_rejects_it_and_keeps_the_original() {
+    let c = case_with_evidence();
+    let (x, _) = te::propose(c.conn(), &agent(), new_entry(ev())).unwrap();
+    te::verify(c.conn(), &agent(), &x).unwrap();
+    let (b, p) = te::edit(c.conn(), &agent(), &x, edit_title("B")).unwrap();
+    review::review_discard(c.conn(), &carlos(), "timeline_entry", &b, p.seq, None).unwrap();
+    assert_eq!(one(&c, &b).status, "rejected");
+    assert_eq!(one(&c, &x).status, "verified");
+    assert!(te::verify(c.conn(), &agent(), &b).is_err());
+}
+
+#[test]
+fn discarding_a_title_edit_touches_only_the_title() {
+    let c = case_with_evidence();
+    let two = vec![
+        EvidenceRef::parse("signins:k2").unwrap(),
+        EvidenceRef::parse("ual_events:abc:def").unwrap(),
+    ];
+    let (id, _) = te::propose(c.conn(), &agent(), new_entry(two)).unwrap();
+    let before = one(&c, &id);
+    let (_, e) = te::edit(c.conn(), &agent(), &id, edit_title("renamed")).unwrap();
+    assert_eq!(
+        e.before.as_ref().unwrap()["evidence"],
+        e.after.as_ref().unwrap()["evidence"]
+    );
+    let d =
+        review::review_discard(c.conn(), &carlos(), "timeline_entry", &id, e.seq, None).unwrap();
+    let restored = d.after.as_ref().unwrap()["restored"]
+        .as_object()
+        .unwrap()
+        .clone();
+    assert_eq!(restored.keys().collect::<Vec<_>>(), ["title"]);
+    let after = one(&c, &id);
+    assert_eq!(
+        (
+            &after.title,
+            &after.phase,
+            after.event_time,
+            &after.narrative,
+            &after.evidence
+        ),
+        (
+            &before.title,
+            &before.phase,
+            before.event_time,
+            &before.narrative,
+            &before.evidence
+        )
+    );
+}
+
+#[test]
+fn a_failed_revert_changes_nothing() {
+    let c = case_with_evidence();
+    let (id, _) = te::propose(c.conn(), &agent(), new_entry(ev())).unwrap();
+    let edit = EntryEdit {
+        title: Some("changed".into()),
+        evidence: Some(vec![EvidenceRef::parse("signins:k2").unwrap()]),
+        ..Default::default()
+    };
+    let (_, e) = te::edit(c.conn(), &agent(), &id, edit).unwrap();
+    let entries = audit_len(&c);
+    te::test_hooks::fail_after_evidence_delete(true);
+    let err = review::review_discard(c.conn(), &carlos(), "timeline_entry", &id, e.seq, None)
+        .unwrap_err();
+    te::test_hooks::fail_after_evidence_delete(false);
+    assert!(err.to_string().contains("injected"), "{err}");
+    let got = one(&c, &id);
+    assert_eq!(got.title, "changed");
+    assert_eq!(
+        got.evidence,
+        vec![EvidenceRef::parse("signins:k2").unwrap()]
+    );
+    assert_eq!(got.review_state, "pending_review");
+    assert_eq!(audit_len(&c), entries);
+    // Without the failure the same discard works.
+    review::review_discard(c.conn(), &carlos(), "timeline_entry", &id, e.seq, None).unwrap();
+    assert_eq!(one(&c, &id).evidence, ev());
+}
+
+#[test]
+fn a_narrative_can_be_cleared() {
+    let c = case_with_evidence();
+    let (id, _) = te::propose(c.conn(), &agent(), new_entry(ev())).unwrap();
+    let (_, e) = te::edit(
+        c.conn(),
+        &agent(),
+        &id,
+        EntryEdit {
+            narrative: Some(None),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(one(&c, &id).narrative, None);
+    // Clearing an empty narrative changes nothing.
+    assert!(
+        te::edit(
+            c.conn(),
+            &agent(),
+            &id,
+            EntryEdit {
+                narrative: Some(None),
+                ..Default::default()
+            }
+        )
+        .is_err()
+    );
+    review::review_discard(c.conn(), &carlos(), "timeline_entry", &id, e.seq, None).unwrap();
+    assert_eq!(one(&c, &id).narrative.as_deref(), Some("replayed session"));
+}
+
+#[test]
+fn text_lengths_are_capped_before_any_write() {
+    use sparrow_core::case::text::{MAX_TEXT_BYTES, MAX_TITLE_CHARS};
+    let c = case_with_evidence();
+    // At the cap: accepted (multi-byte title counts characters).
+    let mut e = new_entry(ev());
+    e.title = "é".repeat(MAX_TITLE_CHARS);
+    e.narrative = Some("n".repeat(MAX_TEXT_BYTES));
+    let (id, _) = te::propose(c.conn(), &agent(), e).unwrap();
+    let n = audit_len(&c);
+    let mut long_title = new_entry(ev());
+    long_title.title = "t".repeat(MAX_TITLE_CHARS + 1);
+    assert!(is_decision(
+        &te::propose(c.conn(), &agent(), long_title).unwrap_err()
+    ));
+    let mut long_narrative = new_entry(ev());
+    long_narrative.narrative = Some("é".repeat(MAX_TEXT_BYTES / 2 + 1));
+    assert!(is_decision(
+        &te::propose(c.conn(), &agent(), long_narrative).unwrap_err()
+    ));
+    let too_long = "r".repeat(MAX_TEXT_BYTES + 1);
+    assert!(is_decision(
+        &te::reject(c.conn(), &agent(), &id, &too_long).unwrap_err()
+    ));
+    assert!(is_decision(
+        &te::edit(
+            c.conn(),
+            &agent(),
+            &id,
+            EntryEdit {
+                narrative: Some(Some(too_long.clone())),
+                ..Default::default()
+            }
+        )
+        .unwrap_err()
+    ));
+    assert!(is_decision(
+        &notes::add_note(
+            c.conn(),
+            &agent(),
+            NoteTarget::parse("signins:k1").unwrap(),
+            &too_long
+        )
+        .unwrap_err()
+    ));
+    c.conn()
+        .execute_batch(
+            "INSERT INTO findings (finding_id, fingerprint, tenant_key, rule_id, rule_version, rule_sha256, severity, \
+             title, created_by, created_at, updated_at) VALUES ('f1', 'fp1', 't1', 'R', 1, 'x', 'high', 'AiTM', 'rule', now(), now());",
+        )
+        .unwrap();
+    use sparrow_core::case::write::{FindingStatus, set_finding_status};
+    assert!(is_decision(
+        &set_finding_status(
+            c.conn(),
+            &agent(),
+            "f1",
+            FindingStatus::Confirmed,
+            Some(&too_long)
+        )
+        .unwrap_err()
+    ));
+    assert!(is_decision(
+        &review::review_accept(
+            c.conn(),
+            &carlos(),
+            "timeline_entry",
+            &id,
+            1,
+            Some(&too_long)
+        )
+        .unwrap_err()
+    ));
+    assert_eq!(audit_len(&c), n);
+    // Text is stored as given.
+    let raw = "  line\none\t\u{1b}[31m  ";
+    notes::add_note(
+        c.conn(),
+        &agent(),
+        NoteTarget::parse("signins:k1").unwrap(),
+        raw,
+    )
+    .unwrap();
+    assert_eq!(
+        notes::notes_for(c.conn(), &NoteTarget::parse("signins:k1").unwrap()).unwrap()[0].text,
+        raw
+    );
+}
+
+#[test]
+fn display_safe_escapes_control_characters() {
+    use sparrow_core::case::text::display_safe;
+    assert_eq!(display_safe("plain é 🔥"), "plain é 🔥");
+    assert_eq!(display_safe("a\nb\tc"), "a\nb\tc");
+    assert_eq!(display_safe("\u{1b}[31mred"), "\\u{001B}[31mred");
+    assert_eq!(
+        display_safe("nul\u{0}x\r\u{7f}"),
+        "nul\\u{0000}x\\u{000D}\\u{007F}"
+    );
+    assert_eq!(display_safe("c1\u{9b}"), "c1\\u{009B}");
 }

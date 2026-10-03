@@ -8,5 +8,6 @@ pub mod indicators;
 pub mod notes;
 mod revert;
 pub mod review;
+pub mod text;
 pub mod timeline_entries;
 pub mod write;

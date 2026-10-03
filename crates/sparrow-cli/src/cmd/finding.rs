@@ -4,6 +4,7 @@ use crate::ActorArgs;
 use anyhow::Result;
 use clap::Subcommand;
 use sparrow_core::case::audit::AuditEntry;
+use sparrow_core::case::text::display_safe;
 use sparrow_core::case::write::{self, FindingStatus};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -44,9 +45,12 @@ pub enum FindingCommand {
 /// "(decided by agent:x for analyst:y, pending review)".
 pub fn provenance(decided_by: &str, on_behalf_of: Option<&str>) -> String {
     let on_behalf = on_behalf_of
-        .map(|a| format!(" for {a}"))
+        .map(|a| format!(" for {}", display_safe(a)))
         .unwrap_or_default();
-    format!("(decided by {decided_by}{on_behalf}, pending review)")
+    format!(
+        "(decided by {}{on_behalf}, pending review)",
+        display_safe(decided_by)
+    )
 }
 
 /// The audit entry with `--json`; otherwise `<object id> <what> (decided by ..., pending review)`.
@@ -55,8 +59,9 @@ pub fn print_decision(e: &AuditEntry, what: &str, json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(e)?);
     } else {
         println!(
-            "{} {what} {}",
-            e.object_id,
+            "{} {} {}",
+            display_safe(&e.object_id),
+            display_safe(what),
             provenance(&e.actor, e.on_behalf_of.as_deref())
         );
     }

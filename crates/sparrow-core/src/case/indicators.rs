@@ -213,6 +213,9 @@ pub fn add_indicator(
             "an indicator value must not be empty".into(),
         ));
     }
+    if let Some(n) = note {
+        crate::case::text::check_text("a note", n)?;
+    }
     let id = indicator_id(tenant_key, ty, value);
     decide(conn, actor, &id, "add_ioc", |tx, before, ts| {
         if before.is_some() {
@@ -241,6 +244,9 @@ pub fn set_verdict(
     verdict: Verdict,
     note: Option<&str>,
 ) -> Result<AuditEntry> {
+    if let Some(n) = note {
+        crate::case::text::check_text("a note", n)?;
+    }
     decide(
         conn,
         actor,
