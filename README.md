@@ -253,6 +253,9 @@ sparrow rules lint | test | list                   # check, test and list the ru
 sparrow ioc list --case case.duckdb               # also add|set-verdict|remove [--agent ID] [--analyst NAME];
                                                   # --include-removed lists removed ones too
 sparrow finding set-status ID STATUS [--reason R] --case case.duckdb   # also assign ID NAME, ack-rule-update ID
+sparrow timeline-entry propose --time T --title X --phase P --evidence TABLE:KEY... --case case.duckdb
+                                                  # also verify ID, reject ID --reason R, edit ID [--title ...]
+sparrow note add finding:ID|entry:ID|ioc:ID|TABLE:KEY --text "..." --case case.duckdb
 sparrow audit verify --case case.duckdb           # check the audit chain (exit 3 when broken;
                                                   # --acknowledge [--agent ID] records a break)
 sparrow audit log --case case.duckdb              # the audit trail; --object TYPE:ID for one object
@@ -266,7 +269,8 @@ Add `--json` to any command for machine-readable output. Exit codes:
   reconcile; `verify`: a record no longer matches its source;
 - 3: the audit chain is broken (`audit verify`, and any write refused because of it);
 - 4: the case is open by another writer;
-- 5: an invalid agent decision (a bad status or verdict, a missing reason, an unknown object); nothing was written.
+- 5: an invalid agent decision (a bad status, verdict, phase or time, a missing reason, an unknown object, an
+  evidence reference not in the case); nothing was written.
 
 With `--json`, errors are also printed to stdout as `{"error": "..."}`.
 

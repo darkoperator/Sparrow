@@ -145,6 +145,16 @@ enum Command {
         #[command(subcommand)]
         command: cmd::finding::FindingCommand,
     },
+    /// Curated timeline entries: propose, verify, reject, edit
+    TimelineEntry {
+        #[command(subcommand)]
+        command: cmd::timeline_entry::TimelineEntryCommand,
+    },
+    /// Notes on findings, timeline entries, indicators and evidence rows
+    Note {
+        #[command(subcommand)]
+        command: cmd::note::NoteCommand,
+    },
     /// The hash-chained audit trail of agent decisions and reviews
     Audit {
         #[command(subcommand)]
@@ -625,6 +635,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Some(Command::Rules { command }) => cmd_rules(command, json),
         Some(Command::Ioc { command }) => cmd_ioc(command, json),
         Some(Command::Finding { command }) => cmd::finding::run(command, json),
+        Some(Command::TimelineEntry { command }) => cmd::timeline_entry::run(command, json),
+        Some(Command::Note { command }) => cmd::note::run(command, json),
         Some(Command::Audit { command }) => match command {
             AuditCommand::Verify {
                 case,

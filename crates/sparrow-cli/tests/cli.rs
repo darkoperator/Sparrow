@@ -1887,3 +1887,205 @@ fn a_write_on_a_broken_chain_exits_3() {
     );
     assert_eq!(finding_row(&case).0, "in_review");
 }
+
+/// A fresh case with provenance for signins:k1 and ual_events:a:b.
+fn case_with_evidence(dir: &std::path::Path) -> std::path::PathBuf {
+    let case = fresh_case(dir);
+    let conn = duckdb::Connection::open(&case).unwrap();
+    conn.execute_batch(
+        "INSERT INTO collections (tool, root_path, sparrow_version, tenant_key) VALUES ('invictus', '/e', 't', 't1');
+         INSERT INTO source_files (collection_id, rel_path, size_bytes, sha256, status) VALUES (1, 's.json', 9, 'aa', 'parsed');
+         INSERT INTO record_sources (table_name, record_key, file_id, record_ordinal, line_start, line_end, byte_offset,
+                                     byte_length, raw_sha256) VALUES
+             ('signins', 'k1', 1, 0, 1, 1, 0, 5, 'r1'), ('ual_events', 'a:b', 1, 1, 2, 2, 5, 4, 'r2');",
+    )
+    .unwrap();
+    case
+}
+
+#[test]
+fn timeline_entries_and_notes_are_agent_decisions() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = case_with_evidence(dir.path());
+    let run = |args: &[&str], code: i32| {
+        json_out(
+            sparrow()
+                .env_remove("SPARROW_AGENT")
+                .env_remove("SPARROW_ANALYST")
+                .arg("--json")
+                .args(args)
+                .args(["--agent", "claude", "--analyst", "carlos", "--case"])
+                .arg(&case),
+            code,
+        )
+    };
+    let p = run(
+        &[
+            "timeline-entry",
+            "propose",
+            "--time",
+            "2026-08-03T09:00:00Z",
+            "--title",
+            "AiTM sign-in",
+            "--narrative",
+            "replayed session",
+            "--phase",
+            "initial_access",
+            "--evidence",
+            "signins:k1",
+            "--evidence",
+            "ual_events:a:b",
+            "--tenant",
+            "t1",
+        ],
+        0,
+    );
+    assert_eq!(p["action"], "propose_entry");
+    assert_eq!(p["actor"], "agent:claude");
+    assert_eq!(p["on_behalf_of"], "analyst:carlos");
+    assert_eq!(
+        p["after"]["evidence"],
+        serde_json::json!(["signins:k1", "ual_events:a:b"])
+    );
+    let id = p["object_id"].as_str().unwrap().to_string();
+    let v = run(&["timeline-entry", "verify", &id], 0);
+    assert_eq!(v["after"]["status"], "verified");
+    // Editing the verified entry proposes a successor.
+    let e = run(
+        &[
+            "timeline-entry",
+            "edit",
+            &id,
+            "--title",
+            "AiTM sign-in from a VPS",
+        ],
+        0,
+    );
+    assert_eq!(e["action"], "propose_entry");
+    let new_id = e["object_id"].as_str().unwrap().to_string();
+    assert_ne!(new_id, id);
+    assert_eq!(e["after"]["supersedes"], id.as_str());
+    let r = run(
+        &[
+            "timeline-entry",
+            "reject",
+            &new_id,
+            "--reason",
+            "keep the first",
+        ],
+        0,
+    );
+    assert_eq!(r["reason"], "keep the first");
+    let n = run(
+        &[
+            "note",
+            "add",
+            &format!("entry:{id}"),
+            "--text",
+            "a,b\"c\nd|e 🔥",
+        ],
+        0,
+    );
+    assert_eq!(
+        (n["action"].as_str(), n["after"]["text"].as_str()),
+        (Some("add_note"), Some("a,b\"c\nd|e 🔥"))
+    );
+    run(&["note", "add", "ual_events:a:b", "--text", "seen"], 0);
+    sparrow()
+        .args(["timeline-entry", "verify", &new_id, "--case"])
+        .arg(&case)
+        .assert()
+        .code(5);
+    let log = json_out(
+        sparrow()
+            .args(["--json", "audit", "log", "--case"])
+            .arg(&case),
+        0,
+    );
+    let actions: Vec<&str> = log["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["action"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        actions,
+        [
+            "propose_entry",
+            "verify_entry",
+            "propose_entry",
+            "reject_entry",
+            "add_note",
+            "add_note"
+        ]
+    );
+}
+
+#[test]
+fn invalid_timeline_and_note_input_exits_5_and_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = case_with_evidence(dir.path());
+    for args in [
+        vec![
+            "timeline-entry",
+            "propose",
+            "--time",
+            "yesterday",
+            "--title",
+            "t",
+            "--phase",
+            "recon",
+        ],
+        vec![
+            "timeline-entry",
+            "propose",
+            "--time",
+            "2026-08-03T09:00:00Z",
+            "--title",
+            "t",
+            "--phase",
+            "lateral",
+        ],
+        vec![
+            "timeline-entry",
+            "propose",
+            "--time",
+            "2026-08-03T09:00:00Z",
+            "--title",
+            "t",
+            "--phase",
+            "recon",
+            "--evidence",
+            "signins:nope",
+        ],
+        vec![
+            "timeline-entry",
+            "propose",
+            "--time",
+            "2026-08-03T09:00:00Z",
+            "--title",
+            "t",
+            "--phase",
+            "recon",
+            "--evidence",
+            "nocolon",
+        ],
+        vec!["timeline-entry", "verify", "nope"],
+        vec!["timeline-entry", "reject", "nope", "--reason", "x"],
+        vec!["note", "add", "finding:nope", "--text", "x"],
+        vec!["note", "add", "signins:k1", "--text", "  "],
+    ] {
+        let v = json_out(
+            sparrow().arg("--json").args(&args).arg("--case").arg(&case),
+            5,
+        );
+        assert!(v["error"].is_string(), "{args:?}: {v}");
+    }
+    let log = json_out(
+        sparrow()
+            .args(["--json", "audit", "log", "--case"])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(log["entries"].as_array().unwrap().len(), 0);
+}

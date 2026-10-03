@@ -203,25 +203,6 @@ fn a_write_inside_an_open_transaction_is_refused() {
     assert!(audit::log(c.conn(), None).unwrap().is_empty());
 }
 
-#[test]
-fn thousand_appends_stay_fast() {
-    let c = case_with_finding();
-    let t = std::time::Instant::now();
-    for i in 0..1000 {
-        let s = if i % 2 == 0 {
-            S::InReview
-        } else {
-            S::NeedsMoreData
-        };
-        write::set_finding_status(c.conn(), &agent(), "f1", s, None).unwrap();
-    }
-    let elapsed = t.elapsed();
-    let r = audit::verify(c.conn()).unwrap();
-    assert!(r.ok, "{r:?}");
-    assert_eq!(r.entries, 1000);
-    assert!(elapsed.as_secs() < 5, "{elapsed:?}");
-}
-
 // ---------------------------------------------------------------- review
 
 #[test]

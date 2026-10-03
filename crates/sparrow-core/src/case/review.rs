@@ -7,7 +7,7 @@
 use crate::case::actor::Reviewer;
 use crate::case::audit::{self, AuditEntry};
 use crate::case::write::{finding_state, in_tx};
-use crate::case::{indicators, revert};
+use crate::case::{indicators, revert, timeline_entries};
 use crate::{Error, Result};
 use duckdb::{Connection, params};
 use serde_json::{Value, json};
@@ -52,9 +52,8 @@ fn state(conn: &Connection, object_type: &str, object_id: &str) -> Result<Value>
         "finding" => finding_state(conn, object_id),
         "indicator" => indicators::indicator_state(conn, object_id)?
             .ok_or_else(|| Error::Decision(format!("unknown indicator {object_id}"))),
-        "timeline_entry" => Err(Error::Decision(
-            "timeline entries are reviewed from Task 3".into(),
-        )),
+        "timeline_entry" => timeline_entries::entry_state(conn, object_id)?
+            .ok_or_else(|| Error::Decision(format!("unknown timeline entry {object_id}"))),
         other => Err(Error::Decision(format!("cannot review a {other}"))),
     }
 }
@@ -84,6 +83,11 @@ fn check_fresh(
     if latest != decision_seq {
         return Err(Error::Decision(format!(
             "{object_type} {object_id} changed since decision {decision_seq} (latest is {latest}); reload and review again"
+        )));
+    }
+    if object_type == "timeline_entry" && current["status"] == "superseded" {
+        return Err(Error::Decision(format!(
+            "timeline entry {object_id} is superseded; review the entry that superseded it"
         )));
     }
     let review_state = current["review_state"].as_str().unwrap_or("none");

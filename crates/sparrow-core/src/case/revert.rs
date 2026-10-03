@@ -1,5 +1,6 @@
 //! What a discard restores (Addendum D.4): only the decision-bearing fields the discarded decision changed (its
-//! audit `before` vs `after`), so later changes by detection (`rule_updated`) or to other fields survive.
+//! audit `before` vs `after`), so later changes by detection (`rule_updated`) or to other fields survive. Timeline
+//! entries have their own revert (evidence rows, a superseded entry): `timeline_entries::revert`.
 
 use crate::case::actor::Reviewer;
 use crate::case::audit::AuditEntry;
@@ -48,9 +49,7 @@ pub(crate) fn apply(
         "finding" => ("findings", "finding_id", FINDING),
         "indicator" => ("case_indicators", "indicator_id", INDICATOR),
         "timeline_entry" => {
-            return Err(Error::Decision(
-                "timeline entries are reviewed from Task 3".into(),
-            ));
+            return crate::case::timeline_entries::revert(tx, object_id, d);
         }
         other => return Err(Error::Decision(format!("cannot review a {other}"))),
     };

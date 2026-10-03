@@ -3,3 +3,5 @@
 pub mod actor;
 pub mod audit;
 pub mod finding;
+pub mod note;
+pub mod timeline_entry;
