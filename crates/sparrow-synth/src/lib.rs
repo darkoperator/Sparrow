@@ -4,12 +4,14 @@
 //! reserved or synthetic; nothing comes from a real capture.
 
 pub mod baseline;
+pub mod cache;
 pub mod check;
 pub mod conformance;
 pub mod coverage;
 pub mod error;
 pub mod events;
 pub mod expect;
+pub mod fingerprint;
 pub mod generate;
 pub mod geo;
 pub mod keys;

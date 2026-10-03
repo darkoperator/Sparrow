@@ -223,6 +223,13 @@ cargo test --workspace -- --ignored       # the heavy job: every-scenario x ever
 Heavy tests carry `#[ignore = "heavy: run with cargo test --workspace -- --ignored"]`; each matrix keeps one
 fast representative (bec-aitm for every collector) in the default job. Run both before merging.
 
+The tests that need a generated tree, or an ingested and profiled case of one, share a cache under
+`target/tmp/sparrow-cache/<build fingerprint>/` (`sparrow_synth::cache`): a tree or a case is built once per
+run, whichever test binary asks first, and every test gets its own copy of the case file. The fingerprint hashes
+the generator, parsers, profile, schema, rules, scenarios, lock file and compiler, so any source edit starts a new
+cache; `cargo clean` removes it. `SPARROW_NO_CACHE=1 cargo test --workspace` bypasses it (every tree generated and
+every case ingested in memory afresh, as before): both modes must pass with the same counts.
+
 ## Use
 
 ```bash

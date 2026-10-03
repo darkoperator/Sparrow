@@ -5,10 +5,8 @@ use sparrow_core::Case;
 use sparrow_core::fixtures::{self, csv_line};
 use sparrow_core::ingest::parser::ParserRegistry;
 use sparrow_core::ingest::{IngestOptions, ingest_path};
-use sparrow_synth::generate::generate_to_dir;
 use sparrow_synth::options::{Collector, GenerateOptions, PsEdition};
 use sparrow_synth::scenario::load;
-use sparrow_synth::testing::ingest_generated;
 use synth::*;
 
 #[test]
@@ -45,11 +43,10 @@ fn devices_and_groups_load() {
 
 #[test]
 fn json_written_to_a_csv_path_is_read_as_json() {
-    let dir = tempfile::tempdir().unwrap();
     let mut o = GenerateOptions::new(Collector::Invictus, 5);
     o.invictus_devices_json = true;
-    let m = generate_to_dir(&load("bec-aitm").unwrap(), &o, dir.path()).unwrap();
-    let case = ingest_generated(dir.path(), &m);
+    let got = synth::cached(&load("bec-aitm").unwrap(), &o);
+    let (m, case) = (got.tree.manifest.clone(), got.case);
     assert_eq!(count(&case, "SELECT count(*) FROM devices"), 18);
     let r = sparrow_synth::check::check_without_detection(&m, &case).unwrap();
     assert!(r.ok, "{:#?}", r.problems);

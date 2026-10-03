@@ -47,15 +47,14 @@ fn alerts_and_secure_score_load_in_every_culture() {
         (PsEdition::Ps51, Culture::DeDe),
     ] {
         let s = load("bec-aitm").unwrap();
-        let dir = tempfile::tempdir().unwrap();
         let mut o = sparrow_synth::options::GenerateOptions::new(
             sparrow_synth::options::Collector::Invictus,
             9,
         );
         o.ps = ps;
         o.culture = culture;
-        let m = sparrow_synth::generate::generate_to_dir(&s, &o, dir.path()).unwrap();
-        let case = sparrow_synth::testing::ingest_generated(dir.path(), &m);
+        let got = synth::cached(&s, &o);
+        let (m, case) = (got.tree.manifest.clone(), got.case);
         assert_eq!(count(&case, "SELECT count(*) FROM secure_score"), 8);
         assert_eq!(
             count(

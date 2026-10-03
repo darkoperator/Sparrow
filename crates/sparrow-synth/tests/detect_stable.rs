@@ -5,10 +5,11 @@
 
 use sha2::{Digest, Sha256};
 use sparrow_core::Case;
-use sparrow_synth::generate::generate_to_dir;
+use sparrow_synth::cache::{Cache, Stage};
 use sparrow_synth::options::{Collector, GenerateOptions};
-use sparrow_synth::scenario::load;
-use sparrow_synth::testing::ingest_generated_detected;
+
+static CACHE: std::sync::LazyLock<Cache> =
+    std::sync::LazyLock::new(|| sparrow_synth::test_cache!());
 
 fn dump(case: &Case, sql: &str) -> String {
     let mut st = case.conn().prepare(sql).unwrap();
@@ -26,14 +27,9 @@ fn dump(case: &Case, sql: &str) -> String {
 }
 
 fn digest(scenario: &str, c: Collector) -> String {
-    let dir = tempfile::tempdir().unwrap();
-    let m = generate_to_dir(
-        &load(scenario).unwrap(),
-        &GenerateOptions::new(c, 1),
-        dir.path(),
-    )
-    .unwrap();
-    let case = ingest_generated_detected(dir.path(), &m);
+    let case = CACHE
+        .builtin_case(scenario, &GenerateOptions::new(c, 1), Stage::Detected)
+        .case;
     let mut h = Sha256::new();
     for sql in [
         "SELECT finding_id, fingerprint, tenant_key, rule_id, CAST(rule_version AS VARCHAR), rule_sha256, severity, title, actor_upn, \

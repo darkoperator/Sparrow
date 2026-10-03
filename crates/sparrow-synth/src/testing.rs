@@ -33,17 +33,20 @@ pub fn ingest_generated_with_rules(
     set: &sparrow_core::detect::load::RuleSet,
 ) -> Case {
     let mut case = ingest_and_profile(dir, manifest);
-    let opts = sparrow_core::detect::DetectOptions {
-        now: Some(manifest.collected_at + Duration::days(1)),
-        ..Default::default()
-    };
-    if let Err(e) = sparrow_core::detect::run::run(&mut case, set, &opts) {
-        panic!("detection of {} failed: {e}", manifest.root);
-    }
+    detect_into(&mut case, manifest, set);
     case
 }
 
 fn ingest_and_profile(dir: &Path, manifest: &Manifest) -> Case {
+    let mut case = Case::in_memory().expect("in-memory case");
+    ingest_into(&mut case, dir, manifest);
+    case
+}
+
+/// Ingest `<dir>/<manifest.root>` into `case` (with the manifest's `ingest_culture`) and profile
+/// it with `--geoip-dir <dir>/<geoip_dir>` at `as_of = collected_at + 1 day`. Panics with the
+/// cause on failure.
+pub fn ingest_into(case: &mut Case, dir: &Path, manifest: &Manifest) {
     let date_order = manifest
         .ingest_culture
         .as_deref()
@@ -52,9 +55,8 @@ fn ingest_and_profile(dir: &Path, manifest: &Manifest) -> Case {
         date_order,
         ..IngestOptions::default()
     };
-    let mut case = Case::in_memory().expect("in-memory case");
     let root = dir.join(&manifest.root);
-    if let Err(e) = ingest_path(&mut case, &root, &ParserRegistry::builtin(), &opts) {
+    if let Err(e) = ingest_path(case, &root, &ParserRegistry::builtin(), &opts) {
         panic!("ingest of {} failed: {e}", root.display());
     }
     let profile = ProfileOptions {
@@ -62,8 +64,22 @@ fn ingest_and_profile(dir: &Path, manifest: &Manifest) -> Case {
         geoip_dir: manifest.geoip_dir.as_ref().map(|g| dir.join(g)),
         as_of: Some(manifest.collected_at + Duration::days(1)),
     };
-    if let Err(e) = refresh(&mut case, &profile) {
+    if let Err(e) = refresh(case, &profile) {
         panic!("profile of {} failed: {e}", root.display());
     }
-    case
+}
+
+/// The detection step of [`ingest_generated_detected`] on an already ingested case.
+pub fn detect_into(
+    case: &mut Case,
+    manifest: &Manifest,
+    set: &sparrow_core::detect::load::RuleSet,
+) {
+    let opts = sparrow_core::detect::DetectOptions {
+        now: Some(manifest.collected_at + Duration::days(1)),
+        ..Default::default()
+    };
+    if let Err(e) = sparrow_core::detect::run::run(case, set, &opts) {
+        panic!("detection of {} failed: {e}", manifest.root);
+    }
 }

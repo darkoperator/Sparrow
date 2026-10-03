@@ -3,10 +3,13 @@
 //! there only to produce a column name.
 
 use serde_json::Value;
-use sparrow_synth::generate::generate_to_dir;
+use sparrow_synth::cache::Cache;
 use sparrow_synth::options::{Collector, GenerateOptions};
 use sparrow_synth::scenario::load;
 use std::collections::{BTreeMap, BTreeSet};
+
+static CACHE: std::sync::LazyLock<Cache> =
+    std::sync::LazyLock::new(|| sparrow_synth::test_cache!());
 use std::path::Path;
 
 const OFFICE: &str = "d3590ed6-52b3-4102-aeff-aad2292ab01c";
@@ -25,15 +28,14 @@ fn json_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
 /// Every AuditData object of the tree's raw `*_Logs` / expanded UAL files (the flattened
 /// `Simple_*` files are derived from these).
 fn audit_records(name: &str) -> Vec<Value> {
-    let dir = tempfile::tempdir().unwrap();
-    generate_to_dir(
-        &load(name).unwrap(),
-        &GenerateOptions::new(Collector::Hawk4, 1),
-        dir.path(),
-    )
-    .unwrap();
+    let tree = CACHE
+        .tree(
+            &load(name).unwrap(),
+            &GenerateOptions::new(Collector::Hawk4, 1),
+        )
+        .unwrap();
     let mut files = Vec::new();
-    json_files(dir.path(), &mut files);
+    json_files(&tree.dir, &mut files);
     let mut out = Vec::new();
     for f in files {
         let n = f.file_name().unwrap().to_string_lossy().to_string();

@@ -1,3 +1,4 @@
+use sparrow_synth::cache::{Cache, CachedTree};
 use sparrow_synth::conformance::{
     conform_layouts, conform_real, profile_dir, recorded_culture_forms,
 };
@@ -5,6 +6,27 @@ use sparrow_synth::generate::generate_to_dir;
 use sparrow_synth::options::{Collector, Culture, GenerateOptions, PsEdition};
 use sparrow_synth::scenario::{builtin_names, load};
 use std::collections::{BTreeMap, BTreeSet};
+
+static CACHE: std::sync::LazyLock<Cache> =
+    std::sync::LazyLock::new(|| sparrow_synth::test_cache!());
+
+/// A read-only generated tree from the cross-binary test cache (trees are keyed by scenario and
+/// every option, so the same matrix point is generated once for the whole run).
+struct Tree(CachedTree);
+
+impl Tree {
+    fn path(&self) -> &std::path::Path {
+        &self.0.dir
+    }
+}
+
+fn cached(name: &str, o: &GenerateOptions) -> Tree {
+    Tree(
+        CACHE
+            .tree(&load(name).unwrap(), o)
+            .unwrap_or_else(|e| panic!("cached tree of {name}: {e}")),
+    )
+}
 
 /// Every per-culture date form the layouts record must really be produced by the generator:
 /// a per-culture key is a claim that the writer renders that column in the host culture, so a
@@ -20,11 +42,10 @@ fn no_dead_culture_forms_are_recorded() {
         for c in Collector::ALL {
             for ps in [PsEdition::Ps7, PsEdition::Ps51] {
                 for culture in [Culture::EnUs, Culture::EnGb, Culture::DeDe] {
-                    let dir = tempfile::tempdir().unwrap();
                     let mut o = GenerateOptions::new(*c, 5);
                     o.ps = ps;
                     o.culture = culture;
-                    generate_to_dir(&load(name).unwrap(), &o, dir.path()).unwrap();
+                    let dir = cached(name, &o);
                     for (art, ap) in &profile_dir(dir.path()).unwrap().artifacts {
                         for (col, forms) in &ap.dates {
                             seen.entry((art.clone(), col.clone(), format!("{culture:?}")))
@@ -48,11 +69,7 @@ fn no_dead_culture_forms_are_recorded() {
     assert!(dead.is_empty(), "recorded but never generated: {dead:#?}");
 }
 
-fn r#gen(
-    name: &str,
-    c: Collector,
-    ps: PsEdition,
-) -> (tempfile::TempDir, sparrow_synth::manifest::Manifest) {
+fn r#gen(name: &str, c: Collector, ps: PsEdition) -> (Tree, sparrow_synth::manifest::Manifest) {
     r#gen_culture(name, c, ps, Culture::EnUs)
 }
 
@@ -61,11 +78,24 @@ fn r#gen_culture(
     c: Collector,
     ps: PsEdition,
     culture: Culture,
+) -> (Tree, sparrow_synth::manifest::Manifest) {
+    let mut o = GenerateOptions::new(c, 5);
+    o.ps = ps;
+    o.culture = culture;
+    let dir = cached(name, &o);
+    let m = dir.0.manifest.clone();
+    (dir, m)
+}
+
+/// A private tree a test may write into (the shared cached ones are read-only).
+fn gen_fresh(
+    name: &str,
+    c: Collector,
+    ps: PsEdition,
 ) -> (tempfile::TempDir, sparrow_synth::manifest::Manifest) {
     let dir = tempfile::tempdir().unwrap();
     let mut o = GenerateOptions::new(c, 5);
     o.ps = ps;
-    o.culture = culture;
     let m = generate_to_dir(&load(name).unwrap(), &o, dir.path()).unwrap();
     (dir, m)
 }
@@ -155,9 +185,8 @@ fn ual_creation_date_kind_is_one_choice_per_tree() {
     ];
     let mut seen: BTreeSet<String> = BTreeSet::new();
     for seed in 1..=8u64 {
-        let dir = tempfile::tempdir().unwrap();
         let o = GenerateOptions::new(Collector::Hawk4, seed);
-        generate_to_dir(&load("bec-aitm").unwrap(), &o, dir.path()).unwrap();
+        let dir = cached("bec-aitm", &o);
         let per_file = creation_date_forms(dir.path());
         assert!(!per_file.is_empty(), "seed {seed}: no raw UAL JSON found");
         for (file, forms) in &per_file {
@@ -708,7 +737,7 @@ fn conform_real_compares_portal_exports_beside_a_hawk_capture() {
 #[test]
 fn a_real_mode_report_prints_no_values() {
     // A stand-in "real" tree: a generated one with recognisable values planted in it.
-    let (dir, m) = r#gen("bec-aitm", Collector::Hawk4, PsEdition::Ps7);
+    let (dir, m) = gen_fresh("bec-aitm", Collector::Hawk4, PsEdition::Ps7);
     let root = dir.path().join(&m.root);
     let secret_user = "secret.person@contoso.example";
     let secret_ip = "203.0.113.99";

@@ -1,21 +1,30 @@
+use sparrow_synth::cache::{Cache, CachedCase, Stage};
 use sparrow_synth::check::check_without_detection as check;
-use sparrow_synth::generate::{generate, generate_to_dir};
+use sparrow_synth::generate::generate;
 use sparrow_synth::options::{Collector, Culture, GenerateOptions, PsEdition};
 use sparrow_synth::reserved::scan_text;
 use sparrow_synth::scenario::{builtin_names, load};
-use sparrow_synth::testing::ingest_generated;
 use sparrow_synth::tree::MemSink;
+
+static CACHE: std::sync::LazyLock<Cache> =
+    std::sync::LazyLock::new(|| sparrow_synth::test_cache!());
+
+/// The tree and a private profiled case of `s`/`o`, from the cross-binary test cache.
+fn cached(s: &sparrow_synth::scenario::Scenario, o: &GenerateOptions) -> CachedCase {
+    CACHE
+        .case(s, o, Stage::Profiled)
+        .unwrap_or_else(|e| panic!("cached case: {e}"))
+}
 
 fn opts(seed: u64) -> GenerateOptions {
     GenerateOptions::new(Collector::Hawk3, seed)
 }
 
 fn green(name: &str, o: &GenerateOptions) -> sparrow_synth::manifest::Manifest {
-    let dir = tempfile::tempdir().unwrap();
-    let m = generate_to_dir(&load(name).unwrap(), o, dir.path()).unwrap();
-    let report = check(&m, &ingest_generated(dir.path(), &m)).unwrap();
+    let got = cached(&load(name).unwrap(), o);
+    let report = check(&got.tree.manifest, &got.case).unwrap();
     assert!(report.ok, "{name} {o:?}: {:#?}", report.problems);
-    m
+    got.tree.manifest.clone()
 }
 
 /// Every built-in scenario but `volume`.
@@ -193,9 +202,8 @@ fn trees_are_deterministic_and_clean() {
 fn investigate_txt_flags(offset: i32) -> (u64, i64, i64) {
     let mut s = load("hawk-investigate").unwrap();
     s.tenant.host_utc_offset_minutes = offset;
-    let dir = tempfile::tempdir().unwrap();
-    let m = generate_to_dir(&s, &opts(46), dir.path()).unwrap();
-    let case = ingest_generated(dir.path(), &m);
+    let got = cached(&s, &opts(46));
+    let (m, case) = (got.tree.manifest.clone(), got.case);
     let report = check(&m, &case).unwrap();
     assert!(report.ok, "offset {offset}: {:#?}", report.problems);
     let q = |sql: &str| -> i64 { case.conn().query_row(sql, [], |r| r.get(0)).unwrap() };
@@ -231,10 +239,10 @@ fn format_list_admin_rule_flags_merge_only_on_a_utc_host() {
 fn hawk3_signins_are_available_not_collected_without_a_logged_window() {
     let mut s = load("hawk-investigate").unwrap();
     s.window.start -= chrono::Duration::days(20);
-    let dir = tempfile::tempdir().unwrap();
-    let m = generate_to_dir(&s, &opts(47), dir.path()).unwrap();
+    let got = cached(&s, &opts(47));
+    let m = got.tree.manifest.clone();
     assert_eq!(m.evidence["signins"].allowed, ["available_not_collected"]);
-    let report = check(&m, &ingest_generated(dir.path(), &m)).unwrap();
+    let report = check(&m, &got.case).unwrap();
     assert!(report.ok, "{:#?}", report.problems);
 }
 
@@ -288,15 +296,15 @@ fn csv_column(dir: &std::path::Path, root: &str, rel: &str, column: &str) -> Vec
 /// so without it that artifact has no 17-column file at all.
 #[test]
 fn hawk3_writes_the_17_column_rbac_changes() {
-    let dir = tempfile::tempdir().unwrap();
-    let m = generate_to_dir(&load("bec-aitm").unwrap(), &opts(51), dir.path()).unwrap();
-    let root = dir.path().join(&m.root);
+    let got = cached(&load("bec-aitm").unwrap(), &opts(51));
+    let m = got.tree.manifest.clone();
+    let root = got.tree.dir.join(&m.root);
     assert!(root.join("Tenant/RBAC_Changes.csv").exists());
     assert_eq!(
-        csv_header(dir.path(), &m.root, "Tenant/RBAC_Changes.csv"),
+        csv_header(&got.tree.dir, &m.root, "Tenant/RBAC_Changes.csv"),
         ADMIN17
     );
-    let simple = csv_header(dir.path(), &m.root, "Tenant/Simple_RBAC_Changes.csv");
+    let simple = csv_header(&got.tree.dir, &m.root, "Tenant/Simple_RBAC_Changes.csv");
     assert_eq!(
         simple,
         [
@@ -326,7 +334,12 @@ fn hawk3_writes_the_17_column_rbac_changes() {
         "Add-RoleGroupMember",
         "Remove-RoleGroupMember",
     ];
-    let cmdlets = csv_column(dir.path(), &m.root, "Tenant/RBAC_Changes.csv", "CmdletName");
+    let cmdlets = csv_column(
+        &got.tree.dir,
+        &m.root,
+        "Tenant/RBAC_Changes.csv",
+        "CmdletName",
+    );
     assert!(!cmdlets.is_empty(), "RBAC_Changes has no records");
     for cmdlet in &cmdlets {
         assert!(
@@ -336,7 +349,7 @@ fn hawk3_writes_the_17_column_rbac_changes() {
     }
 
     // The `synth check` gate still holds with the extra files.
-    let report = check(&m, &ingest_generated(dir.path(), &m)).unwrap();
+    let report = check(&m, &got.case).unwrap();
     assert!(report.ok, "{:#?}", report.problems);
 }
 
@@ -344,9 +357,8 @@ fn hawk3_writes_the_17_column_rbac_changes() {
 /// record, and the manifest's expectation matches.
 #[test]
 fn sparrow_loads_the_17_column_rbac_files_into_admin_audit_events() {
-    let dir = tempfile::tempdir().unwrap();
-    let m = generate_to_dir(&load("bec-aitm").unwrap(), &opts(52), dir.path()).unwrap();
-    let case = ingest_generated(dir.path(), &m);
+    let got = cached(&load("bec-aitm").unwrap(), &opts(52));
+    let (m, case) = (got.tree.manifest.clone(), got.case);
     let n: i64 = case
         .conn()
         .query_row("SELECT count(*) FROM admin_audit_events", [], |r| r.get(0))

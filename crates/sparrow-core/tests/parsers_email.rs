@@ -8,10 +8,8 @@ use sparrow_core::Case;
 use sparrow_core::fixtures::{self, csv_line};
 use sparrow_core::ingest::parser::ParserRegistry;
 use sparrow_core::ingest::{IngestOptions, ingest_path};
-use sparrow_synth::generate::generate_to_dir;
 use sparrow_synth::options::{Collector, GenerateOptions, PsEdition};
 use sparrow_synth::scenario::load;
-use sparrow_synth::testing::ingest_generated;
 use std::path::Path;
 use synth::*;
 
@@ -44,14 +42,11 @@ fn eml_headers_show_the_spoof_and_the_clean_message() {
 
 #[test]
 fn hawk_header_exports_load_with_findings() {
-    let dir = tempfile::tempdir().unwrap();
-    let m = generate_to_dir(
+    let got = synth::cached(
         &load("hawk-investigate").unwrap(),
         &GenerateOptions::new(Collector::Hawk4, 3),
-        dir.path(),
-    )
-    .unwrap();
-    let case = ingest_generated(dir.path(), &m);
+    );
+    let (m, case) = (got.tree.manifest.clone(), got.case);
     assert_eq!(
         count(
             &case,

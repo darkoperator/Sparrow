@@ -7,25 +7,66 @@ use sparrow_core::data::DataDirs;
 use sparrow_core::detect::coverage::BaselineAllow;
 use sparrow_core::detect::load::{LoadedRule, RuleSet, load_rules, rule_sha256};
 use sparrow_core::detect::rule::{Cond, Rule, RuleBody};
+use sparrow_synth::cache::{Cache, CachedTree, Stage};
 use sparrow_synth::check::{CheckReport, check, check_with, check_without_detection};
 use sparrow_synth::generate::generate_to_dir;
 use sparrow_synth::manifest::{Manifest, RuleExpect, RuleOutcome};
 use sparrow_synth::options::{Collector, GenerateOptions};
-use sparrow_synth::scenario::{At, builtin_names, load};
-use sparrow_synth::testing::{
-    ingest_generated, ingest_generated_detected, ingest_generated_with_rules,
-};
+use sparrow_synth::scenario::{At, Scenario, builtin_names, load};
+use sparrow_synth::testing::detect_into;
 use std::collections::BTreeMap;
 
-fn tree(name: &str, c: Collector) -> (tempfile::TempDir, Manifest) {
-    let dir = tempfile::tempdir().unwrap();
-    let m = generate_to_dir(
-        &load(name).unwrap(),
-        &GenerateOptions::new(c, 1),
-        dir.path(),
+static CACHE: std::sync::LazyLock<Cache> =
+    std::sync::LazyLock::new(|| sparrow_synth::test_cache!());
+
+/// A built-in scenario's tree (from the cross-binary test cache) with the means to get a private
+/// copy of its ingested + profiled case, or that case after detection.
+struct Tree {
+    /// Keeps a private (uncached) tree alive under `SPARROW_NO_CACHE=1`.
+    _cached: CachedTree,
+    scenario: Scenario,
+    opts: GenerateOptions,
+}
+
+impl Tree {
+    fn profiled(&self) -> Case {
+        CACHE
+            .case(&self.scenario, &self.opts, Stage::Profiled)
+            .unwrap_or_else(|e| panic!("cached case: {e}"))
+            .case
+    }
+
+    /// Ingested, profiled and detected with the built-in rules.
+    fn detected(&self) -> Case {
+        CACHE
+            .case(&self.scenario, &self.opts, Stage::Detected)
+            .unwrap_or_else(|e| panic!("cached case: {e}"))
+            .case
+    }
+
+    /// The profiled case with `set` run over it (a custom rule set).
+    fn with_rules(&self, m: &Manifest, set: &RuleSet) -> Case {
+        let mut case = self.profiled();
+        detect_into(&mut case, m, set);
+        case
+    }
+}
+
+fn tree(name: &str, c: Collector) -> (Tree, Manifest) {
+    let scenario = load(name).unwrap();
+    let opts = GenerateOptions::new(c, 1);
+    let cached = CACHE
+        .tree(&scenario, &opts)
+        .unwrap_or_else(|e| panic!("cached tree: {e}"));
+    let m = cached.manifest.clone();
+    (
+        Tree {
+            _cached: cached,
+            scenario,
+            opts,
+        },
+        m,
     )
-    .unwrap();
-    (dir, m)
 }
 
 fn builtin_set() -> RuleSet {
@@ -59,7 +100,7 @@ fn coverage_allow() -> BTreeMap<String, Vec<BaselineAllow>> {
 
 fn gate(name: &str, c: Collector) -> (CheckReport, Manifest, Case) {
     let (dir, m) = tree(name, c);
-    let case = ingest_generated_detected(dir.path(), &m);
+    let case = dir.detected();
     let report = check(&m, &case).unwrap();
     (report, m, case)
 }
@@ -165,7 +206,7 @@ fn gate_catches_a_missing_hit() {
         )
         .unwrap(),
     };
-    let case = ingest_generated_with_rules(dir.path(), &m, &set);
+    let case = dir.with_rules(&m, &set);
     let r = check_with(&m, &case, &set, &coverage_allow()).unwrap();
     assert!(!r.ok);
     assert!(
@@ -193,7 +234,7 @@ fn gate_catches_an_unexpected_baseline_hit() {
     let (dir, m) = tree("bec-aitm", Collector::Hawk4);
     let mut set = builtin_set();
     every_login_rule(&mut set);
-    let case = ingest_generated_with_rules(dir.path(), &m, &set);
+    let case = dir.with_rules(&m, &set);
     let r = check_with(&m, &case, &set, &coverage_allow()).unwrap();
     assert!(!r.ok);
     assert!(
@@ -213,7 +254,7 @@ fn baseline_allow_accepts_a_documented_exception() {
     let (dir, m) = tree("bec-aitm", Collector::Hawk4);
     let mut set = builtin_set();
     every_login_rule(&mut set);
-    let case = ingest_generated_with_rules(dir.path(), &m, &set);
+    let case = dir.with_rules(&m, &set);
     // Allow the background logins and every storyline kind that also logs in.
     let mut kinds: Vec<String> = m.storylines.iter().map(|s| s.kind.clone()).collect();
     kinds.push("baseline".to_string());
@@ -304,7 +345,7 @@ fn coverage_reports_a_correlated_rule_without_negative() {
 fn a_gap_not_applicable_is_checked_as_no_finding() {
     let (dir, mut m) = tree("bec-aitm", Collector::Hawk4);
     let set = builtin_set();
-    let case = ingest_generated_detected(dir.path(), &m);
+    let case = dir.detected();
     let fwd = m
         .rules
         .iter()
@@ -332,7 +373,7 @@ fn a_gap_not_applicable_is_checked_as_no_finding() {
     );
     // Without a finding on its records the same expectation passes (like NoEvidence).
     let (dir2, mut m2) = tree("bec-aitm", Collector::Hawk4);
-    let case2 = ingest_generated_detected(dir2.path(), &m2);
+    let case2 = dir2.detected();
     m2.rules.push(RuleExpect {
         rule_id: "SPW-HAWK-011".into(),
         storyline: "l-dismiss".into(),
@@ -355,7 +396,7 @@ fn a_tenant_wide_not_applicable_must_be_in_the_run_log() {
         "SPW-TEST-002",
         "requires: [identity_protection]\nsource: risky_users\nmatch:\n  risk_level: {exists: true}",
     );
-    let case = ingest_generated_with_rules(dir.path(), &m, &set);
+    let case = dir.with_rules(&m, &set);
     let story = m.storylines[0].id.clone();
     m.rules.push(RuleExpect {
         rule_id: "SPW-TEST-002".into(),
@@ -375,7 +416,7 @@ fn a_tenant_wide_not_applicable_must_be_in_the_run_log() {
     }
     // Claiming not_applicable for a licensed tenant while the run log says `ran` is caught.
     let (dir2, mut m2) = tree("bec-aitm", Collector::Hawk4);
-    let case2 = ingest_generated_with_rules(dir2.path(), &m2, &set);
+    let case2 = dir2.with_rules(&m2, &set);
     m2.capabilities
         .get_mut("identity_protection")
         .unwrap()
@@ -453,7 +494,7 @@ fn forwarding_in_the_ual_off_window_has_no_evidence_on_invictus() {
 #[test]
 fn the_gate_fails_when_detection_did_not_run() {
     let (dir, m) = tree("bec-aitm", Collector::Hawk4);
-    let case = ingest_generated(dir.path(), &m);
+    let case = dir.profiled();
     let r = check(&m, &case).unwrap();
     assert!(!r.ok);
     assert!(
@@ -477,7 +518,7 @@ fn the_gate_fails_on_a_partial_run() {
     let full = builtin_set();
     let mut partial = builtin_set();
     partial.rules.retain(|r| r.rule.id != "SPW-ID-010");
-    let case = ingest_generated_with_rules(dir.path(), &m, &partial);
+    let case = dir.with_rules(&m, &partial);
     let r = check_with(&m, &case, &full, &coverage_allow()).unwrap();
     assert!(!r.ok);
     assert!(
@@ -498,7 +539,7 @@ fn a_finding_citing_hit_and_baseline_records_fails() {
     let (dir, mut m) = tree("bec-aitm", Collector::Hawk4);
     let mut set = builtin_set();
     every_login_rule(&mut set);
-    let case = ingest_generated_with_rules(dir.path(), &m, &set);
+    let case = dir.with_rules(&m, &set);
     // Declare the AiTM storyline a hit of the custom rule: its login is one of the records the
     // (per-actor) finding cites, next to the background logins of the same user.
     m.rules.push(RuleExpect {
@@ -564,8 +605,8 @@ fn a_sign_in_interrupt_never_reaches_a_finding() {
         ("bec-aitm", Collector::Hawk4),
         ("bec-aitm", Collector::Invictus),
     ] {
-        let (dir, m) = tree(name, c);
-        let case = ingest_generated_detected(dir.path(), &m);
+        let (dir, _) = tree(name, c);
+        let case = dir.detected();
         let interrupts: i64 = case
             .conn()
             .query_row(

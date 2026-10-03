@@ -1,21 +1,30 @@
+use sparrow_synth::cache::{Cache, CachedCase, Stage};
 use sparrow_synth::check::check_without_detection as check;
-use sparrow_synth::generate::{generate, generate_to_dir, generate_with_policy};
+use sparrow_synth::generate::{generate, generate_with_policy};
 use sparrow_synth::options::{Collector, Culture, GenerateOptions, PsEdition, UalFormat};
 use sparrow_synth::reserved::scan_text;
 use sparrow_synth::scenario::{builtin_names, load};
-use sparrow_synth::testing::ingest_generated;
 use sparrow_synth::tree::{CulturePolicy, MemSink};
+
+static CACHE: std::sync::LazyLock<Cache> =
+    std::sync::LazyLock::new(|| sparrow_synth::test_cache!());
+
+/// The tree and a private profiled case of `s`/`o`, from the cross-binary test cache.
+fn cached(s: &sparrow_synth::scenario::Scenario, o: &GenerateOptions) -> CachedCase {
+    CACHE
+        .case(s, o, Stage::Profiled)
+        .unwrap_or_else(|e| panic!("cached case: {e}"))
+}
 
 fn opts(seed: u64) -> GenerateOptions {
     GenerateOptions::new(Collector::Invictus, seed)
 }
 
 fn green(name: &str, o: &GenerateOptions) -> sparrow_synth::manifest::Manifest {
-    let dir = tempfile::tempdir().unwrap();
-    let m = generate_to_dir(&load(name).unwrap(), o, dir.path()).unwrap();
-    let report = check(&m, &ingest_generated(dir.path(), &m)).unwrap();
+    let got = cached(&load(name).unwrap(), o);
+    let report = check(&got.tree.manifest, &got.case).unwrap();
     assert!(report.ok, "{name} {o:?}: {:#?}", report.problems);
-    m
+    got.tree.manifest.clone()
 }
 
 /// Fast representative of the every-scenario matrix below: bec-aitm on both PowerShell editions.
@@ -105,10 +114,10 @@ fn all_ambiguous_collection_needs_culture() {
     assert!(failing.files.iter().any(|f| f.status == "error"));
     // Ingesting with the culture (what `ingest_generated` passes) loads every file and `check`
     // is green: the collection really is only unusable without `--culture`.
-    let dir = tempfile::tempdir().unwrap();
-    let m = generate_to_dir(&s, &o, dir.path()).unwrap();
+    let got = cached(&s, &o);
+    let m = got.tree.manifest.clone();
     assert_eq!(m.ingest_culture.as_deref(), Some("en-GB"));
-    let case = ingest_generated(dir.path(), &m);
+    let case = got.case;
     let errors: i64 = case
         .conn()
         .query_row(
@@ -188,10 +197,10 @@ fn trees_are_deterministic_and_clean() {
 fn non_windows_log_sits_beside_output_and_the_project_is_the_collection() {
     let mut o = opts(28);
     o.non_windows = true;
-    let dir = tempfile::tempdir().unwrap();
-    let m = generate_to_dir(&load("business-basic").unwrap(), &o, dir.path()).unwrap();
+    let got = cached(&load("business-basic").unwrap(), &o);
+    let (m, dir) = (got.tree.manifest.clone(), got.tree.dir.clone());
     assert_eq!(m.root, "Output/Adatum_Example");
-    let log = std::fs::read(dir.path().join("Output\\LogFile.txt")).unwrap();
+    let log = std::fs::read(dir.join("Output\\LogFile.txt")).unwrap();
     assert!(log.starts_with(b"20") && !log.windows(2).any(|w| w == b"\r\n"));
     assert!(!m.files.iter().any(|f| f.rel_path.ends_with("LogFile.txt")));
     let trace = m
@@ -199,9 +208,9 @@ fn non_windows_log_sits_beside_output_and_the_project_is_the_collection() {
         .iter()
         .find(|f| f.artifact_id.as_deref() == Some("inv.message_trace"))
         .unwrap();
-    let bytes = std::fs::read(dir.path().join(&m.root).join(&trace.rel_path)).unwrap();
+    let bytes = std::fs::read(dir.join(&m.root).join(&trace.rel_path)).unwrap();
     assert!(!bytes.windows(2).any(|w| w == b"\r\n"), "LF line ends");
-    let report = check(&m, &ingest_generated(dir.path(), &m)).unwrap();
+    let report = check(&m, &got.case).unwrap();
     assert!(report.ok, "{:#?}", report.problems);
 }
 
@@ -209,8 +218,8 @@ fn non_windows_log_sits_beside_output_and_the_project_is_the_collection() {
 fn non_windows_triage_folder_keeps_the_literal_backslash_name() {
     let mut o = opts(29);
     o.non_windows = true;
-    let dir = tempfile::tempdir().unwrap();
-    let m = generate_to_dir(&load("bec-aitm").unwrap(), &o, dir.path()).unwrap();
+    let got = cached(&load("bec-aitm").unwrap(), &o);
+    let (m, dir) = (got.tree.manifest.clone(), got.tree.dir.clone());
     assert_eq!(m.root, "Output/Contoso_Example");
     // The collector's `Output\<TriageName>` has no separator on non-Windows, so it is one
     // directory literally named `Output\Triage-Contoso_Example` beside `Output/`, outside the
@@ -221,7 +230,7 @@ fn non_windows_triage_folder_keeps_the_literal_backslash_name() {
             .any(|f| f.artifact_id.as_deref() == Some("inv.user_applications")),
         "the unlisted triage file must not be in the manifest"
     );
-    let triage = dir.path().join("Output\\Triage-Contoso_Example");
+    let triage = dir.join("Output\\Triage-Contoso_Example");
     assert!(triage.is_dir(), "no literal-backslash triage folder");
     let names: Vec<String> = std::fs::read_dir(&triage)
         .unwrap()
@@ -231,6 +240,6 @@ fn non_windows_triage_folder_keeps_the_literal_backslash_name() {
         names.iter().any(|n| n.ends_with("-UserApplications.csv")),
         "{names:?}"
     );
-    let report = check(&m, &ingest_generated(dir.path(), &m)).unwrap();
+    let report = check(&m, &got.case).unwrap();
     assert!(report.ok, "{:#?}", report.problems);
 }

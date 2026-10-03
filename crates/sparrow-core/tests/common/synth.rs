@@ -2,85 +2,72 @@
 //! temporary Microsoft-Extractor-Suite tree, ingest and profile it, and compare it with the
 //! manifest. General on purpose: later tasks generate other collectors with it too.
 //!
-//! Every tree lives under `<CARGO_TARGET_TMPDIR>/synth-<test binary>/`, wiped once at first use
-//! in the process, so a run leaves nothing in the system temp dir. A built-in `(scenario,
-//! edition)` tree is generated once per test binary and cached on disk; each call re-ingests it
-//! into its own `Case`, so a test may mutate it. Inline scenarios (`invictus`) are never cached
-//! and own their `TempDir` again.
+//! A built-in `(scenario, edition)` is served by the cross-binary test cache
+//! (`sparrow_synth::cache`, under `<CARGO_TARGET_TMPDIR>/sparrow-cache/`): its tree is generated
+//! and its pristine ingested + profiled case file is built once for the whole run, whichever test
+//! binary asks first; each call gets its own COPY of that case, so a test may mutate it. The
+//! cached tree is read-only and shared. `SPARROW_NO_CACHE=1` makes every call generate and ingest
+//! afresh, as before the cache. Inline scenarios (`invictus`) are never cached; they live under
+//! `<CARGO_TARGET_TMPDIR>/synth-<test binary>/`.
 
 #![allow(dead_code)]
 
 use sparrow_core::Case;
+use sparrow_synth::cache::{Cache, CachedTree, Stage};
 use sparrow_synth::generate::generate_to_dir;
 use sparrow_synth::manifest::Manifest;
 use sparrow_synth::options::{Collector, GenerateOptions, PsEdition};
 use sparrow_synth::scenario::{Scenario, load};
 use sparrow_synth::testing::ingest_generated;
-use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{LazyLock, Mutex, MutexGuard};
+use std::sync::LazyLock;
 
 pub struct Generated {
     pub dir: PathBuf,
     pub manifest: Manifest,
     pub case: Case,
-    /// A custom tree's `TempDir`, kept alive until the `Generated` drops; cached built-in trees
-    /// live under `TREES` and need none.
+    /// A custom tree's `TempDir`, kept alive until the `Generated` drops.
     _tree: Option<tempfile::TempDir>,
+    /// With `SPARROW_NO_CACHE=1` the tree is private and goes with this value.
+    _owned: Option<CachedTree>,
 }
 
-/// The per-test-binary root under Cargo's target tmp dir, wiped once at first use. Cargo sets
-/// `CARGO_TARGET_TMPDIR` and `CARGO_CRATE_NAME` for integration test targets.
+/// The per-test-binary root for inline trees under Cargo's target tmp dir. Cargo sets
+/// `CARGO_TARGET_TMPDIR` and `CARGO_CRATE_NAME` for integration test targets. It is created, never
+/// wiped: every inline tree owns a `TempDir` that removes itself, and a wipe at first use would
+/// delete the trees of another test process running at the same time (cargo-nextest runs each
+/// test in its own process).
 static TREES: LazyLock<PathBuf> = LazyLock::new(|| {
     let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .join(format!("synth-{}", env!("CARGO_CRATE_NAME")));
-    let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("create synth test tree root");
     root
 });
 
-#[derive(Clone)]
-struct Cached {
-    dir: PathBuf,
-    manifest: Manifest,
-}
+static CACHE: LazyLock<Cache> = LazyLock::new(|| sparrow_synth::test_cache!());
 
-static CACHE: LazyLock<Mutex<BTreeMap<(String, PsEdition), Cached>>> =
-    LazyLock::new(|| Mutex::new(BTreeMap::new()));
-
-/// The cache lock, recovering from poisoning so a panicking generation does not cascade into
-/// unrelated tests.
-fn lock_cache() -> MutexGuard<'static, BTreeMap<(String, PsEdition), Cached>> {
-    CACHE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-/// A built-in scenario's tree: generated once per `(name, ps)`, ingested freshly per call.
+/// A built-in scenario's tree and case: from the cache (a private copy of the pristine case).
 pub fn builtin(name: &str, ps: PsEdition) -> Generated {
-    let key = (name.to_string(), ps);
-    let cached = {
-        let mut cache = lock_cache();
-        match cache.get(&key) {
-            Some(c) => c.clone(),
-            None => {
-                let dir = TREES.join(format!("{name}-{}", ps.as_str()));
-                let mut o = GenerateOptions::new(Collector::Invictus, 17);
-                o.ps = ps;
-                let manifest = generate_to_dir(&load(name).unwrap(), &o, &dir).unwrap();
-                let c = Cached { dir, manifest };
-                cache.insert(key, c.clone());
-                c
-            }
-        }
-    };
-    let case = ingest_generated(&cached.dir, &cached.manifest);
+    let mut o = GenerateOptions::new(Collector::Invictus, 17);
+    o.ps = ps;
+    let got = CACHE
+        .case(&load(name).unwrap(), &o, Stage::Profiled)
+        .unwrap_or_else(|e| panic!("cached case of {name}: {e}"));
     Generated {
-        dir: cached.dir,
-        manifest: cached.manifest,
-        case,
+        dir: got.tree.dir.clone(),
+        manifest: got.tree.manifest.clone(),
+        case: got.case,
         _tree: None,
+        _owned: Some(got.tree),
     }
+}
+
+/// Any scenario and options through the cache (keyed by the whole scenario and every option):
+/// the tree plus a private profiled case.
+pub fn cached(scenario: &Scenario, o: &GenerateOptions) -> sparrow_synth::cache::CachedCase {
+    CACHE
+        .case(scenario, o, Stage::Profiled)
+        .unwrap_or_else(|e| panic!("cached case: {e}"))
 }
 
 /// The custom-scenario variant, never cached: each call generates a fresh tree that the
@@ -99,6 +86,7 @@ pub fn invictus(scenario: &Scenario, ps: PsEdition, seed: u64) -> Generated {
         manifest,
         case,
         _tree: Some(dir),
+        _owned: None,
     }
 }
 

@@ -1,21 +1,30 @@
+use sparrow_synth::cache::{Cache, CachedCase, Stage};
 use sparrow_synth::check::check_without_detection as check;
 use sparrow_synth::generate::{generate, generate_to_dir};
 use sparrow_synth::options::{Collector, GenerateOptions, PsEdition};
 use sparrow_synth::reserved::scan_text;
 use sparrow_synth::scenario::{builtin_names, load};
-use sparrow_synth::testing::ingest_generated;
 use sparrow_synth::tree::MemSink;
+
+static CACHE: std::sync::LazyLock<Cache> =
+    std::sync::LazyLock::new(|| sparrow_synth::test_cache!());
+
+/// The tree and a private profiled case of `s`/`o`, from the cross-binary test cache.
+fn cached(s: &sparrow_synth::scenario::Scenario, o: &GenerateOptions) -> CachedCase {
+    CACHE
+        .case(s, o, Stage::Profiled)
+        .unwrap_or_else(|e| panic!("cached case: {e}"))
+}
 
 fn opts(seed: u64) -> GenerateOptions {
     GenerateOptions::new(Collector::Hawk4, seed)
 }
 
 fn green(name: &str, o: &GenerateOptions) -> sparrow_synth::manifest::Manifest {
-    let dir = tempfile::tempdir().unwrap();
-    let m = generate_to_dir(&load(name).unwrap(), o, dir.path()).unwrap();
-    let report = check(&m, &ingest_generated(dir.path(), &m)).unwrap();
+    let got = cached(&load(name).unwrap(), o);
+    let report = check(&got.tree.manifest, &got.case).unwrap();
     assert!(report.ok, "{name} {o:?}: {:#?}", report.problems);
-    m
+    got.tree.manifest.clone()
 }
 
 /// Every built-in scenario but `volume`.
@@ -208,13 +217,12 @@ fn a_csv_only_hawk4_sign_in_folder_says_the_result_was_not_collected() {
         };
 
     // With the JSON twins: the result is known and the availability note is absent.
-    let dir = tempfile::tempdir().unwrap();
-    let m = generate_to_dir(&scenario, &opts(5), dir.path()).unwrap();
+    let got = cached(&scenario, &opts(5));
     assert!(
-        !json_twins(dir.path()).is_empty(),
+        !json_twins(&got.tree.dir).is_empty(),
         "the tree has JSON twins"
     );
-    let case = ingest_generated(dir.path(), &m);
+    let case = got.case;
     let (total, unknown) = counts(&case);
     assert!(total > 0);
     assert_eq!(unknown, 0, "the JSON twin supersedes the CSV");

@@ -1,3 +1,4 @@
+use sparrow_synth::cache::{Cache, Stage};
 use sparrow_synth::check::check_without_detection as check;
 use sparrow_synth::generate::{generate, generate_to_dir, generate_zip};
 use sparrow_synth::options::{Collector, Culture, GenerateOptions, SigninExport};
@@ -6,6 +7,9 @@ use sparrow_synth::scenario::{builtin_names, load};
 use sparrow_synth::testing::ingest_generated;
 use sparrow_synth::tree::MemSink;
 use std::collections::BTreeSet;
+
+static CACHE: std::sync::LazyLock<Cache> =
+    std::sync::LazyLock::new(|| sparrow_synth::test_cache!());
 
 fn opts(seed: u64) -> GenerateOptions {
     GenerateOptions::new(Collector::Portal, seed)
@@ -60,9 +64,8 @@ fn generated_trees_contain_only_reserved_values() {
 #[test]
 fn portal_tree_checks_green() {
     for name in ["bec-aitm", "hawk-investigate", "business-basic"] {
-        let dir = tempfile::tempdir().unwrap();
-        let m = generate_to_dir(&load(name).unwrap(), &opts(11), dir.path()).unwrap();
-        let case = ingest_generated(dir.path(), &m);
+        let got = CACHE.builtin_case(name, &opts(11), Stage::Profiled);
+        let (m, case) = (got.tree.manifest.clone(), got.case);
         let report = check(&m, &case).unwrap();
         assert!(report.ok, "{name}: {:#?}", report.problems);
     }
@@ -74,24 +77,24 @@ fn portal_tree_checks_green() {
 /// value-level proof that both spellings load.
 #[test]
 fn xlsx_signin_export_checks_green() {
-    let dir = tempfile::tempdir().unwrap();
     let mut o = opts(3);
     o.signin_export = SigninExport::Xlsx;
-    let m = generate_to_dir(&load("bec-aitm").unwrap(), &o, dir.path()).unwrap();
+    let got = CACHE.builtin_case("bec-aitm", &o, Stage::Profiled);
+    let m = got.tree.manifest.clone();
     assert!(
         m.files
             .iter()
             .any(|f| f.rel_path.ends_with(".xlsx") && f.status == "parsed")
     );
-    let report = check(&m, &ingest_generated(dir.path(), &m)).unwrap();
+    let report = check(&m, &got.case).unwrap();
     assert!(report.ok, "{:#?}", report.problems);
 }
 
 #[test]
 fn check_reports_missing_extra_and_wrong_status() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut m = generate_to_dir(&load("bec-aitm").unwrap(), &opts(5), dir.path()).unwrap();
-    let case = ingest_generated(dir.path(), &m);
+    let got = CACHE.builtin_case("bec-aitm", &opts(5), Stage::Profiled);
+    let mut m = got.tree.manifest.clone();
+    let case = got.case;
     // Tamper with the manifest three ways; each must be reported.
     let t = m.tables.get_mut("ual_events").unwrap();
     t.keys.pop();
@@ -255,9 +258,9 @@ fn xlsx_export_is_deterministic() {
 
 #[test]
 fn check_reports_a_moved_sighting() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut m = generate_to_dir(&load("bec-aitm").unwrap(), &opts(6), dir.path()).unwrap();
-    let case = ingest_generated(dir.path(), &m);
+    let got = CACHE.builtin_case("bec-aitm", &opts(6), Stage::Profiled);
+    let mut m = got.tree.manifest.clone();
+    let case = got.case;
     let landed = m
         .storylines
         .iter_mut()
@@ -282,9 +285,9 @@ fn check_reports_a_moved_sighting() {
 
 #[test]
 fn check_reports_hash_count_capability_and_unlisted_sighting_problems() {
-    let dir = tempfile::tempdir().unwrap();
-    let m = generate_to_dir(&load("bec-aitm").unwrap(), &opts(12), dir.path()).unwrap();
-    let case = ingest_generated(dir.path(), &m);
+    let got = CACHE.builtin_case("bec-aitm", &opts(12), Stage::Profiled);
+    let m = got.tree.manifest.clone();
+    let case = got.case;
     assert!(check(&m, &case).unwrap().ok);
     assert!(m.tenant.domains.contains(&"contoso.example".to_string()));
 
@@ -422,11 +425,11 @@ fn portal_success_rows_have_an_empty_error_code_cell() {
     for export in [SigninExport::Csv, SigninExport::Xlsx] {
         let mut o = opts(3);
         o.signin_export = export;
-        let dir = tempfile::tempdir().unwrap();
-        let m = generate_to_dir(&load("bec-aitm").unwrap(), &o, dir.path()).unwrap();
+        let got = CACHE.builtin_case("bec-aitm", &o, Stage::Profiled);
+        let m = got.tree.manifest.clone();
         if export == SigninExport::Csv {
             let mut found = 0;
-            for entry in std::fs::read_dir(dir.path().join(&m.root)).unwrap() {
+            for entry in std::fs::read_dir(got.tree.dir.join(&m.root)).unwrap() {
                 let path = entry.unwrap().path();
                 if !path
                     .file_name()
@@ -446,7 +449,7 @@ fn portal_success_rows_have_an_empty_error_code_cell() {
         }
         // Through the parser: every Success row has error_code 0, none is unknown, and a
         // failure keeps its code.
-        let case = ingest_generated(dir.path(), &m);
+        let case = got.case;
         let n = |sql: &str| -> i64 { case.conn().query_row(sql, [], |r| r.get(0)).unwrap() };
         assert!(n("SELECT count(*) FROM signins WHERE status = 'Success'") > 0);
         assert_eq!(
@@ -557,9 +560,9 @@ fn both_message_trace_variants_load_the_same_subject() {
                 .expect("the message-trace summary");
             (sparrow_core::readers::text::decode(bytes).encoding, (), ())
         };
-        let dir = tempfile::tempdir().unwrap();
-        let m = generate_to_dir(&load("bec-aitm").unwrap(), &opts(seed), dir.path()).unwrap();
-        let case = ingest_generated(dir.path(), &m);
+        let case = CACHE
+            .builtin_case("bec-aitm", &opts(seed), Stage::Profiled)
+            .case;
         let q = |sql: &str| {
             case.conn()
                 .query_row(sql, [], |r| r.get::<_, i64>(0))
@@ -669,17 +672,15 @@ fn purview_creation_date_follows_the_export_version_of_the_tree() {
     // that exercises the fallback -- it has no `CreationTime`, which is where a month-first
     // misread of `dd/MM` would show. `purview_creation_date_falls_back_to_a_day_first_value`
     // tests that path on its own.
-    let dir = tempfile::tempdir().unwrap();
     let mut o = opts(seed);
     o.culture = Culture::EnGb;
-    let m = generate_to_dir(&load("bec-aitm").unwrap(), &o, dir.path()).unwrap();
-    assert!(check(&m, &ingest_generated(dir.path(), &m)).unwrap().ok);
+    let got = CACHE.builtin_case("bec-aitm", &o, Stage::Profiled);
+    assert!(check(&got.tree.manifest, &got.case).unwrap().ok);
 
     // And the instant survives either form: the check is green on a tree of each kind.
     for seed in 1..=8u64 {
-        let dir = tempfile::tempdir().unwrap();
-        let m = generate_to_dir(&load("bec-aitm").unwrap(), &opts(seed), dir.path()).unwrap();
-        let report = check(&m, &ingest_generated(dir.path(), &m)).unwrap();
+        let got = CACHE.builtin_case("bec-aitm", &opts(seed), Stage::Profiled);
+        let report = check(&got.tree.manifest, &got.case).unwrap();
         assert!(report.ok, "seed {seed}: {:#?}", report.problems);
     }
 }

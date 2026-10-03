@@ -19,6 +19,7 @@ use sparrow_core::ingest::{FileStatus, IngestOptions, ingest_collections, ingest
 use sparrow_core::profile::availability::EVIDENCE;
 use sparrow_core::profile::{ProfileOptions, refresh};
 use sparrow_core::verify::verify_record;
+use sparrow_synth::cache::{Cache, CachedTree, Stage};
 use sparrow_synth::check::check;
 use sparrow_synth::generate::generate_to_dir;
 use sparrow_synth::manifest::Manifest;
@@ -26,7 +27,6 @@ use sparrow_synth::options::{
     Collector, Culture, GenerateOptions, PsEdition, SigninExport, UalFormat,
 };
 use sparrow_synth::scenario::{At, Scenario, StoryKind, StorySpec, builtin_names, load};
-use sparrow_synth::testing::{ingest_generated, ingest_generated_detected};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -100,11 +100,37 @@ fn ingest_tree(g: &Generated) -> Case {
     case
 }
 
-/// One generated tree: the parent dir that holds `<manifest.root>` and the manifest.
+/// One generated tree: the parent dir that holds `<manifest.root>` and the manifest. The tree
+/// and the pristine ingested cases come from the cross-binary test cache (`sparrow_synth::cache`);
+/// every `profiled()` / `detected()` call is a private copy.
 struct Generated {
-    _dir: tempfile::TempDir,
+    /// Keeps a private (uncached) tree alive for the life of the value.
+    _tree: CachedTree,
     dir: PathBuf,
     manifest: Manifest,
+    scenario: Scenario,
+    opts: GenerateOptions,
+}
+
+static TEST_CACHE: LazyLock<Cache> = LazyLock::new(|| sparrow_synth::test_cache!());
+
+impl Generated {
+    fn case(&self, stage: Stage) -> Case {
+        TEST_CACHE
+            .case(&self.scenario, &self.opts, stage)
+            .unwrap_or_else(|e| panic!("cached case: {e}"))
+            .case
+    }
+
+    /// A private, ingested and profiled copy (what `ingest_generated` returned).
+    fn profiled(&self) -> Case {
+        self.case(Stage::Profiled)
+    }
+
+    /// A private, ingested, profiled and detected copy (`ingest_generated_detected`).
+    fn detected(&self) -> Case {
+        self.case(Stage::Detected)
+    }
 }
 
 static CACHE: LazyLock<Mutex<BTreeMap<String, Arc<Generated>>>> =
@@ -117,13 +143,15 @@ fn generated(label: &str, scenario: &Scenario, opts: &GenerateOptions) -> Arc<Ge
     if let Some(g) = CACHE.lock().unwrap().get(&key) {
         return g.clone();
     }
-    let dir = tempfile::tempdir().unwrap();
-    let manifest = generate_to_dir(scenario, opts, dir.path()).unwrap();
-    let dir_path = dir.path().to_path_buf();
+    let tree = TEST_CACHE
+        .tree(scenario, opts)
+        .unwrap_or_else(|e| panic!("cached tree: {e}"));
     let g = Arc::new(Generated {
-        _dir: dir,
-        dir: dir_path,
-        manifest,
+        dir: tree.dir.clone(),
+        manifest: tree.manifest.clone(),
+        _tree: tree,
+        scenario: scenario.clone(),
+        opts: opts.clone(),
     });
     CACHE.lock().unwrap().insert(key, g.clone());
     g
@@ -138,7 +166,7 @@ fn builtin(name: &str, opts: &GenerateOptions) -> Arc<Generated> {
 /// manifest, the exact detection gate included.
 fn checked(name: &str, opts: &GenerateOptions) {
     let g = builtin(name, opts);
-    let r = check(&g.manifest, &ingest_generated_detected(&g.dir, &g.manifest)).unwrap();
+    let r = check(&g.manifest, &g.detected()).unwrap();
     assert!(
         r.ok,
         "{name} {:?} seed {}: {:#?}",
@@ -184,7 +212,7 @@ fn every_builtin_scenario_and_collector_checks_green() {
 /// written into: the record lines/sighting in `record_sources` and the raw record bytes.
 fn verify_storyline_records(c: Collector, opts: &GenerateOptions) {
     let g = builtin("bec-aitm", opts);
-    let case = ingest_generated(&g.dir, &g.manifest);
+    let case = g.profiled();
     // Resolve each distinct delivered record once (one record can have many sightings).
     let mut records: std::collections::BTreeSet<(String, String)> =
         std::collections::BTreeSet::new();
@@ -298,7 +326,7 @@ fn assert_flags_resolve(case: &Case) {
 fn collector_flags_link_to_their_records() {
     for c in [Collector::Hawk4, Collector::Hawk3] {
         let g = builtin("bec-aitm", &GenerateOptions::new(c, 1));
-        let case = ingest_generated(&g.dir, &g.manifest);
+        let case = g.profiled();
         assert!(
             count(&case, "SELECT count(*) FROM collector_flags") > 0,
             "{c:?}: no flags"
@@ -417,7 +445,7 @@ fn comma_display_names_load_exactly_per_collector() {
     for (artifact, collector, column, table, db_col, label) in cases {
         let g = builtin("bec-aitm", &GenerateOptions::new(collector, 1));
         let raw = csv_column(&g, artifact, column);
-        let case = ingest_generated(&g.dir, &g.manifest);
+        let case = g.profiled();
         let loaded = db_column(&case, table, db_col);
         for name in &expected {
             assert!(
@@ -445,7 +473,7 @@ fn comma_display_names_load_exactly_per_collector() {
     let raw = csv_column(&g, "portal.entra_signins", "User");
     let comma: Vec<String> = raw.into_iter().filter(|n| n.contains(", ")).collect();
     assert!(!comma.is_empty(), "portal: no comma-bearing sign-in name");
-    let case = ingest_generated(&g.dir, &g.manifest);
+    let case = g.profiled();
     let loaded = db_column(&case, "signins", "user_display_name");
     for name in &comma {
         assert!(
@@ -970,7 +998,7 @@ fn snapshot(case: &Case, relation: &str) -> String {
 #[test]
 fn geoip_enrichment_marks_hosting_and_microsoft_asns() {
     let g = builtin("bec-aitm", &GenerateOptions::new(Collector::Hawk4, 1));
-    let case = ingest_generated(&g.dir, &g.manifest);
+    let case = g.profiled();
     assert!(
         count(&case, "SELECT count(*) FROM ip_intel WHERE is_hosting") > 0,
         "no hosting IP was enriched"
@@ -1265,7 +1293,7 @@ fn profile_timeline_and_identities_cover_the_window() {
     ];
     for c in [Collector::Invictus, Collector::Hawk4] {
         let g = builtin("bec-aitm", &GenerateOptions::new(c, 1));
-        let case = ingest_generated(&g.dir, &g.manifest);
+        let case = g.profiled();
         let mut stmt = case
             .conn()
             .prepare("SELECT source_table, count(*) FROM timeline GROUP BY source_table")
@@ -1350,7 +1378,7 @@ fn profile_timeline_and_identities_cover_the_window() {
 #[test]
 fn hawk4_audit_config_matches_the_audit_profile() {
     let g = builtin("bec-aitm", &GenerateOptions::new(Collector::Hawk4, 1));
-    let case = ingest_generated(&g.dir, &g.manifest);
+    let case = g.profiled();
     assert_eq!(
         text(
             &case,

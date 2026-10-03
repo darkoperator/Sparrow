@@ -31,6 +31,15 @@ fn read_only_placeholder() -> Result<Connection> {
     Ok(conn?)
 }
 
+/// A directory removed when the `Case` that owns it is dropped (see [`Case::with_scratch_dir`]).
+struct ScratchDir(PathBuf);
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 pub struct Case {
     conn: Connection,
     path: Option<PathBuf>,
@@ -38,6 +47,9 @@ pub struct Case {
     /// Set when the file could not be reopened after `with_file_released`: `conn` is then an
     /// read-only, empty placeholder database that cannot take writes.
     poisoned: Option<String>,
+    /// Declared last so it drops after `conn`: the database is closed (and its WAL settled)
+    /// before the directory that holds the file goes.
+    scratch: Option<ScratchDir>,
 }
 
 impl Case {
@@ -50,7 +62,16 @@ impl Case {
             path: Some(path.to_path_buf()),
             read_only: false,
             poisoned: None,
+            scratch: None,
         })
+    }
+
+    /// Remove `dir` when this case is dropped, after its database is closed. For test helpers
+    /// that hand out a private copy of a cached case file.
+    #[doc(hidden)]
+    pub fn with_scratch_dir(mut self, dir: PathBuf) -> Case {
+        self.scratch = Some(ScratchDir(dir));
+        self
     }
 
     /// Bring an existing case database's schema up to date. Never creates a new file.
@@ -78,6 +99,7 @@ impl Case {
             path: Some(path.to_path_buf()),
             read_only: true,
             poisoned: None,
+            scratch: None,
         })
     }
 
@@ -89,6 +111,7 @@ impl Case {
             path: None,
             read_only: false,
             poisoned: None,
+            scratch: None,
         })
     }
 
