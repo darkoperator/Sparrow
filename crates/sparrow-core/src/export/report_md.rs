@@ -60,14 +60,22 @@ fn keep(prov: &Provenance, reviewed_only: bool) -> bool {
     !reviewed_only || prov.review_state.as_deref() == Some("accepted")
 }
 
-fn note_lines(out: &mut Vec<String>, notes: &[Note]) {
+/// The label of an agent note: notes carry no review state, so none of them is ever reviewed.
+pub const LABEL_AGENT_NOTE: &str = "agent note — not reviewed";
+
+/// The notes as list items, each labelled [`LABEL_AGENT_NOTE`]; none at all under `--reviewed-only` (no reviewer
+/// accepted them).
+fn note_lines(out: &mut Vec<String>, notes: &[Note], reviewed_only: bool) {
+    if reviewed_only {
+        return;
+    }
     for n in notes {
         let by = match &n.on_behalf_of {
             Some(o) => format!("{} on behalf of {o}", n.actor),
             None => n.actor.clone(),
         };
         out.push(format!(
-            "  - Note by {} at {} UTC: {}",
+            "  - {LABEL_AGENT_NOTE} ({} at {} UTC): {}",
             one(&by),
             when(&n.created_at),
             block(&n.text).replace('\n', "\n    ")
@@ -123,7 +131,7 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
     doc.push("# Sparrow case report".into());
     doc.push(String::new());
     for (k, v) in head.pairs() {
-        doc.push(format!("- **{k}:** {}", one(&v)));
+        doc.push(format!("- **{k}:** {v}"));
     }
     if opts.reviewed_only {
         doc.push("- **Decisions shown:** accepted decisions only (`--reviewed-only`)".into());
@@ -224,6 +232,7 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
             note_lines(
                 &mut lines,
                 &notes_for(conn, &NoteTarget::Entry(e.entry_id.clone()))?,
+                opts.reviewed_only,
             );
         }
         if !lines.is_empty() {
@@ -280,7 +289,7 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
         }
         provenance_lines(&mut doc, &prov, "");
         let mut note_buf = Vec::new();
-        note_lines(&mut note_buf, &detail.notes);
+        note_lines(&mut note_buf, &detail.notes, opts.reviewed_only);
         if !note_buf.is_empty() {
             doc.push("- Notes:".into());
             doc.extend(note_buf);
@@ -362,12 +371,14 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
          Findings, indicators and timeline entries were triaged by an AI agent through the command line: every such \
          decision is recorded in a hash-chained audit trail with who made it and when, and starts as an AI decision \
          that no analyst has reviewed. Review happens outside Sparrow; an item shows `accepted` or `discarded` only \
-         when a reviewer's decision was recorded."
+         when a reviewer's decision was recorded, and a review covers the latest decision on each object (an \
+         earlier decision that a later one replaced was not itself reviewed). Notes carry no review state and are \
+         labelled as agent notes."
             .into(),
     );
     doc.push(String::new());
     for (k, v) in head.pairs() {
-        doc.push(format!("- {k}: {}", one(&v)));
+        doc.push(format!("- {k}: {v}"));
     }
     write_footnotes(conn, &mut doc, &notes_fn)?;
 
@@ -390,12 +401,12 @@ fn write_footnotes(conn: &Connection, doc: &mut Vec<String>, f: &Footnotes) -> R
             "no source file reference".to_string()
         } else {
             let more = refs.len().saturating_sub(SIGHTINGS_PER_FOOTNOTE);
-            let mut text = refs
+            let mut text = one(&refs
                 .iter()
                 .take(SIGHTINGS_PER_FOOTNOTE)
                 .cloned()
                 .collect::<Vec<_>>()
-                .join("; ");
+                .join("; "));
             if more > 0 {
                 text.push_str(&format!(" (+{more} more sightings)"));
             }
@@ -406,7 +417,7 @@ fn write_footnotes(conn: &Connection, doc: &mut Vec<String>, f: &Footnotes) -> R
             i + 1,
             one(table),
             one(key),
-            one(&refs)
+            refs
         ));
     }
     Ok(())

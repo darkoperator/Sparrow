@@ -52,7 +52,7 @@ pub struct Provenance {
 }
 
 pub const LABEL_AI_PENDING: &str = "AI decision — not reviewed";
-pub const LABEL_LEGACY_PENDING: &str = "decision recorded before the audit trail";
+pub const LABEL_LEGACY_PENDING: &str = "decision recorded before the audit trail — not reviewed";
 
 impl Provenance {
     pub fn class(&self) -> DecisionClass {

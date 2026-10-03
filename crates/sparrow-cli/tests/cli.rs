@@ -2803,3 +2803,94 @@ fn export_report_timeline_and_workbook_through_the_cli() {
     // Exports never write to the case.
     assert_eq!(std::fs::read(&case).unwrap(), before);
 }
+
+#[test]
+fn export_refuses_to_write_over_the_case_and_leaves_no_partial_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fixtures::hawk_tree(dir.path());
+    let case = dir.path().join("case.duckdb");
+    json_out(
+        sparrow()
+            .args(["--json", "ingest"])
+            .arg(&root)
+            .arg("--case")
+            .arg(&case),
+        0,
+    );
+    let before = std::fs::read(&case).unwrap();
+    std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+    // The case itself, spelled three ways, and its write-ahead log: exit 5, the case untouched.
+    let spelled = dir.path().join("sub").join("..").join("case.duckdb");
+    let wal = dir.path().join("case.duckdb.wal");
+    for out in [&case, &spelled, &wal] {
+        for kind in [
+            vec!["export", "report"],
+            vec!["export", "timeline"],
+            vec!["export", "workbook"],
+        ] {
+            let result = sparrow()
+                .args(&kind)
+                .arg("--out")
+                .arg(out)
+                .arg("--case")
+                .arg(&case)
+                .output()
+                .unwrap();
+            assert_eq!(result.status.code(), Some(5), "{kind:?} {out:?}");
+            assert!(
+                String::from_utf8_lossy(&result.stderr)
+                    .contains("refusing to write the export over the case"),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+    }
+    assert_eq!(
+        std::fs::read(&case).unwrap(),
+        before,
+        "the case is unchanged"
+    );
+    assert!(!wal.exists(), "no write-ahead log appeared");
+    // A target/tmp cache is refused too.
+    let cache = dir.path().join("target").join("tmp");
+    std::fs::create_dir_all(&cache).unwrap();
+    sparrow()
+        .args(["export", "report", "--out"])
+        .arg(cache.join("report.md"))
+        .arg("--case")
+        .arg(&case)
+        .assert()
+        .code(5)
+        .stderr(contains("target/tmp cache"));
+    // A missing output directory is a plain error (1), not a panic.
+    sparrow()
+        .args(["export", "report", "--out"])
+        .arg(dir.path().join("nope").join("r.md"))
+        .arg("--case")
+        .arg(&case)
+        .assert()
+        .code(1);
+    // A successful export leaves exactly the output file: no temp file beside it.
+    let out_dir = dir.path().join("out");
+    std::fs::create_dir_all(&out_dir).unwrap();
+    for (args, name) in [
+        (vec!["export", "report"], "r.md"),
+        (vec!["export", "timeline"], "t.csv"),
+        (vec!["export", "workbook"], "w.xlsx"),
+    ] {
+        sparrow()
+            .args(&args)
+            .arg("--out")
+            .arg(out_dir.join(name))
+            .arg("--case")
+            .arg(&case)
+            .assert()
+            .success();
+    }
+    let mut names: Vec<String> = std::fs::read_dir(&out_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["r.md", "t.csv", "w.xlsx"]);
+}

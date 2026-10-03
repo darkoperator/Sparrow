@@ -8,8 +8,10 @@
 //!
 //! Scope `Verified` writes the curated timeline entries (one row each, in event-time order). Scope `All` writes
 //! every row of the `timeline` view, STREAMED through a statement iterator (a case can hold 100k+ rows; nothing
-//! is collected), each carrying the phase, status and decision of the first verified entry that cites it. The file
-//! ends with one record (Source `sparrow-export`, Category `header`) that carries the export header.
+//! is collected), each carrying the phase, status and decision of the verified entry that cites it (the earliest by event time, then
+//! entry id). The file
+//! ends with one record (Source `sparrow-export`, Category `header`, Timestamp = the generation time) that carries the
+//! export header.
 
 use super::header;
 use super::{at, when};
@@ -36,6 +38,30 @@ pub const COLUMNS: [&str; 13] = [
     "FindingIds",
     "EvidenceRef",
 ];
+
+/// Test-only probe (never compiled into a normal build): the number of timeline rows `Scope::All` has fetched from
+/// the statement on this thread, so a test can show that bytes reach the sink while most rows are still unread.
+#[cfg(any(test, feature = "test-fixtures"))]
+#[doc(hidden)]
+pub mod probe {
+    use std::cell::Cell;
+
+    thread_local! {
+        static FETCHED: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub fn reset() {
+        FETCHED.with(|c| c.set(0));
+    }
+
+    pub fn fetched() -> u64 {
+        FETCHED.with(Cell::get)
+    }
+
+    pub(super) fn bump() {
+        FETCHED.with(|c| c.set(c.get() + 1));
+    }
+}
 
 /// `cell` as a CSV text cell: prefixed with `'` when a spreadsheet would read it as a formula (first character
 /// `=`, `+`, `-`, `@`, TAB or CR).
@@ -65,6 +91,8 @@ pub struct CsvOpts {
 
 /// Write the CSV to `out`; returns the data rows written (not the header record or the closing record).
 pub fn write(conn: &Connection, out: &mut dyn Write, opts: &CsvOpts) -> Result<u64> {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    probe::reset();
     let head = header::build(conn, opts.generated_at)?;
     out.write_all("\u{feff}".as_bytes())
         .map_err(super::io_err)?;
@@ -75,6 +103,7 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &CsvOpts) -> Result<u
         Scope::Verified => write_verified(conn, &mut w, opts)?,
     };
     let mut closing: [String; 13] = Default::default();
+    closing[0] = when(&opts.generated_at);
     closing[1] = "sparrow-export".into();
     closing[2] = "header".into();
     closing[6] = head.one_line();
@@ -110,9 +139,9 @@ fn write_all<W: Write>(conn: &Connection, w: &mut csv::Writer<W>, opts: &CsvOpts
     // Not cached: a sort and an aggregate (the cited CTE) planned on an empty case misread real rows later.
     let mut stmt = conn.prepare(&format!(
         "WITH cited AS ( \
-           SELECT ev.source_table, ev.record_key, arg_min(CAST(e.phase AS VARCHAR), e.entry_id) AS phase, \
-                  arg_min(e.decided_by, e.entry_id) AS decided_by, \
-                  arg_min(CAST(e.review_state AS VARCHAR), e.entry_id) AS review_state \
+           SELECT ev.source_table, ev.record_key, arg_min(CAST(e.phase AS VARCHAR), struct_pack(t := e.event_time, id := e.entry_id)) AS phase, \
+                  arg_min(e.decided_by, struct_pack(t := e.event_time, id := e.entry_id)) AS decided_by, \
+                  arg_min(CAST(e.review_state AS VARCHAR), struct_pack(t := e.event_time, id := e.entry_id)) AS review_state \
            FROM timeline_entry_evidence ev JOIN timeline_entries e ON e.entry_id = ev.entry_id \
            WHERE CAST(e.status AS VARCHAR) = 'verified' GROUP BY ev.source_table, ev.record_key) \
          SELECT epoch_us(t.event_time), t.source_table, CAST(t.category AS VARCHAR), t.actor_upn, t.ip, \
@@ -124,6 +153,8 @@ fn write_all<W: Write>(conn: &Connection, w: &mut csv::Writer<W>, opts: &CsvOpts
     let mut rows = stmt.query(params_from_iter(args.iter()))?;
     let mut n = 0u64;
     while let Some(r) = rows.next()? {
+        #[cfg(any(test, feature = "test-fixtures"))]
+        probe::bump();
         let when_text = when(&at(r.get::<_, Option<i64>>(0)?.unwrap_or_default()));
         let source: String = r.get(1)?;
         let phase: Option<String> = r.get(7)?;

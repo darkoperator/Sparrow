@@ -34,11 +34,11 @@ fn generated_at() -> DateTime<Utc> {
 }
 
 fn agent() -> Actor {
-    Actor::agent("claude", Some("carlos")).unwrap()
+    Actor::agent("claude", Some("example")).unwrap()
 }
 
 fn reviewer() -> Reviewer {
-    Reviewer::analyst("dana").unwrap()
+    Reviewer::analyst("reviewer").unwrap()
 }
 
 /// What the scripted session decided, for the assertions.
@@ -130,30 +130,33 @@ fn scripted(hostile: bool) -> Script {
     )
     .unwrap();
 
-    // Three verified entries and one proposed, citing evidence rows of the findings (the confirmed one first).
-    let rules = load_rules(&DataDirs::default()).unwrap();
-    let mut refs: Vec<(EvidenceRef, DateTime<Utc>)> = Vec::new();
-    for f in &findings {
-        for e in read::finding_show(c, &f.finding_id, &rules)
-            .unwrap()
-            .evidence
-        {
-            if let Some(t) = &e.timeline {
-                let r = EvidenceRef {
-                    source_table: e.source_table.clone(),
-                    record_key: e.record_key.clone(),
-                };
-                if !refs.iter().any(|(x, _)| *x == r) && refs.len() < 4 {
-                    refs.push((r, t.event_time));
-                }
-            }
-        }
-    }
-    assert_eq!(
-        refs.len(),
-        4,
-        "the findings cite at least four timeline rows"
-    );
+    // Three verified entries and one proposed, each citing a record of the kind it describes: a sign-in entry a
+    // sign-in, the inbox rule a New-InboxRule record, the mailbox read a MailItemsAccessed record.
+    let pick = |filter: &str, skip: usize| -> (EvidenceRef, DateTime<Utc>) {
+        c.query_row(
+            &format!(
+                "SELECT source_table, record_key, epoch_us(event_time) FROM timeline WHERE {filter} \
+                 ORDER BY event_time, source_table, record_key LIMIT 1 OFFSET {skip}"
+            ),
+            [],
+            |r| {
+                Ok((
+                    EvidenceRef {
+                        source_table: r.get(0)?,
+                        record_key: r.get(1)?,
+                    },
+                    DateTime::from_timestamp_micros(r.get(2)?).unwrap(),
+                ))
+            },
+        )
+        .unwrap_or_else(|e| panic!("no timeline row for {filter}: {e}"))
+    };
+    let refs = [
+        pick("source_table = 'signins'", 0),
+        pick("operation = 'New-InboxRule'", 0),
+        pick("operation = 'MailItemsAccessed'", 0),
+        pick("source_table = 'signins'", 1),
+    ];
     let specs = [
         (
             "Sign-in from the proxy",
@@ -316,12 +319,33 @@ fn sheet_rows(wb: &mut Xlsx<std::io::BufReader<std::fs::File>>, name: &str) -> V
         .collect()
 }
 
-fn golden(name: &str, actual: &str) {
+/// `actual` with the Sparrow version and the rule-pack hash replaced by placeholders, so a version bump or a rule
+/// edit does not churn the goldens.
+fn redact(actual: &str, case: &Case) -> String {
+    let h = header::build(case.conn(), generated_at()).unwrap();
+    let mut s = actual.to_string();
+    if let Some(p) = &h.rule_pack_sha256 {
+        s = s.replace(p.as_str(), "<RULE_PACK_SHA256>");
+    }
+    let v = sparrow_core::VERSION;
+    s.replace(
+        &format!("Sparrow version:** {v}"),
+        "Sparrow version:** <VERSION>",
+    )
+    .replace(
+        &format!("Sparrow version: {v}"),
+        "Sparrow version: <VERSION>",
+    )
+    .replace(&format!("\"{v}\""), "\"<VERSION>\"")
+}
+
+fn golden(name: &str, actual: &str, case: &Case) {
+    let actual = redact(actual, case);
     let path = format!("{}/tests/golden/{name}", env!("CARGO_MANIFEST_DIR"));
     // SPARROW_RECORD_GOLDEN=1 re-records the goldens: a deliberate step whose diff is reviewed and whose reason goes
-    // in the commit message.
+    // in the commit message. The version and the rule-pack hash are redacted, so a rule edit leaves them alone.
     if std::env::var_os("SPARROW_RECORD_GOLDEN").is_some() {
-        std::fs::write(&path, actual).unwrap();
+        std::fs::write(&path, &actual).unwrap();
         return;
     }
     let expected = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("record {path} first"));
@@ -337,7 +361,7 @@ fn count(case: &Case, sql: &str) -> i64 {
 #[test]
 fn report_matches_golden() {
     let s = scripted(false);
-    golden("export_report.md", &report(&s.case, false));
+    golden("export_report.md", &report(&s.case, false), &s.case);
 }
 
 #[test]
@@ -363,10 +387,10 @@ fn report_labels_pending_ai_decisions() {
     for ioc in &s.iocs {
         assert!(md.contains(ioc), "{ioc}");
     }
-    assert!(md.contains("decided by agent:claude on behalf of analyst:carlos at 2026-10-02"));
+    assert!(md.contains("decided by agent:claude on behalf of analyst:example at 2026-10-02"));
     // The reviewed finding shows who accepted it and when, and the reviewer's comment.
     assert!(
-        md.contains("accepted by analyst:dana at 2026-10-02"),
+        md.contains("accepted by analyst:reviewer at 2026-10-02"),
         "{md}"
     );
     assert!(md.contains("Reviewer comment: agreed"));
@@ -452,7 +476,7 @@ fn report_cites_evidence_with_source_refs() {
     // Every footnote names table:record_key and a file:line source ref.
     let notes: Vec<&str> = md.lines().filter(|l| l.starts_with("[^")).collect();
     assert!(!notes.is_empty());
-    let shape = regex::Regex::new(r"^\[\^\d+\]: [a-z_]+:\S+ — .+:\d+(-\d+)?").unwrap();
+    let shape = regex::Regex::new(r"^\[\^\d+\]: [a-z\\_]+:\S+ — .+:\d+(-\d+)?").unwrap();
     for n in &notes {
         assert!(shape.is_match(n), "footnote shape: {n}");
         assert!(!n.contains("no source file reference"), "{n}");
@@ -514,7 +538,11 @@ fn timeline_csv_matches_golden_and_round_trips() {
     let s = scripted(false);
     let (bytes, n) = csv_bytes(&s.case, &csv_opts(Scope::Verified));
     assert_eq!(n, 3);
-    golden("export_timeline.csv", std::str::from_utf8(&bytes).unwrap());
+    golden(
+        "export_timeline.csv",
+        std::str::from_utf8(&bytes).unwrap(),
+        &s.case,
+    );
     let rec = csv_records(&bytes);
     assert_eq!(rec[0], COLUMNS);
     assert_eq!(
@@ -547,6 +575,8 @@ fn timeline_csv_matches_golden_and_round_trips() {
         assert!(r[12].contains(':'), "evidence ref: {}", r[12]);
     }
     assert_eq!(rec[4][1], "sparrow-export");
+    // The closing record sorts with the data: its Timestamp is the generation time.
+    assert_eq!(rec[4][0], "2026-10-03 00:00:00");
 }
 
 #[test]
@@ -568,30 +598,32 @@ fn timeline_csv_streams_all_rows() {
         rec.iter()
             .any(|r| r[8] == "verified" && r[7] == "initial_access")
     );
-    // Streaming: the sink sees many small writes, never one buffer of the whole file.
-    struct Chunks {
-        max: usize,
-        total: usize,
+    // Streaming: the first bytes of the rows reach the sink while most rows are still unread. The sink records
+    // how many rows the statement has handed out when each write arrives; collecting every row first would make
+    // that the total at the very first write.
+    struct Probe {
+        writes: Vec<u64>,
     }
-    impl Write for Chunks {
+    impl Write for Probe {
         fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-            self.max = self.max.max(b.len());
-            self.total += b.len();
+            self.writes.push(timeline_csv::probe::fetched());
             Ok(b.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
     }
-    let mut sink = Chunks { max: 0, total: 0 };
+    let mut sink = Probe { writes: Vec::new() };
     timeline_csv::write(s.case.conn(), &mut sink, &csv_opts(Scope::All)).unwrap();
+    // writes[0] is the BOM; writes[1] is the first flush of the csv writer's buffer: the first data bytes.
+    assert!(sink.writes.len() > 8, "{:?}", sink.writes.len());
     assert!(
-        sink.total > 8 * sink.max,
-        "{} bytes in chunks of up to {}",
-        sink.total,
-        sink.max
+        sink.writes[1] * 10 < total as u64,
+        "{} of {total} rows were fetched when the first data bytes arrived",
+        sink.writes[1]
     );
-    assert!(sink.max <= 64 * 1024);
+    assert!(sink.writes.windows(2).all(|w| w[0] <= w[1]));
+    assert_eq!(*sink.writes.last().unwrap(), total as u64);
 }
 
 #[test]
@@ -683,9 +715,9 @@ fn workbook_reopens_with_expected_sheets() {
     let col = |rows: &Vec<Vec<String>>, h: &str| rows[0].iter().position(|c| c == h).unwrap();
     let row = findings.iter().find(|r| r[0] == s.confirmed.0).unwrap();
     assert_eq!(row[col(&findings, "DecidedBy")], "agent:claude");
-    assert_eq!(row[col(&findings, "OnBehalfOf")], "analyst:carlos");
+    assert_eq!(row[col(&findings, "OnBehalfOf")], "analyst:example");
     assert_eq!(row[col(&findings, "ReviewState")], "accepted");
-    assert_eq!(row[col(&findings, "ReviewedBy")], "analyst:dana");
+    assert_eq!(row[col(&findings, "ReviewedBy")], "analyst:reviewer");
     assert_eq!(row[col(&findings, "Analyst notes")], "");
     let row = findings
         .iter()
@@ -697,7 +729,7 @@ fn workbook_reopens_with_expected_sheets() {
     let row = findings.iter().find(|r| r[0] == s.in_review.0).unwrap();
     assert_eq!(row[col(&findings, "ReviewState")], "discarded");
     assert_eq!(row[col(&findings, "Status")], "new");
-    assert!(row[col(&findings, "DecisionLabel")].starts_with("discarded by analyst:dana at "));
+    assert!(row[col(&findings, "DecisionLabel")].starts_with("discarded by analyst:reviewer at "));
     // Dates are real date cells.
     let range = wb.worksheet_range("Timeline").unwrap();
     assert!(
@@ -715,6 +747,7 @@ fn workbook_reopens_with_expected_sheets() {
     golden(
         "export_workbook.json",
         &serde_json::to_string_pretty(&out).unwrap(),
+        &s.case,
     );
 }
 
@@ -737,7 +770,7 @@ fn exports_survive_hostile_text() {
     assert_eq!(table_lines(&md), table_lines(&plain_md));
     assert!(md.contains("a,b\"c<br>d\\|e 🔥 \\u{202E}x"), "{md}");
     // The note on the confirmed finding reads back too, its bidi override escaped, its newline kept in the block.
-    assert!(md.contains("a,b\"c\n    d|e 🔥 \\u{202E}x"), "{md}");
+    assert!(md.contains("a,b\"c\n    d\\|e 🔥 \\u{202E}x"), "{md}");
     assert!(
         !md.contains('\u{202E}'),
         "no raw bidi override in the report"
@@ -788,7 +821,7 @@ fn control_characters_are_escaped_in_markdown_and_kept_raw_in_csv_and_workbook()
     for bad in ['\u{1b}', '\u{0}', '\u{7}', '\r', '\u{200B}'] {
         assert!(!md.contains(bad), "raw {:?} in the report", bad);
     }
-    assert!(md.contains("t\\u{001B}[31mred\\u{0000}"));
+    assert!(md.contains("t\\u{001B}\\[31mred\\u{0000}"));
     assert!(md.contains("n\\u{0007}ote"));
     assert!(md.contains("line\\u{200B}two"));
     // The workbook keeps the raw stored text (control characters are escaped by the file format, not by Sparrow).
@@ -987,4 +1020,201 @@ fn workbook_cells_are_strings_never_formulas() {
             .count();
         assert_eq!(n, 0, "{name} holds {n} formulas");
     }
+}
+
+// ------------------------------------------------------------------ Markdown and HTML injection (B1)
+
+/// An attacker's string: an HTML comment that never closes, a phishing link, a tracking image, a forged footnote
+/// reference, emphasis, a code span, an entity, a script tag, and (in a block) a heading, a list and a setext line.
+const ATTACK: &str = "AP <!-- [Verify your account](https://evil.example) ![](https://t.example/p.png) [^99] \
+     **bold** `code` &amp; <script>x</script>";
+const ATTACK_BLOCK: &str = "first line <!--\n# heading\n- fake bullet\n1. one\n===\n> quote";
+
+fn assert_no_live_markup(md: &str) {
+    // Not one `<` of attacker text reaches the output: the only `<` left are our own `<br>` in table cells.
+    assert_eq!(
+        md.matches('<').count(),
+        md.matches("<br>").count(),
+        "raw HTML in the report"
+    );
+    assert!(!md.contains("<!--") && !md.contains("<script"));
+    assert!(
+        md.contains("&lt;\\!--"),
+        "the comment opener is shown as text"
+    );
+    // No link or image syntax: every `](` and `![` is backslash-escaped.
+    let link = regex::Regex::new(r"(^|[^\\])\]\(").unwrap();
+    assert!(!link.is_match(md), "link syntax");
+    assert!(!md.contains("!["), "image syntax");
+    assert!(md.contains("\\[Verify your account\\]\\(https://evil.example\\)"));
+    // No forged footnote reference: `[^99]` only appears with its brackets escaped.
+    let forged = regex::Regex::new(r"(^|[^\\])\[\^99\]").unwrap();
+    assert!(!forged.is_match(md), "a forged footnote reference");
+    assert!(md.contains("\\[\\^99\\]") || md.contains("\\[^99\\]"));
+    // No emphasis, code span or entity of the attacker's survives as markup.
+    assert!(!md.contains("**bold**") && !md.contains("`code`"));
+    assert!(md.contains("\\*\\*bold\\*\\*") && md.contains("\\`code\\`"));
+    assert!(md.contains("&amp;amp;"));
+    // No line of an attacker's block starts a heading, a list, a quote or a setext underline.
+    for l in md.lines() {
+        let t = l.trim_start();
+        assert!(
+            !(t.starts_with("# heading")
+                || t.starts_with("- fake bullet")
+                || t.starts_with("1. one")
+                || t == "==="
+                || t.starts_with("> quote")),
+            "structure forged by agent text: {l:?}"
+        );
+    }
+}
+
+#[test]
+fn attacker_text_is_escaped_as_markdown_and_html_everywhere() {
+    let s = scripted(false);
+    let c = s.case.conn();
+    // The evidence path: an inbox rule named by the attacker lands in the summary of a cited timeline row.
+    c.execute(
+        &format!(
+            "UPDATE ual_events SET object_id = '{}' WHERE lower(CAST(record_id AS VARCHAR)) IN \
+             (SELECT record_key FROM finding_evidence WHERE finding_id = '{}' AND source_table = 'ual_events')",
+            ATTACK.replace('\'', "''"),
+            s.confirmed.0
+        ),
+        [],
+    )
+    .unwrap();
+    // The agent path: a verified entry, a note, an indicator value and its note.
+    let key: String = c
+        .query_row(
+            "SELECT source_table || ':' || record_key FROM timeline ORDER BY event_time LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let (id, _) = te::propose(
+        c,
+        &agent(),
+        NewEntry {
+            tenant_key: None,
+            event_time: generated_at(),
+            title: ATTACK.into(),
+            narrative: Some(ATTACK_BLOCK.into()),
+            phase: Phase::Impact,
+            evidence: vec![EvidenceRef::parse(&key).unwrap()],
+        },
+    )
+    .unwrap();
+    te::verify(c, &agent(), &id).unwrap();
+    notes::add_note(
+        c,
+        &agent(),
+        NoteTarget::Finding(s.confirmed.0.clone()),
+        ATTACK_BLOCK,
+    )
+    .unwrap();
+    indicators::add_indicator(
+        c,
+        &agent(),
+        None,
+        IndicatorType::RuleName,
+        ATTACK,
+        Verdict::Suspicious,
+        Some(ATTACK_BLOCK),
+    )
+    .unwrap();
+    let md = report(&s.case, false);
+    assert_no_live_markup(&md);
+    // The labels after the attacker's text are all still there: three entries and the new one, three indicators.
+    assert_eq!(md.matches(LABEL_AI_PENDING).count(), 4 + 3, "{md}");
+    for section in [
+        "## Evidence gaps",
+        "## Method and integrity",
+        "## Evidence references",
+    ] {
+        assert!(md.contains(section), "{section} missing");
+    }
+    // The attacker's text is still readable, escaped: the evidence summary and the table cell show it.
+    assert!(md.contains("AP &lt;\\!-- "), "{md}");
+    // Our own markup is intact: bold labels, footnote markers and definitions.
+    assert!(md.contains("- **Audit chain:**"));
+    assert!(md.lines().any(|l| l.starts_with("[^1]: ")));
+}
+
+// ------------------------------------------------------------------ notes (S2), dates (S3)
+
+#[test]
+fn agent_notes_are_labelled_and_left_out_of_a_reviewed_only_report() {
+    let s = scripted(false);
+    let md = report(&s.case, false);
+    assert!(md.contains(&format!(
+        "{} (agent:claude on behalf of analyst:example at ",
+        sparrow_core::export::report_md::LABEL_AGENT_NOTE
+    )));
+    assert!(md.contains(&s.note));
+    // The finding is accepted, so it stays in a reviewed-only report; its note does not.
+    let reviewed = report(&s.case, true);
+    assert!(
+        reviewed.contains(&s.confirmed.1),
+        "the accepted finding stays"
+    );
+    assert!(!reviewed.contains(&s.note), "{reviewed}");
+    assert!(!reviewed.contains(sparrow_core::export::report_md::LABEL_AGENT_NOTE));
+    assert!(!reviewed.contains("- Notes:"));
+}
+
+#[test]
+fn a_date_outside_excels_range_is_written_as_text() {
+    let s = scripted(false);
+    let c = s.case.conn();
+    let key: String = c
+        .query_row(
+            "SELECT source_table || ':' || record_key FROM timeline LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let (id, _) = te::propose(
+        c,
+        &agent(),
+        NewEntry {
+            tenant_key: None,
+            event_time: Utc.with_ymd_and_hms(1, 1, 1, 0, 0, 0).unwrap(),
+            title: "A sentinel date".into(),
+            narrative: None,
+            phase: Phase::Recon,
+            evidence: vec![EvidenceRef::parse(&key).unwrap()],
+        },
+    )
+    .unwrap();
+    te::verify(c, &agent(), &id).unwrap();
+    // And an evidence-availability bound from a sentinel too.
+    c.execute(
+        "UPDATE evidence_availability SET min_time = CAST('0001-01-01T00:00:00Z' AS TIMESTAMPTZ) \
+         WHERE evidence = (SELECT min(evidence) FROM evidence_availability WHERE CAST(status AS VARCHAR) <> 'collected')",
+        [],
+    )
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let mut wb = workbook(&s.case, &dir);
+    let tl = sheet_rows(&mut wb, "Timeline");
+    assert!(
+        tl.iter().any(|r| r[0]
+            == "0001-01-01T00:00:00Z (outside Excel's date range; written as text)"
+            && r[2] == "A sentinel date"),
+        "{tl:?}"
+    );
+    let gaps = sheet_rows(&mut wb, "Evidence gaps");
+    assert!(
+        gaps.iter()
+            .any(|r| r[7].starts_with("0001-01-01T00:00:00Z (outside"))
+    );
+    // In-range dates stay real date cells.
+    let range = wb.worksheet_range("Timeline").unwrap();
+    assert!(
+        range
+            .rows()
+            .skip(1)
+            .any(|r| matches!(r[0], Data::DateTime(_)))
+    );
 }

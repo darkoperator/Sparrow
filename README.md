@@ -315,6 +315,12 @@ The CSV is UTF-8 with a BOM; its cells keep the stored text, with one exception:
 text (rule names, subjects, user agents, display names) can be attacker-controlled. The Timestamp and id columns
 are left as they are. The workbook writes every cell as a string, never as a formula.
 
+The Markdown report escapes all evidence and agent text as Markdown and HTML (so a rule named `x <!--` cannot hide
+the rest of the report, and `[text](url)`, `![](url)` and `[^3]` stay plain text). Agent notes carry no review
+state: they are labelled "agent note — not reviewed", and `--reviewed-only` leaves them out. A date Excel cannot
+hold is written to the workbook as ISO text. `--out` is written through a temp file and renamed when the export
+succeeds, and is refused when it is the case file, its `.wal`, or inside a cargo `target/tmp` cache (exit 5).
+
 ## Synthetic data
 
 `sparrow synth` generates deterministic collector trees from a scenario and a seed, each with a ground-truth

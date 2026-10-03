@@ -1,7 +1,8 @@
 //! The XLSX workbook (Addendum D.6). Sheets: Summary, Findings, Timeline, Indicators, Evidence gaps, Audit. Every
 //! decision sheet has `DecidedBy`, `OnBehalfOf` and `ReviewState` columns plus an empty `Analyst notes` column for
 //! work outside Sparrow. Frozen header row, filter, real date cells (`yyyy-mm-dd hh:mm:ss`, UTC) and fixed column
-//! widths. Cells keep the raw stored text, as strings (a text that starts with `=` stays text).
+//! widths. Cells keep the raw stored text, as strings (a text that starts with `=` stays text). A date outside
+//! Excel's range is written as ISO text with a note.
 
 use super::header;
 use super::{
@@ -48,6 +49,11 @@ fn x(e: rust_xlsxwriter::XlsxError) -> Error {
     Error::Invalid(format!("workbook: {e}"))
 }
 
+/// Excel dates run from 1900-01-01 to 9999-12-31.
+fn in_excel_range(d: &DateTime<Utc>) -> bool {
+    (1900..=9999).contains(&d.year())
+}
+
 fn excel_time(d: &DateTime<Utc>) -> Result<ExcelDateTime> {
     ExcelDateTime::from_ymd(d.year() as u16, d.month() as u8, d.day() as u8)
         .and_then(|e| e.and_hms(d.hour() as u16, d.minute() as u8, d.second() as f64))
@@ -89,6 +95,19 @@ fn sheet(wb: &mut Workbook, name: &str, cols: &[(&str, f64)], rows: Vec<Vec<Cell
                 }
                 Cell::Bool(b) => {
                     ws.write_boolean(r, c, *b).map_err(x)?;
+                }
+                Cell::Time(Some(d)) if !in_excel_range(d) => {
+                    // A date Excel cannot hold (before 1900-01-01, after 9999-12-31: a `DateTime.MinValue`
+                    // sentinel, a mistyped year) is written as ISO text with a note, never an export failure.
+                    ws.write_string(
+                        r,
+                        c,
+                        format!(
+                            "{} (outside Excel's date range; written as text)",
+                            d.format("%Y-%m-%dT%H:%M:%SZ")
+                        ),
+                    )
+                    .map_err(x)?;
                 }
                 Cell::Time(Some(d)) => {
                     ws.write_datetime_with_format(r, c, &excel_time(d)?, &date)

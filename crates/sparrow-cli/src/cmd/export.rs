@@ -81,21 +81,96 @@ fn format_is(kind: &str, got: &str, want: &str) -> Result<()> {
     Ok(())
 }
 
-/// Run `f` on the sink: the file when given, else stdout. A file is flushed before the summary prints.
+/// The canonical form of `p`: the path itself when it exists, else its canonical parent plus the file name (a new
+/// output file). An error when the parent does not exist.
+fn canonical(p: &Path) -> Result<PathBuf> {
+    if p.exists() {
+        return Ok(p.canonicalize()?);
+    }
+    let parent = match p.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => Path::new("."),
+    };
+    let name = p
+        .file_name()
+        .with_context(|| format!("{} is not a file name", p.display()))?;
+    let parent = parent
+        .canonicalize()
+        .with_context(|| format!("the directory of {} does not exist", p.display()))?;
+    Ok(parent.join(name))
+}
+
+/// Refuse an `--out` that is the case file, its write-ahead log, or a file inside a cargo `target/tmp` cache (the
+/// test trees): the one way an export could write the case, or step on another run's files. Exit code 5.
+fn check_out(out: &Path, case: &Path) -> Result<()> {
+    let target = canonical(out)?;
+    let case = case
+        .canonicalize()
+        .with_context(|| format!("cannot open the case {}", case.display()))?;
+    let mut wal = case.clone().into_os_string();
+    wal.push(".wal");
+    if target == case || target == PathBuf::from(wal) {
+        return Err(sparrow_core::Error::Decision(format!(
+            "refusing to write the export over the case ({}); choose another --out",
+            target.display()
+        ))
+        .into());
+    }
+    let parts: Vec<_> = target.components().collect();
+    if parts.windows(2).any(|w| {
+        w[0].as_os_str() == std::ffi::OsStr::new("target")
+            && w[1].as_os_str() == std::ffi::OsStr::new("tmp")
+    }) {
+        return Err(sparrow_core::Error::Decision(format!(
+            "refusing to write the export inside a cargo target/tmp cache ({}); choose another --out",
+            target.display()
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+/// A temp file beside `path`, renamed over it when `f` succeeds and removed when it fails: a failed export never
+/// leaves a partial `--out` file.
+fn atomic<T>(path: &Path, f: impl FnOnce(&Path) -> Result<T>) -> Result<T> {
+    let dir = match path.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    let name = path
+        .file_name()
+        .with_context(|| format!("{} is not a file name", path.display()))?
+        .to_string_lossy()
+        .into_owned();
+    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    match f(&tmp).and_then(|v| {
+        std::fs::rename(&tmp, path)
+            .with_context(|| format!("cannot write {}", path.display()))
+            .map(|_| v)
+    }) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
+/// Run `f` on the sink: the file when given (written atomically), else stdout.
 fn with_sink<T>(
     out: Option<&Path>,
     json: bool,
     f: impl FnOnce(&mut dyn Write) -> Result<T>,
 ) -> Result<T> {
     match out {
-        Some(path) => {
+        Some(path) => atomic(path, |tmp| {
             let mut w = BufWriter::new(
-                File::create(path).with_context(|| format!("cannot create {}", path.display()))?,
+                File::create(tmp).with_context(|| format!("cannot create {}", tmp.display()))?,
             );
             let v = f(&mut w)?;
             w.flush()?;
             Ok(v)
-        }
+        }),
         None => {
             if json {
                 bail!("--json needs --out (the export itself goes to stdout)");
@@ -134,6 +209,9 @@ pub fn run(command: ExportCommand, json: bool) -> Result<ExitCode> {
             reviewed_only,
         } => {
             format_is("report", &format, "md")?;
+            if let Some(o) = &out {
+                check_out(o, &case)?;
+            }
             let c = Case::open_read_only(&case)?;
             let opts = ReportOpts {
                 reviewed_only,
@@ -168,6 +246,9 @@ pub fn run(command: ExportCommand, json: bool) -> Result<ExitCode> {
                 user,
                 generated_at,
             };
+            if let Some(o) = &out {
+                check_out(o, &case)?;
+            }
             let c = Case::open_read_only(&case)?;
             let n = with_sink(out.as_deref(), json, |w| {
                 Ok(timeline_csv::write(c.conn(), w, &opts)?)
@@ -181,8 +262,11 @@ pub fn run(command: ExportCommand, json: bool) -> Result<ExitCode> {
             let Some(out) = out else {
                 bail!("export workbook needs --out FILE (a workbook is binary)");
             };
+            check_out(&out, &case)?;
             let c = Case::open_read_only(&case)?;
-            workbook_xlsx::write(c.conn(), &out, generated_at)?;
+            atomic(&out, |tmp| {
+                Ok(workbook_xlsx::write(c.conn(), tmp, generated_at)?)
+            })?;
             summary("workbook", &out, None, json)?;
         }
     }
