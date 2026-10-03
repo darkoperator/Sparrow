@@ -633,15 +633,11 @@ fn discard_reverts_only_what_the_decision_changed() {
 
 #[test]
 fn detection_rerun_preserves_decision_and_review() {
-    let mut g = synth::builtin("bec-aitm", sparrow_synth::options::PsEdition::Ps7);
+    // Detected once already (the cached case: built-in rules at the collection time plus a day).
+    let mut g = synth::builtin_detected("bec-aitm", sparrow_synth::options::PsEdition::Ps7);
     let set =
         sparrow_core::detect::load::load_rules(&sparrow_core::data::DataDirs::default()).unwrap();
     let now = g.manifest.collected_at + chrono::Duration::days(1);
-    let o = DetectOptions {
-        now: Some(now),
-        ..DetectOptions::default()
-    };
-    run(&mut g.case, &set, &o).unwrap();
     let c = &g.case;
     let fid: String = c
         .conn()
@@ -663,8 +659,8 @@ fn detection_rerun_preserves_decision_and_review() {
         c.conn()
             .query_row(
                 "SELECT CAST(status AS VARCHAR), disposition_reason, assigned_to, decided_by, \
-                        CAST(decided_at AS VARCHAR), on_behalf_of, CAST(review_state AS VARCHAR), reviewed_by, \
-                        CAST(reviewed_at AS VARCHAR), review_comment FROM findings WHERE finding_id = ?",
+                        CAST(epoch_us(decided_at) AS VARCHAR), on_behalf_of, CAST(review_state AS VARCHAR), reviewed_by, \
+                        CAST(epoch_us(reviewed_at) AS VARCHAR), review_comment FROM findings WHERE finding_id = ?",
                 [&fid],
                 |r| (0..10).map(|i| r.get(i)).collect(),
             )

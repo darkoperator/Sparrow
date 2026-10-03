@@ -3,7 +3,6 @@ mod detect;
 #[path = "common/synth.rs"]
 mod synth;
 
-use chrono::Duration;
 use sparrow_core::Case;
 use sparrow_core::case::actor::Actor;
 use sparrow_core::case::read::{self, FindingFilter, TimelineFilter};
@@ -11,19 +10,13 @@ use sparrow_core::case::write::{self, FindingStatus};
 use sparrow_core::case::{notes, review};
 use sparrow_core::data::DataDirs;
 use sparrow_core::detect::load::{RuleSet, load_rules};
-use sparrow_core::detect::run::{DetectOptions, run};
 use sparrow_synth::options::PsEdition;
 
-/// Synthetic bec-aitm (Invictus, PS7), ingested and detected.
+/// Synthetic bec-aitm (Invictus, PS7), ingested and detected (a private copy from the test cache), with the
+/// built-in rules.
 fn detected() -> (Case, RuleSet) {
-    let mut g = synth::builtin("bec-aitm", PsEdition::Ps7);
-    let set = load_rules(&DataDirs::default()).unwrap();
-    let o = DetectOptions {
-        now: Some(g.manifest.collected_at + Duration::days(1)),
-        ..DetectOptions::default()
-    };
-    run(&mut g.case, &set, &o).unwrap();
-    (g.case, set)
+    let g = synth::builtin_detected("bec-aitm", PsEdition::Ps7);
+    (g.case, load_rules(&DataDirs::default()).unwrap())
 }
 
 fn agent() -> Actor {

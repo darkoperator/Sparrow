@@ -62,6 +62,23 @@ pub fn builtin(name: &str, ps: PsEdition) -> Generated {
     }
 }
 
+/// [`builtin`], also detected with the built-in rules (`ingest_generated_detected`: at the manifest's collection
+/// time plus a day), from the cache.
+pub fn builtin_detected(name: &str, ps: PsEdition) -> Generated {
+    let mut o = GenerateOptions::new(Collector::Invictus, 17);
+    o.ps = ps;
+    let got = CACHE
+        .case(&load(name).unwrap(), &o, Stage::Detected)
+        .unwrap_or_else(|e| panic!("cached detected case of {name}: {e}"));
+    Generated {
+        dir: got.tree.dir.clone(),
+        manifest: got.tree.manifest.clone(),
+        case: got.case,
+        _tree: None,
+        _owned: Some(got.tree),
+    }
+}
+
 /// Any scenario and options through the cache (keyed by the whole scenario and every option):
 /// the tree plus a private profiled case.
 pub fn cached(scenario: &Scenario, o: &GenerateOptions) -> sparrow_synth::cache::CachedCase {

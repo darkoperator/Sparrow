@@ -932,7 +932,8 @@ fn private_directories_of_dead_processes_are_removed_and_live_ones_kept() {
 }
 
 /// Every column of every table of the case as text, ordered, minus what legitimately differs
-/// between two ingests of the same tree: when the rows were loaded or migrated, how long a rule took, and where the tree lives.
+/// between two ingests of the same tree: when the rows were loaded or migrated, how long a rule took, where the tree
+/// lives, and the random `case_meta` case id each new case gets (the audit chain's genesis).
 fn full_digest(case: &sparrow_core::Case) -> std::collections::BTreeMap<String, String> {
     const SKIP: [&str; 6] = [
         "ingested_at",
@@ -975,7 +976,12 @@ fn full_digest(case: &sparrow_core::Case) -> std::collections::BTreeMap<String, 
             .map(|c| format!("coalesce(CAST(\"{c}\" AS VARCHAR), '<null>')"))
             .collect::<Vec<_>>()
             .join(" || '|' || ");
-        let sql = format!("SELECT {select} AS row FROM \"{t}\" ORDER BY row");
+        let filter = if t == "case_meta" {
+            " WHERE key <> 'case_id'"
+        } else {
+            ""
+        };
+        let sql = format!("SELECT {select} AS row FROM \"{t}\"{filter} ORDER BY row");
         let mut st = case.conn().prepare(&sql).unwrap();
         let mut h = Sha256::new();
         let rows = st.query_map([], |r| r.get::<_, String>(0)).unwrap();
