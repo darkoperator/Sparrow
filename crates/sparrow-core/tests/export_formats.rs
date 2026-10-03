@@ -1218,3 +1218,43 @@ fn a_date_outside_excels_range_is_written_as_text() {
             .any(|r| matches!(r[0], Data::DateTime(_)))
     );
 }
+
+// ------------------------------------------------------------------ time zone
+
+/// TIMESTAMPTZ text casts follow the connection's time zone, which can be local. Every time an export renders is
+/// explicit UTC (formatted from epoch_us), so the same case gives the same bytes under America/New_York.
+#[test]
+fn exports_do_not_depend_on_the_connections_time_zone() {
+    let s = scripted(false);
+    let c = s.case.conn();
+    let dir = tempfile::tempdir().unwrap();
+    let render = |case: &Case| {
+        let mut wb = workbook(case, &dir);
+        let sheets: Vec<Vec<Vec<String>>> = SHEETS.iter().map(|n| sheet_rows(&mut wb, n)).collect();
+        (
+            report(case, false),
+            csv_bytes(case, &csv_opts(Scope::Verified)).0,
+            csv_bytes(case, &csv_opts(Scope::All)).0,
+            sheets,
+        )
+    };
+    let utc = render(&s.case);
+    c.execute_batch("SET TimeZone = 'America/New_York'")
+        .unwrap();
+    // The setting is live (and so the test can fail): a TIMESTAMPTZ cast now reads in New York.
+    let cast: String = c
+        .query_row(
+            "SELECT CAST(TIMESTAMPTZ '2026-08-21 09:47:00+00' AS VARCHAR)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(cast.starts_with("2026-08-21 05:47:00"), "{cast}");
+    let ny = render(&s.case);
+    assert_eq!(utc.0, ny.0, "the report");
+    assert_eq!(utc.1, ny.1, "the verified CSV");
+    assert_eq!(utc.2, ny.2, "the full CSV");
+    assert_eq!(utc.3, ny.3, "the workbook");
+    // And the times in them are UTC: the first sign-in entry reads 14:24:08, not 10:24:08.
+    assert!(ny.0.contains("2026-08-11 14:24:08 UTC"));
+}
