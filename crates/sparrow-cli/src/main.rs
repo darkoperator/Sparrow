@@ -23,6 +23,8 @@ use sparrow_synth::options::{
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod cmd;
+
 #[derive(Parser)]
 #[command(
     name = "sparrow",
@@ -137,6 +139,11 @@ enum Command {
     Ioc {
         #[command(subcommand)]
         command: IocCommand,
+    },
+    /// The hash-chained audit trail of agent decisions and reviews
+    Audit {
+        #[command(subcommand)]
+        command: AuditCommand,
     },
     /// Tenant settings kept by the analyst
     Tenant {
@@ -381,9 +388,8 @@ enum IocCommand {
         /// Tenant the indicator applies to; default every tenant of the case
         #[arg(long)]
         tenant: Option<String>,
-        /// Who is asking; required (or $SPARROW_ANALYST)
-        #[arg(long)]
-        analyst: Option<String>,
+        #[command(flatten)]
+        actor: ActorArgs,
     },
     /// List the indicators of the case
     List {
@@ -398,8 +404,47 @@ enum IocCommand {
         case: PathBuf,
         #[arg(long)]
         id: String,
+        #[command(flatten)]
+        actor: ActorArgs,
+    },
+}
+
+/// Who makes an agent write (Addendum D.2).
+#[derive(Args)]
+struct ActorArgs {
+    /// The agent making this decision; default $SPARROW_AGENT or "unnamed"
+    #[arg(long)]
+    agent: Option<String>,
+    /// The analyst the decision is made on behalf of (its reviewer, not an identity); default $SPARROW_ANALYST
+    #[arg(long)]
+    analyst: Option<String>,
+}
+
+impl ActorArgs {
+    fn resolve(self) -> Result<sparrow_core::case::actor::Actor> {
+        cmd::actor::resolve(self.agent, self.analyst)
+    }
+}
+
+#[derive(Subcommand)]
+enum AuditCommand {
+    /// Check the audit chain; exit code 3 when it is broken
+    Verify {
         #[arg(long)]
-        analyst: Option<String>,
+        case: PathBuf,
+        /// Record an open break as an audit entry so writes can continue (opens the case for writing)
+        #[arg(long)]
+        acknowledge: bool,
+        #[command(flatten)]
+        actor: ActorArgs,
+    },
+    /// List the audit entries in sequence order
+    Log {
+        #[arg(long)]
+        case: PathBuf,
+        /// Only the entries of this object, as TYPE:ID (for example finding:abc123)
+        #[arg(long)]
+        object: Option<String>,
     },
 }
 
@@ -545,6 +590,14 @@ fn run(cli: Cli) -> Result<ExitCode> {
         ),
         Some(Command::Rules { command }) => cmd_rules(command, json),
         Some(Command::Ioc { command }) => cmd_ioc(command, json),
+        Some(Command::Audit { command }) => match command {
+            AuditCommand::Verify {
+                case,
+                acknowledge,
+                actor,
+            } => cmd::audit::verify(&case, acknowledge, actor.agent, actor.analyst, json),
+            AuditCommand::Log { case, object } => cmd::audit::log(&case, object.as_deref(), json),
+        },
         Some(Command::Tenant { command }) => cmd_tenant(command, json),
         Some(Command::Synth { command, generate }) => match command {
             None => cmd_synth_generate(generate, json),
@@ -1578,17 +1631,6 @@ fn cmd_rules(command: RulesCommand, json: bool) -> Result<ExitCode> {
     }
 }
 
-/// `--analyst` or $SPARROW_ANALYST, validated as an [`Actor`] (unlike the tenant commands there
-/// is no anonymous fallback: an indicator changes what rules find).
-fn required_actor(explicit: Option<String>) -> Result<sparrow_core::case::indicators::Actor> {
-    let name = explicit
-        .or_else(|| std::env::var("SPARROW_ANALYST").ok())
-        .unwrap_or_default();
-    sparrow_core::case::indicators::Actor::analyst(&name).map_err(|_| {
-        anyhow::anyhow!("an analyst is required: pass --analyst NAME or set SPARROW_ANALYST")
-    })
-}
-
 fn cmd_ioc(command: IocCommand, json: bool) -> Result<ExitCode> {
     use sparrow_core::case::indicators::{
         IndicatorType, Verdict, add_indicator, list_indicators, remove_indicator,
@@ -1601,9 +1643,9 @@ fn cmd_ioc(command: IocCommand, json: bool) -> Result<ExitCode> {
             verdict,
             note,
             tenant,
-            analyst,
+            actor,
         } => {
-            let actor = required_actor(analyst)?;
+            let actor = actor.resolve()?;
             let ty = IndicatorType::parse(&ty)?;
             let verdict = Verdict::parse(&verdict)?;
             let c = open_case_for_write(&case)?;
@@ -1619,7 +1661,7 @@ fn cmd_ioc(command: IocCommand, json: bool) -> Result<ExitCode> {
             if json {
                 print_json(&serde_json::json!({
                     "indicator_id": id, "type": ty, "value": value.trim(), "verdict": verdict,
-                    "tenant_key": tenant, "added_by": actor.as_str(),
+                    "tenant_key": tenant, "added_by": actor.as_str()
                 }))?;
             } else {
                 println!(
@@ -1653,8 +1695,8 @@ fn cmd_ioc(command: IocCommand, json: bool) -> Result<ExitCode> {
                 println!("{} indicators", items.len());
             }
         }
-        IocCommand::Remove { case, id, analyst } => {
-            let actor = required_actor(analyst)?;
+        IocCommand::Remove { case, id, actor } => {
+            let actor = actor.resolve()?;
             let c = open_case_for_write(&case)?;
             let removed = remove_indicator(c.conn(), &actor, &id)?;
             if json {

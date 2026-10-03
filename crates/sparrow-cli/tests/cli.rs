@@ -1233,7 +1233,7 @@ fn detect_reports_per_rule_status() {
 }
 
 #[test]
-fn ioc_add_requires_an_analyst() {
+fn ioc_add_and_remove_are_agent_writes() {
     let dir = tempfile::tempdir().unwrap();
     let root = sparrow_core::fixtures::hawk_tree(dir.path());
     let case = dir.path().join("case.duckdb");
@@ -1246,9 +1246,10 @@ fn ioc_add_requires_an_analyst() {
             .arg("--no-detect"),
         0,
     );
-    let add = |analyst: Option<&str>| {
+    let add = |flags: &[&str]| {
         let mut c = sparrow();
-        c.env_remove("SPARROW_ANALYST")
+        c.env_remove("SPARROW_AGENT")
+            .env_remove("SPARROW_ANALYST")
             .args([
                 "--json",
                 "ioc",
@@ -1261,53 +1262,52 @@ fn ioc_add_requires_an_analyst() {
                 "malicious",
                 "--case",
             ])
-            .arg(&case);
-        if let Some(a) = analyst {
-            c.args(["--analyst", a]);
-        }
+            .arg(&case)
+            .args(flags);
         c
     };
-    let v = json_out(&mut add(None), 1);
-    assert!(v["error"].as_str().unwrap().contains("analyst"), "{v}");
-    // The environment variable works as well.
-    let v = json_out(add(None).env("SPARROW_ANALYST", "sam"), 0);
+    let added_by = || {
+        let list = json_out(
+            sparrow()
+                .args(["--json", "ioc", "list", "--case"])
+                .arg(&case),
+            0,
+        );
+        let items = list["indicators"].as_array().unwrap().clone();
+        assert_eq!(items.len(), 1, "{list}");
+        assert_eq!(
+            (items[0]["type"].as_str(), items[0]["verdict"].as_str()),
+            (Some("ip"), Some("malicious"))
+        );
+        items[0]["added_by"].as_str().unwrap().to_string()
+    };
+    // No agent named: every CLI write is still an agent decision.
+    let v = json_out(&mut add(&[]), 0);
     let id = v["indicator_id"].as_str().unwrap().to_string();
     assert_eq!(id.len(), 16);
-    assert!(
-        json_out(&mut add(Some("   ")), 1)["error"]
-            .as_str()
-            .unwrap()
-            .contains("analyst")
-    );
-    let list = json_out(
+    assert_eq!(v["added_by"], "agent:unnamed");
+    assert_eq!(added_by(), "agent:unnamed");
+    // The environment variable names the agent; --agent overrides it.
+    json_out(add(&[]).env("SPARROW_AGENT", "claude"), 0);
+    assert_eq!(added_by(), "agent:claude");
+    json_out(add(&["--agent", "codex"]).env("SPARROW_AGENT", "claude"), 0);
+    assert_eq!(added_by(), "agent:codex");
+    // A blank analyst counts as none; an invalid agent id is refused before any write.
+    json_out(&mut add(&["--agent", "claude", "--analyst", "   "]), 0);
+    assert_eq!(added_by(), "agent:claude");
+    let v = json_out(&mut add(&["--agent", "a:b"]), 1);
+    assert!(v["error"].as_str().unwrap().contains("agent id"), "{v}");
+    assert_eq!(added_by(), "agent:claude");
+    // Remove is an agent write too.
+    let v = json_out(
         sparrow()
-            .args(["--json", "ioc", "list", "--case"])
+            .env_remove("SPARROW_AGENT")
+            .args([
+                "--json", "ioc", "remove", "--id", &id, "--agent", "claude", "--case",
+            ])
             .arg(&case),
         0,
     );
-    let items = list["indicators"].as_array().unwrap();
-    assert_eq!(items.len(), 1);
-    assert_eq!(
-        (
-            items[0]["type"].as_str(),
-            items[0]["verdict"].as_str(),
-            items[0]["added_by"].as_str()
-        ),
-        (Some("ip"), Some("malicious"), Some("analyst:sam"))
-    );
-    // Remove needs an analyst too.
-    let rm = |analyst: Option<&str>| {
-        let mut c = sparrow();
-        c.env_remove("SPARROW_ANALYST")
-            .args(["--json", "ioc", "remove", "--id", &id, "--case"])
-            .arg(&case);
-        if let Some(a) = analyst {
-            c.args(["--analyst", a]);
-        }
-        c
-    };
-    json_out(&mut rm(None), 1);
-    let v = json_out(&mut rm(Some("sam")), 0);
     assert_eq!(v["removed"], true);
     assert_eq!(
         json_out(
@@ -1334,8 +1334,6 @@ fn ioc_add_requires_an_analyst() {
                 "x",
                 "--verdict",
                 "malicious",
-                "--analyst",
-                "sam",
                 "--case",
             ])
             .arg(&case),
@@ -1427,4 +1425,258 @@ fn builtin_rules_requiring(capability: &str) -> Vec<String> {
         &mut out,
     );
     out
+}
+
+/// A fresh case file at the current schema.
+fn fresh_case(dir: &std::path::Path) -> std::path::PathBuf {
+    let case = dir.join("c.duckdb");
+    sparrow_core::Case::create_or_open(&case).unwrap();
+    case
+}
+
+/// Append `n` audit entries through core, as an agent write does.
+fn audit_entries(case: &std::path::Path, n: usize) {
+    let c = sparrow_core::Case::create_or_open(case).unwrap();
+    let a = sparrow_core::case::actor::Actor::agent("t", Some("sam")).unwrap();
+    for i in 0..n {
+        c.conn().execute_batch("BEGIN TRANSACTION").unwrap();
+        sparrow_core::case::audit::append(
+            c.conn(),
+            a.as_str(),
+            a.on_behalf_of(),
+            "test",
+            "finding",
+            &format!("f{i}"),
+            None,
+            Some(&serde_json::json!({ "i": i })),
+            None,
+        )
+        .unwrap();
+        c.conn().execute_batch("COMMIT").unwrap();
+    }
+}
+
+#[test]
+fn audit_verify_on_a_fresh_case_is_ok() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = fresh_case(dir.path());
+    let v = json_out(
+        sparrow()
+            .args(["--json", "audit", "verify", "--case"])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["entries"], 0);
+    sparrow()
+        .args(["audit", "verify", "--case"])
+        .arg(&case)
+        .assert()
+        .success()
+        .stdout(contains("ok"));
+}
+
+#[test]
+fn audit_verify_exits_3_on_a_broken_chain_until_acknowledged() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = fresh_case(dir.path());
+    audit_entries(&case, 3);
+    let v = json_out(
+        sparrow()
+            .args(["--json", "audit", "verify", "--case"])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(
+        (v["ok"].as_bool(), v["entries"].as_i64()),
+        (Some(true), Some(3))
+    );
+    let head = v["head_hash"].as_str().unwrap().to_string();
+    {
+        let conn = duckdb::Connection::open(&case).unwrap();
+        conn.execute("DELETE FROM audit_trail WHERE seq = 2", [])
+            .unwrap();
+    }
+    let v = json_out(
+        sparrow()
+            .args(["--json", "audit", "verify", "--case"])
+            .arg(&case),
+        3,
+    );
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["first_bad_seq"], 2);
+    assert_eq!(v["head_hash"], head.as_str());
+    sparrow()
+        .args(["audit", "verify", "--case"])
+        .arg(&case)
+        .assert()
+        .code(3)
+        .stdout(contains("seq 2"));
+    // Acknowledging records the break as an entry by the agent; the chain is usable again.
+    let v = json_out(
+        sparrow()
+            .env_remove("SPARROW_AGENT")
+            .env_remove("SPARROW_ANALYST")
+            .args([
+                "--json",
+                "audit",
+                "verify",
+                "--acknowledge",
+                "--agent",
+                "claude",
+                "--analyst",
+                "sam",
+                "--case",
+            ])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["acknowledged_breaks"], serde_json::json!([2]));
+    let log = json_out(
+        sparrow()
+            .args([
+                "--json",
+                "audit",
+                "log",
+                "--object",
+                "audit_trail:2",
+                "--case",
+            ])
+            .arg(&case),
+        0,
+    );
+    let entries = log["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "{log}");
+    assert_eq!(entries[0]["seq"], 4);
+    assert_eq!(entries[0]["action"], "acknowledge_break");
+    assert_eq!(entries[0]["actor"], "agent:claude");
+    assert_eq!(entries[0]["on_behalf_of"], "analyst:sam");
+    assert_eq!(entries[0]["prev_hash"], head.as_str());
+}
+
+#[test]
+fn audit_log_lists_entries_and_filters_by_object() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = fresh_case(dir.path());
+    audit_entries(&case, 3);
+    let v = json_out(
+        sparrow()
+            .args(["--json", "audit", "log", "--case"])
+            .arg(&case),
+        0,
+    );
+    let all = v["entries"].as_array().unwrap();
+    assert_eq!(
+        all.iter()
+            .map(|e| e["seq"].as_i64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+    assert_eq!(all[0]["actor"], "agent:t");
+    assert_eq!(all[0]["on_behalf_of"], "analyst:sam");
+    assert!(all[0]["ts"].as_str().unwrap().ends_with('Z'));
+    let v = json_out(
+        sparrow()
+            .args(["--json", "audit", "log", "--object", "finding:f1", "--case"])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(v["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(v["entries"][0]["seq"], 2);
+    sparrow()
+        .args(["audit", "log", "--case"])
+        .arg(&case)
+        .assert()
+        .success()
+        .stdout(contains("agent:t for analyst:sam test finding:f1"));
+    // An --object without TYPE:ID is a usage error.
+    json_out(
+        sparrow()
+            .args(["--json", "audit", "log", "--object", "f1", "--case"])
+            .arg(&case),
+        1,
+    );
+}
+
+#[test]
+#[ignore = "enabled by Task 2"]
+fn ioc_add_records_agent_and_on_behalf_of() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = fresh_case(dir.path());
+    sparrow()
+        .args([
+            "ioc",
+            "add",
+            "--type",
+            "ip",
+            "--value",
+            "203.0.113.9",
+            "--verdict",
+            "malicious",
+            "--agent",
+            "claude",
+            "--analyst",
+            "carlos",
+            "--case",
+        ])
+        .arg(&case)
+        .assert()
+        .success();
+    let v = json_out(
+        sparrow()
+            .args(["--json", "audit", "log", "--case"])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(v["entries"][0]["actor"], "agent:claude");
+    assert_eq!(v["entries"][0]["on_behalf_of"], "analyst:carlos");
+}
+
+#[test]
+fn second_writer_process_is_refused_and_chain_stays_linear() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = fresh_case(dir.path());
+    audit_entries(&case, 1);
+    let first = sparrow_core::Case::create_or_open(&case).unwrap();
+    for args in [
+        vec![
+            "--json",
+            "ioc",
+            "add",
+            "--type",
+            "ip",
+            "--value",
+            "203.0.113.9",
+            "--verdict",
+            "malicious",
+            "--case",
+        ],
+        vec!["--json", "audit", "verify", "--acknowledge", "--case"],
+        vec!["--json", "upgrade", "--case"],
+    ] {
+        let v = json_out(sparrow().args(&args).arg(&case), 1);
+        assert!(
+            v["error"].as_str().unwrap().contains("another writer"),
+            "{args:?}: {v}"
+        );
+    }
+    drop(first);
+    let v = json_out(
+        sparrow()
+            .args(["--json", "audit", "verify", "--case"])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(
+        (v["ok"].as_bool(), v["entries"].as_i64()),
+        (Some(true), Some(1))
+    );
+    let v = json_out(
+        sparrow()
+            .args(["--json", "ioc", "list", "--case"])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(v["indicators"].as_array().unwrap().len(), 0);
 }

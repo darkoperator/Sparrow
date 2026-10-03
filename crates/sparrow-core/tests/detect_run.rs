@@ -588,7 +588,7 @@ fn case_ioc_list_feeds_rules() {
     // No indicator yet: nothing.
     let report = run(&mut case, &set, &opts(2)).unwrap();
     assert_eq!(report.rules[0].hits, 0);
-    let actor = Actor::analyst("sam").unwrap();
+    let actor = Actor::agent("sam", None).unwrap();
     let id = add_indicator(
         case.conn(),
         &actor,
@@ -612,7 +612,7 @@ fn case_ioc_list_feeds_rules() {
     .unwrap();
     let listed = list_indicators(case.conn(), Some(T1)).unwrap();
     assert_eq!(listed.len(), 2);
-    assert_eq!(listed[0].added_by, "analyst:sam");
+    assert_eq!(listed[0].added_by, "agent:sam");
     let report = run(&mut case, &set, &opts(3)).unwrap();
     assert_eq!(report.rules[0].hits, 1);
     assert_eq!(report.findings_new, 1);
@@ -648,7 +648,7 @@ fn ioc_change_marks_rule_updated() {
         json!({"record_id": "00000000-0000-0000-0000-000000000001", "client_ip": "203.0.113.7"}),
     );
     let set = set_of(vec![ioc_rule()]);
-    let actor = Actor::analyst("sam").unwrap();
+    let actor = Actor::agent("sam", None).unwrap();
     let id = add_indicator(
         case.conn(),
         &actor,

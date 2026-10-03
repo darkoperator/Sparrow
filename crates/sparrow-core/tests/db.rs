@@ -33,13 +33,16 @@ fn fresh_case_has_provenance_tables() {
         tables(&case),
         vec![
             "admin_audit_events",
+            "annotations",
             "app_credentials",
             "applications",
             "audit_config",
+            "audit_trail",
             "azure_activity",
             "ca_policies",
             "capabilities",
             "case_indicators",
+            "case_meta",
             "cloud_services",
             "collection_log",
             "collections",
@@ -88,6 +91,8 @@ fn fresh_case_has_provenance_tables() {
             "tenant_domain_overrides",
             "tenant_domains",
             "tenant_settings",
+            "timeline_entries",
+            "timeline_entry_evidence",
             "transport_rules",
             "ual_events",
             "user_licenses",
@@ -295,7 +300,7 @@ fn describe_lists_views_with_their_kind() {
 #[test]
 fn state_table_specs_match_the_schema() {
     let case = Case::in_memory().unwrap();
-    assert_eq!(case.schema_version().unwrap(), 15);
+    assert_eq!(case.schema_version().unwrap(), 16);
     for spec in ALL {
         for common in [
             "record_key",

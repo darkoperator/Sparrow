@@ -586,9 +586,9 @@ $ sparrow rules lint [--data DIR] [--rules DIR]…   # exit 1 on an error
 $ sparrow rules test [--rule ID] [--data DIR] [--rules DIR]…   # exit 1 when a test fails
 $ sparrow rules list [--requires CAP] [--tag TAG] [--data DIR] [--rules DIR]…
 $ sparrow detect --case CASE [--rule ID]… [--tag TAG]… [--data DIR] [--rules DIR]…
-$ sparrow ioc add --case CASE --type T --value V --verdict VERDICT [--note N] [--tenant KEY] [--analyst NAME]
+$ sparrow ioc add --case CASE --type T --value V --verdict VERDICT [--note N] [--tenant KEY] [--agent ID] [--analyst NAME]
 $ sparrow ioc list --case CASE [--tenant KEY]
-$ sparrow ioc remove --case CASE --id ID [--analyst NAME]
+$ sparrow ioc remove --case CASE --id ID [--agent ID] [--analyst NAME]
 ```
 
 `rules lint` reports, per rule: a compile error (column, list, regex, CIDR, threshold, SQL
@@ -597,8 +597,8 @@ the coverage cross-check. `rules test` prints one line per fixture
 (`ok`/`FAIL`, expected, got, and the error when it failed). `rules list` prints
 `id, severity, status, title, [requires …]`.
 
-`--analyst` is required for `ioc add` and `ioc remove` (or `SPARROW_ANALYST`): an indicator
-changes what rules find, so it is never anonymous.
+`ioc add` and `ioc remove` are agent decisions: `--agent` (or `SPARROW_AGENT`, default `unnamed`)
+names the agent and `--analyst` (or `SPARROW_ANALYST`, optional) the analyst it acts on behalf of.
 
 ## Hit tables
 

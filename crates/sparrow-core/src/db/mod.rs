@@ -31,6 +31,60 @@ fn read_only_placeholder() -> Result<Connection> {
     Ok(conn?)
 }
 
+/// The case files this process holds a writer on. DuckDB's file lock refuses a writer in another process, but a
+/// second handle in the same process is not refused cleanly (it replays the first one's WAL and fails with an
+/// internal error), so `Case` refuses it here first.
+static WRITERS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// This process's writer registration on a case file; released on drop.
+struct WriterGuard(PathBuf);
+
+impl Drop for WriterGuard {
+    fn drop(&mut self) {
+        let mut w = WRITERS.lock().unwrap_or_else(|e| e.into_inner());
+        w.retain(|p| p != &self.0);
+    }
+}
+
+fn another_writer(path: &Path, detail: &str) -> Error {
+    Error::Invalid(format!(
+        "case is open by another writer: {} ({detail})",
+        path.display()
+    ))
+}
+
+/// Open `path` for writing: one writer per file, in this process (`WRITERS`) and across processes (DuckDB's lock,
+/// whose error becomes "case is open by another writer").
+fn open_writer(path: &Path) -> Result<(Connection, WriterGuard)> {
+    // The file may not exist yet: resolve its directory.
+    let key = match (path.parent(), path.file_name()) {
+        (Some(dir), Some(name)) if !dir.as_os_str().is_empty() => dir
+            .canonicalize()
+            .map(|d| d.join(name))
+            .unwrap_or_else(|_| path.to_path_buf()),
+        _ => std::env::current_dir()
+            .map(|d| d.join(path))
+            .unwrap_or_else(|_| path.to_path_buf()),
+    };
+    let guard = {
+        let mut w = WRITERS.lock().unwrap_or_else(|e| e.into_inner());
+        if w.contains(&key) {
+            return Err(another_writer(path, "already open in this process"));
+        }
+        w.push(key.clone());
+        WriterGuard(key)
+    };
+    let conn = Connection::open(path).map_err(|e| {
+        let msg = e.to_string();
+        if msg.contains("Could not set lock") || msg.contains("Conflicting lock") {
+            another_writer(path, &msg)
+        } else {
+            e.into()
+        }
+    })?;
+    Ok((conn, guard))
+}
+
 /// A directory removed when the `Case` that owns it is dropped (see [`Case::with_scratch_dir`]).
 struct ScratchDir(PathBuf);
 
@@ -47,6 +101,8 @@ pub struct Case {
     /// Set when the file could not be reopened after `with_file_released`: `conn` is then an
     /// read-only, empty placeholder database that cannot take writes.
     poisoned: Option<String>,
+    /// Held while this `Case` is the file's writer; declared after `conn` so it is released after the connection.
+    _writer: Option<WriterGuard>,
     /// Declared last so it drops after `conn`: the database is closed (and its WAL settled)
     /// before the directory that holds the file goes.
     scratch: Option<ScratchDir>,
@@ -55,13 +111,14 @@ pub struct Case {
 impl Case {
     /// Open (creating if needed) a case database for writing and bring its schema up to date.
     pub fn create_or_open(path: &Path) -> Result<Case> {
-        let conn = Connection::open(path)?;
+        let (conn, writer) = open_writer(path)?;
         migrations::migrate(&conn)?;
         Ok(Case {
             conn,
             path: Some(path.to_path_buf()),
             read_only: false,
             poisoned: None,
+            _writer: Some(writer),
             scratch: None,
         })
     }
@@ -80,9 +137,39 @@ impl Case {
         if !path.is_file() {
             return Err(Error::NotFound(format!("case database {}", path.display())));
         }
-        let conn = Connection::open(path)?;
-        let from = migrations::current_version(&conn)?;
-        let to = migrations::migrate(&conn)?;
+        let (conn, writer) = open_writer(path)?;
+        let out = Self::upgrade_conn(&conn);
+        // Close the connection before releasing the writer registration.
+        drop(conn);
+        drop(writer);
+        out
+    }
+
+    fn upgrade_conn(conn: &Connection) -> Result<(u32, u32)> {
+        let from = migrations::current_version(conn)?;
+        let to = migrations::migrate(conn)?;
+        // The upgrade to the Phase 7 schema starts the audit chain (Addendum D.3).
+        if from < migrations::ANALYST_VERSION && to >= migrations::ANALYST_VERSION {
+            conn.execute_batch("BEGIN TRANSACTION")?;
+            let appended = crate::case::audit::case_id(conn).and_then(|case_id| {
+                crate::case::audit::append_system(
+                    conn,
+                    crate::case::audit::SYSTEM_UPGRADE,
+                    "schema_upgrade",
+                    "case",
+                    &case_id,
+                    Some(&serde_json::json!({ "schema_version": from })),
+                    Some(&serde_json::json!({ "schema_version": to })),
+                )
+            });
+            match appended {
+                Ok(_) => conn.execute_batch("COMMIT")?,
+                Err(e) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    return Err(e);
+                }
+            }
+        }
         Ok((from, to))
     }
 
@@ -99,6 +186,7 @@ impl Case {
             path: Some(path.to_path_buf()),
             read_only: true,
             poisoned: None,
+            _writer: None,
             scratch: None,
         })
     }
@@ -111,6 +199,7 @@ impl Case {
             path: None,
             read_only: false,
             poisoned: None,
+            _writer: None,
             scratch: None,
         })
     }
@@ -270,7 +359,7 @@ mod tests {
                 .execute_batch("CREATE TABLE x (id INTEGER)")
                 .is_err()
         );
-        let actor = crate::case::indicators::Actor::analyst("sam").unwrap();
+        let actor = crate::case::actor::Actor::agent("sam", None).unwrap();
         let ind = crate::case::indicators::add_indicator(
             case.conn(),
             &actor,

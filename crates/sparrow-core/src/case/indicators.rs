@@ -7,25 +7,7 @@ use duckdb::{Connection, params};
 use serde::{Serialize, Serializer};
 use sha2::{Digest, Sha256};
 
-/// Who makes a change: `analyst:<name>`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Actor(String);
-
-impl Actor {
-    pub fn analyst(name: &str) -> Result<Actor> {
-        let name = name.trim();
-        if name.is_empty() || name.chars().any(char::is_control) {
-            return Err(Error::Invalid(
-                "an analyst name must be non-empty text".to_string(),
-            ));
-        }
-        Ok(Actor(format!("analyst:{name}")))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
+pub use super::actor::Actor;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]

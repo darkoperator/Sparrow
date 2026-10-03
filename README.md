@@ -195,7 +195,7 @@ sparrow rules list [--requires CAP] [--tag TAG] # id, severity, status, title, r
 $ sparrow ioc add --case case.duckdb --type ip --value 203.0.113.50 --verdict malicious --note "attacker proxy"
 a4d22a34c6847a00  ip 203.0.113.50  malicious
 $ sparrow ioc list --case case.duckdb
-a4d22a34c6847a00  ip         malicious  203.0.113.50  by analyst:docs@example.invalid  (attacker proxy)
+a4d22a34c6847a00  ip         malicious  203.0.113.50  by agent:unnamed  (attacker proxy)
 1 indicators
 $ sparrow ioc remove --case case.duckdb --id a4d22a34c6847a00
 removed a4d22a34c6847a00
@@ -203,8 +203,9 @@ removed a4d22a34c6847a00
 
 (the `id` is derived from the indicator, so it differs per case and value).
 
-`--analyst NAME` (or `$SPARROW_ANALYST`) is **required** for `add` and `remove`: an indicator changes
-what rules find, so it is never anonymous. `--tenant KEY` scopes an indicator to one tenant; without
+`add` and `remove` are agent decisions: `--agent ID` (or `$SPARROW_AGENT`, default `unnamed`) names the
+agent, recorded as `agent:<id>`, and `--analyst NAME` (or `$SPARROW_ANALYST`, optional) names the analyst the
+decision is made on behalf of: its reviewer, not an identity claim. `--tenant KEY` scopes an indicator to one tenant; without
 it it applies to every tenant of the case.
 
 ## Build
@@ -246,7 +247,10 @@ sparrow verify ual_events <record-id> --case case.duckdb [--root /moved/Hawk_fol
 sparrow detect --case case.duckdb                 # run the rules (also the last step of ingest/profile;
                                                   # --rule ID / --tag TAG to narrow, --no-detect to skip
 sparrow rules lint | test | list                   # check, test and list the rules in rules/
-sparrow ioc list --case case.duckdb               # also add|remove (--analyst NAME required)
+sparrow ioc list --case case.duckdb               # also add|remove [--agent ID] [--analyst NAME]
+sparrow audit verify --case case.duckdb           # check the audit chain (exit 3 when broken;
+                                                  # --acknowledge [--agent ID] records a break)
+sparrow audit log --case case.duckdb              # the audit trail; --object TYPE:ID for one object
 ```
 
 Add `--json` to any command for machine-readable output. `ingest` exits with code 2 when it completed but a file

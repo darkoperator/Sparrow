@@ -85,7 +85,15 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "spray_takeover_resistant",
         sql: include_str!("../../migrations/0015_spray_takeover_resistant.sql"),
     },
+    Migration {
+        version: 16,
+        name: "analyst",
+        sql: include_str!("../../migrations/0016_analyst.sql"),
+    },
 ];
+
+/// The migration that adds the Phase 7 analyst tables and the audit trail.
+pub const ANALYST_VERSION: u32 = 16;
 
 pub fn latest_version() -> u32 {
     MIGRATIONS.last().map(|m| m.version).unwrap_or(0)
