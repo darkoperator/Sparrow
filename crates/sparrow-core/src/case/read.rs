@@ -303,6 +303,7 @@ fn timeline_row(r: &duckdb::Row<'_>, o: usize) -> duckdb::Result<TimelineRow> {
 pub struct TimelineFilter {
     /// The actor or the target (case-insensitive).
     pub user: Option<String>,
+    /// Case-insensitive (IPv6 text may differ in case).
     pub ip: Option<String>,
     pub category: Option<String>,
     /// Inclusive bounds on the event time.
@@ -341,7 +342,7 @@ pub fn timeline_query(conn: &Connection, f: &TimelineFilter) -> Result<Page<Time
         args.push(u.clone());
     }
     if let Some(v) = &f.ip {
-        filter.push("t.ip = ?".into());
+        filter.push("lower(t.ip) = lower(?)".into());
         args.push(v.clone());
     }
     if let Some(v) = &f.category {
@@ -448,7 +449,7 @@ pub fn pivot_ip(conn: &Connection, ip: &str, cap: usize) -> Result<Pivot> {
             section(
                 conn,
                 "ip_intel",
-                "SELECT * FROM ip_intel WHERE ip = ?",
+                "SELECT * FROM ip_intel WHERE lower(ip) = lower(?)",
                 "q.ip",
                 &[ip],
                 cap,
@@ -456,7 +457,7 @@ pub fn pivot_ip(conn: &Connection, ip: &str, cap: usize) -> Result<Pivot> {
             section(
                 conn,
                 "spray_source",
-                "SELECT * FROM spray_sources WHERE ip = ?",
+                "SELECT * FROM spray_sources WHERE lower(ip) = lower(?)",
                 "q.tenant_key",
                 &[ip],
                 cap,
@@ -464,7 +465,7 @@ pub fn pivot_ip(conn: &Connection, ip: &str, cap: usize) -> Result<Pivot> {
             section(
                 conn,
                 "timeline",
-                &format!("{TIMELINE_JSON} WHERE t.ip = ?"),
+                &format!("{TIMELINE_JSON} WHERE lower(t.ip) = lower(?)"),
                 TIMELINE_ORDER,
                 &[ip],
                 cap,
@@ -473,7 +474,7 @@ pub fn pivot_ip(conn: &Connection, ip: &str, cap: usize) -> Result<Pivot> {
                 conn,
                 "findings",
                 &format!(
-                    "{FINDING_JSON} WHERE f.finding_id IN (SELECT unnest(finding_ids) FROM timeline WHERE ip = ?)"
+                    "{FINDING_JSON} WHERE f.finding_id IN (SELECT unnest(finding_ids) FROM timeline WHERE lower(ip) = lower(?))"
                 ),
                 FINDING_ORDER,
                 &[ip],
@@ -493,7 +494,7 @@ pub fn pivot_ip(conn: &Connection, ip: &str, cap: usize) -> Result<Pivot> {
 
 /// Everything the case knows about one user (case-insensitive UPN): identity (Sparrow's resolved identities, by
 /// UPN or alias), directory (the users table), roles, mfa, timeline (as actor or target), findings (as actor, or
-/// citing the user's timeline rows), indicators (upn or email). Each section holds at most `cap` rows.
+/// citing timeline rows where the user is the actor or the target), indicators (upn or email). Each section holds at most `cap` rows.
 pub fn pivot_user(conn: &Connection, upn: &str, cap: usize) -> Result<Pivot> {
     Ok(Pivot {
         sections: vec![
@@ -546,10 +547,11 @@ pub fn pivot_user(conn: &Connection, upn: &str, cap: usize) -> Result<Pivot> {
                 "findings",
                 &format!(
                     "{FINDING_JSON} WHERE lower(f.actor_upn) = lower(?) OR f.finding_id IN \
-                     (SELECT unnest(finding_ids) FROM timeline WHERE lower(actor_upn) = lower(?))"
+                     (SELECT unnest(finding_ids) FROM timeline \
+                      WHERE lower(actor_upn) = lower(?) OR lower(target) = lower(?))"
                 ),
                 FINDING_ORDER,
-                &[upn, upn],
+                &[upn, upn, upn],
                 cap,
             )?,
             section(

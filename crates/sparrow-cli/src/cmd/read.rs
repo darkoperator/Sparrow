@@ -1,5 +1,6 @@
 //! Read commands (Addendum D.5): `finding list|show`, `timeline`, `timeline-entry list`, `pivot ip|user` and `query`.
-//! Each opens the case read-only. Plain output passes agent and evidence text through `display_safe`; `--json`
+//! Each opens the case read-only. Plain output passes agent and evidence text through `display_safe_line` (one-line
+//! values) or `display_safe` (multi-line blocks); `--json`
 //! prints the stored values.
 
 use anyhow::{Context, Result};
@@ -8,7 +9,7 @@ use clap::{Args, Subcommand};
 use serde::Serialize;
 use sparrow_core::Case;
 use sparrow_core::case::read::{self, FindingFilter, Page, Pivot, TimelineFilter, TimelineRow};
-use sparrow_core::case::text::display_safe as safe;
+use sparrow_core::case::text::{display_safe, display_safe_line as safe};
 use sparrow_core::case::{audit, query, timeline_entries};
 use sparrow_core::data::DataDirs;
 use sparrow_core::detect::load::load_rules;
@@ -110,11 +111,15 @@ pub fn finding_list(a: FindingListArgs, json: bool) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Evidence rows `finding show` prints without `--all`.
+const SHOW_EVIDENCE: usize = 50;
+
 pub fn finding_show(
     case: &Path,
     id: &str,
     data: Option<PathBuf>,
     rules: Vec<PathBuf>,
+    all: bool,
     json: bool,
 ) -> Result<ExitCode> {
     let c = Case::open_read_only(case)?;
@@ -166,11 +171,16 @@ pub fn finding_show(
     if let Some(g) = &d.analyst_guidance {
         println!("guidance:");
         for line in g.lines() {
-            println!("  {}", safe(line));
+            println!("  {}", display_safe(line));
         }
     }
     println!("evidence ({}):", d.evidence.len());
-    for e in &d.evidence {
+    let shown = if all {
+        d.evidence.len()
+    } else {
+        d.evidence.len().min(SHOW_EVIDENCE)
+    };
+    for e in &d.evidence[..shown] {
         let what = e
             .timeline
             .as_ref()
@@ -189,6 +199,12 @@ pub fn finding_show(
             safe(&e.record_key),
             what,
             safe(&e.source_refs.join(", "))
+        );
+    }
+    if shown < d.evidence.len() {
+        println!(
+            "  … {} more (use --json or --all)",
+            d.evidence.len() - shown
         );
     }
     if !d.notes.is_empty() {

@@ -5,7 +5,7 @@ use crate::ActorArgs;
 use anyhow::Result;
 use clap::Subcommand;
 use sparrow_core::case::audit::AuditEntry;
-use sparrow_core::case::text::display_safe;
+use sparrow_core::case::text::display_safe_line;
 use sparrow_core::case::write::{self, FindingStatus};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -25,6 +25,9 @@ pub enum FindingCommand {
         /// Rule directory (repeatable), for the guidance of custom rules; default $SPARROW_RULES
         #[arg(long)]
         rules: Vec<PathBuf>,
+        /// Print every evidence row (plain output shows the first 50; --json always has all)
+        #[arg(long)]
+        all: bool,
     },
     /// Set a finding's status (new, in_review, confirmed, false_positive, benign, needs_more_data)
     SetStatus {
@@ -60,11 +63,11 @@ pub enum FindingCommand {
 /// "(decided by agent:x for analyst:y, pending review)".
 pub fn provenance(decided_by: &str, on_behalf_of: Option<&str>) -> String {
     let on_behalf = on_behalf_of
-        .map(|a| format!(" for {}", display_safe(a)))
+        .map(|a| format!(" for {}", display_safe_line(a)))
         .unwrap_or_default();
     format!(
         "(decided by {}{on_behalf}, pending review)",
-        display_safe(decided_by)
+        display_safe_line(decided_by)
     )
 }
 
@@ -75,8 +78,8 @@ pub fn print_decision(e: &AuditEntry, what: &str, json: bool) -> Result<()> {
     } else {
         println!(
             "{} {} {}",
-            display_safe(&e.object_id),
-            display_safe(what),
+            display_safe_line(&e.object_id),
+            display_safe_line(what),
             provenance(&e.actor, e.on_behalf_of.as_deref())
         );
     }
@@ -91,7 +94,8 @@ pub fn run(command: FindingCommand, json: bool) -> Result<ExitCode> {
             case,
             data,
             rules,
-        } => return super::read::finding_show(&case, &id, data, rules, json),
+            all,
+        } => return super::read::finding_show(&case, &id, data, rules, all, json),
         FindingCommand::SetStatus {
             id,
             status,

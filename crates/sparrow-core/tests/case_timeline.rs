@@ -811,3 +811,29 @@ fn display_safe_escapes_control_characters() {
     );
     assert_eq!(display_safe("c1\u{9b}"), "c1\\u{009B}");
 }
+
+#[test]
+fn display_escapes_format_characters_and_single_lines_escape_newlines() {
+    use sparrow_core::case::text::{display_safe, display_safe_line};
+    // Bidi overrides and isolates, zero-width characters and the BOM are escaped in both forms.
+    for (c, hex) in [
+        ('\u{202E}', "202E"),
+        ('\u{2066}', "2066"),
+        ('\u{200B}', "200B"),
+        ('\u{200F}', "200F"),
+        ('\u{FEFF}', "FEFF"),
+        ('\u{E0041}', "E0041"),
+    ] {
+        let want = format!("a\\u{{{hex}}}b");
+        assert_eq!(display_safe(&format!("a{c}b")), want);
+        assert_eq!(display_safe_line(&format!("a{c}b")), want);
+    }
+    // Blocks keep newlines and tabs; a single line keeps tabs only.
+    assert_eq!(display_safe("one\ntwo\tx"), "one\ntwo\tx");
+    assert_eq!(
+        display_safe_line("one\ntwo\tx\r"),
+        "one\\u{000A}two\tx\\u{000D}"
+    );
+    // Ordinary text, accents and emoji pass through.
+    assert_eq!(display_safe_line("Ünïcødé 🔥 שלום"), "Ünïcødé 🔥 שלום");
+}

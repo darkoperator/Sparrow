@@ -1,3 +1,5 @@
+#[path = "common/detect.rs"]
+mod detect;
 #[path = "common/synth.rs"]
 mod synth;
 
@@ -346,6 +348,13 @@ fn timeline_filters_by_ip_category_and_finding_and_pages() {
     )
     .unwrap();
     assert!(!p.rows.is_empty() && p.rows.iter().all(|r| r.ip.as_deref() == Some(ip.as_str())));
+    let n: i64 = c
+        .conn()
+        .query_row("SELECT count(*) FROM timeline WHERE ip = ?", [&ip], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!((p.total, p.rows.len() as i64), (n, n));
     let p = read::timeline_query(
         c.conn(),
         &TimelineFilter {
@@ -356,6 +365,15 @@ fn timeline_filters_by_ip_category_and_finding_and_pages() {
     )
     .unwrap();
     assert!(!p.rows.is_empty() && p.rows.iter().all(|r| r.category == "auth"));
+    let n: i64 = c
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM timeline WHERE category = 'auth'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!((p.total, p.rows.len() as i64), (n, n));
     let fid: String = c
         .conn()
         .query_row(
@@ -490,4 +508,66 @@ fn pivot_ip_gathers_its_sections() {
     assert!(get("findings").total > 0);
     assert_eq!(get("indicators").total, 1);
     assert_eq!(get("indicators").rows[0]["verdict"], "malicious");
+}
+
+/// A small case: one UAL event where `attacker@contoso.example` acts on `victim@contoso.example`'s mailbox from an
+/// IPv6 address written in upper case, and a finding (actor: the attacker) citing it.
+fn target_only_case() -> Case {
+    use serde_json::json;
+    let c = Case::in_memory().unwrap();
+    detect::insert_row(&c, "tenant", "t1", json!({"tenant_key": "t1"}));
+    detect::collection_of(&c, "t1");
+    detect::insert_ual(
+        &c,
+        "t1",
+        json!({"record_id": "00000000-0000-0000-0000-0000000000a1", "operation": "MailItemsAccessed",
+               "user_upn": "attacker@contoso.example", "mailbox_upn": "victim@contoso.example",
+               "client_ip": "2001:DB8::A1"}),
+    );
+    c.conn()
+        .execute_batch(
+            "INSERT INTO findings (finding_id, fingerprint, tenant_key, rule_id, rule_version, rule_sha256, severity, \
+             title, actor_upn, created_by, created_at, updated_at) \
+             VALUES ('f1', 'fp1', 't1', 'SPW-T-1', 1, 'x', 'high', 'mailbox read', 'attacker@contoso.example', 'rule', \
+                     now(), now());
+             INSERT INTO finding_evidence (finding_id, source_table, record_key, role, added_run_id) \
+             VALUES ('f1', 'ual_events', '00000000-0000-0000-0000-0000000000a1', 'trigger', 1);",
+        )
+        .unwrap();
+    c
+}
+
+#[test]
+fn pivot_user_finds_findings_where_the_user_is_only_the_target() {
+    let c = target_only_case();
+    let p = read::pivot_user(c.conn(), "VICTIM@contoso.example", 50).unwrap();
+    let get = |n: &str| p.sections.iter().find(|s| s.name == n).unwrap();
+    assert_eq!(get("timeline").total, 1);
+    assert_eq!(get("timeline").rows[0]["target"], "victim@contoso.example");
+    let f = get("findings");
+    assert_eq!(f.total, 1);
+    assert_eq!(f.rows[0]["finding_id"], "f1");
+    assert_eq!(f.rows[0]["actor_upn"], "attacker@contoso.example");
+    // An unrelated user sees nothing.
+    let p = read::pivot_user(c.conn(), "someone@contoso.example", 50).unwrap();
+    assert!(p.sections.iter().all(|s| s.total == 0), "{p:?}");
+}
+
+#[test]
+fn ip_matching_ignores_case() {
+    let c = target_only_case();
+    let page = read::timeline_query(
+        c.conn(),
+        &TimelineFilter {
+            ip: Some("2001:db8::a1".into()),
+            limit: 10,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.rows[0].ip.as_deref(), Some("2001:DB8::A1"));
+    let p = read::pivot_ip(c.conn(), "2001:db8::a1", 50).unwrap();
+    let get = |n: &str| p.sections.iter().find(|s| s.name == n).unwrap();
+    assert_eq!((get("timeline").total, get("findings").total), (1, 1));
 }

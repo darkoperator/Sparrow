@@ -2269,19 +2269,55 @@ fn ingested(dir: &std::path::Path) -> std::path::PathBuf {
     );
     let root = out.join(v["root"].as_str().unwrap());
     let case = dir.join("case.duckdb");
-    // 2 = completed with file problems (the generated tree's deliberate edge cases); the case is complete.
-    let code = sparrow()
-        .args(["ingest"])
-        .arg(&root)
-        .arg("--case")
-        .arg(&case)
-        .arg("--geoip-dir")
-        .arg(out.join("geoip"))
-        .output()
-        .unwrap()
-        .status
-        .code();
-    assert!(matches!(code, Some(0) | Some(2)), "{code:?}");
+    // Exit 2: bec-aitm's AllRoles.csv carries a deliberate Role carry-over row, and nothing else fails.
+    let v = json_out(
+        sparrow()
+            .args(["--json", "ingest"])
+            .arg(&root)
+            .arg("--case")
+            .arg(&case)
+            .arg("--geoip-dir")
+            .arg(out.join("geoip")),
+        2,
+    );
+    fn failing<'a>(v: &'a Value, out: &mut Vec<&'a Value>) {
+        match v {
+            Value::Object(m) => {
+                let bad = m.contains_key("rel_path")
+                    && (m.get("records_error").and_then(Value::as_i64).unwrap_or(0) > 0
+                        || m.get("status").and_then(Value::as_str) == Some("error")
+                        || m.get("warnings")
+                            .and_then(Value::as_array)
+                            .is_some_and(|w| {
+                                w.iter().any(|w| {
+                                    w.as_str()
+                                        .unwrap_or("")
+                                        .starts_with("reconciliation mismatch")
+                                })
+                            }));
+                if bad {
+                    out.push(v);
+                }
+                m.values().for_each(|x| failing(x, out));
+            }
+            Value::Array(a) => a.iter().for_each(|x| failing(x, out)),
+            _ => {}
+        }
+    }
+    let mut bad = Vec::new();
+    failing(&v, &mut bad);
+    assert_eq!(bad.len(), 1, "{bad:?}");
+    assert!(
+        bad[0]["rel_path"]
+            .as_str()
+            .unwrap()
+            .ends_with("AllRoles.csv"),
+        "{bad:?}"
+    );
+    assert!(
+        bad[0]["warnings"].to_string().contains("Role carry-over"),
+        "{bad:?}"
+    );
     case
 }
 
@@ -2334,19 +2370,36 @@ fn read_commands_report_and_cap() {
     let v = json_out(
         sparrow()
             .args([
-                "--json", "timeline", "--user", &user, "--limit", "100000", "--case",
+                "--json",
+                "timeline",
+                "--user",
+                &user.to_uppercase(),
+                "--limit",
+                "100000",
+                "--case",
             ])
             .arg(&case),
         0,
     );
-    assert!(v["total"].as_i64().unwrap() > 0);
-    assert!(
-        v["rows"]
-            .as_array()
+    let n: i64 = {
+        let c = sparrow_core::Case::open_read_only(&case).unwrap();
+        c.conn()
+            .query_row(
+                "SELECT count(*) FROM timeline WHERE lower(actor_upn) = lower(?) OR lower(target) = lower(?)",
+                [&user, &user],
+                |r| r.get(0),
+            )
             .unwrap()
+    };
+    assert!(n > 0);
+    assert_eq!(v["total"], n);
+    assert_eq!(v["rows"].as_array().unwrap().len() as i64, n);
+    let lower = user.to_lowercase();
+    assert!(v["rows"].as_array().unwrap().iter().all(|r| {
+        [&r["actor_upn"], &r["target"]]
             .iter()
-            .all(|r| r["actor_upn"] == user.as_str() || r["target"] == user.as_str())
-    );
+            .any(|x| x.as_str().is_some_and(|x| x.to_lowercase() == lower))
+    }));
     let findings = json_out(
         sparrow()
             .args(["--json", "finding", "list", "--case"])
@@ -2542,4 +2595,105 @@ fn timeline_entry_list_escapes_agent_text() {
         0,
     );
     assert_eq!(v["entries"].as_array().unwrap().len(), 0);
+}
+
+/// A case file with one finding whose title holds an ESC, citing 60 UAL events whose operation holds an ESC and a
+/// newline, plus a note with a bidi override.
+fn hostile_finding_case(dir: &std::path::Path) -> std::path::PathBuf {
+    let case = fresh_case(dir);
+    let c = sparrow_core::Case::create_or_open(&case).unwrap();
+    sparrow_core::detect::test::ensure_collection(&c, "t1").unwrap();
+    for i in 0..60 {
+        sparrow_core::detect::test::insert_record(
+            &c,
+            "t1",
+            "ual_events",
+            &serde_json::json!({"record_id": format!("00000000-0000-0000-0000-{i:012}"),
+                                "operation": "Op\u{1b}[2J\nforged line", "user_upn": "a@contoso.example"}),
+            &format!("r{i}"),
+        )
+        .unwrap();
+    }
+    c.conn()
+        .execute_batch(
+            "INSERT INTO findings (finding_id, fingerprint, tenant_key, rule_id, rule_version, rule_sha256, severity, \
+             title, created_by, created_at, updated_at) \
+             VALUES ('f1', 'fp1', 't1', 'SPW-T-1', 1, 'x', 'high', 'placeholder', 'rule', now(), now());
+             INSERT INTO finding_evidence (finding_id, source_table, record_key, role, added_run_id) \
+             SELECT 'f1', 'ual_events', CAST(record_id AS VARCHAR), 'trigger', 1 FROM ual_events;",
+        )
+        .unwrap();
+    // The hostile title, bound as a parameter.
+    c.conn()
+        .execute("UPDATE findings SET title = ?", ["evil\u{1b}[2Jtitle"])
+        .unwrap();
+    let a = sparrow_core::case::actor::Actor::agent("claude", None).unwrap();
+    sparrow_core::case::notes::add_note(
+        c.conn(),
+        &a,
+        sparrow_core::case::notes::NoteTarget::Finding("f1".into()),
+        "note \u{202E}reversed",
+    )
+    .unwrap();
+    case
+}
+
+#[test]
+fn finding_show_caps_evidence_and_escapes_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = hostile_finding_case(dir.path());
+    let plain = |extra: &[&str]| {
+        let out = sparrow()
+            .args(["finding", "show", "f1", "--case"])
+            .arg(&case)
+            .args(extra)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let text = plain(&[]);
+    for raw in ['\u{1b}', '\u{202E}'] {
+        assert!(!text.contains(raw), "{text:?}");
+    }
+    assert!(text.contains("evil\\u{001B}[2Jtitle"), "{text}");
+    assert!(text.contains("note \\u{202E}reversed"), "{text}");
+    assert!(
+        text.contains("Op\\u{001B}[2J\\u{000A}forged line"),
+        "{text}"
+    );
+    assert!(
+        !text.lines().any(|l| l.starts_with("forged line")),
+        "a value forged an output line: {text}"
+    );
+    assert!(text.contains("evidence (60):"), "{text}");
+    assert_eq!(text.matches("ual_events:").count(), 50);
+    assert!(text.contains("… 10 more (use --json or --all)"), "{text}");
+    let all = plain(&["--all"]);
+    assert_eq!(all.matches("ual_events:").count(), 60);
+    assert!(!all.contains("more (use --json"));
+    let v = json_out(
+        sparrow()
+            .args(["--json", "finding", "show", "f1", "--case"])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(v["evidence"].as_array().unwrap().len(), 60);
+    assert_eq!(v["finding"]["title"], "evil\u{1b}[2Jtitle");
+    // Timeline rows escape their summaries the same way.
+    let out = sparrow()
+        .args(["timeline", "--case"])
+        .arg(&case)
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(text.lines().count(), 60, "{text}");
+    assert!(
+        !text.contains('\u{1b}') && text.contains("Op\\u{001B}[2J\\u{000A}forged line"),
+        "{text}"
+    );
 }

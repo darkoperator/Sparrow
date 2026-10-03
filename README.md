@@ -259,7 +259,8 @@ sparrow timeline-entry propose --time T --title X --phase P --evidence TABLE:KEY
 sparrow note add finding:ID|entry:ID|ioc:ID|TABLE:KEY --text "..." --case case.duckdb
 sparrow finding list --case case.duckdb           # [--status --severity --rule --user --tenant --rule-updated
                                                   #  --review-state]; severity first, then the most recent
-sparrow finding show ID --case case.duckdb        # evidence with source refs, guidance, notes, decision, history
+sparrow finding show ID --case case.duckdb        # evidence with source refs (first 50; --all), guidance, notes,
+                                                  # decision, history
 sparrow timeline --case case.duckdb               # [--user --ip --category --from --to --finding --limit 200]
 sparrow timeline-entry list --case case.duckdb    # [--status --review-state]
 sparrow pivot ip|user VALUE --case case.duckdb    # every section capped by --cap 50, truncation reported
@@ -287,8 +288,9 @@ extension loading off and the configuration locked. It sees every table and view
 id and the audit chain's `audit_head`/`audit_verified` bookkeeping); that is harmless, since they are not secret and
 reading them changes nothing.
 
-Agent text is stored as given. Plain (non-`--json`) output shows control characters other than newline and tab as
-`\u{XXXX}`.
+Agent text is stored as given. Plain (non-`--json`) output shows control characters and Unicode format characters
+(bidi overrides, zero-width characters) as `\u{XXXX}`; values printed on one line escape newlines too, so text cannot
+forge an output line.
 
 With `--json`, errors are also printed to stdout as `{"error": "..."}`.
 

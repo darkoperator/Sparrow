@@ -4,7 +4,7 @@ use crate::ActorArgs;
 use anyhow::Result;
 use clap::Subcommand;
 use sparrow_core::case::notes::{NoteTarget, add_note};
-use sparrow_core::case::text::display_safe;
+use sparrow_core::case::text::display_safe_line;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -39,8 +39,8 @@ pub fn run(command: NoteCommand, json: bool) -> Result<ExitCode> {
             } else {
                 println!(
                     "note {id} on {} by {}",
-                    display_safe(&target),
-                    display_safe(&e.actor)
+                    display_safe_line(&target),
+                    display_safe_line(&e.actor)
                 );
             }
         }

@@ -1702,7 +1702,7 @@ fn cmd_ioc(command: IocCommand, json: bool) -> Result<ExitCode> {
     use sparrow_core::case::indicators::{
         IndicatorType, Verdict, add_indicator, list_indicators, remove_indicator, set_verdict,
     };
-    use sparrow_core::case::text::display_safe;
+    use sparrow_core::case::text::display_safe_line;
     // A bad type or verdict is an invalid decision (exit 5).
     let decision = |e: sparrow_core::Error| sparrow_core::Error::Decision(e.to_string());
     match command {
@@ -1738,7 +1738,7 @@ fn cmd_ioc(command: IocCommand, json: bool) -> Result<ExitCode> {
                 println!(
                     "{id}  {} {}  {}  {}",
                     ty.as_str(),
-                    display_safe(value.trim()),
+                    display_safe_line(value.trim()),
                     verdict.as_str(),
                     cmd::finding::provenance(actor.as_str(), actor.on_behalf_of())
                 );
@@ -1760,15 +1760,15 @@ fn cmd_ioc(command: IocCommand, json: bool) -> Result<ExitCode> {
                         i.indicator_id,
                         i.ty.as_str(),
                         i.verdict.as_str(),
-                        display_safe(&i.value),
-                        display_safe(i.decided_by.as_deref().unwrap_or(&i.added_by)),
+                        display_safe_line(&i.value),
+                        display_safe_line(i.decided_by.as_deref().unwrap_or(&i.added_by)),
                         i.review_state
                             .as_deref()
                             .map(|r| format!(" [{r}]"))
                             .unwrap_or_default(),
                         i.note
                             .as_deref()
-                            .map(|n| format!("  ({})", display_safe(n)))
+                            .map(|n| format!("  ({})", display_safe_line(n)))
                             .unwrap_or_default(),
                         if i.removed_at.is_some() {
                             "  REMOVED"
@@ -1802,11 +1802,11 @@ fn cmd_ioc(command: IocCommand, json: bool) -> Result<ExitCode> {
             } else if removed {
                 println!(
                     "removed {}  {}",
-                    display_safe(&id),
+                    display_safe_line(&id),
                     cmd::finding::provenance(actor.as_str(), actor.on_behalf_of())
                 );
             } else {
-                println!("no active indicator {}", display_safe(&id));
+                println!("no active indicator {}", display_safe_line(&id));
             }
         }
     }

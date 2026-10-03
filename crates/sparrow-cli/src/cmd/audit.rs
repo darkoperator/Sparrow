@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use sparrow_core::Case;
 use sparrow_core::case::audit::{self, ChainReport};
-use sparrow_core::case::text::display_safe;
+use sparrow_core::case::text::display_safe_line;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -25,7 +25,7 @@ fn print_report(r: &ChainReport, json: bool) -> Result<()> {
         println!(
             "audit chain BROKEN at seq {}: {} ({} entries)",
             r.first_bad_seq.unwrap_or(0),
-            display_safe(r.problem.as_deref().unwrap_or("")),
+            display_safe_line(r.problem.as_deref().unwrap_or("")),
             r.entries
         );
     }
@@ -91,16 +91,16 @@ pub fn log(case_path: &Path, object: Option<&str>, json: bool) -> Result<ExitCod
             let on_behalf = e
                 .on_behalf_of
                 .as_deref()
-                .map(|a| format!(" for {}", display_safe(a)))
+                .map(|a| format!(" for {}", display_safe_line(a)))
                 .unwrap_or_default();
             println!(
                 "{} {} {}{on_behalf} {} {}:{}",
                 e.seq,
                 audit::ts_text(&e.ts),
-                display_safe(&e.actor),
-                display_safe(&e.action),
-                display_safe(&e.object_type),
-                display_safe(&e.object_id)
+                display_safe_line(&e.actor),
+                display_safe_line(&e.action),
+                display_safe_line(&e.object_type),
+                display_safe_line(&e.object_id)
             );
         }
     }
