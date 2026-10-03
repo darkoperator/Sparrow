@@ -275,15 +275,14 @@ sparrow export workbook --format xlsx --out FILE --case case.duckdb
 
 Add `--json` to any command for machine-readable output. Exit codes:
 
-- 0: success;
-- 1: any other error;
-- 2: `ingest` completed but a file failed, a record could not be parsed, or a file's record counts did not
-  reconcile; `verify`: a record no longer matches its source;
-- 3: the audit chain is broken (`audit verify`, and any write refused because of it);
-- 4: the case is open by another writer;
-- 5: an invalid agent decision (a bad status, verdict, phase or time, a missing reason, an unknown object, an
-  evidence reference not in the case, text over its cap: 16 KiB for notes, narratives, reasons and comments, 500
-  characters for titles); nothing was written.
+| Code | Meaning |
+| ---: | --- |
+| 0 | success |
+| 1 | any other error, including a refused `query` (not a single SELECT, or one that tries to write or reach outside the case) and a bad option |
+| 2 | `ingest` completed but a file failed, a record could not be parsed, or a file's record counts did not reconcile; `verify`: a record no longer matches its source; `synth coverage` / `conformance`: a gap |
+| 3 | the audit chain is broken (`audit verify`, and any write refused because of it) |
+| 4 | the case is open by another writer (a write, and also a read or `audit verify` while a writer holds the case) |
+| 5 | an invalid agent decision (a bad status, verdict, phase or time, a missing reason, an unknown object, an evidence reference not in the case, text over its cap: 16 KiB for notes, narratives, reasons and comments, 500 characters for titles) or an `export --out` that would overwrite the case; nothing was written |
 
 Read commands open the case read-only. `query` runs exactly one SELECT (checked by DuckDB's own parser) on a
 separate in-memory DuckDB that attaches the case read-only, with external access (files, network, environment) and
@@ -303,6 +302,70 @@ seq. Deleting the newest entries is detected against the head the last write rec
 outside the case. A break blocks every write until `audit verify --acknowledge` records it as an audit entry.
 Indicators from a case made before the audit trail get one reviewable `legacy_decision` entry each on `upgrade`.
 
+## Agent workflow
+
+The CLI is the AI agent's tool. An agent (any program that can run a command and read JSON) drives a case from
+evidence to deliverables with `--json` on every command; nothing else is needed, and there is no server.
+
+```bash
+sparrow ingest /evidence --case case.duckdb --json          # ingest, profile and detect (exit 2: some file failed)
+sparrow capabilities --case case.duckdb --json              # what the case can and cannot show
+sparrow finding list --case case.duckdb --json --severity high
+sparrow finding show 1c8b18eff09c880c --case case.duckdb --json   # evidence rows, guidance, notes, history
+sparrow pivot ip 203.0.113.2 --case case.duckdb --json     # everything about an IP, section by section
+sparrow query "SELECT operation, count(*) FROM timeline GROUP BY 1" --case case.duckdb --json
+
+export SPARROW_AGENT=claude SPARROW_ANALYST=carlos         # or --agent / --analyst on each write
+sparrow finding set-status 1c8b18eff09c880c confirmed --reason "hides mail from the owner" --case case.duckdb
+sparrow ioc add --type ip --value 203.0.113.2 --verdict malicious --note "AiTM relay" --case case.duckdb
+sparrow timeline-entry propose --time 2026-08-21T09:47:00Z --title "Inbox rule created" --phase persistence \
+        --evidence ual_events:02a13335-5a42-4ce8-9f05-5b5f0f489146 --case case.duckdb
+sparrow timeline-entry verify 69d952e3c22b --case case.duckdb
+sparrow note add finding:1c8b18eff09c880c --text "rule forwards to an outside address" --case case.duckdb
+
+sparrow audit verify --case case.duckdb --json              # ok, entry count, head hash
+sparrow export report --out report.md --case case.duckdb
+sparrow export timeline --out timeline.csv --case case.duckdb
+sparrow export workbook --out case.xlsx --case case.duckdb
+```
+
+Every command above is listed under [Use](#use) with its options. The same flow is exercised end to end, through
+the binary, by `crates/sparrow-cli/tests/agent_workflow_e2e.rs`.
+
+**Provenance.** Every write through the CLI is an agent decision. It is recorded on the object as `decided_by`
+(`agent:<id>`), `decided_at`, `on_behalf_of` (`analyst:<name>`, the analyst who should review it; not an identity
+claim) and `review_state = pending_review`, and in the audit trail with the object's state before and after. A new
+agent decision on an object that was reviewed sets it back to `pending_review`. Decisions take effect at once:
+a malicious or suspicious indicator is read by the rules, a finding's status shows in every listing. A rule that
+fires again after an agent closed a finding widens its evidence but never reopens it or touches the decision.
+
+**Review happens outside the CLI.** There is no review command. Either a future UI writes reviews back through the
+core functions (`sparrow_core::case::review::review_accept` / `review_discard`, which take the audit `seq` of the
+decision being reviewed and fail if the object changed since), or the analyst works on the exported files and writes
+nothing back. Discarding a decision restores the fields it changed. The exports therefore label every decision: an
+agent decision nobody has reviewed is "AI decision — not reviewed", and `export report --reviewed-only` keeps accepted
+decisions only (pending items and agent notes are left out).
+
+**The audit trail** is append-only and hash-chained (SHA-256 over the previous hash and the canonical JSON of the
+entry). It holds one entry per state-changing write and per review; a write that changes nothing (removing an
+inactive indicator) adds none, and detection and exports add none. `audit verify` reports the first bad `seq`
+(exit 3); a break blocks writes until `audit verify --acknowledge` records it.
+
+Limits you should know about:
+
+- **The CLI cannot prove who ran a command.** Anyone who can run `sparrow` can claim any `--agent` and `--analyst`.
+  The trail records what the command line said, not who typed it, and review is out-of-band by design. Treat the
+  analyst name as "please review this", not as an authentication.
+- **Truncation is detected only against `case_meta`.** Deleting the newest audit entries is caught because each
+  append records the expected head (seq and hash) in `case_meta`. Someone who can edit the case file can rewrite
+  `case_meta` too, or put back an older copy of the file. The head hash printed by `audit verify` and written into
+  every export is the anchor: keep it outside the case (in the ticket, the report, a message) and compare.
+- **CSV formula neutralisation changes some cells.** In the Timeline Explorer CSV a text cell that starts with `=`
+  `+` `-` `@`, a tab or a carriage return gets a leading `'`, so a spreadsheet will not run it. The Timestamp and
+  FindingIds columns are left alone. The workbook stores every cell as text.
+- **Times in exports are UTC**, whatever the machine or the DuckDB session time zone: `yyyy-MM-dd HH:mm:ss` in the
+  CSV, ` UTC` in the report, UTC date cells in the workbook.
+
 ## Exports
 
 `sparrow export` writes the deliverables from a case, read-only (no audit row): the Markdown report, the Timeline
@@ -319,7 +382,7 @@ The Markdown report escapes all evidence and agent text as Markdown and HTML (so
 the rest of the report, and `[text](url)`, `![](url)` and `[^3]` stay plain text). Agent notes carry no review
 state: they are labelled "agent note — not reviewed", and `--reviewed-only` leaves them out. A date Excel cannot
 hold is written to the workbook as ISO text. `--out` is written through a temp file and renamed when the export
-succeeds, and is refused when it is the case file, its `.wal`, or inside a cargo `target/tmp` cache (exit 5).
+succeeds, and is refused when it is the case file, its `.wal`, or inside the test cache root (`$CARGO_TARGET_TMPDIR/sparrow-cache`, only when that variable is set) (exit 5).
 
 ## Synthetic data
 

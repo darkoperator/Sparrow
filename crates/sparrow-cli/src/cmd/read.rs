@@ -47,6 +47,7 @@ fn truncated_line(shown: usize, total: i64) {
 
 #[derive(Args)]
 pub struct FindingListArgs {
+    /// Case database file
     #[arg(long)]
     pub case: PathBuf,
     /// new, in_review, confirmed, false_positive, benign or needs_more_data
@@ -61,6 +62,8 @@ pub struct FindingListArgs {
     /// The finding's actor UPN (case-insensitive)
     #[arg(long)]
     pub user: Option<String>,
+    /// Tenant key
+    /// Tenant key
     #[arg(long)]
     pub tenant: Option<String>,
     /// true or false
@@ -241,11 +244,13 @@ pub fn finding_show(
 
 #[derive(Args)]
 pub struct TimelineArgs {
+    /// Case database file
     #[arg(long)]
     pub case: PathBuf,
     /// Actor or target UPN (case-insensitive)
     #[arg(long)]
     pub user: Option<String>,
+    /// Source IP address
     #[arg(long)]
     pub ip: Option<String>,
     /// Event category (auth, mail_flow, config_change, ...)
@@ -260,6 +265,7 @@ pub struct TimelineArgs {
     /// Only the rows this finding cites as evidence
     #[arg(long)]
     pub finding: Option<String>,
+    /// At most this many rows
     #[arg(long, default_value_t = 200)]
     pub limit: usize,
 }
@@ -345,7 +351,9 @@ pub fn timeline_entry_list(
 pub enum PivotCommand {
     /// Everything about an IP: ip_intel, spray source, timeline, findings, indicators
     Ip {
+        /// The IP address (IPv4 or IPv6)
         ip: String,
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         /// Rows per section
@@ -354,7 +362,9 @@ pub enum PivotCommand {
     },
     /// Everything about a user: identity, directory, roles, MFA, timeline, findings, indicators
     User {
+        /// The user principal name
         upn: String,
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         /// Rows per section

@@ -15,6 +15,7 @@ use std::process::ExitCode;
 pub enum TimelineEntryCommand {
     /// List the entries, by event time
     List {
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         /// proposed, verified, rejected or superseded
@@ -29,8 +30,10 @@ pub enum TimelineEntryCommand {
         /// When the event happened, RFC 3339 (for example 2026-08-03T09:00:00Z)
         #[arg(long)]
         time: String,
+        /// One line saying what happened (up to 500 characters)
         #[arg(long)]
         title: String,
+        /// What happened and why it matters (optional)
         #[arg(long)]
         narrative: Option<String>,
         /// initial_access, persistence, defense_evasion, recon, collection, exfiltration, impact or remediation
@@ -42,6 +45,7 @@ pub enum TimelineEntryCommand {
         /// Tenant the entry belongs to; default case-wide
         #[arg(long)]
         tenant: Option<String>,
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         #[command(flatten)]
@@ -49,7 +53,9 @@ pub enum TimelineEntryCommand {
     },
     /// Verify a proposed entry (needs evidence that exists in the case)
     Verify {
+        /// Entry id (see `timeline-entry list`)
         id: String,
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         #[command(flatten)]
@@ -57,9 +63,12 @@ pub enum TimelineEntryCommand {
     },
     /// Reject a proposed or verified entry
     Reject {
+        /// Entry id (see `timeline-entry list`)
         id: String,
+        /// Why the entry is wrong
         #[arg(long)]
         reason: String,
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         #[command(flatten)]
@@ -67,21 +76,27 @@ pub enum TimelineEntryCommand {
     },
     /// Edit an entry: in place when proposed; a verified entry gets a successor that supersedes it once verified
     Edit {
+        /// Entry id (see `timeline-entry list`)
         id: String,
+        /// New event time, RFC 3339
         #[arg(long)]
         time: Option<String>,
+        /// New title
         #[arg(long)]
         title: Option<String>,
+        /// New narrative
         #[arg(long, conflicts_with = "clear_narrative")]
         narrative: Option<String>,
         /// Remove the narrative
         #[arg(long)]
         clear_narrative: bool,
+        /// New phase (as for propose)
         #[arg(long)]
         phase: Option<String>,
         /// Replaces the evidence (repeatable)
         #[arg(long)]
         evidence: Vec<String>,
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         #[command(flatten)]

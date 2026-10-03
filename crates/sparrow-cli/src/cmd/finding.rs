@@ -16,7 +16,9 @@ pub enum FindingCommand {
     List(super::read::FindingListArgs),
     /// One finding: evidence with source references, analyst guidance, notes, decision and review, history
     Show {
+        /// Finding id (see `finding list`)
         id: String,
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         /// Directory overriding the embedded data files; default $SPARROW_DATA
@@ -31,11 +33,14 @@ pub enum FindingCommand {
     },
     /// Set a finding's status (new, in_review, confirmed, false_positive, benign, needs_more_data)
     SetStatus {
+        /// Finding id (see `finding list`)
         id: String,
+        /// new, in_review, confirmed, false_positive, benign or needs_more_data
         status: String,
         /// Why; required for confirmed, false_positive and benign (becomes the disposition reason)
         #[arg(long)]
         reason: Option<String>,
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         #[command(flatten)]
@@ -43,8 +48,11 @@ pub enum FindingCommand {
     },
     /// Assign a finding to an analyst
     Assign {
+        /// Finding id (see `finding list`)
         id: String,
+        /// The analyst the finding is assigned to
         analyst_name: String,
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         #[command(flatten)]
@@ -52,7 +60,9 @@ pub enum FindingCommand {
     },
     /// Acknowledge that a finding's rule (or the indicators it reads) changed since it was raised
     AckRuleUpdate {
+        /// Finding id (see `finding list`)
         id: String,
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         #[command(flatten)]

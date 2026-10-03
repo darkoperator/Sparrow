@@ -29,7 +29,13 @@ mod cmd;
 #[command(
     name = "sparrow",
     version,
-    about = "Ingest Hawk / Microsoft-Extractor-Suite output into a DuckDB case database for M365 BEC investigations"
+    about = "Ingest Hawk / Microsoft-Extractor-Suite output into a DuckDB case database for M365 BEC investigations",
+    after_help = "Agent workflow: every command takes --json. Writes (finding set-status|assign|ack-rule-update, ioc, timeline-entry, note) \
+are agent decisions recorded in the audit trail with --agent and --analyst; review happens outside the CLI.\n\
+\n\
+Exit codes: 0 success; 1 other error (including a refused query); 2 completed with problems (ingest, verify); \
+3 audit chain broken; 4 case open by another writer; 5 invalid agent decision.\n\
+See the README, section \"Agent workflow\"."
 )]
 struct Cli {
     /// Emit machine-readable JSON
@@ -70,6 +76,7 @@ enum Command {
     },
     /// Re-derive the tenant profile, capabilities, IP enrichment and identities of a case
     Profile {
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         #[arg(long)]
@@ -84,11 +91,13 @@ enum Command {
     },
     /// Evidence availability: what the case holds, what is missing and why (first call for agents)
     Capabilities {
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
     },
     /// Tenant, licences, collections, coverage window, row counts, top actors and evidence gaps
     Summary {
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
     },
@@ -96,6 +105,7 @@ enum Command {
     Verify {
         table: String,
         record_key: String,
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         /// Use this folder as the collection root (when the evidence was moved)
@@ -104,17 +114,20 @@ enum Command {
     },
     /// Upgrade an existing case database to this version's schema
     Upgrade {
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
     },
     /// Describe the case database tables and columns
     Schema {
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         table: Option<String>,
     },
     /// Run the detection rules over a case and merge the hits into its findings
     Detect {
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         /// Run only this rule id (repeatable)
@@ -135,12 +148,12 @@ enum Command {
         #[command(subcommand)]
         command: RulesCommand,
     },
-    /// Case indicators (ip, upn, ...) that rules read through @list:case_iocs.<type>
+    /// Case indicators (ip, upn, ...) that rules read through @list:case_iocs.<type>; add, set-verdict and remove are agent decisions
     Ioc {
         #[command(subcommand)]
         command: IocCommand,
     },
-    /// Agent decisions on findings: status, assignment, rule-update acknowledgement
+    /// Findings: list and show them; set-status, assign and ack-rule-update are agent decisions
     Finding {
         #[command(subcommand)]
         command: cmd::finding::FindingCommand,
@@ -162,22 +175,23 @@ enum Command {
         #[command(subcommand)]
         command: cmd::read::PivotCommand,
     },
-    /// Run one read-only SELECT on a locked-down connection
+    /// Run one read-only SELECT on a locked-down connection (exit 1 when refused)
     Query {
         /// The SELECT (or WITH ... SELECT) statement
         sql: String,
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         /// At most this many rows
         #[arg(long, default_value_t = 1000)]
         limit: usize,
     },
-    /// Export the case: the Markdown report, the Timeline Explorer CSV, the XLSX workbook (read-only)
+    /// Export the case read-only: the Markdown report, the Timeline Explorer CSV, the XLSX workbook (times in UTC)
     Export {
         #[command(subcommand)]
         command: cmd::export::ExportCommand,
     },
-    /// The hash-chained audit trail of agent decisions and reviews
+    /// The hash-chained audit trail of agent decisions and reviews: verify it (exit 3 when broken) or read it
     Audit {
         #[command(subcommand)]
         command: AuditCommand,
@@ -251,6 +265,7 @@ enum SynthCommand {
     Check {
         #[arg(long)]
         manifest: PathBuf,
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
     },
@@ -410,16 +425,19 @@ enum RulesCommand {
 enum IocCommand {
     /// Add (or update) an indicator
     Add {
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         /// ip, upn, app_id, domain, user_agent, rule_name, email, url or hash
         #[arg(long = "type")]
         ty: String,
+        /// The indicator value (an address, UPN, domain, ...)
         #[arg(long)]
         value: String,
         /// malicious, suspicious or benign
         #[arg(long)]
         verdict: String,
+        /// Free-text note shown with the indicator
         #[arg(long)]
         note: Option<String>,
         /// Tenant the indicator applies to; default every tenant of the case
@@ -430,8 +448,10 @@ enum IocCommand {
     },
     /// List the indicators of the case
     List {
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
+        /// Only indicators of this tenant key
         #[arg(long)]
         tenant: Option<String>,
         /// Include removed indicators (rules no longer read them)
@@ -440,8 +460,10 @@ enum IocCommand {
     },
     /// Change the verdict (and optionally the note) of an indicator
     SetVerdict {
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
+        /// Indicator id (see `ioc list`)
         #[arg(long)]
         id: String,
         /// malicious, suspicious or benign
@@ -455,8 +477,10 @@ enum IocCommand {
     },
     /// Remove an indicator by id
     Remove {
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
+        /// Indicator id (see `ioc list`)
         #[arg(long)]
         id: String,
         #[command(flatten)]
@@ -485,6 +509,7 @@ impl ActorArgs {
 enum AuditCommand {
     /// Check the audit chain; exit code 3 when it is broken
     Verify {
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         /// Record an open break as an audit entry so writes can continue (opens the case for writing)
@@ -495,6 +520,7 @@ enum AuditCommand {
     },
     /// List the audit entries in sequence order
     Log {
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         /// Only the entries of this object, as TYPE:ID (for example finding:abc123)
@@ -517,6 +543,7 @@ enum DomainCommand {
     /// Mark a domain as internal to the tenant (kept even if the evidence does not show it)
     Add {
         domain: String,
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         #[arg(long)]
@@ -528,6 +555,7 @@ enum DomainCommand {
     /// Mark a domain as external to the tenant (dropped even if the evidence shows it)
     Remove {
         domain: String,
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         #[arg(long)]
@@ -537,6 +565,7 @@ enum DomainCommand {
     },
     /// List the tenant's domains
     List {
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         #[arg(long)]

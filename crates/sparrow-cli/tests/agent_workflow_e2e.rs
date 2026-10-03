@@ -694,3 +694,91 @@ fn an_agent_triages_a_bec_aitm_case_and_the_exports_carry_its_decisions() {
     // The real case is still intact.
     assert_eq!(json(&["audit", "verify", "--case", case], 0)["ok"], true);
 }
+
+/// Every option and argument of the Phase 7 subcommands has help text, and `--help` of the program lists the exit
+/// codes an agent has to handle.
+#[test]
+fn every_agent_workflow_option_is_documented_in_help() {
+    let commands: &[&[&str]] = &[
+        &["finding", "list"],
+        &["finding", "show"],
+        &["finding", "set-status"],
+        &["finding", "assign"],
+        &["finding", "ack-rule-update"],
+        &["timeline-entry", "list"],
+        &["timeline-entry", "propose"],
+        &["timeline-entry", "verify"],
+        &["timeline-entry", "reject"],
+        &["timeline-entry", "edit"],
+        &["note", "add"],
+        &["timeline"],
+        &["pivot", "ip"],
+        &["pivot", "user"],
+        &["query"],
+        &["export", "report"],
+        &["export", "timeline"],
+        &["export", "workbook"],
+        &["audit", "verify"],
+        &["audit", "log"],
+        &["ioc", "add"],
+        &["ioc", "list"],
+        &["ioc", "set-verdict"],
+        &["ioc", "remove"],
+    ];
+    let mut checked = 0;
+    for cmd in commands {
+        let mut args = cmd.to_vec();
+        args.push("--help");
+        let r = run(&args);
+        assert_eq!(r.code, 0, "{cmd:?}: {}", r.err);
+        for line in r.out.lines() {
+            let t = line.trim_start();
+            if !(t.starts_with("--") || t.starts_with("-h") || t.starts_with('<'))
+                || line.starts_with("Usage")
+            {
+                continue;
+            }
+            // "<flag or arg>  description": two spaces separate them.
+            let described = t
+                .split_once("  ")
+                .map(|(_, d)| !d.trim().is_empty())
+                .unwrap_or(false);
+            assert!(described, "{cmd:?}: no help text for `{t}`");
+            checked += 1;
+        }
+    }
+    assert!(checked > 100, "only {checked} options checked");
+
+    let top = run(&["--help"]).out;
+    for needle in [
+        "Exit codes:",
+        "3 audit chain broken",
+        "4 case open by another writer",
+        "5 invalid agent decision",
+        "Agent workflow",
+    ] {
+        assert!(
+            top.contains(needle),
+            "`sparrow --help` lacks {needle:?}:\n{top}"
+        );
+    }
+    for sub in [
+        "finding",
+        "timeline-entry",
+        "note",
+        "pivot",
+        "query",
+        "export",
+        "audit",
+        "ioc",
+    ] {
+        let line = top
+            .lines()
+            .find(|l| l.trim_start().starts_with(&format!("{sub} ")))
+            .expect(sub);
+        assert!(
+            line.trim().len() > sub.len() + 20,
+            "a one-liner for {sub}: {line}"
+        );
+    }
+}

@@ -12,9 +12,12 @@ use std::process::ExitCode;
 pub enum NoteCommand {
     /// Add a note to finding:ID, entry:ID, ioc:ID or an evidence row <table>:<record_key>
     Add {
+        /// What the note is about: finding:ID, entry:ID, ioc:ID or <table>:<record_key>
         target: String,
+        /// The note (plain text, up to 16 KiB)
         #[arg(long)]
         text: String,
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         #[command(flatten)]

@@ -18,6 +18,7 @@ use std::process::ExitCode;
 pub enum ExportCommand {
     /// The Markdown customer report (pending AI decisions are labelled unless --reviewed-only)
     Report {
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         /// Only md
@@ -32,6 +33,7 @@ pub enum ExportCommand {
     },
     /// The Timeline Explorer CSV (UTF-8 with a BOM)
     Timeline {
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         /// Only csv
@@ -55,6 +57,7 @@ pub enum ExportCommand {
     },
     /// The XLSX workbook (Summary, Findings, Timeline, Indicators, Evidence gaps, Audit)
     Workbook {
+        /// Case database file
         #[arg(long)]
         case: PathBuf,
         /// Only xlsx
