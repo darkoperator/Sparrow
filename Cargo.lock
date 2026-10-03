@@ -1499,8 +1499,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
+ "calamine",
  "chrono",
  "clap",
+ "csv",
  "duckdb",
  "predicates",
  "serde",

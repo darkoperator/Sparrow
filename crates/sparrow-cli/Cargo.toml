@@ -20,6 +20,9 @@ tempfile.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true
+calamine.workspace = true
+chrono.workspace = true
+csv.workspace = true
 duckdb.workspace = true
 predicates.workspace = true
 serde_json.workspace = true
