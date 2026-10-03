@@ -11,8 +11,9 @@
 //! * **Only the current build is kept.** The first `Cache::new` in a process deletes the cache
 //!   directories of every other build fingerprint, and any private directory (`tmp/`, `runs/`,
 //!   `fresh/`) whose owning process is gone.
-//! * **Pristine, shared, read-only.** An entry's files and the directories of a tree are
-//!   published read-only, and `DONE` records every file's size, modification time and SHA-256.
+//! * **Pristine, shared, read-only.** An entry's files are published read-only (directories stay
+//!   writable so `rm -rf` and `cargo clean` can remove the cache), and `DONE` records every
+//!   file's size, modification time and SHA-256, and the list of files itself.
 //!   Each read compares sizes and times (a stat walk); the first read of an entry through a
 //!   `Cache` also re-hashes it. Any mismatch rebuilds the entry. A test never opens a cached
 //!   case: it gets its own COPY (a copy-on-write clone where the filesystem has one, so it costs
@@ -378,18 +379,15 @@ fn set_mode(path: &Path, mode: u32) {
     }
 }
 
-/// Make everything under `path` read-only, directories included (files 0444, directories 0555).
-/// `path` itself is left as it is when `keep_root` is true, so an entry's top directory stays
-/// movable.
-fn make_read_only(path: &Path, keep_root: bool) {
+/// Make every file under `path` read-only (0444). Directories stay writable on purpose: a
+/// read-only directory can not be emptied, so `rm -rf` and `cargo clean` would leave the
+/// cache behind. An added or removed file is caught by the file-list check on every read.
+fn make_read_only(path: &Path) {
     if path.is_dir() {
         if let Ok(rd) = std::fs::read_dir(path) {
             for e in rd.flatten() {
-                make_read_only(&e.path(), false);
+                make_read_only(&e.path());
             }
-        }
-        if !keep_root {
-            set_mode(path, 0o555);
         }
     } else {
         set_mode(path, 0o444);
@@ -675,7 +673,9 @@ impl Cache {
             .append(true)
             .open(self.root.join("builds.log"))
         {
-            let _ = writeln!(f, "{what} {} pid {}", &key[..12], std::process::id());
+            // One write call, so lines of concurrent processes never interleave.
+            let line = format!("{what} {} pid {}\n", &key[..12], std::process::id());
+            let _ = f.write_all(line.as_bytes());
         }
     }
 
@@ -756,7 +756,7 @@ impl Cache {
             &tmp,
             std::fs::write(tmp.join("DONE"), serde_json::to_string(&done)?),
         )?;
-        make_read_only(&tmp, true);
+        make_read_only(&tmp);
         self.publish(&tmp, &entry, ready)?;
         read().ok_or_else(|| {
             Error::Invalid(format!(
@@ -877,7 +877,7 @@ impl Cache {
             &tmp,
             std::fs::write(tmp.join("DONE"), serde_json::to_string(&done)?),
         )?;
-        make_read_only(&tmp, true);
+        make_read_only(&tmp);
         self.publish(&tmp, entry, ready)
     }
 
