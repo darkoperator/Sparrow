@@ -817,3 +817,56 @@ fn a_lost_fingerprint_falls_back_to_the_full_walk() {
     append_is_refused(&c);
     assert!(audit::verify(c.conn()).unwrap().first_bad_seq == Some(1));
 }
+
+/// (action, actor, object_type, object_id, before, after) of every entry, with the case id written as "<case>".
+fn trail(c: &Case) -> Vec<(String, String, String, String, String, String)> {
+    let id = audit::case_id(c.conn()).unwrap();
+    audit::log(c.conn(), None)
+        .unwrap()
+        .into_iter()
+        .map(|e| {
+            let j = |v: Option<serde_json::Value>| v.map(|v| v.to_string()).unwrap_or_default();
+            (
+                e.action,
+                e.actor,
+                e.object_type,
+                e.object_id.replace(&id, "<case>"),
+                j(e.before),
+                j(e.after),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn opening_a_phase6_case_for_writing_records_the_upgrade() {
+    let dir = tempfile::tempdir().unwrap();
+    let opened = dir.path().join("opened.duckdb");
+    let upgraded = dir.path().join("upgraded.duckdb");
+    phase6_case(&opened);
+    phase6_case(&upgraded);
+    let via_open = trail(&Case::create_or_open(&opened).unwrap());
+    Case::upgrade(&upgraded).unwrap();
+    let via_upgrade = trail(&Case::open_read_only(&upgraded).unwrap());
+    assert_eq!(via_open.len(), 3);
+    assert_eq!(via_open[0].0, "schema_upgrade");
+    assert_eq!(via_open[0].3, "<case>");
+    assert_eq!(via_open, via_upgrade);
+    // Opening it again adds nothing.
+    let c = Case::create_or_open(&opened).unwrap();
+    assert_eq!(trail(&c), via_open);
+    assert!(audit::verify(c.conn()).unwrap().ok);
+}
+
+#[test]
+fn a_brand_new_case_file_has_an_empty_trail() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("new.duckdb");
+    assert!(trail(&Case::create_or_open(&p).unwrap()).is_empty());
+    assert!(trail(&Case::create_or_open(&p).unwrap()).is_empty());
+    assert_eq!(
+        Case::upgrade(&p).unwrap(),
+        (latest_version(), latest_version())
+    );
+    assert!(trail(&Case::open_read_only(&p).unwrap()).is_empty());
+}

@@ -104,6 +104,39 @@ fn open_writer(path: &Path) -> Result<(Connection, WriterGuard)> {
     Ok((conn, WriterGuard(key)))
 }
 
+/// Apply pending migrations; the ONLY way a case is migrated. When an existing case crosses the analyst version, the
+/// audit trail records it in one transaction: a `schema_upgrade` entry, then one `legacy_decision` per indicator.
+/// Returns the schema version before and after.
+fn migrate_recorded(conn: &Connection) -> Result<(u32, u32)> {
+    let from = migrations::current_version(conn)?;
+    let to = migrations::migrate(conn)?;
+    // An existing case brought to the Phase 7 schema starts its audit chain (Addendum D.3); a brand-new one
+    // (no schema yet) starts empty.
+    if from > 0 && from < migrations::ANALYST_VERSION && to >= migrations::ANALYST_VERSION {
+        conn.execute_batch("BEGIN TRANSACTION")?;
+        let appended = crate::case::audit::case_id(conn).and_then(|case_id| {
+            crate::case::audit::append_system(
+                conn,
+                crate::case::audit::SYSTEM_UPGRADE,
+                "schema_upgrade",
+                "case",
+                &case_id,
+                Some(&serde_json::json!({ "schema_version": from })),
+                Some(&serde_json::json!({ "schema_version": to })),
+            )
+        });
+        let appended = appended.and_then(|_| legacy_indicator_decisions(conn));
+        match appended {
+            Ok(_) => conn.execute_batch("COMMIT")?,
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(e);
+            }
+        }
+    }
+    Ok((from, to))
+}
+
 /// One reviewable `legacy_decision` audit entry per indicator that predates the audit trail, by its original
 /// author (`added_by`), with its current state as `after` and no `before`: accepting it keeps the indicator,
 /// discarding it soft-deletes it. Runs inside the upgrade's transaction, after the `schema_upgrade` entry.
@@ -159,7 +192,7 @@ impl Case {
     /// Open (creating if needed) a case database for writing and bring its schema up to date.
     pub fn create_or_open(path: &Path) -> Result<Case> {
         let (conn, writer) = open_writer(path)?;
-        migrations::migrate(&conn)?;
+        migrate_recorded(&conn)?;
         Ok(Case {
             conn,
             path: Some(path.to_path_buf()),
@@ -185,40 +218,11 @@ impl Case {
             return Err(Error::NotFound(format!("case database {}", path.display())));
         }
         let (conn, writer) = open_writer(path)?;
-        let out = Self::upgrade_conn(&conn);
+        let out = migrate_recorded(&conn);
         // Close the connection before releasing the writer registration.
         drop(conn);
         drop(writer);
         out
-    }
-
-    fn upgrade_conn(conn: &Connection) -> Result<(u32, u32)> {
-        let from = migrations::current_version(conn)?;
-        let to = migrations::migrate(conn)?;
-        // The upgrade to the Phase 7 schema starts the audit chain (Addendum D.3).
-        if from < migrations::ANALYST_VERSION && to >= migrations::ANALYST_VERSION {
-            conn.execute_batch("BEGIN TRANSACTION")?;
-            let appended = crate::case::audit::case_id(conn).and_then(|case_id| {
-                crate::case::audit::append_system(
-                    conn,
-                    crate::case::audit::SYSTEM_UPGRADE,
-                    "schema_upgrade",
-                    "case",
-                    &case_id,
-                    Some(&serde_json::json!({ "schema_version": from })),
-                    Some(&serde_json::json!({ "schema_version": to })),
-                )
-            });
-            let appended = appended.and_then(|_| legacy_indicator_decisions(conn));
-            match appended {
-                Ok(_) => conn.execute_batch("COMMIT")?,
-                Err(e) => {
-                    let _ = conn.execute_batch("ROLLBACK");
-                    return Err(e);
-                }
-            }
-        }
-        Ok((from, to))
     }
 
     /// Open an existing case database read-only. The schema must match this build exactly.
@@ -241,7 +245,7 @@ impl Case {
 
     pub fn in_memory() -> Result<Case> {
         let conn = Connection::open_in_memory()?;
-        migrations::migrate(&conn)?;
+        migrate_recorded(&conn)?;
         Ok(Case {
             conn,
             path: None,
