@@ -271,6 +271,28 @@ fn walk_first_file(dir: &Path) -> std::path::PathBuf {
 }
 
 #[test]
+fn an_empty_directory_added_to_a_cached_tree_forces_a_rebuild() {
+    let tmp = tmpdir();
+    let c = Cache::always(tmp.path(), &"d".repeat(64));
+    let s = small();
+    c.tree(&s, &opts(1)).unwrap();
+    let entry = c.tree_entry(&s, &opts(1)).unwrap();
+    let built = |c: &Cache| c.builds().iter().filter(|l| l.starts_with("tree ")).count();
+    assert_eq!(built(&c), 1);
+    // Discovery reads empty stamped run directories, so an extra one changes what a test sees.
+    let stray = entry.join("tree").join("empty-run-dir");
+    std::fs::create_dir(&stray).unwrap();
+    // A fresh Cache, so this is the first (hashing) read of the entry.
+    let t = Cache::always(tmp.path(), &"d".repeat(64));
+    let again = t.tree(&s, &opts(1)).unwrap();
+    assert_eq!(built(&t), 2, "the extra directory made the entry rebuild");
+    assert!(
+        !again.dir.join("empty-run-dir").exists(),
+        "the rebuilt tree has no stray directory"
+    );
+}
+
+#[test]
 fn a_partial_or_damaged_case_entry_is_rebuilt() {
     let tmp = tmpdir();
     let c = Cache::always(tmp.path(), &"d".repeat(64));
@@ -629,6 +651,55 @@ fn only_the_current_builds_cache_is_kept() {
         "the current build's directory is never touched"
     );
     assert!(t.join("synth-new").is_dir(), "a recent directory stays");
+}
+
+#[test]
+fn another_builds_cache_with_a_live_owner_survives_pruning_and_a_dead_one_does_not() {
+    let tmp = tmpdir();
+    let t = tmp.path();
+    let keep = "a".repeat(64);
+    let base = t.join("sparrow-cache");
+    let live = std::process::id();
+    let dead = dead_pid();
+    for (fp, sub, name) in [
+        ("1111111111111111", "runs", format!("case-{live}-0")),
+        ("2222222222222222", "tmp", format!("abc-{live}-1")),
+        ("3333333333333333", "fresh", format!("tree-{live}-2")),
+        ("4444444444444444", "runs", format!("case-{dead}-0")),
+        ("5555555555555555", "tmp", format!("abc-{dead}-1")),
+    ] {
+        write(&base.join(fp), &format!("{sub}/{name}/file"), "x");
+        write(&base.join(fp), "trees/k/DONE", "x");
+    }
+    for fp in ["6666666666666666", "7777777777777777"] {
+        write(&base.join(fp), "trees/k/DONE", "x");
+    }
+    // A live lock file keeps a build alive too; a dead one does not.
+    write(
+        &base.join("6666666666666666"),
+        "locks/k.lock",
+        &live.to_string(),
+    );
+    write(
+        &base.join("7777777777777777"),
+        "locks/k.lock",
+        &dead.to_string(),
+    );
+    prune_other_builds(t, &keep);
+    for fp in [
+        "1111111111111111",
+        "2222222222222222",
+        "3333333333333333",
+        "6666666666666666",
+    ] {
+        assert!(
+            base.join(fp).join("trees/k/DONE").is_file(),
+            "{fp} has a live owner"
+        );
+    }
+    for fp in ["4444444444444444", "5555555555555555", "7777777777777777"] {
+        assert!(!base.join(fp).exists(), "{fp} has only dead owners");
+    }
 }
 
 #[test]

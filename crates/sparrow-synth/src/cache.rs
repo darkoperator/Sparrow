@@ -189,7 +189,7 @@ pub struct EntryLock {
 }
 
 /// A lock this old is taken over whatever its owner is doing.
-const LOCK_MAX_AGE: Duration = Duration::from_secs(30 * 60);
+const LOCK_MAX_AGE: Duration = Duration::from_secs(10 * 60);
 
 fn process_alive(pid: u32) -> bool {
     if !cfg!(unix) || pid == std::process::id() {
@@ -268,16 +268,45 @@ impl Drop for EntryLock {
     }
 }
 
+/// Whether a cache directory of some build has a live user: a private directory (`runs/`, `tmp/`,
+/// `fresh/`) named after a living process, or a lock file whose owner lives. Another suite, of
+/// another build, may be running from it.
+fn has_live_owner(root: &Path) -> bool {
+    for sub in ["runs", "tmp", "fresh"] {
+        let Ok(rd) = std::fs::read_dir(root.join(sub)) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            match owner_pid(&name) {
+                Some(pid) if process_alive(pid) => return true,
+                Some(_) => {}
+                // Not judgeable by pid: treat a recent one as live.
+                None if !older_than(&e.path(), Duration::from_secs(6 * 3600)) => return true,
+                None => {}
+            }
+        }
+    }
+    if let Ok(rd) = std::fs::read_dir(root.join("locks")) {
+        for e in rd.flatten() {
+            if !lock_is_stale(&e.path()) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Delete the cache directories of every build fingerprint other than `keep` under
 /// `target_tmp/sparrow-cache`, and the `synth-*` tree directories an older test helper left in
 /// `target_tmp`. The current fingerprint's directory (where other processes may be publishing)
-/// is never touched.
+/// is never touched, nor is another build's directory while a process still uses it.
 pub fn prune_other_builds(target_tmp: &Path, keep_fingerprint: &str) {
     let base = target_tmp.join("sparrow-cache");
     let keep = &keep_fingerprint[..keep_fingerprint.len().min(16)];
     if let Ok(rd) = std::fs::read_dir(&base) {
         for e in rd.flatten() {
-            if e.file_name().to_string_lossy() != keep {
+            if e.file_name().to_string_lossy() != keep && !has_live_owner(&e.path()) {
                 remove_entry(&e.path());
             }
         }
@@ -438,6 +467,20 @@ fn file_sigs(dir: &Path, hash: bool) -> Option<Vec<FileSig>> {
         for e in std::fs::read_dir(d).ok()? {
             let p = e.ok()?.path();
             if p.is_dir() {
+                // Directories are part of the signature too (size 0, no time, no hash): readers
+                // look at empty ones, and a missing or extra one changes what they see.
+                out.push(FileSig {
+                    rel: format!(
+                        "{}/",
+                        p.strip_prefix(root)
+                            .ok()?
+                            .to_string_lossy()
+                            .replace('\\', "/")
+                    ),
+                    size: 0,
+                    mtime_ns: 0,
+                    sha256: String::new(),
+                });
                 go(root, &p, hash, out)?;
             } else {
                 let meta = std::fs::metadata(&p).ok()?;
