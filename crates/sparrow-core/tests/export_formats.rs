@@ -6,7 +6,7 @@
 mod synth;
 
 use calamine::{Data, Reader, Xlsx, open_workbook};
-use chrono::{DateTime, Duration, TimeZone, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use sparrow_core::Case;
 use sparrow_core::case::actor::{Actor, Reviewer};
 use sparrow_core::case::audit;
@@ -16,9 +16,6 @@ use sparrow_core::case::read::{self, FindingFilter};
 use sparrow_core::case::review;
 use sparrow_core::case::timeline_entries::{self as te, EvidenceRef, NewEntry, Phase};
 use sparrow_core::case::write::{self, FindingStatus};
-use sparrow_core::data::DataDirs;
-use sparrow_core::detect::load::load_rules;
-use sparrow_core::detect::run::{DetectOptions, run};
 use sparrow_core::export::header;
 use sparrow_core::export::report_md::{self, ReportOpts};
 use sparrow_core::export::timeline_csv::{self, COLUMNS, CsvOpts, Scope};
@@ -55,14 +52,8 @@ struct Script {
 }
 
 fn detected() -> Case {
-    let mut g = synth::builtin("bec-aitm", PsEdition::Ps7);
-    let set = load_rules(&DataDirs::default()).unwrap();
-    let o = DetectOptions {
-        now: Some(g.manifest.collected_at + Duration::days(1)),
-        ..DetectOptions::default()
-    };
-    run(&mut g.case, &set, &o).unwrap();
-    g.case
+    // A private copy of the cached, detected bec-aitm case (the test cache; no tree is shared between runs).
+    synth::builtin_detected("bec-aitm", PsEdition::Ps7).case
 }
 
 /// The fixed agent session of the plan: detect; three findings decided; two IOCs; three timeline entries verified
