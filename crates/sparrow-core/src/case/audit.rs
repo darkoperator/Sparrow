@@ -195,6 +195,8 @@ impl Break {
 /// Each row is compared with the previous row's stored seq and hash, not with its index, so the rows after a break
 /// (and the acknowledgement) still link.
 fn breaks(conn: &Connection) -> Result<(Vec<AuditEntry>, Vec<Break>, Vec<i64>)> {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    test_hooks::FULL_WALKS.with(|n| n.set(n.get() + 1));
     let all = read(conn, None)?;
     let mut prev_hash = genesis(conn)?;
     let mut prev_seq = 0i64;
@@ -604,5 +606,20 @@ pub fn acknowledge_break(conn: &Connection, actor: &Actor) -> Result<AuditEntry>
             let _ = conn.execute_batch("ROLLBACK");
             Err(err)
         }
+    }
+}
+
+/// Test-only instrumentation (never compiled into a normal build).
+#[cfg(any(test, feature = "test-fixtures"))]
+#[doc(hidden)]
+pub mod test_hooks {
+    thread_local! {
+        pub(super) static FULL_WALKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    /// Full walks of the audit chain (`verify`, and every append that could not use the verified fingerprint) on
+    /// this thread so far.
+    pub fn full_walks() -> usize {
+        FULL_WALKS.with(std::cell::Cell::get)
     }
 }

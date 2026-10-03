@@ -683,3 +683,37 @@ fn detection_rerun_preserves_decision_and_review() {
     assert_eq!(audit::log(c.conn(), None).unwrap().len(), 3);
     assert!(audit::verify(c.conn()).unwrap().ok);
 }
+
+/// Appends use the verified fingerprint, not a walk of the whole chain: 1,000 audited writes walk the chain once
+/// (the first append, before any fingerprint is stored), and a tamper forces the next append to walk it again.
+/// Deterministic: it counts walks instead of timing them.
+#[test]
+fn thousand_appends_walk_the_chain_once() {
+    use sparrow_core::case::audit::test_hooks::full_walks;
+    let c = case_with_finding();
+    let start = full_walks();
+    for i in 0..1000 {
+        let s = if i % 2 == 0 {
+            S::InReview
+        } else {
+            S::NeedsMoreData
+        };
+        write::set_finding_status(c.conn(), &agent(), "f1", s, None).unwrap();
+    }
+    assert_eq!(
+        full_walks() - start,
+        1,
+        "one full walk across 1,000 appends"
+    );
+    c.conn()
+        .execute(
+            "UPDATE audit_trail SET reason = 'edited' WHERE seq = 500",
+            [],
+        )
+        .unwrap();
+    let err = write::set_finding_status(c.conn(), &agent(), "f1", S::InReview, None).unwrap_err();
+    assert!(matches!(err, Error::ChainBroken(_)), "{err:?}");
+    assert_eq!(full_walks() - start, 2, "the tamper forces a second walk");
+    let r = audit::verify(c.conn()).unwrap();
+    assert_eq!((r.entries, r.first_bad_seq), (1000, Some(500)));
+}
