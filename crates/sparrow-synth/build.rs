@@ -7,7 +7,29 @@ mod fingerprint;
 use std::path::PathBuf;
 use std::process::Command;
 
+/// How this crate is compiled, for the test cache key.
+fn build_config() -> String {
+    let var = |k: &str| std::env::var(k).unwrap_or_default();
+    let mut features: Vec<String> = std::env::vars()
+        .filter_map(|(k, _)| k.strip_prefix("CARGO_FEATURE_").map(str::to_string))
+        .collect();
+    features.sort();
+    format!(
+        "profile={};opt={};debug={};debug_assertions={};features={};rustflags={}",
+        var("PROFILE"),
+        var("OPT_LEVEL"),
+        var("DEBUG"),
+        std::env::var_os("CARGO_CFG_DEBUG_ASSERTIONS").is_some(),
+        features.join(","),
+        var("CARGO_ENCODED_RUSTFLAGS").replace('\x1f', " "),
+    )
+}
+
 fn main() {
+    println!(
+        "cargo:rustc-env=SPARROW_SYNTH_BUILD_CONFIG={}",
+        build_config()
+    );
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir"));
     let repo = manifest.join("../..");
     for r in fingerprint::ROOTS {

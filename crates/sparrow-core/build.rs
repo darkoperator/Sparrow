@@ -41,7 +41,30 @@ fn collect(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// How this crate is compiled, for the test cache key (profile, optimisation, debug assertions,
+/// enabled features, rustflags): anything here can change what ingest and profile produce.
+fn build_config() -> String {
+    let var = |k: &str| std::env::var(k).unwrap_or_default();
+    let mut features: Vec<String> = std::env::vars()
+        .filter_map(|(k, _)| k.strip_prefix("CARGO_FEATURE_").map(str::to_string))
+        .collect();
+    features.sort();
+    format!(
+        "profile={};opt={};debug={};debug_assertions={};features={};rustflags={}",
+        var("PROFILE"),
+        var("OPT_LEVEL"),
+        var("DEBUG"),
+        std::env::var_os("CARGO_CFG_DEBUG_ASSERTIONS").is_some(),
+        features.join(","),
+        var("CARGO_ENCODED_RUSTFLAGS").replace('\x1f', " "),
+    )
+}
+
 fn main() {
+    println!(
+        "cargo:rustc-env=SPARROW_CORE_BUILD_CONFIG={}",
+        build_config()
+    );
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../rules");
     println!("cargo:rerun-if-changed={}", root.display());
     let mut files = Vec::new();
