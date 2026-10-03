@@ -39,3 +39,14 @@ zip = { version = "=7.2.0", default-features = false }
 # wall time while adding nothing debuggable. Our own crates stay at opt-level 0.
 [profile.dev.package."*"]
 opt-level = 2
+
+# Our own library crates are lightly optimized in dev/test builds: generating, ingesting and
+# profiling synthetic trees is the test suite's work, and at opt-level 0 it dominated the wall time
+# (measured on the default job: conformance 461 s -> 135 s, portal 58 s -> 18 s, detect_gate
+# 144 s -> 45 s). opt-level 2 gave no further run-time gain for +17 s of clean compile time. The
+# incremental rebuild after a one-file edit is unchanged (about 10 s).
+[profile.dev.package.sparrow-core]
+opt-level = 1
+
+[profile.dev.package.sparrow-synth]
+opt-level = 1
