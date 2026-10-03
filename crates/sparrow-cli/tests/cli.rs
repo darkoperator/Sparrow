@@ -2089,3 +2089,48 @@ fn invalid_timeline_and_note_input_exits_5_and_writes_nothing() {
     );
     assert_eq!(log["entries"].as_array().unwrap().len(), 0);
 }
+
+#[test]
+fn audit_verify_detects_and_acknowledges_a_truncated_chain() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = fresh_case(dir.path());
+    audit_entries(&case, 3);
+    {
+        let conn = duckdb::Connection::open(&case).unwrap();
+        conn.execute("DELETE FROM audit_trail WHERE seq = 3", [])
+            .unwrap();
+    }
+    let v = json_out(
+        sparrow()
+            .args(["--json", "audit", "verify", "--case"])
+            .arg(&case),
+        3,
+    );
+    assert_eq!(v["first_bad_seq"], 3);
+    assert_eq!(
+        v["problem"],
+        "chain is shorter than the recorded head (seq 3)"
+    );
+    let v = json_out(
+        sparrow()
+            .args([
+                "--json",
+                "audit",
+                "verify",
+                "--acknowledge",
+                "--agent",
+                "claude",
+                "--case",
+            ])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(v["acknowledged_breaks"], serde_json::json!([3]));
+    audit_entries(&case, 1);
+    json_out(
+        sparrow()
+            .args(["--json", "audit", "verify", "--case"])
+            .arg(&case),
+        0,
+    );
+}

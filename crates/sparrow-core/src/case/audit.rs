@@ -161,11 +161,21 @@ struct Break {
     stored_hash: String,
     /// `entry_hash` recomputed over that row's current content.
     content_hash: String,
+    /// For a break against the recorded head (truncation, or a rewritten newest entry): that head's seq and hash.
+    recorded_head: Option<(i64, String)>,
 }
 
 impl Break {
     /// The `after` of the `acknowledge_break` entry that records this break.
     fn ack_after(&self) -> Value {
+        if let Some((seq, hash)) = &self.recorded_head {
+            return serde_json::json!({
+                "first_bad_seq": self.seq,
+                "problem": self.problem,
+                "recorded_head_seq": seq,
+                "recorded_head_hash": hash,
+            });
+        }
         serde_json::json!({
             "first_bad_seq": self.seq,
             "problem": self.problem,
@@ -219,6 +229,7 @@ fn breaks(conn: &Connection) -> Result<(Vec<AuditEntry>, Vec<Break>, Vec<i64>)> 
                 problem,
                 stored_hash: e.hash.clone(),
                 content_hash,
+                recorded_head: None,
             }),
             None if e.action == "acknowledge_break" => {
                 if let Some(i) = open
@@ -226,6 +237,10 @@ fn breaks(conn: &Connection) -> Result<(Vec<AuditEntry>, Vec<Break>, Vec<i64>)> 
                     .position(|b| e.after.as_ref() == Some(&b.ack_after()))
                 {
                     acks.push(open.remove(i).seq);
+                } else if let Some(bad) = head_ack(e) {
+                    // A break against the recorded head left no row to pin: its acknowledgement is the entry
+                    // appended right after the surviving head, which also resets the recorded head.
+                    acks.push(bad);
                 }
             }
             None => {}
@@ -233,7 +248,53 @@ fn breaks(conn: &Connection) -> Result<(Vec<AuditEntry>, Vec<Break>, Vec<i64>)> 
         prev_hash = e.hash.clone();
         prev_seq = e.seq;
     }
+    if let Some((seq, hash)) = recorded_head(conn)? {
+        match all.iter().find(|e| e.seq == seq) {
+            Some(e) if e.hash == hash => {}
+            Some(e) => open.push(Break {
+                seq,
+                problem: format!("the entry at the recorded head (seq {seq}) has a different hash"),
+                stored_hash: e.hash.clone(),
+                content_hash: entry_hash(&e.prev_hash, e),
+                recorded_head: Some((seq, hash)),
+            }),
+            None if prev_seq < seq => open.push(Break {
+                seq: prev_seq + 1,
+                problem: format!("chain is shorter than the recorded head (seq {seq})"),
+                stored_hash: String::new(),
+                content_hash: String::new(),
+                recorded_head: Some((seq, hash)),
+            }),
+            // A missing row below the stored head is a gap, reported by the walk.
+            None => {}
+        }
+        open.sort_by_key(|b| b.seq);
+    }
     Ok((all, open, acks))
+}
+
+/// The `case_meta` key of the head (seq and hash) the last insert left: a deleted or rewritten newest entry is
+/// detected against it.
+const HEAD_KEY: &str = "audit_head";
+
+fn recorded_head(conn: &Connection) -> Result<Option<(i64, String)>> {
+    let v: Option<String> = conn
+        .prepare_cached("SELECT value FROM case_meta WHERE key = ?")?
+        .query_row([HEAD_KEY], |r| r.get(0))
+        .optional()?;
+    Ok(v.and_then(|v| {
+        let (seq, hash) = v.split_once(':')?;
+        Some((seq.parse().ok()?, hash.to_string()))
+    }))
+}
+
+/// The first bad seq a head acknowledgement `e` records, when `e` sits where it must: at that seq (the chain was
+/// shorter) or right after the recorded head (the head entry was rewritten).
+fn head_ack(e: &AuditEntry) -> Option<i64> {
+    let after = e.after.as_ref()?;
+    let bad = after.get("first_bad_seq")?.as_i64()?;
+    let head = after.get("recorded_head_seq")?.as_i64()?;
+    (e.seq == bad || e.seq == head + 1).then_some(bad)
 }
 
 /// Verify the whole chain. `ok` is true when no break is open; `first_bad_seq` and `problem` describe the first
@@ -317,6 +378,8 @@ fn insert(
             e.hash
         ],
     )?;
+    conn.prepare_cached("INSERT OR REPLACE INTO case_meta (key, value) VALUES (?, ?)")?
+        .execute(params![HEAD_KEY, format!("{}:{}", e.seq, e.hash)])?;
     Ok(e)
 }
 
@@ -402,12 +465,16 @@ fn store_verified(conn: &Connection, fp: &Fingerprint) -> Result<()> {
     Ok(())
 }
 
-/// Fail unless the chain is intact. The full Rust `verify` runs only when the stored rows differ from the last
-/// state this check verified (their fingerprint, `VERIFIED_KEY`); any change to any row, the row set or the case id
+/// Fail unless the chain is intact. The full Rust `verify` runs only when the stored head is not the recorded one
+/// or the stored rows differ from the last state this check verified (their fingerprint, `VERIFIED_KEY`); any change to any row, the row set or the case id
 /// changes the fingerprint and forces it.
 fn ensure_intact(conn: &Connection) -> Result<Fingerprint> {
     let fp = fingerprint(conn)?;
-    if verified_fingerprint(conn)?.as_deref() == Some(fp.text().as_str()) {
+    let head_matches = match recorded_head(conn)? {
+        Some((seq, hash)) => seq == fp.head_seq && hash == fp.head_hash,
+        None => true,
+    };
+    if head_matches && verified_fingerprint(conn)?.as_deref() == Some(fp.text().as_str()) {
         return Ok(fp);
     }
     let r = verify(conn)?;

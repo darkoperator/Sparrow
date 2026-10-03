@@ -104,6 +104,34 @@ fn open_writer(path: &Path) -> Result<(Connection, WriterGuard)> {
     Ok((conn, WriterGuard(key)))
 }
 
+/// One reviewable `legacy_decision` audit entry per indicator that predates the audit trail, by its original
+/// author (`added_by`), with its current state as `after` and no `before`: accepting it keeps the indicator,
+/// discarding it soft-deletes it. Runs inside the upgrade's transaction, after the `schema_upgrade` entry.
+fn legacy_indicator_decisions(conn: &Connection) -> Result<()> {
+    let rows: Vec<(String, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT indicator_id, added_by FROM case_indicators ORDER BY indicator_id")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect::<std::result::Result<_, _>>()?
+    };
+    for (id, added_by) in rows {
+        let state = crate::case::indicators::indicator_state(conn, &id)?;
+        crate::case::audit::append_at(
+            conn,
+            crate::case::audit::now(),
+            &added_by,
+            None,
+            "legacy_decision",
+            "indicator",
+            &id,
+            None,
+            state.as_ref(),
+            None,
+        )?;
+    }
+    Ok(())
+}
+
 /// A directory removed when the `Case` that owns it is dropped (see [`Case::with_scratch_dir`]).
 struct ScratchDir(PathBuf);
 
@@ -181,6 +209,7 @@ impl Case {
                     Some(&serde_json::json!({ "schema_version": to })),
                 )
             });
+            let appended = appended.and_then(|_| legacy_indicator_decisions(conn));
             match appended {
                 Ok(_) => conn.execute_batch("COMMIT")?,
                 Err(e) => {

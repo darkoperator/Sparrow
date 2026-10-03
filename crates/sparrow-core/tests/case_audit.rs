@@ -353,7 +353,7 @@ fn second_writer_is_refused_and_chain_stays_linear() {
     assert_eq!(r.entries, 2);
 }
 
-/// A Phase 6 case: migrations 1-15 applied by hand, plus one indicator.
+/// A Phase 6 case: migrations 1-15 applied by hand, plus two indicators.
 fn phase6_case(path: &std::path::Path) {
     let conn = duckdb::Connection::open(path).unwrap();
     conn.execute_batch(
@@ -372,7 +372,9 @@ fn phase6_case(path: &std::path::Path) {
     conn.execute_batch(
         "INSERT INTO case_indicators (indicator_id, tenant_key, type, value, verdict, note, added_by, added_at) \
          VALUES ('0123456789abcdef', NULL, 'ip', '203.0.113.9', 'malicious', NULL, 'analyst:sam', \
-                 TIMESTAMPTZ '2026-09-30 10:00:00+00')",
+                 TIMESTAMPTZ '2026-09-30 10:00:00+00'), \
+                ('fedcba9876543210', 't1', 'upn', 'x@evil.example', 'suspicious', 'lure', 'analyst:dana', \
+                 TIMESTAMPTZ '2026-09-30 11:00:00+00')",
     )
     .unwrap();
 }
@@ -391,7 +393,8 @@ fn upgrading_a_phase6_case_starts_the_chain() {
         .conn()
         .query_row(
             "SELECT decided_by, CAST(review_state AS VARCHAR), added_by, \
-                    epoch_us(decided_at) - epoch_us(added_at) FROM case_indicators",
+                    epoch_us(decided_at) - epoch_us(added_at) FROM case_indicators \
+             WHERE indicator_id = '0123456789abcdef'",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
@@ -406,8 +409,24 @@ fn upgrading_a_phase6_case_starts_the_chain() {
         )
     );
     let log = audit::log(c.conn(), None).unwrap();
-    assert_eq!(log.len(), 1);
+    assert_eq!(log.len(), 3);
     assert_eq!(log[0].action, "schema_upgrade");
+    // Each pre-existing indicator gets a reviewable legacy decision, by its original author.
+    let legacy: Vec<(&str, &str, &str)> = log[1..]
+        .iter()
+        .map(|e| (e.action.as_str(), e.actor.as_str(), e.object_id.as_str()))
+        .collect();
+    assert_eq!(
+        legacy,
+        [
+            ("legacy_decision", "analyst:sam", "0123456789abcdef"),
+            ("legacy_decision", "analyst:dana", "fedcba9876543210")
+        ]
+    );
+    assert_eq!(log[1].object_type, "indicator");
+    assert_eq!(log[1].before, None);
+    assert_eq!(log[2].after.as_ref().unwrap()["verdict"], "suspicious");
+    assert_eq!(log[2].after.as_ref().unwrap()["note"], "lure");
     assert_eq!(log[0].actor, "system:upgrade");
     assert_eq!(log[0].before.as_ref().unwrap()["schema_version"], 15);
     assert_eq!(log[0].after.as_ref().unwrap()["schema_version"], to as i64);
@@ -416,7 +435,152 @@ fn upgrading_a_phase6_case_starts_the_chain() {
     // Upgrading again changes nothing and appends nothing.
     assert_eq!(Case::upgrade(&path).unwrap(), (to, to));
     let c = Case::open_read_only(&path).unwrap();
-    assert_eq!(audit::log(c.conn(), None).unwrap().len(), 1);
+    assert_eq!(audit::log(c.conn(), None).unwrap().len(), 3);
+}
+
+#[test]
+fn migrated_indicators_can_be_reviewed() {
+    use sparrow_core::case::actor::Reviewer;
+    use sparrow_core::case::{indicators, review};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("p6.duckdb");
+    phase6_case(&path);
+    Case::upgrade(&path).unwrap();
+    let c = Case::create_or_open(&path).unwrap();
+    let rv = Reviewer::analyst("carlos").unwrap();
+    let a = review::latest_decision_seq(c.conn(), "indicator", "0123456789abcdef")
+        .unwrap()
+        .unwrap();
+    let b = review::latest_decision_seq(c.conn(), "indicator", "fedcba9876543210")
+        .unwrap()
+        .unwrap();
+    assert_eq!((a, b), (2, 3));
+    review::review_accept(c.conn(), &rv, "indicator", "0123456789abcdef", a, None).unwrap();
+    review::review_discard(
+        c.conn(),
+        &rv,
+        "indicator",
+        "fedcba9876543210",
+        b,
+        Some("stale"),
+    )
+    .unwrap();
+    let active = indicators::list_indicators(c.conn(), None, false).unwrap();
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].indicator_id, "0123456789abcdef");
+    assert_eq!(active[0].review_state.as_deref(), Some("accepted"));
+    let all = indicators::list_indicators(c.conn(), None, true).unwrap();
+    let gone = all
+        .iter()
+        .find(|i| i.indicator_id == "fedcba9876543210")
+        .unwrap();
+    assert!(gone.removed_at.is_some());
+    assert_eq!(gone.removed_by.as_deref(), Some("analyst:carlos"));
+    assert_eq!(gone.review_state.as_deref(), Some("discarded"));
+    assert!(audit::verify(c.conn()).unwrap().ok);
+}
+
+#[test]
+fn deleting_the_newest_entry_is_detected() {
+    let c = case();
+    append(&c, 3);
+    c.conn()
+        .execute("DELETE FROM audit_trail WHERE seq = 3", [])
+        .unwrap();
+    let r = audit::verify(c.conn()).unwrap();
+    assert!(!r.ok);
+    assert_eq!(r.first_bad_seq, Some(3), "{r:?}");
+    assert_eq!(
+        r.problem.as_deref(),
+        Some("chain is shorter than the recorded head (seq 3)")
+    );
+    append_is_refused(&c);
+}
+
+#[test]
+fn deleting_the_newest_three_entries_is_detected() {
+    let c = case();
+    append(&c, 5);
+    c.conn()
+        .execute("DELETE FROM audit_trail WHERE seq >= 3", [])
+        .unwrap();
+    let r = audit::verify(c.conn()).unwrap();
+    assert_eq!(r.first_bad_seq, Some(3), "{r:?}");
+    assert!(r.problem.unwrap().contains("(seq 5)"));
+    append_is_refused(&c);
+    // Deleting everything is a truncation too.
+    let c = case();
+    append(&c, 2);
+    c.conn().execute("DELETE FROM audit_trail", []).unwrap();
+    assert_eq!(audit::verify(c.conn()).unwrap().first_bad_seq, Some(1));
+    append_is_refused(&c);
+}
+
+#[test]
+fn a_rehashed_head_is_detected() {
+    // Rewriting the newest entry and recomputing its hash leaves a self-consistent chain; the recorded head
+    // hash still differs.
+    let c = case();
+    append(&c, 3);
+    let mut e = audit::log(c.conn(), None).unwrap()[2].clone();
+    e.reason = Some("forged".into());
+    let forged = audit::entry_hash(&e.prev_hash, &e);
+    c.conn()
+        .execute(
+            "UPDATE audit_trail SET reason = 'forged', hash = ? WHERE seq = 3",
+            [forged],
+        )
+        .unwrap();
+    let r = audit::verify(c.conn()).unwrap();
+    assert_eq!(r.first_bad_seq, Some(3), "{r:?}");
+    append_is_refused(&c);
+}
+
+#[test]
+fn a_truncation_can_be_acknowledged() {
+    let c = case();
+    append(&c, 3);
+    c.conn()
+        .execute("DELETE FROM audit_trail WHERE seq = 3", [])
+        .unwrap();
+    let a = Actor::agent("t", None).unwrap();
+    let ack = audit::acknowledge_break(c.conn(), &a).unwrap();
+    assert_eq!(ack.seq, 3);
+    let after = ack.after.unwrap();
+    assert_eq!(after["recorded_head_seq"], 3);
+    assert!(after["recorded_head_hash"].is_string());
+    let r = audit::verify(c.conn()).unwrap();
+    assert!(r.ok, "{r:?}");
+    assert_eq!(r.acknowledged_breaks, vec![3]);
+    append(&c, 1);
+    assert!(audit::verify(c.conn()).unwrap().ok);
+}
+
+#[test]
+fn a_restored_fingerprint_does_not_hide_a_truncation() {
+    // The fast path's stored fingerprint of the 2-entry chain, put back after a third entry is deleted, must not
+    // let an append through: the recorded head says 3.
+    let c = case();
+    append(&c, 2);
+    let fp2: String = c
+        .conn()
+        .query_row(
+            "SELECT value FROM case_meta WHERE key = 'audit_verified'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    append(&c, 1);
+    c.conn()
+        .execute("DELETE FROM audit_trail WHERE seq = 3", [])
+        .unwrap();
+    c.conn()
+        .execute(
+            "UPDATE case_meta SET value = ? WHERE key = 'audit_verified'",
+            [fp2],
+        )
+        .unwrap();
+    append_is_refused(&c);
 }
 
 #[test]

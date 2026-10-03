@@ -274,6 +274,12 @@ Add `--json` to any command for machine-readable output. Exit codes:
 
 With `--json`, errors are also printed to stdout as `{"error": "..."}`.
 
+`audit verify` walks the whole SHA-256 chain: an edited, deleted, reordered or rewritten entry is reported at its
+seq. Deleting the newest entries is detected against the head the last write recorded in `case_meta`, unless
+`case_meta` was edited too; the head hash printed by `audit verify` (and by the exports) is the anchor to keep
+outside the case. A break blocks every write until `audit verify --acknowledge` records it as an audit entry.
+Indicators from a case made before the audit trail get one reviewable `legacy_decision` entry each on `upgrade`.
+
 ## Synthetic data
 
 `sparrow synth` generates deterministic collector trees from a scenario and a seed, each with a ground-truth

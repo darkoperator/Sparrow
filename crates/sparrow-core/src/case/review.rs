@@ -20,6 +20,7 @@ const DECISION_ACTIONS: &[&str] = &[
     "add_ioc",
     "set_ioc_verdict",
     "remove_ioc",
+    "legacy_decision",
     "propose_entry",
     "verify_entry",
     "reject_entry",
