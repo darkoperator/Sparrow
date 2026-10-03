@@ -33,8 +33,8 @@ mod cmd;
     after_help = "Agent workflow: every command takes --json. Writes (finding set-status|assign|ack-rule-update, ioc, timeline-entry, note) \
 are agent decisions recorded in the audit trail with --agent and --analyst; review happens outside the CLI.\n\
 \n\
-Exit codes: 0 success; 1 other error (including a refused query); 2 completed with problems (ingest, verify); \
-3 audit chain broken; 4 case open by another writer; 5 invalid agent decision.\n\
+Exit codes: 0 success; 1 other error (including a refused query); 2 completed with problems (ingest, verify, synth coverage/conformance); \
+3 audit chain broken; 4 case open by another writer; 5 invalid agent decision, or an export --out over the case.\n\
 See the README, section \"Agent workflow\"."
 )]
 struct Cli {
@@ -451,7 +451,7 @@ enum IocCommand {
         /// Case database file
         #[arg(long)]
         case: PathBuf,
-        /// Only indicators of this tenant key
+        /// Indicators that apply to this tenant (its own and case-wide)
         #[arg(long)]
         tenant: Option<String>,
         /// Include removed indicators (rules no longer read them)

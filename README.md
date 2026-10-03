@@ -315,7 +315,7 @@ sparrow finding show 1c8b18eff09c880c --case case.duckdb --json   # evidence row
 sparrow pivot ip 203.0.113.2 --case case.duckdb --json     # everything about an IP, section by section
 sparrow query "SELECT operation, count(*) FROM timeline GROUP BY 1" --case case.duckdb --json
 
-export SPARROW_AGENT=claude SPARROW_ANALYST=carlos         # or --agent / --analyst on each write
+export SPARROW_AGENT=claude SPARROW_ANALYST=example         # or --agent / --analyst on each write
 sparrow finding set-status 1c8b18eff09c880c confirmed --reason "hides mail from the owner" --case case.duckdb
 sparrow ioc add --type ip --value 203.0.113.2 --verdict malicious --note "AiTM relay" --case case.duckdb
 sparrow timeline-entry propose --time 2026-08-21T09:47:00Z --title "Inbox rule created" --phase persistence \
@@ -362,7 +362,7 @@ Limits you should know about:
   every export is the anchor: keep it outside the case (in the ticket, the report, a message) and compare.
 - **CSV formula neutralisation changes some cells.** In the Timeline Explorer CSV a text cell that starts with `=`
   `+` `-` `@`, a tab or a carriage return gets a leading `'`, so a spreadsheet will not run it. The Timestamp and
-  FindingIds columns are left alone. The workbook stores every cell as text.
+  FindingIds columns are left alone. The workbook writes text as strings, never as formulas; numbers, booleans and dates are typed cells.
 - **Times in exports are UTC**, whatever the machine or the DuckDB session time zone: `yyyy-MM-dd HH:mm:ss` in the
   CSV, ` UTC` in the report, UTC date cells in the workbook.
 
@@ -376,7 +376,7 @@ nobody has reviewed is "AI decision — not reviewed".
 The CSV is UTF-8 with a BOM; its cells keep the stored text, with one exception: cells beginning with `=` `+` `-`
 `@` (or a tab or carriage return) are prefixed with `'` to stop spreadsheet formula execution, because evidence
 text (rule names, subjects, user agents, display names) can be attacker-controlled. The Timestamp and id columns
-are left as they are. The workbook writes every cell as a string, never as a formula.
+are left as they are. The workbook writes text as strings, never as formulas; numbers, booleans and dates are typed cells.
 
 The Markdown report escapes all evidence and agent text as Markdown and HTML (so a rule named `x <!--` cannot hide
 the rest of the report, and `[text](url)`, `![](url)` and `[^3]` stay plain text). Agent notes carry no review

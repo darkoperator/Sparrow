@@ -45,7 +45,7 @@ fn json(args: &[&str], code: i32) -> Value {
 }
 
 /// The agent flags every write carries.
-const AGENT: [&str; 4] = ["--agent", "claude", "--analyst", "carlos"];
+const AGENT: [&str; 4] = ["--agent", "claude", "--analyst", "example"];
 
 /// One state-changing agent write: exit 0, JSON out. Counts toward the expected audit length.
 struct Agent<'a> {
@@ -102,6 +102,15 @@ fn block(md: &str, needle: &str) -> String {
     lines[start..end].join("\n")
 }
 
+/// The Indicators table row of an IP indicator: the line `| ip | <value> | ...` (not the first line that mentions the
+/// value, which is a finding's evidence).
+fn ioc_row(md: &str, value: &str) -> String {
+    let start = format!("| ip | {value} |");
+    let rows: Vec<&str> = md.lines().filter(|l| l.starts_with(&start)).collect();
+    assert_eq!(rows.len(), 1, "one Indicators row for {value}: {rows:?}");
+    rows[0].to_string()
+}
+
 const LABEL: &str = "AI decision — not reviewed";
 
 /// The audit head hash of a report or CSV header line.
@@ -142,13 +151,47 @@ fn an_agent_triages_a_bec_aitm_case_and_the_exports_carry_its_decisions() {
     let tree_dir = tree.dir.to_str().unwrap();
     // Exactly 2: the deliberate AllRoles "Role carry-over" row (one row lost its role name). Nothing else fails.
     let ingest = json(&["ingest", tree_dir, "--case", case, "--no-detect"], 2);
-    let problems: Vec<&Value> = ingest["collections"][0]["files"]
-        .as_array()
-        .unwrap()
+    let files = ingest["collections"][0]["files"].as_array().unwrap();
+    let failing: Vec<&Value> = files
+        .iter()
+        .filter(|f| f["records_error"].as_u64().unwrap() > 0)
+        .collect();
+    assert_eq!(
+        failing.len(),
+        1,
+        "only one file has error records: {failing:?}"
+    );
+    let roles = failing[0];
+    let path = roles["rel_path"].as_str().unwrap();
+    assert!(
+        path.contains("/Roles/") && path.ends_with("-AllRoles.csv"),
+        "the failing file is the AllRoles export: {path}"
+    );
+    assert_eq!(roles["records_error"], 1);
+    assert!(
+        roles["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("Role carry-over")),
+        "{roles}"
+    );
+    let bad_status: Vec<&Value> = files
         .iter()
         .filter(|f| f["status"] == "error" || f["status"] == "unrecognized")
         .collect();
-    assert!(problems.is_empty(), "unexpected failed files: {problems:?}");
+    assert!(
+        bad_status.is_empty(),
+        "unexpected failed files: {bad_status:?}"
+    );
+    assert!(
+        files.iter().all(|f| f["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|w| !w.as_str().unwrap().starts_with("reconciliation mismatch"))),
+        "no file may fail to reconcile"
+    );
     assert_eq!(
         json(&["audit", "verify", "--case", case], 0)["entries"],
         0,
@@ -348,7 +391,7 @@ fn an_agent_triages_a_bec_aitm_case_and_the_exports_carry_its_decisions() {
     {
         assert_eq!(f["status"], status);
         assert_eq!(f["decided_by"], "agent:claude");
-        assert_eq!(f["on_behalf_of"], "analyst:carlos");
+        assert_eq!(f["on_behalf_of"], "analyst:example");
         assert_eq!(f["review_state"], "pending_review");
     }
     assert_eq!(run(&["detect", "--case", case]).code, 0);
@@ -391,7 +434,8 @@ fn an_agent_triages_a_bec_aitm_case_and_the_exports_carry_its_decisions() {
     assert!(md.contains(&format!("Audit chain:** ok ({} entries)", agent.writes)));
     assert!(block(&md, &format!("`{confirmed_a}`")).contains(LABEL));
     assert!(block(&md, &format!("`{confirmed_c}`")).contains(LABEL));
-    assert!(block(&md, "203.0.113.2").contains(LABEL));
+    assert!(ioc_row(&md, "203.0.113.2").contains(LABEL));
+    assert!(ioc_row(&md, "203.0.113.9").contains(LABEL));
     assert!(md.contains("agent note — not reviewed"));
 
     // ---- 6. review is core-only: the reviewer accepts and discards on the case file ---------------------------
@@ -401,7 +445,7 @@ fn an_agent_triages_a_bec_aitm_case_and_the_exports_carry_its_decisions() {
     let seq_e1 = decision_seq(case, &format!("timeline_entry:{entry_1}"));
     {
         let c = Case::create_or_open(&case_path).unwrap();
-        let r = Reviewer::analyst("carlos").unwrap();
+        let r = Reviewer::analyst("example").unwrap();
         review_accept(c.conn(), &r, "finding", &confirmed_a, seq_a, Some("agreed")).unwrap();
         review_accept(c.conn(), &r, "indicator", &ioc_a, seq_ioc, None).unwrap();
         review_accept(c.conn(), &r, "timeline_entry", &entry_1, seq_e1, None).unwrap();
@@ -456,10 +500,10 @@ fn an_agent_triages_a_bec_aitm_case_and_the_exports_carry_its_decisions() {
         !md.contains(&format!("`{confirmed_c}`")),
         "the discarded decision (back to new) is not a confirmed finding"
     );
-    assert!(block(&md, "203.0.113.2").contains("accepted"));
-    assert!(!block(&md, "203.0.113.2").contains(LABEL));
+    assert!(ioc_row(&md, "203.0.113.2").contains("accepted"));
+    assert!(!ioc_row(&md, "203.0.113.2").contains(LABEL));
     assert!(
-        block(&md, "203.0.113.9").contains(LABEL),
+        ioc_row(&md, "203.0.113.9").contains(LABEL),
         "the pending indicator is still labelled"
     );
     assert!(
@@ -508,12 +552,17 @@ fn an_agent_triages_a_bec_aitm_case_and_the_exports_carry_its_decisions() {
         0
     );
     let ro = std::fs::read_to_string(&report_3).unwrap();
-    assert!(ro.contains(&format!("`{confirmed_a}`")) && ro.contains("203.0.113.2"));
+    assert!(ro.contains(&format!("`{confirmed_a}`")));
+    let kept = ioc_row(&ro, "203.0.113.2");
+    assert!(kept.contains("accepted") && !kept.contains(LABEL), "{kept}");
     assert!(
         ro.contains("Inbox rule created"),
         "the accepted entry stays"
     );
-    assert!(!ro.contains("203.0.113.9"), "pending indicator dropped");
+    assert!(
+        !ro.contains("| ip | 203.0.113.9 |"),
+        "pending indicator dropped"
+    );
     assert!(!ro.contains("HYPERLINK"), "pending entry dropped");
     assert!(!ro.contains("is not a formula here"), "agent notes dropped");
     assert!(!ro.contains(LABEL), "nothing pending is left to label");
@@ -562,6 +611,10 @@ fn an_agent_triages_a_bec_aitm_case_and_the_exports_carry_its_decisions() {
                     .any(|r| r[9] == "agent:claude" && r[10] == "accepted")
             );
             assert!(rows.iter().any(|r| r[10] == "pending_review"));
+            assert!(
+                !summaries.iter().any(|s| s.contains("Inbox rule updated")),
+                "the proposed entry is not in the verified export"
+            );
             assert!(
                 rows.iter().all(|r| r[8] != "proposed"),
                 "verified scope has no proposed entry"
