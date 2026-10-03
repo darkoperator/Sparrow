@@ -31,18 +31,45 @@ fn read_only_placeholder() -> Result<Connection> {
     Ok(conn?)
 }
 
-/// The case files this process holds a writer on. DuckDB's file lock refuses a writer in another process, but a
-/// second handle in the same process is not refused cleanly (it replays the first one's WAL and fails with an
-/// internal error), so `Case` refuses it here first.
-static WRITERS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+/// The case files this process holds a writer on, by file identity. DuckDB's file lock refuses a writer in another
+/// process, but a second handle in the same process is not refused cleanly (it replays the first one's WAL and fails
+/// with an internal error), so `Case` refuses it here first.
+static WRITERS: std::sync::Mutex<Vec<FileKey>> = std::sync::Mutex::new(Vec::new());
+
+/// A file's identity, the same through every path that reaches it (symlinks, hard links, `..`): (device, inode) on
+/// Unix, the canonical path elsewhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FileKey {
+    #[cfg(unix)]
+    Inode(u64, u64),
+    #[cfg(not(unix))]
+    Path(PathBuf),
+}
+
+impl FileKey {
+    fn of(path: &Path) -> Result<FileKey> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let m = std::fs::metadata(path).map_err(|e| Error::io(path, e))?;
+            Ok(FileKey::Inode(m.dev(), m.ino()))
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(FileKey::Path(
+                std::fs::canonicalize(path).map_err(|e| Error::io(path, e))?,
+            ))
+        }
+    }
+}
 
 /// This process's writer registration on a case file; released on drop.
-struct WriterGuard(PathBuf);
+struct WriterGuard(FileKey);
 
 impl Drop for WriterGuard {
     fn drop(&mut self) {
         let mut w = WRITERS.lock().unwrap_or_else(|e| e.into_inner());
-        w.retain(|p| p != &self.0);
+        w.retain(|k| k != &self.0);
     }
 }
 
@@ -54,26 +81,16 @@ fn another_writer(path: &Path, detail: &str) -> Error {
 }
 
 /// Open `path` for writing: one writer per file, in this process (`WRITERS`) and across processes (DuckDB's lock,
-/// whose error becomes "case is open by another writer").
+/// whose error becomes "case is open by another writer"). The registry lock is held across the open, so a file that
+/// does not exist yet is keyed right after DuckDB creates it, before any other open in this process can run.
 fn open_writer(path: &Path) -> Result<(Connection, WriterGuard)> {
-    // The file may not exist yet: resolve its directory.
-    let key = match (path.parent(), path.file_name()) {
-        (Some(dir), Some(name)) if !dir.as_os_str().is_empty() => dir
-            .canonicalize()
-            .map(|d| d.join(name))
-            .unwrap_or_else(|_| path.to_path_buf()),
-        _ => std::env::current_dir()
-            .map(|d| d.join(path))
-            .unwrap_or_else(|_| path.to_path_buf()),
-    };
-    let guard = {
-        let mut w = WRITERS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut w = WRITERS.lock().unwrap_or_else(|e| e.into_inner());
+    if path.exists() {
+        let key = FileKey::of(path)?;
         if w.contains(&key) {
             return Err(another_writer(path, "already open in this process"));
         }
-        w.push(key.clone());
-        WriterGuard(key)
-    };
+    }
     let conn = Connection::open(path).map_err(|e| {
         let msg = e.to_string();
         if msg.contains("Could not set lock") || msg.contains("Conflicting lock") {
@@ -82,7 +99,12 @@ fn open_writer(path: &Path) -> Result<(Connection, WriterGuard)> {
             e.into()
         }
     })?;
-    Ok((conn, guard))
+    let key = FileKey::of(path)?;
+    if w.contains(&key) {
+        return Err(another_writer(path, "already open in this process"));
+    }
+    w.push(key.clone());
+    Ok((conn, WriterGuard(key)))
 }
 
 /// A directory removed when the `Case` that owns it is dropped (see [`Case::with_scratch_dir`]).

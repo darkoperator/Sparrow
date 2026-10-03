@@ -35,7 +35,7 @@ fn print_report(r: &ChainReport, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Verify the chain (read-only), or with `acknowledge` record an open break as an entry by `actor` first.
+/// Verify the chain (read-only), or with `acknowledge` first record every open break as an entry by `actor`.
 /// Exit code 0 when the chain is ok, [`BROKEN_CHAIN`] otherwise.
 pub fn verify(
     case_path: &Path,
@@ -47,10 +47,16 @@ pub fn verify(
     let report = if acknowledge {
         let actor = super::actor::resolve(agent, analyst)?;
         let case = crate::open_case_for_write(case_path)?;
-        if !audit::verify(case.conn())?.ok {
+        // One entry per open break; each closes only the break it names.
+        let mut r = audit::verify(case.conn())?;
+        for _ in 0..=r.entries {
+            if r.ok {
+                break;
+            }
             audit::acknowledge_break(case.conn(), &actor)?;
+            r = audit::verify(case.conn())?;
         }
-        audit::verify(case.conn())?
+        r
     } else {
         let case = Case::open_read_only(case_path)?;
         audit::verify(case.conn())?

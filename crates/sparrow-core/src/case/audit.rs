@@ -153,23 +153,48 @@ pub fn log(conn: &Connection, object: Option<(&str, &str)>) -> Result<Vec<AuditE
     read(conn, object)
 }
 
-/// Walk the whole chain in seq order:
+/// One break in the chain: where it is, why, and the row that shows it (as stored now).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Break {
+    /// The first bad seq (for a gap: the first missing seq).
+    seq: i64,
+    problem: String,
+    /// The `hash` column of the row where the break shows (for a gap: the row after it).
+    stored_hash: String,
+    /// `entry_hash` recomputed over that row's current content.
+    content_hash: String,
+}
+
+impl Break {
+    /// The `after` of the `acknowledge_break` entry that records this break.
+    fn ack_after(&self) -> Value {
+        serde_json::json!({
+            "first_bad_seq": self.seq,
+            "problem": self.problem,
+            "acknowledged_hash": self.stored_hash,
+            "acknowledged_content_hash": self.content_hash,
+        })
+    }
+}
+
+/// Walk the chain and return every unacknowledged break, in seq order.
 /// - each row's seq must be the previous row's seq + 1 (seq 1 first), its prev_hash the previous row's stored hash
-///   (genesis for the first row), and its hash `entry_hash(prev_hash, row)`;
-/// - the first failure opens a break at that seq (for a gap: the first missing seq);
-/// - a later `acknowledge_break` row that is itself intact and linked closes the open break and lists it in
-///   `acknowledged_breaks`; a failure after that opens a new break.
+///   (genesis for the first row), and its hash `entry_hash(prev_hash, row)`; each row that fails opens a break;
+/// - an intact, linked `acknowledge_break` row closes the ONE open break it names: same first bad seq, same problem,
+///   and the same stored hash and content of the row that shows it. Any other break stays open, and a break whose
+///   row changed again after its acknowledgement is not the acknowledged one.
 ///
-/// `ok` is true when no break is open at the end. Each row is compared with the previous row's stored seq and hash,
-/// not with its index, so the rows after a break (and the acknowledgement) still link.
-pub fn verify(conn: &Connection) -> Result<ChainReport> {
+/// Each row is compared with the previous row's stored seq and hash, not with its index, so the rows after a break
+/// (and the acknowledgement) still link.
+fn breaks(conn: &Connection) -> Result<(Vec<AuditEntry>, Vec<Break>, Vec<i64>)> {
     let all = read(conn, None)?;
     let mut prev_hash = genesis(conn)?;
     let mut prev_seq = 0i64;
-    let mut open: Option<(i64, String)> = None;
+    let mut open: Vec<Break> = Vec::new();
     let mut acks = Vec::new();
     for e in &all {
-        let self_ok = entry_hash(&e.prev_hash, e) == e.hash;
+        let content_hash = entry_hash(&e.prev_hash, e);
+        let self_ok = content_hash == e.hash;
         let linked = e.prev_hash == prev_hash;
         let problem = if e.seq != prev_seq + 1 {
             Some((
@@ -190,20 +215,40 @@ pub fn verify(conn: &Connection) -> Result<ChainReport> {
         } else {
             None
         };
-        if e.action == "acknowledge_break" && self_ok && linked && open.is_some() {
-            acks.extend(open.take().map(|(s, _)| s));
-        } else if let Some(p) = problem {
-            open.get_or_insert(p);
+        match problem {
+            Some((seq, problem)) => open.push(Break {
+                seq,
+                problem,
+                stored_hash: e.hash.clone(),
+                content_hash,
+            }),
+            None if e.action == "acknowledge_break" => {
+                if let Some(i) = open
+                    .iter()
+                    .position(|b| e.after.as_ref() == Some(&b.ack_after()))
+                {
+                    acks.push(open.remove(i).seq);
+                }
+            }
+            None => {}
         }
         prev_hash = e.hash.clone();
         prev_seq = e.seq;
     }
+    Ok((all, open, acks))
+}
+
+/// Verify the whole chain. `ok` is true when no break is open; `first_bad_seq` and `problem` describe the first
+/// open break.
+pub fn verify(conn: &Connection) -> Result<ChainReport> {
+    let (all, open, acks) = breaks(conn)?;
+    let first = open.into_iter().next();
     Ok(ChainReport {
-        ok: open.is_none(),
+        ok: first.is_none(),
         entries: all.len() as i64,
         head_hash: all.last().map(|e| e.hash.clone()),
-        first_bad_seq: open.as_ref().map(|(s, _)| *s),
-        problem: open.map(|(_, p)| p),
+        first_bad_seq: first.as_ref().map(|b| b.seq),
+        problem: first.map(|b| b.problem),
         acknowledged_breaks: acks,
     })
 }
@@ -333,25 +378,25 @@ pub(crate) fn append_system(
     )
 }
 
-/// Record the open break as its own entry, chained to the stored head, so later appends can continue. Runs its own
-/// transaction. Fails when the chain is intact.
+/// Record the first open break as its own entry, chained to the stored head. The entry names the break (seq,
+/// problem) and pins the row that shows it (its stored hash and current content), so it closes that break only.
+/// Several breaks need several acknowledgements. Runs its own transaction. Fails when the chain is intact.
 pub fn acknowledge_break(conn: &Connection, actor: &Actor) -> Result<AuditEntry> {
     conn.execute_batch("BEGIN TRANSACTION")?;
     let out = (|| {
-        let r = verify(conn)?;
-        let Some(bad) = r.first_bad_seq else {
+        let (_, open, _) = breaks(conn)?;
+        let Some(b) = open.into_iter().next() else {
             return Err(Error::Invalid("the audit chain is not broken".into()));
         };
-        let after = serde_json::json!({ "first_bad_seq": bad, "problem": r.problem });
         insert(
             conn,
             actor.as_str(),
             actor.on_behalf_of(),
             "acknowledge_break",
             "audit_trail",
-            &bad.to_string(),
+            &b.seq.to_string(),
             None,
-            Some(&after),
+            Some(&b.ack_after()),
             None,
         )
     })();

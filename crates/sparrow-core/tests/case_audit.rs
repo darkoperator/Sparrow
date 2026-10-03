@@ -455,3 +455,123 @@ fn a_fresh_case_has_an_empty_chain_and_no_decision_tags() {
         assert_eq!(n, 1, "{t}");
     }
 }
+
+/// A case with 3 entries whose seq 2 was tampered with and the break acknowledged (seq 4).
+fn acknowledged_at_2() -> Case {
+    let c = case();
+    append(&c, 3);
+    c.conn()
+        .execute("UPDATE audit_trail SET reason = 'edited' WHERE seq = 2", [])
+        .unwrap();
+    let ack = audit::acknowledge_break(c.conn(), &Actor::agent("t", None).unwrap()).unwrap();
+    assert_eq!(ack.seq, 4);
+    let after = ack.after.unwrap();
+    assert_eq!(after["first_bad_seq"], 2);
+    assert!(after["problem"].as_str().unwrap().contains("hash"));
+    assert!(after["acknowledged_hash"].is_string());
+    assert!(after["acknowledged_content_hash"].is_string());
+    let r = audit::verify(c.conn()).unwrap();
+    assert!(r.ok, "{r:?}");
+    assert_eq!(r.acknowledged_breaks, vec![2]);
+    c
+}
+
+#[test]
+fn an_acknowledgement_does_not_cover_a_later_tamper_elsewhere() {
+    let c = acknowledged_at_2();
+    c.conn()
+        .execute("UPDATE audit_trail SET actor = 'x' WHERE seq = 1", [])
+        .unwrap();
+    let r = audit::verify(c.conn()).unwrap();
+    assert!(!r.ok);
+    assert_eq!(r.first_bad_seq, Some(1), "{r:?}");
+    // A tamper of a row between the acknowledged one and the acknowledgement is not covered either.
+    let c = acknowledged_at_2();
+    c.conn()
+        .execute("UPDATE audit_trail SET actor = 'x' WHERE seq = 3", [])
+        .unwrap();
+    let r = audit::verify(c.conn()).unwrap();
+    assert_eq!(r.first_bad_seq, Some(3), "{r:?}");
+}
+
+#[test]
+fn an_acknowledgement_does_not_cover_a_second_change_to_the_same_row() {
+    let c = acknowledged_at_2();
+    c.conn()
+        .execute(
+            "UPDATE audit_trail SET reason = 'edited again' WHERE seq = 2",
+            [],
+        )
+        .unwrap();
+    let r = audit::verify(c.conn()).unwrap();
+    assert!(!r.ok);
+    assert_eq!(r.first_bad_seq, Some(2), "{r:?}");
+    assert!(r.acknowledged_breaks.is_empty());
+    // Changing the row's stored hash is caught too.
+    let c = acknowledged_at_2();
+    c.conn()
+        .execute(
+            "UPDATE audit_trail SET hash = 'ff' || hash WHERE seq = 2",
+            [],
+        )
+        .unwrap();
+    assert!(!audit::verify(c.conn()).unwrap().ok);
+}
+
+#[test]
+fn deleting_the_acknowledgement_reopens_the_break() {
+    let c = acknowledged_at_2();
+    c.conn()
+        .execute("DELETE FROM audit_trail WHERE seq = 4", [])
+        .unwrap();
+    let r = audit::verify(c.conn()).unwrap();
+    assert!(!r.ok);
+    assert_eq!(r.first_bad_seq, Some(2), "{r:?}");
+}
+
+#[test]
+fn several_breaks_need_one_acknowledgement_each() {
+    let c = case();
+    append(&c, 4);
+    c.conn()
+        .execute_batch(
+            "UPDATE audit_trail SET reason = 'a' WHERE seq = 2; UPDATE audit_trail SET reason = 'b' WHERE seq = 3;",
+        )
+        .unwrap();
+    let a = Actor::agent("t", None).unwrap();
+    assert_eq!(
+        audit::acknowledge_break(c.conn(), &a)
+            .unwrap()
+            .after
+            .unwrap()["first_bad_seq"],
+        2
+    );
+    let r = audit::verify(c.conn()).unwrap();
+    assert_eq!((r.ok, r.first_bad_seq), (false, Some(3)), "{r:?}");
+    audit::acknowledge_break(c.conn(), &a).unwrap();
+    let r = audit::verify(c.conn()).unwrap();
+    assert!(r.ok, "{r:?}");
+    assert_eq!(r.acknowledged_breaks, vec![2, 3]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_to_an_open_case_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("c.duckdb");
+    let link = dir.path().join("alias.duckdb");
+    let first = Case::create_or_open(&real).unwrap();
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let err = Case::create_or_open(&link)
+        .err()
+        .expect("an alias is the same file");
+    assert!(err.to_string().contains("another writer"), "{err}");
+    // A path through `..` is the same file too.
+    let dotted = dir.path().join("sub").join("..").join("c.duckdb");
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    assert!(Case::create_or_open(&dotted).is_err());
+    drop(first);
+    let via_link = Case::create_or_open(&link).unwrap();
+    assert!(Case::create_or_open(&real).is_err());
+    drop(via_link);
+}
