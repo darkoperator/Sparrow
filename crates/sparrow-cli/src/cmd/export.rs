@@ -100,8 +100,9 @@ fn canonical(p: &Path) -> Result<PathBuf> {
     Ok(parent.join(name))
 }
 
-/// Refuse an `--out` that is the case file, its write-ahead log, or a file inside a cargo `target/tmp` cache (the
-/// test trees): the one way an export could write the case, or step on another run's files. Exit code 5.
+/// Refuse an `--out` that is the case file, its write-ahead log, or inside the test cache root
+/// (`$CARGO_TARGET_TMPDIR/sparrow-cache`, when set): the one way an export could write the case, or step on another
+/// run's files. Exit code 5.
 fn check_out(out: &Path, case: &Path) -> Result<()> {
     let target = canonical(out)?;
     let case = case
@@ -116,16 +117,19 @@ fn check_out(out: &Path, case: &Path) -> Result<()> {
         ))
         .into());
     }
-    let parts: Vec<_> = target.components().collect();
-    if parts.windows(2).any(|w| {
-        w[0].as_os_str() == std::ffi::OsStr::new("target")
-            && w[1].as_os_str() == std::ffi::OsStr::new("tmp")
-    }) {
-        return Err(sparrow_core::Error::Decision(format!(
-            "refusing to write the export inside a cargo target/tmp cache ({}); choose another --out",
-            target.display()
-        ))
-        .into());
+    // The test cache (`<CARGO_TARGET_TMPDIR>/sparrow-cache`, when that variable is set): its trees are shared by
+    // test runs. A user folder that merely happens to be named target/tmp is fine.
+    if let Some(root) = std::env::var_os("CARGO_TARGET_TMPDIR")
+        .map(|t| PathBuf::from(t).join("sparrow-cache"))
+        .and_then(|r| r.canonicalize().ok())
+    {
+        if target.starts_with(&root) {
+            return Err(sparrow_core::Error::Decision(format!(
+                "refusing to write the export inside the test cache ({}); choose another --out",
+                root.display()
+            ))
+            .into());
+        }
     }
     Ok(())
 }

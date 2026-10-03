@@ -2851,17 +2851,40 @@ fn export_refuses_to_write_over_the_case_and_leaves_no_partial_files() {
         "the case is unchanged"
     );
     assert!(!wal.exists(), "no write-ahead log appeared");
-    // A target/tmp cache is refused too.
-    let cache = dir.path().join("target").join("tmp");
+    // A user folder that happens to be named target/tmp is fine.
+    let user = dir.path().join("target").join("tmp");
+    std::fs::create_dir_all(&user).unwrap();
+    sparrow()
+        .args(["export", "report", "--out"])
+        .arg(user.join("report.md"))
+        .arg("--case")
+        .arg(&case)
+        .assert()
+        .success();
+    assert!(user.join("report.md").is_file());
+    // The test cache root (CARGO_TARGET_TMPDIR/sparrow-cache, when the variable is set) is refused.
+    let tmpdir = dir.path().join("cargo-tmp");
+    let cache = tmpdir.join("sparrow-cache").join("aaaaaaaaaaaaaaaa");
     std::fs::create_dir_all(&cache).unwrap();
     sparrow()
+        .env("CARGO_TARGET_TMPDIR", &tmpdir)
         .args(["export", "report", "--out"])
         .arg(cache.join("report.md"))
         .arg("--case")
         .arg(&case)
         .assert()
         .code(5)
-        .stderr(contains("target/tmp cache"));
+        .stderr(contains("inside the test cache"));
+    assert!(!cache.join("report.md").exists());
+    // With the variable unset nothing but the case and its .wal is refused.
+    sparrow()
+        .env_remove("CARGO_TARGET_TMPDIR")
+        .args(["export", "report", "--out"])
+        .arg(cache.join("report.md"))
+        .arg("--case")
+        .arg(&case)
+        .assert()
+        .success();
     // A missing output directory is a plain error (1), not a panic.
     sparrow()
         .args(["export", "report", "--out"])
