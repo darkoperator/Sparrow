@@ -172,6 +172,11 @@ enum Command {
         #[arg(long, default_value_t = 1000)]
         limit: usize,
     },
+    /// Export the case: the Markdown report, the Timeline Explorer CSV, the XLSX workbook (read-only)
+    Export {
+        #[command(subcommand)]
+        command: cmd::export::ExportCommand,
+    },
     /// The hash-chained audit trail of agent decisions and reviews
     Audit {
         #[command(subcommand)]
@@ -657,6 +662,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Some(Command::Timeline(a)) => cmd::read::timeline(a, json),
         Some(Command::Pivot { command }) => cmd::read::pivot(command, json),
         Some(Command::Query { sql, case, limit }) => cmd::read::query(&case, &sql, limit, json),
+        Some(Command::Export { command }) => cmd::export::run(command, json),
         Some(Command::Audit { command }) => match command {
             AuditCommand::Verify {
                 case,

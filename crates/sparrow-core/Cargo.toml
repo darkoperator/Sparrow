@@ -14,6 +14,7 @@ hex.workspace = true
 ipnet.workspace = true
 maxminddb.workspace = true
 regex.workspace = true
+rust_xlsxwriter.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_norway.workspace = true
@@ -29,5 +30,4 @@ test-fixtures = []
 [dev-dependencies]
 sparrow-core = { path = ".", features = ["test-fixtures"] }
 sparrow-synth = { path = "../sparrow-synth" }
-rust_xlsxwriter.workspace = true
 tempfile.workspace = true

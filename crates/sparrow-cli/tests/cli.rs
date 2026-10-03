@@ -2697,3 +2697,109 @@ fn finding_show_caps_evidence_and_escapes_text() {
         "{text}"
     );
 }
+
+#[test]
+fn export_report_timeline_and_workbook_through_the_cli() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fixtures::hawk_tree(dir.path());
+    let case = dir.path().join("case.duckdb");
+    json_out(
+        sparrow()
+            .args(["--json", "ingest"])
+            .arg(&root)
+            .arg("--case")
+            .arg(&case),
+        0,
+    );
+    let before = std::fs::read(&case).unwrap();
+
+    // The Markdown report: stdout by default, a file with --out.
+    let out = sparrow()
+        .args(["export", "report", "--format", "md", "--case"])
+        .arg(&case)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let md = String::from_utf8(out.stdout).unwrap();
+    assert!(md.starts_with("# Sparrow case report"), "{md}");
+    assert!(md.contains("_Analyst to write._") && md.contains("**Audit chain:**"));
+    let file = dir.path().join("report.md");
+    sparrow()
+        .args(["export", "report", "--reviewed-only", "--out"])
+        .arg(&file)
+        .arg("--case")
+        .arg(&case)
+        .assert()
+        .success()
+        .stdout(contains("wrote report to"));
+    let reviewed = std::fs::read_to_string(&file).unwrap();
+    assert!(reviewed.contains("accepted decisions only"));
+
+    // The CSV: a BOM, the fixed header, scope all and verified.
+    for scope in ["verified", "all"] {
+        let out = sparrow()
+            .args(["export", "timeline", "--scope", scope, "--case"])
+            .arg(&case)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{scope}");
+        let csv = String::from_utf8(out.stdout).unwrap();
+        assert!(
+            csv.starts_with("\u{feff}Timestamp,Source,Category,User,IP,Operation,Summary,Phase,Status,DecidedBy,ReviewState,FindingIds,EvidenceRef"),
+            "{scope}: {csv}"
+        );
+        assert!(csv.contains("sparrow-export,header"));
+    }
+    let v = json_out(
+        sparrow()
+            .args(["--json", "export", "timeline", "--scope", "all", "--out"])
+            .arg(dir.path().join("t.csv"))
+            .arg("--case")
+            .arg(&case),
+        0,
+    );
+    assert_eq!(v["export"], "timeline");
+    assert!(v["rows"].as_u64().unwrap() > 0, "{v}");
+
+    // The workbook needs --out, and is a zip (xlsx) file.
+    sparrow()
+        .args(["export", "workbook", "--case"])
+        .arg(&case)
+        .assert()
+        .code(1)
+        .stderr(contains("needs --out"));
+    let xlsx = dir.path().join("case.xlsx");
+    sparrow()
+        .args(["export", "workbook", "--format", "xlsx", "--out"])
+        .arg(&xlsx)
+        .arg("--case")
+        .arg(&case)
+        .assert()
+        .success();
+    assert_eq!(&std::fs::read(&xlsx).unwrap()[..2], b"PK");
+
+    // Usage errors: a format that does not belong to the kind, a bad scope, --json without --out.
+    for args in [
+        vec!["export", "report", "--format", "csv"],
+        vec!["export", "timeline", "--format", "md"],
+        vec!["export", "workbook", "--format", "md", "--out", "x.xlsx"],
+        vec!["export", "timeline", "--scope", "bogus"],
+        vec!["--json", "export", "report"],
+    ] {
+        let out = sparrow()
+            .args(&args)
+            .arg("--case")
+            .arg(&case)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1), "{args:?}");
+    }
+    sparrow()
+        .args(["export", "report", "--format", "csv", "--case"])
+        .arg(&case)
+        .assert()
+        .stderr(contains("supports --format md"));
+
+    // Exports never write to the case.
+    assert_eq!(std::fs::read(&case).unwrap(), before);
+}

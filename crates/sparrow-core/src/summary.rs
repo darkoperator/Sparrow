@@ -110,7 +110,11 @@ pub struct TableCount {
 /// top actors, evidence gaps and row counts (spec §10). Read-only; opens fine on a read-only
 /// connection.
 pub fn summarize(case: &Case) -> Result<Summary> {
-    let conn = case.conn();
+    summarize_conn(case.conn())
+}
+
+/// [`summarize`] on a bare connection (the exports read a case through one).
+pub fn summarize_conn(conn: &Connection) -> Result<Summary> {
     let tenants: Vec<(String, Option<String>, Option<String>)> = {
         let mut stmt = conn
             .prepare("SELECT tenant_key, tenant_id, tenant_name FROM tenant ORDER BY tenant_key")?;

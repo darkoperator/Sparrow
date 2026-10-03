@@ -7,6 +7,7 @@ pub mod detect;
 pub mod discovery;
 pub mod enrich;
 pub mod error;
+pub mod export;
 #[cfg(any(test, feature = "test-fixtures"))]
 #[doc(hidden)]
 pub mod fixtures;

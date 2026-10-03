@@ -13,7 +13,7 @@ use duckdb::{Connection, params};
 use serde_json::{Value, json};
 
 /// The audit actions that are agent decisions (reviews are not).
-const DECISION_ACTIONS: &[&str] = &[
+pub const DECISION_ACTIONS: &[&str] = &[
     "set_status",
     "assign",
     "ack_rule_update",

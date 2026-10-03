@@ -322,8 +322,9 @@ pub struct Page<T> {
     pub total: i64,
 }
 
-/// The timeline rows matching `f`, by event time, then table and key; at most `f.limit`.
-pub fn timeline_query(conn: &Connection, f: &TimelineFilter) -> Result<Page<TimelineRow>> {
+/// The `WHERE` clause (over the `timeline` view aliased `t`) and its text arguments for `f`; the category is
+/// checked against the enum first.
+pub fn timeline_where(conn: &Connection, f: &TimelineFilter) -> Result<(String, Vec<String>)> {
     if let Some(c) = &f.category {
         let known: bool = conn.query_row(
             "SELECT ? IN (SELECT unnest(enum_range(NULL::event_category))::VARCHAR)",
@@ -361,7 +362,12 @@ pub fn timeline_query(conn: &Connection, f: &TimelineFilter) -> Result<Page<Time
         filter.push("list_contains(t.finding_ids, ?)".into());
         args.push(v.clone());
     }
-    let filter = filter.join(" AND ");
+    Ok((filter.join(" AND "), args))
+}
+
+/// The timeline rows matching `f`, by event time, then table and key; at most `f.limit`.
+pub fn timeline_query(conn: &Connection, f: &TimelineFilter) -> Result<Page<TimelineRow>> {
+    let (filter, args) = timeline_where(conn, f)?;
     let total: i64 = conn.query_row(
         &format!("SELECT count(*) FROM timeline t WHERE {filter}"),
         params_from_iter(args.iter()),

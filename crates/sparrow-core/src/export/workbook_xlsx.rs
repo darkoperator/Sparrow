@@ -1,0 +1,355 @@
+//! The XLSX workbook (Addendum D.6). Sheets: Summary, Findings, Timeline, Indicators, Evidence gaps, Audit. Every
+//! decision sheet has `DecidedBy`, `OnBehalfOf` and `ReviewState` columns plus an empty `Analyst notes` column for
+//! work outside Sparrow. Frozen header row, filter, real date cells (`yyyy-mm-dd hh:mm:ss`, UTC) and fixed column
+//! widths. Cells keep the raw stored text, as strings (a text that starts with `=` stays text).
+
+use super::header;
+use super::{
+    Provenance, entry_provenance, evidence_gaps, finding_provenance, indicator_rows, legacy_objects,
+};
+use crate::case::{audit, read, timeline_entries};
+use crate::summary::summarize_conn;
+use crate::{Error, Result};
+use chrono::{DateTime, Datelike, Timelike, Utc};
+use duckdb::Connection;
+use rust_xlsxwriter::{ExcelDateTime, Format, Workbook, Worksheet};
+use std::path::Path;
+
+/// The sheets, in order.
+pub const SHEETS: [&str; 6] = [
+    "Summary",
+    "Findings",
+    "Timeline",
+    "Indicators",
+    "Evidence gaps",
+    "Audit",
+];
+
+/// Excel holds at most this many characters in a cell.
+const MAX_CELL_CHARS: usize = 32_000;
+
+enum Cell {
+    Empty,
+    Text(String),
+    Int(i64),
+    Bool(bool),
+    Time(Option<DateTime<Utc>>),
+}
+
+fn t(s: impl Into<String>) -> Cell {
+    Cell::Text(s.into())
+}
+
+fn ot(s: Option<&str>) -> Cell {
+    s.map(t).unwrap_or(Cell::Empty)
+}
+
+fn x(e: rust_xlsxwriter::XlsxError) -> Error {
+    Error::Invalid(format!("workbook: {e}"))
+}
+
+fn excel_time(d: &DateTime<Utc>) -> Result<ExcelDateTime> {
+    ExcelDateTime::from_ymd(d.year() as u16, d.month() as u8, d.day() as u8)
+        .and_then(|e| e.and_hms(d.hour() as u16, d.minute() as u8, d.second() as f64))
+        .map_err(x)
+}
+
+fn clip(s: &str) -> String {
+    if s.chars().count() <= MAX_CELL_CHARS {
+        s.to_string()
+    } else {
+        let mut o: String = s.chars().take(MAX_CELL_CHARS).collect();
+        o.push_str("…[truncated]");
+        o
+    }
+}
+
+/// One sheet: a header row (frozen, filtered, bold), then `rows`; `cols` are (header, width).
+fn sheet(wb: &mut Workbook, name: &str, cols: &[(&str, f64)], rows: Vec<Vec<Cell>>) -> Result<()> {
+    let bold = Format::new().set_bold();
+    let date = Format::new().set_num_format("yyyy-mm-dd hh:mm:ss");
+    let ws: &mut Worksheet = wb.add_worksheet();
+    ws.set_name(name).map_err(x)?;
+    for (c, (h, w)) in cols.iter().enumerate() {
+        ws.write_string_with_format(0, c as u16, *h, &bold)
+            .map_err(x)?;
+        ws.set_column_width(c as u16, *w).map_err(x)?;
+    }
+    for (i, row) in rows.iter().enumerate() {
+        let r = i as u32 + 1;
+        for (c, cell) in row.iter().enumerate() {
+            let c = c as u16;
+            match cell {
+                Cell::Empty => {}
+                Cell::Text(s) => {
+                    ws.write_string(r, c, clip(s)).map_err(x)?;
+                }
+                Cell::Int(n) => {
+                    ws.write_number(r, c, *n as f64).map_err(x)?;
+                }
+                Cell::Bool(b) => {
+                    ws.write_boolean(r, c, *b).map_err(x)?;
+                }
+                Cell::Time(Some(d)) => {
+                    ws.write_datetime_with_format(r, c, &excel_time(d)?, &date)
+                        .map_err(x)?;
+                }
+                Cell::Time(None) => {}
+            }
+        }
+    }
+    ws.set_freeze_panes(1, 0).map_err(x)?;
+    let last_row = (rows.len() as u32).max(1);
+    ws.autofilter(0, 0, last_row, cols.len() as u16 - 1)
+        .map_err(x)?;
+    Ok(())
+}
+
+fn decision_cells(p: &Provenance) -> Vec<Cell> {
+    vec![
+        ot(p.decided_by.as_deref()),
+        Cell::Time(p.decided_at),
+        ot(p.on_behalf_of.as_deref()),
+        ot(p.review_state.as_deref()),
+        t(p.label()),
+        ot(p.reviewed_by.as_deref()),
+        Cell::Time(p.reviewed_at),
+        ot(p.review_comment.as_deref()),
+    ]
+}
+
+const DECISION_COLS: [(&str, f64); 8] = [
+    ("DecidedBy", 18.0),
+    ("DecidedAt", 20.0),
+    ("OnBehalfOf", 18.0),
+    ("ReviewState", 15.0),
+    ("DecisionLabel", 34.0),
+    ("ReviewedBy", 18.0),
+    ("ReviewedAt", 20.0),
+    ("ReviewComment", 30.0),
+];
+
+/// Write the workbook to `path`.
+pub fn write(conn: &Connection, path: &Path, generated_at: DateTime<Utc>) -> Result<()> {
+    let head = header::build(conn, generated_at)?;
+    let legacy = legacy_objects(conn)?;
+    let mut wb = Workbook::new();
+
+    // ---- Summary
+    let summary = summarize_conn(conn)?;
+    let mut rows: Vec<Vec<Cell>> = head
+        .pairs()
+        .into_iter()
+        .map(|(k, v)| vec![t(k), t(v)])
+        .collect();
+    let d = &head.decisions;
+    for (k, n) in [
+        ("AI-decided, not reviewed", d.pending_review),
+        ("Recorded before the audit trail", d.legacy),
+        ("Accepted", d.accepted),
+        ("Discarded", d.discarded),
+    ] {
+        rows.push(vec![t(format!("Decisions: {k}")), Cell::Int(n)]);
+    }
+    for ten in &summary.tenants {
+        rows.push(vec![
+            t(format!("Tenant {}", ten.tenant_key)),
+            t(ten.tenant_name.clone().unwrap_or_default()),
+        ]);
+        rows.push(vec![
+            t(format!("Domains ({})", ten.tenant_key)),
+            t(ten.domains.join(", ")),
+        ]);
+    }
+    sheet(&mut wb, "Summary", &[("Item", 34.0), ("Value", 90.0)], rows)?;
+
+    // ---- Findings
+    let findings = read::finding_list(conn, &read::FindingFilter::default())?;
+    let mut rows = Vec::new();
+    for f in &findings {
+        let mut row = vec![
+            t(&f.finding_id),
+            t(&f.tenant_key),
+            ot(f.rule_id.as_deref()),
+            t(&f.severity),
+            t(&f.title),
+            ot(f.actor_upn.as_deref()),
+            Cell::Time(f.first_seen),
+            Cell::Time(f.last_seen),
+            t(&f.status),
+            ot(f.disposition_reason.as_deref()),
+            ot(f.assigned_to.as_deref()),
+            Cell::Bool(f.rule_updated),
+            Cell::Int(f.evidence_count),
+        ];
+        row.extend(decision_cells(&finding_provenance(f, &legacy)));
+        row.push(Cell::Empty);
+        rows.push(row);
+    }
+    let mut cols = vec![
+        ("FindingId", 18.0),
+        ("Tenant", 14.0),
+        ("Rule", 14.0),
+        ("Severity", 10.0),
+        ("Title", 50.0),
+        ("User", 30.0),
+        ("FirstSeen", 20.0),
+        ("LastSeen", 20.0),
+        ("Status", 14.0),
+        ("Reason", 40.0),
+        ("AssignedTo", 18.0),
+        ("RuleUpdated", 12.0),
+        ("EvidenceCount", 14.0),
+    ];
+    cols.extend(DECISION_COLS);
+    cols.push(("Analyst notes", 40.0));
+    sheet(&mut wb, "Findings", &cols, rows)?;
+
+    // ---- Timeline (every timeline entry, with its status)
+    let entries = timeline_entries::list(conn, None, None)?;
+    let mut rows = Vec::new();
+    for e in &entries {
+        let mut row = vec![
+            Cell::Time(Some(e.event_time)),
+            t(&e.phase),
+            t(&e.title),
+            ot(e.narrative.as_deref()),
+            t(&e.status),
+            ot(e.supersedes.as_deref()),
+            t(&e.entry_id),
+            t(e.evidence
+                .iter()
+                .map(|r| r.text())
+                .collect::<Vec<_>>()
+                .join("; ")),
+        ];
+        row.extend(decision_cells(&entry_provenance(e, &legacy)));
+        row.push(Cell::Empty);
+        rows.push(row);
+    }
+    let mut cols = vec![
+        ("Timestamp", 20.0),
+        ("Phase", 16.0),
+        ("Title", 50.0),
+        ("Narrative", 60.0),
+        ("Status", 12.0),
+        ("Supersedes", 14.0),
+        ("EntryId", 14.0),
+        ("EvidenceRef", 60.0),
+    ];
+    cols.extend(DECISION_COLS);
+    cols.push(("Analyst notes", 40.0));
+    sheet(&mut wb, "Timeline", &cols, rows)?;
+
+    // ---- Indicators
+    let mut rows = Vec::new();
+    for i in indicator_rows(conn)? {
+        let mut row = vec![
+            t(&i.indicator_id),
+            ot(i.tenant_key.as_deref()),
+            t(&i.ty),
+            t(&i.value),
+            t(&i.verdict),
+            ot(i.note.as_deref()),
+            t(&i.added_by),
+            Cell::Time(Some(i.added_at)),
+            Cell::Time(i.removed_at),
+            ot(i.removed_by.as_deref()),
+        ];
+        row.extend(decision_cells(&i.prov));
+        row.push(Cell::Empty);
+        rows.push(row);
+    }
+    let mut cols = vec![
+        ("IndicatorId", 18.0),
+        ("Tenant", 14.0),
+        ("Type", 12.0),
+        ("Value", 40.0),
+        ("Verdict", 12.0),
+        ("Note", 40.0),
+        ("AddedBy", 18.0),
+        ("AddedAt", 20.0),
+        ("RemovedAt", 20.0),
+        ("RemovedBy", 18.0),
+    ];
+    cols.extend(DECISION_COLS);
+    cols.push(("Analyst notes", 40.0));
+    sheet(&mut wb, "Indicators", &cols, rows)?;
+
+    // ---- Evidence gaps
+    let rows = evidence_gaps(conn)?
+        .into_iter()
+        .map(|g| {
+            vec![
+                t(g.tenant_key),
+                t(g.evidence),
+                t(g.title),
+                t(g.status),
+                t(g.reason),
+                ot(g.remediation.as_deref()),
+                Cell::Int(g.rows),
+                Cell::Time(g.min_time),
+                Cell::Time(g.max_time),
+                g.users_covered.map(Cell::Int).unwrap_or(Cell::Empty),
+            ]
+        })
+        .collect();
+    sheet(
+        &mut wb,
+        "Evidence gaps",
+        &[
+            ("Tenant", 14.0),
+            ("Evidence", 22.0),
+            ("Title", 40.0),
+            ("Status", 14.0),
+            ("Reason", 60.0),
+            ("Remediation", 50.0),
+            ("Rows", 10.0),
+            ("MinTime", 20.0),
+            ("MaxTime", 20.0),
+            ("UsersCovered", 14.0),
+        ],
+        rows,
+    )?;
+
+    // ---- Audit
+    let rows = audit::log(conn, None)?
+        .into_iter()
+        .map(|e| {
+            vec![
+                Cell::Int(e.seq),
+                Cell::Time(Some(e.ts)),
+                t(e.actor),
+                ot(e.on_behalf_of.as_deref()),
+                t(e.action),
+                t(e.object_type),
+                t(e.object_id),
+                ot(e.reason.as_deref()),
+                t(e.before.map(|v| audit::canonical(&v)).unwrap_or_default()),
+                t(e.after.map(|v| audit::canonical(&v)).unwrap_or_default()),
+                t(e.prev_hash),
+                t(e.hash),
+            ]
+        })
+        .collect();
+    sheet(
+        &mut wb,
+        "Audit",
+        &[
+            ("Seq", 8.0),
+            ("Time", 20.0),
+            ("Actor", 20.0),
+            ("OnBehalfOf", 18.0),
+            ("Action", 18.0),
+            ("ObjectType", 16.0),
+            ("ObjectId", 18.0),
+            ("Reason", 40.0),
+            ("Before", 60.0),
+            ("After", 60.0),
+            ("PrevHash", 66.0),
+            ("Hash", 66.0),
+        ],
+        rows,
+    )?;
+    wb.save(path).map_err(x)
+}

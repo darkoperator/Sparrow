@@ -1,0 +1,190 @@
+//! `sparrow export report|timeline|workbook` (Addendum D.6): the Markdown customer report, the Timeline Explorer CSV
+//! and the XLSX workbook. Each opens the case read-only and writes nothing to it. `--out` defaults to stdout for
+//! the Markdown and the CSV; the workbook needs `--out`. `--json` prints a one-object summary and needs `--out`.
+
+use anyhow::{Context, Result, bail};
+use chrono::{DateTime, Utc};
+use clap::Subcommand;
+use sparrow_core::Case;
+use sparrow_core::export::report_md::{self, ReportOpts};
+use sparrow_core::export::timeline_csv::{self, CsvOpts, Scope};
+use sparrow_core::export::workbook_xlsx;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+#[derive(Subcommand)]
+pub enum ExportCommand {
+    /// The Markdown customer report (pending AI decisions are labelled unless --reviewed-only)
+    Report {
+        #[arg(long)]
+        case: PathBuf,
+        /// Only md
+        #[arg(long, default_value = "md")]
+        format: String,
+        /// Write to this file instead of stdout
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Keep accepted decisions only
+        #[arg(long)]
+        reviewed_only: bool,
+    },
+    /// The Timeline Explorer CSV (UTF-8 with a BOM)
+    Timeline {
+        #[arg(long)]
+        case: PathBuf,
+        /// Only csv
+        #[arg(long, default_value = "csv")]
+        format: String,
+        /// verified (the curated entries) or all (every timeline row, streamed)
+        #[arg(long, default_value = "verified")]
+        scope: String,
+        /// Inclusive lower bound on the event time (RFC 3339)
+        #[arg(long)]
+        from: Option<String>,
+        /// Inclusive upper bound on the event time (RFC 3339)
+        #[arg(long)]
+        to: Option<String>,
+        /// The actor or target of the rows (case-insensitive)
+        #[arg(long)]
+        user: Option<String>,
+        /// Write to this file instead of stdout
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// The XLSX workbook (Summary, Findings, Timeline, Indicators, Evidence gaps, Audit)
+    Workbook {
+        #[arg(long)]
+        case: PathBuf,
+        /// Only xlsx
+        #[arg(long, default_value = "xlsx")]
+        format: String,
+        /// The file to write (required)
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+}
+
+fn time(flag: &str, s: &str) -> Result<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(s)
+        .map(|t| t.with_timezone(&Utc))
+        .with_context(|| {
+            format!("{flag} must be RFC 3339 (for example 2026-08-03T09:00:00Z), got {s:?}")
+        })
+}
+
+fn format_is(kind: &str, got: &str, want: &str) -> Result<()> {
+    if got != want {
+        bail!("export {kind} supports --format {want}, got {got:?}");
+    }
+    Ok(())
+}
+
+/// Run `f` on the sink: the file when given, else stdout. A file is flushed before the summary prints.
+fn with_sink<T>(
+    out: Option<&Path>,
+    json: bool,
+    f: impl FnOnce(&mut dyn Write) -> Result<T>,
+) -> Result<T> {
+    match out {
+        Some(path) => {
+            let mut w = BufWriter::new(
+                File::create(path).with_context(|| format!("cannot create {}", path.display()))?,
+            );
+            let v = f(&mut w)?;
+            w.flush()?;
+            Ok(v)
+        }
+        None => {
+            if json {
+                bail!("--json needs --out (the export itself goes to stdout)");
+            }
+            let stdout = std::io::stdout();
+            let mut w = BufWriter::new(stdout.lock());
+            let v = f(&mut w)?;
+            w.flush()?;
+            Ok(v)
+        }
+    }
+}
+
+fn summary(kind: &str, out: &Path, rows: Option<u64>, json: bool) -> Result<()> {
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({ "export": kind, "out": out.display().to_string(), "rows": rows })
+        );
+    } else {
+        match rows {
+            Some(n) => println!("wrote {kind} ({n} rows) to {}", out.display()),
+            None => println!("wrote {kind} to {}", out.display()),
+        }
+    }
+    Ok(())
+}
+
+pub fn run(command: ExportCommand, json: bool) -> Result<ExitCode> {
+    let generated_at = Utc::now();
+    match command {
+        ExportCommand::Report {
+            case,
+            format,
+            out,
+            reviewed_only,
+        } => {
+            format_is("report", &format, "md")?;
+            let c = Case::open_read_only(&case)?;
+            let opts = ReportOpts {
+                reviewed_only,
+                generated_at,
+            };
+            with_sink(out.as_deref(), json, |w| {
+                Ok(report_md::write(c.conn(), w, &opts)?)
+            })?;
+            if let Some(p) = out {
+                summary("report", &p, None, json)?;
+            }
+        }
+        ExportCommand::Timeline {
+            case,
+            format,
+            scope,
+            from,
+            to,
+            user,
+            out,
+        } => {
+            format_is("timeline", &format, "csv")?;
+            let scope = match scope.as_str() {
+                "verified" => Scope::Verified,
+                "all" => Scope::All,
+                other => bail!("--scope is verified or all, got {other:?}"),
+            };
+            let opts = CsvOpts {
+                scope,
+                from: from.as_deref().map(|s| time("--from", s)).transpose()?,
+                to: to.as_deref().map(|s| time("--to", s)).transpose()?,
+                user,
+                generated_at,
+            };
+            let c = Case::open_read_only(&case)?;
+            let n = with_sink(out.as_deref(), json, |w| {
+                Ok(timeline_csv::write(c.conn(), w, &opts)?)
+            })?;
+            if let Some(p) = out {
+                summary("timeline", &p, Some(n), json)?;
+            }
+        }
+        ExportCommand::Workbook { case, format, out } => {
+            format_is("workbook", &format, "xlsx")?;
+            let Some(out) = out else {
+                bail!("export workbook needs --out FILE (a workbook is binary)");
+            };
+            let c = Case::open_read_only(&case)?;
+            workbook_xlsx::write(c.conn(), &out, generated_at)?;
+            summary("workbook", &out, None, json)?;
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}

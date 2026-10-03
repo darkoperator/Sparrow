@@ -388,7 +388,38 @@ fn insert(
 /// The current time at microsecond precision (as stored): the `ts` of an entry, and the `decided_at` /
 /// `reviewed_at` of the change it records.
 pub fn now() -> DateTime<Utc> {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    if let Some(t) = test_clock::tick() {
+        return t;
+    }
     DateTime::from_timestamp_micros(Utc::now().timestamp_micros()).unwrap_or_default()
+}
+
+/// Test-only fixed clock (never compiled into a normal build): with it set, `now()` returns the start time and
+/// then one more second per call, on this thread only, so a scripted session makes the same ids, timestamps and
+/// hashes on every run (the export goldens).
+#[cfg(any(test, feature = "test-fixtures"))]
+#[doc(hidden)]
+pub mod test_clock {
+    use chrono::{DateTime, Duration, Utc};
+    use std::cell::Cell;
+
+    thread_local! {
+        static NEXT: Cell<Option<DateTime<Utc>>> = const { Cell::new(None) };
+    }
+
+    /// Start the fixed clock at `start`; `None` returns to the wall clock.
+    pub fn set(start: Option<DateTime<Utc>>) {
+        NEXT.with(|c| c.set(start));
+    }
+
+    pub(super) fn tick() -> Option<DateTime<Utc>> {
+        NEXT.with(|c| {
+            let t = c.get()?;
+            c.set(Some(t + Duration::seconds(1)));
+            Some(t)
+        })
+    }
 }
 
 /// The `case_meta` key of the last fully verified chain state.
