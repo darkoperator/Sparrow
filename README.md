@@ -268,6 +268,9 @@ sparrow query "SELECT ..." --case case.duckdb     # one read-only SELECT, --limi
 sparrow audit verify --case case.duckdb           # check the audit chain (exit 3 when broken;
                                                   # --acknowledge [--agent ID] records a break)
 sparrow audit log --case case.duckdb              # the audit trail; --object TYPE:ID for one object
+sparrow export report --format md [--out FILE] [--reviewed-only] --case case.duckdb
+sparrow export timeline --format csv [--scope verified|all --from T --to T --user U --out FILE] --case case.duckdb
+sparrow export workbook --format xlsx --out FILE --case case.duckdb
 ```
 
 Add `--json` to any command for machine-readable output. Exit codes:
@@ -299,6 +302,18 @@ seq. Deleting the newest entries is detected against the head the last write rec
 `case_meta` was edited too; the head hash printed by `audit verify` (and by the exports) is the anchor to keep
 outside the case. A break blocks every write until `audit verify --acknowledge` records it as an audit entry.
 Indicators from a case made before the audit trail get one reviewable `legacy_decision` entry each on `upgrade`.
+
+## Exports
+
+`sparrow export` writes the deliverables from a case, read-only (no audit row): the Markdown report, the Timeline
+Explorer CSV and the XLSX workbook. Every export carries the Sparrow version, the rule-pack hash, the generation
+time, the audit-chain status, the head hash and the decision counts, and labels every decision: an agent decision
+nobody has reviewed is "AI decision — not reviewed".
+
+The CSV is UTF-8 with a BOM; its cells keep the stored text, with one exception: cells beginning with `=` `+` `-`
+`@` (or a tab or carriage return) are prefixed with `'` to stop spreadsheet formula execution, because evidence
+text (rule names, subjects, user agents, display names) can be attacker-controlled. The Timestamp and id columns
+are left as they are. The workbook writes every cell as a string, never as a formula.
 
 ## Synthetic data
 

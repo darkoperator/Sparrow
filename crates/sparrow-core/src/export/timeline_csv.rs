@@ -1,6 +1,10 @@
 //! The Timeline Explorer CSV (Addendum D.6): UTF-8 with a BOM, `Timestamp` (UTC `yyyy-MM-dd HH:mm:ss`) first, then
 //! `Source, Category, User, IP, Operation, Summary, Phase, Status, DecidedBy, ReviewState, FindingIds, EvidenceRef`.
-//! Cells keep the raw stored text; the csv crate quotes commas, quotes and newlines.
+//! Cells keep the raw stored text; the csv crate quotes commas, quotes and newlines. One exception, against
+//! spreadsheet formula injection (the evidence text can be attacker-controlled: rule names, subjects, user agents,
+//! display names, and the CSV may be opened in Excel): every TEXT cell whose first character is `=`, `+`, `-`,
+//! `@`, TAB or CR is prefixed with a single quote `'` (OWASP CSV-injection guidance). The Timestamp and the
+//! FindingIds (hex ids) are left as they are; a character in the middle of a cell is never touched.
 //!
 //! Scope `Verified` writes the curated timeline entries (one row each, in event-time order). Scope `All` writes
 //! every row of the `timeline` view, STREAMED through a statement iterator (a case can hold 100k+ rows; nothing
@@ -33,6 +37,15 @@ pub const COLUMNS: [&str; 13] = [
     "EvidenceRef",
 ];
 
+/// `cell` as a CSV text cell: prefixed with `'` when a spreadsheet would read it as a formula (first character
+/// `=`, `+`, `-`, `@`, TAB or CR).
+pub fn neutralise(cell: &str) -> String {
+    match cell.chars().next() {
+        Some('=' | '+' | '-' | '@' | '\t' | '\r') => format!("'{cell}"),
+        _ => cell.to_string(),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     Verified,
@@ -61,13 +74,23 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &CsvOpts) -> Result<u
         Scope::All => write_all(conn, &mut w, opts)?,
         Scope::Verified => write_verified(conn, &mut w, opts)?,
     };
-    let mut closing = vec![String::new(); COLUMNS.len()];
+    let mut closing: [String; 13] = Default::default();
     closing[1] = "sparrow-export".into();
     closing[2] = "header".into();
     closing[6] = head.one_line();
-    w.write_record(&closing).map_err(csv_err)?;
+    put(&mut w, closing)?;
     w.flush().map_err(super::io_err)?;
     Ok(n)
+}
+
+/// One record: every cell but the Timestamp (0) and the FindingIds (11) goes through [`neutralise`].
+fn put<W: Write>(w: &mut csv::Writer<W>, cells: [String; 13]) -> Result<()> {
+    let cells: Vec<String> = cells
+        .into_iter()
+        .enumerate()
+        .map(|(i, c)| if i == 0 || i == 11 { c } else { neutralise(&c) })
+        .collect();
+    w.write_record(&cells).map_err(csv_err)
 }
 
 fn csv_err(e: csv::Error) -> crate::Error {
@@ -112,26 +135,28 @@ fn write_all<W: Write>(conn: &Connection, w: &mut csv::Writer<W>, opts: &CsvOpts
         let text = |i: usize| -> duckdb::Result<String> {
             Ok(r.get::<_, Option<String>>(i)?.unwrap_or_default())
         };
-        w.write_record([
-            when_text,
-            source.clone(),
-            text(2)?,
-            text(3)?,
-            text(4)?,
-            text(5)?,
-            text(6)?,
-            phase.clone().unwrap_or_default(),
-            if phase.is_some() {
-                "verified".into()
-            } else {
-                String::new()
-            },
-            text(8)?,
-            text(9)?,
-            finding_ids.join(";"),
-            format!("{source}:{key}"),
-        ])
-        .map_err(csv_err)?;
+        put(
+            w,
+            [
+                when_text,
+                source.clone(),
+                text(2)?,
+                text(3)?,
+                text(4)?,
+                text(5)?,
+                text(6)?,
+                phase.clone().unwrap_or_default(),
+                if phase.is_some() {
+                    "verified".into()
+                } else {
+                    String::new()
+                },
+                text(8)?,
+                text(9)?,
+                finding_ids.join(";"),
+                format!("{source}:{key}"),
+            ],
+        )?;
         n += 1;
     }
     Ok(n)
@@ -162,30 +187,32 @@ fn write_verified<W: Write>(
             Some(n) => format!("{} — {n}", e.title),
             None => e.title.clone(),
         };
-        w.write_record([
-            when(&e.event_time),
-            "timeline_entry".to_string(),
-            String::new(),
-            String::new(),
-            String::new(),
-            String::new(),
-            summary,
-            e.phase.clone(),
-            e.status.clone(),
-            e.decided_by.clone(),
-            e.review_state.clone(),
-            findings
-                .get(&e.entry_id)
-                .cloned()
-                .unwrap_or_default()
-                .join(";"),
-            e.evidence
-                .iter()
-                .map(|r| r.text())
-                .collect::<Vec<_>>()
-                .join(";"),
-        ])
-        .map_err(csv_err)?;
+        put(
+            w,
+            [
+                when(&e.event_time),
+                "timeline_entry".to_string(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                summary,
+                e.phase.clone(),
+                e.status.clone(),
+                e.decided_by.clone(),
+                e.review_state.clone(),
+                findings
+                    .get(&e.entry_id)
+                    .cloned()
+                    .unwrap_or_default()
+                    .join(";"),
+                e.evidence
+                    .iter()
+                    .map(|r| r.text())
+                    .collect::<Vec<_>>()
+                    .join(";"),
+            ],
+        )?;
         n += 1;
     }
     Ok(n)

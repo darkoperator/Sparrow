@@ -847,3 +847,144 @@ fn every_export_carries_the_header() {
         "{h:?}"
     );
 }
+
+// ------------------------------------------------------------------ formula injection
+
+/// A new verified entry whose title is `title`, citing the first timeline row.
+fn entry_titled(c: &duckdb::Connection, title: &str) {
+    let key: String = c
+        .query_row(
+            "SELECT source_table || ':' || record_key FROM timeline ORDER BY event_time, source_table, record_key LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let (id, _) = te::propose(
+        c,
+        &agent(),
+        NewEntry {
+            tenant_key: None,
+            event_time: generated_at(),
+            title: title.into(),
+            narrative: None,
+            phase: Phase::Impact,
+            evidence: vec![EvidenceRef::parse(&key).unwrap()],
+        },
+    )
+    .unwrap();
+    te::verify(c, &agent(), &id).unwrap();
+}
+
+#[test]
+fn neutralise_prefixes_exactly_the_formula_starters() {
+    use sparrow_core::export::timeline_csv::neutralise;
+    for first in ['=', '+', '-', '@', '\t', '\r'] {
+        let cell = format!("{first}1+1");
+        assert_eq!(neutralise(&cell), format!("'{cell}"), "{first:?}");
+    }
+    // Only the first character counts, and only those six.
+    for cell in [
+        "a=b",
+        "x+1",
+        "1-2",
+        "mail@example",
+        "",
+        " =1",
+        "'=1",
+        "#=1",
+        "A\t",
+    ] {
+        assert_eq!(neutralise(cell), cell, "{cell:?}");
+    }
+}
+
+#[test]
+fn csv_text_cells_that_start_like_a_formula_are_prefixed() {
+    let s = scripted(false);
+    let c = s.case.conn();
+    let titles = [
+        "=HYPERLINK(\"http://evil.example\",\"x\")",
+        "+cmd|' /C calc'!A0",
+        "-2+3",
+        "@SUM(1,1)",
+        "\tTAB first",
+        "\rCR first",
+        "mid=dle is left alone",
+    ];
+    for t in titles {
+        entry_titled(c, t);
+    }
+    let (bytes, _) = csv_bytes(&s.case, &csv_opts(Scope::Verified));
+    let rec = csv_records(&bytes);
+    let summaries: Vec<&str> = rec.iter().map(|r| r[6].as_str()).collect();
+    for t in &titles[..6] {
+        assert!(
+            summaries.contains(&format!("'{t}").as_str()),
+            "{t:?} not prefixed in {summaries:?}"
+        );
+        assert!(!summaries.contains(t), "{t:?} written bare");
+    }
+    assert!(
+        summaries.contains(&titles[6]),
+        "a = in the middle is not touched"
+    );
+    // The timestamp and the id columns are never prefixed; every other cell of every row is either unchanged or
+    // starts with a quote because it began with one of the six.
+    for r in &rec[1..] {
+        assert!(!r[0].starts_with('\''), "{r:?}");
+        assert!(!r[11].starts_with('\''), "{r:?}");
+    }
+    // Scope all goes through the same writer: no cell of any row starts with a formula character.
+    let (bytes, _) = csv_bytes(&s.case, &csv_opts(Scope::All));
+    for r in &csv_records(&bytes)[1..] {
+        for (i, cell) in r.iter().enumerate().filter(|(i, _)| *i != 0 && *i != 11) {
+            assert!(
+                !cell.starts_with(['=', '+', '-', '@', '\t', '\r']),
+                "column {i}: {cell:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn workbook_cells_are_strings_never_formulas() {
+    let s = scripted(false);
+    let c = s.case.conn();
+    let formula = "=HYPERLINK(\"http://evil.example\",\"click\")";
+    entry_titled(c, formula);
+    indicators::add_indicator(
+        c,
+        &agent(),
+        None,
+        IndicatorType::UserAgent,
+        "=cmd|' /C calc'!A0",
+        Verdict::Suspicious,
+        Some("+SUM(1;1)"),
+    )
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let mut wb = workbook(&s.case, &dir);
+    let find = |wb: &mut Xlsx<std::io::BufReader<std::fs::File>>, sheet: &str, want: &str| {
+        let range = wb.worksheet_range(sheet).unwrap();
+        range
+            .rows()
+            .flat_map(|r| r.iter())
+            .any(|d| matches!(d, Data::String(t) if t == want))
+    };
+    assert!(
+        find(&mut wb, "Timeline", formula),
+        "title reads back as a string"
+    );
+    assert!(find(&mut wb, "Indicators", "=cmd|' /C calc'!A0"));
+    assert!(find(&mut wb, "Indicators", "+SUM(1;1)"));
+    // And no cell of any sheet holds a formula.
+    for name in SHEETS {
+        let formulas = wb.worksheet_formula(name).unwrap();
+        let n = formulas
+            .rows()
+            .flat_map(|r| r.iter())
+            .filter(|f| !f.is_empty())
+            .count();
+        assert_eq!(n, 0, "{name} holds {n} formulas");
+    }
+}
