@@ -155,6 +155,23 @@ enum Command {
         #[command(subcommand)]
         command: cmd::note::NoteCommand,
     },
+    /// The evidence timeline (every event record), filtered; capped by --limit
+    Timeline(cmd::read::TimelineArgs),
+    /// Everything the case knows about an IP or a user, section by section (each capped)
+    Pivot {
+        #[command(subcommand)]
+        command: cmd::read::PivotCommand,
+    },
+    /// Run one read-only SELECT on a locked-down connection
+    Query {
+        /// The SELECT (or WITH ... SELECT) statement
+        sql: String,
+        #[arg(long)]
+        case: PathBuf,
+        /// At most this many rows
+        #[arg(long, default_value_t = 1000)]
+        limit: usize,
+    },
     /// The hash-chained audit trail of agent decisions and reviews
     Audit {
         #[command(subcommand)]
@@ -637,6 +654,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Some(Command::Finding { command }) => cmd::finding::run(command, json),
         Some(Command::TimelineEntry { command }) => cmd::timeline_entry::run(command, json),
         Some(Command::Note { command }) => cmd::note::run(command, json),
+        Some(Command::Timeline(a)) => cmd::read::timeline(a, json),
+        Some(Command::Pivot { command }) => cmd::read::pivot(command, json),
+        Some(Command::Query { sql, case, limit }) => cmd::read::query(&case, &sql, limit, json),
         Some(Command::Audit { command }) => match command {
             AuditCommand::Verify {
                 case,

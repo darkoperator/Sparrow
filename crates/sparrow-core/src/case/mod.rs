@@ -6,6 +6,8 @@ pub mod actor;
 pub mod audit;
 pub mod indicators;
 pub mod notes;
+pub mod query;
+pub mod read;
 mod revert;
 pub mod review;
 pub mod text;

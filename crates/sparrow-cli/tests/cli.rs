@@ -1,4 +1,5 @@
 use assert_cmd::Command;
+use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use serde_json::Value;
 use sparrow_core::data::DataDirs;
@@ -2245,4 +2246,300 @@ fn plain_output_escapes_control_characters_and_narratives_can_be_cleared() {
             .arg(&case),
         5,
     );
+}
+
+/// Synthetic bec-aitm (Invictus), generated, ingested and detected through the binary.
+fn ingested(dir: &std::path::Path) -> std::path::PathBuf {
+    let out = dir.join("tree");
+    let v = json_out(
+        sparrow()
+            .args([
+                "--json",
+                "synth",
+                "--scenario",
+                "bec-aitm",
+                "--collector",
+                "invictus",
+                "--seed",
+                "4",
+                "--out",
+            ])
+            .arg(&out),
+        0,
+    );
+    let root = out.join(v["root"].as_str().unwrap());
+    let case = dir.join("case.duckdb");
+    // 2 = completed with file problems (the generated tree's deliberate edge cases); the case is complete.
+    let code = sparrow()
+        .args(["ingest"])
+        .arg(&root)
+        .arg("--case")
+        .arg(&case)
+        .arg("--geoip-dir")
+        .arg(out.join("geoip"))
+        .output()
+        .unwrap()
+        .status
+        .code();
+    assert!(matches!(code, Some(0) | Some(2)), "{code:?}");
+    case
+}
+
+#[test]
+fn read_commands_report_and_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = ingested(dir.path());
+    let (total, user, ip): (i64, String, String) = {
+        let c = sparrow_core::Case::open_read_only(&case).unwrap();
+        let t = c
+            .conn()
+            .query_row("SELECT count(*) FROM timeline", [], |r| r.get(0))
+            .unwrap();
+        let u = c
+            .conn()
+            .query_row(
+                "SELECT actor_upn FROM timeline WHERE actor_upn LIKE '%@%' GROUP BY actor_upn ORDER BY count(*) DESC, 1 LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let i = c
+            .conn()
+            .query_row(
+                "SELECT ip FROM timeline WHERE ip IS NOT NULL GROUP BY ip ORDER BY count(*) DESC, 1 LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        (t, u, i)
+    };
+    assert!(total > 3, "{total}");
+    let v = json_out(
+        sparrow()
+            .args(["--json", "timeline", "--limit", "3", "--case"])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(v["rows"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        (v["total"].as_i64(), v["truncated"].as_bool()),
+        (Some(total), Some(true))
+    );
+    sparrow()
+        .args(["timeline", "--limit", "3", "--case"])
+        .arg(&case)
+        .assert()
+        .success()
+        .stdout(contains(format!("… {} more (truncated)", total - 3)));
+    let v = json_out(
+        sparrow()
+            .args([
+                "--json", "timeline", "--user", &user, "--limit", "100000", "--case",
+            ])
+            .arg(&case),
+        0,
+    );
+    assert!(v["total"].as_i64().unwrap() > 0);
+    assert!(
+        v["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["actor_upn"] == user.as_str() || r["target"] == user.as_str())
+    );
+    let findings = json_out(
+        sparrow()
+            .args(["--json", "finding", "list", "--case"])
+            .arg(&case),
+        0,
+    );
+    let list = findings["findings"].as_array().unwrap();
+    assert!(!list.is_empty(), "bec-aitm raises findings");
+    let id = list[0]["finding_id"].as_str().unwrap();
+    let s = json_out(
+        sparrow()
+            .args(["--json", "finding", "show", id, "--case"])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(s["finding"]["finding_id"], id);
+    assert!(!s["evidence"].as_array().unwrap().is_empty());
+    assert!(
+        s["analyst_guidance"]
+            .as_str()
+            .is_some_and(|g| !g.trim().is_empty())
+    );
+    sparrow()
+        .args(["finding", "show", id, "--case"])
+        .arg(&case)
+        .assert()
+        .success()
+        .stdout(contains("evidence ("));
+    let p = json_out(
+        sparrow()
+            .args(["--json", "pivot", "user", &user, "--cap", "1", "--case"])
+            .arg(&case),
+        0,
+    );
+    let sections = p["sections"].as_array().unwrap();
+    let names: Vec<&str> = sections
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "identity",
+            "directory",
+            "roles",
+            "mfa",
+            "timeline",
+            "findings",
+            "indicators"
+        ]
+    );
+    assert!(
+        sections
+            .iter()
+            .all(|s| s["rows"].as_array().unwrap().len() <= 1)
+    );
+    let tl = sections.iter().find(|s| s["name"] == "timeline").unwrap();
+    assert_eq!(tl["truncated"], true);
+    let p = json_out(
+        sparrow()
+            .args(["--json", "pivot", "ip", &ip, "--case"])
+            .arg(&case),
+        0,
+    );
+    assert!(p["sections"][2]["total"].as_i64().unwrap() > 0);
+    sparrow()
+        .args(["pivot", "user", &user, "--cap", "1", "--case"])
+        .arg(&case)
+        .assert()
+        .success()
+        .stdout(contains("== timeline (").and(contains("more (truncated)")));
+    let q = json_out(
+        sparrow()
+            .args([
+                "--json",
+                "query",
+                "SELECT count(*) AS n FROM timeline",
+                "--case",
+            ])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(q["columns"], serde_json::json!(["n"]));
+    assert_eq!(q["rows"][0][0], total);
+    let q = json_out(
+        sparrow()
+            .args(["--json", "query", "DELETE FROM findings", "--case"])
+            .arg(&case),
+        1,
+    );
+    assert!(q["error"].as_str().unwrap().contains("SELECT"), "{q}");
+    let after = json_out(
+        sparrow()
+            .args(["--json", "finding", "list", "--case"])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(after["findings"].as_array().unwrap().len(), list.len());
+    json_out(
+        sparrow()
+            .args(["--json", "finding", "list", "--status", "closed", "--case"])
+            .arg(&case),
+        5,
+    );
+}
+
+#[test]
+fn read_commands_while_another_process_writes_exit_4() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = case_with_finding(dir.path());
+    let writer = sparrow_core::Case::create_or_open(&case).unwrap();
+    for args in [
+        vec!["--json", "finding", "list", "--case"],
+        vec!["--json", "timeline", "--case"],
+        vec!["--json", "audit", "verify", "--case"],
+        vec!["--json", "query", "SELECT 1", "--case"],
+    ] {
+        let v = json_out(sparrow().args(&args).arg(&case), 4);
+        assert!(
+            v["error"].as_str().unwrap().contains("another writer"),
+            "{args:?}: {v}"
+        );
+    }
+    drop(writer);
+    json_out(
+        sparrow()
+            .args(["--json", "finding", "list", "--case"])
+            .arg(&case),
+        0,
+    );
+}
+
+#[test]
+fn timeline_entry_list_escapes_agent_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = case_with_evidence(dir.path());
+    json_out(
+        sparrow()
+            .args([
+                "--json",
+                "timeline-entry",
+                "propose",
+                "--time",
+                "2026-08-03T09:00:00Z",
+                "--title",
+                "evil\u{1b}[2Jtitle",
+                "--phase",
+                "recon",
+                "--evidence",
+                "signins:k1",
+                "--case",
+            ])
+            .arg(&case),
+        0,
+    );
+    let out = sparrow()
+        .args(["timeline-entry", "list", "--case"])
+        .arg(&case)
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        !text.contains('\u{1b}') && text.contains("evil\\u{001B}[2Jtitle"),
+        "{text:?}"
+    );
+    assert!(text.contains("1 entries"));
+    let v = json_out(
+        sparrow()
+            .args([
+                "--json",
+                "timeline-entry",
+                "list",
+                "--status",
+                "proposed",
+                "--case",
+            ])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(v["entries"][0]["title"], "evil\u{1b}[2Jtitle");
+    assert_eq!(v["entries"][0]["evidence"][0]["record_key"], "k1");
+    let v = json_out(
+        sparrow()
+            .args([
+                "--json",
+                "timeline-entry",
+                "list",
+                "--status",
+                "verified",
+                "--case",
+            ])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(v["entries"].as_array().unwrap().len(), 0);
 }

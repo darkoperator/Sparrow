@@ -1,0 +1,404 @@
+//! Read commands (Addendum D.5): `finding list|show`, `timeline`, `timeline-entry list`, `pivot ip|user` and `query`.
+//! Each opens the case read-only. Plain output passes agent and evidence text through `display_safe`; `--json`
+//! prints the stored values.
+
+use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use clap::{Args, Subcommand};
+use serde::Serialize;
+use sparrow_core::Case;
+use sparrow_core::case::read::{self, FindingFilter, Page, Pivot, TimelineFilter, TimelineRow};
+use sparrow_core::case::text::display_safe as safe;
+use sparrow_core::case::{audit, query, timeline_entries};
+use sparrow_core::data::DataDirs;
+use sparrow_core::detect::load::load_rules;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+fn print_json<T: Serialize>(v: &T) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(v)?);
+    Ok(())
+}
+
+fn opt(s: Option<&str>) -> String {
+    s.map(safe).unwrap_or_else(|| "-".into())
+}
+
+fn ts(t: &DateTime<Utc>) -> String {
+    t.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+fn time(flag: &str, s: &str) -> Result<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(s)
+        .map(|t| t.with_timezone(&Utc))
+        .with_context(|| {
+            format!("{flag} must be RFC 3339 (for example 2026-08-03T09:00:00Z), got {s:?}")
+        })
+}
+
+fn truncated_line(shown: usize, total: i64) {
+    if total > shown as i64 {
+        println!("… {} more (truncated)", total - shown as i64);
+    }
+}
+
+// ------------------------------------------------------------------ finding list / show
+
+#[derive(Args)]
+pub struct FindingListArgs {
+    #[arg(long)]
+    pub case: PathBuf,
+    /// new, in_review, confirmed, false_positive, benign or needs_more_data
+    #[arg(long)]
+    pub status: Option<String>,
+    /// critical, high, medium, low or info
+    #[arg(long)]
+    pub severity: Option<String>,
+    /// Rule id
+    #[arg(long)]
+    pub rule: Option<String>,
+    /// The finding's actor UPN (case-insensitive)
+    #[arg(long)]
+    pub user: Option<String>,
+    #[arg(long)]
+    pub tenant: Option<String>,
+    /// true or false
+    #[arg(long)]
+    pub rule_updated: Option<bool>,
+    /// pending_review, accepted or discarded
+    #[arg(long)]
+    pub review_state: Option<String>,
+}
+
+pub fn finding_list(a: FindingListArgs, json: bool) -> Result<ExitCode> {
+    let c = Case::open_read_only(&a.case)?;
+    let rows = read::finding_list(
+        c.conn(),
+        &FindingFilter {
+            status: a.status,
+            severity: a.severity,
+            rule: a.rule,
+            user: a.user,
+            tenant: a.tenant,
+            rule_updated: a.rule_updated,
+            review_state: a.review_state,
+        },
+    )?;
+    if json {
+        print_json(&serde_json::json!({ "findings": rows }))?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    for f in &rows {
+        let decision = match (&f.decided_by, &f.review_state) {
+            (Some(by), Some(rs)) => format!("  [{} {}]", safe(by), rs),
+            _ => String::new(),
+        };
+        println!(
+            "{}  {:<8} {:<15} {:<12} {}  {}  ({} evidence){}{}",
+            f.finding_id,
+            f.severity,
+            f.status,
+            opt(f.rule_id.as_deref()),
+            safe(&f.title),
+            opt(f.actor_upn.as_deref()),
+            f.evidence_count,
+            if f.rule_updated { "  RULE UPDATED" } else { "" },
+            decision
+        );
+    }
+    println!("{} findings", rows.len());
+    Ok(ExitCode::SUCCESS)
+}
+
+pub fn finding_show(
+    case: &Path,
+    id: &str,
+    data: Option<PathBuf>,
+    rules: Vec<PathBuf>,
+    json: bool,
+) -> Result<ExitCode> {
+    let c = Case::open_read_only(case)?;
+    let set = load_rules(&DataDirs::with_env_fallback(data, rules))?;
+    let d = read::finding_show(c.conn(), id, &set)?;
+    if json {
+        print_json(&d)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    let f = &d.finding;
+    println!("{}  {}  {}", f.finding_id, f.severity, safe(&f.title));
+    println!(
+        "  rule {}  tenant {}  actor {}",
+        opt(f.rule_id.as_deref()),
+        safe(&f.tenant_key),
+        opt(f.actor_upn.as_deref())
+    );
+    println!(
+        "  seen {} .. {}{}",
+        f.first_seen.as_ref().map(ts).unwrap_or_else(|| "-".into()),
+        f.last_seen.as_ref().map(ts).unwrap_or_else(|| "-".into()),
+        if f.rule_updated { "  RULE UPDATED" } else { "" }
+    );
+    println!(
+        "  status {}{}  assigned {}",
+        f.status,
+        f.disposition_reason
+            .as_deref()
+            .map(|r| format!(" ({})", safe(r)))
+            .unwrap_or_default(),
+        opt(f.assigned_to.as_deref())
+    );
+    match &f.decided_by {
+        Some(by) => println!(
+            "  decided by {}{}  review {}{}",
+            safe(by),
+            f.on_behalf_of
+                .as_deref()
+                .map(|a| format!(" for {}", safe(a)))
+                .unwrap_or_default(),
+            f.review_state.as_deref().unwrap_or("-"),
+            f.reviewed_by
+                .as_deref()
+                .map(|r| format!(" by {}", safe(r)))
+                .unwrap_or_default()
+        ),
+        None => println!("  no decision yet"),
+    }
+    if let Some(g) = &d.analyst_guidance {
+        println!("guidance:");
+        for line in g.lines() {
+            println!("  {}", safe(line));
+        }
+    }
+    println!("evidence ({}):", d.evidence.len());
+    for e in &d.evidence {
+        let what = e
+            .timeline
+            .as_ref()
+            .map(|t| {
+                format!(
+                    "  {}  {}",
+                    opt(t.actor_upn.as_deref()),
+                    opt(t.summary.as_deref())
+                )
+            })
+            .unwrap_or_default();
+        println!(
+            "  {} {}:{}{}  [{}]",
+            e.event_time.as_ref().map(ts).unwrap_or_else(|| "-".into()),
+            e.source_table,
+            safe(&e.record_key),
+            what,
+            safe(&e.source_refs.join(", "))
+        );
+    }
+    if !d.notes.is_empty() {
+        println!("notes:");
+        for n in &d.notes {
+            println!(
+                "  {} {}: {}",
+                audit::ts_text(&n.created_at),
+                safe(&n.actor),
+                safe(&n.text)
+            );
+        }
+    }
+    if !d.audit.is_empty() {
+        println!("history:");
+        for e in &d.audit {
+            println!(
+                "  {} {} {} {}{}",
+                e.seq,
+                audit::ts_text(&e.ts),
+                safe(&e.actor),
+                safe(&e.action),
+                e.reason
+                    .as_deref()
+                    .map(|r| format!(" ({})", safe(r)))
+                    .unwrap_or_default()
+            );
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+// ------------------------------------------------------------------ timeline
+
+#[derive(Args)]
+pub struct TimelineArgs {
+    #[arg(long)]
+    pub case: PathBuf,
+    /// Actor or target UPN (case-insensitive)
+    #[arg(long)]
+    pub user: Option<String>,
+    #[arg(long)]
+    pub ip: Option<String>,
+    /// Event category (auth, mail_flow, config_change, ...)
+    #[arg(long)]
+    pub category: Option<String>,
+    /// From this time (inclusive, RFC 3339)
+    #[arg(long)]
+    pub from: Option<String>,
+    /// Up to this time (inclusive, RFC 3339)
+    #[arg(long)]
+    pub to: Option<String>,
+    /// Only the rows this finding cites as evidence
+    #[arg(long)]
+    pub finding: Option<String>,
+    #[arg(long, default_value_t = 200)]
+    pub limit: usize,
+}
+
+fn print_timeline_row(r: &TimelineRow) {
+    println!(
+        "{}  {:<20} {:<14} {:<28} {:<32} {:<15} {}",
+        ts(&r.event_time),
+        r.source_table,
+        r.category,
+        opt(r.operation.as_deref()),
+        opt(r.actor_upn.as_deref()),
+        opt(r.ip.as_deref()),
+        opt(r.summary.as_deref())
+    );
+}
+
+pub fn timeline(a: TimelineArgs, json: bool) -> Result<ExitCode> {
+    let filter = TimelineFilter {
+        user: a.user,
+        ip: a.ip,
+        category: a.category,
+        from: a.from.as_deref().map(|s| time("--from", s)).transpose()?,
+        to: a.to.as_deref().map(|s| time("--to", s)).transpose()?,
+        finding: a.finding,
+        limit: a.limit,
+    };
+    let c = Case::open_read_only(&a.case)?;
+    let page: Page<TimelineRow> = read::timeline_query(c.conn(), &filter)?;
+    if json {
+        print_json(&page)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    for r in &page.rows {
+        print_timeline_row(r);
+    }
+    truncated_line(page.rows.len(), page.total);
+    Ok(ExitCode::SUCCESS)
+}
+
+// ------------------------------------------------------------------ timeline-entry list
+
+pub fn timeline_entry_list(
+    case: &Path,
+    status: Option<&str>,
+    review_state: Option<&str>,
+    json: bool,
+) -> Result<ExitCode> {
+    let c = Case::open_read_only(case)?;
+    let entries = timeline_entries::list(c.conn(), status, review_state)?;
+    if json {
+        print_json(&serde_json::json!({ "entries": entries }))?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    for e in &entries {
+        println!(
+            "{}  {}  {:<10} {:<15} {:<16} {}  ({} evidence; {} {}){}",
+            e.entry_id,
+            ts(&e.event_time),
+            e.status,
+            e.phase,
+            e.review_state,
+            safe(&e.title),
+            e.evidence.len(),
+            safe(&e.decided_by),
+            e.on_behalf_of
+                .as_deref()
+                .map(|a| format!("for {}", safe(a)))
+                .unwrap_or_default(),
+            e.supersedes
+                .as_deref()
+                .map(|s| format!("  supersedes {s}"))
+                .unwrap_or_default()
+        );
+    }
+    println!("{} entries", entries.len());
+    Ok(ExitCode::SUCCESS)
+}
+
+// ------------------------------------------------------------------ pivot
+
+#[derive(Subcommand)]
+pub enum PivotCommand {
+    /// Everything about an IP: ip_intel, spray source, timeline, findings, indicators
+    Ip {
+        ip: String,
+        #[arg(long)]
+        case: PathBuf,
+        /// Rows per section
+        #[arg(long, default_value_t = 50)]
+        cap: usize,
+    },
+    /// Everything about a user: identity, directory, roles, MFA, timeline, findings, indicators
+    User {
+        upn: String,
+        #[arg(long)]
+        case: PathBuf,
+        /// Rows per section
+        #[arg(long, default_value_t = 50)]
+        cap: usize,
+    },
+}
+
+pub fn pivot(cmd: PivotCommand, json: bool) -> Result<ExitCode> {
+    let p: Pivot = match cmd {
+        PivotCommand::Ip { ip, case, cap } => {
+            read::pivot_ip(Case::open_read_only(&case)?.conn(), &ip, cap)?
+        }
+        PivotCommand::User { upn, case, cap } => {
+            read::pivot_user(Case::open_read_only(&case)?.conn(), &upn, cap)?
+        }
+    };
+    if json {
+        print_json(&p)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    for s in &p.sections {
+        println!("== {} ({})", s.name, s.total);
+        for r in &s.rows {
+            println!("  {}", safe(&r.to_string()));
+        }
+        truncated_line(s.rows.len(), s.total);
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+// ------------------------------------------------------------------ query
+
+pub fn query(case: &Path, sql: &str, limit: usize, json: bool) -> Result<ExitCode> {
+    let r = query::run(case, sql, limit)?;
+    if json {
+        print_json(&r)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    println!(
+        "{}",
+        r.columns
+            .iter()
+            .map(|c| safe(c))
+            .collect::<Vec<_>>()
+            .join("\t")
+    );
+    for row in &r.rows {
+        let cells: Vec<String> = row
+            .iter()
+            .map(|v| match v {
+                serde_json::Value::String(s) => safe(s),
+                serde_json::Value::Null => "NULL".into(),
+                other => safe(&other.to_string()),
+            })
+            .collect();
+        println!("{}", cells.join("\t"));
+    }
+    if r.truncated {
+        println!("… more rows (truncated at {limit}; raise --limit)");
+    }
+    Ok(ExitCode::SUCCESS)
+}

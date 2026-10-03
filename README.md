@@ -257,6 +257,13 @@ sparrow timeline-entry propose --time T --title X --phase P --evidence TABLE:KEY
                                                   # also verify ID, reject ID --reason R,
                                                   # edit ID [--title ...] [--clear-narrative]
 sparrow note add finding:ID|entry:ID|ioc:ID|TABLE:KEY --text "..." --case case.duckdb
+sparrow finding list --case case.duckdb           # [--status --severity --rule --user --tenant --rule-updated
+                                                  #  --review-state]; severity first, then the most recent
+sparrow finding show ID --case case.duckdb        # evidence with source refs, guidance, notes, decision, history
+sparrow timeline --case case.duckdb               # [--user --ip --category --from --to --finding --limit 200]
+sparrow timeline-entry list --case case.duckdb    # [--status --review-state]
+sparrow pivot ip|user VALUE --case case.duckdb    # every section capped by --cap 50, truncation reported
+sparrow query "SELECT ..." --case case.duckdb     # one read-only SELECT, --limit 1000
 sparrow audit verify --case case.duckdb           # check the audit chain (exit 3 when broken;
                                                   # --acknowledge [--agent ID] records a break)
 sparrow audit log --case case.duckdb              # the audit trail; --object TYPE:ID for one object
@@ -273,6 +280,12 @@ Add `--json` to any command for machine-readable output. Exit codes:
 - 5: an invalid agent decision (a bad status, verdict, phase or time, a missing reason, an unknown object, an
   evidence reference not in the case, text over its cap: 16 KiB for notes, narratives, reasons and comments, 500
   characters for titles); nothing was written.
+
+Read commands open the case read-only. `query` runs exactly one SELECT (checked by DuckDB's own parser) on a
+separate in-memory DuckDB that attaches the case read-only, with external access (files, network, environment) and
+extension loading off and the configuration locked. It sees every table and view, including `case_meta` (the case
+id and the audit chain's `audit_head`/`audit_verified` bookkeeping); that is harmless, since they are not secret and
+reading them changes nothing.
 
 Agent text is stored as given. Plain (non-`--json`) output shows control characters other than newline and tab as
 `\u{XXXX}`.

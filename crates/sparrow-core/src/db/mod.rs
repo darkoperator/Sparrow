@@ -77,6 +77,17 @@ fn another_writer(path: &Path, detail: &str) -> Error {
     Error::WriterBusy(format!("{} ({detail})", path.display()))
 }
 
+/// DuckDB's error opening or attaching `path`: its file-lock conflict (another process holds the case as writer)
+/// becomes `Error::WriterBusy`; any other error stays a database error.
+pub(crate) fn lock_error(path: &Path, e: duckdb::Error) -> Error {
+    let msg = e.to_string();
+    if msg.contains("Could not set lock") || msg.contains("Conflicting lock") {
+        another_writer(path, &msg)
+    } else {
+        e.into()
+    }
+}
+
 /// Open `path` for writing: one writer per file, in this process (`WRITERS`) and across processes (DuckDB's lock,
 /// whose error becomes "case is open by another writer"). The registry lock is held across the open, so a file that
 /// does not exist yet is keyed right after DuckDB creates it, before any other open in this process can run.
@@ -88,14 +99,7 @@ fn open_writer(path: &Path) -> Result<(Connection, WriterGuard)> {
             return Err(another_writer(path, "already open in this process"));
         }
     }
-    let conn = Connection::open(path).map_err(|e| {
-        let msg = e.to_string();
-        if msg.contains("Could not set lock") || msg.contains("Conflicting lock") {
-            another_writer(path, &msg)
-        } else {
-            e.into()
-        }
-    })?;
+    let conn = Connection::open(path).map_err(|e| lock_error(path, e))?;
     let key = FileKey::of(path)?;
     if w.contains(&key) {
         return Err(another_writer(path, "already open in this process"));
@@ -231,7 +235,7 @@ impl Case {
             return Err(Error::NotFound(format!("case database {}", path.display())));
         }
         let config = Config::default().access_mode(AccessMode::ReadOnly)?;
-        let conn = Connection::open_with_flags(path, config)?;
+        let conn = Connection::open_with_flags(path, config).map_err(|e| lock_error(path, e))?;
         migrations::check_readable(&conn)?;
         Ok(Case {
             conn,

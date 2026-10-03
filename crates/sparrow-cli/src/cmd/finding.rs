@@ -1,4 +1,5 @@
-//! `sparrow finding set-status|assign|ack-rule-update`: agent decisions on findings (Addendum D.5).
+//! `sparrow finding set-status|assign|ack-rule-update`: agent decisions on findings (Addendum D.5). `list` and
+//! `show` are read commands (`cmd::read`).
 
 use crate::ActorArgs;
 use anyhow::Result;
@@ -11,6 +12,20 @@ use std::process::ExitCode;
 
 #[derive(Subcommand)]
 pub enum FindingCommand {
+    /// List findings: severity first, then the most recent
+    List(super::read::FindingListArgs),
+    /// One finding: evidence with source references, analyst guidance, notes, decision and review, history
+    Show {
+        id: String,
+        #[arg(long)]
+        case: PathBuf,
+        /// Directory overriding the embedded data files; default $SPARROW_DATA
+        #[arg(long)]
+        data: Option<PathBuf>,
+        /// Rule directory (repeatable), for the guidance of custom rules; default $SPARROW_RULES
+        #[arg(long)]
+        rules: Vec<PathBuf>,
+    },
     /// Set a finding's status (new, in_review, confirmed, false_positive, benign, needs_more_data)
     SetStatus {
         id: String,
@@ -70,6 +85,13 @@ pub fn print_decision(e: &AuditEntry, what: &str, json: bool) -> Result<()> {
 
 pub fn run(command: FindingCommand, json: bool) -> Result<ExitCode> {
     match command {
+        FindingCommand::List(a) => return super::read::finding_list(a, json),
+        FindingCommand::Show {
+            id,
+            case,
+            data,
+            rules,
+        } => return super::read::finding_show(&case, &id, data, rules, json),
         FindingCommand::SetStatus {
             id,
             status,

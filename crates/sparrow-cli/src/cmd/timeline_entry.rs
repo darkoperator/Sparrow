@@ -1,5 +1,5 @@
 //! `sparrow timeline-entry propose|verify|reject|edit`: curated timeline entries as agent decisions (Addendum D.5).
-//! `timeline-entry list` is a read command (Task 4).
+//! `timeline-entry list` is a read command (`cmd::read`).
 
 use crate::ActorArgs;
 use crate::cmd::finding::print_decision;
@@ -13,6 +13,17 @@ use std::process::ExitCode;
 
 #[derive(Subcommand)]
 pub enum TimelineEntryCommand {
+    /// List the entries, by event time
+    List {
+        #[arg(long)]
+        case: PathBuf,
+        /// proposed, verified, rejected or superseded
+        #[arg(long)]
+        status: Option<String>,
+        /// pending_review, accepted or discarded
+        #[arg(long)]
+        review_state: Option<String>,
+    },
     /// Propose an entry (verify it once its evidence is attached)
     Propose {
         /// When the event happened, RFC 3339 (for example 2026-08-03T09:00:00Z)
@@ -93,6 +104,18 @@ fn evidence(refs: &[String]) -> Result<Vec<EvidenceRef>> {
 
 pub fn run(command: TimelineEntryCommand, json: bool) -> Result<ExitCode> {
     match command {
+        TimelineEntryCommand::List {
+            case,
+            status,
+            review_state,
+        } => {
+            return super::read::timeline_entry_list(
+                &case,
+                status.as_deref(),
+                review_state.as_deref(),
+                json,
+            );
+        }
         TimelineEntryCommand::Propose {
             time: t,
             title,
