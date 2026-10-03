@@ -1321,7 +1321,16 @@ fn ioc_add_and_remove_are_agent_writes() {
             .len(),
         0
     );
-    // Unknown types and verdicts are usage errors.
+    // The removed indicator stays stored (soft delete).
+    let all = json_out(
+        sparrow()
+            .args(["--json", "ioc", "list", "--include-removed", "--case"])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(all["indicators"].as_array().unwrap().len(), 1);
+    assert_eq!(all["indicators"][0]["removed_by"], "agent:claude");
+    // Unknown types and verdicts are invalid decisions.
     json_out(
         sparrow()
             .args([
@@ -1337,7 +1346,7 @@ fn ioc_add_and_remove_are_agent_writes() {
                 "--case",
             ])
             .arg(&case),
-        1,
+        5,
     );
 }
 
@@ -1600,7 +1609,6 @@ fn audit_log_lists_entries_and_filters_by_object() {
 }
 
 #[test]
-#[ignore = "enabled by Task 2"]
 fn ioc_add_records_agent_and_on_behalf_of() {
     let dir = tempfile::tempdir().unwrap();
     let case = fresh_case(dir.path());
@@ -1631,6 +1639,22 @@ fn ioc_add_records_agent_and_on_behalf_of() {
     );
     assert_eq!(v["entries"][0]["actor"], "agent:claude");
     assert_eq!(v["entries"][0]["on_behalf_of"], "analyst:carlos");
+    assert_eq!(v["entries"][0]["action"], "add_ioc");
+    let list = json_out(
+        sparrow()
+            .args(["--json", "ioc", "list", "--case"])
+            .arg(&case),
+        0,
+    );
+    let i = &list["indicators"][0];
+    assert_eq!(
+        (&i["decided_by"], &i["on_behalf_of"], &i["review_state"]),
+        (
+            &serde_json::json!("agent:claude"),
+            &serde_json::json!("analyst:carlos"),
+            &serde_json::json!("pending_review")
+        )
+    );
 }
 
 #[test]
@@ -1655,7 +1679,7 @@ fn second_writer_process_is_refused_and_chain_stays_linear() {
         vec!["--json", "audit", "verify", "--acknowledge", "--case"],
         vec!["--json", "upgrade", "--case"],
     ] {
-        let v = json_out(sparrow().args(&args).arg(&case), 1);
+        let v = json_out(sparrow().args(&args).arg(&case), 4);
         assert!(
             v["error"].as_str().unwrap().contains("another writer"),
             "{args:?}: {v}"
@@ -1679,4 +1703,187 @@ fn second_writer_process_is_refused_and_chain_stays_linear() {
         0,
     );
     assert_eq!(v["indicators"].as_array().unwrap().len(), 0);
+}
+
+/// A fresh case with one rule finding, `f1`.
+fn case_with_finding(dir: &std::path::Path) -> std::path::PathBuf {
+    let case = fresh_case(dir);
+    let conn = duckdb::Connection::open(&case).unwrap();
+    conn.execute_batch(
+        "INSERT INTO findings (finding_id, fingerprint, tenant_key, rule_id, rule_version, rule_sha256, severity, \
+         title, created_by, created_at, updated_at) \
+         VALUES ('f1', 'fp1', 't1', 'SPW-ID-004', 1, 'x', 'high', 'AiTM', 'rule', now(), now());",
+    )
+    .unwrap();
+    case
+}
+
+fn finding_row(
+    case: &std::path::Path,
+) -> (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
+    let conn = duckdb::Connection::open(case).unwrap();
+    conn.query_row(
+        "SELECT CAST(status AS VARCHAR), disposition_reason, decided_by, on_behalf_of, CAST(review_state AS VARCHAR) \
+         FROM findings",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+    )
+    .unwrap()
+}
+
+#[test]
+fn finding_writes_are_agent_decisions() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = case_with_finding(dir.path());
+    let v = json_out(
+        sparrow()
+            .env_remove("SPARROW_AGENT")
+            .env_remove("SPARROW_ANALYST")
+            .args([
+                "--json",
+                "finding",
+                "set-status",
+                "f1",
+                "confirmed",
+                "--reason",
+                "token replay",
+                "--agent",
+                "claude",
+                "--analyst",
+                "carlos",
+                "--case",
+            ])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(v["action"], "set_status");
+    assert_eq!(v["seq"], 1);
+    assert_eq!(v["after"]["status"], "confirmed");
+    assert_eq!(
+        finding_row(&case),
+        (
+            "confirmed".into(),
+            Some("token replay".into()),
+            Some("agent:claude".into()),
+            Some("analyst:carlos".into()),
+            Some("pending_review".into())
+        )
+    );
+    sparrow()
+        .env("SPARROW_AGENT", "codex")
+        .env_remove("SPARROW_ANALYST")
+        .args(["finding", "assign", "f1", "dana", "--case"])
+        .arg(&case)
+        .assert()
+        .success()
+        .stdout(contains(
+            "f1 assigned to dana (decided by agent:codex, pending review)",
+        ));
+    // Nothing to acknowledge: an invalid decision, exit 5, nothing written.
+    let v = json_out(
+        sparrow()
+            .args(["--json", "finding", "ack-rule-update", "f1", "--case"])
+            .arg(&case),
+        5,
+    );
+    assert!(
+        v["error"].as_str().unwrap().contains("no rule update"),
+        "{v}"
+    );
+    let log = json_out(
+        sparrow()
+            .args(["--json", "audit", "log", "--case"])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(log["entries"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn invalid_decisions_exit_5_and_write_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = case_with_finding(dir.path());
+    for args in [
+        vec!["finding", "set-status", "f1", "closed"],
+        vec!["finding", "set-status", "f1", "false_positive"],
+        vec!["finding", "set-status", "f1", "benign", "--reason", "  "],
+        vec!["finding", "set-status", "nope", "in_review"],
+        vec!["finding", "assign", "nope", "dana"],
+        vec!["ioc", "set-verdict", "--id", "nope", "--verdict", "benign"],
+        vec![
+            "ioc",
+            "add",
+            "--type",
+            "ip",
+            "--value",
+            "1.2.3.4",
+            "--verdict",
+            "bad",
+        ],
+    ] {
+        let v = json_out(
+            sparrow().arg("--json").args(&args).arg("--case").arg(&case),
+            5,
+        );
+        assert!(v["error"].is_string(), "{args:?}: {v}");
+    }
+    assert_eq!(finding_row(&case).0, "new");
+    let log = json_out(
+        sparrow()
+            .args(["--json", "audit", "log", "--case"])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(log["entries"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn a_write_on_a_broken_chain_exits_3() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = case_with_finding(dir.path());
+    json_out(
+        sparrow()
+            .args([
+                "--json",
+                "finding",
+                "set-status",
+                "f1",
+                "in_review",
+                "--case",
+            ])
+            .arg(&case),
+        0,
+    );
+    {
+        let conn = duckdb::Connection::open(&case).unwrap();
+        conn.execute("UPDATE audit_trail SET actor = 'x'", [])
+            .unwrap();
+    }
+    let v = json_out(
+        sparrow()
+            .args([
+                "--json",
+                "finding",
+                "set-status",
+                "f1",
+                "needs_more_data",
+                "--case",
+            ])
+            .arg(&case),
+        3,
+    );
+    assert!(
+        v["error"]
+            .as_str()
+            .unwrap()
+            .contains("audit chain is broken"),
+        "{v}"
+    );
+    assert_eq!(finding_row(&case).0, "in_review");
 }

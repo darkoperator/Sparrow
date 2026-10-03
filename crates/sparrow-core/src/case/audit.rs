@@ -99,11 +99,9 @@ pub fn entry_hash(prev_hash: &str, e: &AuditEntry) -> String {
 
 /// The case's random UUID (`case_meta`), set by the analyst migration.
 pub fn case_id(conn: &Connection) -> Result<String> {
-    Ok(conn.query_row(
-        "SELECT value FROM case_meta WHERE key = 'case_id'",
-        [],
-        |r| r.get(0),
-    )?)
+    Ok(conn
+        .prepare_cached("SELECT value FROM case_meta WHERE key = 'case_id'")?
+        .query_row([], |r| r.get(0))?)
 }
 
 /// The `prev_hash` of seq 1: hex SHA-256 of "sparrow-audit-genesis" followed by the case id.
@@ -255,6 +253,8 @@ pub fn verify(conn: &Connection) -> Result<ChainReport> {
 
 /// The stored last row's seq and hash.
 fn head(conn: &Connection) -> Result<Option<(i64, String)>> {
+    // Not cached: DuckDB keeps a cached plan's column statistics, and an ORDER BY or aggregate planned on an
+    // empty audit_trail then fails (or misreads) on real rows.
     Ok(conn
         .query_row(
             "SELECT seq, hash FROM audit_trail ORDER BY seq DESC LIMIT 1",
@@ -268,6 +268,7 @@ fn head(conn: &Connection) -> Result<Option<(i64, String)>> {
 #[allow(clippy::too_many_arguments)]
 fn insert(
     conn: &Connection,
+    ts: DateTime<Utc>,
     actor: &str,
     on_behalf_of: Option<&str>,
     action: &str,
@@ -281,8 +282,6 @@ fn insert(
         Some((s, h)) => (s + 1, h),
         None => (1, genesis(conn)?),
     };
-    // Microsecond precision, as stored.
-    let ts = DateTime::from_timestamp_micros(Utc::now().timestamp_micros()).unwrap_or_default();
     let mut e = AuditEntry {
         seq,
         ts,
@@ -298,11 +297,12 @@ fn insert(
         hash: String::new(),
     };
     e.hash = entry_hash(&e.prev_hash, &e);
-    conn.execute(
+    conn.prepare_cached(
         "INSERT INTO audit_trail (seq, ts, actor, on_behalf_of, action, object_type, object_id, before, after, \
                                   reason, prev_hash, hash) \
          VALUES (?, CAST(? AS TIMESTAMPTZ), ?, ?, ?, ?, ?, CAST(? AS JSON), CAST(? AS JSON), ?, ?, ?)",
-        params![
+    )?
+    .execute(params![
             e.seq,
             ts_text(&e.ts),
             e.actor,
@@ -320,8 +320,142 @@ fn insert(
     Ok(e)
 }
 
-/// Append one entry. Must run inside the caller's transaction, with the change it records. Refuses when the chain
-/// is broken and the break is not acknowledged.
+/// The current time at microsecond precision (as stored): the `ts` of an entry, and the `decided_at` /
+/// `reviewed_at` of the change it records.
+pub fn now() -> DateTime<Utc> {
+    DateTime::from_timestamp_micros(Utc::now().timestamp_micros()).unwrap_or_default()
+}
+
+/// The `case_meta` key of the last fully verified chain state.
+const VERIFIED_KEY: &str = "audit_verified";
+
+/// DuckDB's `hash()` of every column `verify` reads, for one stored row.
+const ROW_HASH: &str = "hash(seq, epoch_us(ts), actor, on_behalf_of, action, object_type, object_id, \
+     CAST(before AS VARCHAR), CAST(after AS VARCHAR), reason, prev_hash, hash)";
+
+/// A fingerprint of everything `verify` reads: the case id (the genesis), the row count, the head, and the XOR of
+/// every row's hash (each covers the row's seq, so reordering rows changes it). Any change to a row, the row set or
+/// the case id changes it. Computed by DuckDB in one scan, without sorting.
+///
+/// It only decides when `append` may skip the full SHA-256 walk. It is not a cryptographic commitment, and needs
+/// not be: whoever can edit audit rows can also rewrite the stored fingerprint (in `case_meta`), whatever hash it
+/// used. `verify` (the CLI's `audit verify`, the exports) always walks the whole chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Fingerprint {
+    count: i64,
+    head_seq: i64,
+    head_hash: String,
+    rows: u64,
+    case_id: String,
+}
+
+impl Fingerprint {
+    fn text(&self) -> String {
+        format!(
+            "{}:{}:{}:{:016x}:{}",
+            self.count, self.head_seq, self.head_hash, self.rows, self.case_id
+        )
+    }
+}
+
+fn fingerprint(conn: &Connection) -> Result<Fingerprint> {
+    let sql = format!(
+        "SELECT count(*), coalesce(max(seq), 0), coalesce(arg_max(hash, seq), ''), \
+                coalesce(bit_xor({ROW_HASH}), 0) FROM audit_trail"
+    );
+    let (count, head_seq, head_hash, rows) = conn.query_row(&sql, [], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+    })?;
+    Ok(Fingerprint {
+        count,
+        head_seq,
+        head_hash,
+        rows,
+        case_id: case_id(conn)?,
+    })
+}
+
+/// `fp` extended by the stored row `e` (just appended to the chain `fp` describes): one point lookup, no scan.
+fn extended(conn: &Connection, fp: Fingerprint, e: &AuditEntry) -> Result<Fingerprint> {
+    let row: u64 = conn
+        .prepare_cached(&format!("SELECT {ROW_HASH} FROM audit_trail WHERE seq = ?"))?
+        .query_row([e.seq], |r| r.get(0))?;
+    Ok(Fingerprint {
+        count: fp.count + 1,
+        head_seq: e.seq,
+        head_hash: e.hash.clone(),
+        rows: fp.rows ^ row,
+        case_id: fp.case_id,
+    })
+}
+
+fn verified_fingerprint(conn: &Connection) -> Result<Option<String>> {
+    Ok(conn
+        .prepare_cached("SELECT value FROM case_meta WHERE key = ?")?
+        .query_row([VERIFIED_KEY], |r| r.get(0))
+        .optional()?)
+}
+
+fn store_verified(conn: &Connection, fp: &Fingerprint) -> Result<()> {
+    conn.prepare_cached("INSERT OR REPLACE INTO case_meta (key, value) VALUES (?, ?)")?
+        .execute(params![VERIFIED_KEY, fp.text()])?;
+    Ok(())
+}
+
+/// Fail unless the chain is intact. The full Rust `verify` runs only when the stored rows differ from the last
+/// state this check verified (their fingerprint, `VERIFIED_KEY`); any change to any row, the row set or the case id
+/// changes the fingerprint and forces it.
+fn ensure_intact(conn: &Connection) -> Result<Fingerprint> {
+    let fp = fingerprint(conn)?;
+    if verified_fingerprint(conn)?.as_deref() == Some(fp.text().as_str()) {
+        return Ok(fp);
+    }
+    let r = verify(conn)?;
+    if !r.ok {
+        return Err(Error::ChainBroken(format!(
+            "the audit chain is broken at seq {} ({}); run `sparrow audit verify --acknowledge` to record the break",
+            r.first_bad_seq.unwrap_or(0),
+            r.problem.unwrap_or_default()
+        )));
+    }
+    Ok(fp)
+}
+
+/// Append one entry at `ts` (use [`now`], and write the same `ts` to the change's `decided_at` / `reviewed_at`).
+/// Must run inside the caller's transaction, with the change it records. Refuses when the chain is broken and the
+/// break is not acknowledged.
+#[allow(clippy::too_many_arguments)]
+pub fn append_at(
+    conn: &Connection,
+    ts: DateTime<Utc>,
+    actor: &str,
+    on_behalf_of: Option<&str>,
+    action: &str,
+    object_type: &str,
+    object_id: &str,
+    before: Option<&Value>,
+    after: Option<&Value>,
+    reason: Option<&str>,
+) -> Result<AuditEntry> {
+    let fp = ensure_intact(conn)?;
+    let e = insert(
+        conn,
+        ts,
+        actor,
+        on_behalf_of,
+        action,
+        object_type,
+        object_id,
+        before,
+        after,
+        reason,
+    )?;
+    // The chain was intact and the new entry is linked to its head: remember the new state as verified.
+    store_verified(conn, &extended(conn, fp, &e)?)?;
+    Ok(e)
+}
+
+/// [`append_at`] the current time.
 #[allow(clippy::too_many_arguments)]
 pub fn append(
     conn: &Connection,
@@ -334,16 +468,9 @@ pub fn append(
     after: Option<&Value>,
     reason: Option<&str>,
 ) -> Result<AuditEntry> {
-    let r = verify(conn)?;
-    if !r.ok {
-        return Err(Error::Invalid(format!(
-            "the audit chain is broken at seq {} ({}); run `sparrow audit verify --acknowledge` to record the break",
-            r.first_bad_seq.unwrap_or(0),
-            r.problem.unwrap_or_default()
-        )));
-    }
-    insert(
+    append_at(
         conn,
+        now(),
         actor,
         on_behalf_of,
         action,
@@ -386,10 +513,11 @@ pub fn acknowledge_break(conn: &Connection, actor: &Actor) -> Result<AuditEntry>
     let out = (|| {
         let (_, open, _) = breaks(conn)?;
         let Some(b) = open.into_iter().next() else {
-            return Err(Error::Invalid("the audit chain is not broken".into()));
+            return Err(Error::Decision("the audit chain is not broken".into()));
         };
         insert(
             conn,
+            now(),
             actor.as_str(),
             actor.on_behalf_of(),
             "acknowledge_break",

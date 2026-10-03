@@ -300,7 +300,7 @@ fn describe_lists_views_with_their_kind() {
 #[test]
 fn state_table_specs_match_the_schema() {
     let case = Case::in_memory().unwrap();
-    assert_eq!(case.schema_version().unwrap(), 16);
+    assert_eq!(case.schema_version().unwrap(), 17);
     for spec in ALL {
         for common in [
             "record_key",

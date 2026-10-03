@@ -205,7 +205,10 @@ removed a4d22a34c6847a00
 
 `add` and `remove` are agent decisions: `--agent ID` (or `$SPARROW_AGENT`, default `unnamed`) names the
 agent, recorded as `agent:<id>`, and `--analyst NAME` (or `$SPARROW_ANALYST`, optional) names the analyst the
-decision is made on behalf of: its reviewer, not an identity claim. `--tenant KEY` scopes an indicator to one tenant; without
+decision is made on behalf of: its reviewer, not an identity claim. Each write records `decided_by`,
+`on_behalf_of` and `review_state = pending_review` on the indicator and appends an audit entry. `ioc set-verdict
+--id ID --verdict V [--note N]` changes a verdict. `remove` is a soft delete: rules stop reading the indicator,
+and `ioc list --include-removed` still shows it. `--tenant KEY` scopes an indicator to one tenant; without
 it it applies to every tenant of the case.
 
 ## Build
@@ -247,15 +250,25 @@ sparrow verify ual_events <record-id> --case case.duckdb [--root /moved/Hawk_fol
 sparrow detect --case case.duckdb                 # run the rules (also the last step of ingest/profile;
                                                   # --rule ID / --tag TAG to narrow, --no-detect to skip
 sparrow rules lint | test | list                   # check, test and list the rules in rules/
-sparrow ioc list --case case.duckdb               # also add|remove [--agent ID] [--analyst NAME]
+sparrow ioc list --case case.duckdb               # also add|set-verdict|remove [--agent ID] [--analyst NAME];
+                                                  # --include-removed lists removed ones too
+sparrow finding set-status ID STATUS [--reason R] --case case.duckdb   # also assign ID NAME, ack-rule-update ID
 sparrow audit verify --case case.duckdb           # check the audit chain (exit 3 when broken;
                                                   # --acknowledge [--agent ID] records a break)
 sparrow audit log --case case.duckdb              # the audit trail; --object TYPE:ID for one object
 ```
 
-Add `--json` to any command for machine-readable output. `ingest` exits with code 2 when it completed but a file
-failed, a record could not be parsed, or a file's record counts did not reconcile; `verify` exits with code 2 when
-a record no longer matches its source. With `--json`, fatal errors (exit code 1) are also printed to stdout as `{"error": "..."}`.
+Add `--json` to any command for machine-readable output. Exit codes:
+
+- 0: success;
+- 1: any other error;
+- 2: `ingest` completed but a file failed, a record could not be parsed, or a file's record counts did not
+  reconcile; `verify`: a record no longer matches its source;
+- 3: the audit chain is broken (`audit verify`, and any write refused because of it);
+- 4: the case is open by another writer;
+- 5: an invalid agent decision (a bad status or verdict, a missing reason, an unknown object); nothing was written.
+
+With `--json`, errors are also printed to stdout as `{"error": "..."}`.
 
 ## Synthetic data
 

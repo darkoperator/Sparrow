@@ -140,6 +140,11 @@ enum Command {
         #[command(subcommand)]
         command: IocCommand,
     },
+    /// Agent decisions on findings: status, assignment, rule-update acknowledgement
+    Finding {
+        #[command(subcommand)]
+        command: cmd::finding::FindingCommand,
+    },
     /// The hash-chained audit trail of agent decisions and reviews
     Audit {
         #[command(subcommand)]
@@ -397,6 +402,24 @@ enum IocCommand {
         case: PathBuf,
         #[arg(long)]
         tenant: Option<String>,
+        /// Include removed indicators (rules no longer read them)
+        #[arg(long)]
+        include_removed: bool,
+    },
+    /// Change the verdict (and optionally the note) of an indicator
+    SetVerdict {
+        #[arg(long)]
+        case: PathBuf,
+        #[arg(long)]
+        id: String,
+        /// malicious, suspicious or benign
+        #[arg(long)]
+        verdict: String,
+        /// Replaces the note; kept when omitted
+        #[arg(long)]
+        note: Option<String>,
+        #[command(flatten)]
+        actor: ActorArgs,
     },
     /// Remove an indicator by id
     Remove {
@@ -411,7 +434,7 @@ enum IocCommand {
 
 /// Who makes an agent write (Addendum D.2).
 #[derive(Args)]
-struct ActorArgs {
+pub(crate) struct ActorArgs {
     /// The agent making this decision; default $SPARROW_AGENT or "unnamed"
     #[arg(long)]
     agent: Option<String>,
@@ -421,7 +444,7 @@ struct ActorArgs {
 }
 
 impl ActorArgs {
-    fn resolve(self) -> Result<sparrow_core::case::actor::Actor> {
+    pub(crate) fn resolve(self) -> Result<sparrow_core::case::actor::Actor> {
         cmd::actor::resolve(self.agent, self.analyst)
     }
 }
@@ -514,8 +537,19 @@ fn main() -> ExitCode {
             if json {
                 println!("{}", serde_json::json!({ "error": msg }));
             }
-            ExitCode::from(1)
+            ExitCode::from(error_exit_code(&e))
         }
+    }
+}
+
+/// The exit code of a failed command: 3 for a broken audit chain, 4 when another writer holds the case, 5 for an
+/// invalid agent decision or review, 1 otherwise. (2 means "completed with problems" for ingest and verify.)
+fn error_exit_code(e: &anyhow::Error) -> u8 {
+    match e.downcast_ref::<sparrow_core::Error>() {
+        Some(sparrow_core::Error::ChainBroken(_)) => cmd::audit::BROKEN_CHAIN,
+        Some(sparrow_core::Error::WriterBusy(_)) => 4,
+        Some(sparrow_core::Error::Decision(_)) => 5,
+        _ => 1,
     }
 }
 
@@ -590,6 +624,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         ),
         Some(Command::Rules { command }) => cmd_rules(command, json),
         Some(Command::Ioc { command }) => cmd_ioc(command, json),
+        Some(Command::Finding { command }) => cmd::finding::run(command, json),
         Some(Command::Audit { command }) => match command {
             AuditCommand::Verify {
                 case,
@@ -1633,8 +1668,10 @@ fn cmd_rules(command: RulesCommand, json: bool) -> Result<ExitCode> {
 
 fn cmd_ioc(command: IocCommand, json: bool) -> Result<ExitCode> {
     use sparrow_core::case::indicators::{
-        IndicatorType, Verdict, add_indicator, list_indicators, remove_indicator,
+        IndicatorType, Verdict, add_indicator, list_indicators, remove_indicator, set_verdict,
     };
+    // A bad type or verdict is an invalid decision (exit 5).
+    let decision = |e: sparrow_core::Error| sparrow_core::Error::Decision(e.to_string());
     match command {
         IocCommand::Add {
             case,
@@ -1646,8 +1683,8 @@ fn cmd_ioc(command: IocCommand, json: bool) -> Result<ExitCode> {
             actor,
         } => {
             let actor = actor.resolve()?;
-            let ty = IndicatorType::parse(&ty)?;
-            let verdict = Verdict::parse(&verdict)?;
+            let ty = IndicatorType::parse(&ty).map_err(decision)?;
+            let verdict = Verdict::parse(&verdict).map_err(decision)?;
             let c = open_case_for_write(&case)?;
             let id = add_indicator(
                 c.conn(),
@@ -1661,39 +1698,67 @@ fn cmd_ioc(command: IocCommand, json: bool) -> Result<ExitCode> {
             if json {
                 print_json(&serde_json::json!({
                     "indicator_id": id, "type": ty, "value": value.trim(), "verdict": verdict,
-                    "tenant_key": tenant, "added_by": actor.as_str()
+                    "tenant_key": tenant, "added_by": actor.as_str(), "on_behalf_of": actor.on_behalf_of(),
+                    "review_state": "pending_review",
                 }))?;
             } else {
                 println!(
-                    "{id}  {} {}  {}",
+                    "{id}  {} {}  {}  {}",
                     ty.as_str(),
                     value.trim(),
-                    verdict.as_str()
+                    verdict.as_str(),
+                    cmd::finding::provenance(actor.as_str(), actor.on_behalf_of())
                 );
             }
         }
-        IocCommand::List { case, tenant } => {
+        IocCommand::List {
+            case,
+            tenant,
+            include_removed,
+        } => {
             let c = Case::open_read_only(&case)?;
-            let items = list_indicators(c.conn(), tenant.as_deref())?;
+            let items = list_indicators(c.conn(), tenant.as_deref(), include_removed)?;
             if json {
                 print_json(&serde_json::json!({ "indicators": items }))?;
             } else {
                 for i in &items {
                     println!(
-                        "{}  {:<10} {:<10} {}  by {}{}",
+                        "{}  {:<10} {:<10} {}  by {}{}{}{}",
                         i.indicator_id,
                         i.ty.as_str(),
                         i.verdict.as_str(),
                         i.value,
-                        i.added_by,
+                        i.decided_by.as_deref().unwrap_or(&i.added_by),
+                        i.review_state
+                            .as_deref()
+                            .map(|r| format!(" [{r}]"))
+                            .unwrap_or_default(),
                         i.note
                             .as_deref()
                             .map(|n| format!("  ({n})"))
-                            .unwrap_or_default()
+                            .unwrap_or_default(),
+                        if i.removed_at.is_some() {
+                            "  REMOVED"
+                        } else {
+                            ""
+                        }
                     );
                 }
                 println!("{} indicators", items.len());
             }
+        }
+        IocCommand::SetVerdict {
+            case,
+            id,
+            verdict,
+            note,
+            actor,
+        } => {
+            let actor = actor.resolve()?;
+            let verdict = Verdict::parse(&verdict).map_err(decision)?;
+            let c = open_case_for_write(&case)?;
+            let e = set_verdict(c.conn(), &actor, &id, verdict, note.as_deref())?;
+            cmd::finding::print_decision(&e, verdict.as_str(), json)?;
         }
         IocCommand::Remove { case, id, actor } => {
             let actor = actor.resolve()?;
@@ -1702,9 +1767,12 @@ fn cmd_ioc(command: IocCommand, json: bool) -> Result<ExitCode> {
             if json {
                 print_json(&serde_json::json!({ "indicator_id": id, "removed": removed }))?;
             } else if removed {
-                println!("removed {id}");
+                println!(
+                    "removed {id}  {}",
+                    cmd::finding::provenance(actor.as_str(), actor.on_behalf_of())
+                );
             } else {
-                println!("no indicator {id}");
+                println!("no active indicator {id}");
             }
         }
     }

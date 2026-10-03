@@ -74,10 +74,7 @@ impl Drop for WriterGuard {
 }
 
 fn another_writer(path: &Path, detail: &str) -> Error {
-    Error::Invalid(format!(
-        "case is open by another writer: {} ({detail})",
-        path.display()
-    ))
+    Error::WriterBusy(format!("{} ({detail})", path.display()))
 }
 
 /// Open `path` for writing: one writer per file, in this process (`WRITERS`) and across processes (DuckDB's lock,

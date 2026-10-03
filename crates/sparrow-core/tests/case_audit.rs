@@ -337,6 +337,7 @@ fn second_writer_is_refused_and_chain_stays_linear() {
     let err = second
         .err()
         .expect("DuckDB must refuse a second writer handle");
+    assert!(matches!(err, sparrow_core::Error::WriterBusy(_)), "{err:?}");
     assert!(err.to_string().contains("another writer"), "{err}");
     assert!(
         Case::upgrade(&p)
@@ -565,7 +566,7 @@ fn a_symlink_to_an_open_case_is_refused() {
     let err = Case::create_or_open(&link)
         .err()
         .expect("an alias is the same file");
-    assert!(err.to_string().contains("another writer"), "{err}");
+    assert!(matches!(err, sparrow_core::Error::WriterBusy(_)), "{err:?}");
     // A path through `..` is the same file too.
     let dotted = dir.path().join("sub").join("..").join("c.duckdb");
     std::fs::create_dir(dir.path().join("sub")).unwrap();
@@ -574,4 +575,81 @@ fn a_symlink_to_an_open_case_is_refused() {
     let via_link = Case::create_or_open(&link).unwrap();
     assert!(Case::create_or_open(&real).is_err());
     drop(via_link);
+}
+
+/// Appending one more entry fails with ChainBroken, and writes nothing.
+fn append_is_refused(c: &Case) {
+    let n = audit::log(c.conn(), None).unwrap().len();
+    c.conn().execute_batch("BEGIN TRANSACTION").unwrap();
+    let err = audit::append(
+        c.conn(),
+        "agent:t",
+        None,
+        "test",
+        "finding",
+        "fz",
+        None,
+        None,
+        None,
+    )
+    .unwrap_err();
+    c.conn().execute_batch("ROLLBACK").unwrap();
+    assert!(
+        matches!(err, sparrow_core::Error::ChainBroken(_)),
+        "{err:?}"
+    );
+    assert_eq!(audit::log(c.conn(), None).unwrap().len(), n);
+}
+
+#[test]
+fn every_tamper_is_refused_on_the_append_path() {
+    // Each case appends first, so the verified fingerprint is stored and the fast path is armed.
+    let tampers: &[&str] = &[
+        "UPDATE audit_trail SET after = '{\"status\":\"confirmed\"}' WHERE seq = 2",
+        "UPDATE audit_trail SET reason = 'x' WHERE seq = 1",
+        "UPDATE audit_trail SET on_behalf_of = NULL WHERE seq = 3",
+        "UPDATE audit_trail SET ts = CAST('2020-01-01 00:00:00+00' AS TIMESTAMPTZ) WHERE seq = 2",
+        "UPDATE audit_trail SET prev_hash = hash WHERE seq = 2",
+        "DELETE FROM audit_trail WHERE seq = 2",
+        "DELETE FROM audit_trail WHERE seq = 1",
+        "UPDATE audit_trail SET seq = 100 WHERE seq = 2; UPDATE audit_trail SET seq = 2 WHERE seq = 3; \
+         UPDATE audit_trail SET seq = 3 WHERE seq = 100;",
+        "UPDATE case_meta SET value = 'another-case' WHERE key = 'case_id'",
+    ];
+    for sql in tampers {
+        let c = case();
+        append(&c, 3);
+        c.conn().execute_batch(sql).unwrap();
+        append_is_refused(&c);
+    }
+}
+
+#[test]
+fn a_tampered_head_is_refused_on_the_append_path() {
+    // The head row is the one the stored fingerprint names: changing it must not pass as the verified head.
+    let c = case();
+    append(&c, 3);
+    c.conn()
+        .execute("UPDATE audit_trail SET actor = 'x' WHERE seq = 3", [])
+        .unwrap();
+    append_is_refused(&c);
+}
+
+#[test]
+fn a_lost_fingerprint_falls_back_to_the_full_walk() {
+    let c = case();
+    append(&c, 2);
+    c.conn()
+        .execute("DELETE FROM case_meta WHERE key = 'audit_verified'", [])
+        .unwrap();
+    append(&c, 1);
+    // A wrong stored fingerprint never hides a tamper either.
+    c.conn()
+        .execute_batch(
+            "UPDATE case_meta SET value = 'bogus' WHERE key = 'audit_verified'; \
+             UPDATE audit_trail SET reason = 'x' WHERE seq = 1;",
+        )
+        .unwrap();
+    append_is_refused(&c);
+    assert!(audit::verify(c.conn()).unwrap().first_bad_seq == Some(1));
 }

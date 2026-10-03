@@ -2,3 +2,4 @@
 
 pub mod actor;
 pub mod audit;
+pub mod finding;

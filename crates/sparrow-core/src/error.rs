@@ -28,6 +28,16 @@ pub enum Error {
     NotFound(String),
     #[error("{0}")]
     Invalid(String),
+    /// Another writer holds the case file (another process, or another `Case` in this process).
+    #[error("case is open by another writer: {0}")]
+    WriterBusy(String),
+    /// An agent decision or review that cannot be applied: a bad status or verdict, a missing reason, an unknown
+    /// object, a bad evidence reference, a stale or out-of-order review. Nothing was written.
+    #[error("{0}")]
+    Decision(String),
+    /// The audit chain has an unacknowledged break, so no entry may be appended.
+    #[error("{0}")]
+    ChainBroken(String),
     /// The file's records have a shape this version cannot load. Ingest records the file as
     /// `not_supported` (retried by later versions) instead of `error`.
     #[error("unsupported record shape: {0}")]

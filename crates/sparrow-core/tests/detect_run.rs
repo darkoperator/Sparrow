@@ -610,7 +610,7 @@ fn case_ioc_list_feeds_rules() {
         None,
     )
     .unwrap();
-    let listed = list_indicators(case.conn(), Some(T1)).unwrap();
+    let listed = list_indicators(case.conn(), Some(T1), false).unwrap();
     assert_eq!(listed.len(), 2);
     assert_eq!(listed[0].added_by, "agent:sam");
     let report = run(&mut case, &set, &opts(3)).unwrap();
@@ -635,7 +635,7 @@ fn case_ioc_list_feeds_rules() {
     )
     .unwrap();
     assert_eq!(again, id);
-    assert_eq!(list_indicators(case.conn(), None).unwrap().len(), 2);
+    assert_eq!(list_indicators(case.conn(), None, false).unwrap().len(), 2);
 }
 
 #[test]

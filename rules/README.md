@@ -299,8 +299,8 @@ match:
   client_ip: {in: "@list:case_iocs.ip"}
 ```
 
-Only indicators whose `type` matches and whose verdict is `malicious` or `suspicious` are used;
-`benign` ones are excluded. An indicator with no `tenant_key` applies to every tenant, otherwise
+Only active indicators (not removed: `removed_at` is NULL) whose `type` matches and whose verdict
+is `malicious` or `suspicious` are used; `benign` ones are excluded. An indicator with no `tenant_key` applies to every tenant, otherwise
 only to its own. The types are `ip`, `upn`, `app_id`, `domain`, `user_agent`, `rule_name`,
 `email`, `url` and `hash`.
 
@@ -588,6 +588,7 @@ $ sparrow rules list [--requires CAP] [--tag TAG] [--data DIR] [--rules DIR]…
 $ sparrow detect --case CASE [--rule ID]… [--tag TAG]… [--data DIR] [--rules DIR]…
 $ sparrow ioc add --case CASE --type T --value V --verdict VERDICT [--note N] [--tenant KEY] [--agent ID] [--analyst NAME]
 $ sparrow ioc list --case CASE [--tenant KEY]
+$ sparrow ioc set-verdict --case CASE --id ID --verdict VERDICT [--note N] [--agent ID] [--analyst NAME]
 $ sparrow ioc remove --case CASE --id ID [--agent ID] [--analyst NAME]
 ```
 
@@ -599,6 +600,7 @@ the coverage cross-check. `rules test` prints one line per fixture
 
 `ioc add` and `ioc remove` are agent decisions: `--agent` (or `SPARROW_AGENT`, default `unnamed`)
 names the agent and `--analyst` (or `SPARROW_ANALYST`, optional) the analyst it acts on behalf of.
+`ioc remove` is a soft delete: a rule reads only active indicators.
 
 ## Hit tables
 

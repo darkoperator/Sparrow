@@ -181,7 +181,7 @@ pub fn run(case: &mut Case, set: &RuleSet, opts: &DetectOptions) -> Result<Detec
         case,
         "SELECT tenant_key, evidence, CAST(status AS VARCHAR) FROM evidence_availability",
     )?;
-    let indicators = list_indicators(case.conn(), None)?;
+    let indicators = list_indicators(case.conn(), None, false)?;
     phase::record("inputs", t);
     let t = Instant::now();
     let geo_tenants = if rules.iter().any(|r| r.rule.needs_geoip) {
