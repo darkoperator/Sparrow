@@ -109,7 +109,7 @@ fn check_out(out: &Path, case: &Path) -> Result<()> {
         .with_context(|| format!("cannot open the case {}", case.display()))?;
     let mut wal = case.clone().into_os_string();
     wal.push(".wal");
-    if target == case || target == PathBuf::from(wal) {
+    if target == case || target.as_os_str() == wal.as_os_str() {
         return Err(sparrow_core::Error::Decision(format!(
             "refusing to write the export over the case ({}); choose another --out",
             target.display()
