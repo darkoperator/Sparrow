@@ -45,6 +45,10 @@ storylines:
   - {kind: forwarding_transport_rule, id: s-trule, at: {day: 22, hour: 23, minute: 40}}
   - {kind: mailbox_permission_grant, id: s-perm, actor: 1, target: 2, at: {day: 22, hour: 23, minute: 10}}
   - {kind: header_spoof, id: s-hdr, target: 1, at: {day: 19, hour: 15}}
+  # SPW-ID-007: a stolen session replayed from a residential ISP of the victim's country, then the finance
+  # rule within the hour. Late in the window: Hawk's sign-in range reaches back 14 days, and the user
+  # needs three earlier active days.
+  - {kind: residential_replay_rule, id: s-replay-rule, actor: 9, at: {day: 37, hour: 10}}
 lookalikes:
   - {kind: risk_dismissed, id: l-dismiss, actor: 2, at: {day: 5, hour: 11}}
   - {kind: mfa_new_hire, id: l-newhire, actor: 4, at: {day: 3, hour: 9, minute: 30}}
@@ -83,3 +87,10 @@ lookalikes:
   - {kind: mfa_after_stale_risk, id: l-cn-mfa, actor: 6, at: {day: 26, hour: 11}}
   - {kind: anonymous_link_after_stale_risk, id: l-cn-anon, actor: 10, at: {day: 27, hour: 16}}
   - {kind: lure_shared_late, id: l-cn-lure, actor: 9, at: {day: 22, hour: 9}}
+  # SPW-ID-007's look-alikes: a new network alone (a phone on a new carrier), both halves two hours
+  # apart (a correlation negative), and the admin's routine role changes after a sign-in from the office.
+  # The rule edit sits days before the window's end: Hawk 3 writes Exchange_UAL_Audit newest first with
+  # Export-Csv's first-object header, so the user's later mailbox records must come first on every seed.
+  - {kind: rule_edit_after_new_network, id: l-rule-2h, actor: 10, at: {day: 31, hour: 8}}
+  - {kind: new_carrier_phone, id: l-carrier, actor: 5, at: {day: 37, hour: 14}}
+  - {kind: admin_role_changes, id: l-roles, actor: 11, at: {day: 38, hour: 15}}

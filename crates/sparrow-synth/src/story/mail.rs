@@ -251,15 +251,29 @@ fn inbox_rule_finance(w: &mut World, ctx: &mut Ctx) {
     let session = attacker_session(w, ctx, &a, t);
     // The correlated preceding risky sign-in SPW-ID-010 pairs the rule with.
     push_correlated_signin(w, ctx, &a, t);
+    finance_rule(w, ctx, &a, ".", t, ip, session);
+}
+
+/// `a`'s finance-keyword rule `name` created at `t` from `ip` in `session` (`New-InboxRule`): finance
+/// mail is marked read and hidden in RSS Feeds.
+pub(super) fn finance_rule(
+    w: &mut World,
+    ctx: &mut Ctx,
+    a: &User,
+    name: &str,
+    t: DateTime<Utc>,
+    ip: IpAddr,
+    session: Uuid,
+) {
     push_cmdlet(
         w,
         ctx,
-        &a,
+        a,
         t,
         "New-InboxRule",
-        &rule_object(&a.upn, "."),
+        &rule_object(&a.upn, name),
         &[
-            ("Name", "."),
+            ("Name", name),
             ("SubjectOrBodyContainsWords", "invoice;payment;wire"),
             ("MoveToFolder", "RSS Feeds"),
             ("MarkAsRead", "True"),
@@ -272,7 +286,7 @@ fn inbox_rule_finance(w: &mut World, ctx: &mut Ctx) {
         ip,
         session,
     );
-    let mut rule = new_rule(ctx, &a.upn, ".", t);
+    let mut rule = new_rule(ctx, &a.upn, name, t);
     rule.subject_or_body_contains = vec![
         "invoice".to_string(),
         "payment".to_string(),
@@ -322,7 +336,7 @@ fn outlook_client_hiding_rule(w: &mut World, ctx: &mut Ctx) {
 
 /// The user files a project list's mail into a Projects folder from Outlook on their own
 /// computer, in their own session and from the office.
-fn outlook_client_filing_rule(w: &mut World, ctx: &mut Ctx) {
+pub(super) fn outlook_client_filing_rule(w: &mut World, ctx: &mut Ctx) {
     let a = ctx.a.clone();
     let t = ctx.t;
     let session = ctx.rng.uuid();

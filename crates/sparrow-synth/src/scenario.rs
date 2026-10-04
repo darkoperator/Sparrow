@@ -254,6 +254,7 @@ story_kind! {
         SprayVpsLogin => "spray_vps_login",
         VpsPasswordFailures => "vps_password_failures",
         ConnectorAppOtherAsn => "connector_app_other_asn",
+        ResidentialReplayRule => "residential_replay_rule",
     }
     lookalike {
         RiskDismissed => "risk_dismissed",
@@ -303,6 +304,9 @@ story_kind! {
         GatewayEgress => "gateway_egress",
         ConferenceNetwork => "conference_network",
         PasswordSpray => "password_spray",
+        NewCarrierPhone => "new_carrier_phone",
+        RuleEditAfterNewNetwork => "rule_edit_after_new_network",
+        AdminRoleChanges => "admin_role_changes",
     }
 }
 

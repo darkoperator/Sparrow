@@ -15,6 +15,7 @@ use crate::world::{LOCATIONS, Location, User, World};
 use crate::{Error, Result};
 use chrono::{DateTime, Duration, Utc};
 use std::net::IpAddr;
+use uuid::Uuid;
 
 /// A documentation-range residential ISP (RFC 5398 AS number, never a hosting provider) the
 /// attacker's compromised routers sit in: the victim's own city, a different ASN.
@@ -28,6 +29,7 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
         StoryKind::SpraySuccess => spray_success(w, ctx)?,
         StoryKind::SprayReplay => spray_replay(w, ctx)?,
         StoryKind::ReplayOtherCountry => replay_other_country(w, ctx)?,
+        StoryKind::ResidentialReplayRule => residential_replay_rule(w, ctx)?,
         StoryKind::MiaBurstResidential => mail::mia_burst_residential(w, ctx)?,
         StoryKind::SendResidential => mail::send_residential(w, ctx)?,
         StoryKind::SprayAfterPhish => spray_after_phish(w, ctx)?,
@@ -286,10 +288,34 @@ fn replay_other_country(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     Ok(())
 }
 
+/// A stolen session replayed from a residential ISP of the victim's own country, then persistence:
+/// the attacker's compromised router (a pool address in the victim's city on another ISP and ASN, not
+/// a hosting provider, no spray) uses the victim's session twenty minutes after their MFA sign-in from
+/// home, in the victim's own browser agent and with no risk rating, and fifteen minutes later creates
+/// the finance inbox rule from that address in that session. SPW-ID-004 (same country, not hosting,
+/// not a spray source), SPW-ID-003 (same city) and SPW-ID-010 (no risk, not hosting) do not see the
+/// replay; SPW-ID-007 correlates the first sign-in from the new network with the rule.
+fn residential_replay_rule(w: &mut World, ctx: &mut Ctx) -> Result<()> {
+    let a: User = ctx.a.clone();
+    let location = router_location(&a);
+    let ip = attacker_ip(w, ctx, &location)?;
+    let (session, used) = replay(w, ctx, &a, ip, &location, 20);
+    // Its own name, beside the AiTM victim's "." rule.
+    mail::finance_rule(w, ctx, &a, "..", used + Duration::minutes(15), ip, session);
+    Ok(())
+}
+
 /// The victim signs in from home with MFA (the session is created) and, `minutes` later, the same
 /// session is used from `ip`: an AiTM replay in a browser is an interactive sign-in whose MFA claim
-/// comes from the stolen session.
-fn replay(w: &mut World, ctx: &mut Ctx, a: &User, ip: IpAddr, location: &Location, minutes: i64) {
+/// comes from the stolen session. Returns the session and the time of the replayed sign-in.
+fn replay(
+    w: &mut World,
+    ctx: &mut Ctx,
+    a: &User,
+    ip: IpAddr,
+    location: &Location,
+    minutes: i64,
+) -> (Uuid, DateTime<Utc>) {
     let session = ctx.rng.uuid();
     let first = signin(
         w,
@@ -316,7 +342,9 @@ fn replay(w: &mut World, ctx: &mut Ctx, a: &User, ip: IpAddr, location: &Locatio
         well_known("Office 365 Exchange Online"),
         session,
     );
+    let at = used.time;
     push_signin(w, ctx, a, used, true);
+    (session, at)
 }
 
 /// An office NAT: about ten users of one city share one egress address, sign in from it on the four

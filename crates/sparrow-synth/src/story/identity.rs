@@ -9,6 +9,7 @@ use super::{
 use crate::events::{RiskDetection, SignInType, Target};
 use crate::scenario::StoryKind;
 use crate::ual;
+use crate::world::RoleAssignment;
 use crate::world::{
     LOCATIONS, Location, MICROSOFT_ASN, MfaRegistration, MobileDevice, RiskyUser, User, World,
 };
@@ -38,6 +39,9 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
         StoryKind::WifiToCellular => wifi_to_cellular(w, ctx),
         StoryKind::Ipv6Rotation => ipv6_rotation(w, ctx),
         StoryKind::CarrierGeoJitter => carrier_geo_jitter(w, ctx),
+        StoryKind::NewCarrierPhone => new_carrier_phone(w, ctx),
+        StoryKind::RuleEditAfterNewNetwork => rule_edit_after_new_network(w, ctx),
+        StoryKind::AdminRoleChanges => admin_role_changes(w, ctx)?,
         _ => return Ok(false),
     }
     Ok(true)
@@ -828,4 +832,138 @@ fn carrier_geo_jitter(w: &mut World, ctx: &mut Ctx) {
         );
         push_signin(w, ctx, &a, s, true);
     }
+}
+
+/// The user's phone on a mobile carrier they never used (their city, a carrier ASN, not a hosting
+/// provider), from `ip`: an interactive MFA sign-in at `t`. Returns its session.
+fn phone_on_new_carrier(
+    w: &mut World,
+    ctx: &mut Ctx,
+    a: &User,
+    t: DateTime<Utc>,
+    ip: IpAddr,
+) -> uuid::Uuid {
+    let session = ctx.rng.uuid();
+    let s = signin(
+        w,
+        &mut ctx.rng,
+        a,
+        t,
+        ip,
+        &cellular_location(&a.home),
+        SignInType::Interactive,
+        well_known("OfficeHome"),
+        well_known("Office 365 Exchange Online"),
+        session,
+    );
+    push_signin(w, ctx, a, s, true);
+    session
+}
+
+/// A phone that moves to a new mobile carrier: the first sign-in from the carrier's network (the
+/// user's city, an ASN the user never used, not a hosting provider) and the same session's token
+/// refreshes through the day. Nothing else changes: a new network alone is not an attack.
+fn new_carrier_phone(w: &mut World, ctx: &mut Ctx) {
+    let a: User = ctx.a.clone();
+    let ip = ctx.shared.next_ip();
+    let session = phone_on_new_carrier(w, ctx, &a, ctx.t, ip);
+    for hours in [2, 5] {
+        let refresh = signin(
+            w,
+            &mut ctx.rng,
+            &a,
+            ctx.t + Duration::hours(hours),
+            ip,
+            &cellular_location(&a.home),
+            SignInType::NonInteractive,
+            well_known("Microsoft Office"),
+            well_known("Office 365 Exchange Online"),
+            session,
+        );
+        push_signin(w, ctx, &a, refresh, false);
+    }
+}
+
+/// Both halves of SPW-ID-007, too far apart: the user's phone signs in from a new carrier on the
+/// way to work, and two hours later, at the office, the user files a project list's mail into a
+/// folder from Outlook (`UpdateInboxRules`, their own session and address).
+fn rule_edit_after_new_network(w: &mut World, ctx: &mut Ctx) {
+    let a: User = ctx.a.clone();
+    let ip = ctx.shared.next_ip();
+    phone_on_new_carrier(w, ctx, &a, ctx.t, ip);
+    let start = ctx.t;
+    ctx.t = start + Duration::hours(2);
+    super::mail::outlook_client_filing_rule(w, ctx);
+    ctx.t = start;
+}
+
+/// Entra built-in roles a helpdesk member receives (display names as the portal shows them).
+const HELPDESK_ROLES: [&str; 2] = ["Helpdesk Administrator", "Reports Reader"];
+
+/// The IT admin's routine role changes: a sign-in from the office (a network the admin uses every
+/// day), then the storyline's user is added to the helpdesk roles ten and twelve minutes later
+/// (directory audit `Add member to role`, category RoleManagement, and its UAL record), and the
+/// tenant's role list holds the new assignments.
+fn admin_role_changes(w: &mut World, ctx: &mut Ctx) -> Result<()> {
+    let admin = first_admin(w)?;
+    let member = ctx.a.clone();
+    let t = ctx.t;
+    let session = ctx.rng.uuid();
+    let s = signin(
+        w,
+        &mut ctx.rng,
+        &admin,
+        t,
+        admin.office_ip,
+        &admin.home,
+        SignInType::Interactive,
+        well_known("OfficeHome"),
+        well_known("Microsoft Graph"),
+        session,
+    );
+    push_signin(w, ctx, &admin, s, true);
+    for (k, role) in HELPDESK_ROLES.iter().enumerate() {
+        let at = t + Duration::minutes(10 + 2 * k as i64);
+        let role_id = ctx.rng.uuid();
+        let audit = dir_audit(
+            &mut ctx.rng,
+            at,
+            "Add member to role",
+            "RoleManagement",
+            "Assign",
+            "Core Directory",
+            &admin,
+            admin.office_ip,
+            vec![
+                user_target(&member, Vec::new()),
+                Target {
+                    id: role_id.to_string(),
+                    display_name: role.to_string(),
+                    kind: "Role".to_string(),
+                    upn: None,
+                    modified: vec![
+                        (
+                            "Role.ObjectID".to_string(),
+                            String::new(),
+                            format!("\"{role_id}\""),
+                        ),
+                        (
+                            "Role.DisplayName".to_string(),
+                            String::new(),
+                            format!("\"{role}\""),
+                        ),
+                    ],
+                },
+            ],
+        );
+        push_audit_and_ual(w, ctx, audit, Some("Add member to role."));
+        w.roles.push(RoleAssignment {
+            role: role.to_string(),
+            principal: member.upn.clone(),
+            kind: "Permanent".to_string(),
+            start: Some(at),
+            end: None,
+        });
+    }
+    Ok(())
 }

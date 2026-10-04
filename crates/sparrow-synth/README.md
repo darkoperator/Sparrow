@@ -259,6 +259,7 @@ Positives:
 | `anonymous_link` | An anyone-with-the-link view link on a Finance document. |
 | `lure_share` | A OneNote lure and PDF uploaded to the victim's OneDrive, shared externally, and mailed to 15 recipients. |
 | `audit_tamper` | Auditing turned off step by step (mailbox, bypass, organization, UAL ingestion) from the attacker's address. |
+| `residential_replay_rule` | The victim's interactive MFA sign-in from home, then the same session 20 minutes later from a compromised router (attacker-pool address, the victim's city on another ISP and ASN, not hosting, no risk, the user's own browser agent), and 15 minutes after that the finance-keyword rule (`New-InboxRule`) from the router in that session. |
 
 Look-alikes:
 
@@ -317,6 +318,9 @@ Look-alikes:
 | `anonymous_link_benign` | An anyone-with-the-link view link on a Marketing document. |
 | `internal_docx_share` | The user shares a plan with a colleague. |
 | `audit_config_benign` | The admin lengthens audit retention and adds an audited owner action. |
+| `new_carrier_phone` | The user's phone signs in for the first time from a mobile carrier of their own city (another ASN, not hosting), and the same session refreshes two and five hours later; nothing else. |
+| `rule_edit_after_new_network` | The phone's first sign-in from a new carrier, then, two hours later at the office, the user's own project filing rule from Outlook (`UpdateInboxRules`). |
+| `admin_role_changes` | The admin signs in from the office and, ten and twelve minutes later, adds the storyline's user to the Helpdesk Administrator and Reports Reader roles (directory audit `Add member to role` and its UAL record). |
 
 ### Licence profiles
 
@@ -537,7 +541,7 @@ gate, so a collector that structurally cannot supply the evidence never fails th
 ## `sparrow synth coverage` and `rules/coverage.yaml`
 
 `rules/coverage.yaml` (committed, embedded at compile time) is the single source of the
-rule ↔ storyline map for the spec §8.5 seed-rule pack (33 rules). Per rule it holds `id`,
+rule ↔ storyline map for the spec §8.5 seed-rule pack (34 rules). Per rule it holds `id`,
 `title`, `category`, `severity`, the Hawk investigate condition it covers (`hawk`), the intended
 `logic` Phase 6 must implement, the `tables` it reads (the first is where a hit lands), the
 `requires` capability ids and `requires_evidence` evidence ids that make it `not_applicable`,

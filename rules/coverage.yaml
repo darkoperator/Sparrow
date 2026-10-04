@@ -221,7 +221,7 @@ rules:
     needs_geoip: false
     collectors: [hawk3, hawk4, invictus, portal]
     positives: [forwarding_inbox_rule, admin_inbox_rule, outlook_client_hiding_rule]
-    lookalikes: [vendor_filing_rule, inbox_rule_finance, outlook_client_filing_rule]
+    lookalikes: [vendor_filing_rule, inbox_rule_finance, outlook_client_filing_rule, residential_replay_rule]
   - id: SPW-HAWK-011
     title: Mailbox forwarding configured
     category: mail
@@ -320,7 +320,7 @@ rules:
     needs_geoip: false
     collectors: [hawk3, hawk4, invictus, portal]
     # admin_inbox_rule: its throw-away rule moves mail to Deleted Items, a hiding folder.
-    positives: [inbox_rule_finance, admin_inbox_rule, outlook_client_hiding_rule]
+    positives: [inbox_rule_finance, admin_inbox_rule, outlook_client_hiding_rule, residential_replay_rule]
     lookalikes: [vendor_filing_rule, outlook_client_filing_rule]
   - id: SPW-MAIL-004
     title: External forwarding through the mailbox, an inbox rule or a transport rule
@@ -516,7 +516,8 @@ rules:
     # location depends on the seed and the scenario, so they are exceptions, not positives.
     # replay_other_country: a cross-country pair between two ORDINARY ISPs (no hosting end).
     positives: [aitm_signin, replay_other_country, spray_success_foreign]
-    lookalikes: [plausible_travel, carrier_geo_jitter, cloud_connector_longstanding]
+    # residential_replay_rule: a same-city, same-country, non-hosting replay forms no pair.
+    lookalikes: [plausible_travel, carrier_geo_jitter, cloud_connector_longstanding, residential_replay_rule]
     computed:
       - kind: oauth_consent
         condition: impossible_travel
@@ -567,7 +568,10 @@ rules:
     # the proxy's own network (same ASN and country as the MFA sign-in that created the session), with
     # Outlook on the web or a Graph client: no network change for session_moved and no scripted agent,
     # so it must never trigger the rule.
-    lookalikes: [same_ip_token_use, wifi_to_cellular, ipv6_rotation, password_spray, mia_burst]
+    # residential_replay_rule replays the session from a residential ISP of the victim's own city (same
+    # country, not hosting, not a spray source, no risk, the user's own agent): no signal of this rule,
+    # the residual SPW-ID-007 closes.
+    lookalikes: [same_ip_token_use, wifi_to_cellular, ipv6_rotation, password_spray, mia_burst, residential_replay_rule]
     computed:
       - kind: inbox_rule_finance
         condition: aitm_indicators
@@ -639,6 +643,38 @@ rules:
     lookalike_collectors: [hawk4, invictus, portal]
     positives: [distributed_spray, spray_success, spray_replay, spray_after_phish, spray_success_foreign, spray_proxy_takeover, spray_vps_login]
     lookalikes: [office_nat_mistypes, office_stale_accounts, office_window_mistypes, phone_stale_password, password_spray, gateway_egress, conference_network]
+  - id: SPW-ID-007
+    title: Persistence within 60 minutes of the user's first sign-in from a new same-country network
+    category: identity
+    severity: high
+    hawk: null
+    logic: >-
+      A persistence action of a user - UAL / Hawk 3 admin audit New-InboxRule, Set-InboxRule,
+      UpdateInboxRules, Add-MailboxPermission, Set-Mailbox setting a non-empty ForwardingSmtpAddress or
+      ForwardingAddress; directory audit / UAL Consent to application, Add app role assignment grant to
+      user, Add app role assignment to service principal, User registered security info, Add member to
+      role, or Update user of the strong-authentication details - at most 60 minutes after that user's
+      FIRST successful sign-in (error_code 0 or NULL, or UAL UserLoggedIn not Failed) from an ASN (history
+      is the user's successful sign-ins in the case, so the ASN was not used on an earlier day). That
+      sign-in must be from a country the user signed in from on an earlier UTC day, not a hosting ASN, not
+      a Microsoft address, not rated medium/high risk (an Entra sign-in and its UAL twin at the same
+      instant are one sign-in), with ASN and country known to ip_intel, and the user must have successful
+      sign-ins on at least 3 distinct UTC days before its day (a user's first three active days are never
+      judged). The trigger is the persistence record; the new-network sign-in is in the context.
+    tables: [ual_events, admin_audit_events, directory_audits, signins]
+    requires: []
+    requires_evidence: []
+    needs_geoip: true
+    # The persistence half and the preceding new-network sign-in.
+    evidence_all_of: [[ual_events, admin_audit_events, directory_audits], [signins, ual_events]]
+    collectors: [hawk3, hawk4, invictus, portal]
+    # residential_replay_rule: a stolen session replayed from a residential ISP of the victim's own
+    # country, then the finance inbox rule within the hour. new_carrier_phone: the new network alone.
+    # rule_edit_after_new_network: both halves, two hours apart. admin_role_changes: the admin's routine
+    # role changes right after a sign-in from the office (a known network).
+    positives: [residential_replay_rule]
+    lookalikes: [new_carrier_phone, rule_edit_after_new_network, admin_role_changes]
+    correlation_negatives: [rule_edit_after_new_network]
   - id: SPW-ID-010
     title: Inbox rule created within 60 minutes of a risky or hosting-ASN sign-in
     category: identity
@@ -662,7 +698,8 @@ rules:
     evidence_all_of: [[ual_events, admin_audit_events], [signins, ual_events]]
     collectors: [hawk3, hawk4, invictus, portal]
     positives: [inbox_rule_finance]
-    lookalikes: [vendor_filing_rule, inbox_rule_after_stale_risk]
+    # residential_replay_rule: the rule follows a sign-in that is neither risky nor from a hosting ASN.
+    lookalikes: [vendor_filing_rule, inbox_rule_after_stale_risk, residential_replay_rule]
     correlation_negatives: [inbox_rule_after_stale_risk]
     computed:
       - kind: forwarding_inbox_rule
