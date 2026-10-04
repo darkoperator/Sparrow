@@ -807,3 +807,108 @@ fn hawk_per_user_collection_is_partial_only_when_it_covers_some_users() {
     let r = row(&rows, "message_trace");
     assert_eq!(r.status, "partial", "unknown coverage: {r:?}");
 }
+
+/// A parse_errors row for file `f`.
+fn parse_error(case: &Case, f: i64, ordinal: i64, msg: &str) {
+    case.conn()
+        .execute(
+            "INSERT INTO parse_errors (file_id, record_ordinal, line_start, line_end, byte_offset, byte_length, error) \
+             VALUES (?, ?, 1, 1, 0, 1, ?)",
+            params![f, ordinal, msg],
+        )
+        .unwrap();
+}
+
+#[test]
+fn records_the_collector_lost_are_not_parse_failures() {
+    use sparrow_core::ingest::COLLECTOR_LOSS;
+    let lost = format!(
+        "{COLLECTOR_LOSS}Get-MgUser failed for this role member (the collector wrote 'Error retrieving data')"
+    );
+    // Only a collector-side rejection: partial, and said so, never "failed to parse".
+    let mut case = Case::in_memory().unwrap();
+    let c = collection(&case, "invictus", "2026-09-20 00:00:00+00", None);
+    let f = file(
+        &case,
+        c,
+        "UnifiedAuditLog/a.csv",
+        "inv.ual.window",
+        "parsed",
+        None,
+    );
+    set_records_error(&case, f, 1);
+    parse_error(&case, f, 3, &lost);
+    ual(
+        &case,
+        c,
+        f,
+        "11111111-1111-4111-8111-111111111111",
+        "2026-09-01 10:00:00+00",
+        "New-InboxRule",
+        "alice@contoso.example",
+    );
+    let rows = evaluate(&mut case);
+    let r = row(&rows, "ual");
+    assert_eq!(r.status, "partial", "{r:?}");
+    assert!(
+        r.reason
+            .contains("1 files lost records in the collector's own output"),
+        "{r:?}"
+    );
+    assert!(!r.reason.contains("failed to parse"), "{r:?}");
+
+    // A collector-side rejection plus a real parse failure in the same file: the file failed to parse.
+    let mut case = Case::in_memory().unwrap();
+    let c = collection(&case, "invictus", "2026-09-20 00:00:00+00", None);
+    let f = file(
+        &case,
+        c,
+        "UnifiedAuditLog/a.csv",
+        "inv.ual.window",
+        "parsed",
+        None,
+    );
+    set_records_error(&case, f, 2);
+    parse_error(&case, f, 3, &lost);
+    parse_error(&case, f, 4, "unterminated quote");
+    ual(
+        &case,
+        c,
+        f,
+        "11111111-1111-4111-8111-111111111111",
+        "2026-09-01 10:00:00+00",
+        "New-InboxRule",
+        "alice@contoso.example",
+    );
+    let r = row(&evaluate(&mut case), "ual").clone();
+    assert!(r.reason.contains("1 files failed to parse"), "{r:?}");
+
+    // A row that loaded but lost a value to a collector bug (the Role carry-over warning): collector loss too.
+    let mut case = Case::in_memory().unwrap();
+    let c = collection(&case, "invictus", "2026-09-20 00:00:00+00", None);
+    let f = file(
+        &case,
+        c,
+        "UnifiedAuditLog/a.csv",
+        "inv.ual.window",
+        "parsed",
+        Some(r#"["1 rows lost their role name to the collector's Role carry-over"]"#),
+    );
+    ual(
+        &case,
+        c,
+        f,
+        "11111111-1111-4111-8111-111111111111",
+        "2026-09-01 10:00:00+00",
+        "New-InboxRule",
+        "alice@contoso.example",
+    );
+    let r = row(&evaluate(&mut case), "ual").clone();
+    assert_eq!(r.status, "partial", "{r:?}");
+    assert!(
+        r.reason
+            .contains("1 files lost records in the collector's own output"),
+        "{r:?}"
+    );
+    assert!(!r.reason.contains("failed to parse"), "{r:?}");
+}

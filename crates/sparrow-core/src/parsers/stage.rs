@@ -111,6 +111,16 @@ pub fn reject(ctx: &mut ParseContext<'_>, r: &SourceRecord, msg: &str) -> Result
     reject_at(ctx, r.ordinal, r.span, None, msg)
 }
 
+/// [`reject`] a record the collector lost (it wrote a failure placeholder, not data): the message is prefixed with
+/// [`crate::ingest::COLLECTOR_LOSS`] so availability does not report it as a parse failure.
+pub fn reject_collector_loss(
+    ctx: &mut ParseContext<'_>,
+    r: &SourceRecord,
+    msg: &str,
+) -> Result<()> {
+    reject(ctx, r, &format!("{}{msg}", crate::ingest::COLLECTOR_LOSS))
+}
+
 /// Count a record as read and record why it could not be loaded, at its span or sheet row.
 pub fn reject_at(
     ctx: &mut ParseContext<'_>,

@@ -199,6 +199,10 @@ fn allroles_lookup_error_rows_need_all_seven_columns() {
         .query_row("SELECT error FROM parse_errors", [], |r| r.get(0))
         .unwrap();
     assert!(msg.contains("Error retrieving data"), "{msg}");
+    assert!(
+        msg.starts_with(sparrow_core::ingest::COLLECTOR_LOSS),
+        "the collector lost it: {msg}"
+    );
     assert_eq!(
         count(
             &case,

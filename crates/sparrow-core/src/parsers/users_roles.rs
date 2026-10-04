@@ -12,7 +12,7 @@ use crate::parsers::directory::{role_key, user_key};
 use crate::parsers::records::RecordFormat;
 use crate::parsers::stage::{
     CellRow, TableRows, file_date_order, load_tables, lower, read_state_records, reject,
-    require_any_key,
+    reject_collector_loss, require_any_key,
 };
 use crate::readers::time::{DateOrder, parse_timestamp};
 
@@ -175,7 +175,7 @@ impl ArtifactParser for AdminRolesParser {
         for r in &records {
             let rec = Rec::new(&r.map, format.lossy());
             if is_lookup_error(&rec) {
-                reject(
+                reject_collector_loss(
                     ctx,
                     r,
                     "Get-MgUser failed for this role member (the collector wrote 'Error retrieving data')",
@@ -207,7 +207,8 @@ impl ArtifactParser for AdminRolesParser {
         }
         if lost_role > 0 {
             ctx.warn(format!(
-                "{lost_role} rows lost their role name to the collector's Role carry-over"
+                "{lost_role} rows {}",
+                crate::ingest::ROLE_CARRY_OVER_WARNING
             ));
         }
         load_tables(ctx, vec![rows])

@@ -28,6 +28,14 @@ pub const DEFAULT_MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 /// Warning on a file with no content (0 bytes, or a byte-order mark and whitespace only).
 pub const EMPTY_FILE_WARNING: &str = "file is empty: the collector ran and wrote no records";
 
+/// Prefix of a `parse_errors.error` for a record the COLLECTOR lost (it wrote a failure placeholder instead of the
+/// data), as opposed to one Sparrow could not parse. Availability reports the two differently.
+pub const COLLECTOR_LOSS: &str = "collector lost the record: ";
+
+/// The warning of a file whose rows loaded but lost their role name to Get-Roles.ps1's Role carry-over (a
+/// collector defect): availability counts it as collector loss.
+pub const ROLE_CARRY_OVER_WARNING: &str = "lost their role name to the collector's Role carry-over";
+
 /// Replace this collection's `collector_runs` rows with the run folders now on disk.
 fn record_collector_runs(case: &mut Case, collection_id: i64, root: &Path) -> Result<()> {
     let runs = run_dirs(root);

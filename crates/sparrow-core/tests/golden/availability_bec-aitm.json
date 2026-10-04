@@ -191,7 +191,7 @@
     "evidence": "role_assignments",
     "title": "Admin role assignments (Entra ID, Exchange, eDiscovery)",
     "status": "partial",
-    "reason": "1 files failed to parse (see the ingest report / parse_errors)",
+    "reason": "1 files lost records in the collector's own output (failure placeholders or a collector defect; see the ingest report)",
     "remediation": "Microsoft-Extractor-Suite: Get-AdminUsers | Hawk: Get-HawkTenantEntraIDAdmin; Get-HawkTenantEXOAdmin",
     "rows": 4
   },
