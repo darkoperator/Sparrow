@@ -21,10 +21,13 @@
 #     logon differ by seconds, so any Entra sign-in of the user from the same address within twin_ms
 #     (120 s) of it is that logon: a medium/high rating on it excludes the sign-in.
 # The trigger is a persistence action by the same user (actor) at most 60 minutes after that sign-in
-# (inclusive), FROM THE NEW NETWORK: when the record carries a non-Microsoft address whose ASN ip_intel
-# knows, that ASN must be the new network's (the user's other device elsewhere is not the replay). A
-# record with no address, an address of unknown ASN, or a Microsoft address (Graph, the Exchange back
-# end) counts as before. Persistence is:
+# (inclusive), FROM THE NEW NETWORK OR ATTACKER INFRASTRUCTURE: when the record carries a non-Microsoft
+# address whose ASN ip_intel knows, it counts if that ASN is the new network's, or a hosting ASN, or the
+# address is a password-spray source of the tenant (real data: an incident user's New-InboxRule came from
+# another hosting ASN, the attacker's own infrastructure; an AiTM operation's proxy, replay host and admin
+# tooling often differ). It does not count from another ordinary (non-hosting, non-spray) network: the
+# user's other device elsewhere is not the replay. A record with no address, an address of unknown ASN,
+# or a Microsoft address (Graph, the Exchange back end) counts as before. Persistence is:
 #   - UAL / Hawk 3 admin audit log: New-InboxRule, Set-InboxRule, UpdateInboxRules (UAL), Add-MailboxPermission,
 #     Add-RecipientPermission, Add-MailboxFolderPermission, Set-MailboxFolderPermission, New-TransportRule,
 #     Set-TransportRule, Set-MailboxJunkEmailConfiguration, and Set-Mailbox setting a non-empty
@@ -42,9 +45,10 @@
 # Residuals, documented: a replay whose first sign-in from the network is rated risky (the risk rules see
 # it), a persistence action more than an hour after the new network, a persistence action from another
 # network than the replay's, and a network whose ASN or country is unknown to GeoIP.
-# Known false positive: the user's other device within the hour, from a different network, when its
+# Known false positives: the user's other device within the hour, from a different network, when its
 # record carries no address or a Microsoft one (a Graph client, the Exchange back end), so the networks
-# cannot be compared.
+# cannot be compared, or when that network is a hosting provider (a VPN, a cloud desktop) or a spray
+# source.
 id: SPW-ID-007
 title: Persistence within 60 minutes of the user's first sign-in from a new same-country network
 version: 1
@@ -166,11 +170,14 @@ sql: |
   JOIN fresh n ON n.upn = lower(p.actor)
     AND n.ms <= epoch_ms(p.t) AND n.ms >= epoch_ms(p.t) - k.window_ms
   LEFT JOIN ip_intel pi ON pi.ip = p.ip
-  -- From the new network: a record whose address is a non-Microsoft one with a known ASN must come
-  -- from the new network's ASN (another device of the user elsewhere is not the replay). A record with
-  -- no address, an address of unknown ASN, or a Microsoft address (Graph, the Exchange back end) counts.
+  -- From the new network or attacker infrastructure: a record whose address is a non-Microsoft one with
+  -- a known ASN counts from the new network's ASN, a hosting ASN or a spray source of the tenant (the
+  -- proxy, the replay host and the attacker's tooling often differ), not from another ordinary network
+  -- (the user's other device elsewhere is not the replay). A record with no address, an address of
+  -- unknown ASN, or a Microsoft address (Graph, the Exchange back end) counts.
   WHERE p.ip IS NULL OR p.ip = '' OR pi.asn IS NULL OR coalesce(pi.is_microsoft, false)
-     OR pi.asn = n.asn
+     OR pi.asn = n.asn OR coalesce(pi.is_hosting, false)
+     OR EXISTS (SELECT 1 FROM spray_sources sp WHERE sp.ip = p.ip)
   QUALIFY row_number() OVER (PARTITION BY p.src, p.record_key ORDER BY n.ms DESC, n.ip) = 1
 group_by: [actor_upn]
 analyst_guidance: |
@@ -184,7 +191,7 @@ analyst_guidance: |
 false_positives:
   - A user who changes phone carrier or works from a new place and, within the hour, legitimately edits a rule or registers a new phone.
   - An admin who signs in from a new network (a new office line, a hotspot) and makes routine role changes.
-  - Another device of the user within the hour, from a different network, when its record carries no address or a Microsoft one (a Graph client, the Exchange back end), so the networks cannot be compared.
+  - Another device of the user within the hour, from a different network, when its record carries no address or a Microsoft one (a Graph client, the Exchange back end), so the networks cannot be compared, or comes from a hosting provider (a VPN, a cloud desktop) or a spray source.
 references:
   - https://learn.microsoft.com/en-us/purview/audit-log-activities
   - https://learn.microsoft.com/en-us/entra/identity/monitoring-health/reference-audit-activities
@@ -1739,3 +1746,38 @@ tests:
       - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:00:00Z", "ip": "198.51.100.7", "error_code": 0}
       - {"table": "ual_events", "operation": "Set-MailboxJunkEmailConfiguration", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:20:00Z", "client_ip": "198.51.100.7"}
     expect_hits: 1
+  - name: "S1: a rule from another HOSTING ASN within the hour (the attacker's own infrastructure) counts"
+    records:
+      - {"table": "ip_intel", "ip": "192.0.2.10", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64496}
+      - {"table": "ip_intel", "ip": "198.51.100.7", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64509}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-01T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-02T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-03T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "ip_intel", "ip": "203.0.113.50", "country_iso": "US", "is_hosting": true, "is_microsoft": false, "is_private": false, "asn": 14061}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:00:00Z", "ip": "198.51.100.7", "error_code": 0}
+      - {"table": "ual_events", "operation": "New-InboxRule", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:20:00Z", "client_ip": "203.0.113.50"}
+    expect_hits: 1
+  - name: "S1: a rule from a password-spray source of the tenant (another ordinary ASN) counts"
+    records:
+      - {"table": "ip_intel", "ip": "192.0.2.10", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64496}
+      - {"table": "ip_intel", "ip": "198.51.100.7", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64509}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-01T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-02T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-03T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "ip_intel", "ip": "203.0.113.80", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64510}
+      - {"table": "spray_sources", "tenant_key": "test", "ip": "203.0.113.80", "users_targeted": 7, "failures": 20, "first_failure": "2026-02-20T00:00:00Z", "last_failure": "2026-02-28T00:00:00Z"}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:00:00Z", "ip": "198.51.100.7", "error_code": 0}
+      - {"table": "ual_events", "operation": "New-InboxRule", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:20:00Z", "client_ip": "203.0.113.80"}
+    expect_hits: 1
+  - name: "S1: a rule from another ordinary ASN that is not a spray source does not count"
+    records:
+      - {"table": "ip_intel", "ip": "192.0.2.10", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64496}
+      - {"table": "ip_intel", "ip": "198.51.100.7", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64509}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-01T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-02T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-03T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "ip_intel", "ip": "203.0.113.81", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64510}
+      - {"table": "spray_sources", "tenant_key": "test", "ip": "203.0.113.80", "users_targeted": 7, "failures": 20, "first_failure": "2026-02-20T00:00:00Z", "last_failure": "2026-02-28T00:00:00Z"}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:00:00Z", "ip": "198.51.100.7", "error_code": 0}
+      - {"table": "ual_events", "operation": "New-InboxRule", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:20:00Z", "client_ip": "203.0.113.81"}
+    expect_hits: 0

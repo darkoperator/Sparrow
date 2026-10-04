@@ -659,10 +659,11 @@ rules:
       service principal credentials, Update application - Certificates and secrets management, or Update
       user of the strong-authentication details - at most 60 minutes (inclusive) after that user's FIRST
       successful sign-in (error_code 0 or NULL, or UAL UserLoggedIn not Failed) from an ASN (history is the
-      user's successful sign-ins in the case, so the ASN was not used on an earlier day), and from that
-      network: when the persistence record carries a non-Microsoft address whose ASN ip_intel knows, that
-      ASN must be the new network's (a record with no address, an unknown ASN or a Microsoft address
-      counts). That sign-in must be from a country the user signed in from on an earlier UTC day, not a
+      user's successful sign-ins in the case, so the ASN was not used on an earlier day), from that network
+      or attacker infrastructure: when the persistence record carries a non-Microsoft address whose ASN
+      ip_intel knows, it counts if that ASN is the new network's or a hosting ASN, or the address is a
+      spray source of the tenant, and not from another ordinary network (a record with no address, an
+      unknown ASN or a Microsoft address counts). That sign-in must be from a country the user signed in from on an earlier UTC day, not a
       hosting ASN, not a Microsoft address, with ASN and country known to ip_intel, and not rated
       medium/high by any Entra sign-in of the user from the same address within 120 seconds of it (the UAL
       row has no rating and its timestamp differs by seconds); the user must have successful sign-ins on at
