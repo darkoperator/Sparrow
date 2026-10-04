@@ -516,8 +516,9 @@ rules:
     severity: high
     hawk: null
     logic: >-
-      A session (session_id / AADSessionId) created by an interactive sign-in that satisfied MFA
-      (error_code 0 or NULL) and used within 1 hour from a different NETWORK. The country differs
+      A session (session_id / AADSessionId) created by an interactive sign-in (or one of unknown kind,
+      is_interactive NULL, as spray_sources counts it) that satisfied MFA (error_code 0 or NULL) and used
+      within 1 hour from a different NETWORK. The country differs
       (ip_intel), or the ASN differs and the use or the creating sign-in is a hosting ASN or a
       password-spray source of the tenant (spray_sources), or the use is a sign-in rated medium/high
       risk. A Microsoft service address (ip_intel.is_microsoft) on either side never counts, and a plain

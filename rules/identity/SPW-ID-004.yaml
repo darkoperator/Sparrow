@@ -4,7 +4,8 @@
 # @list:suspicious_user_agents").
 # Two indicators, both `sql:` (a session join, and a list matched inside the text):
 # - session_moved: a signins row or UAL record carrying a session id that was created by an
-#   interactive sign-in that satisfied MFA (auth_requirement starting "multifactor", or
+#   interactive sign-in (a sign-in of unknown kind, is_interactive NULL, counts as interactive, as for
+#   spray_sources) that satisfied MFA (auth_requirement starting "multifactor", or
 #   mfa_result "MFA successfully completed"; error_code 0 or NULL: an unknown result is kept, the
 #   MFA condition already implies the sign-in completed), used at a different IP address within one hour after
 #   it, from a different NETWORK. Only the later use is the hit, never the creating sign-in.
@@ -37,7 +38,7 @@
 # A record that matches both is one hit; the context lists the indicators.
 id: SPW-ID-004
 title: Adversary-in-the-middle indicators
-version: 2
+version: 3
 status: stable
 severity: high
 confidence: medium
@@ -51,7 +52,7 @@ sql: |
     FROM signins s
     WHERE s.session_id IS NOT NULL AND s.session_id <> ''
       AND (s.error_code IS NULL OR s.error_code = 0)
-      AND coalesce(s.is_interactive, false)
+      AND coalesce(s.is_interactive, true)
       AND (lower(coalesce(s.auth_requirement, '')) LIKE 'multifactor%'
            OR lower(coalesce(s.mfa_result, '')) LIKE '%mfa successfully completed%')
   ),
@@ -682,6 +683,36 @@ tests:
         user_upn: alice@contoso.example
         ip: 198.51.100.1
         is_interactive: true
+        auth_requirement: multiFactorAuthentication
+        session_id: s-1
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.2
+        is_interactive: false
+        session_id: s-1
+        event_time: "2026-03-01T09:30:00Z"
+    expect_hits: 1
+  - name: a creating MFA sign-in of unknown kind counts as interactive
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.2
+        asn: 64500
+        country_iso: DE
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        error_code: 0
         auth_requirement: multiFactorAuthentication
         session_id: s-1
         event_time: "2026-03-01T09:00:00Z"
