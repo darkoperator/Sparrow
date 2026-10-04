@@ -782,20 +782,31 @@ impl Facts {
 
     /// SPW-ID-010. A UAL New-InboxRule / Set-InboxRule / UpdateInboxRules, or an admin audit
     /// New-InboxRule / Set-InboxRule, whose actor had within the window before it a sign-in rated
-    /// medium/high risk or from a hosting address, or a UAL UserLoggedIn from a hosting address.
+    /// medium/high risk or from a hosting address, or a UAL UserLoggedIn from a hosting address. A
+    /// hosting sign-in or logon of a cloud service's application from its ASN does not count unless
+    /// the address is a spray source (the rule header names this exclusion); the risk arm has none.
     fn risky_rule_correlation(&self) -> Result<BTreeSet<Record>> {
         let window = rule_number("SPW-ID-010", "epoch_ms(r.event_time) - ")? as i64;
+        // A hosting address that is not a cloud service's own sign-in to `app` from its ASN.
+        let hosting = |ip: IpAddr, app: &str| {
+            let f = self.ip(ip);
+            f.hosting
+                && !(f
+                    .asn
+                    .is_some_and(|asn| self.cloud.contains(&(app.to_string(), asn)))
+                    && !self.spray.contains(&ip))
+        };
         let mut risky: BTreeMap<&str, Vec<i64>> = BTreeMap::new();
         for s in &self.signins {
             if let Some(u) = s.upn.as_deref() {
-                if s.risky || self.ip(s.ip).hosting {
+                if s.risky || hosting(s.ip, &s.app) {
                     risky.entry(u).or_default().push(s.t);
                 }
             }
         }
         for x in &self.ual {
             if let (Some(u), Some(ip), "userloggedin") = (x.upn.as_deref(), x.ip, x.op.as_str()) {
-                if self.ip(ip).hosting {
+                if hosting(ip, x.app.as_deref().unwrap_or("")) {
                     risky.entry(u).or_default().push(x.t);
                 }
             }

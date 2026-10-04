@@ -638,7 +638,9 @@ rules:
     logic: >-
       UAL New-InboxRule / Set-InboxRule / UpdateInboxRules whose actor had, in the preceding 60
       minutes, a sign-in with risk_level_during medium/high or from ip_intel.is_hosting
-      (spec §8.2 example). Hawk 3.1 records New-InboxRule / Set-InboxRule in
+      (spec §8.2 example). The hosting arm skips a tenant-wide cloud service's own sign-ins to its
+      application from its ASN (cloud_services; UAL UserLoggedIn by ual_events.app_id) unless the
+      address is a password-spray source; the risk arm has no exclusion. Hawk 3.1 records New-InboxRule / Set-InboxRule in
       Search-AdminAuditLog (admin_audit_events, CmdletName + Caller + RunDate) instead of the
       UAL; Phase 6 implements both sources.
     tables: [ual_events, signins, admin_audit_events]

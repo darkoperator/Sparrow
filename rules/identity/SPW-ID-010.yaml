@@ -2,9 +2,18 @@
 # Logic source: coverage.yaml. Hawk 3.1 records New-InboxRule / Set-InboxRule in
 # Search-AdminAuditLog (admin_audit_events), so both sources are covered. The tenant scope is
 # structural (the rule connection shows only the tenant's rows), so no tenant predicate here.
+# Skipped on purpose in the hosting arm: the sign-ins of a tenant-wide cloud service to its application
+# from its hosting ASN (the tenant's `cloud_services` relation, per application and ASN, the definition
+# SPW-ID-002 and SPW-ID-003 use), and its UAL UserLoggedIn records by ual_events.app_id: a SaaS
+# connector signs its users in from a cloud region every day, so a user's own inbox rule edit within
+# the hour after it is not the attacker's persistence step. A sign-in or logon from a password-spray
+# source always counts, and so does the same application from another ASN. The medium/high-risk arm
+# has no exclusion: a risky sign-in counts whoever made it. Residual, documented: an attacker on the
+# connector's own application from its own ASN, with no risk rating, is excused here (as in ID-003).
+# The sparrow-synth oracle (`risky_rule_correlation`) models this exclusion.
 id: SPW-ID-010
 title: Inbox rule created within 60 minutes of a risky or hosting-ASN sign-in
-version: 1
+version: 2
 status: stable
 severity: high
 confidence: medium
@@ -28,12 +37,24 @@ sql: |
     SELECT lower(s.user_upn) AS upn, s.event_time
     FROM signins s
     WHERE (lower(s.risk_level_during) IN ('medium', 'high')
-           OR EXISTS (SELECT 1 FROM ip_intel i WHERE i.ip = s.ip AND i.is_hosting))
+           OR EXISTS (SELECT 1 FROM ip_intel i WHERE i.ip = s.ip AND i.is_hosting
+                        -- Not a cloud service's own sign-in to its application from its ASN,
+                        -- unless the address is a spray source.
+                        AND NOT EXISTS (SELECT 1 FROM cloud_services c
+                                        WHERE c.app_id = lower(coalesce(s.app_id, '')) AND c.asn = i.asn
+                                          AND NOT EXISTS (SELECT 1 FROM spray_sources p
+                                                          WHERE p.ip = s.ip))))
     UNION ALL
     SELECT lower(u.user_upn), u.event_time
     FROM ual_events u
     WHERE lower(u.operation) = 'userloggedin'
-      AND EXISTS (SELECT 1 FROM ip_intel i WHERE i.ip = u.client_ip AND i.is_hosting)
+      AND EXISTS (SELECT 1 FROM ip_intel i WHERE i.ip = u.client_ip AND i.is_hosting
+                    -- The same exclusion by ual_events.app_id; a logon with no application id is
+                    -- never excused.
+                    AND NOT EXISTS (SELECT 1 FROM cloud_services c
+                                    WHERE c.app_id = lower(coalesce(u.app_id, '')) AND c.asn = i.asn
+                                      AND NOT EXISTS (SELECT 1 FROM spray_sources p
+                                                      WHERE p.ip = u.client_ip)))
   )
   SELECT r.record_key,
          CASE WHEN r.is_ual THEN 'ual_events' ELSE 'admin_audit_events' END AS source_table,
@@ -53,6 +74,7 @@ analyst_guidance: |
   rule touched.
 false_positives:
   - A user on a VPN or a cloud-hosted desktop who legitimately creates a rule.
+  - A rule created soon after a SaaS connector's sign-in from a hosting ASN the case has not established as a cloud service (too few users or days in the capture).
   - Risk detections that Entra ID later dismisses as safe.
 references:
   - https://learn.microsoft.com/en-us/purview/audit-log-activities
@@ -118,3 +140,143 @@ tests:
         user_upn: alice@contoso.example
         event_time: "2026-03-01T10:20:00Z"
     expect_hits: 0
+  - name: a cloud service's own sign-in to its application from its ASN is not a hosting sign-in
+    records:
+      - table: ip_intel
+        ip: 203.0.113.50
+        asn: 24940
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: cloud_services
+        tenant_key: test
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        hosting_users: 8
+        hosting_days: 7
+        signins: 56
+        hosting_signins: 56
+        asn: 24940
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        ip: 203.0.113.50
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        risk_level_during: none
+      - table: ual_events
+        operation: UpdateInboxRules
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:45:00Z"
+    expect_hits: 0
+  - name: a cloud service's own UAL logon from its ASN is not a hosting logon either
+    records:
+      - table: ip_intel
+        ip: 203.0.113.50
+        asn: 24940
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: cloud_services
+        tenant_key: test
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        hosting_users: 8
+        hosting_days: 7
+        signins: 56
+        hosting_signins: 56
+        asn: 24940
+      - table: ual_events
+        operation: UserLoggedIn
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.50
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        event_time: "2026-03-01T10:00:00Z"
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:45:00Z"
+    expect_hits: 0
+  - name: the same application from another hosting ASN still counts
+    records:
+      - table: ip_intel
+        ip: 203.0.113.60
+        asn: 14061
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: cloud_services
+        tenant_key: test
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        hosting_users: 8
+        hosting_days: 7
+        signins: 56
+        hosting_signins: 56
+        asn: 24940
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        ip: 203.0.113.60
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:45:00Z"
+    expect_hits: 1
+  - name: a cloud service's sign-in from an address that is a spray source still counts
+    records:
+      - table: ip_intel
+        ip: 203.0.113.50
+        asn: 24940
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: cloud_services
+        tenant_key: test
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        hosting_users: 8
+        hosting_days: 7
+        signins: 56
+        hosting_signins: 56
+        asn: 24940
+      - table: spray_sources
+        tenant_key: test
+        ip: 203.0.113.50
+        users_targeted: 7
+        failures: 20
+        first_failure: "2026-02-20T00:00:00Z"
+        last_failure: "2026-02-28T00:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        ip: 203.0.113.50
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:45:00Z"
+    expect_hits: 1
+  - name: a cloud service's sign-in rated high risk still counts (the risk arm has no exclusion)
+    records:
+      - table: ip_intel
+        ip: 203.0.113.50
+        asn: 24940
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: cloud_services
+        tenant_key: test
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        hosting_users: 8
+        hosting_days: 7
+        signins: 56
+        hosting_signins: 56
+        asn: 24940
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        ip: 203.0.113.50
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        risk_level_during: high
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:45:00Z"
+    expect_hits: 1
