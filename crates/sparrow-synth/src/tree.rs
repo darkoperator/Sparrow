@@ -215,6 +215,10 @@ pub struct TreeOutcome {
     pub tables: BTreeMap<String, TableExpect>,
     /// Where each tracked evidence item landed in parsed files: (table, sighting), sorted.
     pub delivered: BTreeMap<Evidence, Vec<(String, Sighting)>>,
+    /// Every record key the parsed files load, per table (`tables` lists at most
+    /// `MAX_LISTED_KEYS`): which rows of the world the collector delivered, for the computed
+    /// expectations (`oracle`).
+    pub row_keys: BTreeMap<String, BTreeSet<String>>,
     /// The `--culture` the ingest must pass (`CulturePolicy::Given`, or `Auto` when no file of
     /// the collection proves the day/month order).
     pub ingest_culture: Option<String>,
@@ -425,9 +429,11 @@ impl<'a> Tree<'a> {
         }
 
         let mut tables = BTreeMap::new();
+        let mut row_keys = BTreeMap::new();
         let names: BTreeSet<&'static str> = keys.keys().chain(counted.keys()).copied().collect();
         for name in names {
             let k = keys.remove(name).unwrap_or_default();
+            row_keys.insert(name.to_string(), k.clone());
             let n = counted.get(name).copied().unwrap_or(0);
             let keys_sha256 = (!k.is_empty()).then(|| {
                 let joined = k.iter().map(String::as_str).collect::<Vec<_>>().join("\n");
@@ -475,6 +481,7 @@ impl<'a> Tree<'a> {
             empty_dirs,
             tables,
             delivered,
+            row_keys,
             ingest_culture,
         })
     }

@@ -6,8 +6,8 @@ use crate::geo;
 use crate::manifest::{self, Manifest};
 use crate::options::{Collector, GenerateOptions};
 use crate::scenario::Scenario;
-use crate::story::{self, Evidence};
-use crate::tree::{CulturePolicy, DirSink, Sink, Tree};
+use crate::story::{self, Evidence, StoryRecord};
+use crate::tree::{CulturePolicy, DirSink, Sink, Tree, TreeOutcome};
 use crate::world::World;
 use crate::writers;
 use crate::{Error, Result};
@@ -52,6 +52,66 @@ pub fn generate_with_policy(
             opts.collector
         )));
     }
+    let (world, records, root, out) = render(scenario, opts, sink, policy)?;
+    geo::write_geoip(&world, sink, GEOIP_DIR)?;
+    let caps = expect::capabilities(
+        &world,
+        expect::delivery(opts, writers::parsed_by_sparrow("inv.licenses.tenant")),
+    );
+    Ok(Manifest {
+        format: 1,
+        generator: format!("sparrow-synth {}", env!("CARGO_PKG_VERSION")),
+        scenario: scenario.name.clone(),
+        options: opts.clone(),
+        root,
+        geoip_dir: Some(GEOIP_DIR.into()),
+        ingest_culture: out.ingest_culture.clone(),
+        window_start: world.window_start(),
+        window_end: world.window_end(),
+        collected_at: world.collected_at(),
+        licence_profile: world.licence.id.clone(),
+        audit_profile: world.audit_profile.id.clone(),
+        tenant: manifest::tenant_expect(&world, opts),
+        evidence: expect::evidence(&world, opts, &out),
+        rules: {
+            let mut rules = expect::rule_outcomes(&world, &records, &caps, &out);
+            rules.extend(expect::computed_outcomes(
+                &world,
+                &records,
+                &caps,
+                &out,
+                opts.collector,
+            )?);
+            let kinds: std::collections::BTreeMap<String, String> = records
+                .iter()
+                .map(|r| (r.id.clone(), r.kind.as_str().to_string()))
+                .collect();
+            // The users the collector's sign-in source covers: Hawk 4 only the investigated users
+            // (Hawk 3 exports no sign-in log), the tenant-wide exports every person.
+            let signin_users = match opts.collector {
+                Collector::Hawk3 => 0,
+                Collector::Hawk4 => crate::writers::hawk::hawk_users(&world).len(),
+                _ => world.all_people().count(),
+            };
+            expect::restrict_to_collector(&mut rules, opts.collector, &kinds, signin_users);
+            rules
+        },
+        storylines: manifest::story_expects(&world, &records, &out),
+        capabilities: caps,
+        files: out.files,
+        empty_dirs: out.empty_dirs,
+        tables: out.tables,
+    })
+}
+
+/// The world, its storyline records, the collection root and the tree's outcome of `scenario` for
+/// `opts`, rendered into `sink`.
+fn render(
+    scenario: &Scenario,
+    opts: &GenerateOptions,
+    sink: &mut dyn Sink,
+    policy: CulturePolicy,
+) -> Result<(World, Vec<StoryRecord>, String, TreeOutcome)> {
     let mut world = World::build(scenario, opts.seed)?;
     world.culture = opts.culture;
     if let Some(v) = opts.purview_culture_dates {
@@ -75,48 +135,20 @@ pub fn generate_with_policy(
         _ => writers::portal::write(&world, opts, &mut tree)?,
     }
     let out = tree.finish()?;
-    geo::write_geoip(&world, sink, GEOIP_DIR)?;
-    let caps = expect::capabilities(
-        &world,
-        expect::delivery(opts, writers::parsed_by_sparrow("inv.licenses.tenant")),
-    );
-    Ok(Manifest {
-        format: 1,
-        generator: format!("sparrow-synth {}", env!("CARGO_PKG_VERSION")),
-        scenario: scenario.name.clone(),
-        options: opts.clone(),
-        root,
-        geoip_dir: Some(GEOIP_DIR.into()),
-        ingest_culture: out.ingest_culture.clone(),
-        window_start: world.window_start(),
-        window_end: world.window_end(),
-        collected_at: world.collected_at(),
-        licence_profile: world.licence.id.clone(),
-        audit_profile: world.audit_profile.id.clone(),
-        tenant: manifest::tenant_expect(&world, opts),
-        evidence: expect::evidence(&world, opts, &out),
-        rules: {
-            let mut rules = expect::rule_outcomes(&world, &records, &caps, &out);
-            let kinds: std::collections::BTreeMap<String, String> = records
-                .iter()
-                .map(|r| (r.id.clone(), r.kind.as_str().to_string()))
-                .collect();
-            // The users the collector's sign-in source covers: Hawk 4 only the investigated users
-            // (Hawk 3 exports no sign-in log), the tenant-wide exports every person.
-            let signin_users = match opts.collector {
-                Collector::Hawk3 => 0,
-                Collector::Hawk4 => crate::writers::hawk::hawk_users(&world).len(),
-                _ => world.all_people().count(),
-            };
-            expect::restrict_to_collector(&mut rules, opts.collector, &kinds, signin_users);
-            rules
-        },
-        storylines: manifest::story_expects(&world, &records, &out),
-        capabilities: caps,
-        files: out.files,
-        empty_dirs: out.empty_dirs,
-        tables: out.tables,
-    })
+    Ok((world, records, root, out))
+}
+
+/// The facts the computed expectations (`oracle`) read for `scenario` under `opts`: the same
+/// world and tree `generate` renders, written nowhere.
+pub fn oracle_facts(scenario: &Scenario, opts: &GenerateOptions) -> Result<crate::oracle::Facts> {
+    let mut sink = crate::tree::NullSink::default();
+    let (world, _, _, out) = render(
+        scenario,
+        opts,
+        &mut sink,
+        CulturePolicy::Auto(opts.culture.to_string()),
+    )?;
+    crate::oracle::Facts::build(&world, opts.collector, &out)
 }
 
 /// Write the tree and `manifest.json` into `out` (created if missing; must be empty).

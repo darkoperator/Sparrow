@@ -18,6 +18,7 @@ pub mod keys;
 pub mod manifest;
 pub mod names;
 pub mod options;
+pub mod oracle;
 pub mod profiles;
 pub mod ps;
 pub mod reserved;

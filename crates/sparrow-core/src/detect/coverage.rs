@@ -57,6 +57,22 @@ pub struct RuleDef<C = String, S = String> {
     /// Kinds whose records a finding of this rule may cite without an expected `hit`.
     #[serde(default = "Vec::new")]
     pub baseline_allow: Vec<BaselineAllow>,
+    /// Kinds whose outcome for this rule depends on generated facts (locations, timings, which
+    /// rows a collector delivers): the generator computes `hit` or `no_hit` per tree from the
+    /// named condition, and the detection gate checks that outcome exactly.
+    #[serde(default = "Vec::new")]
+    pub computed: Vec<Computed<S>>,
+}
+
+/// One storyline kind whose outcome for a rule the generator computes per tree.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Computed<S = String> {
+    pub kind: S,
+    /// The computation (`sparrow_synth::oracle::Condition`), named after the rule logic it models.
+    pub condition: String,
+    /// Why the outcome cannot be fixed per kind.
+    pub reason: String,
 }
 
 /// One documented exception to the detection gate's baseline rule.

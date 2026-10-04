@@ -8,6 +8,7 @@ use crate::coverage::{RuleDef, rules};
 use crate::events::{RecordType, Ual};
 use crate::manifest::{CapExpect, EvidenceExpect, RuleExpect, RuleOutcome};
 use crate::options::{Collector, GenerateOptions};
+use crate::oracle;
 use crate::profiles::Delivery;
 use crate::story::{Evidence, StoryRecord};
 use crate::tree::TreeOutcome;
@@ -457,10 +458,93 @@ pub fn rule_outcomes(
                 reason,
                 tables,
                 complete,
+                computed: None,
             });
         }
     }
     v
+}
+
+/// The outcome of every rule on every storyline record whose kind it lists under `computed`
+/// (`rules/coverage.yaml`): what [`outcome`] gives a positive (a capability not licensed, the
+/// evidence not logged, none delivered), else `hit` when a record the rule's logic triggers on in
+/// this tree ([`oracle::Facts::triggers`]) is one of the storyline's delivered records, and
+/// `no_hit` when none is. The tree's facts are built only when a computed kind occurs.
+pub fn computed_outcomes(
+    world: &World,
+    records: &[StoryRecord],
+    caps: &BTreeMap<String, CapExpect>,
+    out: &TreeOutcome,
+    collector: Collector,
+) -> crate::Result<Vec<RuleExpect>> {
+    let ual: BTreeMap<Uuid, &Ual> = world.story.ual.iter().map(|u| (u.id, u)).collect();
+    let mut facts: Option<oracle::Facts> = None;
+    let mut triggers: BTreeMap<oracle::Condition, BTreeSet<oracle::Record>> = BTreeMap::new();
+    let mut v = Vec::new();
+    for r in records {
+        for rule in rules() {
+            let Some(c) = rule.computed.iter().find(|c| c.kind == r.kind) else {
+                continue;
+            };
+            let cond = oracle::Condition::parse(&c.condition).ok_or_else(|| {
+                crate::Error::Invalid(format!(
+                    "{}: unknown computed condition {}",
+                    rule.id, c.condition
+                ))
+            })?;
+            let (mut outcome, mut reason, tables) = outcome(world, &ual, r, rule, true, caps, out);
+            if outcome == RuleOutcome::Hit {
+                if facts.is_none() {
+                    facts = Some(oracle::Facts::build(world, collector, out)?);
+                }
+                let fired = match triggers.get(&cond) {
+                    Some(t) => t,
+                    None => {
+                        let t = facts.as_ref().map(|f| f.triggers(cond)).transpose()?;
+                        triggers.entry(cond).or_insert(t.unwrap_or_default())
+                    }
+                };
+                let own: BTreeSet<oracle::Record> = r
+                    .evidence
+                    .iter()
+                    .flat_map(|e| {
+                        out.delivered
+                            .get(e)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|(t, s)| {
+                                crate::keys::for_evidence(world, e, t, &s.rel_path)
+                                    .map(|k| (t.clone(), k))
+                            })
+                    })
+                    .collect();
+                if own.iter().any(|rec| fired.contains(rec)) {
+                    reason = format!(
+                        "computed ({}): the rule's logic triggers on the storyline's records in this tree",
+                        cond.as_str()
+                    );
+                } else {
+                    outcome = RuleOutcome::NoHit;
+                    reason = format!(
+                        "computed ({}): the rule's logic triggers on none of the storyline's records in this tree",
+                        cond.as_str()
+                    );
+                }
+            }
+            let complete = !matches!(outcome, RuleOutcome::Hit | RuleOutcome::NoHit)
+                || halves_distinct(world, r, records, rule, &ual, out);
+            v.push(RuleExpect {
+                rule_id: rule.id.clone(),
+                storyline: r.id.clone(),
+                outcome,
+                reason,
+                tables,
+                complete,
+                computed: Some(cond.as_str().to_string()),
+            });
+        }
+    }
+    Ok(v)
 }
 
 /// Child tables a UAL record feeds; a group that lists one next to `ual_events` names the
@@ -654,7 +738,8 @@ pub fn restrict_to_collector(
     signin_users: usize,
 ) {
     for r in rules {
-        if !matches!(r.outcome, RuleOutcome::Hit | RuleOutcome::NoHit) {
+        // A computed outcome already reflects what this collector delivers.
+        if !matches!(r.outcome, RuleOutcome::Hit | RuleOutcome::NoHit) || r.computed.is_some() {
             continue;
         }
         let Some(def) = crate::coverage::rule(&r.rule_id) else {

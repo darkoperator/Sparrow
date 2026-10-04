@@ -161,6 +161,10 @@ pub struct RuleExpect {
     /// for both). Always `true`, and not written, for an uncorrelated rule.
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub complete: bool,
+    /// The condition (`oracle::Condition`) the outcome was computed with, for a kind
+    /// `rules/coverage.yaml` lists under the rule's `computed`; absent for a fixed per-kind outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub computed: Option<String>,
 }
 
 fn yes() -> bool {

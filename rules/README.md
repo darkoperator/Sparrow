@@ -502,39 +502,68 @@ and the `sparrow synth check` detection gate use:
   only proved "the second half was missing" does not prove the join. `sparrow synth coverage`
   reports the gap `correlated rule has no correlation negative` without one.
 
+### `computed`
+
+Some storyline kinds trigger a rule only under facts the generator draws per seed and scenario,
+so their outcome cannot be a fixed per-kind `hit`. A stale risky sign-in from a hosting address is
+an impossible-travel pair only when the user's seeded home is far enough from it. A stolen session
+is visible only where the collector delivers the creating MFA sign-in with its session id. For
+those, the rule lists the kind under `computed`, naming the condition the generator evaluates:
+
+```yaml
+- id: SPW-ID-004
+  …
+  computed:
+    - kind: inbox_rule_finance
+      condition: aitm_indicators
+      reason: "the storyline reuses the AiTM sign-in session from another address; it fires only
+             where the creating MFA sign-in is delivered with its session id"
+```
+
+Per tree, `sparrow-synth`'s `oracle` evaluates the rule's logic over the rows that tree delivers.
+Its inputs are:
+
+- the world's events, filtered to the record keys the parsed files load;
+- what each collector's rows carry;
+- the generated GeoIP locations;
+- the shipped data lists;
+- the spray sources and cloud services, recomputed from the same rows.
+
+The oracle writes `hit` or `no_hit` into the manifest (`no_evidence` when nothing was delivered),
+and the detection gate checks it exactly: a computed `hit` must be found and a computed `no_hit`
+must not be.
+
+Each condition models one rule:
+
+- `impossible_travel`: SPW-ID-003;
+- `aitm_indicators`: SPW-ID-004;
+- `new_network_send`: SPW-MAIL-006;
+- `risky_rule_correlation`: SPW-ID-010.
+
+The thresholds are read from the rule's own SQL, so a changed threshold is picked up and a
+rewritten rule fails generation instead of drifting. A kind is never both computed and a positive
+or look-alike of the same rule.
+
 ### `baseline_allow`
 
 The detection gate requires that **every** finding of a rule cite the records of a storyline
-whose expected outcome is `hit` — the benign baseline must produce zero findings for every rule.
-`baseline_allow` is the documented exception, for a rule that genuinely fires on baseline
-activity:
+whose expected outcome is `hit`: the benign baseline must produce zero findings for every rule.
+`baseline_allow` is the escape hatch for a rule that genuinely fires on activity whose outcome
+cannot be computed:
 
 ```yaml
-- id: SPW-ID-003
-  …
   baseline_allow:
-    - kind: oauth_consent
-      reason: "in hawk-investigate the consenting attacker sign-in from a far hosting location
-             follows the victim's home sign-in; it pairs only in that scenario"
+    - kind: <storyline kind, or `baseline` for background activity>
+      reason: "…"
 ```
 
-`kind` is a storyline kind, or the literal `baseline` for background activity no storyline
-produced. `reason` is required, and every entry needs an architect ruling reported to the user.
-`SPW-ID-003` (impossible travel) is the one entry in the matrix today; read
-`rules/coverage.yaml` for the current list.
+`reason` is required, and every entry needs an architect ruling reported to the user. Prefer
+`computed`, which checks the outcome exactly; a tolerated finding cannot catch a regression that
+adds or drops it. **The shipped matrix has no `baseline_allow` entry**: the former exceptions
+(SPW-MAIL-006, SPW-ID-003, SPW-ID-004 and SPW-ID-010) are all computed, and a test keeps it that way.
 
-**`SPW-ID-003` (impossible travel) is the one real example.** The rule pairs two sign-ins of one
-user that imply more than 900 km/h. The `aitm_signin` storyline deliberately includes the
-attacker's sign-in from a hosting ASN, far from the victim's home — and in the `hawk-investigate`
-scenario the `oauth_consent` storyline's attacker sign-in happens to be a later endpoint of such a
-pair, so the rule correctly fires on it. The other far-from-home sign-ins
-(`inbox_rule_after_stale_risk`, `mfa_after_stale_risk`, `anonymous_link_after_stale_risk`) are
-listed as `positives` instead, because in every scenario the hosting end of their pair is the one
-the rule hits.
-
-`rules lint` does **not** list these exceptions; the list is read out of `rules/coverage.yaml` and
-surfaced by the `sparrow synth check` detection gate, which is where an exception is actually
-enforced.
+`rules lint` does **not** list these entries. They are read out of `rules/coverage.yaml` and
+enforced by the `sparrow synth check` detection gate.
 
 ## Custom rule directories
 

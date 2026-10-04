@@ -51,6 +51,27 @@ fn load() -> Vec<RuleDef> {
         if r.evidence_all_of.is_empty() {
             r.evidence_all_of = vec![r.tables.clone()];
         }
+        for c in &r.computed {
+            assert!(
+                !r.positives.contains(&c.kind) && !r.lookalikes.contains(&c.kind),
+                "rules/coverage.yaml: {}: computed kind {} is also a positive or look-alike",
+                r.id,
+                c.kind.as_str()
+            );
+            let cond = crate::oracle::Condition::parse(&c.condition).unwrap_or_else(|| {
+                panic!(
+                    "rules/coverage.yaml: {}: unknown computed condition {}",
+                    r.id, c.condition
+                )
+            });
+            assert_eq!(
+                cond.rule_id(),
+                r.id,
+                "rules/coverage.yaml: {}: condition {} models another rule",
+                r.id,
+                c.condition
+            );
+        }
     }
     rules
 }

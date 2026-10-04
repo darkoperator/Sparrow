@@ -28,11 +28,18 @@
 #                     listed under `lookalikes`) whose storyline delivers BOTH evidence halves but
 #                     fails the rule's time or actor condition. `sparrow synth coverage` reports
 #                     the gap "correlated rule has no correlation negative" without one.
+#   computed          storyline kinds whose outcome for the rule depends on generated facts (a
+#                     seeded location, a collector's session ids, a preceding sign-in): per tree the
+#                     generator evaluates the rule's logic (`condition`, sparrow-synth `oracle`) over
+#                     the rows that tree delivers and writes `hit` or `no_hit`, which the detection
+#                     gate checks exactly. Each entry names the `kind`, the `condition` and a
+#                     `reason`. A kind is never both computed and a positive or look-alike.
 #   baseline_allow    optional exceptions to the detection gate's baseline rule (`sparrow synth
 #                     check`): every finding of a rule must cite a storyline whose expected
 #                     outcome is `hit`. A finding that cites only records of a kind listed here
 #                     (`kind:` a storyline kind, or `baseline` for background activity) is
-#                     tolerated. Each entry needs a `reason` and a ruling; prefer fixing the rule.
+#                     tolerated. Each entry needs a `reason` and a ruling; prefer `computed`, which
+#                     checks exactly. The shipped file has none.
 # Rules SPW-HAWK-001..015 cover every Hawk 4.0 investigate condition (research
 # 2026-09-26-phase5-hawk-layouts.md §6, H01-H15) plus the two content-derived ones.
 version: 1
@@ -383,9 +390,10 @@ rules:
       spray_success: [invictus, portal]
     positives: [send_new_ip, send_residential, spray_success]
     lookalikes: [send_known_ip, send_new_isp]
-    baseline_allow:
+    computed:
       - kind: plausible_travel
-        reason: "a traveller's first send on arrival day in a new country is a new network and country by the rule's logic, and cannot be told from an attacker's same-day send after a replay; documented limitation"
+        condition: new_network_send
+        reason: "a traveller's first send on arrival day in a new country is a new network and country by the rule's logic (documented limitation); whether it fires depends on the user's history before the trip in the delivered rows (three earlier active days, the destination network and country unseen on an earlier day)"
   - id: SPW-MAIL-007
     title: Mailbox or SharePoint search for finance keywords
     category: mail
@@ -501,15 +509,19 @@ rules:
     # replay_other_country: a cross-country pair between two ORDINARY ISPs (no hosting end).
     positives: [aitm_signin, replay_other_country, spray_success_foreign]
     lookalikes: [plausible_travel, carrier_geo_jitter, cloud_connector_longstanding]
-    baseline_allow:
+    computed:
       - kind: oauth_consent
-        reason: "in hawk-investigate the consenting attacker sign-in from a far hosting location follows the victim's home sign-in; it pairs only in that scenario"
+        condition: impossible_travel
+        reason: &far_hosting "the storyline carries a successful sign-in or logon from an attacker address; whether it forms an impossible-travel pair with the user's neighbouring delivered sign-in depends on the user's seeded home location and on the rows the collector delivers"
       - kind: inbox_rule_after_stale_risk
-        reason: "the storyline carries a successful hosting sign-in from the attacker's address that is an impossible-travel pair with a neighbouring home sign-in only on some seeds and scenarios (the user's home location is seeded and the address is not always over 500 km and 900 km/h away), so it cannot be a per-kind positive"
+        condition: impossible_travel
+        reason: *far_hosting
       - kind: mfa_after_stale_risk
-        reason: "the storyline carries a successful hosting sign-in from the attacker's address that is an impossible-travel pair with a neighbouring home sign-in only on some seeds and scenarios (the user's home location is seeded and the address is not always over 500 km and 900 km/h away), so it cannot be a per-kind positive"
+        condition: impossible_travel
+        reason: *far_hosting
       - kind: anonymous_link_after_stale_risk
-        reason: "the storyline carries a successful hosting sign-in from the attacker's address that is an impossible-travel pair with a neighbouring home sign-in only on some seeds and scenarios (the user's home location is seeded and the address is not always over 500 km and 900 km/h away), so it cannot be a per-kind positive"
+        condition: impossible_travel
+        reason: *far_hosting
   - id: SPW-ID-004
     title: Adversary-in-the-middle indicators
     category: identity
@@ -544,12 +556,15 @@ rules:
     # same-country spray source: only the spray-source infrastructure test sees it.
     positives: [aitm_signin, replay_other_country, spray_replay]
     lookalikes: [same_ip_token_use, wifi_to_cellular, ipv6_rotation, password_spray]
-    baseline_allow:
+    computed:
       - kind: inbox_rule_finance
-        reason: &stolen_session "the storyline reuses the AiTM sign-in session from another hosting address (a true session_moved signal); it is visible only where UAL rows carry the session id and the creator sign-in exists (not Hawk UAL, not scenarios without an AiTM sign-in), so it cannot be a per-kind positive"
+        condition: aitm_indicators
+        reason: &stolen_session "the storyline reuses the AiTM sign-in session from another address (a true session_moved signal); it fires only where the creating MFA sign-in is delivered with its session id (not Hawk, not a tree without sign-ins or without an AiTM sign-in) and the use falls within the hour after it"
       - kind: forwarding_inbox_rule
+        condition: aitm_indicators
         reason: *stolen_session
       - kind: mia_burst
+        condition: aitm_indicators
         reason: *stolen_session
   - id: SPW-ID-005
     title: Successful sign-in from a password-spray source
@@ -636,9 +651,10 @@ rules:
     positives: [inbox_rule_finance]
     lookalikes: [vendor_filing_rule, inbox_rule_after_stale_risk]
     correlation_negatives: [inbox_rule_after_stale_risk]
-    baseline_allow:
+    computed:
       - kind: forwarding_inbox_rule
-        reason: "the attacker's forwarding rule (New-InboxRule) follows the AiTM sign-in by 35 minutes: a true hit of this rule's logic wherever the scenario has that risky sign-in (bec-aitm), so it cannot be a per-kind positive (hawk-investigate has none)"
+        condition: risky_rule_correlation
+        reason: "the attacker's forwarding rule (New-InboxRule) follows the AiTM sign-in within the hour: a true hit of this rule's logic wherever the scenario has that risky or hosting sign-in and the collector delivers it (hawk-investigate has none)"
   - id: SPW-APP-001
     title: Consent to an app with Mail.*, Files.* or offline_access
     category: apps

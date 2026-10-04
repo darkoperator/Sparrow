@@ -18,7 +18,7 @@ pub const OTHER_LOCATION: usize = 6;
 /// Every address of the world with its location; the first source to name an address wins
 /// (people, then the attacker, then storyline sign-ins and risk detections, then other
 /// storyline addresses).
-fn locations(w: &World) -> BTreeMap<IpAddr, Location> {
+pub(crate) fn locations(w: &World) -> BTreeMap<IpAddr, Location> {
     let mut m: BTreeMap<IpAddr, Location> = BTreeMap::new();
     for u in w.all_people() {
         m.entry(u.office_ip).or_insert_with(|| u.home.clone());

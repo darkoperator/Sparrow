@@ -381,6 +381,7 @@ fn a_gap_not_applicable_is_checked_as_no_finding() {
         reason: "unified audit log ingestion disabled".into(),
         tables: vec!["mailboxes".into()],
         complete: true,
+        computed: None,
     });
     let r = check_with(&m2, &case2, &set, &coverage_allow()).unwrap();
     assert!(r.ok, "{:#?}", r.problems);
@@ -405,6 +406,7 @@ fn a_tenant_wide_not_applicable_must_be_in_the_run_log() {
         reason: "capability identity_protection is not_licensed".into(),
         tables: vec!["risky_users".into()],
         complete: true,
+        computed: None,
     });
     let cap = m
         .capabilities
@@ -428,6 +430,7 @@ fn a_tenant_wide_not_applicable_must_be_in_the_run_log() {
         reason: "capability identity_protection is not_licensed".into(),
         tables: vec!["risky_users".into()],
         complete: true,
+        computed: None,
     });
     let r = check_with(&m2, &case2, &set, &coverage_allow()).unwrap();
     assert!(
@@ -549,6 +552,7 @@ fn a_finding_citing_hit_and_baseline_records_fails() {
         reason: "test".into(),
         tables: vec!["ual_events".into()],
         complete: true,
+        computed: None,
     });
     let r = check_with(&m, &case, &set, &coverage_allow()).unwrap();
     assert!(

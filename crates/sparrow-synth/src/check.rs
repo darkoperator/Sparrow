@@ -587,10 +587,19 @@ fn tenant_wide_not_applicable(
     })
 }
 
+/// " (computed: <condition>)" for a computed expectation, else nothing.
+fn computed(ex: &crate::manifest::RuleExpect) -> String {
+    ex.computed
+        .as_deref()
+        .map(|c| format!(" (computed: {c})"))
+        .unwrap_or_default()
+}
+
 /// The exact detection gate (Addendum C.3) for every rule that has a rule file.
 ///
 /// 1. `hit` storyline: a finding of the rule cites one of the storyline's delivered records in
-///    one of the rule's tables.
+///    one of the rule's tables. A `computed` expectation (`rules/coverage.yaml`, `oracle`) is a
+///    `hit` or `no_hit` like any other and is checked the same way.
 /// 2. `no_hit` storyline: no finding of the rule cites its records.
 /// 3. `not_applicable`: for a tenant-wide cause the run log has the rule `not_applicable`;
 ///    for a logging-gap cause (audit-tamper) the storyline is treated like `no_evidence`, plus
@@ -726,9 +735,10 @@ fn check_detection(
                     explained.insert(ex.storyline.as_str());
                     if !cites(&ex.storyline, Some(&ex.tables)) {
                         out.missing_hits.push(format!(
-                            "{id}: storyline {} ({}) should hit but no finding cites its records in {}",
+                            "{id}: storyline {} ({}) should hit{} but no finding cites its records in {}",
                             ex.storyline,
                             kind_of.get(ex.storyline.as_str()).copied().unwrap_or("?"),
+                            computed(ex),
                             ex.tables.join(", ")
                         ));
                     }
@@ -736,11 +746,19 @@ fn check_detection(
                 RuleOutcome::NoHit => {
                     if cites(&ex.storyline, None) {
                         reported.insert(ex.storyline.as_str());
-                        out.unexpected_hits.push(format!(
-                            "{id}: look-alike storyline {} ({}) triggered a finding",
-                            ex.storyline,
-                            kind_of.get(ex.storyline.as_str()).copied().unwrap_or("?"),
-                        ));
+                        out.unexpected_hits.push(match &ex.computed {
+                            None => format!(
+                                "{id}: look-alike storyline {} ({}) triggered a finding",
+                                ex.storyline,
+                                kind_of.get(ex.storyline.as_str()).copied().unwrap_or("?"),
+                            ),
+                            Some(_) => format!(
+                                "{id}: storyline {} ({}) triggered a finding but should not{}",
+                                ex.storyline,
+                                kind_of.get(ex.storyline.as_str()).copied().unwrap_or("?"),
+                                computed(ex),
+                            ),
+                        });
                     }
                 }
                 RuleOutcome::NotApplicable => {

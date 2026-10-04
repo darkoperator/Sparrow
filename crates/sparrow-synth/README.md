@@ -414,12 +414,22 @@ statuses the scenario allows, with the reason. `check` evaluates availability wi
 line_end}`. `logged` is false for a UAL record Microsoft 365 did not record under the audit
 profile.
 
-`RuleExpect { rule_id, storyline, outcome, reason, tables }` with `outcome` one of `hit`,
+`RuleExpect { rule_id, storyline, outcome, reason, tables, computed }` with `outcome` one of `hit`,
 `no_hit`, `not_applicable` or `no_evidence`, and `tables` the rule tables the storyline's
 evidence reached. `no_evidence` means the tree did not deliver the evidence at all (the storyline
 fell in a logging gap, or `restrict_to_collector` demoted it because the collector cannot supply
 that attribute), so the rule is not expected to fire; it is the one outcome the detection gate
 skips.
+
+`computed` names the condition (`oracle::Condition`) for a kind that `rules/coverage.yaml` lists
+under the rule's `computed`. It is absent for a fixed per-kind outcome.
+
+- The generator evaluates the rule's logic over the rows the tree delivers (`oracle::Facts`) and
+  writes `hit` when the logic triggers on one of the storyline's delivered records, else `no_hit`.
+- `restrict_to_collector` leaves it alone, because it already reflects what the collector
+  delivers.
+- `tests/oracle.rs` checks that the oracle's rows, `ip_intel`, spray sources and cloud services
+  equal what Sparrow ingests and derives.
 
 ### `sparrow synth check`
 
@@ -451,9 +461,10 @@ file, against the **latest** `detection_runs` of the tenant:
 2. **No `no_hit` (look-alike) storyline produces a finding of its rule** citing its records.
 3. **Every `not_applicable` storyline is honoured**, with the right kind of cause (below).
 4. **The baseline produces no findings**: every finding of a rule must cite the records of a `hit`
-   storyline of that rule. A finding citing only records of a kind listed in that rule's
-   `baseline_allow`, or of no storyline at all (`kind: baseline`), is tolerated; anything else is
-   reported as an extra finding. This is the rule that says *the benign background must be quiet*.
+   storyline of that rule, including a computed `hit`. A finding citing only records of a kind
+   listed in that rule's `baseline_allow`, or of no storyline at all (`kind: baseline`), is
+   tolerated; anything else is reported as an extra finding. The shipped matrix has no
+   `baseline_allow` entry. This is the rule that says *the benign background must be quiet*.
 5. **`no_evidence` is skipped** — a storyline that did not reach its evidence tests nothing.
 
 A rule that failed (`detection_runs.status = 'error'`) is reported, not counted.
@@ -494,8 +505,8 @@ ok: collection 1 matches /tmp/tree/manifest.json
 0 rule expectations not checked (detection engine: Phase 6)
 ```
 
-`hawk-investigate` is also the tree that exercises `baseline_allow`: its one `SPW-ID-003`
-(impossible travel) finding is the documented `oauth_consent` exception. See
+`hawk-investigate`'s `SPW-ID-003` (impossible travel) finding on its `oauth_consent` storyline
+is a computed `hit` (`rules/coverage.yaml` `computed`). See
 [`../../rules/README.md`](../../rules/README.md).
 
 A failing tree, and what it says:
@@ -537,8 +548,9 @@ correlates two kinds of evidence sets `evidence_all_of`; absent, it defaults to 
 to `tables`. A rule with `evidence_all_of` must also list `correlation_negatives`: look-alike
 kinds (also under `lookalikes`) whose storyline delivers **both** evidence halves but fails the
 rule's time or actor condition, and which the rule must not fire on. That is what proves the
-correlation itself and not just the presence of the second half. `baseline_allow` lists the
-documented exceptions to the detection gate's baseline rule.
+correlation itself and not just the presence of the second half. `computed` lists the kinds
+whose outcome the generator computes per tree. `baseline_allow` lists tolerated exceptions to
+the detection gate's baseline rule; the shipped file has none.
 
 `sparrow synth coverage [--seed N]` generates every built-in scenario (except `volume`) for
 every collector into memory and aggregates the manifests' rule outcomes into a report with, per
