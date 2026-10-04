@@ -154,9 +154,11 @@ fn an_empty_flush_is_a_no_op() {
 }
 
 #[test]
-fn a_large_batch_keeps_queue_order_and_first_wins() {
-    // 2,600 sightings (enough for several DuckDB vectors and parallel scan chunks): every 7th repeats an earlier
-    // key with another span, every 11th is an exact duplicate. Order and the surviving span must match the per-row path.
+fn a_large_batch_dedups_first_wins_like_the_per_row_path() {
+    // 2,600 sightings (past a DuckDB vector boundary): every 7th repeats an earlier key with another span, every
+    // 11th is an exact duplicate. The surviving rows and spans must equal the per-row path's. The `rowid` order is
+    // compared too, but it can only fail if DuckDB reorders this insert; the dedup and first-wins parts are what
+    // this test is sure to catch.
     let mut batch: Vec<Input> = Vec::new();
     for i in 0..2600u64 {
         let ln = (i % 14 + 1) as usize;

@@ -748,7 +748,9 @@ fn ingest_file(
     ctx.date_hint = job.date_hint;
     ctx.defer_ambiguous_dates = job.defer;
     ctx.collection_orders_conflict = job.orders_conflict;
-    // A parser that queued sightings and did not flush them loses none.
+    // A parser that queued sightings and did not flush them loses none. (That covers loss, not order relative to the
+    // parser's own later writes: a parser that reads `record_sources` mid-parse must flush before it reads. The
+    // parsers that flush themselves, logs and Sessions, make this second flush a no-op.)
     let parsed = parser.parse(&mut ctx).and_then(|()| ctx.flush_sources());
     match parsed {
         Ok(()) => {

@@ -148,8 +148,11 @@ impl<'a> ParseContext<'a> {
         });
     }
 
-    /// Write the queued sightings with one `INSERT ... SELECT`, in queue order (rows already stored are filtered out
-    /// with `NOT EXISTS` rather than `ON CONFLICT`, which does not keep the order). Within the batch and against stored rows
+    /// Write the queued sightings with one `INSERT ... SELECT`, in queue order. The order is not load-bearing: readers
+    /// of `record_sources` order explicitly (`record_source_refs` by file and ordinal) and the primary key makes that order
+    /// total, so nothing may come to depend on insertion order; the tests compare `rowid` only because that is stricter
+    /// than needed. Rows already stored are filtered out with `NOT EXISTS` rather than `ON CONFLICT` (which scrambled the
+    /// order, and so the row-for-row comparison with the per-row path). Within the batch and against stored rows
     /// the first sighting of a primary key (table, key, file, ordinal) wins, exactly as the same calls to
     /// `record_source` would leave it. The ingest also flushes after every successful parse, so a parser that
     /// queues and forgets to flush loses nothing.

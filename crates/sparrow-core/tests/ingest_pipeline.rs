@@ -844,3 +844,85 @@ fn non_utf8_file_names_are_flagged() {
 fn default_max_file_size_is_one_gib() {
     assert_eq!(DEFAULT_MAX_FILE_BYTES, 1 << 30);
 }
+
+/// Test parser that QUEUES sightings (the set-based path) and then fails.
+struct QueueThenFailParser;
+impl ArtifactParser for QueueThenFailParser {
+    fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
+        for (n, span) in line_spans(&ctx.text.text).into_iter().enumerate() {
+            ctx.queue_source("test_lines", &format!("doomed:{n}"), n as u64, span);
+        }
+        // Flushed once, so the rows exist inside the file's transaction when the parser fails.
+        ctx.flush_sources()?;
+        ctx.queue_source(
+            "test_lines",
+            "doomed:late",
+            99,
+            line_spans(&ctx.text.text)[0],
+        );
+        Err(Error::Invalid("boom after queueing".into()))
+    }
+}
+
+/// Test parser that queues one sighting per line and leaves the flush to the ingest.
+struct QueueingLinesParser;
+impl ArtifactParser for QueueingLinesParser {
+    fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
+        for (n, span) in line_spans(&ctx.text.text).into_iter().enumerate() {
+            ctx.queue_source(
+                "test_lines",
+                &format!("{}:{}", ctx.file_id, n),
+                n as u64,
+                span,
+            );
+            ctx.stats.read += 1;
+            ctx.stats.loaded += 1;
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn queued_sightings_roll_back_with_a_failed_file_and_a_sibling_keeps_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    fixtures::hawk_tree(dir.path());
+    let mut case = Case::in_memory().unwrap();
+    let mut r = ParserRegistry::empty();
+    r.register("hawk.log", Box::new(QueueingLinesParser));
+    r.register("hawk.investigate_txt", Box::new(QueueThenFailParser));
+    let report = ingest_path(&mut case, dir.path(), &r, &IngestOptions::default()).unwrap();
+    assert_eq!(status_of(&report, "_Investigate.txt"), FileStatus::Error);
+    assert_eq!(status_of(&report, "Hawk.log"), FileStatus::Parsed);
+
+    let rows_of = |rel: &str| {
+        count(
+            &case,
+            &format!(
+                "SELECT count(*) FROM record_sources rs JOIN source_files sf USING (file_id)
+                 WHERE sf.rel_path = '{rel}'"
+            ),
+        )
+    };
+    assert_eq!(
+        rows_of("_Investigate.txt"),
+        0,
+        "the failed file's flushed and queued sightings are gone"
+    );
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM record_sources WHERE record_key LIKE 'doomed%'"
+        ),
+        0
+    );
+    // The sibling's queued rows were flushed by the ingest after its parse and are all there (11 lines).
+    assert_eq!(rows_of("Hawk.log"), 11);
+    // No file row is left pointing at the rolled-back attempt: the failed file has only its error record.
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM source_files WHERE rel_path = '_Investigate.txt' AND status = 'error'"
+        ),
+        1
+    );
+}
