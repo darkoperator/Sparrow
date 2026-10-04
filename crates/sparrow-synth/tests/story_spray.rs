@@ -111,9 +111,18 @@ fn the_vps_storylines_carry_no_ual_logon_and_use_their_own_asn() {
     };
     assert_eq!(asn_of(&pw).len(), 1);
     assert!(asn_of(&pw).is_disjoint(&asn_of(&vps)));
-    // The password variant: two accounts fail first to the same application from its VPS, and no spray.
+    // The password variant: three accounts fail first to the same application from its VPS (three
+    // distinct users disqualify a cloud service; one or two would not), and no spray.
     let fails: Vec<_> = pw.iter().filter(|s| s.error_code == 50126).collect();
-    assert_eq!(fails.len(), 2);
+    assert_eq!(fails.len(), 3);
+    assert_eq!(
+        fails
+            .iter()
+            .map(|f| f.user.clone())
+            .collect::<BTreeSet<_>>()
+            .len(),
+        3
+    );
     let ok_app = pw.iter().find(|s| s.error_code == 0).unwrap().app_id;
     assert!(fails.iter().all(|f| f.app_id == ok_app));
     let users: BTreeSet<_> = pw.iter().map(|s| s.user.clone()).collect();

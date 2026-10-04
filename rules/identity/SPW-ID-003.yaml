@@ -27,12 +27,15 @@
 #   WHOLE case, the same definition SPW-ID-002 uses: 5 or more users with known successes from the ASN
 #   on 3 or more days, 80% of the application's successes; interactive and non-interactive both count,
 #   the portal export records a connector's backend as interactive), because its backend signs users in
-#   from a cloud region on their behalf and that is not the user travelling; the same application from
-#   another ASN, a UAL UserLoggedIn and a sign-in from a password-spray source always count. Residual:
-#   an attacker on the same application from the same ASN as an established connector is excused, and so
-#   are 5 or more PHISHED (not sprayed) accounts used from one VPS on one application for 3 or more days
-#   with no failures. An application and ASN whose users were sprayed, or with a credential failure from
-#   that ASN, is not a service.
+#   from a cloud region on their behalf and that is not the user travelling. The UAL UserLoggedIn arm
+#   applies the same exclusion by ual_events.app_id (a connector's backend may write logon records too);
+#   the same application from another ASN, a logon with no application id and a sign-in or logon from a
+#   password-spray source always count. An (application, ASN) is NOT a service when (a) sprayed users are
+#   at least 20% of its users or at least 3 of them are sprayed, or (b) at least 3 distinct users have an
+#   interactive credential failure to the application from that ASN. Residual: an attacker on the same
+#   application from the same ASN as an established connector is excused, and so are 5 or more PHISHED
+#   (not sprayed) accounts used from one VPS on one application for 3 or more days with no failures, and
+#   up to 2 failing or a lone sprayed user among a connector's users.
 #   Microsoft addresses (ip_intel.is_microsoft): Exchange Online, a Cloud PC
 #   or a Microsoft relay geolocate to a datacentre unrelated to the user. Addresses with no
 #   location are ignored, not treated as far.
@@ -47,7 +50,7 @@
 # `sql:` because the pair needs a window over the user's sign-ins joined to ip_intel.
 id: SPW-ID-003
 title: Impossible travel
-version: 3
+version: 4
 status: stable
 severity: medium
 confidence: low
@@ -75,6 +78,11 @@ sql: |
     FROM ual_events u JOIN ip_intel i ON i.ip = u.client_ip
     WHERE lower(u.operation) = 'userloggedin' AND u.user_upn IS NOT NULL
       AND i.latitude IS NOT NULL AND i.longitude IS NOT NULL AND NOT coalesce(i.is_microsoft, false)
+      -- The same exclusion as the sign-in arm, by ual_events.app_id; a logon with no application id
+      -- is never excused.
+      AND NOT EXISTS (SELECT 1 FROM cloud_services c
+                      WHERE c.app_id = lower(coalesce(u.app_id, '')) AND c.asn = i.asn
+                        AND NOT EXISTS (SELECT 1 FROM spray_sources p WHERE p.ip = u.client_ip))
   ),
   seq AS (
     SELECT *,
@@ -704,4 +712,244 @@ tests:
         is_interactive: false
         event_time: "2026-03-01T09:10:00Z"
         error_code: 0
+    expect_hits: 1
+  - name: a connector's UserLoggedIn from its own (app, ASN) forms no pair (a backend that also writes logon records)
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        latitude: 41.88
+        longitude: -87.63
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 203.0.113.2
+        asn: 14061
+        latitude: 50.1
+        longitude: 8.7
+        country_iso: DE
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: cloud_services
+        tenant_key: test
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        hosting_users: 6
+        hosting_days: 3
+        signins: 18
+        hosting_signins: 18
+        asn: 14061
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-03-01T09:00:00Z"
+        error_code: 0
+      - table: ual_events
+        operation: UserLoggedIn
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.2
+        event_time: "2026-03-01T09:10:00Z"
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+    expect_hits: 0
+  - name: the connector's UserLoggedIn forms no pair whatever the case of the application id
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        latitude: 41.88
+        longitude: -87.63
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 203.0.113.2
+        asn: 14061
+        latitude: 50.1
+        longitude: 8.7
+        country_iso: DE
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: cloud_services
+        tenant_key: test
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        hosting_users: 6
+        hosting_days: 3
+        signins: 18
+        hosting_signins: 18
+        asn: 14061
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-03-01T09:00:00Z"
+        error_code: 0
+      - table: ual_events
+        operation: UserLoggedIn
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.2
+        event_time: "2026-03-01T09:10:00Z"
+        app_id: C0C0C0C0-0000-4000-8000-0000000000C1
+    expect_hits: 0
+  - name: a UserLoggedIn of the connector's app from another hosting ASN is a hit
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        latitude: 41.88
+        longitude: -87.63
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 203.0.113.2
+        asn: 16509
+        latitude: 50.1
+        longitude: 8.7
+        country_iso: DE
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: cloud_services
+        tenant_key: test
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        hosting_users: 6
+        hosting_days: 3
+        signins: 18
+        hosting_signins: 18
+        asn: 14061
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-03-01T09:00:00Z"
+        error_code: 0
+      - table: ual_events
+        operation: UserLoggedIn
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.2
+        event_time: "2026-03-01T09:10:00Z"
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+    expect_hits: 1
+  - name: a UserLoggedIn to another application from the connector's ASN is a hit
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        latitude: 41.88
+        longitude: -87.63
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 203.0.113.2
+        asn: 14061
+        latitude: 50.1
+        longitude: 8.7
+        country_iso: DE
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: cloud_services
+        tenant_key: test
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        hosting_users: 6
+        hosting_days: 3
+        signins: 18
+        hosting_signins: 18
+        asn: 14061
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-03-01T09:00:00Z"
+        error_code: 0
+      - table: ual_events
+        operation: UserLoggedIn
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.2
+        event_time: "2026-03-01T09:10:00Z"
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c2
+    expect_hits: 1
+  - name: a UserLoggedIn with no application id is a hit
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        latitude: 41.88
+        longitude: -87.63
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 203.0.113.2
+        asn: 14061
+        latitude: 50.1
+        longitude: 8.7
+        country_iso: DE
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: cloud_services
+        tenant_key: test
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        hosting_users: 6
+        hosting_days: 3
+        signins: 18
+        hosting_signins: 18
+        asn: 14061
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-03-01T09:00:00Z"
+        error_code: 0
+      - table: ual_events
+        operation: UserLoggedIn
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.2
+        event_time: "2026-03-01T09:10:00Z"
+    expect_hits: 1
+  - name: a UserLoggedIn from a password-spray source always forms a pair, connector or not
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        latitude: 41.88
+        longitude: -87.63
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 203.0.113.2
+        asn: 14061
+        latitude: 50.1
+        longitude: 8.7
+        country_iso: DE
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: cloud_services
+        tenant_key: test
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
+        hosting_users: 6
+        hosting_days: 3
+        signins: 18
+        hosting_signins: 18
+        asn: 14061
+      - table: spray_sources
+        tenant_key: test
+        ip: 203.0.113.2
+        users_targeted: 9
+        failures: 40
+        first_failure: "2026-01-20T00:00:00Z"
+        last_failure: "2026-01-28T00:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-03-01T09:00:00Z"
+        error_code: 0
+      - table: ual_events
+        operation: UserLoggedIn
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.2
+        event_time: "2026-03-01T09:10:00Z"
+        app_id: c0c0c0c0-0000-4000-8000-0000000000c1
     expect_hits: 1

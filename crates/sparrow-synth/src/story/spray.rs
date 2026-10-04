@@ -577,10 +577,11 @@ fn spray_vps_login(w: &mut World, ctx: &mut Ctx) -> Result<()> {
 }
 
 /// Wrong passwords first, no spray: five colleagues' accounts are tried from a cloud VPS (a hosting ASN
-/// of its own: not the connector's and not the spray VPS's) to Microsoft Teams, two of them fail once with an invalid password (50126)
-/// before the right one works, then all five sign in on each of three days. No spray source exists, but a
-/// credential failure to the application comes from that ASN, so the (application, ASN) is not a cloud
-/// service. No UAL logon is written: the hit is the sign-in arm's.
+/// of its own: not the connector's and not the spray VPS's) to Microsoft Teams, three of them fail once with
+/// an invalid password (50126) before the right one works, then all five sign in on each of three days.
+/// No spray source exists, but three distinct users' credential failures to the application come from that
+/// ASN (the cloud-service disqualifier: one or two stale accounts would not), so the (application, ASN) is
+/// not a cloud service. No UAL logon is written: the hit is the sign-in arm's.
 fn vps_password_failures(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     let a: User = ctx.a.clone();
     let staff = city_staff(w, &a, 5);
@@ -597,7 +598,7 @@ fn vps_password_failures(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     vps.asn_org = crate::world::HOSTING_ASNS[0].1.to_string();
     let ip = attacker_ip(w, ctx, &vps)?;
     let teams = well_known("Microsoft Teams");
-    for (k, user) in staff.iter().take(2).enumerate() {
+    for (k, user) in staff.iter().take(3).enumerate() {
         let mut f = failed_signin(
             w,
             ctx,

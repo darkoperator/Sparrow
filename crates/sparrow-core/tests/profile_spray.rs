@@ -797,12 +797,12 @@ fn accounts_taken_from_a_spray_do_not_make_a_cloud_service() {
     assert_eq!(services(&case)[0].1, "c0c0c0c0-0000-4000-8000-0000000000f2");
 }
 
-/// A credential failure to the application from the ASN disqualifies it, with no spray anywhere: wrong
-/// passwords typed on the VPS before the accounts worked. An interactive row and a row of unknown kind
-/// count; a Conditional Access block (not a credential failure), a failure to another application and
-/// a failure from another ASN do not.
+/// Three users' credential failures to the application from the ASN disqualify it, with no spray
+/// anywhere: wrong passwords typed on the VPS before the accounts worked. An interactive row and a row
+/// of unknown kind count; a Conditional Access block (not a credential failure), a failure to another
+/// application and a failure from another ASN do not, even from three users.
 #[test]
-fn a_credential_failure_from_the_asn_disqualifies_the_service() {
+fn credential_failures_from_the_asn_disqualify_the_service() {
     let case = Case::in_memory().unwrap();
     tenant(&case, T1);
     intel(&case, T1, "203.0.113.1", 14061, true);
@@ -814,64 +814,238 @@ fn a_credential_failure_from_the_asn_disqualifies_the_service() {
         "c0c0c0c0-0000-4000-8000-0000000000a3",
         "c0c0c0c0-0000-4000-8000-0000000000a4",
     );
+    for app in [a1, a2, a3, a4] {
+        connector_signins(&case, app, "203.0.113.1", 5);
+    }
+    let failing = ["x", "y", "z"].map(|w| format!("{w}@contoso.example"));
+    for who in &failing {
+        // a1: an interactive wrong password from the same ASN (another address of it).
+        app_signin(&case, T1, who, "203.0.113.2", a1, "02", true, Some(50126));
+        // a2: a row of unknown kind (NULL is_interactive) counts as interactive.
+        insert_row(
+            &case,
+            "signins",
+            T1,
+            json!({"user_upn": who, "ip": "203.0.113.2", "app_id": a2,
+                   "error_code": 50126, "event_time": "2026-02-02T09:00:00Z"}),
+        );
+        // a3: a Conditional Access block is not a credential failure.
+        app_signin(&case, T1, who, "203.0.113.2", a3, "02", true, Some(53003));
+        // a4: a credential failure from ANOTHER ASN.
+        app_signin(&case, T1, who, "203.0.113.3", a4, "02", true, Some(50126));
+    }
+    assert_eq!(cloud(&case), 2);
+    let got: Vec<String> = services(&case).into_iter().map(|r| r.1).collect();
+    assert_eq!(got, vec![a3.to_string(), a4.to_string()]);
+}
+
+/// Six users (`n` users named `u0..`) of one application sign in from one hosting address on three
+/// days: a service by the counts alone. The disqualifier tests add failures or sprays on top.
+fn connector_signins(case: &Case, app: &str, ip: &str, users: usize) {
     for day in ["03", "04", "05"] {
-        for u in 0..5 {
-            for app in [a1, a2, a3, a4] {
+        for u in 0..users {
+            app_signin(
+                case,
+                T1,
+                &format!("u{u}@contoso.example"),
+                ip,
+                app,
+                day,
+                true,
+                Some(0),
+            );
+        }
+    }
+}
+
+fn service_apps(case: &Case) -> Vec<String> {
+    services(case).into_iter().map(|r| r.1).collect()
+}
+
+/// (b) Three DISTINCT users with an interactive credential failure to the application from the ASN
+/// disqualify it. One stale account (a departed user's 50057 or 50034, retried by a device) or two
+/// do not, however many times they fail; neither does a user failing three times, nor non-interactive
+/// failures of three users.
+#[test]
+fn three_failing_users_disqualify_a_service_and_fewer_do_not() {
+    let case = Case::in_memory().unwrap();
+    tenant(&case, T1);
+    intel(&case, T1, "203.0.113.1", 14061, true);
+    intel(&case, T1, "203.0.113.2", 14061, true);
+    let apps: Vec<String> = (1..=6)
+        .map(|k| format!("c0c0c0c0-0000-4000-8000-0000000001b{k}"))
+        .collect();
+    for app in &apps {
+        connector_signins(&case, app, "203.0.113.1", 6);
+    }
+    // apps[0]: one departed account fails (disabled), twice. Still a service.
+    for day in ["02", "03"] {
+        app_signin(
+            &case,
+            T1,
+            "gone@contoso.example",
+            "203.0.113.2",
+            &apps[0],
+            day,
+            true,
+            Some(50057),
+        );
+    }
+    // apps[1]: two users fail (an unknown user and a wrong password). Still a service.
+    app_signin(
+        &case,
+        T1,
+        "gone@contoso.example",
+        "203.0.113.2",
+        &apps[1],
+        "02",
+        true,
+        Some(50034),
+    );
+    app_signin(
+        &case,
+        T1,
+        "typo@contoso.example",
+        "203.0.113.2",
+        &apps[1],
+        "02",
+        true,
+        Some(50126),
+    );
+    // apps[2]: three distinct users fail. Not a service.
+    for who in ["gone", "typo", "old"] {
+        app_signin(
+            &case,
+            T1,
+            &format!("{who}@contoso.example"),
+            "203.0.113.2",
+            &apps[2],
+            "02",
+            true,
+            Some(50126),
+        );
+    }
+    // apps[3]: one user fails three times. One user: still a service.
+    for day in ["01", "02", "03"] {
+        app_signin(
+            &case,
+            T1,
+            "gone@contoso.example",
+            "203.0.113.2",
+            &apps[3],
+            day,
+            true,
+            Some(50126),
+        );
+    }
+    // apps[4]: three users fail, non-interactively (not an interactive credential failure). Still a service.
+    for who in ["gone", "typo", "old"] {
+        app_signin(
+            &case,
+            T1,
+            &format!("{who}@contoso.example"),
+            "203.0.113.2",
+            &apps[4],
+            "02",
+            false,
+            Some(50126),
+        );
+    }
+    // apps[5]: three users of the connector itself fail, by case: UPN case does not make them distinct users.
+    for who in ["GONE", "gone", "Gone"] {
+        app_signin(
+            &case,
+            T1,
+            &format!("{who}@contoso.example"),
+            "203.0.113.2",
+            &apps[5],
+            "02",
+            true,
+            Some(50126),
+        );
+    }
+    assert_eq!(cloud(&case), 5);
+    let mut want = vec![
+        apps[0].clone(),
+        apps[1].clone(),
+        apps[3].clone(),
+        apps[4].clone(),
+        apps[5].clone(),
+    ];
+    want.sort();
+    assert_eq!(service_apps(&case), want);
+}
+
+/// (a) Sprayed users (a credential failure from a spray source) disqualify the pair when they make up
+/// at least 20% of its users or when at least three of them are sprayed. A lone sprayed user among
+/// many (a real tenant's connector) does not. Each application has users of its own (`a{k}u{n}`), so
+/// "sprayed" is judged per application; the sprays are separate sources.
+#[test]
+fn sprayed_users_disqualify_a_service_from_twenty_percent_or_three_users() {
+    let case = Case::in_memory().unwrap();
+    tenant(&case, T1);
+    intel(&case, T1, "203.0.113.1", 14061, true);
+    // (users, sprayed users, a service?)
+    let table: [(usize, usize, bool); 7] = [
+        (20, 1, true),  // 5%
+        (6, 1, true),   // 16.7%
+        (5, 1, false),  // exactly 20%
+        (10, 2, false), // exactly 20%
+        (11, 2, true),  // 18.2%, two sprayed
+        (20, 3, false), // 15%, but three sprayed
+        (40, 2, true),  // 5%
+    ];
+    let mut want = Vec::new();
+    for (k, (users, sprayed, ok)) in table.into_iter().enumerate() {
+        let app = format!("c0c0c0c0-0000-4000-8000-0000000001d{k}");
+        for day in ["03", "04", "05"] {
+            for u in 0..users {
                 app_signin(
                     &case,
                     T1,
-                    &format!("u{u}@contoso.example"),
+                    &format!("a{k}u{u}@contoso.example"),
                     "203.0.113.1",
-                    app,
+                    &app,
                     day,
                     true,
                     Some(0),
                 );
             }
         }
+        // A spray source of its own fails the first `sprayed` users and six others, from an ordinary
+        // address, and never sees them succeed.
+        let ip = format!("198.51.100.{}", 100 + k);
+        for u in 0..sprayed {
+            signin(
+                &case,
+                T1,
+                &format!("a{k}u{u}@contoso.example"),
+                &ip,
+                50126,
+                "2026-03-01T10:00:00Z",
+            );
+        }
+        for v in 0..(6 - sprayed.min(5)) {
+            signin(
+                &case,
+                T1,
+                &format!("v{k}x{v}@contoso.example"),
+                &ip,
+                50126,
+                "2026-03-01T10:00:00Z",
+            );
+        }
+        if ok {
+            want.push(app);
+        }
     }
-    // a1: an interactive wrong password from the same ASN (another address of it).
-    app_signin(
-        &case,
-        T1,
-        "x@contoso.example",
-        "203.0.113.2",
-        a1,
-        "02",
-        true,
-        Some(50126),
+    assert_eq!(
+        rebuild(&case),
+        7,
+        "every spray is a source (six or more failed users each)"
     );
-    // a2: a row of unknown kind (NULL is_interactive) counts as interactive.
-    insert_row(
-        &case,
-        "signins",
-        T1,
-        json!({"user_upn": "x@contoso.example", "ip": "203.0.113.2", "app_id": a2,
-               "error_code": 50126, "event_time": "2026-02-02T09:00:00Z"}),
-    );
-    // a3: a Conditional Access block is not a credential failure.
-    app_signin(
-        &case,
-        T1,
-        "x@contoso.example",
-        "203.0.113.2",
-        a3,
-        "02",
-        true,
-        Some(53003),
-    );
-    // a4: a credential failure from ANOTHER ASN.
-    app_signin(
-        &case,
-        T1,
-        "x@contoso.example",
-        "203.0.113.3",
-        a4,
-        "02",
-        true,
-        Some(50126),
-    );
-    assert_eq!(cloud(&case), 2);
-    let got: Vec<String> = services(&case).into_iter().map(|r| r.1).collect();
-    assert_eq!(got, vec![a3.to_string(), a4.to_string()]);
+    cloud(&case);
+    want.sort();
+    assert_eq!(service_apps(&case), want);
+    assert_eq!(want.len(), 4, "the table must exercise both outcomes");
 }

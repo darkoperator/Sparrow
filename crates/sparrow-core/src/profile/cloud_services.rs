@@ -9,13 +9,20 @@
 //! hosting ASN on at least [`MIN_DAYS`] distinct UTC days, and those sign-ins are at least
 //! [`SHARE_PERCENT`] percent of the application's known successes.
 //!
-//! An (application, ASN) pair does NOT qualify when either holds: any of its users (a user with a known
-//! success to the application from that ASN) has a credential failure (interactive or of unknown kind,
-//! the shared `credential_failure_codes` list) from a spray source of the tenant, or any credential
-//! failure to the application comes from that ASN. Accounts taken from a spray, or typed wrongly on a
-//! VPS first, never make their VPS a connector. Residual, documented: five or more PHISHED (not
-//! sprayed) accounts used from one VPS on the same application for three days with no failures look
-//! exactly like a connector and are excused.
+//! An (application, ASN) pair does NOT qualify when either holds:
+//! (a) SPRAYED users make up at least [`SPRAYED_PERCENT`] percent of its users (a user with a known
+//!     success to the application from that ASN), or at least [`SPRAYED_USERS`] of them are sprayed; a
+//!     sprayed user has a credential failure (interactive or of unknown kind, the shared
+//!     `credential_failure_codes` list) from a spray source of the tenant; or
+//! (b) at least [`FAILING_USERS`] distinct users (any user, not only the pair's) have a credential
+//!     failure of that kind to the application from that ASN.
+//! Accounts taken from a spray, or typed wrongly on a VPS first, never make their VPS a connector, but a
+//! single sprayed user or a single departed account (50057, 50034) retried by a device no longer takes
+//! a real connector's findings back. SPW-ID-005 still reports every success from a spray source, so
+//! the attacker case stays covered. Residual, documented: five or more PHISHED (not sprayed) accounts
+//! used from one VPS on the same application for three days with no failures look exactly like a
+//! connector and are excused, and so are up to two failing or (below 20%) one sprayed account among a
+//! connector's users.
 //!
 //! The profile is established from the WHOLE case, no prefix: a capture is a window, and a connector in
 //! use since before it starts would only be "established" a few days before the window ends, leaving
@@ -33,6 +40,12 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const MIN_USERS: usize = 5;
 pub const MIN_DAYS: usize = 3;
 pub const SHARE_PERCENT: i64 = 80;
+/// Disqualifier (a): sprayed users are at least this percent of the pair's users, ...
+pub const SPRAYED_PERCENT: usize = 20;
+/// ... or at least this many of them are sprayed.
+pub const SPRAYED_USERS: usize = 3;
+/// Disqualifier (b): this many distinct users with an interactive credential failure from the ASN.
+pub const FAILING_USERS: usize = 3;
 
 /// Rewrite `cloud_services` from `signins`, `ip_intel` and `spray_sources` (rebuilt first), where a
 /// credential failure is one of `codes`; returns the number of services.
@@ -107,15 +120,15 @@ pub fn rebuild(conn: &Connection, codes: &[i64]) -> Result<usize> {
             sprayed.insert(row?);
         }
     }
-    // (tenant, app, asn) with a credential failure to the app from an address of that ASN.
-    let mut failed_from: BTreeSet<(String, String, i64)> = BTreeSet::new();
+    // (tenant, app, asn) -> the distinct users with a credential failure to the app from that ASN.
+    let mut failed_from: BTreeMap<(String, String, i64), BTreeSet<String>> = BTreeMap::new();
     {
         let mut stmt = conn.prepare(&format!(
-            "SELECT DISTINCT c.tenant_key, lower(g.app_id), i.asn
+            "SELECT DISTINCT c.tenant_key, lower(g.app_id), i.asn, lower(g.user_upn)
              FROM signins g JOIN collections c ON c.collection_id = g.collection_id
              JOIN ip_intel i ON i.ip = g.ip
              WHERE c.tenant_key IS NOT NULL AND g.app_id IS NOT NULL AND g.app_id <> ''
-               AND i.asn IS NOT NULL
+               AND i.asn IS NOT NULL AND g.user_upn IS NOT NULL
                AND coalesce(g.is_interactive, true) AND g.error_code IN ({codes})"
         ))?;
         for row in stmt.query_map([], |r| {
@@ -123,9 +136,14 @@ pub fn rebuild(conn: &Connection, codes: &[i64]) -> Result<usize> {
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, i64>(2)?,
+                r.get::<_, String>(3)?,
             ))
         })? {
-            failed_from.insert(row?);
+            let (tenant, app, asn, user) = row?;
+            failed_from
+                .entry((tenant, app, asn))
+                .or_default()
+                .insert(user);
         }
     }
     let mut n = 0;
@@ -138,10 +156,16 @@ pub fn rebuild(conn: &Connection, codes: &[i64]) -> Result<usize> {
         let users: BTreeSet<&String> = days.values().flat_map(|(u, _)| u.iter()).collect();
         let hosting: i64 = days.values().map(|(_, n)| n).sum();
         let all: i64 = totals[&(tenant.clone(), app.clone())].values().sum();
-        let disqualified = failed_from.contains(&(tenant.clone(), app.clone(), *asn))
-            || users
-                .iter()
-                .any(|u| sprayed.contains(&(tenant.clone(), (*u).clone())));
+        let n_sprayed = users
+            .iter()
+            .filter(|u| sprayed.contains(&(tenant.clone(), (*u).to_string())))
+            .count();
+        let n_failing = failed_from
+            .get(&(tenant.clone(), app.clone(), *asn))
+            .map_or(0, BTreeSet::len);
+        let disqualified = n_sprayed * 100 >= users.len() * SPRAYED_PERCENT && n_sprayed > 0
+            || n_sprayed >= SPRAYED_USERS
+            || n_failing >= FAILING_USERS;
         if !disqualified
             && users.len() >= MIN_USERS
             && days.len() >= MIN_DAYS

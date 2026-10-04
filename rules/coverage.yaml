@@ -437,12 +437,16 @@ rules:
       tenant-wide cloud service, to that application from that same hosting ASN
       (cloud_services, one row per application and ASN, established from the whole case: at least 5 users
       with known successes from that ASN on at least 3 days, at least 80% of the application's successes); another ASN, another
-      application, a UAL UserLoggedIn and a sign-in from a password-spray source always count. Residual:
+      application, a logon or sign-in from a password-spray source and a UAL UserLoggedIn with no application
+      id always count; a UAL UserLoggedIn (ual_events.app_id) of the service from its ASN is excused exactly
+      like its sign-ins. Residual:
       an attacker using the same application from the same cloud ASN as an established connector is
       excused, and a connector's first days are too (no cold start; SPW-ID-005 and the consent rules remain).
-      An (application, ASN) with a sprayed user (a credential failure from a spray source) or a credential
-      failure from that ASN is not a service; 5+ PHISHED accounts used from one VPS on one application for 3+
-      days with no failures are excused (residual).
+      An (application, ASN) is NOT a service when sprayed users (a credential failure from a spray source)
+      are at least 20% of its users or at least 3 of them are sprayed, or when at least 3 distinct users have
+      an interactive credential failure to the application from that ASN; 5+ PHISHED accounts used from one
+      VPS on one application for 3+ days with no failures are excused (residual), and so are up to 2
+      failing users or a lone sprayed user (under 20%) among a connector's users.
     tables: [signins, ual_events]
     requires: []
     requires_evidence: []
@@ -452,11 +456,12 @@ rules:
     # attacker's proxy or replay address (a hosting ASN, far from the user's home): the logic hits.
     # The cloud-service profile is established from the whole case (no prefix), so a connector's first
     # days are excused too and cloud_connector_onboarding is a look-alike. An (app, ASN) is NOT a cloud
-    # service when one of its users was sprayed (a credential failure from a spray source) or when a
-    # credential failure to the app comes from that ASN. spray_vps_login: accounts taken from a spray
+    # service when sprayed users (a credential failure from a spray source) are >= 20% of its users or
+    # >= 3 of them, or when >= 3 distinct users have an interactive credential failure to the app from
+    # that ASN. spray_vps_login: accounts taken from a spray
     # and used from a cloud VPS (its sprayed users disqualify the pair; the hit cites a sign-in record,
-    # the storyline has no UAL logon); vps_password_failures: wrong passwords first on the VPS, no spray
-    # (the failures from the ASN disqualify it). Residual: 5+ PHISHED accounts used from one VPS on one
+    # the storyline has no UAL logon); vps_password_failures: wrong passwords first on the VPS by three
+    # users, no spray (the failures from the ASN disqualify it). Residual: 5+ PHISHED accounts used from one VPS on one
     # app for 3+ days with no failures look like a connector and are excused. connector_app_other_asn: the connector's own application from a
     # different hosting ASN. Known limit: a per-user collection (Hawk 4, a few users) cannot establish a
     # connector, so a connector's sign-ins of its investigated users hit there; the scenario's connector
@@ -478,8 +483,9 @@ rules:
       pair whose two addresses are in the same country counts only when an end is a hosting address or a
       password-spray source of the tenant; a cross-country pair, or a pair with an unknown country, counts
       as before. The sign-ins of a tenant-wide cloud service (established from the whole case) to its application from its
-      hosting ASN (cloud_services, per application and ASN, interactive or not; not a service when a user was sprayed or a credential failure comes from the ASN) form no pair; another
-      ASN, UAL records and spray-source sign-ins always do.
+      hosting ASN (cloud_services, per application and ASN, interactive or not; not a service when sprayed users are 20% of its users or 3 of them, or 3 users
+      failed their credentials from the ASN) form no pair, and neither do the service's UAL UserLoggedIn records
+      (ual_events.app_id); another ASN, a UAL record with no application id and spray-source sign-ins always do.
     tables: [signins, ual_events]
     requires: []
     requires_evidence: []
