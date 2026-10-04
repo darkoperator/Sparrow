@@ -1499,8 +1499,11 @@ fn cmd_synth_check(manifest_path: &Path, case_path: &Path, json: bool) -> Result
                 println!("  {p}");
             }
         }
+        // Two different counts: every rule of the pack is checked against the latest detection run (its
+        // applicability, errors and unexplained hits); the manifest carries hit/no-hit expectations for some of them.
         println!(
-            "{} of {} rules checked, {} rule expectations not checked (no rule file)",
+            "{} rules checked against the latest detection run; the manifest has expectations for {} rules ({} of \
+             those have no rule file and are not checked)",
             report.detection.rules_checked, report.rules_expected, report.rules_unchecked
         );
     }

@@ -915,6 +915,22 @@ fn synth_generates_then_checks_a_case() {
         0,
     );
     assert_eq!(r["ok"], true, "{r}");
+    // The plain summary names what each count is: every pack rule is checked against the detection run, and a
+    // smaller set of them carries manifest expectations.
+    let checked = r["detection"]["rules_checked"].as_u64().unwrap();
+    let expected = r["rules_expected"].as_u64().unwrap();
+    assert!(checked > expected, "{checked} {expected}");
+    sparrow()
+        .args(["synth", "check", "--manifest"])
+        .arg(out.join("manifest.json"))
+        .arg("--case")
+        .arg(&case)
+        .assert()
+        .success()
+        .stdout(contains(format!(
+            "{checked} rules checked against the latest detection run; the manifest has expectations for \
+             {expected} rules (0 of those have no rule file and are not checked)"
+        )));
 }
 
 /// The real Hawk captures hold portal exports beside the Hawk trees (survey §3), so
