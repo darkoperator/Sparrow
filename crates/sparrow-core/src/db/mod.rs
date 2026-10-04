@@ -7,7 +7,7 @@ pub mod state_tables;
 pub use describe::{ColumnInfo, TableInfo, describe};
 
 use crate::{Error, Result};
-use duckdb::{AccessMode, Config, Connection};
+use duckdb::{AccessMode, Config, Connection, OptionalExt};
 use std::path::{Path, PathBuf};
 
 /// An empty database file opened READ_ONLY: the stand-in connection while a case's file is
@@ -108,37 +108,80 @@ fn open_writer(path: &Path) -> Result<(Connection, WriterGuard)> {
     Ok((conn, WriterGuard(key)))
 }
 
-/// Apply pending migrations; the ONLY way a case is migrated. When an existing case was migrated, one transaction
-/// then rebuilds its derived relations (`rebuild_derived`) and, when it crossed the analyst version, records the
-/// upgrade in the audit trail: a `schema_upgrade` entry, then one `legacy_decision` per indicator. Returns the schema
-/// version before and after.
+/// `case_meta` key: present while a migrated case still owes its post-migration step ([`post_migration`]); the
+/// value is the schema version the case had before it was migrated. The migration runner writes it in the same
+/// transaction as the migrations, and the step deletes it in its own, so a failed step is retried by every later
+/// writable open until it succeeds. Read-only commands warn while it exists.
+pub const POST_MIGRATION_PENDING: &str = "post_migration_pending";
+
+/// `case_meta` key: the credential-failure codes (a JSON array of integers) the last profile run derived
+/// `spray_sources` and `cloud_services` with. The post-migration rebuild reuses them, so an upgrade never swaps a
+/// case's custom `credential_failure_codes` list for the environment's.
+pub const CREDENTIAL_FAILURE_CODES: &str = "credential_failure_codes";
+
+/// Apply pending migrations, then run the post-migration step if one is pending; the ONLY way a case is migrated,
+/// and every writable open goes through it. Returns the schema version before and after: when a pending step ran,
+/// "before" is the version the marker recorded (the upgrade completed now), else the version this open found.
 fn migrate_recorded(conn: &Connection) -> Result<(u32, u32)> {
-    let from = migrations::current_version(conn)?;
+    let found = migrations::current_version(conn)?;
     let to = migrations::migrate(conn)?;
-    // A brand-new case (no schema yet) has nothing to rebuild or record.
-    let migrated = from > 0 && to > from;
-    // An existing case brought to the Phase 7 schema starts its audit chain (Addendum D.3).
-    let crossed_analyst =
-        from > 0 && from < migrations::ANALYST_VERSION && to >= migrations::ANALYST_VERSION;
-    if !migrated {
-        return Ok((from, to));
+    match pending_post_migration(conn)? {
+        Some(from) => {
+            post_migration(conn, from, to)?;
+            Ok((from, to))
+        }
+        None => Ok((found, to)),
     }
+}
+
+/// The pending post-migration step's "before" version ([`POST_MIGRATION_PENDING`]), if one is pending.
+fn pending_post_migration(conn: &Connection) -> Result<Option<u32>> {
+    if migrations::current_version(conn)? < migrations::ANALYST_VERSION {
+        return Ok(None);
+    }
+    let v: Option<String> = conn
+        .query_row(
+            "SELECT value FROM case_meta WHERE key = ?",
+            [POST_MIGRATION_PENDING],
+            |r| r.get(0),
+        )
+        .optional()?;
+    v.map(|v| {
+        v.parse().map_err(|_| {
+            Error::Invalid(format!(
+                "case_meta {POST_MIGRATION_PENDING}: {v:?} is not a schema version"
+            ))
+        })
+    })
+    .transpose()
+}
+
+/// The post-migration step of a case migrated from schema `from` to `to`, in ONE transaction that also deletes the
+/// marker: rebuild the derived relations (`rebuild_derived`) and, when the case crossed the analyst version, record
+/// the upgrade in the audit trail (Addendum D.3): a `schema_upgrade` entry, then one `legacy_decision` per
+/// indicator. Any error rolls all of it back and leaves the marker for the next writable open.
+fn post_migration(conn: &Connection, from: u32, to: u32) -> Result<()> {
+    let crossed_analyst = from < migrations::ANALYST_VERSION && to >= migrations::ANALYST_VERSION;
     conn.execute_batch("BEGIN TRANSACTION")?;
     let done = rebuild_derived(conn).and_then(|_| {
-        if !crossed_analyst {
-            return Ok(());
+        if crossed_analyst {
+            let case_id = crate::case::audit::case_id(conn)?;
+            crate::case::audit::append_system(
+                conn,
+                crate::case::audit::SYSTEM_UPGRADE,
+                "schema_upgrade",
+                "case",
+                &case_id,
+                Some(&serde_json::json!({ "schema_version": from })),
+                Some(&serde_json::json!({ "schema_version": to })),
+            )?;
+            legacy_indicator_decisions(conn)?;
         }
-        let case_id = crate::case::audit::case_id(conn)?;
-        crate::case::audit::append_system(
-            conn,
-            crate::case::audit::SYSTEM_UPGRADE,
-            "schema_upgrade",
-            "case",
-            &case_id,
-            Some(&serde_json::json!({ "schema_version": from })),
-            Some(&serde_json::json!({ "schema_version": to })),
+        conn.execute(
+            "DELETE FROM case_meta WHERE key = ?",
+            [POST_MIGRATION_PENDING],
         )?;
-        legacy_indicator_decisions(conn)
+        Ok(())
     });
     match done {
         Ok(()) => conn.execute_batch("COMMIT")?,
@@ -147,19 +190,65 @@ fn migrate_recorded(conn: &Connection) -> Result<(u32, u32)> {
             return Err(e);
         }
     }
-    Ok((from, to))
+    Ok(())
 }
 
 /// Rewrite the derived relations whose definition a migration may have changed (`spray_sources`, then
 /// `cloud_services`, which reads it) from the case's own sign-ins, so a migrated case never keeps rows computed
-/// under an older definition. The credential-failure codes come from `$SPARROW_DATA` / `$SPARROW_RULES` or the
-/// built-in list; a later profile run rebuilds them again with its own `--data` / `--rules`.
+/// under an older definition. The credential-failure codes are the ones the last profile run stored
+/// ([`CREDENTIAL_FAILURE_CODES`]); a case never profiled since that was recorded falls back to `$SPARROW_DATA` /
+/// `$SPARROW_RULES` or the built-in list.
 fn rebuild_derived(conn: &Connection) -> Result<()> {
-    let codes =
-        crate::profile::spray::credential_failure_codes(&crate::data::DataDirs::from_env())?;
+    #[cfg(any(test, feature = "test-fixtures"))]
+    if test_hooks::FAIL_POST_MIGRATION.with(std::cell::Cell::get) {
+        return Err(Error::Invalid(
+            "test hook: post-migration step failed".into(),
+        ));
+    }
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT value FROM case_meta WHERE key = ?",
+            [CREDENTIAL_FAILURE_CODES],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let codes = match stored {
+        Some(v) => serde_json::from_str::<Vec<i64>>(&v)
+            .map_err(|e| Error::Invalid(format!("case_meta {CREDENTIAL_FAILURE_CODES}: {e}")))?,
+        None => {
+            crate::profile::spray::credential_failure_codes(&crate::data::DataDirs::from_env())?
+        }
+    };
     crate::profile::spray::rebuild(conn, &codes)?;
     crate::profile::cloud_services::rebuild(conn, &codes)?;
     Ok(())
+}
+
+/// Record `codes` as the credential-failure codes the derived relations were built with
+/// ([`CREDENTIAL_FAILURE_CODES`]); the profile step calls it in its own transaction.
+pub fn store_credential_failure_codes(conn: &Connection, codes: &[i64]) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO case_meta (key, value) VALUES (?, ?)",
+        duckdb::params![
+            CREDENTIAL_FAILURE_CODES,
+            serde_json::to_string(codes).map_err(|e| Error::Invalid(e.to_string()))?
+        ],
+    )?;
+    Ok(())
+}
+
+/// Test-only failure injection (never compiled into a normal build).
+#[cfg(any(test, feature = "test-fixtures"))]
+#[doc(hidden)]
+pub mod test_hooks {
+    thread_local! {
+        pub(super) static FAIL_POST_MIGRATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Make every post-migration step on this thread fail before it changes anything.
+    pub fn fail_post_migration(on: bool) {
+        FAIL_POST_MIGRATION.with(|c| c.set(on));
+    }
 }
 
 /// One reviewable `legacy_decision` audit entry per indicator that predates the audit trail, by its original
@@ -266,6 +355,12 @@ impl Case {
             _writer: None,
             scratch: None,
         })
+    }
+
+    /// The schema version recorded by a post-migration step that has not completed yet
+    /// ([`POST_MIGRATION_PENDING`]): `sparrow upgrade` (or any writable open) runs it.
+    pub fn pending_post_migration(&self) -> Result<Option<u32>> {
+        pending_post_migration(&self.conn)
     }
 
     pub fn in_memory() -> Result<Case> {

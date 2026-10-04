@@ -191,12 +191,20 @@ fn with_sink<T>(
     }
 }
 
-fn summary(kind: &str, out: &Path, rows: Option<u64>, json: bool) -> Result<()> {
+fn summary(
+    kind: &str,
+    out: &Path,
+    rows: Option<u64>,
+    warning: Option<&str>,
+    json: bool,
+) -> Result<()> {
     if json {
-        println!(
-            "{}",
-            serde_json::json!({ "export": kind, "out": out.display().to_string(), "rows": rows })
-        );
+        let mut v =
+            serde_json::json!({ "export": kind, "out": out.display().to_string(), "rows": rows });
+        if let Some(w) = warning {
+            v["warning"] = w.into();
+        }
+        println!("{v}");
     } else {
         match rows {
             Some(n) => println!("wrote {kind} ({n} rows) to {}", out.display()),
@@ -220,6 +228,7 @@ pub fn run(command: ExportCommand, json: bool) -> Result<ExitCode> {
                 check_out(o, &case)?;
             }
             let c = Case::open_read_only(&case)?;
+            let warning = crate::pending_warning(&c, json)?;
             let opts = ReportOpts {
                 reviewed_only,
                 generated_at,
@@ -228,7 +237,7 @@ pub fn run(command: ExportCommand, json: bool) -> Result<ExitCode> {
                 Ok(report_md::write(c.conn(), w, &opts)?)
             })?;
             if let Some(p) = out {
-                summary("report", &p, None, json)?;
+                summary("report", &p, None, warning.as_deref(), json)?;
             }
         }
         ExportCommand::Timeline {
@@ -257,11 +266,12 @@ pub fn run(command: ExportCommand, json: bool) -> Result<ExitCode> {
                 check_out(o, &case)?;
             }
             let c = Case::open_read_only(&case)?;
+            let warning = crate::pending_warning(&c, json)?;
             let n = with_sink(out.as_deref(), json, |w| {
                 Ok(timeline_csv::write(c.conn(), w, &opts)?)
             })?;
             if let Some(p) = out {
-                summary("timeline", &p, Some(n), json)?;
+                summary("timeline", &p, Some(n), warning.as_deref(), json)?;
             }
         }
         ExportCommand::Workbook { case, format, out } => {
@@ -271,10 +281,11 @@ pub fn run(command: ExportCommand, json: bool) -> Result<ExitCode> {
             };
             check_out(&out, &case)?;
             let c = Case::open_read_only(&case)?;
+            let warning = crate::pending_warning(&c, json)?;
             atomic(&out, |tmp| {
                 Ok(workbook_xlsx::write(c.conn(), tmp, generated_at)?)
             })?;
-            summary("workbook", &out, None, json)?;
+            summary("workbook", &out, None, warning.as_deref(), json)?;
         }
     }
     Ok(ExitCode::SUCCESS)

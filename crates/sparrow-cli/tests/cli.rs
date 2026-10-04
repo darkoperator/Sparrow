@@ -2998,3 +2998,77 @@ fn create_commands_return_the_new_id() {
     assert_eq!(i["audit"]["object_id"], iid);
     assert_eq!(i["audit"]["after"]["value"], "203.0.113.9");
 }
+
+#[test]
+fn read_commands_warn_while_a_post_migration_step_is_pending() {
+    const WARNING: &str = "case has a pending post-migration step; run `sparrow upgrade`";
+    let dir = tempfile::tempdir().unwrap();
+    let case = dir.path().join("c.duckdb");
+    drop(sparrow_core::Case::create_or_open(&case).unwrap());
+    // A failed post-migration step leaves this marker (the core tests inject that failure).
+    duckdb::Connection::open(&case)
+        .unwrap()
+        .execute(
+            "INSERT INTO case_meta (key, value) VALUES (?, '15')",
+            [sparrow_core::db::POST_MIGRATION_PENDING],
+        )
+        .unwrap();
+
+    sparrow()
+        .args(["audit", "verify", "--case"])
+        .arg(&case)
+        .assert()
+        .success()
+        .stderr(contains(WARNING));
+    let v = json_out(
+        sparrow()
+            .args(["--json", "audit", "verify", "--case"])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(v["warning"], WARNING);
+    // capabilities and summary warn before they find there is no tenant profile.
+    for cmd in ["capabilities", "summary"] {
+        sparrow()
+            .args([cmd, "--case"])
+            .arg(&case)
+            .assert()
+            .stderr(contains(WARNING));
+    }
+    sparrow()
+        .args(["export", "report", "--case"])
+        .arg(&case)
+        .assert()
+        .success()
+        .stderr(contains(WARNING));
+    let out = dir.path().join("r.md");
+    let v = json_out(
+        sparrow()
+            .args(["--json", "export", "report", "--out"])
+            .arg(&out)
+            .arg("--case")
+            .arg(&case),
+        0,
+    );
+    assert_eq!(v["warning"], WARNING);
+
+    // `sparrow upgrade` runs the step; the warning is gone.
+    sparrow()
+        .args(["upgrade", "--case"])
+        .arg(&case)
+        .assert()
+        .success();
+    let v = json_out(
+        sparrow()
+            .args(["--json", "audit", "verify", "--case"])
+            .arg(&case),
+        0,
+    );
+    assert!(v.get("warning").is_none(), "{v}");
+    sparrow()
+        .args(["audit", "verify", "--case"])
+        .arg(&case)
+        .assert()
+        .success()
+        .stderr(contains(WARNING).not());
+}

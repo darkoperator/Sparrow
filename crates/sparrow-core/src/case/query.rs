@@ -14,8 +14,9 @@
 //!    The lockdown is probed before the query runs; if a probe succeeds the query is refused.
 //! 3. **Never a writer.** The case file is only ever attached read-only, so no statement can change it.
 //!
-//! The query sees every table and view of the case, including `case_meta` (the case id and the audit chain's
-//! `audit_head` and `audit_verified` bookkeeping). That is harmless: they are not secret, and reading them changes
+//! The query sees every table and view of the case, including `case_meta` (the case id, the audit chain's
+//! `audit_head` and `audit_verified` bookkeeping, and `db::POST_MIGRATION_PENDING` and
+//! `db::CREDENTIAL_FAILURE_CODES`). That is harmless: they are not secret, and reading them changes
 //! nothing; the audit chain's integrity comes from `audit verify`, not from hiding them.
 
 use crate::{Error, Result};

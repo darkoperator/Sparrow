@@ -139,8 +139,19 @@ pub fn migrate(conn: &Connection) -> Result<u32> {
         });
     }
     for m in MIGRATIONS.iter().filter(|m| m.version > current) {
+        // An existing case owes a post-migration step (`super::POST_MIGRATION_PENDING`): the marker commits with
+        // every migration that has `case_meta` (so with the last one), and an older marker is kept, so a run that
+        // stopped part-way still names the version the case had before its first migration.
+        let marker = if current > 0 && m.version >= ANALYST_VERSION {
+            format!(
+                "INSERT INTO case_meta (key, value) VALUES ('{}', '{current}') ON CONFLICT DO NOTHING;\n",
+                super::POST_MIGRATION_PENDING
+            )
+        } else {
+            String::new()
+        };
         let batch = format!(
-            "BEGIN TRANSACTION;\n{}\nINSERT INTO schema_migrations (version, name) VALUES ({}, '{}');\nCOMMIT;",
+            "BEGIN TRANSACTION;\n{}\n{marker}INSERT INTO schema_migrations (version, name) VALUES ({}, '{}');\nCOMMIT;",
             m.sql, m.version, m.name
         );
         if let Err(source) = conn.execute_batch(&batch) {

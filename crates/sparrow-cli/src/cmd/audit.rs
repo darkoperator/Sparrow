@@ -10,10 +10,9 @@ use std::process::ExitCode;
 /// The exit code of `audit verify` on a broken chain.
 pub const BROKEN_CHAIN: u8 = 3;
 
-fn print_report(r: &ChainReport, json: bool) -> Result<()> {
+fn print_report(r: &ChainReport, warning: Option<&str>, json: bool) -> Result<()> {
     if json {
-        println!("{}", serde_json::to_string_pretty(r)?);
-        return Ok(());
+        return crate::print_json_warned(r, warning);
     }
     if r.ok {
         println!(
@@ -45,6 +44,7 @@ pub fn verify(
     analyst: Option<String>,
     json: bool,
 ) -> Result<ExitCode> {
+    let mut warning = None;
     let report = if acknowledge {
         let actor = super::actor::resolve(agent, analyst)?;
         let case = crate::open_case_for_write(case_path)?;
@@ -60,9 +60,10 @@ pub fn verify(
         r
     } else {
         let case = Case::open_read_only(case_path)?;
+        warning = crate::pending_warning(&case, json)?;
         audit::verify(case.conn())?
     };
-    print_report(&report, json)?;
+    print_report(&report, warning.as_deref(), json)?;
     Ok(if report.ok {
         ExitCode::SUCCESS
     } else {

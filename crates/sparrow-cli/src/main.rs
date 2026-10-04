@@ -722,6 +722,27 @@ fn print_json<T: Serialize>(value: &T) -> Result<()> {
     Ok(())
 }
 
+/// A read-only command's warning while the case owes a post-migration step (`db::POST_MIGRATION_PENDING`):
+/// printed to stderr, or returned for the `--json` output's `warning` key.
+pub(crate) fn pending_warning(case: &Case, json: bool) -> Result<Option<String>> {
+    let warning = case
+        .pending_post_migration()?
+        .map(|_| "case has a pending post-migration step; run `sparrow upgrade`".to_string());
+    if let (Some(w), false) = (&warning, json) {
+        eprintln!("warning: {w}");
+    }
+    Ok(warning)
+}
+
+/// `value` as JSON, with a top-level `warning` key when one is given.
+pub(crate) fn print_json_warned<T: Serialize>(value: &T, warning: Option<&str>) -> Result<()> {
+    let mut v = serde_json::to_value(value)?;
+    if let (Some(w), Some(o)) = (warning, v.as_object_mut()) {
+        o.insert("warning".into(), w.into());
+    }
+    print_json(&v)
+}
+
 #[derive(Serialize)]
 struct DiscoverFile {
     rel_path: String,
@@ -1018,6 +1039,7 @@ fn print_stale_warning(stale_collections: &[i64], case_path: &Path) {
 fn cmd_capabilities(case_path: &Path, json: bool) -> Result<ExitCode> {
     let case = Case::open_read_only(case_path)?;
     let report = capabilities_report(&case, chrono::Utc::now())?;
+    let warning = pending_warning(&case, json)?;
     if report.tenants.is_empty() {
         anyhow::bail!(
             "the case has no tenant profile; run `sparrow profile --case {}` first",
@@ -1025,7 +1047,7 @@ fn cmd_capabilities(case_path: &Path, json: bool) -> Result<ExitCode> {
         );
     }
     if json {
-        print_json(&report)?;
+        print_json_warned(&report, warning.as_deref())?;
         return Ok(ExitCode::SUCCESS);
     }
     print_stale_warning(&report.stale_collections, case_path);
@@ -1072,6 +1094,7 @@ fn cmd_capabilities(case_path: &Path, json: bool) -> Result<ExitCode> {
 fn cmd_summary(case_path: &Path, json: bool) -> Result<ExitCode> {
     let case = Case::open_read_only(case_path)?;
     let report = summarize(&case)?;
+    let warning = pending_warning(&case, json)?;
     if report.tenants.is_empty() {
         anyhow::bail!(
             "the case has no tenant profile; run `sparrow profile --case {}` first",
@@ -1079,7 +1102,7 @@ fn cmd_summary(case_path: &Path, json: bool) -> Result<ExitCode> {
         );
     }
     if json {
-        print_json(&report)?;
+        print_json_warned(&report, warning.as_deref())?;
         return Ok(ExitCode::SUCCESS);
     }
     print_stale_warning(&report.stale_collections, case_path);

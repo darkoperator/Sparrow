@@ -246,7 +246,9 @@ sparrow summary --case case.duckdb                # tenant, licences, coverage, 
 sparrow tenant domains list --case case.duckdb    # also add|remove <domain> [--tenant KEY] [--analyst NAME]
 sparrow schema --case case.duckdb                 # tables and column descriptions
 sparrow upgrade --case case.duckdb                # bring a case made by an older sparrow up to date (also
-                                                  # rebuilds spray_sources and cloud_services from its sign-ins)
+                                                  # rebuilds spray_sources and cloud_services from its sign-ins,
+                                                  # with the codes the last profile used; a failed rebuild is
+                                                  # retried by every later write, and read commands warn meanwhile)
 sparrow verify ual_events <record-id> --case case.duckdb [--root /moved/Hawk_folder]
 sparrow detect --case case.duckdb                 # run the rules (also the last step of ingest/profile;
                                                   # --rule ID / --tag TAG to narrow, --no-detect to skip
@@ -288,7 +290,8 @@ Add `--json` to any command for machine-readable output. Exit codes:
 Read commands open the case read-only. `query` runs exactly one SELECT (checked by DuckDB's own parser) on a
 separate in-memory DuckDB that attaches the case read-only, with external access (files, network, environment) and
 extension loading off and the configuration locked. It sees every table and view, including `case_meta` (the case
-id and the audit chain's `audit_head`/`audit_verified` bookkeeping); that is harmless, since they are not secret and
+id, the audit chain's `audit_head`/`audit_verified` bookkeeping, `post_migration_pending` while an upgrade's
+post-migration step has not completed, and the `credential_failure_codes` the last profile used); that is harmless, since they are not secret and
 reading them changes nothing.
 
 Agent text is stored as given. Plain (non-`--json`) output shows control characters and Unicode format characters

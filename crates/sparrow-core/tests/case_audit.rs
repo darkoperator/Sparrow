@@ -954,3 +954,127 @@ fn opening_a_current_case_leaves_the_derived_relations_alone() {
     let c = Case::create_or_open(&path).unwrap();
     assert_eq!(derived_rows(&c).0.len(), 1);
 }
+
+/// (schema_upgrade entries and their `before`, legacy_decision entries) in the audit trail.
+fn upgrade_entries(c: &Case) -> (Vec<String>, i64) {
+    let mut st = c
+        .conn()
+        .prepare("SELECT CAST(before AS VARCHAR) FROM audit_trail WHERE action = 'schema_upgrade' ORDER BY seq")
+        .unwrap();
+    let ups = st
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<Vec<String>, _>>()
+        .unwrap();
+    let legacy: i64 = c
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM audit_trail WHERE action = 'legacy_decision'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    (ups, legacy)
+}
+
+#[test]
+fn a_failed_post_migration_step_is_retried_by_the_next_writable_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("p6.duckdb");
+    phase6_case_with_stale_derived_rows(&path);
+    sparrow_core::db::test_hooks::fail_post_migration(true);
+    let failed = Case::upgrade(&path);
+    sparrow_core::db::test_hooks::fail_post_migration(false);
+    assert!(failed.is_err());
+
+    // The schema is current and the marker remembers v15; the derived rows and the audit trail are untouched.
+    let c = Case::open_read_only(&path).unwrap();
+    assert_eq!(
+        sparrow_core::db::migrations::current_version(c.conn()).unwrap(),
+        latest_version()
+    );
+    assert_eq!(c.pending_post_migration().unwrap(), Some(15));
+    let stale = (vec![("t1".to_string(), "203.0.113.250".to_string(), 9)], 1);
+    assert_eq!(derived_rows(&c), stale);
+    assert_eq!(upgrade_entries(&c), (vec![], 0));
+    drop(c);
+
+    // The next writable open retries the step: rebuilt, recorded once, marker gone.
+    let c = Case::create_or_open(&path).unwrap();
+    assert_eq!(c.pending_post_migration().unwrap(), None);
+    assert_eq!(
+        derived_rows(&c),
+        (vec![("t1".to_string(), "198.51.100.7".to_string(), 5)], 0)
+    );
+    let (ups, legacy) = upgrade_entries(&c);
+    assert_eq!(ups.len(), 1);
+    assert!(ups[0].contains("\"schema_version\":15"), "{}", ups[0]);
+    assert_eq!(legacy, 2);
+    assert!(audit::verify(c.conn()).unwrap().ok);
+    drop(c);
+
+    // Nothing is pending any more: a later upgrade writes nothing.
+    assert_eq!(
+        Case::upgrade(&path).unwrap(),
+        (latest_version(), latest_version())
+    );
+    let c = Case::open_read_only(&path).unwrap();
+    assert_eq!(upgrade_entries(&c).0.len(), 1);
+    assert_eq!(upgrade_entries(&c).1, 2);
+}
+
+#[test]
+fn an_upgrade_keeps_the_credential_failure_codes_the_profile_used() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("p6.duckdb");
+    phase6_case_with_stale_derived_rows(&path);
+    Case::upgrade(&path).unwrap();
+    // A custom list that knows only 59999, which five users failed with from another address.
+    let rules = dir.path().join("rules");
+    std::fs::create_dir_all(rules.join("lists")).unwrap();
+    std::fs::write(
+        rules.join("lists/credential_failure_codes.yaml"),
+        "name: credential_failure_codes\ndescription: test list\nvalues:\n  - \"59999\"\n",
+    )
+    .unwrap();
+    let mut c = Case::create_or_open(&path).unwrap();
+    for i in 0..5 {
+        c.conn()
+            .execute(
+                "INSERT INTO signins (record_key, collection_id, event_time, user_upn, ip, is_interactive, \
+                                      error_code, app_id) \
+                 VALUES (?, 1, CAST(? AS TIMESTAMPTZ), ?, '198.51.100.8', true, 59999, \
+                         '00000003-0000-0000-c000-000000000000')",
+                duckdb::params![
+                    format!("x{i}"),
+                    format!("2026-09-03 10:0{i}:00+00"),
+                    format!("user{i}@contoso.example")
+                ],
+            )
+            .unwrap();
+    }
+    let opts = sparrow_core::profile::ProfileOptions {
+        dirs: sparrow_core::data::DataDirs {
+            data: None,
+            rules: vec![rules],
+        },
+        ..Default::default()
+    };
+    sparrow_core::profile::refresh(&mut c, &opts).unwrap();
+    // The profile names the collection's tenant itself (no tenant evidence in this case).
+    let custom = vec![("collection:1".to_string(), "198.51.100.8".to_string(), 5)];
+    assert_eq!(derived_rows(&c).0, custom);
+    // A later migration is pending (v16 is the newest schema, so the runner's marker is set by hand), and the
+    // upgrade runs without the custom list: the rebuild uses the stored one.
+    c.conn()
+        .execute(
+            "INSERT INTO case_meta (key, value) VALUES (?, '16')",
+            [sparrow_core::db::POST_MIGRATION_PENDING],
+        )
+        .unwrap();
+    drop(c);
+    Case::upgrade(&path).unwrap();
+    let c = Case::open_read_only(&path).unwrap();
+    assert_eq!(c.pending_post_migration().unwrap(), None);
+    assert_eq!(derived_rows(&c).0, custom);
+}

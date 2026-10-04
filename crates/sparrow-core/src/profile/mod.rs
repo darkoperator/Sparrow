@@ -90,6 +90,7 @@ pub fn refresh(case: &mut Case, opts: &ProfileOptions) -> Result<ProfileReport> 
     let codes = spray::credential_failure_codes(&opts.dirs)?;
     report.spray_sources = spray::rebuild(&tx, &codes)?;
     report.cloud_services = cloud_services::rebuild(&tx, &codes)?;
+    crate::db::store_credential_failure_codes(&tx, &codes)?;
     let ids = identities::rebuild(&tx)?;
     report.identities = ids.identities;
     if ids.conflicts > 0 {
