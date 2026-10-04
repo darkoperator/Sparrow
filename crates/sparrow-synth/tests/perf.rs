@@ -191,6 +191,12 @@ fn tree_digest(dir: &Path) -> String {
 /// Re-recorded by the architect at the end of Phase 6 after the last merges (F10 interrupts, F11
 /// Outlook rules, the review fixes, and F6 part 2: the tenant id now depends on the scenario, which
 /// changes every byte). Previous value `563b547e93f40270a3a050b8a08019e2be1ff6d83133f30ab8cc70e5043c6d0d`.
+///
+/// Re-recorded for fu-wave3-oracle: the manifest gains the computed expectations of the volume
+/// tree's `inbox_rule_finance` and `mia_burst` under SPW-ID-004 (`RuleExpect.computed`); every
+/// collector file is byte-identical. With those two entries removed from `manifest.json`, the
+/// tree hashes to the previous value
+/// `3e037d5faa658cee372dccc2eba1b0fb85edb020c5982c2d0df387d9b9e4d812`.
 #[test]
 #[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
@@ -201,7 +207,7 @@ fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
     generate_to_dir(&load("volume").unwrap(), &o, dir.path()).unwrap();
     assert_eq!(
         tree_digest(dir.path()),
-        "3e037d5faa658cee372dccc2eba1b0fb85edb020c5982c2d0df387d9b9e4d812"
+        "1c45d7e934bae7b040e2cf7d218dc4f0f9e29a5d54099efc8b28fc2a3ae125bb"
     );
 }
 

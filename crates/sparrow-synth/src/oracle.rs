@@ -293,7 +293,8 @@ impl Facts {
     /// carry (checked against ingested cases by `tests/oracle.rs`):
     /// - sign-ins: Hawk 4 writes the Graph v1.0 schema, which has no session id, user agent, auth
     ///   requirement or MFA detail; the portal export has no risk column; the others carry the event.
-    /// - UAL records: the record's own AuditData, read as Sparrow's normalizer reads it (UserId,
+    /// - UAL records: the record's own AuditData (Hawk 3's eDiscovery log keeps eight of its columns),
+    ///   read as Sparrow's normalizer reads it (UserId,
     ///   ClientIP / ClientIPAddress / ActorIpAddress, SessionId else AppAccessContext.AADSessionId,
     ///   AppId / ApplicationId, UserAgent else ExtendedProperties UserAgent else ClientInfoString).
     /// - admin audit rows (Hawk 3's Exchange admin cmdlets): the cmdlet, its caller and run time.
@@ -318,7 +319,7 @@ impl Facts {
             for u in &day.ual {
                 let key = crate::keys::ual(u.id);
                 if uk.contains(&key) {
-                    ual.push(ual_row(u, key));
+                    ual.push(ual_row(collector, u, key));
                 }
                 let akey = crate::keys::admin_audit_of(u);
                 if ak.contains(&akey) {
@@ -851,8 +852,29 @@ fn signin_row(collector: Collector, s: &SignIn, key: String) -> SignInRow {
     }
 }
 
-fn ual_row(u: &Ual, key: String) -> UalRow {
-    let a = &u.audit;
+fn ual_row(collector: Collector, u: &Ual, key: String) -> UalRow {
+    // Hawk 3 delivers Discovery records only in eDiscoveryLogs.csv, whose eight columns carry no
+    // address, session, application or client (`writers::hawk::v3::ediscovery_logs`).
+    let kept: Map<String, Value>;
+    let a =
+        if collector == Collector::Hawk3 && u.record_type == crate::events::RecordType::Discovery {
+            kept = [
+                "CreationTime",
+                "Id",
+                "Operation",
+                "Workload",
+                "UserId",
+                "Case",
+                "CaseID",
+                "Cmdlet",
+            ]
+            .iter()
+            .filter_map(|k| u.audit.get(*k).map(|v| (k.to_string(), v.clone())))
+            .collect();
+            &kept
+        } else {
+            &u.audit
+        };
     let user_agent = text(a, "UserAgent")
         .or_else(|| {
             name_values(get_ci(a, "ExtendedProperties"))
