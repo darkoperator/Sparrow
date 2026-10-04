@@ -968,6 +968,19 @@ fn conformance_real_hawk_compares_portal_exports_beside_the_capture() {
         .map(|x| x.as_str().unwrap())
         .collect();
     assert_eq!(covered.len(), 3, "{covered:?}");
+    let not_covered = v["not_covered"].as_array().unwrap();
+    assert!(
+        not_covered
+            .iter()
+            .any(|x| x.as_str().unwrap().contains("ja-JP"))
+            && not_covered
+                .iter()
+                .any(|x| x.as_str().unwrap().contains("non_windows"))
+            && not_covered
+                .iter()
+                .any(|x| x.as_str().unwrap().contains("invictus_devices_json")),
+        "{not_covered:?}"
+    );
     assert!(
         covered
             .iter()

@@ -325,6 +325,7 @@ fn cmd_synth_conformance(
             let (generated, covered) = generated_profiles(c, seed)?;
             let mut report = sparrow_synth::conformance::conform_real(&real, &generated);
             report.variants = covered;
+            report.not_covered = REAL_NOT_COVERED.iter().map(|s| s.to_string()).collect();
             report
         }
         _ => anyhow::bail!("pass exactly one of --tree DIR or --real DIR"),
@@ -359,6 +360,13 @@ fn conformance_collectors(c: ConformanceCollector) -> &'static [Collector] {
         ConformanceCollector::Portal => &[Collector::Portal],
     }
 }
+
+/// Generator options the `--real` matrix does not vary (named in the report so a clean result is read correctly).
+const REAL_NOT_COVERED: [&str; 3] = [
+    "ja-JP host culture (the matrix has en-US, en-GB, de-DE)",
+    "non_windows (PowerShell 7 on macOS/Linux)",
+    "invictus_devices_json (Get-Devices -Output JSON)",
+];
 
 /// The per-tree variants of each collector the `--real` matrix covers, for the report: `collector[label; label]`.
 fn variant_summary(collectors: &[Collector]) -> Vec<String> {
@@ -1965,8 +1973,14 @@ mod tests {
         let report = sparrow_synth::conformance::ConformanceReport {
             ok: true,
             variants: s,
+            not_covered: REAL_NOT_COVERED.iter().map(|s| s.to_string()).collect(),
             ..Default::default()
         };
+        assert!(
+            report.to_text().contains("not covered: ja-JP"),
+            "{}",
+            report.to_text()
+        );
         assert!(
             report.to_text().contains("variants covered: hawk3["),
             "{}",

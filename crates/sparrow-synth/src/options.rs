@@ -91,13 +91,13 @@ pub struct GenerateOptions {
     /// Per-tree variants the seed otherwise picks (`None`: the seed's pick). `--real` conformance forces each in
     /// turn to compare a real capture with every variant a tree can take. Portal: the Purview `CreationDate`
     /// form (`true`: the host-culture form of the older export).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purview_culture_dates: Option<bool>,
     /// Portal: the message-trace summary re-saved through Excel (`true`: single-byte file).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_trace_excel_resave: Option<bool>,
     /// Hawk: the UAL `CreationDate` kind of the embedded raw records (`true`: UTC, `false`: unspecified).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hawk_ual_creation_utc: Option<bool>,
 }
 

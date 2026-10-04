@@ -244,6 +244,10 @@ pub struct ConformanceReport {
     /// `--real`: the per-tree variants the generated matrix covered (`variants`), by label.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<String>,
+    /// `--real`: generator options the matrix does NOT vary, so a real capture in that form would report "real only"
+    /// for the reason this report is meant to rule out. Named so nobody reads "no findings" as "covers everything".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_covered: Vec<String>,
 }
 
 impl ConformanceReport {
@@ -254,6 +258,9 @@ impl ConformanceReport {
         );
         if !self.variants.is_empty() {
             out.push_str(&format!("variants covered: {}\n", self.variants.join("; ")));
+        }
+        if !self.not_covered.is_empty() {
+            out.push_str(&format!("not covered: {}\n", self.not_covered.join("; ")));
         }
         if self.findings.is_empty() {
             out.push_str("findings: none\n");
@@ -710,6 +717,12 @@ fn check_artifact(
 /// message-trace Excel re-save, the Hawk UAL `CreationDate` kind). `--real` generates the matrix once per variant, so
 /// a form the generator can produce in any variant is never "real only" just because the seed took the other one.
 /// A variant forces the choice (`GenerateOptions`' `Option` overrides) instead of hoping enough seeds cover it.
+///
+/// What the tests guarantee: every value of the choices listed here is generated
+/// (`every_seeds_own_pick_of_a_known_choice_is_a_listed_variant`), and a per-tree choice that is NOT listed is likely
+/// to be noticed because a forced variant must not change with the seed
+/// (`a_forced_variant_does_not_depend_on_the_seed`, seeds 1-8: a fair-coin choice escapes with probability 2^-7).
+/// Neither is a proof that no choice is missing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Variant {
     pub label: String,
@@ -727,8 +740,7 @@ impl Variant {
     }
 }
 
-/// Every variant a tree of `collector` can take. Adding a per-tree seeded choice to a writer means adding it here;
-/// `every_seeds_own_pick_is_covered_by_the_variants` fails when a seed's pick is missing.
+/// Every variant a tree of `collector` can take. Adding a per-tree seeded choice to a writer means adding it here.
 pub fn variants(collector: Collector) -> Vec<Variant> {
     let none = || Variant {
         label: String::new(),
@@ -768,7 +780,9 @@ pub fn variants(collector: Collector) -> Vec<Variant> {
             }
             out
         }
-        // Microsoft-Extractor-Suite trees have no per-tree seeded form.
+        // Microsoft-Extractor-Suite trees have no per-tree seeded FORM. The directory-activity JSON key order is a
+        // per-tree seeded shuffle (`writers/invictus/activity.rs`), left out on purpose: `conform_real` compares column
+        // and key SETS, so order cannot produce a finding.
         Collector::Invictus => vec![Variant {
             label: "single-form".to_string(),
             ..none()

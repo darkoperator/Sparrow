@@ -157,10 +157,11 @@ fn a_shape_no_variant_produces_is_still_reported() {
     );
 }
 
-/// The drift guard: whatever a seed picks must be among the forced variants. A new per-tree seeded choice that
-/// `variants()` does not cover would show up as a real-only finding here.
+/// The known choices' value lists are complete: whatever value a seed gives a KNOWN per-tree choice is one of the
+/// forced variants. (Dropping a value from `variants()` makes this fail.) It cannot see a choice `variants()` does not
+/// force at all; `a_forced_variant_does_not_depend_on_the_seed` is the guard for that.
 #[test]
-fn every_seeds_own_pick_is_covered_by_the_variants() {
+fn every_seeds_own_pick_of_a_known_choice_is_a_listed_variant() {
     for c in [Collector::Portal, Collector::Hawk3, Collector::Hawk4] {
         for seed in 1..=8 {
             let u = union(c, seed);
@@ -169,4 +170,98 @@ fn every_seeds_own_pick_is_covered_by_the_variants() {
             assert!(r.ok, "{c:?} seed {seed}:\n{}", r.to_text());
         }
     }
+}
+
+/// What `conform_real` compares, as key sets (never counts): per artifact the column SET, the encodings, the date
+/// forms per column and the JSON shapes. Header order and counts do not matter to it, so they are not compared.
+#[derive(Debug, PartialEq, Eq)]
+struct Shape {
+    columns: std::collections::BTreeSet<String>,
+    encodings: std::collections::BTreeSet<String>,
+    dates: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    json_shapes: std::collections::BTreeSet<String>,
+}
+
+fn shapes(p: &Profile) -> std::collections::BTreeMap<String, Shape> {
+    p.artifacts
+        .iter()
+        .map(|(a, ap)| {
+            (
+                a.clone(),
+                Shape {
+                    columns: ap.headers.keys().flatten().cloned().collect(),
+                    encodings: ap.encodings.keys().cloned().collect(),
+                    dates: ap.dates.clone(),
+                    json_shapes: ap.json_shapes.keys().cloned().collect(),
+                },
+            )
+        })
+        .collect()
+}
+
+/// Artifacts whose COLUMN SET legitimately varies with the seed today: their columns are the flattened AuditData /
+/// event properties of whichever records the seed generated (`Folders_*`, `Param_*`, `Item_Attachments`,
+/// `TargetUserOrGroup*`), i.e. CONTENT, not a per-tree form. Found by this test (seeds 1-8, Hawk 4); a variant cannot
+/// cover them, and `--real` covers them by comparing against every scenario. Their encodings, date forms (on columns
+/// both trees have) and JSON shapes are still held to seed-independence below. Header ORDER also varies by seed on
+/// several Hawk artifacts; `conform_real` compares column sets, so order is not compared here.
+const CONTENT_DRIVEN_COLUMNS: &[&str] = &["hawk.user.simple_ual", "hawk.ip.events"];
+
+/// The guard for a NEW per-tree choice: hold the variant fixed and vary the seed. Everything `--real` compares must
+/// stay the same, so a form a writer picks per tree from the seed and `variants()` does not force shows up as a
+/// seed-dependent shape (a fair-coin choice escapes seeds 2-8 with probability 2^-7). The comparison of the stand-in
+/// with the union cannot see it: it builds the union from the same seed, so both sides agree on that choice.
+#[test]
+fn a_forced_variant_does_not_depend_on_the_seed() {
+    let mut content_driven_seen = false;
+    for c in [Collector::Portal, Collector::Hawk3, Collector::Hawk4] {
+        for v in variants(c) {
+            let base = shapes(&profile(c, 1, Some(&v)));
+            assert!(!base.is_empty(), "{c:?} {}: no artifacts profiled", v.label);
+            for seed in 2..=8 {
+                let other = shapes(&profile(c, seed, Some(&v)));
+                let who = format!("{c:?} {} seed 1 vs {seed}", v.label);
+                assert_eq!(
+                    base.keys().collect::<Vec<_>>(),
+                    other.keys().collect::<Vec<_>>(),
+                    "{who}: the artifacts differ"
+                );
+                for (a, x) in &base {
+                    let y = &other[a];
+                    assert_eq!(
+                        x.encodings, y.encodings,
+                        "{who}: {a} encodings depend on the seed"
+                    );
+                    assert_eq!(
+                        x.json_shapes, y.json_shapes,
+                        "{who}: {a} JSON shapes depend on the seed"
+                    );
+                    if CONTENT_DRIVEN_COLUMNS.contains(&a.as_str()) {
+                        content_driven_seen |= x.columns != y.columns;
+                        // Date forms only on the columns both trees have.
+                        let common: std::collections::BTreeSet<&String> =
+                            x.columns.intersection(&y.columns).collect();
+                        let pick = |s: &Shape| {
+                            s.dates
+                                .iter()
+                                .filter(|(col, _)| common.contains(col))
+                                .map(|(c, f)| (c.clone(), f.clone()))
+                                .collect::<std::collections::BTreeMap<_, _>>()
+                        };
+                        assert_eq!(pick(x), pick(y), "{who}: {a} date forms depend on the seed");
+                    } else {
+                        assert_eq!(
+                            x.columns, y.columns,
+                            "{who}: {a} columns depend on the seed"
+                        );
+                        assert_eq!(x.dates, y.dates, "{who}: {a} date forms depend on the seed");
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        content_driven_seen,
+        "the content-driven allow-list no longer varies by seed: delete CONTENT_DRIVEN_COLUMNS"
+    );
 }
