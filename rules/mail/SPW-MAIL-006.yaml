@@ -4,10 +4,14 @@
 # Tuning, because a plain "new address" is background for most users (a new phone, a rotating
 # IPv6 privacy address, a carrier pool, a new home connection; Microsoft Learn,
 # audit-log-activities: the ClientIPAddress of a Send is simply the client's address):
-#   1. History: the user must have activity (ual_events or signins) on at least 3 distinct days
-#      BEFORE the send's day. A short or partial capture, or a user first seen today, has no
-#      baseline to deviate from; their first sends are not judged (not a miss we can tell from
-#      normal use).
+#   1. History: for the new-network path (3 below) the user must have activity (ual_events or
+#      signins) on at least 3 distinct days BEFORE the send's day. A short or partial capture, or a
+#      user first seen today, has no baseline to deviate from, so a new network is not judged for them
+#      (not a miss we can tell from normal use). The exception is the attacker-infrastructure arm: a
+#      send from a hosting ASN (ip_intel.is_hosting) or a password-spray source of the tenant is judged
+#      whatever the user's history, even a brand-new account's first send, because that arm needs no
+#      baseline to compare with (a new employee does not send from a data centre or a spray router).
+#      Real data: 45 sends by 15 new users, none from hosting or a spray source.
 #   2. Network, not address: "known" compares the network of the send's address - the ASN from
 #      ip_intel, else the address itself when ip_intel has no ASN - with the networks of the
 #      user's earlier events. A different address in a network the user has used is not new.
@@ -33,7 +37,7 @@
 # `sql:` because the history is a lookup over two tables.
 id: SPW-MAIL-006
 title: Mail sent from an IP address the user never used before
-version: 2
+version: 3
 status: stable
 severity: medium
 confidence: low
@@ -71,12 +75,14 @@ sql: |
   )
   SELECT s.record_key, 'ual_events' AS source_table, s.event_time, s.actor_upn, s.ip
   FROM sends s
-  WHERE (SELECT count(*) FROM days d WHERE d.upn = s.upn AND d.d < epoch_ms(s.event_time) // 86400000) >= 3
-    AND NOT EXISTS (SELECT 1 FROM first_ip f WHERE f.upn = s.upn AND f.ip = s.ip
+  WHERE NOT EXISTS (SELECT 1 FROM first_ip f WHERE f.upn = s.upn AND f.ip = s.ip
                     AND f.first_d < epoch_ms(s.event_time) // 86400000)
+    -- Hosting and spray-source sends are judged for every user, however little history; the
+    -- new-network path needs three earlier active days.
     AND (s.hosting OR EXISTS (SELECT 1 FROM spray_sources p WHERE p.ip = s.ip)
-         OR (NOT EXISTS (SELECT 1 FROM first_net f WHERE f.upn = s.upn AND f.net = s.net
-                         AND f.first_d < epoch_ms(s.event_time) // 86400000)
+         OR ((SELECT count(*) FROM days d WHERE d.upn = s.upn AND d.d < epoch_ms(s.event_time) // 86400000) >= 3
+             AND NOT EXISTS (SELECT 1 FROM first_net f WHERE f.upn = s.upn AND f.net = s.net
+                             AND f.first_d < epoch_ms(s.event_time) // 86400000)
              AND (s.cc IS NULL
                   OR NOT EXISTS (SELECT 1 FROM first_cc c WHERE c.upn = s.upn AND c.cc = s.cc
                                  AND c.first_d < epoch_ms(s.event_time) // 86400000)
@@ -803,6 +809,134 @@ tests:
       - table: ual_events
         operation: Send
         user_upn: alice@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 0
+  - name: a brand-new account's first send from a hosting address is a hit, whatever its history
+    records:
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 64500
+        country_iso: US
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: ual_events
+        operation: Send
+        user_upn: newbie@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 1
+  - name: a new user with one earlier day sending from a new hosting address is a hit
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 64500
+        country_iso: US
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: newbie@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-28T09:00:00Z"
+      - table: ual_events
+        operation: SendAs
+        user_upn: newbie@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 1
+  - name: a new user's first send from a password-spray source is a hit
+    records:
+      - table: spray_sources
+        tenant_key: test
+        ip: 198.51.100.77
+        users_targeted: 9
+        failures: 20
+        first_failure: "2026-02-20T00:00:00Z"
+        last_failure: "2026-02-28T00:00:00Z"
+      - table: ual_events
+        operation: Send
+        user_upn: newbie@contoso.example
+        client_ip: 198.51.100.77
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 1
+  - name: a new employee's first send from an ordinary ISP in a new country is not judged (no network arm without history)
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 64500
+        country_iso: DE
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: newbie@contoso.example
+        ip: 198.51.100.1
+        event_time: "2026-02-28T09:00:00Z"
+      - table: ual_events
+        operation: Send
+        user_upn: newbie@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 0
+  - name: a new employee's first sends from the office address (no ip_intel, no history) are not hits
+    records:
+      - table: ual_events
+        operation: Send
+        user_upn: newbie@contoso.example
+        client_ip: 198.51.100.1
+        event_time: "2026-03-01T10:00:00Z"
+      - table: ual_events
+        operation: Send
+        user_upn: newbie@contoso.example
+        client_ip: 198.51.100.1
+        event_time: "2026-03-01T10:30:00Z"
+    expect_hits: 0
+  - name: a new user's hosting address used on an earlier day is known, not a hit
+    records:
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 64500
+        country_iso: US
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: newbie@contoso.example
+        ip: 203.0.113.9
+        event_time: "2026-02-28T09:00:00Z"
+      - table: ual_events
+        operation: Send
+        user_upn: newbie@contoso.example
+        client_ip: 203.0.113.9
+        event_time: "2026-03-01T10:00:00Z"
+    expect_hits: 0
+  - name: a new account's send from a Microsoft address is never judged
+    records:
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 8075
+        is_hosting: true
+        is_microsoft: true
+        is_private: false
+      - table: ual_events
+        operation: Send
+        user_upn: newbie@contoso.example
         client_ip: 203.0.113.9
         event_time: "2026-03-01T10:00:00Z"
     expect_hits: 0

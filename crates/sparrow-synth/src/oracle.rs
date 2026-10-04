@@ -733,12 +733,12 @@ impl Facts {
         Ok(out)
     }
 
-    /// SPW-MAIL-006. A UAL Send / SendAs / SendOnBehalf, not from a Microsoft address, by a user with
-    /// activity (any UAL record or sign-in with an address) on enough earlier UTC days, from an
-    /// address the user never used on an earlier day, that is hosting or a spray source; or from a
-    /// network (ASN, else the address) never used on an earlier day that also has no country, a
-    /// country never seen on an earlier day, or follows a risky sign-in of the user within the
-    /// look-back.
+    /// SPW-MAIL-006. A UAL Send / SendAs / SendOnBehalf, not from a Microsoft address, from an
+    /// address the user never used on an earlier day, that is hosting or a spray source (whatever the
+    /// user's history, a brand-new account's first send included); or, by a user with activity (any UAL
+    /// record or sign-in with an address) on enough earlier UTC days, from a network (ASN, else the
+    /// address) never used on an earlier day that also has no country, a country never seen on an
+    /// earlier day, or follows a risky sign-in of the user within the look-back.
     fn new_network_send(&self) -> Result<BTreeSet<Record>> {
         const R: &str = "SPW-MAIL-006";
         let min_days = rule_number(R, "epoch_ms(s.event_time) // 86400000) >= ")? as usize;
@@ -792,12 +792,16 @@ impl Facts {
             let Some(h) = hist.get(u) else { continue };
             let d = day(s.t);
             let earlier = |first: Option<&i64>| first.is_some_and(|f| *f < d);
-            if h.days.iter().filter(|x| **x < d).count() < min_days || earlier(h.ip.get(&ip)) {
+            if earlier(h.ip.get(&ip)) {
                 continue;
             }
+            // Hosting and spray-source sends are judged whatever the history (a brand-new account's
+            // first send); the new-network path needs `min_days` earlier active days.
+            let history = h.days.iter().filter(|x| **x < d).count() >= min_days;
             let qualifies = f.hosting
                 || self.spray.contains(&ip)
-                || (!earlier(h.net.get(&net(ip, &f)))
+                || (history
+                    && !earlier(h.net.get(&net(ip, &f)))
                     && (f.country.as_ref().is_none_or(|cc| !earlier(h.cc.get(cc)))
                         || self.signins.iter().any(|r| {
                             r.upn.as_deref() == Some(u)

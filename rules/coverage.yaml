@@ -372,9 +372,10 @@ rules:
     severity: medium
     hawk: null
     logic: >-
-      UAL Send / SendAs / SendOnBehalf by a user with activity on at least 3 earlier UTC days, from an
-      address the user never used on an EARLIER UTC day (same-day activity never makes an address, a
-      network or a country known) that is a hosting ASN or a password-spray source of the tenant; or from
+      UAL Send / SendAs / SendOnBehalf from an address the user never used on an EARLIER UTC day
+      (same-day activity never makes an address, a network or a country known) that is a hosting ASN or a
+      password-spray source of the tenant, whatever the user's history (a brand-new account's first send
+      counts: that arm needs no baseline); or, for a user with activity on at least 3 earlier UTC days, from
       a network (ASN, else the address) the user never used on an earlier day that also meets one of: a
       country the user was never seen in on an earlier day, a medium/high risk sign-in of the user in the
       previous 24 hours, or no ip_intel country for the address (the qualifier is waived, so partial
@@ -389,6 +390,10 @@ rules:
     # new-network path alone). spray_success: the spray-source path alone.
     # spray_success is seen only through the spray-source relation, which needs the tenant-wide
     # sign-in export (a spray source is an address that failed against 5 distinct users).
+    # New accounts: the password-spray scenario runs send_new_ip (positive) and send_new_isp / send_known_ip
+    # (look-alikes) on days 1-2 of the window, where the user has fewer than three earlier active days: only
+    # the hosting / spray-source arm judges such a send. The spray-source arm has no synth positive for a new
+    # account (sign-ins before the 30-day retention are not delivered); the rule's own tests cover it.
     kind_collectors:
       spray_success: [invictus, portal]
     positives: [send_new_ip, send_residential, spray_success]
