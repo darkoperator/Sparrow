@@ -3,11 +3,10 @@
 //! values) or `display_safe` (multi-line blocks); `--json`
 //! prints the stored values.
 
+use crate::{open_read, print_json};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use clap::{Args, Subcommand};
-use serde::Serialize;
-use sparrow_core::Case;
 use sparrow_core::case::read::{self, FindingFilter, Page, Pivot, TimelineFilter, TimelineRow};
 use sparrow_core::case::text::{display_safe, display_safe_line as safe};
 use sparrow_core::case::{audit, query, timeline_entries};
@@ -15,11 +14,6 @@ use sparrow_core::data::DataDirs;
 use sparrow_core::detect::load::load_rules;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-
-fn print_json<T: Serialize>(v: &T) -> Result<()> {
-    println!("{}", serde_json::to_string_pretty(v)?);
-    Ok(())
-}
 
 fn opt(s: Option<&str>) -> String {
     s.map(safe).unwrap_or_else(|| "-".into())
@@ -75,7 +69,7 @@ pub struct FindingListArgs {
 }
 
 pub fn finding_list(a: FindingListArgs, json: bool) -> Result<ExitCode> {
-    let c = Case::open_read_only(&a.case)?;
+    let c = open_read(&a.case)?;
     let rows = read::finding_list(
         c.conn(),
         &FindingFilter {
@@ -125,7 +119,7 @@ pub fn finding_show(
     all: bool,
     json: bool,
 ) -> Result<ExitCode> {
-    let c = Case::open_read_only(case)?;
+    let c = open_read(case)?;
     let set = load_rules(&DataDirs::with_env_fallback(data, rules))?;
     let d = read::finding_show(c.conn(), id, &set)?;
     if json {
@@ -293,7 +287,7 @@ pub fn timeline(a: TimelineArgs, json: bool) -> Result<ExitCode> {
         finding: a.finding,
         limit: a.limit,
     };
-    let c = Case::open_read_only(&a.case)?;
+    let c = open_read(&a.case)?;
     let page: Page<TimelineRow> = read::timeline_query(c.conn(), &filter)?;
     if json {
         print_json(&page)?;
@@ -314,7 +308,7 @@ pub fn timeline_entry_list(
     review_state: Option<&str>,
     json: bool,
 ) -> Result<ExitCode> {
-    let c = Case::open_read_only(case)?;
+    let c = open_read(case)?;
     let entries = timeline_entries::list(c.conn(), status, review_state)?;
     if json {
         print_json(&serde_json::json!({ "entries": entries }))?;
@@ -375,11 +369,9 @@ pub enum PivotCommand {
 
 pub fn pivot(cmd: PivotCommand, json: bool) -> Result<ExitCode> {
     let p: Pivot = match cmd {
-        PivotCommand::Ip { ip, case, cap } => {
-            read::pivot_ip(Case::open_read_only(&case)?.conn(), &ip, cap)?
-        }
+        PivotCommand::Ip { ip, case, cap } => read::pivot_ip(open_read(&case)?.conn(), &ip, cap)?,
         PivotCommand::User { upn, case, cap } => {
-            read::pivot_user(Case::open_read_only(&case)?.conn(), &upn, cap)?
+            read::pivot_user(open_read(&case)?.conn(), &upn, cap)?
         }
     };
     if json {
@@ -399,6 +391,8 @@ pub fn pivot(cmd: PivotCommand, json: bool) -> Result<ExitCode> {
 // ------------------------------------------------------------------ query
 
 pub fn query(case: &Path, sql: &str, limit: usize, json: bool) -> Result<ExitCode> {
+    // The query attaches the file itself; the case is opened (and closed) first for its warnings.
+    drop(open_read(case)?);
     let r = query::run(case, sql, limit)?;
     if json {
         print_json(&r)?;

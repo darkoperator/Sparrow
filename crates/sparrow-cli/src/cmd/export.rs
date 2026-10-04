@@ -5,7 +5,6 @@
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use clap::Subcommand;
-use sparrow_core::Case;
 use sparrow_core::export::report_md::{self, ReportOpts};
 use sparrow_core::export::timeline_csv::{self, CsvOpts, Scope};
 use sparrow_core::export::workbook_xlsx;
@@ -191,20 +190,11 @@ fn with_sink<T>(
     }
 }
 
-fn summary(
-    kind: &str,
-    out: &Path,
-    rows: Option<u64>,
-    warning: Option<&str>,
-    json: bool,
-) -> Result<()> {
+fn summary(kind: &str, out: &Path, rows: Option<u64>, json: bool) -> Result<()> {
     if json {
-        let mut v =
+        let v =
             serde_json::json!({ "export": kind, "out": out.display().to_string(), "rows": rows });
-        if let Some(w) = warning {
-            v["warning"] = w.into();
-        }
-        println!("{v}");
+        println!("{}", crate::with_warnings(&v)?);
     } else {
         match rows {
             Some(n) => println!("wrote {kind} ({n} rows) to {}", out.display()),
@@ -227,8 +217,7 @@ pub fn run(command: ExportCommand, json: bool) -> Result<ExitCode> {
             if let Some(o) = &out {
                 check_out(o, &case)?;
             }
-            let c = Case::open_read_only(&case)?;
-            let warning = crate::pending_warning(&c, json)?;
+            let c = crate::open_read(&case)?;
             let opts = ReportOpts {
                 reviewed_only,
                 generated_at,
@@ -237,7 +226,7 @@ pub fn run(command: ExportCommand, json: bool) -> Result<ExitCode> {
                 Ok(report_md::write(c.conn(), w, &opts)?)
             })?;
             if let Some(p) = out {
-                summary("report", &p, None, warning.as_deref(), json)?;
+                summary("report", &p, None, json)?;
             }
         }
         ExportCommand::Timeline {
@@ -265,13 +254,12 @@ pub fn run(command: ExportCommand, json: bool) -> Result<ExitCode> {
             if let Some(o) = &out {
                 check_out(o, &case)?;
             }
-            let c = Case::open_read_only(&case)?;
-            let warning = crate::pending_warning(&c, json)?;
+            let c = crate::open_read(&case)?;
             let n = with_sink(out.as_deref(), json, |w| {
                 Ok(timeline_csv::write(c.conn(), w, &opts)?)
             })?;
             if let Some(p) = out {
-                summary("timeline", &p, Some(n), warning.as_deref(), json)?;
+                summary("timeline", &p, Some(n), json)?;
             }
         }
         ExportCommand::Workbook { case, format, out } => {
@@ -280,12 +268,11 @@ pub fn run(command: ExportCommand, json: bool) -> Result<ExitCode> {
                 bail!("export workbook needs --out FILE (a workbook is binary)");
             };
             check_out(&out, &case)?;
-            let c = Case::open_read_only(&case)?;
-            let warning = crate::pending_warning(&c, json)?;
+            let c = crate::open_read(&case)?;
             atomic(&out, |tmp| {
                 Ok(workbook_xlsx::write(c.conn(), tmp, generated_at)?)
             })?;
-            summary("workbook", &out, None, warning.as_deref(), json)?;
+            summary("workbook", &out, None, json)?;
         }
     }
     Ok(ExitCode::SUCCESS)

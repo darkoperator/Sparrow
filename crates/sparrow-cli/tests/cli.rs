@@ -3013,44 +3013,67 @@ fn read_commands_warn_while_a_post_migration_step_is_pending() {
             [sparrow_core::db::POST_MIGRATION_PENDING],
         )
         .unwrap();
-
-    sparrow()
-        .args(["audit", "verify", "--case"])
-        .arg(&case)
-        .assert()
-        .success()
-        .stderr(contains(WARNING));
-    let v = json_out(
-        sparrow()
-            .args(["--json", "audit", "verify", "--case"])
-            .arg(&case),
-        0,
-    );
-    assert_eq!(v["warning"], WARNING);
-    // capabilities and summary warn before they find there is no tenant profile.
+    let out = |name: &str| dir.path().join(name).to_string_lossy().into_owned();
+    let (report, timeline, workbook) = (out("r.md"), out("t.csv"), out("w.xlsx"));
+    // Every read command, in plain and in --json form.
+    let commands: Vec<Vec<&str>> = vec![
+        vec!["finding", "list"],
+        vec!["timeline"],
+        vec!["timeline-entry", "list"],
+        vec!["pivot", "ip", "198.51.100.7"],
+        vec!["pivot", "user", "user0@contoso.example"],
+        vec!["query", "SELECT count(*) AS n FROM spray_sources"],
+        vec!["audit", "verify"],
+        vec!["audit", "log"],
+        vec!["schema"],
+        vec!["ioc", "list"],
+        vec!["export", "report", "--out", &report],
+        vec!["export", "timeline", "--scope", "all", "--out", &timeline],
+        vec!["export", "workbook", "--format", "xlsx", "--out", &workbook],
+    ];
+    let warned = |args: &[&str], json: bool| {
+        let mut cmd = sparrow();
+        if json {
+            cmd.arg("--json");
+        }
+        let o = cmd.args(args).arg("--case").arg(&case).output().unwrap();
+        let stderr = String::from_utf8_lossy(&o.stderr).into_owned();
+        assert_eq!(o.status.code(), Some(0), "{args:?}: {stderr}");
+        let stdout = String::from_utf8_lossy(&o.stdout).into_owned();
+        (stderr.contains(WARNING), stdout)
+    };
+    for args in &commands {
+        let (plain, stdout) = warned(args, false);
+        assert!(plain, "{args:?}: no warning on stderr");
+        assert!(
+            !stdout.contains(WARNING),
+            "{args:?}: the warning went to stdout"
+        );
+        let (on_stderr, stdout) = warned(args, true);
+        assert!(on_stderr, "{args:?} --json: no warning on stderr");
+        let v: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(v["warnings"], serde_json::json!([WARNING]), "{args:?}: {v}");
+    }
+    // The plain exports to stdout warn on stderr, and the export stays clean.
+    for args in [["export", "report"], ["export", "timeline"]] {
+        let (plain, stdout) = warned(&args, false);
+        assert!(plain && !stdout.contains(WARNING), "{args:?}");
+    }
+    // A read command that then fails still warns, and its --json error carries the warning too.
     for cmd in ["capabilities", "summary"] {
         sparrow()
             .args([cmd, "--case"])
             .arg(&case)
             .assert()
             .stderr(contains(WARNING));
+        let o = sparrow()
+            .args(["--json", cmd, "--case"])
+            .arg(&case)
+            .output()
+            .unwrap();
+        let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(v["warnings"], serde_json::json!([WARNING]), "{cmd}: {v}");
     }
-    sparrow()
-        .args(["export", "report", "--case"])
-        .arg(&case)
-        .assert()
-        .success()
-        .stderr(contains(WARNING));
-    let out = dir.path().join("r.md");
-    let v = json_out(
-        sparrow()
-            .args(["--json", "export", "report", "--out"])
-            .arg(&out)
-            .arg("--case")
-            .arg(&case),
-        0,
-    );
-    assert_eq!(v["warning"], WARNING);
 
     // `sparrow upgrade` runs the step; the warning is gone.
     sparrow()
@@ -3058,17 +3081,11 @@ fn read_commands_warn_while_a_post_migration_step_is_pending() {
         .arg(&case)
         .assert()
         .success();
-    let v = json_out(
-        sparrow()
-            .args(["--json", "audit", "verify", "--case"])
-            .arg(&case),
-        0,
-    );
-    assert!(v.get("warning").is_none(), "{v}");
-    sparrow()
-        .args(["audit", "verify", "--case"])
-        .arg(&case)
-        .assert()
-        .success()
-        .stderr(contains(WARNING).not());
+    for args in &commands {
+        let (plain, _) = warned(args, false);
+        assert!(!plain, "{args:?}");
+        let (on_stderr, stdout) = warned(args, true);
+        let v: Value = serde_json::from_str(&stdout).unwrap();
+        assert!(!on_stderr && v.get("warnings").is_none(), "{args:?}: {v}");
+    }
 }

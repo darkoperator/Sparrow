@@ -1,7 +1,6 @@
 //! `sparrow audit verify|log`: check and read the hash-chained audit trail.
 
 use anyhow::{Context, Result};
-use sparrow_core::Case;
 use sparrow_core::case::audit::{self, ChainReport};
 use sparrow_core::case::text::display_safe_line;
 use std::path::Path;
@@ -10,9 +9,9 @@ use std::process::ExitCode;
 /// The exit code of `audit verify` on a broken chain.
 pub const BROKEN_CHAIN: u8 = 3;
 
-fn print_report(r: &ChainReport, warning: Option<&str>, json: bool) -> Result<()> {
+fn print_report(r: &ChainReport, json: bool) -> Result<()> {
     if json {
-        return crate::print_json_warned(r, warning);
+        return crate::print_json(r);
     }
     if r.ok {
         println!(
@@ -44,7 +43,6 @@ pub fn verify(
     analyst: Option<String>,
     json: bool,
 ) -> Result<ExitCode> {
-    let mut warning = None;
     let report = if acknowledge {
         let actor = super::actor::resolve(agent, analyst)?;
         let case = crate::open_case_for_write(case_path)?;
@@ -59,11 +57,10 @@ pub fn verify(
         }
         r
     } else {
-        let case = Case::open_read_only(case_path)?;
-        warning = crate::pending_warning(&case, json)?;
+        let case = crate::open_read(case_path)?;
         audit::verify(case.conn())?
     };
-    print_report(&report, warning.as_deref(), json)?;
+    print_report(&report, json)?;
     Ok(if report.ok {
         ExitCode::SUCCESS
     } else {
@@ -80,13 +77,10 @@ pub fn log(case_path: &Path, object: Option<&str>, json: bool) -> Result<ExitCod
                 .with_context(|| format!("--object must be TYPE:ID, got {o:?}"))
         })
         .transpose()?;
-    let case = Case::open_read_only(case_path)?;
+    let case = crate::open_read(case_path)?;
     let entries = audit::log(case.conn(), object)?;
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({ "entries": entries }))?
-        );
+        crate::print_json(&serde_json::json!({ "entries": entries }))?;
     } else {
         for e in &entries {
             let on_behalf = e

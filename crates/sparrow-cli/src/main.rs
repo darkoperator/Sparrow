@@ -584,7 +584,7 @@ fn main() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             if json_requested {
-                println!("{}", serde_json::json!({ "error": e.render().to_string() }));
+                println!("{}", error_json(e.render().to_string()));
             }
             return ExitCode::from(1);
         }
@@ -596,7 +596,7 @@ fn main() -> ExitCode {
             let msg = format!("{e:#}");
             eprintln!("error: {msg}");
             if json {
-                println!("{}", serde_json::json!({ "error": msg }));
+                println!("{}", error_json(msg));
             }
             ExitCode::from(error_exit_code(&e))
         }
@@ -717,30 +717,58 @@ fn run(cli: Cli) -> Result<ExitCode> {
     }
 }
 
-fn print_json<T: Serialize>(value: &T) -> Result<()> {
-    println!("{}", serde_json::to_string_pretty(value)?);
-    Ok(())
-}
+/// The warning a read command gives while the case owes a post-migration step (`db::POST_MIGRATION_PENDING`): its
+/// derived relations (`spray_sources`, `cloud_services`) may still be stale.
+const PENDING_STEP_WARNING: &str = "case has a pending post-migration step; run `sparrow upgrade`";
 
-/// A read-only command's warning while the case owes a post-migration step (`db::POST_MIGRATION_PENDING`):
-/// printed to stderr, or returned for the `--json` output's `warning` key.
-pub(crate) fn pending_warning(case: &Case, json: bool) -> Result<Option<String>> {
-    let warning = case
-        .pending_post_migration()?
-        .map(|_| "case has a pending post-migration step; run `sparrow upgrade`".to_string());
-    if let (Some(w), false) = (&warning, json) {
-        eprintln!("warning: {w}");
+/// Warnings about the case this run's read command opened ([`open_read`]); every JSON output carries them.
+static READ_WARNINGS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Open a case read-only: the ONLY way a CLI command opens one, so no read command can skip its warnings. While the
+/// case owes a post-migration step, the warning is printed to stderr (stdout stays clean for piped output) and kept
+/// for the `warnings` key of the JSON output ([`print_json`]).
+pub(crate) fn open_read(path: &Path) -> Result<Case> {
+    let case = Case::open_read_only(path)?;
+    if case.pending_post_migration()?.is_some() {
+        eprintln!("warning: {PENDING_STEP_WARNING}");
+        let mut w = READ_WARNINGS.lock().unwrap_or_else(|e| e.into_inner());
+        if !w.iter().any(|x| x == PENDING_STEP_WARNING) {
+            w.push(PENDING_STEP_WARNING.to_string());
+        }
     }
-    Ok(warning)
+    Ok(case)
 }
 
-/// `value` as JSON, with a top-level `warning` key when one is given.
-pub(crate) fn print_json_warned<T: Serialize>(value: &T, warning: Option<&str>) -> Result<()> {
+/// `value` as JSON with this run's read warnings, when there are any, as a top-level `warnings` array. A value that
+/// is not an object is wrapped as `{"result": value, "warnings": [...]}`.
+pub(crate) fn with_warnings<T: Serialize>(value: &T) -> Result<serde_json::Value> {
     let mut v = serde_json::to_value(value)?;
-    if let (Some(w), Some(o)) = (warning, v.as_object_mut()) {
-        o.insert("warning".into(), w.into());
+    let warnings = READ_WARNINGS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    if warnings.is_empty() {
+        return Ok(v);
     }
-    print_json(&v)
+    match v.as_object_mut() {
+        Some(o) => {
+            o.insert("warnings".into(), warnings.into());
+        }
+        None => v = serde_json::json!({ "result": v, "warnings": warnings }),
+    }
+    Ok(v)
+}
+
+/// The `--json` error object, with this run's read warnings.
+fn error_json(msg: impl Into<String>) -> serde_json::Value {
+    let v = serde_json::json!({ "error": msg.into() });
+    with_warnings(&v).unwrap_or(v)
+}
+
+/// Print `value` as pretty JSON, with this run's read warnings ([`with_warnings`]).
+pub(crate) fn print_json<T: Serialize>(value: &T) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(&with_warnings(value)?)?);
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -1037,9 +1065,8 @@ fn print_stale_warning(stale_collections: &[i64], case_path: &Path) {
 }
 
 fn cmd_capabilities(case_path: &Path, json: bool) -> Result<ExitCode> {
-    let case = Case::open_read_only(case_path)?;
+    let case = open_read(case_path)?;
     let report = capabilities_report(&case, chrono::Utc::now())?;
-    let warning = pending_warning(&case, json)?;
     if report.tenants.is_empty() {
         anyhow::bail!(
             "the case has no tenant profile; run `sparrow profile --case {}` first",
@@ -1047,7 +1074,7 @@ fn cmd_capabilities(case_path: &Path, json: bool) -> Result<ExitCode> {
         );
     }
     if json {
-        print_json_warned(&report, warning.as_deref())?;
+        print_json(&report)?;
         return Ok(ExitCode::SUCCESS);
     }
     print_stale_warning(&report.stale_collections, case_path);
@@ -1092,9 +1119,8 @@ fn cmd_capabilities(case_path: &Path, json: bool) -> Result<ExitCode> {
 }
 
 fn cmd_summary(case_path: &Path, json: bool) -> Result<ExitCode> {
-    let case = Case::open_read_only(case_path)?;
+    let case = open_read(case_path)?;
     let report = summarize(&case)?;
-    let warning = pending_warning(&case, json)?;
     if report.tenants.is_empty() {
         anyhow::bail!(
             "the case has no tenant profile; run `sparrow profile --case {}` first",
@@ -1102,7 +1128,7 @@ fn cmd_summary(case_path: &Path, json: bool) -> Result<ExitCode> {
         );
     }
     if json {
-        print_json_warned(&report, warning.as_deref())?;
+        print_json(&report)?;
         return Ok(ExitCode::SUCCESS);
     }
     print_stale_warning(&report.stale_collections, case_path);
@@ -1199,7 +1225,7 @@ fn cmd_verify(
     root: Option<&Path>,
     json: bool,
 ) -> Result<ExitCode> {
-    let case = Case::open_read_only(case_path)?;
+    let case = open_read(case_path)?;
     let report = verify_record(&case, table, key, root)?;
     if json {
         print_json(&report)?;
@@ -1256,7 +1282,7 @@ struct SchemaOutput {
 }
 
 fn cmd_schema(case_path: &Path, table: Option<&str>, json: bool) -> Result<ExitCode> {
-    let case = Case::open_read_only(case_path)?;
+    let case = open_read(case_path)?;
     let out = SchemaOutput {
         tables: sparrow_core::db::describe(&case, table)?,
     };
@@ -1390,7 +1416,7 @@ fn cmd_tenant(command: TenantCommand, json: bool) -> Result<ExitCode> {
             print_domain_action(json, &key, &normalized, "remove")
         }
         DomainCommand::List { case, tenant } => {
-            let c = Case::open_read_only(&case)?;
+            let c = open_read(&case)?;
             let domains = list_domains(&c, tenant.as_deref())?;
             if json {
                 print_json(&DomainsOutput { domains })?;
@@ -1505,7 +1531,7 @@ fn cmd_synth_check(manifest_path: &Path, case_path: &Path, json: bool) -> Result
         ))
         .into());
     }
-    let case = Case::open_read_only(case_path)?;
+    let case = open_read(case_path)?;
     let report = sparrow_synth::check::check(&manifest, &case)?;
     if json {
         print_json(&report)?;
@@ -1812,7 +1838,7 @@ fn cmd_ioc(command: IocCommand, json: bool) -> Result<ExitCode> {
             tenant,
             include_removed,
         } => {
-            let c = Case::open_read_only(&case)?;
+            let c = open_read(&case)?;
             let items = list_indicators(c.conn(), tenant.as_deref(), include_removed)?;
             if json {
                 print_json(&serde_json::json!({ "indicators": items }))?;

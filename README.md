@@ -300,6 +300,10 @@ forge an output line.
 
 With `--json`, errors are also printed to stdout as `{"error": "..."}`.
 
+While an upgrade's post-migration step is pending (a failed rebuild, retried by the next write), every read
+command prints `warning: case has a pending post-migration step; run `sparrow upgrade`` to stderr, and its `--json`
+output (an error too) carries it in a top-level `warnings` array.
+
 `audit verify` walks the whole SHA-256 chain: an edited, deleted, reordered or rewritten entry is reported at its
 seq. Deleting the newest entries is detected against the head the last write recorded in `case_meta`, unless
 `case_meta` was edited too; the head hash printed by `audit verify` (and by the exports) is the anchor to keep
