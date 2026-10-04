@@ -748,7 +748,9 @@ fn ingest_file(
     ctx.date_hint = job.date_hint;
     ctx.defer_ambiguous_dates = job.defer;
     ctx.collection_orders_conflict = job.orders_conflict;
-    match parser.parse(&mut ctx) {
+    // A parser that queued sightings and did not flush them loses none.
+    let parsed = parser.parse(&mut ctx).and_then(|()| ctx.flush_sources());
+    match parsed {
         Ok(()) => {
             let orders = ctx.orders_seen().to_vec();
             // One proved order is stored; a file that proved both stores NULL.

@@ -209,12 +209,14 @@ impl ArtifactParser for SessionsParser {
                 continue;
             }
             if let Some(row) = by_ordinal.get(&ord) {
-                ctx.record_source("ual_events", &rec, row.ordinal, row.span)?;
+                ctx.queue_source("ual_events", &rec, row.ordinal, row.span);
                 ctx.stats.duplicate += 1;
                 used.insert(rec);
                 matched.insert(ord);
             }
         }
+        // The matched rows' sightings go in before the partial records load, as when each was written at once.
+        ctx.flush_sources()?;
         let mut staged = Vec::new();
         for row in &parsed {
             if matched.contains(&row.ordinal) {
@@ -423,7 +425,7 @@ impl ArtifactParser for MessageIdsParser {
         let mut matched_count = 0u64;
         for row in &parsed {
             if let Some(rec) = matched.get(&row.ordinal) {
-                ctx.record_source("ual_events", rec, row.ordinal, row.span)?;
+                ctx.queue_source("ual_events", rec, row.ordinal, row.span);
                 ctx.stats.duplicate += 1;
                 matched_count += 1;
                 continue;
@@ -438,7 +440,7 @@ impl ArtifactParser for MessageIdsParser {
                 params![key],
                 |r| r.get(0),
             )?;
-            ctx.record_source("mail_items_accessed", &key, row.ordinal, row.span)?;
+            ctx.queue_source("mail_items_accessed", &key, row.ordinal, row.span);
             if exists {
                 ctx.stats.duplicate += 1;
                 continue;
@@ -464,6 +466,7 @@ impl ArtifactParser for MessageIdsParser {
             )?;
             ctx.stats.loaded += 1;
         }
+        ctx.flush_sources()?;
         if matched_count > 0 {
             ctx.warn(format!(
                 "{matched_count} rows match items of raw MailItemsAccessed records loaded from the unified audit log; each adds a sighting to its record"

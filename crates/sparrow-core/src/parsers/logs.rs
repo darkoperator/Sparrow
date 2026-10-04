@@ -120,10 +120,11 @@ fn store(
                  VALUES (?, ?, ?, ?, CAST(? AS TIMESTAMPTZ), ?, ?, ?, ?)",
             )?
             .execute(params![key, ctx.collection_id, ctx.file_id, ordinal as i64, ts, e.ts_raw, tz_assumed, e.level, e.message])?;
-        ctx.record_source("collection_log", &key, ordinal as u64, e.span)?;
+        ctx.queue_source("collection_log", &key, ordinal as u64, e.span);
         ctx.stats.read += 1;
         ctx.stats.loaded += 1;
     }
+    ctx.flush_sources()?;
     if bad > 0 {
         ctx.warn(format!(
             "{bad} log entries have timestamps that could not be parsed (ts is NULL)"

@@ -38,6 +38,17 @@ pub struct ParseContext<'a> {
     orders_seen: Vec<DateOrder>,
     warnings: Vec<String>,
     mapper: OffsetMapper,
+    /// Sightings queued by [`ParseContext::queue_source`], written by [`ParseContext::flush_sources`].
+    pending_sources: Vec<PendingSource>,
+}
+
+/// One queued `record_sources` row.
+struct PendingSource {
+    table: String,
+    key: String,
+    ordinal: i64,
+    pos: SourcePos,
+    sha256: String,
 }
 
 impl<'a> ParseContext<'a> {
@@ -70,6 +81,7 @@ impl<'a> ParseContext<'a> {
             orders_seen: Vec::new(),
             warnings: Vec::new(),
             mapper: OffsetMapper::new(text, raw.len() as u64),
+            pending_sources: Vec::new(),
         }
     }
 
@@ -120,6 +132,73 @@ impl<'a> ParseContext<'a> {
         let (pos, _) = self.row_sighting(row, row_text);
         let snippet: String = row_text.chars().take(500).collect();
         self.insert_parse_error(ordinal, &pos, message, &snippet)
+    }
+
+    /// Queue the sighting [`ParseContext::record_source`] would write, for [`ParseContext::flush_sources`]. A parser
+    /// that matches thousands of rows against stored records queues them and flushes once: one single-row
+    /// `INSERT ... ON CONFLICT` into the `record_sources` primary key costs about a millisecond.
+    pub fn queue_source(&mut self, table: &str, record_key: &str, ordinal: u64, span: Span) {
+        let (pos, sha256) = self.sighting(span);
+        self.pending_sources.push(PendingSource {
+            table: table.to_string(),
+            key: record_key.to_string(),
+            ordinal: ordinal as i64,
+            pos,
+            sha256,
+        });
+    }
+
+    /// Write the queued sightings with one `INSERT ... SELECT`, in queue order (rows already stored are filtered out
+    /// with `NOT EXISTS` rather than `ON CONFLICT`, which does not keep the order). Within the batch and against stored rows
+    /// the first sighting of a primary key (table, key, file, ordinal) wins, exactly as the same calls to
+    /// `record_source` would leave it. The ingest also flushes after every successful parse, so a parser that
+    /// queues and forgets to flush loses nothing.
+    pub fn flush_sources(&mut self) -> Result<()> {
+        if self.pending_sources.is_empty() {
+            return Ok(());
+        }
+        self.conn.execute_batch(
+            "CREATE OR REPLACE TEMP TABLE record_sources_stage (
+                 seq BIGINT, table_name VARCHAR, record_key VARCHAR, record_ordinal BIGINT,
+                 line_start INTEGER, line_end INTEGER, byte_offset BIGINT, byte_length BIGINT, raw_sha256 VARCHAR);",
+        )?;
+        {
+            // The first sighting of a key wins, so later duplicates are dropped here, in order.
+            let mut seen = std::collections::HashSet::new();
+            let mut app = self.conn.appender("record_sources_stage")?;
+            for (seq, p) in self.pending_sources.iter().enumerate() {
+                if !seen.insert((p.table.as_str(), p.key.as_str(), p.ordinal)) {
+                    continue;
+                }
+                app.append_row(params![
+                    seq as i64,
+                    p.table,
+                    p.key,
+                    p.ordinal,
+                    p.pos.line_start as i64,
+                    p.pos.line_end as i64,
+                    p.pos.byte_offset as i64,
+                    p.pos.byte_length as i64,
+                    p.sha256
+                ])?;
+            }
+            app.flush()?;
+        }
+        self.conn.execute(
+            "INSERT INTO record_sources (table_name, record_key, file_id, record_ordinal, line_start, line_end,
+                                         byte_offset, byte_length, raw_sha256)
+             SELECT table_name, record_key, ?, record_ordinal, line_start, line_end, byte_offset, byte_length, raw_sha256
+             FROM record_sources_stage s
+             WHERE NOT EXISTS (SELECT 1 FROM record_sources r
+                               WHERE r.table_name = s.table_name AND r.record_key = s.record_key
+                                 AND r.file_id = ? AND r.record_ordinal = s.record_ordinal)
+             ORDER BY s.seq",
+            params![self.file_id, self.file_id],
+        )?;
+        self.conn
+            .execute_batch("DROP TABLE record_sources_stage;")?;
+        self.pending_sources.clear();
+        Ok(())
     }
 
     /// Record that `record_key` in `table` was seen at `span` of this file.
