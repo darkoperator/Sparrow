@@ -245,7 +245,8 @@ sparrow capabilities --case case.duckdb           # what evidence the case holds
 sparrow summary --case case.duckdb                # tenant, licences, coverage, top actors, gaps
 sparrow tenant domains list --case case.duckdb    # also add|remove <domain> [--tenant KEY] [--analyst NAME]
 sparrow schema --case case.duckdb                 # tables and column descriptions
-sparrow upgrade --case case.duckdb                # bring a case made by an older sparrow up to date
+sparrow upgrade --case case.duckdb                # bring a case made by an older sparrow up to date (also
+                                                  # rebuilds spray_sources and cloud_services from its sign-ins)
 sparrow verify ual_events <record-id> --case case.duckdb [--root /moved/Hawk_folder]
 sparrow detect --case case.duckdb                 # run the rules (also the last step of ingest/profile;
                                                   # --rule ID / --tag TAG to narrow, --no-detect to skip

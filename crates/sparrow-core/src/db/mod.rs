@@ -108,37 +108,58 @@ fn open_writer(path: &Path) -> Result<(Connection, WriterGuard)> {
     Ok((conn, WriterGuard(key)))
 }
 
-/// Apply pending migrations; the ONLY way a case is migrated. When an existing case crosses the analyst version, the
-/// audit trail records it in one transaction: a `schema_upgrade` entry, then one `legacy_decision` per indicator.
-/// Returns the schema version before and after.
+/// Apply pending migrations; the ONLY way a case is migrated. When an existing case was migrated, one transaction
+/// then rebuilds its derived relations (`rebuild_derived`) and, when it crossed the analyst version, records the
+/// upgrade in the audit trail: a `schema_upgrade` entry, then one `legacy_decision` per indicator. Returns the schema
+/// version before and after.
 fn migrate_recorded(conn: &Connection) -> Result<(u32, u32)> {
     let from = migrations::current_version(conn)?;
     let to = migrations::migrate(conn)?;
-    // An existing case brought to the Phase 7 schema starts its audit chain (Addendum D.3); a brand-new one
-    // (no schema yet) starts empty.
-    if from > 0 && from < migrations::ANALYST_VERSION && to >= migrations::ANALYST_VERSION {
-        conn.execute_batch("BEGIN TRANSACTION")?;
-        let appended = crate::case::audit::case_id(conn).and_then(|case_id| {
-            crate::case::audit::append_system(
-                conn,
-                crate::case::audit::SYSTEM_UPGRADE,
-                "schema_upgrade",
-                "case",
-                &case_id,
-                Some(&serde_json::json!({ "schema_version": from })),
-                Some(&serde_json::json!({ "schema_version": to })),
-            )
-        });
-        let appended = appended.and_then(|_| legacy_indicator_decisions(conn));
-        match appended {
-            Ok(_) => conn.execute_batch("COMMIT")?,
-            Err(e) => {
-                let _ = conn.execute_batch("ROLLBACK");
-                return Err(e);
-            }
+    // A brand-new case (no schema yet) has nothing to rebuild or record.
+    let migrated = from > 0 && to > from;
+    // An existing case brought to the Phase 7 schema starts its audit chain (Addendum D.3).
+    let crossed_analyst =
+        from > 0 && from < migrations::ANALYST_VERSION && to >= migrations::ANALYST_VERSION;
+    if !migrated {
+        return Ok((from, to));
+    }
+    conn.execute_batch("BEGIN TRANSACTION")?;
+    let done = rebuild_derived(conn).and_then(|_| {
+        if !crossed_analyst {
+            return Ok(());
+        }
+        let case_id = crate::case::audit::case_id(conn)?;
+        crate::case::audit::append_system(
+            conn,
+            crate::case::audit::SYSTEM_UPGRADE,
+            "schema_upgrade",
+            "case",
+            &case_id,
+            Some(&serde_json::json!({ "schema_version": from })),
+            Some(&serde_json::json!({ "schema_version": to })),
+        )?;
+        legacy_indicator_decisions(conn)
+    });
+    match done {
+        Ok(()) => conn.execute_batch("COMMIT")?,
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(e);
         }
     }
     Ok((from, to))
+}
+
+/// Rewrite the derived relations whose definition a migration may have changed (`spray_sources`, then
+/// `cloud_services`, which reads it) from the case's own sign-ins, so a migrated case never keeps rows computed
+/// under an older definition. The credential-failure codes come from `$SPARROW_DATA` / `$SPARROW_RULES` or the
+/// built-in list; a later profile run rebuilds them again with its own `--data` / `--rules`.
+fn rebuild_derived(conn: &Connection) -> Result<()> {
+    let codes =
+        crate::profile::spray::credential_failure_codes(&crate::data::DataDirs::from_env())?;
+    crate::profile::spray::rebuild(conn, &codes)?;
+    crate::profile::cloud_services::rebuild(conn, &codes)?;
+    Ok(())
 }
 
 /// One reviewable `legacy_decision` audit entry per indicator that predates the audit trail, by its original

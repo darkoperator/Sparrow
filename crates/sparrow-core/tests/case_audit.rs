@@ -870,3 +870,87 @@ fn a_brand_new_case_file_has_an_empty_trail() {
     );
     assert!(trail(&Case::open_read_only(&p).unwrap()).is_empty());
 }
+
+/// A Phase 6 case whose derived relations are stale: a spray_sources row and a cloud_services row that its
+/// sign-ins do not support, next to five interactive credential failures from 198.51.100.7 for five users (a real
+/// spray source under the current definition).
+fn phase6_case_with_stale_derived_rows(path: &std::path::Path) {
+    phase6_case(path);
+    let conn = duckdb::Connection::open(path).unwrap();
+    conn.execute_batch(
+        "INSERT INTO collections (tool, root_path, sparrow_version, tenant_key) VALUES ('invictus', '/e/T1', '0.1.0', 't1');
+         INSERT INTO spray_sources (tenant_key, ip, users_targeted, failures, first_failure, last_failure,
+                                    failed_only_users, success_users, sprayed_users, takeover_users)
+             VALUES ('t1', '203.0.113.250', 9, 90, TIMESTAMPTZ '2026-09-01 00:00:00+00',
+                     TIMESTAMPTZ '2026-09-01 01:00:00+00', 9, 0, 9, 0);
+         INSERT INTO cloud_services (tenant_key, app_id, hosting_users, hosting_days, signins, hosting_signins, asn)
+             VALUES ('t1', '00000000-0000-0000-0000-00000000c0de', 7, 5, 100, 100, 64500);",
+    )
+    .unwrap();
+    for i in 0..5 {
+        conn.execute(
+            "INSERT INTO signins (record_key, collection_id, event_time, user_upn, ip, is_interactive, error_code, \
+                                  app_id) \
+             VALUES (?, 1, CAST(? AS TIMESTAMPTZ), ?, '198.51.100.7', true, 50126, \
+                     '00000003-0000-0000-c000-000000000000')",
+            duckdb::params![
+                format!("s{i}"),
+                format!("2026-09-02 10:0{i}:00+00"),
+                format!("user{i}@contoso.example")
+            ],
+        )
+        .unwrap();
+    }
+}
+
+fn derived_rows(c: &Case) -> (Vec<(String, String, i64)>, i64) {
+    let mut st = c
+        .conn()
+        .prepare("SELECT tenant_key, ip, sprayed_users FROM spray_sources ORDER BY tenant_key, ip")
+        .unwrap();
+    let spray = st
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let cloud: i64 = c
+        .conn()
+        .query_row("SELECT count(*) FROM cloud_services", [], |r| r.get(0))
+        .unwrap();
+    (spray, cloud)
+}
+
+#[test]
+fn an_upgrade_rebuilds_the_derived_relations() {
+    let want = (vec![("t1".to_string(), "198.51.100.7".to_string(), 5)], 0);
+    // Explicit `sparrow upgrade`.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("p6.duckdb");
+    phase6_case_with_stale_derived_rows(&path);
+    Case::upgrade(&path).unwrap();
+    assert_eq!(derived_rows(&Case::open_read_only(&path).unwrap()), want);
+    // An implicit migration (any write open) does the same.
+    let path = dir.path().join("p6-open.duckdb");
+    phase6_case_with_stale_derived_rows(&path);
+    let c = Case::create_or_open(&path).unwrap();
+    assert_eq!(derived_rows(&c), want);
+    assert!(audit::verify(c.conn()).unwrap().ok);
+}
+
+#[test]
+fn opening_a_current_case_leaves_the_derived_relations_alone() {
+    // No migration ran: nothing is rebuilt (a profile run owns them).
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("c.duckdb");
+    let c = Case::create_or_open(&path).unwrap();
+    c.conn()
+        .execute_batch(
+            "INSERT INTO spray_sources (tenant_key, ip, users_targeted, failures, first_failure, last_failure,
+                                        failed_only_users, success_users, sprayed_users, takeover_users)
+             VALUES ('t1', '203.0.113.250', 9, 90, now(), now(), 9, 0, 9, 0);",
+        )
+        .unwrap();
+    drop(c);
+    let c = Case::create_or_open(&path).unwrap();
+    assert_eq!(derived_rows(&c).0.len(), 1);
+}
