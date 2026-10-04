@@ -88,6 +88,17 @@ pub struct GenerateOptions {
     /// Scale overrides (Task 25): total benign UAL rows / sign-ins, replacing the scenario's.
     pub ual_rows: Option<u64>,
     pub signins: Option<u64>,
+    /// Per-tree variants the seed otherwise picks (`None`: the seed's pick). `--real` conformance forces each in
+    /// turn to compare a real capture with every variant a tree can take. Portal: the Purview `CreationDate`
+    /// form (`true`: the host-culture form of the older export).
+    #[serde(default)]
+    pub purview_culture_dates: Option<bool>,
+    /// Portal: the message-trace summary re-saved through Excel (`true`: single-byte file).
+    #[serde(default)]
+    pub message_trace_excel_resave: Option<bool>,
+    /// Hawk: the UAL `CreationDate` kind of the embedded raw records (`true`: UTC, `false`: unspecified).
+    #[serde(default)]
+    pub hawk_ual_creation_utc: Option<bool>,
 }
 
 impl GenerateOptions {
@@ -105,6 +116,9 @@ impl GenerateOptions {
             invictus_devices_json: false,
             ual_rows: None,
             signins: None,
+            purview_culture_dates: None,
+            message_trace_excel_resave: None,
+            hawk_ual_creation_utc: None,
         }
     }
 }

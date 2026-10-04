@@ -960,6 +960,20 @@ fn conformance_real_hawk_compares_portal_exports_beside_the_capture() {
         0,
     );
     assert_eq!(v["ok"], true, "{v}");
+    // The report names the per-tree variants the matrix covered (forced, not left to the seed).
+    let covered: Vec<&str> = v["variants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_str().unwrap())
+        .collect();
+    assert_eq!(covered.len(), 3, "{covered:?}");
+    assert!(
+        covered
+            .iter()
+            .any(|c| c.starts_with("portal[") && c.contains("excel-resave")),
+        "{covered:?}"
+    );
 }
 
 #[test]

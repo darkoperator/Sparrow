@@ -322,8 +322,10 @@ fn cmd_synth_conformance(
         (None, Some(dir)) => {
             let c = collector.context("--collector is required with --real")?;
             let real = sparrow_synth::conformance::profile_dir(&dir)?;
-            let generated = generated_profiles(c, seed)?;
-            sparrow_synth::conformance::conform_real(&real, &generated)
+            let (generated, covered) = generated_profiles(c, seed)?;
+            let mut report = sparrow_synth::conformance::conform_real(&real, &generated);
+            report.variants = covered;
+            report
         }
         _ => anyhow::bail!("pass exactly one of --tree DIR or --real DIR"),
     };
@@ -358,12 +360,28 @@ fn conformance_collectors(c: ConformanceCollector) -> &'static [Collector] {
     }
 }
 
+/// The per-tree variants of each collector the `--real` matrix covers, for the report: `collector[label; label]`.
+fn variant_summary(collectors: &[Collector]) -> Vec<String> {
+    collectors
+        .iter()
+        .map(|c| {
+            let labels: Vec<String> = sparrow_synth::conformance::variants(*c)
+                .into_iter()
+                .map(|v| v.label)
+                .collect();
+            format!("{c}[{}]", labels.join("; "))
+        })
+        .collect()
+}
+
 /// Profile every built-in scenario (except `volume`) for `collector` with both editions and the
-/// three host cultures, so `--real` compares a real capture with the whole generated matrix.
+/// three host cultures, once per per-tree variant the generator can take
+/// (`sparrow_synth::conformance::variants`: forced, not left to the seed), so `--real` compares a real capture with
+/// the whole generated matrix. Also returns the variants covered, for the report.
 fn generated_profiles(
     c: ConformanceCollector,
     seed: u64,
-) -> Result<Vec<sparrow_synth::conformance::Profile>> {
+) -> Result<(Vec<sparrow_synth::conformance::Profile>, Vec<String>)> {
     let collectors = conformance_collectors(c);
     let mut out = Vec::new();
     for name in sparrow_synth::scenario::builtin_names()
@@ -372,19 +390,22 @@ fn generated_profiles(
     {
         let scenario = sparrow_synth::scenario::load(name)?;
         for collector in collectors {
-            for ps in [PsEdition::Ps7, PsEdition::Ps51] {
-                for culture in [Culture::EnUs, Culture::EnGb, Culture::DeDe] {
-                    let dir = tempfile::tempdir()?;
-                    let mut o = GenerateOptions::new(*collector, seed);
-                    o.ps = ps;
-                    o.culture = culture;
-                    sparrow_synth::generate::generate_to_dir(&scenario, &o, dir.path())?;
-                    out.push(sparrow_synth::conformance::profile_dir(dir.path())?);
+            for variant in sparrow_synth::conformance::variants(*collector) {
+                for ps in [PsEdition::Ps7, PsEdition::Ps51] {
+                    for culture in [Culture::EnUs, Culture::EnGb, Culture::DeDe] {
+                        let dir = tempfile::tempdir()?;
+                        let mut o = GenerateOptions::new(*collector, seed);
+                        o.ps = ps;
+                        o.culture = culture;
+                        variant.apply(&mut o);
+                        sparrow_synth::generate::generate_to_dir(&scenario, &o, dir.path())?;
+                        out.push(sparrow_synth::conformance::profile_dir(dir.path())?);
+                    }
                 }
             }
         }
     }
-    Ok(out)
+    Ok((out, variant_summary(collectors)))
 }
 
 #[derive(Subcommand)]
@@ -1921,6 +1942,35 @@ mod tests {
         assert_eq!(
             conformance_collectors(ConformanceCollector::Portal),
             [Collector::Portal]
+        );
+    }
+
+    /// The report names the variants the matrix covered, per collector.
+    #[test]
+    fn the_real_report_lists_the_covered_variants() {
+        let s = variant_summary(conformance_collectors(ConformanceCollector::Hawk));
+        assert_eq!(s.len(), 3, "{s:?}");
+        assert!(
+            s.iter().any(|l| l.starts_with("hawk4[")
+                && l.contains("ual-creation=utc")
+                && l.contains("ual-creation=unspecified")),
+            "{s:?}"
+        );
+        assert!(
+            s.iter()
+                .any(|l| l.starts_with("portal[")
+                    && l.contains("purview-dates=iso,trace=excel-resave")),
+            "{s:?}"
+        );
+        let report = sparrow_synth::conformance::ConformanceReport {
+            ok: true,
+            variants: s,
+            ..Default::default()
+        };
+        assert!(
+            report.to_text().contains("variants covered: hawk3["),
+            "{}",
+            report.to_text()
         );
     }
 }

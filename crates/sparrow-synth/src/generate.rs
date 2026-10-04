@@ -54,6 +54,12 @@ pub fn generate_with_policy(
     }
     let mut world = World::build(scenario, opts.seed)?;
     world.culture = opts.culture;
+    if let Some(v) = opts.purview_culture_dates {
+        world.purview_culture_dates = v;
+    }
+    if let Some(v) = opts.message_trace_excel_resave {
+        world.message_trace_excel_resave = v;
+    }
     world.apply_scale(opts);
     let records = story::apply(&mut world)?;
     let tracked: BTreeSet<Evidence> = records

@@ -6,7 +6,7 @@
 //! contain `@` or look like an IP) are masked to `<masked>`, and reports print only artifact
 //! ids, masked names, encodings, date forms and counts — never a path, a file name or a value.
 
-use crate::options::{Collector, Culture};
+use crate::options::{Collector, Culture, GenerateOptions};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use sparrow_core::discovery::{
@@ -241,6 +241,9 @@ pub struct ConformanceReport {
     pub checked: u64,
     pub not_checked: u64,
     pub findings: Vec<String>,
+    /// `--real`: the per-tree variants the generated matrix covered (`variants`), by label.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<String>,
 }
 
 impl ConformanceReport {
@@ -249,6 +252,9 @@ impl ConformanceReport {
             "ok: {}\nchecked: {}, not checked: {}\n",
             self.ok, self.checked, self.not_checked
         );
+        if !self.variants.is_empty() {
+            out.push_str(&format!("variants covered: {}\n", self.variants.join("; ")));
+        }
         if self.findings.is_empty() {
             out.push_str("findings: none\n");
         } else {
@@ -697,6 +703,76 @@ fn check_artifact(
                 }
             }
         }
+    }
+}
+
+/// One combination of the choices the generator makes PER TREE from the seed (the Purview `CreationDate` form, the
+/// message-trace Excel re-save, the Hawk UAL `CreationDate` kind). `--real` generates the matrix once per variant, so
+/// a form the generator can produce in any variant is never "real only" just because the seed took the other one.
+/// A variant forces the choice (`GenerateOptions`' `Option` overrides) instead of hoping enough seeds cover it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Variant {
+    pub label: String,
+    pub purview_culture_dates: Option<bool>,
+    pub message_trace_excel_resave: Option<bool>,
+    pub hawk_ual_creation_utc: Option<bool>,
+}
+
+impl Variant {
+    /// Force this variant's choices on `o`.
+    pub fn apply(&self, o: &mut GenerateOptions) {
+        o.purview_culture_dates = self.purview_culture_dates;
+        o.message_trace_excel_resave = self.message_trace_excel_resave;
+        o.hawk_ual_creation_utc = self.hawk_ual_creation_utc;
+    }
+}
+
+/// Every variant a tree of `collector` can take. Adding a per-tree seeded choice to a writer means adding it here;
+/// `every_seeds_own_pick_is_covered_by_the_variants` fails when a seed's pick is missing.
+pub fn variants(collector: Collector) -> Vec<Variant> {
+    let none = || Variant {
+        label: String::new(),
+        purview_culture_dates: None,
+        message_trace_excel_resave: None,
+        hawk_ual_creation_utc: None,
+    };
+    match collector {
+        // The Hawk writers pick the UAL CreationDate kind of the embedded raw records per tree.
+        Collector::Hawk3 | Collector::Hawk4 => [
+            (true, "ual-creation=utc"),
+            (false, "ual-creation=unspecified"),
+        ]
+        .into_iter()
+        .map(|(utc, label)| Variant {
+            label: label.to_string(),
+            hawk_ual_creation_utc: Some(utc),
+            ..none()
+        })
+        .collect(),
+        // The portal writer picks the Purview CreationDate form and the message-trace re-save per tree.
+        Collector::Portal => {
+            let mut out = Vec::new();
+            for culture in [true, false] {
+                for resave in [false, true] {
+                    out.push(Variant {
+                        label: format!(
+                            "purview-dates={},trace={}",
+                            if culture { "culture" } else { "iso" },
+                            if resave { "excel-resave" } else { "download" }
+                        ),
+                        purview_culture_dates: Some(culture),
+                        message_trace_excel_resave: Some(resave),
+                        ..none()
+                    });
+                }
+            }
+            out
+        }
+        // Microsoft-Extractor-Suite trees have no per-tree seeded form.
+        Collector::Invictus => vec![Variant {
+            label: "single-form".to_string(),
+            ..none()
+        }],
     }
 }
 

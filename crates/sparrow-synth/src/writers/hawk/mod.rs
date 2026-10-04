@@ -216,7 +216,10 @@ impl<'w> Ctx<'w> {
             user_host: host(user_edition),
             days,
             ual,
-            ual_creation_kind: if stream(world.seed, "hawk/ualcreationkind").next_u64() % 2 == 0 {
+            ual_creation_kind: if opts
+                .hawk_ual_creation_utc
+                .unwrap_or_else(|| stream(world.seed, "hawk/ualcreationkind").next_u64() % 2 == 0)
+            {
                 DtKind::Utc
             } else {
                 DtKind::Unspecified
