@@ -16,13 +16,18 @@
 //!     `credential_failure_codes` list) from a spray source of the tenant; or
 //! (b) at least [`FAILING_USERS`] distinct users (any user, not only the pair's) have a credential
 //!     failure of that kind to the application from that ASN.
+//! A failure row with no user name never counts toward (b) (Entra records the typed name for unknown
+//! users, so this should not lose real failures).
 //! Accounts taken from a spray, or typed wrongly on a VPS first, never make their VPS a connector, but a
-//! single sprayed user or a single departed account (50057, 50034) retried by a device no longer takes
-//! a real connector's findings back. SPW-ID-005 still reports every success from a spray source, so
-//! the attacker case stays covered. Residual, documented: five or more PHISHED (not sprayed) accounts
-//! used from one VPS on the same application for three days with no failures look exactly like a
-//! connector and are excused, and so are up to two failing or (below 20%) one sprayed account among a
-//! connector's users.
+//! departed account (50057, 50034) retried by a device, or one or two sprayed users, no longer take a
+//! real connector's findings back. Residuals, documented, exactly what is excused:
+//! - up to 2 sprayed users, while they are under 20% of the pair's users (so only when the pair has 11 or
+//!   more users): used from the connector's own (application, ASN) from an address that is not itself a
+//!   spray source, they are reported by NEITHER ID-002, ID-003 NOR ID-005 (ID-005 reads only successes
+//!   from a spray-source address);
+//! - up to 2 distinct users with credential failures from the ASN to the application;
+//! - five or more PHISHED (not sprayed) accounts used from one VPS on the same application for three
+//!   days with no failures, which look exactly like a connector.
 //!
 //! The profile is established from the WHOLE case, no prefix: a capture is a window, and a connector in
 //! use since before it starts would only be "established" a few days before the window ends, leaving
@@ -163,7 +168,7 @@ pub fn rebuild(conn: &Connection, codes: &[i64]) -> Result<usize> {
         let n_failing = failed_from
             .get(&(tenant.clone(), app.clone(), *asn))
             .map_or(0, BTreeSet::len);
-        let disqualified = n_sprayed * 100 >= users.len() * SPRAYED_PERCENT && n_sprayed > 0
+        let disqualified = (n_sprayed > 0 && n_sprayed * 100 >= users.len() * SPRAYED_PERCENT)
             || n_sprayed >= SPRAYED_USERS
             || n_failing >= FAILING_USERS;
         if !disqualified

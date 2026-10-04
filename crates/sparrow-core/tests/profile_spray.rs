@@ -872,7 +872,7 @@ fn three_failing_users_disqualify_a_service_and_fewer_do_not() {
     tenant(&case, T1);
     intel(&case, T1, "203.0.113.1", 14061, true);
     intel(&case, T1, "203.0.113.2", 14061, true);
-    let apps: Vec<String> = (1..=6)
+    let apps: Vec<String> = (1..=8)
         .map(|k| format!("c0c0c0c0-0000-4000-8000-0000000001b{k}"))
         .collect();
     for app in &apps {
@@ -964,13 +964,48 @@ fn three_failing_users_disqualify_a_service_and_fewer_do_not() {
             Some(50126),
         );
     }
-    assert_eq!(cloud(&case), 5);
+    // apps[6]: three users fail with a row of UNKNOWN kind (NULL is_interactive): counts as interactive.
+    // Not a service.
+    for who in ["gone", "typo", "old"] {
+        insert_row(
+            &case,
+            "signins",
+            T1,
+            json!({"user_upn": format!("{who}@contoso.example"), "ip": "203.0.113.2",
+                   "app_id": &apps[6], "error_code": 50126, "event_time": "2026-02-02T09:00:00Z"}),
+        );
+    }
+    // apps[7]: two named users fail, and three failure rows carry no user name: those never count.
+    // Still a service.
+    for who in ["gone", "typo"] {
+        app_signin(
+            &case,
+            T1,
+            &format!("{who}@contoso.example"),
+            "203.0.113.2",
+            &apps[7],
+            "02",
+            true,
+            Some(50126),
+        );
+    }
+    for _ in 0..3 {
+        insert_row(
+            &case,
+            "signins",
+            T1,
+            json!({"ip": "203.0.113.2", "app_id": &apps[7], "error_code": 50126,
+                   "is_interactive": true, "event_time": "2026-02-02T09:00:00Z"}),
+        );
+    }
+    assert_eq!(cloud(&case), 6);
     let mut want = vec![
         apps[0].clone(),
         apps[1].clone(),
         apps[3].clone(),
         apps[4].clone(),
         apps[5].clone(),
+        apps[7].clone(),
     ];
     want.sort();
     assert_eq!(service_apps(&case), want);

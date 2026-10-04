@@ -25,11 +25,14 @@
 # source of the tenant) are at least 20% of its users or at least 3 of them are sprayed, or (b) at least
 # 3 distinct users have an interactive credential failure to the application from that ASN. So accounts
 # taken from a spray, or typed wrongly on a VPS first, are not excused, while one stale or sprayed
-# account does not bring a real connector's findings back; SPW-ID-005 still reports every success from a
-# spray source.
-# Residual, documented: 5 or more PHISHED (not sprayed) accounts used from one VPS on the same
-# application for 3 or more days with no failures look exactly like a connector and are excused, and so
-# are up to 2 failing users or a lone sprayed account (under 20%) among a connector's users. Residual,
+# account does not bring a real connector's findings back.
+# Residuals, documented, exactly what is excused: up to 2 sprayed users while they are under 20% of the
+# pair's users (so only when the pair has 11 or more users); used from the connector's own (application,
+# ASN) from an address that is not itself a spray source, they are reported by NEITHER ID-002, ID-003 NOR
+# SPW-ID-005 (ID-005 reads only successes from a spray-source address). Up to 2 distinct users with
+# credential failures from the ASN to the application. 5 or more PHISHED (not sprayed) accounts used from
+# one VPS on the same application for 3 or more days with no failures look exactly like a connector and
+# are excused. A failure row with no user name never counts toward the 3 failing users. Residual,
 # documented: an attacker using the same application from the same cloud ASN as an established connector
 # is excused, and a connector's first days (cold start) are excused too (SPW-ID-005 and the consent
 # rules, SPW-APP-001/002, remain). No application name or id is involved: the profile decides.

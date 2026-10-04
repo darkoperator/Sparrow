@@ -34,8 +34,11 @@
 #   at least 20% of its users or at least 3 of them are sprayed, or (b) at least 3 distinct users have an
 #   interactive credential failure to the application from that ASN. Residual: an attacker on the same
 #   application from the same ASN as an established connector is excused, and so are 5 or more PHISHED
-#   (not sprayed) accounts used from one VPS on one application for 3 or more days with no failures, and
-#   up to 2 failing or a lone sprayed user among a connector's users.
+#   (not sprayed) accounts used from one VPS on one application for 3 or more days with no failures, up to
+#   2 distinct failing users, and up to 2 sprayed users while they are under 20% of the pair's users (only
+#   when the pair has 11 or more users): those sprayed accounts, used from the connector's own
+#   (application, ASN) from an address that is not a spray source, are reported by neither ID-002, ID-003
+#   nor SPW-ID-005 (ID-005 reads only successes from a spray-source address).
 #   Microsoft addresses (ip_intel.is_microsoft): Exchange Online, a Cloud PC
 #   or a Microsoft relay geolocate to a datacentre unrelated to the user. Addresses with no
 #   location are ignored, not treated as far.
