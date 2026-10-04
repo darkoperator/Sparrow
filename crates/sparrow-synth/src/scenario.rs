@@ -290,6 +290,7 @@ story_kind! {
         WifiToCellular => "wifi_to_cellular",
         Ipv6Rotation => "ipv6_rotation",
         SendNewIsp => "send_new_isp",
+        SendNewOfficeEgress => "send_new_office_egress",
         OfficeNatMistypes => "office_nat_mistypes",
         OfficeStaleAccounts => "office_stale_accounts",
         PhoneStalePassword => "phone_stale_password",

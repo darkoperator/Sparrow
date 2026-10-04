@@ -138,6 +138,21 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
         StoryKind::MiaSync => mia_sync(w, ctx),
         StoryKind::MiaHeavyDesktop => mia_heavy_desktop(w, ctx),
         StoryKind::SendNewIsp => send_new_isp(w, ctx),
+        StoryKind::SendNewOfficeEgress => {
+            // The office's shared egress was renumbered: the user's first send from the new office
+            // address, which no earlier day of theirs has seen (not hosting, not a spray source).
+            let ip = ctx.shared.next_egress();
+            let session = ctx.rng.uuid();
+            send(
+                w,
+                ctx,
+                ip,
+                OUTLOOK_DESKTOP,
+                session,
+                "projects@partner.example",
+                "Re: Project timeline",
+            );
+        }
         StoryKind::SendKnownIp => {
             let a = ctx.a.clone();
             let session = ctx.rng.uuid();

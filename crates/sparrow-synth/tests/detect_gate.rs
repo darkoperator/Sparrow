@@ -165,9 +165,10 @@ fn gate_passes_for_the_sample_rules() {
     }
 }
 
-/// The password-spray scenario carries the new-account sends of SPW-MAIL-006 (hosting and spray-source
-/// positives, ordinary-ISP and office look-alikes in the first days of the window); the gate checks them
-/// exactly on every collector, without the full ignored matrix.
+/// The password-spray scenario carries the new-account sends of SPW-MAIL-006 (a hosting positive and
+/// ordinary-ISP and new-office-address look-alikes in the first days of the window; no spray-source
+/// positive, see coverage.yaml); the gate checks them exactly on every collector, without the full ignored
+/// matrix.
 #[test]
 fn gate_passes_for_the_password_spray_scenario_on_every_collector() {
     for c in Collector::ALL {

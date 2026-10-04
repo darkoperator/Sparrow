@@ -12,6 +12,13 @@
 #      whatever the user's history, even a brand-new account's first send, because that arm needs no
 #      baseline to compare with (a new employee does not send from a data centre or a spray router).
 #      Real data: 45 sends by 15 new users, none from hosting or a spray source.
+#      Residual, on purpose: a new employee whose own egress is in a hosting ASN (a corporate VPN, a
+#      virtual desktop such as AWS WorkSpaces, or a SaaS mailer in a cloud ASN listed in
+#      rules/lists/hosting_asns.yaml) hits on every first send from a new egress address; the rule
+#      fires there deliberately and the analyst reads why (see false_positives). A home ISP or the
+#      office cannot hit without three earlier days unless the address is a tenant spray source (a
+#      carrier CGNAT address shared with a sprayer; a spray source needs 5 or more sprayed users
+#      outnumbering the address's successful users, so this is negligible).
 #   2. Network, not address: "known" compares the network of the send's address - the ASN from
 #      ip_intel, else the address itself when ip_intel has no ASN - with the networks of the
 #      user's earlier events. A different address in a network the user has used is not new.
@@ -101,6 +108,7 @@ analyst_guidance: |
 false_positives:
   - A user travelling to a new country or using a VPN (a hosting ASN) for the first time.
   - A tenant captured without GeoIP data, where every new address is judged on history alone.
+  - A new employee whose VPN or virtual desktop egresses from a cloud provider (a hosting ASN) hits on every first send from a new egress address, because a new account is judged on the hosting arm without history.
 references:
   - https://learn.microsoft.com/en-us/purview/audit-mailboxes
   - https://learn.microsoft.com/en-us/purview/audit-log-activities

@@ -390,14 +390,14 @@ rules:
     # new-network path alone). spray_success: the spray-source path alone.
     # spray_success is seen only through the spray-source relation, which needs the tenant-wide
     # sign-in export (a spray source is an address that failed against 5 distinct users).
-    # New accounts: the password-spray scenario runs send_new_ip (positive) and send_new_isp / send_known_ip
-    # (look-alikes) on days 1-2 of the window, where the user has fewer than three earlier active days: only
+    # New accounts: the password-spray scenario runs send_new_ip (positive) and send_new_isp / send_new_office_egress
+    # (look-alikes: an ordinary new ISP, and a first-seen office egress address no earlier day has seen) on days 1-2 of the window, where the user has fewer than three earlier active days: only
     # the hosting / spray-source arm judges such a send. The spray-source arm has no synth positive for a new
     # account (sign-ins before the 30-day retention are not delivered); the rule's own tests cover it.
     kind_collectors:
       spray_success: [invictus, portal]
     positives: [send_new_ip, send_residential, spray_success]
-    lookalikes: [send_known_ip, send_new_isp]
+    lookalikes: [send_known_ip, send_new_isp, send_new_office_egress]
     computed:
       - kind: plausible_travel
         condition: new_network_send

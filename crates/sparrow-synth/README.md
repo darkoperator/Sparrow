@@ -307,6 +307,7 @@ Look-alikes:
 | `mia_sync` | Outlook desktop synchronising twelve folders over ten minutes from the office. |
 | `mia_heavy_desktop` | A busy Outlook desktop user: twelve Bind records of one to three items each over ten minutes from the office. |
 | `send_known_ip` | The user sends mail from the office via Outlook desktop. |
+| `send_new_office_egress` | The office's shared egress was renumbered: the user's first send from the new office address (no earlier day has seen it; not hosting, not a spray source). |
 | `send_new_isp` | The user sends from a new mobile-carrier address of their own city (other ASN, not hosting); their sign-in from it follows three hours later. |
 | `search_benign` | A harmless Exchange search from the office. |
 | `autoreply_disabled` | The user's automatic reply is disabled. |
