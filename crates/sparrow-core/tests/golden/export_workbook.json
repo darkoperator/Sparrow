@@ -1331,7 +1331,7 @@
         "partial",
         "the window starts before the 30-day retention at collection time",
         "Microsoft-Extractor-Suite: Get-GraphEntraSignInLogs -startDate 2026-08-12 -endDate 2026-09-11 | Hawk: Get-HawkUserEntraIDSignInLog -UserPrincipalName <upn> | portal: Entra admin center > Sign-in logs > Download (works on every edition)",
-        "1293",
+        "1294",
         "2026-08-11 14:24:08",
         "2026-09-09 23:49:44",
         "13"

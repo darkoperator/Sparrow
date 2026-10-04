@@ -17,7 +17,7 @@ use std::net::IpAddr;
 use uuid::Uuid;
 
 /// Outlook on the web, as mailbox audit records name it.
-const OWA: &str = "Client=OWA;Action=ViaProxy";
+pub(super) const OWA: &str = "Client=OWA;Action=ViaProxy";
 /// Outlook desktop.
 const OUTLOOK_DESKTOP: &str = "Client=MSExchangeRPC";
 /// An app reading mail through Microsoft Graph.
@@ -337,9 +337,22 @@ fn outlook_client_hiding_rule(w: &mut World, ctx: &mut Ctx) {
 /// The user files a project list's mail into a Projects folder from Outlook on their own
 /// computer, in their own session and from the office.
 pub(super) fn outlook_client_filing_rule(w: &mut World, ctx: &mut Ctx) {
+    let office = ctx.a.office_ip;
+    let session = ctx.rng.uuid();
+    filing_rule_from(w, ctx, office, OUTLOOK_DESKTOP, session);
+}
+
+/// The user's project filing rule created at `ctx.t` from `ip` with client `client_info` in
+/// `session`: the mailbox-audit `UpdateInboxRules` record and the rule the collectors later read.
+pub(super) fn filing_rule_from(
+    w: &mut World,
+    ctx: &mut Ctx,
+    ip: IpAddr,
+    client_info: &str,
+    session: Uuid,
+) {
     let a = ctx.a.clone();
     let t = ctx.t;
-    let session = ctx.rng.uuid();
     let mut r = stream(
         w.seed,
         &format!("ual-extra/outlook-filing/{}/{}", a.upn, t.timestamp()),
@@ -350,8 +363,8 @@ pub(super) fn outlook_client_filing_rule(w: &mut World, ctx: &mut Ctx) {
         &mut r,
         &a,
         t,
-        a.office_ip,
-        OUTLOOK_DESKTOP,
+        ip,
+        client_info,
         session,
         "Project mail",
         Some(&format!("From: {from}")),

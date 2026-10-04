@@ -306,6 +306,7 @@ story_kind! {
         PasswordSpray => "password_spray",
         NewCarrierPhone => "new_carrier_phone",
         RuleEditAfterNewNetwork => "rule_edit_after_new_network",
+        OtherDeviceRuleEdit => "other_device_rule_edit",
         AdminRoleChanges => "admin_role_changes",
     }
 }

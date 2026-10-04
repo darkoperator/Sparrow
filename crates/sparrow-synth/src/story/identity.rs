@@ -41,6 +41,7 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
         StoryKind::CarrierGeoJitter => carrier_geo_jitter(w, ctx),
         StoryKind::NewCarrierPhone => new_carrier_phone(w, ctx),
         StoryKind::RuleEditAfterNewNetwork => rule_edit_after_new_network(w, ctx),
+        StoryKind::OtherDeviceRuleEdit => other_device_rule_edit(w, ctx),
         StoryKind::AdminRoleChanges => admin_role_changes(w, ctx)?,
         _ => return Ok(false),
     }
@@ -862,7 +863,10 @@ fn phone_on_new_carrier(
 
 /// A phone that moves to a new mobile carrier: the first sign-in from the carrier's network (the
 /// user's city, an ASN the user never used, not a hosting provider) and the same session's token
-/// refreshes through the day. Nothing else changes: a new network alone is not an attack.
+/// refreshes through the day. Nothing else changes: a new network alone is not an attack. With no
+/// persistence at all it fails SPW-ID-007 only if the rule ever fired on sign-ins alone; the
+/// look-alikes that guard its conditions are `rule_edit_after_new_network` (the window),
+/// `other_device_rule_edit` (the network of the persistence) and `admin_role_changes` (a known network).
 fn new_carrier_phone(w: &mut World, ctx: &mut Ctx) {
     let a: User = ctx.a.clone();
     let ip = ctx.shared.next_ip();
@@ -884,15 +888,30 @@ fn new_carrier_phone(w: &mut World, ctx: &mut Ctx) {
     }
 }
 
-/// Both halves of SPW-ID-007, too far apart: the user's phone signs in from a new carrier on the
-/// way to work, and two hours later, at the office, the user files a project list's mail into a
-/// folder from Outlook (`UpdateInboxRules`, their own session and address).
+/// Both halves of SPW-ID-007, too far apart and nothing else: the user's phone signs in from a new
+/// carrier in the morning, and two hours later, still on that carrier, the user files a project
+/// list's mail into a folder from Outlook on the web on the phone (`UpdateInboxRules` from the
+/// carrier address, in the phone's session). Same user, same network: only the window fails.
 fn rule_edit_after_new_network(w: &mut World, ctx: &mut Ctx) {
+    let a: User = ctx.a.clone();
+    let ip = ctx.shared.next_ip();
+    let session = phone_on_new_carrier(w, ctx, &a, ctx.t, ip);
+    let start = ctx.t;
+    ctx.t = start + Duration::hours(2);
+    super::mail::filing_rule_from(w, ctx, ip, super::mail::OWA, session);
+    ctx.t = start;
+}
+
+/// Both halves of SPW-ID-007 within the hour, from two networks: the user's phone signs in from a
+/// new carrier on the way to work, and thirty minutes later, at the office, the user files a project
+/// list's mail into a folder from Outlook on their computer (`UpdateInboxRules`, office address, their
+/// own session). The persistence does not come from the new network.
+fn other_device_rule_edit(w: &mut World, ctx: &mut Ctx) {
     let a: User = ctx.a.clone();
     let ip = ctx.shared.next_ip();
     phone_on_new_carrier(w, ctx, &a, ctx.t, ip);
     let start = ctx.t;
-    ctx.t = start + Duration::hours(2);
+    ctx.t = start + Duration::minutes(30);
     super::mail::outlook_client_filing_rule(w, ctx);
     ctx.t = start;
 }

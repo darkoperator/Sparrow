@@ -408,15 +408,24 @@ fn outlook_client_inbox_rules_are_in_the_baseline_and_the_storyline() {
         h.get("ClientProcessName").is_none(),
         "OWA is not a desktop client"
     );
-    // The benign rules: from Outlook on the user's own computer, filing into a folder only.
+    // The benign rules: filing into a folder only, from Outlook on the user's own computer, except
+    // the one SPW-ID-007 look-alike (rule_edit_after_new_network) that files from Outlook on the web
+    // on the user's phone, on its mobile carrier.
     assert!(filing.len() >= 2, "{} benign Outlook rules", filing.len());
+    let mut owa = 0;
     for r in &filing {
         let p = op_props(r);
         assert_eq!(p["RuleActions"], "MoveToFolder");
         assert!(p.contains_key("RuleName") && p["RuleCondition"].starts_with("From: "));
-        assert!(text(r, "ClientInfoString").contains("MSExchangeRPC"));
+        let client = text(r, "ClientInfoString");
+        if client.starts_with("Client=OWA") {
+            owa += 1;
+        } else {
+            assert!(client.contains("MSExchangeRPC"), "{client}");
+        }
         assert_ne!(text(r, "ClientIP"), text(h, "ClientIP"));
     }
+    assert_eq!(owa, 1, "the phone's filing rule");
     // The record has no item (the fixture's shape).
     assert!(updates.iter().all(|r| r.get("Item").is_none()));
 }

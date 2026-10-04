@@ -87,10 +87,13 @@ lookalikes:
   - {kind: mfa_after_stale_risk, id: l-cn-mfa, actor: 6, at: {day: 26, hour: 11}}
   - {kind: anonymous_link_after_stale_risk, id: l-cn-anon, actor: 10, at: {day: 27, hour: 16}}
   - {kind: lure_shared_late, id: l-cn-lure, actor: 9, at: {day: 22, hour: 9}}
-  # SPW-ID-007's look-alikes: a new network alone (a phone on a new carrier), both halves two hours
-  # apart (a correlation negative), and the admin's routine role changes after a sign-in from the office.
+  # SPW-ID-007's look-alikes: a new network alone (a phone on a new carrier: it guards only that sign-ins
+  # alone never fire), both halves two hours apart on the same network (the window), both halves within
+  # the hour from two networks (the phone, then the office: the persistence's network), and the admin's
+  # routine role changes after a sign-in from the office (a known network).
   # The rule edit sits days before the window's end: Hawk 3 writes Exchange_UAL_Audit newest first with
   # Export-Csv's first-object header, so the user's later mailbox records must come first on every seed.
+  - {kind: other_device_rule_edit, id: l-office-edit, actor: 4, at: {day: 30, hour: 8}}
   - {kind: rule_edit_after_new_network, id: l-rule-2h, actor: 10, at: {day: 31, hour: 8}}
   - {kind: new_carrier_phone, id: l-carrier, actor: 5, at: {day: 37, hour: 14}}
   - {kind: admin_role_changes, id: l-roles, actor: 11, at: {day: 38, hour: 15}}

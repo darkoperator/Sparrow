@@ -319,7 +319,8 @@ Look-alikes:
 | `internal_docx_share` | The user shares a plan with a colleague. |
 | `audit_config_benign` | The admin lengthens audit retention and adds an audited owner action. |
 | `new_carrier_phone` | The user's phone signs in for the first time from a mobile carrier of their own city (another ASN, not hosting), and the same session refreshes two and five hours later; nothing else. |
-| `rule_edit_after_new_network` | The phone's first sign-in from a new carrier, then, two hours later at the office, the user's own project filing rule from Outlook (`UpdateInboxRules`). |
+| `rule_edit_after_new_network` | The phone's first sign-in from a new carrier, then, two hours later and still on that carrier, the user's own project filing rule from Outlook on the web on the phone (`UpdateInboxRules`, the carrier address). |
+| `other_device_rule_edit` | The phone's first sign-in from a new carrier, then, thirty minutes later at the office, the user's own project filing rule from Outlook on their computer (`UpdateInboxRules`, the office address). |
 | `admin_role_changes` | The admin signs in from the office and, ten and twelve minutes later, adds the storyline's user to the Helpdesk Administrator and Reports Reader roles (directory audit `Add member to role` and its UAL record). |
 
 ### Licence profiles

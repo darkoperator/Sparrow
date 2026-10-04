@@ -17,20 +17,34 @@
 #     day (a new country is SPW-ID-003's and SPW-MAIL-006's case);
 #   - ip_intel knows its ASN and country (no GeoIP: not judged), it is not a hosting ASN (SPW-ID-010's
 #     case) and not a Microsoft address;
-#   - it is not rated medium/high risk. The UAL carries no risk, so an Entra sign-in and its UAL
-#     UserLoggedIn twin at the same instant are one sign-in: a rating on either excludes both.
-# The trigger is a persistence action by the same user (actor) at most 60 minutes after that sign-in:
+#   - it is not rated medium/high risk. The UAL carries no risk, and the UAL and Entra timestamps of one
+#     logon differ by seconds, so any Entra sign-in of the user from the same address within twin_ms
+#     (120 s) of it is that logon: a medium/high rating on it excludes the sign-in.
+# The trigger is a persistence action by the same user (actor) at most 60 minutes after that sign-in
+# (inclusive), FROM THE NEW NETWORK: when the record carries a non-Microsoft address whose ASN ip_intel
+# knows, that ASN must be the new network's (the user's other device elsewhere is not the replay). A
+# record with no address, an address of unknown ASN, or a Microsoft address (Graph, the Exchange back
+# end) counts as before. Persistence is:
 #   - UAL / Hawk 3 admin audit log: New-InboxRule, Set-InboxRule, UpdateInboxRules (UAL), Add-MailboxPermission,
-#     and Set-Mailbox setting a non-empty ForwardingSmtpAddress or ForwardingAddress;
+#     Add-RecipientPermission, Add-MailboxFolderPermission, Set-MailboxFolderPermission, New-TransportRule,
+#     Set-TransportRule, Set-MailboxJunkEmailConfiguration, and Set-Mailbox setting a non-empty
+#     ForwardingSmtpAddress or ForwardingAddress;
 #   - directory audit / UAL (the UAL spelling ends in "."): Consent to application, Add app role assignment
-#     grant to user, Add app role assignment to service principal, User registered security info, Add member
-#     to role, and Update user of the strong-authentication details (SPW-ID-001's definition).
+#     grant to user, Add app role assignment to service principal, User registered security info, User
+#     registered all required security info, Add member to role, Register device, Add device, Add registered
+#     owner to device, Add registered users to device, Add service principal credentials, Update application
+#     - Certificates and secrets management (both matched as SPW-APP-002 does, so the stored trailing space
+#     and the dash are covered), and Update user of the strong-authentication details (SPW-ID-001's).
+#   Not listed: Add delegated permission grant (it comes with the consent, which is listed).
 # Real data (architect's probe, 2026-10-04): 2 users within 1 hour, both incident users; 24 hours widens it
 # to 6 users, 4 of them incident users, so the window is 1 hour.
 # One row per persistence record; when two new networks precede it, the context names the later one.
 # Residuals, documented: a replay whose first sign-in from the network is rated risky (the risk rules see
-# it), a persistence action more than an hour after the new network, and a network whose ASN or country is
-# unknown to GeoIP.
+# it), a persistence action more than an hour after the new network, a persistence action from another
+# network than the replay's, and a network whose ASN or country is unknown to GeoIP.
+# Known false positive: the user's other device within the hour, from a different network, when its
+# record carries no address or a Microsoft one (a Graph client, the Exchange back end), so the networks
+# cannot be compared.
 id: SPW-ID-007
 title: Persistence within 60 minutes of the user's first sign-in from a new same-country network
 version: 1
@@ -43,21 +57,26 @@ requires: []
 requires_evidence: []
 needs_geoip: true
 sql: |
-  WITH logons AS (
-    SELECT lower(s.user_upn) AS upn, s.event_time AS t, s.ip,
-           lower(coalesce(s.risk_level_during, '')) IN ('medium', 'high') AS risky
+  WITH consts AS (
+    -- twin_ms: an Entra sign-in of the same user and address this close to the first sign-in from a
+    -- network is that logon (UAL and Entra timestamps of one logon differ by seconds), so its risk
+    -- rating counts. window_ms: how long after that sign-in a persistence action correlates.
+    SELECT 120000 AS twin_ms, 3600000 AS window_ms
+  ),
+  logons AS (
+    SELECT lower(s.user_upn) AS upn, s.event_time AS t, s.ip
     FROM signins s
     WHERE (s.error_code IS NULL OR s.error_code = 0)
       AND s.user_upn IS NOT NULL AND s.ip IS NOT NULL AND s.ip <> ''
     UNION ALL
-    SELECT lower(u.user_upn), u.event_time, u.client_ip, false
+    SELECT lower(u.user_upn), u.event_time, u.client_ip
     FROM ual_events u
     WHERE lower(u.operation) = 'userloggedin'
       AND lower(coalesce(u.result_status, '')) <> 'failed'
       AND u.user_upn IS NOT NULL AND u.client_ip IS NOT NULL AND u.client_ip <> ''
   ),
   net AS (
-    SELECT l.upn, epoch_ms(l.t) AS ms, epoch_ms(l.t) // 86400000 AS d, l.ip, l.risky,
+    SELECT l.upn, epoch_ms(l.t) AS ms, epoch_ms(l.t) // 86400000 AS d, l.ip,
            i.asn, i.country_iso AS cc, coalesce(i.is_hosting, false) AS hosting,
            coalesce(i.is_microsoft, false) AS microsoft
     FROM logons l LEFT JOIN ip_intel i ON i.ip = l.ip
@@ -67,18 +86,24 @@ sql: |
   first_cc AS (
     SELECT upn, cc, min(d) AS d FROM net WHERE cc IS NOT NULL AND cc <> '' GROUP BY upn, cc
   ),
-  -- The first successful sign-in of a user from each ASN (an Entra row and its UAL twin are one).
+  -- The first successful sign-in of a user from each ASN.
   new_net AS (
     SELECT n.upn, n.ms, n.d, n.asn, n.cc, min(n.ip) AS ip
     FROM net n JOIN first_net f ON f.upn = n.upn AND f.asn = n.asn AND f.ms = n.ms
     WHERE n.cc IS NOT NULL AND n.cc <> ''
     GROUP BY n.upn, n.ms, n.d, n.asn, n.cc
-    HAVING NOT bool_or(n.risky) AND NOT bool_or(n.hosting) AND NOT bool_or(n.microsoft)
+    HAVING NOT bool_or(n.hosting) AND NOT bool_or(n.microsoft)
   ),
   fresh AS (
-    SELECT x.* FROM new_net x
+    SELECT x.* FROM new_net x, consts k
     WHERE (SELECT count(*) FROM days y WHERE y.upn = x.upn AND y.d < x.d) >= 3
       AND EXISTS (SELECT 1 FROM first_cc c WHERE c.upn = x.upn AND c.cc = x.cc AND c.d < x.d)
+      -- Not rated medium/high: by any Entra sign-in of the user from that address within twin_ms
+      -- (the UAL row has no rating, and it may be the earlier of the two).
+      AND NOT EXISTS (SELECT 1 FROM signins r
+                      WHERE lower(r.user_upn) = x.upn AND r.ip = x.ip
+                        AND lower(coalesce(r.risk_level_during, '')) IN ('medium', 'high')
+                        AND abs(epoch_ms(r.event_time) - x.ms) <= k.twin_ms)
   ),
   persist AS (
     SELECT lower(CAST(u.record_id AS VARCHAR)) AS record_key, 'ual' AS src, u.event_time AS t,
@@ -86,9 +111,15 @@ sql: |
     FROM ual_events u
     WHERE rtrim(lower(u.operation), '.') IN (
             'new-inboxrule', 'set-inboxrule', 'updateinboxrules', 'add-mailboxpermission',
+            'add-recipientpermission', 'add-mailboxfolderpermission', 'set-mailboxfolderpermission',
+            'new-transportrule', 'set-transportrule', 'set-mailboxjunkemailconfiguration',
             'consent to application', 'add app role assignment grant to user',
             'add app role assignment to service principal', 'user registered security info',
-            'add member to role')
+            'user registered all required security info', 'add member to role',
+            'register device', 'add device', 'add registered owner to device',
+            'add registered users to device')
+       OR lower(u.operation) LIKE 'add service principal credentials%'
+       OR lower(u.operation) LIKE 'update application%certificates and secrets management%'
        OR (lower(u.operation) = 'update user.'
            AND CAST(u.audit_data AS VARCHAR) LIKE '%StrongAuthentication%')
        OR (lower(u.operation) = 'set-mailbox'
@@ -98,7 +129,10 @@ sql: |
     UNION ALL
     SELECT a.record_key, 'admin', a.run_time, a.caller, a.client_ip, a.cmdlet
     FROM admin_audit_events a
-    WHERE lower(a.cmdlet) IN ('new-inboxrule', 'set-inboxrule', 'add-mailboxpermission')
+    WHERE lower(a.cmdlet) IN ('new-inboxrule', 'set-inboxrule', 'add-mailboxpermission',
+                              'add-recipientpermission', 'add-mailboxfolderpermission',
+                              'set-mailboxfolderpermission', 'new-transportrule',
+                              'set-transportrule', 'set-mailboxjunkemailconfiguration')
        OR (lower(a.cmdlet) = 'set-mailbox'
            AND EXISTS (SELECT 1 FROM unnest(map_entries(a.parameters)) AS x(e)
                        WHERE lower(x.e.key) IN ('forwardingsmtpaddress', 'forwardingaddress')
@@ -109,7 +143,11 @@ sql: |
     WHERE lower(d.activity) IN (
             'consent to application', 'add app role assignment grant to user',
             'add app role assignment to service principal', 'user registered security info',
-            'add member to role')
+            'user registered all required security info', 'add member to role',
+            'register device', 'add device', 'add registered owner to device',
+            'add registered users to device')
+       OR lower(d.activity) LIKE 'add service principal credentials%'
+       OR lower(d.activity) LIKE 'update application%certificates and secrets management%'
        OR (lower(d.activity) = 'update user'
            AND (CAST(d.targets AS VARCHAR) LIKE '%StrongAuthentication%'
                 OR CAST(d.modified_properties AS VARCHAR) LIKE '%StrongAuthentication%'))
@@ -124,8 +162,15 @@ sql: |
                      'network_signin_utc', strftime(make_timestamp(n.ms * 1000), '%Y-%m-%dT%H:%M:%SZ'),
                      'minutes_after', (epoch_ms(p.t) - n.ms) // 60000) AS context
   FROM persist p
+  CROSS JOIN consts k
   JOIN fresh n ON n.upn = lower(p.actor)
-    AND n.ms <= epoch_ms(p.t) AND n.ms >= epoch_ms(p.t) - 3600000
+    AND n.ms <= epoch_ms(p.t) AND n.ms >= epoch_ms(p.t) - k.window_ms
+  LEFT JOIN ip_intel pi ON pi.ip = p.ip
+  -- From the new network: a record whose address is a non-Microsoft one with a known ASN must come
+  -- from the new network's ASN (another device of the user elsewhere is not the replay). A record with
+  -- no address, an address of unknown ASN, or a Microsoft address (Graph, the Exchange back end) counts.
+  WHERE p.ip IS NULL OR p.ip = '' OR pi.asn IS NULL OR coalesce(pi.is_microsoft, false)
+     OR pi.asn = n.asn
   QUALIFY row_number() OVER (PARTITION BY p.src, p.record_key ORDER BY n.ms DESC, n.ip) = 1
 group_by: [actor_upn]
 analyst_guidance: |
@@ -139,6 +184,7 @@ analyst_guidance: |
 false_positives:
   - A user who changes phone carrier or works from a new place and, within the hour, legitimately edits a rule or registers a new phone.
   - An admin who signs in from a new network (a new office line, a hotspot) and makes routine role changes.
+  - Another device of the user within the hour, from a different network, when its record carries no address or a Microsoft one (a Graph client, the Exchange back end), so the networks cannot be compared.
 references:
   - https://learn.microsoft.com/en-us/purview/audit-log-activities
   - https://learn.microsoft.com/en-us/entra/identity/monitoring-health/reference-audit-activities
@@ -1506,4 +1552,190 @@ tests:
         user_upn: "alice@contoso.example"
         event_time: "2026-03-05T10:20:00Z"
         client_ip: "198.51.100.7"
+    expect_hits: 1
+  - name: the persistence comes exactly 60 minutes after the new-network sign-in (inclusive)
+    records:
+      - table: ip_intel
+        ip: "192.0.2.10"
+        country_iso: "US"
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+        asn: 64496
+      - table: ip_intel
+        ip: "198.51.100.7"
+        country_iso: "US"
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+        asn: 64509
+      - {table: signins, user_upn: "alice@contoso.example", event_time: "2026-03-01T09:00:00Z", ip: "192.0.2.10", error_code: 0}
+      - {table: signins, user_upn: "alice@contoso.example", event_time: "2026-03-02T09:00:00Z", ip: "192.0.2.10", error_code: 0}
+      - {table: signins, user_upn: "alice@contoso.example", event_time: "2026-03-03T09:00:00Z", ip: "192.0.2.10", error_code: 0}
+      - {table: signins, user_upn: "alice@contoso.example", event_time: "2026-03-05T10:00:00Z", ip: "198.51.100.7", error_code: 0}
+      - {table: ual_events, operation: New-InboxRule, user_upn: "alice@contoso.example", event_time: "2026-03-05T11:00:00Z", client_ip: "198.51.100.7"}
+    expect_hits: 1
+  - name: "S1: the user's own rule edit from the office network within the hour of a phone's new carrier"
+    records:
+      - {"table": "ip_intel", "ip": "192.0.2.10", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64496}
+      - {"table": "ip_intel", "ip": "198.51.100.7", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64509}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-01T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-02T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-03T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:00:00Z", "ip": "198.51.100.7", "error_code": 0}
+      - {"table": "ual_events", "operation": "UpdateInboxRules", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:20:00Z", "client_ip": "192.0.2.10"}
+    expect_hits: 0
+  - name: "S1: the same edit from the new network"
+    records:
+      - {"table": "ip_intel", "ip": "192.0.2.10", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64496}
+      - {"table": "ip_intel", "ip": "198.51.100.7", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64509}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-01T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-02T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-03T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:00:00Z", "ip": "198.51.100.7", "error_code": 0}
+      - {"table": "ual_events", "operation": "UpdateInboxRules", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:20:00Z", "client_ip": "198.51.100.7"}
+    expect_hits: 1
+  - name: "S1: a record from a Microsoft address (Graph or the Exchange back end) keeps counting"
+    records:
+      - {"table": "ip_intel", "ip": "192.0.2.10", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64496}
+      - {"table": "ip_intel", "ip": "198.51.100.7", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64509}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-01T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-02T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-03T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "ip_intel", "ip": "40.107.0.5", "country_iso": "US", "is_hosting": false, "is_microsoft": true, "is_private": false, "asn": 8075}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:00:00Z", "ip": "198.51.100.7", "error_code": 0}
+      - {"table": "ual_events", "operation": "New-InboxRule", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:20:00Z", "client_ip": "40.107.0.5"}
+    expect_hits: 1
+  - name: "S1: a record with no address keeps counting"
+    records:
+      - {"table": "ip_intel", "ip": "192.0.2.10", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64496}
+      - {"table": "ip_intel", "ip": "198.51.100.7", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64509}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-01T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-02T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-03T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:00:00Z", "ip": "198.51.100.7", "error_code": 0}
+      - {"table": "directory_audits", "activity": "User registered security info", "initiated_by_upn": "alice@contoso.example", "event_time": "2026-03-05T10:20:00Z"}
+    expect_hits: 1
+  - name: "S1: a record from an address with no ASN in ip_intel keeps counting"
+    records:
+      - {"table": "ip_intel", "ip": "192.0.2.10", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64496}
+      - {"table": "ip_intel", "ip": "198.51.100.7", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64509}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-01T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-02T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-03T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "ip_intel", "ip": "203.0.113.99", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:00:00Z", "ip": "198.51.100.7", "error_code": 0}
+      - {"table": "ual_events", "operation": "New-InboxRule", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:20:00Z", "client_ip": "203.0.113.99"}
+    expect_hits: 1
+  - name: "S2: an Entra twin a few seconds after the UAL logon, rated medium, excludes the sign-in"
+    records:
+      - {"table": "ip_intel", "ip": "192.0.2.10", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64496}
+      - {"table": "ip_intel", "ip": "198.51.100.7", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64509}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-01T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-02T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-03T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "ual_events", "operation": "UserLoggedIn", "user_upn": "alice@contoso.example", "client_ip": "198.51.100.7", "event_time": "2026-03-05T10:00:00Z", "result_status": "Success"}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:00:04Z", "ip": "198.51.100.7", "error_code": 0, "risk_level_during": "medium"}
+      - {"table": "ual_events", "operation": "New-InboxRule", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:20:00Z", "client_ip": "198.51.100.7"}
+    expect_hits: 0
+  - name: "S2: a rated sign-in from the same address more than 120 seconds later is not the twin"
+    records:
+      - {"table": "ip_intel", "ip": "192.0.2.10", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64496}
+      - {"table": "ip_intel", "ip": "198.51.100.7", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64509}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-01T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-02T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-03T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:00:00Z", "ip": "198.51.100.7", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:05:00Z", "ip": "198.51.100.7", "error_code": 0, "risk_level_during": "medium"}
+      - {"table": "ual_events", "operation": "New-InboxRule", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:20:00Z", "client_ip": "198.51.100.7"}
+    expect_hits: 1
+  - name: "S3: device registration (directory audit Register device) counts"
+    records:
+      - {"table": "ip_intel", "ip": "192.0.2.10", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64496}
+      - {"table": "ip_intel", "ip": "198.51.100.7", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64509}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-01T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-02T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-03T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:00:00Z", "ip": "198.51.100.7", "error_code": 0}
+      - {"table": "directory_audits", "activity": "Register device", "initiated_by_upn": "alice@contoso.example", "event_time": "2026-03-05T10:20:00Z", "initiated_by_ip": "198.51.100.7"}
+    expect_hits: 1
+  - name: "S3: a device's registered owner added (UAL) counts"
+    records:
+      - {"table": "ip_intel", "ip": "192.0.2.10", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64496}
+      - {"table": "ip_intel", "ip": "198.51.100.7", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64509}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-01T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-02T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-03T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:00:00Z", "ip": "198.51.100.7", "error_code": 0}
+      - {"table": "ual_events", "operation": "Add registered owner to device.", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:20:00Z", "client_ip": "198.51.100.7"}
+    expect_hits: 1
+  - name: "S3: SendAs through Add-RecipientPermission (admin audit log) counts"
+    records:
+      - {"table": "ip_intel", "ip": "192.0.2.10", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64496}
+      - {"table": "ip_intel", "ip": "198.51.100.7", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64509}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-01T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-02T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-03T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:00:00Z", "ip": "198.51.100.7", "error_code": 0}
+      - {"table": "admin_audit_events", "cmdlet": "Add-RecipientPermission", "caller": "alice@contoso.example", "run_time": "2026-03-05T10:20:00Z", "client_ip": "198.51.100.7"}
+    expect_hits: 1
+  - name: "S3: a mailbox folder permission (Add-MailboxFolderPermission) counts"
+    records:
+      - {"table": "ip_intel", "ip": "192.0.2.10", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64496}
+      - {"table": "ip_intel", "ip": "198.51.100.7", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64509}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-01T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-02T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-03T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:00:00Z", "ip": "198.51.100.7", "error_code": 0}
+      - {"table": "ual_events", "operation": "Add-MailboxFolderPermission", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:20:00Z", "client_ip": "198.51.100.7"}
+    expect_hits: 1
+  - name: "S3: a transport rule (New-TransportRule) counts"
+    records:
+      - {"table": "ip_intel", "ip": "192.0.2.10", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64496}
+      - {"table": "ip_intel", "ip": "198.51.100.7", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64509}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-01T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-02T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-03T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:00:00Z", "ip": "198.51.100.7", "error_code": 0}
+      - {"table": "ual_events", "operation": "New-TransportRule", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:20:00Z", "client_ip": "198.51.100.7"}
+    expect_hits: 1
+  - name: "S3: an application credential (directory audit, as stored with its trailing space) counts"
+    records:
+      - {"table": "ip_intel", "ip": "192.0.2.10", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64496}
+      - {"table": "ip_intel", "ip": "198.51.100.7", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64509}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-01T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-02T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-03T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:00:00Z", "ip": "198.51.100.7", "error_code": 0}
+      - {"table": "directory_audits", "activity": "Update application – Certificates and secrets management ", "initiated_by_upn": "alice@contoso.example", "event_time": "2026-03-05T10:20:00Z", "initiated_by_ip": "198.51.100.7"}
+    expect_hits: 1
+  - name: "S3: a service principal credential (UAL) counts"
+    records:
+      - {"table": "ip_intel", "ip": "192.0.2.10", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64496}
+      - {"table": "ip_intel", "ip": "198.51.100.7", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64509}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-01T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-02T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-03T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:00:00Z", "ip": "198.51.100.7", "error_code": 0}
+      - {"table": "ual_events", "operation": "Add service principal credentials.", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:20:00Z", "client_ip": "198.51.100.7"}
+    expect_hits: 1
+  - name: "S3: the combined security-info registration counts"
+    records:
+      - {"table": "ip_intel", "ip": "192.0.2.10", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64496}
+      - {"table": "ip_intel", "ip": "198.51.100.7", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64509}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-01T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-02T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-03T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:00:00Z", "ip": "198.51.100.7", "error_code": 0}
+      - {"table": "directory_audits", "activity": "User registered all required security info", "initiated_by_upn": "alice@contoso.example", "event_time": "2026-03-05T10:20:00Z", "initiated_by_ip": "198.51.100.7"}
+    expect_hits: 1
+  - name: "S3: a junk mail configuration change (Set-MailboxJunkEmailConfiguration) counts"
+    records:
+      - {"table": "ip_intel", "ip": "192.0.2.10", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64496}
+      - {"table": "ip_intel", "ip": "198.51.100.7", "country_iso": "US", "is_hosting": false, "is_microsoft": false, "is_private": false, "asn": 64509}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-01T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-02T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-03T09:00:00Z", "ip": "192.0.2.10", "error_code": 0}
+      - {"table": "signins", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:00:00Z", "ip": "198.51.100.7", "error_code": 0}
+      - {"table": "ual_events", "operation": "Set-MailboxJunkEmailConfiguration", "user_upn": "alice@contoso.example", "event_time": "2026-03-05T10:20:00Z", "client_ip": "198.51.100.7"}
     expect_hits: 1

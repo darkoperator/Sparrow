@@ -21,12 +21,12 @@
 | --- | ---: | --- | --- |
 | azure\_activity | 4 | 2026-08-06T09:05:00Z | 2026-08-09T11:07:00Z |
 | directory\_audits | 22 | 2026-08-12T16:00:00Z | 2026-09-09T20:08:41Z |
-| mailbox\_audit\_legacy | 1775 | 2026-08-01T08:38:17Z | 2026-09-10T01:55:36Z |
+| mailbox\_audit\_legacy | 1776 | 2026-08-01T08:38:17Z | 2026-09-10T01:55:36Z |
 | message\_trace | 2261 | 2026-08-01T04:17:34Z | 2026-09-09T23:55:36Z |
 | risk\_detections | 4 | 2026-08-04T12:50:10Z | 2026-08-21T19:12:00Z |
 | security\_alerts | 1 | 2026-08-04T10:00:00Z | 2026-08-04T10:00:00Z |
-| signins | 1293 | 2026-08-11T14:24:08Z | 2026-09-09T23:49:44Z |
-| ual\_events | 5899 | 2026-08-01T00:19:21Z | 2026-09-09T23:59:59Z |
+| signins | 1294 | 2026-08-11T14:24:08Z | 2026-09-09T23:49:44Z |
+| ual\_events | 5901 | 2026-08-01T00:19:21Z | 2026-09-09T23:59:59Z |
 
 ## Executive summary
 
@@ -104,7 +104,7 @@ Sparrow ingested the collector output into a case database, enriched it and ran 
 
 ## Evidence references
 
-[^1]: signins:2e1c9d42-6a92-419c-b21a-9d2fb256a795 — Output/Contoso\_Example/Sign-In logs/EntraID/20260910-161751-SignInLogs/interactiveUser &amp; nonInteractiveUser/20260910161757-interactiveUser-nonInteractiveUser-SignInLogs.json:19639-19705
+[^1]: signins:2e1c9d42-6a92-419c-b21a-9d2fb256a795 — Output/Contoso\_Example/Sign-In logs/EntraID/20260910-161751-SignInLogs/interactiveUser &amp; nonInteractiveUser/20260910161757-interactiveUser-nonInteractiveUser-SignInLogs.json:19706-19772
 [^2]: ual\_events:74b0d0cd-8b08-4d7d-b5ce-e5a2784cf1d1 — Output/Contoso\_Example/UnifiedAuditLog/20260910-161616/20260910161616-victims-UnifiedAuditLog.json:96863-96913; Output/Contoso\_Example/UnifiedAuditLog/20260910-161713/20260910161713-victims-UnifiedAuditLog.jsonl:1470; Output/Triage-Contoso\_Example/New-InboxRule.json:2-51 (+2 more sightings)
 [^3]: ual\_events:5ae56966-7d51-4d2d-900d-196664d6118e — Output/Contoso\_Example/UnifiedAuditLog/20260910-161616/20260910161616-victims-UnifiedAuditLog.json:89-161; Output/Contoso\_Example/UnifiedAuditLog/20260910-161713/20260910161713-victims-UnifiedAuditLog.jsonl:2; Output/Triage-Contoso\_Example/MailItemsAccessed.json:2-73 (+3 more sightings)
 [^4]: ual\_events:02a13335-5a42-4ce8-9f05-5b5f0f489146 — Output/Contoso\_Example/UnifiedAuditLog/20260910-161616/20260910161616-victims-UnifiedAuditLog.json:166272-166322; Output/Contoso\_Example/UnifiedAuditLog/20260910-161713/20260910161713-victims-UnifiedAuditLog.jsonl:2520; Output/Triage-Contoso\_Example/New-InboxRule.json:118-167 (+2 more sightings)

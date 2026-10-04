@@ -650,17 +650,24 @@ rules:
     hawk: null
     logic: >-
       A persistence action of a user - UAL / Hawk 3 admin audit New-InboxRule, Set-InboxRule,
-      UpdateInboxRules, Add-MailboxPermission, Set-Mailbox setting a non-empty ForwardingSmtpAddress or
-      ForwardingAddress; directory audit / UAL Consent to application, Add app role assignment grant to
-      user, Add app role assignment to service principal, User registered security info, Add member to
-      role, or Update user of the strong-authentication details - at most 60 minutes after that user's
-      FIRST successful sign-in (error_code 0 or NULL, or UAL UserLoggedIn not Failed) from an ASN (history
-      is the user's successful sign-ins in the case, so the ASN was not used on an earlier day). That
-      sign-in must be from a country the user signed in from on an earlier UTC day, not a hosting ASN, not
-      a Microsoft address, not rated medium/high risk (an Entra sign-in and its UAL twin at the same
-      instant are one sign-in), with ASN and country known to ip_intel, and the user must have successful
-      sign-ins on at least 3 distinct UTC days before its day (a user's first three active days are never
-      judged). The trigger is the persistence record; the new-network sign-in is in the context.
+      UpdateInboxRules, Add-MailboxPermission, Add-RecipientPermission, Add-MailboxFolderPermission,
+      Set-MailboxFolderPermission, New-TransportRule, Set-TransportRule, Set-MailboxJunkEmailConfiguration,
+      Set-Mailbox setting a non-empty ForwardingSmtpAddress or ForwardingAddress; directory audit / UAL
+      Consent to application, Add app role assignment grant to user, Add app role assignment to service
+      principal, User registered security info, User registered all required security info, Add member to
+      role, Register device, Add device, Add registered owner to device, Add registered users to device, Add
+      service principal credentials, Update application - Certificates and secrets management, or Update
+      user of the strong-authentication details - at most 60 minutes (inclusive) after that user's FIRST
+      successful sign-in (error_code 0 or NULL, or UAL UserLoggedIn not Failed) from an ASN (history is the
+      user's successful sign-ins in the case, so the ASN was not used on an earlier day), and from that
+      network: when the persistence record carries a non-Microsoft address whose ASN ip_intel knows, that
+      ASN must be the new network's (a record with no address, an unknown ASN or a Microsoft address
+      counts). That sign-in must be from a country the user signed in from on an earlier UTC day, not a
+      hosting ASN, not a Microsoft address, with ASN and country known to ip_intel, and not rated
+      medium/high by any Entra sign-in of the user from the same address within 120 seconds of it (the UAL
+      row has no rating and its timestamp differs by seconds); the user must have successful sign-ins on at
+      least 3 distinct UTC days before its day (a user's first three active days are never judged). The
+      trigger is the persistence record; the new-network sign-in is in the context.
     tables: [ual_events, admin_audit_events, directory_audits, signins]
     requires: []
     requires_evidence: []
@@ -669,12 +676,15 @@ rules:
     evidence_all_of: [[ual_events, admin_audit_events, directory_audits], [signins, ual_events]]
     collectors: [hawk3, hawk4, invictus, portal]
     # residential_replay_rule: a stolen session replayed from a residential ISP of the victim's own
-    # country, then the finance inbox rule within the hour. new_carrier_phone: the new network alone.
-    # rule_edit_after_new_network: both halves, two hours apart. admin_role_changes: the admin's routine
-    # role changes right after a sign-in from the office (a known network).
+    # country, then the finance inbox rule from it within the hour. The look-alikes and the condition
+    # each guards: new_carrier_phone, the new network alone (it fails only if sign-ins alone ever fired);
+    # rule_edit_after_new_network, both halves on the same network two hours apart (the window);
+    # other_device_rule_edit, both halves within the hour from two networks (the persistence's network);
+    # admin_role_changes, the admin's routine role changes right after a sign-in from the office (a
+    # known network).
     positives: [residential_replay_rule]
-    lookalikes: [new_carrier_phone, rule_edit_after_new_network, admin_role_changes]
-    correlation_negatives: [rule_edit_after_new_network]
+    lookalikes: [new_carrier_phone, rule_edit_after_new_network, other_device_rule_edit, admin_role_changes]
+    correlation_negatives: [rule_edit_after_new_network, other_device_rule_edit]
   - id: SPW-ID-010
     title: Inbox rule created within 60 minutes of a risky or hosting-ASN sign-in
     category: identity

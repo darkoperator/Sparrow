@@ -26,7 +26,11 @@ const PERSISTENCE: [&str; 10] = [
 ];
 
 fn world() -> (World, Vec<StoryRecord>) {
-    let mut w = World::build(&load("bec-aitm").unwrap(), 42).unwrap();
+    world_seed(42)
+}
+
+fn world_seed(seed: u64) -> (World, Vec<StoryRecord>) {
+    let mut w = World::build(&load("bec-aitm").unwrap(), seed).unwrap();
     let recs = apply(&mut w).unwrap();
     (w, recs)
 }
@@ -209,11 +213,8 @@ fn the_users_own_rule_edit_comes_two_hours_after_the_new_network() {
         gap > Duration::minutes(90) && gap <= Duration::minutes(150),
         "{gap}"
     );
-    // From the office, not from the new network.
-    assert_eq!(
-        edits[0].client_ip(),
-        Some(user.office_ip.to_string().as_str())
-    );
+    // From the new network itself (the phone, still on the carrier): only the window fails.
+    assert_eq!(edits[0].client_ip(), Some(first.ip.to_string().as_str()));
     let within = persistence_between(&w, &user.upn, first.time, first.time + Duration::hours(1));
     assert!(within.is_empty(), "{within:?}");
 }
@@ -272,4 +273,63 @@ fn the_admins_role_changes_follow_a_sign_in_from_the_office() {
         roles.contains("Helpdesk Administrator") && roles.contains("Reports Reader"),
         "{roles:?}"
     );
+}
+
+#[test]
+fn the_users_office_rule_edit_follows_the_phones_new_carrier_within_the_hour() {
+    let (w, recs) = world();
+    let r = record(&recs, "l-office-edit", "other_device_rule_edit");
+    let user = w.user_by_upn(&r.actor).unwrap().clone();
+    let first = *own_signins(&w, r).iter().min_by_key(|s| s.time).unwrap();
+    assert_first_from_a_new_network(&w, first);
+    let edits: Vec<&Ual> = own_ual(&w, r)
+        .into_iter()
+        .filter(|u| u.operation == "UpdateInboxRules")
+        .collect();
+    assert_eq!(edits.len(), 1);
+    let gap = edits[0].time - first.time;
+    assert!(
+        gap > Duration::zero() && gap <= Duration::minutes(60),
+        "{gap}"
+    );
+    // From the office, a network the user has used on earlier days: not the new one.
+    assert_eq!(
+        edits[0].client_ip(),
+        Some(user.office_ip.to_string().as_str())
+    );
+    assert_ne!(user.home.asn, first.location.asn);
+}
+
+/// The positive needs no computed expectation only while its facts hold on every seed: checked on
+/// seeds 1-3 (the heavy gate's), with the user's history restricted to Hawk 4's 14-day sign-in range,
+/// the shortest any collector delivers.
+#[test]
+fn the_replays_facts_hold_on_seeds_1_to_3_within_hawk_4s_sign_in_range() {
+    for seed in 1..=3 {
+        let (w, recs) = world_seed(seed);
+        let r = record(&recs, "s-replay-rule", "residential_replay_rule");
+        let user = w.user_by_upn(&r.actor).unwrap().clone();
+        let replay = *own_signins(&w, r)
+            .iter()
+            .find(|s| s.ip != user.home_ip)
+            .expect("the replayed sign-in");
+        assert_first_from_a_new_network(&w, replay);
+        let from = w.collected_at() - Duration::days(14);
+        let days: BTreeSet<_> = history(&w, &user.upn)
+            .iter()
+            .filter(|x| x.time >= from && x.time.date_naive() < replay.time.date_naive())
+            .map(|x| x.time.date_naive())
+            .collect();
+        assert!(days.len() >= 3, "seed {seed}: {days:?}");
+        let rule = own_ual(&w, r)
+            .into_iter()
+            .find(|u| u.operation == "New-InboxRule")
+            .expect("the rule");
+        assert_eq!(rule.client_ip(), Some(replay.ip.to_string().as_str()));
+        let gap = rule.time - replay.time;
+        assert!(
+            gap > Duration::zero() && gap <= Duration::minutes(60),
+            "seed {seed}: {gap}"
+        );
+    }
 }
