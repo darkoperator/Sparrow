@@ -73,6 +73,10 @@ pub struct Computed<S = String> {
     pub condition: String,
     /// Why the outcome cannot be fixed per kind.
     pub reason: String,
+    /// The declared exception to "a computed kind hits on at least one built-in tree": why no
+    /// built-in tree can make it hit. Absent for every kind that must be seen hitting.
+    #[serde(default)]
+    pub never_hits: Option<String>,
 }
 
 /// One documented exception to the detection gate's baseline rule.

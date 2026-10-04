@@ -33,7 +33,10 @@
 #                     generator evaluates the rule's logic (`condition`, sparrow-synth `oracle`) over
 #                     the rows that tree delivers and writes `hit` or `no_hit`, which the detection
 #                     gate checks exactly. Each entry names the `kind`, the `condition` and a
-#                     `reason`. A kind is never both computed and a positive or look-alike.
+#                     `reason`. A kind is never both computed and a positive or look-alike. Every
+#                     computed kind must compute a `hit`, confirmed by the gate, on at least one
+#                     built-in tree (the heavy seeds 1-3 test); an exception declares
+#                     `never_hits: "<why no built-in tree can>"`.
 #   baseline_allow    optional exceptions to the detection gate's baseline rule (`sparrow synth
 #                     check`): every finding of a rule must cite a storyline whose expected
 #                     outcome is `hit`. A finding that cites only records of a kind listed here
@@ -555,15 +558,16 @@ rules:
     # residential address of another country: only session_moved sees it. spray_replay replays from a
     # same-country spray source: only the spray-source infrastructure test sees it.
     positives: [aitm_signin, replay_other_country, spray_replay]
-    lookalikes: [same_ip_token_use, wifi_to_cellular, ipv6_rotation, password_spray]
+    # mia_burst reads the mailbox in the AiTM session from the attacker's mailbox address, which is in
+    # the proxy's own network (same ASN and country as the MFA sign-in that created the session), with
+    # Outlook on the web or a Graph client: no network change for session_moved and no scripted agent,
+    # so it must never trigger the rule.
+    lookalikes: [same_ip_token_use, wifi_to_cellular, ipv6_rotation, password_spray, mia_burst]
     computed:
       - kind: inbox_rule_finance
         condition: aitm_indicators
         reason: &stolen_session "the storyline reuses the AiTM sign-in session from another address (a true session_moved signal); it fires only where the creating MFA sign-in is delivered with its session id (not Hawk, not a tree without sign-ins or without an AiTM sign-in) and the use falls within the hour after it"
       - kind: forwarding_inbox_rule
-        condition: aitm_indicators
-        reason: *stolen_session
-      - kind: mia_burst
         condition: aitm_indicators
         reason: *stolen_session
   - id: SPW-ID-005
@@ -638,9 +642,11 @@ rules:
     logic: >-
       UAL New-InboxRule / Set-InboxRule / UpdateInboxRules whose actor had, in the preceding 60
       minutes, a sign-in with risk_level_during medium/high or from ip_intel.is_hosting
-      (spec §8.2 example). The hosting arm skips a tenant-wide cloud service's own sign-ins to its
-      application from its ASN (cloud_services; UAL UserLoggedIn by ual_events.app_id) unless the
-      address is a password-spray source; the risk arm has no exclusion. Hawk 3.1 records New-InboxRule / Set-InboxRule in
+      (spec §8.2 example). The hosting arm counts only a successful or unknown-result sign-in
+      (error_code 0 or NULL) or a UAL UserLoggedIn whose result is not Failed, and skips a
+      tenant-wide cloud service's own sign-ins to its application from its ASN (cloud_services; UAL
+      UserLoggedIn by ual_events.app_id) unless the address is a password-spray source; the risk arm
+      has neither condition. Hawk 3.1 records New-InboxRule / Set-InboxRule in
       Search-AdminAuditLog (admin_audit_events, CmdletName + Caller + RunDate) instead of the
       UAL; Phase 6 implements both sources.
     tables: [ual_events, signins, admin_audit_events]

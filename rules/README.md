@@ -544,6 +544,12 @@ The thresholds are read from the rule's own SQL, so a changed threshold is picke
 rewritten rule fails generation instead of drifting. A kind is never both computed and a positive
 or look-alike of the same rule.
 
+`computed` must not quietly turn a positive into "whatever the logic does". So every computed kind
+must compute a `hit`, which the gate confirms, on at least one built-in tree. The heavy seeds 1-3
+test reads this requirement from the file. A kind that no built-in tree can make hit must declare
+`never_hits: "<why>"`; the loader rejects a blank reason. A kind that should never fire belongs
+under `lookalikes`, which is stricter: any finding on it is an error.
+
 ### `baseline_allow`
 
 The detection gate requires that **every** finding of a rule cite the records of a storyline
@@ -560,7 +566,8 @@ cannot be computed:
 `reason` is required, and every entry needs an architect ruling reported to the user. Prefer
 `computed`, which checks the outcome exactly; a tolerated finding cannot catch a regression that
 adds or drops it. **The shipped matrix has no `baseline_allow` entry**: the former exceptions
-(SPW-MAIL-006, SPW-ID-003, SPW-ID-004 and SPW-ID-010) are all computed, and a test keeps it that way.
+on SPW-MAIL-006, SPW-ID-003, SPW-ID-004 and SPW-ID-010 are computed, except SPW-ID-004's
+`mia_burst`, which is a look-alike. A test keeps the file free of `baseline_allow`.
 
 `rules lint` does **not** list these entries. They are read out of `rules/coverage.yaml` and
 enforced by the `sparrow synth check` detection gate.

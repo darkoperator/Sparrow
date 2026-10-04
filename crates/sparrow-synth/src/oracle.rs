@@ -13,6 +13,13 @@
 //! Sparrow query runs. The thresholds are read from the rule files ([`rule_number`]), and the derived
 //! relations' constants from `sparrow_core::profile`, so a rule change cannot drift silently from this
 //! model: a threshold that moves is read again, and one that cannot be found fails generation.
+//!
+//! The rows are read as Sparrow sees them, deliberately: a UAL record's fields follow Sparrow's UAL
+//! normalizer's field precedence (UserId; ClientIP, then ClientIPAddress, then ActorIpAddress;
+//! SessionId, then AppAccessContext.AADSessionId; AppId, then ApplicationId; UserAgent, then the
+//! ExtendedProperties UserAgent, then ClientInfoString), so the oracle models the RULE over the record
+//! Sparrow's rule reads. A normalizer bug in those fields would be mirrored here, not caught: the
+//! parsers' own tests and `synth check`'s table expectations guard the normalizer.
 
 use crate::events::{SignIn, SignInType, Ual};
 use crate::options::Collector;
@@ -107,6 +114,8 @@ pub struct UalRow {
     /// Lower case.
     pub app: Option<String>,
     pub user_agent: Option<String>,
+    /// The record's ResultStatus is `Failed`.
+    pub failed: bool,
 }
 
 /// A delivered `admin_audit_events` row (Hawk 3's rendering of an Exchange admin cmdlet).
@@ -239,20 +248,23 @@ fn net_eq(ip: IpAddr, net: &str, len: u32) -> bool {
     }
 }
 
-/// The one number that follows `before` in the SQL of rule `rule_id` (built-in pack). `before` must
-/// occur exactly once, so a rewritten rule fails here instead of drifting from the model.
-pub fn rule_number(rule_id: &str, before: &str) -> Result<f64> {
+/// The built-in rule pack, loaded once.
+fn pack() -> Result<&'static sparrow_core::detect::load::RuleSet> {
     static SET: std::sync::OnceLock<
         std::result::Result<sparrow_core::detect::load::RuleSet, String>,
     > = std::sync::OnceLock::new();
-    let set = SET
-        .get_or_init(|| {
-            sparrow_core::detect::load::load_rules(&sparrow_core::data::DataDirs::default())
-                .map_err(|e| e.to_string())
-        })
-        .as_ref()
-        .map_err(|e| Error::Core(e.clone()))?;
-    let rule = set
+    SET.get_or_init(|| {
+        sparrow_core::detect::load::load_rules(&sparrow_core::data::DataDirs::default())
+            .map_err(|e| e.to_string())
+    })
+    .as_ref()
+    .map_err(|e| Error::Core(e.clone()))
+}
+
+/// The SQL of rule `rule_id` (built-in pack), and where `fragment` occurs in it: exactly once, so a
+/// rewritten rule fails here instead of drifting from the model.
+fn locate(rule_id: &str, fragment: &str) -> Result<(&'static str, usize)> {
+    let rule = pack()?
         .rules
         .iter()
         .find(|r| r.rule.id == rule_id)
@@ -260,29 +272,49 @@ pub fn rule_number(rule_id: &str, before: &str) -> Result<f64> {
     let sparrow_core::detect::rule::RuleBody::Sql { sql } = &rule.rule.body else {
         return Err(Error::Invalid(format!("{rule_id}: not a sql rule")));
     };
-    let found: Vec<usize> = sql.match_indices(before).map(|(i, _)| i).collect();
+    let found: Vec<usize> = sql.match_indices(fragment).map(|(i, _)| i).collect();
     let [at] = found.as_slice() else {
         return Err(Error::Invalid(format!(
-            "{rule_id}: {before:?} occurs {} times in the rule's SQL, expected once (the computed expectations read the threshold there)",
+            "{rule_id}: {fragment:?} occurs {} times in the rule's SQL, expected once (the computed expectations read the threshold there)",
             found.len()
         )));
     };
-    let rest = &sql[at + before.len()..];
-    let end = rest
-        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
-        .unwrap_or(rest.len());
-    rest[..end].parse::<f64>().map_err(|_| {
+    Ok((sql.as_str(), *at))
+}
+
+fn number(rule_id: &str, fragment: &str, text: &str) -> Result<f64> {
+    text.parse::<f64>().map_err(|_| {
         Error::Invalid(format!(
-            "{rule_id}: no number after {before:?} in the rule's SQL"
+            "{rule_id}: no number next to {fragment:?} in the rule's SQL"
         ))
     })
 }
 
+fn is_number_char(c: char) -> bool {
+    c.is_ascii_digit() || c == '.'
+}
+
+/// The one number that follows `before` in the SQL of rule `rule_id` (built-in pack).
+pub fn rule_number(rule_id: &str, before: &str) -> Result<f64> {
+    let (sql, at) = locate(rule_id, before)?;
+    let rest = &sql[at + before.len()..];
+    let end = rest.find(|c| !is_number_char(c)).unwrap_or(rest.len());
+    number(rule_id, before, &rest[..end])
+}
+
+/// The one number that precedes `after` in the SQL of rule `rule_id` (built-in pack), for a
+/// constant whose distinctive context follows it (the Earth radius before `* asin(`).
+pub fn rule_number_before(rule_id: &str, after: &str) -> Result<f64> {
+    let (sql, at) = locate(rule_id, after)?;
+    let head = &sql[..at];
+    let start = head.rfind(|c| !is_number_char(c)).map_or(0, |i| i + 1);
+    number(rule_id, after, &head[start..])
+}
+
 /// The values of a list of the built-in pack.
 fn pack_list(name: &str) -> Result<Vec<String>> {
-    let set = sparrow_core::detect::load::load_rules(&sparrow_core::data::DataDirs::default())
-        .map_err(core)?;
-    set.lists
+    pack()?
+        .lists
         .get(name)
         .cloned()
         .ok_or_else(|| Error::Invalid(format!("list {name} not found")))
@@ -527,7 +559,7 @@ impl Facts {
         let min_km = rule_number(R, "WHERE km >= ")?;
         let max_kmh = rule_number(R, "AND km / hours > ")?;
         let floor_s = rule_number(R, "/ 1000.0, ")?;
-        let radius = rule_number(R, "2 * ")?;
+        let radius = rule_number_before(R, " * asin(sqrt(least(1.0,")?;
         struct Ev<'a> {
             t: i64,
             src: &'static str,
@@ -784,7 +816,9 @@ impl Facts {
     /// New-InboxRule / Set-InboxRule, whose actor had within the window before it a sign-in rated
     /// medium/high risk or from a hosting address, or a UAL UserLoggedIn from a hosting address. A
     /// hosting sign-in or logon of a cloud service's application from its ASN does not count unless
-    /// the address is a spray source (the rule header names this exclusion); the risk arm has none.
+    /// the address is a spray source (the rule header names this exclusion), and the hosting arm
+    /// counts only a successful sign-in (error 0) or a logon whose result is not Failed; the risk
+    /// arm has neither condition.
     fn risky_rule_correlation(&self) -> Result<BTreeSet<Record>> {
         let window = rule_number("SPW-ID-010", "epoch_ms(r.event_time) - ")? as i64;
         // A hosting address that is not a cloud service's own sign-in to `app` from its ASN.
@@ -799,14 +833,14 @@ impl Facts {
         let mut risky: BTreeMap<&str, Vec<i64>> = BTreeMap::new();
         for s in &self.signins {
             if let Some(u) = s.upn.as_deref() {
-                if s.risky || hosting(s.ip, &s.app) {
+                if s.risky || (s.error == 0 && hosting(s.ip, &s.app)) {
                     risky.entry(u).or_default().push(s.t);
                 }
             }
         }
         for x in &self.ual {
             if let (Some(u), Some(ip), "userloggedin") = (x.upn.as_deref(), x.ip, x.op.as_str()) {
-                if hosting(ip, x.app.as_deref().unwrap_or("")) {
+                if !x.failed && hosting(ip, x.app.as_deref().unwrap_or("")) {
                     risky.entry(u).or_default().push(x.t);
                 }
             }
@@ -912,5 +946,6 @@ fn ual_row(collector: Collector, u: &Ual, key: String) -> UalRow {
             .find_map(|k| text(a, k))
             .map(|s| s.to_lowercase()),
         user_agent,
+        failed: text(a, "ResultStatus").is_some_and(|r| r.eq_ignore_ascii_case("failed")),
     }
 }

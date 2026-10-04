@@ -71,6 +71,12 @@ fn load() -> Vec<RuleDef> {
                 r.id,
                 c.condition
             );
+            assert!(
+                c.never_hits.as_deref().is_none_or(|w| !w.trim().is_empty()),
+                "rules/coverage.yaml: {}: computed kind {} declares never_hits without a reason",
+                r.id,
+                c.kind.as_str()
+            );
         }
     }
     rules

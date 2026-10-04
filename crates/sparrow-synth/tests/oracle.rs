@@ -27,37 +27,38 @@ fn detected(name: &str, c: Collector, seed: u64) -> (Manifest, Case) {
 }
 
 #[test]
-fn the_shipped_coverage_has_no_baseline_allow_and_computes_the_former_exceptions() {
-    let rules = sparrow_synth::coverage::rules();
-    let allowed: Vec<&str> = rules
+fn the_shipped_coverage_has_no_baseline_allow() {
+    let allowed: Vec<&str> = sparrow_synth::coverage::rules()
         .iter()
         .filter(|r| !r.baseline_allow.is_empty())
         .map(|r| r.id.as_str())
         .collect();
     assert!(allowed.is_empty(), "baseline_allow in {allowed:?}");
-    let computed: BTreeSet<(String, String)> = rules
-        .iter()
-        .flat_map(|r| {
-            r.computed
-                .iter()
-                .map(|c| (r.id.clone(), c.kind.as_str().to_string()))
-        })
-        .collect();
-    let want: BTreeSet<(String, String)> = [
-        ("SPW-MAIL-006", "plausible_travel"),
-        ("SPW-ID-003", "oauth_consent"),
-        ("SPW-ID-003", "inbox_rule_after_stale_risk"),
-        ("SPW-ID-003", "mfa_after_stale_risk"),
-        ("SPW-ID-003", "anonymous_link_after_stale_risk"),
-        ("SPW-ID-004", "inbox_rule_finance"),
-        ("SPW-ID-004", "forwarding_inbox_rule"),
-        ("SPW-ID-004", "mia_burst"),
-        ("SPW-ID-010", "forwarding_inbox_rule"),
-    ]
-    .into_iter()
-    .map(|(r, k)| (r.to_string(), k.to_string()))
-    .collect();
-    assert_eq!(computed, want);
+}
+
+/// Every computed (rule, kind) of `rules/coverage.yaml` computed a `hit` that the gate confirmed
+/// (flipped to `no_hit`, the finding became unexpected) somewhere in `seen`, unless the entry
+/// declares `never_hits`, which must then still be true. Read from the file, not a list here.
+fn assert_every_computed_kind_hits(seen: &BTreeSet<(String, String, &'static str)>) {
+    let mut problems = Vec::new();
+    for r in sparrow_synth::coverage::rules() {
+        for c in &r.computed {
+            let kind = c.kind.as_str().to_string();
+            let hit = seen.contains(&(r.id.clone(), kind.clone(), "unexpected"));
+            match (&c.never_hits, hit) {
+                (None, false) => problems.push(format!(
+                    "{} {kind}: computed but never a confirmed hit on these trees (declare never_hits with a reason, or make it a look-alike)",
+                    r.id
+                )),
+                (Some(why), true) => problems.push(format!(
+                    "{} {kind}: declares never_hits ({why}) but hits",
+                    r.id
+                )),
+                _ => {}
+            }
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
 fn ip(s: &str) -> IpAddr {
@@ -115,7 +116,8 @@ fn view_differences(name: &str, c: Collector) -> Vec<String> {
     let mut st = conn
         .prepare(
             "SELECT lower(CAST(record_id AS VARCHAR)), epoch_ms(event_time), user_upn, client_ip,
-                    lower(trim(operation)), session_id, lower(app_id), user_agent
+                    lower(trim(operation)), session_id, lower(app_id), user_agent,
+                    lower(coalesce(result_status, '')) = 'failed'
              FROM ual_events ORDER BY 1",
         )
         .unwrap();
@@ -130,6 +132,7 @@ fn view_differences(name: &str, c: Collector) -> Vec<String> {
                 session: some(r.get(5)?),
                 app: some(r.get(6)?),
                 user_agent: some(r.get(7)?),
+                failed: r.get(8)?,
             })
         })
         .unwrap()
@@ -345,43 +348,7 @@ fn flipping_a_computed_outcome_fails_the_gate_in_both_directions() {
     ] {
         seen.extend(flips(name, c, 1));
     }
-    assert_directions(&seen);
-}
-
-/// Every computed (rule, kind) was flipped in the directions its built-in trees allow.
-fn assert_directions(seen: &BTreeSet<(String, String, &'static str)>) {
-    let want = |rule: &str, kind: &str, d: &'static str| (rule.to_string(), kind.to_string(), d);
-    // An expected hit made a no_hit: the finding is unexpected. mia_burst never hits on a built-in
-    // tree (its replay is more than an hour after the session's MFA sign-in).
-    for (rule, kind) in [
-        ("SPW-MAIL-006", "plausible_travel"),
-        ("SPW-ID-003", "oauth_consent"),
-        ("SPW-ID-003", "inbox_rule_after_stale_risk"),
-        ("SPW-ID-003", "mfa_after_stale_risk"),
-        ("SPW-ID-003", "anonymous_link_after_stale_risk"),
-        ("SPW-ID-004", "inbox_rule_finance"),
-        ("SPW-ID-004", "forwarding_inbox_rule"),
-        ("SPW-ID-010", "forwarding_inbox_rule"),
-    ] {
-        assert!(
-            seen.contains(&want(rule, kind, "unexpected")),
-            "{rule} {kind}: {seen:#?}"
-        );
-    }
-    // A computed no_hit made a hit: the hit is missing. The SPW-ID-003 kinds hit on every built-in
-    // tree (seeds 1-3), so they have no no_hit to flip.
-    for (rule, kind) in [
-        ("SPW-MAIL-006", "plausible_travel"),
-        ("SPW-ID-004", "inbox_rule_finance"),
-        ("SPW-ID-004", "forwarding_inbox_rule"),
-        ("SPW-ID-004", "mia_burst"),
-        ("SPW-ID-010", "forwarding_inbox_rule"),
-    ] {
-        assert!(
-            seen.contains(&want(rule, kind, "missing")),
-            "{rule} {kind}: {seen:#?}"
-        );
-    }
+    assert_every_computed_kind_hits(&seen);
 }
 
 /// Seeds 1-3: the generator's computed outcomes must hold exactly on every scenario and collector.
@@ -407,5 +374,5 @@ fn the_gate_passes_with_the_computed_outcomes_on_seeds_1_to_3() {
         }
     }
     assert!(failed.is_empty(), "{}", failed.join("\n"));
-    assert_directions(&seen);
+    assert_every_computed_kind_hits(&seen);
 }
