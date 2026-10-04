@@ -2,7 +2,7 @@
 //! `timeline-entry list` is a read command (`cmd::read`).
 
 use crate::ActorArgs;
-use crate::cmd::finding::print_decision;
+use crate::cmd::finding::{print_decision, print_decision_with};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use clap::Subcommand;
@@ -151,8 +151,8 @@ pub fn run(command: TimelineEntryCommand, json: bool) -> Result<ExitCode> {
                 evidence: evidence(&refs)?,
             };
             let c = crate::open_case_for_write(&case)?;
-            let (_, e) = te::propose(c.conn(), &actor, entry)?;
-            print_decision(&e, "proposed", json)?;
+            let (new_id, e) = te::propose(c.conn(), &actor, entry)?;
+            print_decision_with(&e, &[("entry_id", new_id.into())], "proposed", json)?;
         }
         TimelineEntryCommand::Verify { id, case, actor } => {
             let actor = actor.resolve()?;
@@ -200,12 +200,18 @@ pub fn run(command: TimelineEntryCommand, json: bool) -> Result<ExitCode> {
             };
             let c = crate::open_case_for_write(&case)?;
             let (new_id, e) = te::edit(c.conn(), &actor, &id, edit)?;
-            let what = if new_id == id {
-                "edited".to_string()
+            // In place (same id), or a successor that supersedes the verified entry once verified.
+            let (what, supersedes) = if new_id == id {
+                ("edited".to_string(), serde_json::Value::Null)
             } else {
-                format!("proposed to supersede {id}")
+                (format!("proposed to supersede {id}"), id.clone().into())
             };
-            print_decision(&e, &what, json)?;
+            print_decision_with(
+                &e,
+                &[("entry_id", new_id.into()), ("supersedes", supersedes)],
+                &what,
+                json,
+            )?;
         }
     }
     Ok(ExitCode::SUCCESS)

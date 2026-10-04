@@ -83,8 +83,25 @@ pub fn provenance(decided_by: &str, on_behalf_of: Option<&str>) -> String {
 
 /// The audit entry with `--json`; otherwise `<object id> <what> (decided by ..., pending review)`.
 pub fn print_decision(e: &AuditEntry, what: &str, json: bool) -> Result<()> {
+    print_decision_with(e, &[], what, json)
+}
+
+/// [`print_decision`] for a command that creates an object: `--json` adds `extra` (the new id, ...) to the audit
+/// entry's fields.
+pub fn print_decision_with(
+    e: &AuditEntry,
+    extra: &[(&str, serde_json::Value)],
+    what: &str,
+    json: bool,
+) -> Result<()> {
     if json {
-        println!("{}", serde_json::to_string_pretty(e)?);
+        let mut v = serde_json::to_value(e)?;
+        if let Some(m) = v.as_object_mut() {
+            for (k, x) in extra {
+                m.insert((*k).to_string(), x.clone());
+            }
+        }
+        println!("{}", serde_json::to_string_pretty(&v)?);
     } else {
         println!(
             "{} {} {}",

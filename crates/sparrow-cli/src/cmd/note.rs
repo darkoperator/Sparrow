@@ -38,7 +38,9 @@ pub fn run(command: NoteCommand, json: bool) -> Result<ExitCode> {
             let c = crate::open_case_for_write(&case)?;
             let (id, e) = add_note(c.conn(), &actor, t, &text)?;
             if json {
-                println!("{}", serde_json::to_string_pretty(&e)?);
+                let mut v = serde_json::to_value(&e)?;
+                v["annotation_id"] = id.clone().into();
+                println!("{}", serde_json::to_string_pretty(&v)?);
             } else {
                 println!(
                     "note {id} on {} by {}",

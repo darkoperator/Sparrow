@@ -1767,10 +1767,12 @@ fn cmd_ioc(command: IocCommand, json: bool) -> Result<ExitCode> {
                 note.as_deref(),
             )?;
             if json {
+                let audit =
+                    sparrow_core::case::audit::log(c.conn(), Some(("indicator", &id)))?.pop();
                 print_json(&serde_json::json!({
                     "indicator_id": id, "type": ty, "value": value.trim(), "verdict": verdict,
                     "tenant_key": tenant, "added_by": actor.as_str(), "on_behalf_of": actor.on_behalf_of(),
-                    "review_state": "pending_review",
+                    "review_state": "pending_review", "audit": audit,
                 }))?;
             } else {
                 println!(

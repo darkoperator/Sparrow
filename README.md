@@ -329,6 +329,11 @@ sparrow export timeline --out timeline.csv --case case.duckdb
 sparrow export workbook --out case.xlsx --case case.duckdb
 ```
 
+With `--json`, a write prints its audit entry (`seq`, `action`, `object_id`, `before`, `after`, ...). A command that
+creates an object also names its id: `timeline-entry propose` and `edit` add `entry_id` (`edit` of a verified entry
+returns the successor's id, with the edited one in `supersedes`), `note add` adds `annotation_id`, and `ioc add`
+prints `indicator_id` with the entry under `audit`.
+
 Every command above is listed under [Use](#use) with its options. The same flow is exercised end to end, through
 the binary, by `crates/sparrow-cli/tests/agent_workflow_e2e.rs`.
 

@@ -2933,3 +2933,68 @@ fn export_refuses_to_write_over_the_case_and_leaves_no_partial_files() {
     names.sort();
     assert_eq!(names, ["r.md", "t.csv", "w.xlsx"]);
 }
+
+#[test]
+fn create_commands_return_the_new_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = case_with_evidence(dir.path());
+    let run = |args: &[&str]| {
+        json_out(
+            sparrow().arg("--json").args(args).arg("--case").arg(&case),
+            0,
+        )
+    };
+    let p = run(&[
+        "timeline-entry",
+        "propose",
+        "--time",
+        "2026-08-03T09:00:00Z",
+        "--title",
+        "t",
+        "--phase",
+        "recon",
+        "--evidence",
+        "signins:k1",
+    ]);
+    let id = p["entry_id"].as_str().expect("entry_id").to_string();
+    assert_eq!(id.len(), 12);
+    assert_eq!(
+        (p["object_id"].as_str(), p["action"].as_str()),
+        (Some(id.as_str()), Some("propose_entry"))
+    );
+    // An in-place edit keeps the id and supersedes nothing.
+    let e = run(&["timeline-entry", "edit", &id, "--title", "t2"]);
+    assert_eq!(
+        (e["entry_id"].as_str(), e["action"].as_str()),
+        (Some(id.as_str()), Some("edit_entry"))
+    );
+    assert!(e["supersedes"].is_null(), "{e}");
+    // Editing a verified entry returns the successor's id and the id it supersedes.
+    run(&["timeline-entry", "verify", &id]);
+    let s = run(&["timeline-entry", "edit", &id, "--title", "t3"]);
+    let new = s["entry_id"].as_str().unwrap();
+    assert_ne!(new, id);
+    assert_eq!(s["object_id"], new);
+    assert_eq!(s["supersedes"], id.as_str());
+    let n = run(&["note", "add", &format!("entry:{id}"), "--text", "x"]);
+    let nid = n["annotation_id"].as_str().expect("annotation_id");
+    assert_eq!(nid.len(), 16);
+    assert_eq!(
+        (n["object_id"].as_str(), n["action"].as_str()),
+        (Some(nid), Some("add_note"))
+    );
+    let i = run(&[
+        "ioc",
+        "add",
+        "--type",
+        "ip",
+        "--value",
+        "203.0.113.9",
+        "--verdict",
+        "malicious",
+    ]);
+    let iid = i["indicator_id"].as_str().expect("indicator_id");
+    assert_eq!(i["audit"]["action"], "add_ioc");
+    assert_eq!(i["audit"]["object_id"], iid);
+    assert_eq!(i["audit"]["after"]["value"], "203.0.113.9");
+}
