@@ -42,8 +42,8 @@
 //! spray source and a UAL UserLoggedIn always count, and the key is (application, ASN), so the same
 //! application from another hosting ASN counts. Residual, documented: an attacker who uses the same
 //! application from the same cloud ASN as an established connector is excused, and a connector's first
-//! days (cold start) are excused too. No application name or id is involved, and an unknown result
-//! never helps establish a connector.
+//! days (cold start) are excused too. No third-party application name or id is involved (only the
+//! first-party list above), and an unknown result never helps establish a connector.
 
 use crate::Result;
 use duckdb::Connection;
