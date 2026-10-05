@@ -4,7 +4,8 @@
 # structural (the rule connection shows only the tenant's rows), so no tenant predicate here.
 # Skipped on purpose in the hosting arm: the sign-ins of a tenant-wide cloud service to its application
 # from its hosting ASN (the tenant's `cloud_services` relation, per application and ASN, the definition
-# SPW-ID-002 and SPW-ID-003 use), and its UAL UserLoggedIn records by ual_events.app_id: a SaaS
+# SPW-ID-002 and SPW-ID-003 use, including its rule that a Microsoft first-party application is never a
+# service), and its UAL UserLoggedIn records by ual_events.app_id: a SaaS
 # connector signs its users in from a cloud region every day, so a user's own inbox rule edit within
 # the hour after it is not the attacker's persistence step. A sign-in or logon from a password-spray
 # source always counts, and so does the same application from another ASN. The medium/high-risk arm
@@ -14,10 +15,20 @@
 # NULL: fail closed) and a UAL UserLoggedIn whose result is not Failed: a failed attempt from a VPS
 # (a spray, a stale device) is not the session that created the rule. The medium/high-risk arm has no
 # result condition.
-# The sparrow-synth oracle (`risky_rule_correlation`) models this exclusion and the result condition.
+# The hosting arm also ties the rule record to the infrastructure (the tie SPW-ID-007 uses): when the
+# inbox-rule record (New/Set-InboxRule, UpdateInboxRules, admin-audit New/Set-InboxRule) carries a
+# non-Microsoft client address whose ASN ip_intel knows, the hosting sign-in correlates with it only if
+# that ASN is the hosting sign-in's ASN, or any hosting ASN, or the address is a spray source. A user's
+# own rule, made from their office or home client within the hour after a connector or VPN sign-in, is
+# not the attacker's step (a connector that signs its users in hourly would otherwise make every rule edit
+# of its users a high-severity finding). No address, an address of unknown ASN, or a Microsoft address
+# (Graph, the Exchange back end) counts as before, and the risk arm has no tie. Residual, documented: an
+# attacker who signs in from a VPS and creates the rule from a residential proxy within the hour is not
+# reported here (SPW-ID-002 reports the VPS sign-in; SPW-ID-007 or SPW-ID-004 may see the proxy).
+# The sparrow-synth oracle (`risky_rule_correlation`) models this exclusion, the result condition and the tie.
 id: SPW-ID-010
 title: Inbox rule created within 60 minutes of a risky or hosting-ASN sign-in
-version: 3
+version: 4
 status: stable
 severity: high
 confidence: medium
@@ -38,39 +49,49 @@ sql: |
     WHERE lower(a.cmdlet) IN ('new-inboxrule', 'set-inboxrule')
   ),
   risky_signins AS (
-    SELECT lower(s.user_upn) AS upn, s.event_time
+    -- The risk arm: a risky sign-in counts whoever made it, from wherever.
+    SELECT lower(s.user_upn) AS upn, s.event_time, false AS hosting_arm, CAST(NULL AS BIGINT) AS asn
     FROM signins s
-    WHERE (lower(s.risk_level_during) IN ('medium', 'high')
-           OR ((s.error_code IS NULL OR s.error_code = 0)
-               AND EXISTS (SELECT 1 FROM ip_intel i WHERE i.ip = s.ip AND i.is_hosting
-                        -- Not a cloud service's own sign-in to its application from its ASN,
-                        -- unless the address is a spray source.
-                        AND NOT EXISTS (SELECT 1 FROM cloud_services c
-                                        WHERE c.app_id = lower(coalesce(s.app_id, '')) AND c.asn = i.asn
-                                          AND NOT EXISTS (SELECT 1 FROM spray_sources p
-                                                          WHERE p.ip = s.ip)))))
+    WHERE lower(s.risk_level_during) IN ('medium', 'high')
     UNION ALL
-    SELECT lower(u.user_upn), u.event_time
-    FROM ual_events u
+    -- The hosting arm: a successful (or unknown-result) sign-in from a hosting address that is not a
+    -- cloud service's own sign-in to its application from its ASN, unless the address is a spray source.
+    SELECT lower(s.user_upn), s.event_time, true, i.asn
+    FROM signins s JOIN ip_intel i ON i.ip = s.ip
+    WHERE (s.error_code IS NULL OR s.error_code = 0)
+      AND i.is_hosting
+      AND NOT EXISTS (SELECT 1 FROM cloud_services c
+                      WHERE c.app_id = lower(coalesce(s.app_id, '')) AND c.asn = i.asn
+                        AND NOT EXISTS (SELECT 1 FROM spray_sources p WHERE p.ip = s.ip))
+    UNION ALL
+    -- The same by ual_events.app_id; a logon with no application id is never excused.
+    SELECT lower(u.user_upn), u.event_time, true, i.asn
+    FROM ual_events u JOIN ip_intel i ON i.ip = u.client_ip
     WHERE lower(u.operation) = 'userloggedin'
       AND lower(coalesce(u.result_status, '')) <> 'failed'
-      AND EXISTS (SELECT 1 FROM ip_intel i WHERE i.ip = u.client_ip AND i.is_hosting
-                    -- The same exclusion by ual_events.app_id; a logon with no application id is
-                    -- never excused.
-                    AND NOT EXISTS (SELECT 1 FROM cloud_services c
-                                    WHERE c.app_id = lower(coalesce(u.app_id, '')) AND c.asn = i.asn
-                                      AND NOT EXISTS (SELECT 1 FROM spray_sources p
-                                                      WHERE p.ip = u.client_ip)))
+      AND i.is_hosting
+      AND NOT EXISTS (SELECT 1 FROM cloud_services c
+                      WHERE c.app_id = lower(coalesce(u.app_id, '')) AND c.asn = i.asn
+                        AND NOT EXISTS (SELECT 1 FROM spray_sources p WHERE p.ip = u.client_ip))
   )
   SELECT r.record_key,
          CASE WHEN r.is_ual THEN 'ual_events' ELSE 'admin_audit_events' END AS source_table,
          r.event_time, r.actor_upn, r.ip
   FROM rule_events r
+  LEFT JOIN ip_intel ri ON ri.ip = r.ip
   WHERE EXISTS (
     SELECT 1 FROM risky_signins s
     WHERE s.upn = lower(r.actor_upn)
       AND epoch_ms(s.event_time) <= epoch_ms(r.event_time)
       AND epoch_ms(s.event_time) >= epoch_ms(r.event_time) - 3600000
+      -- The hosting arm correlates the rule with that infrastructure: a rule record that carries a
+      -- non-Microsoft address of known ASN counts only from the hosting sign-in's ASN, from any hosting
+      -- ASN, or from a spray source (the tie SPW-ID-007 uses). No address, an address of unknown ASN or
+      -- a Microsoft address (Graph, the Exchange back end) counts as before.
+      AND (NOT s.hosting_arm
+           OR r.ip IS NULL OR r.ip = '' OR ri.asn IS NULL OR coalesce(ri.is_microsoft, false)
+           OR ri.asn = s.asn OR coalesce(ri.is_hosting, false)
+           OR EXISTS (SELECT 1 FROM spray_sources sp WHERE sp.ip = r.ip))
   )
 group_by: [actor_upn]
 analyst_guidance: |
@@ -79,7 +100,7 @@ analyst_guidance: |
   folder), compare the sign-in IP with the IP that created the rule, and check what mail the
   rule touched.
 false_positives:
-  - A user on a VPN or a cloud-hosted desktop who legitimately creates a rule.
+  - A user on a VPN or a cloud-hosted desktop who legitimately creates a rule (the rule comes from the same hosting ASN, or from a Microsoft or unknown address).
   - A rule created soon after a SaaS connector's sign-in from a hosting ASN the case has not established as a cloud service (too few users or days in the capture).
   - Risk detections that Entra ID later dismisses as safe.
 references:
@@ -350,5 +371,163 @@ tests:
       - table: ual_events
         operation: New-InboxRule
         user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:30:00Z"
+    expect_hits: 1
+  - name: a rule from the user's own office network after a hosting sign-in is not tied to it
+    records:
+      - table: ip_intel
+        ip: 203.0.113.70
+        asn: 14061
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.9
+        asn: 7922
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        ip: 203.0.113.70
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.9
+        event_time: "2026-03-01T10:30:00Z"
+    expect_hits: 0
+  - name: a rule from the hosting sign-in's own ASN is tied to it
+    records:
+      - table: ip_intel
+        ip: 203.0.113.70
+        asn: 14061
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 203.0.113.71
+        asn: 14061
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        ip: 203.0.113.70
+      - table: admin_audit_events
+        cmdlet: New-InboxRule
+        caller: alice@contoso.example
+        client_ip: 203.0.113.71
+        run_time: "2026-03-01T10:30:00Z"
+    expect_hits: 1
+  - name: a rule from another hosting ASN is tied to it
+    records:
+      - table: ip_intel
+        ip: 203.0.113.70
+        asn: 14061
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 192.0.2.80
+        asn: 24940
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        ip: 203.0.113.70
+      - table: ual_events
+        operation: Set-InboxRule
+        user_upn: alice@contoso.example
+        client_ip: 192.0.2.80
+        event_time: "2026-03-01T10:30:00Z"
+    expect_hits: 1
+  - name: a rule from a spray-source address is tied to it
+    records:
+      - table: ip_intel
+        ip: 203.0.113.70
+        asn: 14061
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.9
+        asn: 7922
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: spray_sources
+        tenant_key: test
+        ip: 198.51.100.9
+        users_targeted: 7
+        failures: 20
+        first_failure: "2026-02-20T00:00:00Z"
+        last_failure: "2026-02-28T00:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        ip: 203.0.113.70
+      - table: ual_events
+        operation: UpdateInboxRules
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.9
+        event_time: "2026-03-01T10:30:00Z"
+    expect_hits: 1
+  - name: a rule with a Microsoft, unknown-ASN or no address is tied to the hosting sign-in as before
+    records:
+      - table: ip_intel
+        ip: 203.0.113.70
+        asn: 14061
+        is_hosting: true
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 40.107.0.1
+        asn: 8075
+        is_hosting: false
+        is_microsoft: true
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.77
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        ip: 203.0.113.70
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        client_ip: 40.107.0.1
+        event_time: "2026-03-01T10:10:00Z"
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.77
+        event_time: "2026-03-01T10:20:00Z"
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:30:00Z"
+    expect_hits: 3
+  - name: a rule from the user's office after a high-risk sign-in still counts (the risk arm has no tie)
+    records:
+      - table: ip_intel
+        ip: 198.51.100.9
+        asn: 7922
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        event_time: "2026-03-01T10:00:00Z"
+        risk_level_during: high
+      - table: ual_events
+        operation: New-InboxRule
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.9
         event_time: "2026-03-01T10:30:00Z"
     expect_hits: 1

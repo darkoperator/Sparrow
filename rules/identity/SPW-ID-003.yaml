@@ -30,7 +30,8 @@
 #   from a cloud region on their behalf and that is not the user travelling. The UAL UserLoggedIn arm
 #   applies the same exclusion by ual_events.app_id (a connector's backend may write logon records too);
 #   the same application from another ASN, a logon with no application id and a sign-in or logon from a
-#   password-spray source always count. An (application, ASN) is NOT a service when (a) sprayed users are
+#   password-spray source always count. A Microsoft first-party application (rules/lists/
+#   microsoft_first_party_apps.yaml) is never a service (see SPW-ID-002). An (application, ASN) is NOT a service when (a) sprayed users are
 #   at least 20% of its users or at least 3 of them are sprayed, or (b) at least 3 distinct users have an
 #   interactive credential failure to the application from that ASN. Residual: an attacker on the same
 #   application from the same ASN as an established connector is excused, and so are 5 or more PHISHED

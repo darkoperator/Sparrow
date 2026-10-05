@@ -29,6 +29,13 @@
 //! - five or more PHISHED (not sprayed) accounts used from one VPS on the same application for three
 //!   days with no failures, which look exactly like a connector.
 //!
+//! A Microsoft FIRST-PARTY application (the `microsoft_first_party_apps` list: Office, Outlook, Exchange
+//! Online, SharePoint, Teams, OneDrive, the Azure and Graph tools, ids from public Microsoft Learn pages)
+//! never qualifies, whatever its users or days: a real connector is a third-party application, while
+//! accounts phished and used from a VPS sign in to Office and Outlook. Residual, documented: an
+//! attacker's third-party application (it needs a consent, which APP-001 / APP-002 report) and a
+//! first-party application the list does not have.
+//!
 //! The profile is established from the WHOLE case, no prefix: a capture is a window, and a connector in
 //! use since before it starts would only be "established" a few days before the window ends, leaving
 //! every earlier day counting. A rule excuses every sign-in to that application from that same ASN; a
@@ -51,10 +58,22 @@ pub const SPRAYED_PERCENT: usize = 20;
 pub const SPRAYED_USERS: usize = 3;
 /// Disqualifier (b): this many distinct users with an interactive credential failure from the ASN.
 pub const FAILING_USERS: usize = 3;
+/// The `rules/lists` list of Microsoft first-party application ids no (application, ASN) pair of which
+/// is ever a cloud service.
+pub const FIRST_PARTY_LIST: &str = "microsoft_first_party_apps";
+
+/// The built-in (or custom) first-party application ids, lower-cased.
+pub fn first_party_apps(dirs: &crate::data::DataDirs) -> Result<Vec<String>> {
+    Ok(crate::detect::load::list_values(dirs, FIRST_PARTY_LIST)?
+        .into_iter()
+        .map(|v| v.trim().to_lowercase())
+        .collect())
+}
 
 /// Rewrite `cloud_services` from `signins`, `ip_intel` and `spray_sources` (rebuilt first), where a
-/// credential failure is one of `codes`; returns the number of services.
-pub fn rebuild(conn: &Connection, codes: &[i64]) -> Result<usize> {
+/// credential failure is one of `codes` and an application in `first_party` (lower-case ids) is never a
+/// service; returns the number of services.
+pub fn rebuild(conn: &Connection, codes: &[i64], first_party: &[String]) -> Result<usize> {
     conn.execute_batch("DELETE FROM cloud_services")?;
     // Per (tenant, app): day -> all known successes; per (tenant, app, hosting asn): day -> (users, n).
     type Totals = BTreeMap<i64, i64>;
@@ -168,7 +187,8 @@ pub fn rebuild(conn: &Connection, codes: &[i64]) -> Result<usize> {
         let n_failing = failed_from
             .get(&(tenant.clone(), app.clone(), *asn))
             .map_or(0, BTreeSet::len);
-        let disqualified = (n_sprayed > 0 && n_sprayed * 100 >= users.len() * SPRAYED_PERCENT)
+        let disqualified = first_party.iter().any(|a| a == app)
+            || (n_sprayed > 0 && n_sprayed * 100 >= users.len() * SPRAYED_PERCENT)
             || n_sprayed >= SPRAYED_USERS
             || n_failing >= FAILING_USERS;
         if !disqualified

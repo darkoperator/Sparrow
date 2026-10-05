@@ -12,6 +12,7 @@ use crate::scenario::StoryKind;
 use crate::world::{App, CredKind, Credential, Grant, GrantKind, HOSTING_ASNS, User, World};
 use chrono::{DateTime, Duration, Utc};
 use std::net::IpAddr;
+use uuid::Uuid;
 
 /// Applies `ctx`'s storyline if it is an application kind; `false` otherwise.
 pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
@@ -25,6 +26,8 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
         StoryKind::CloudConnectorOnboarding => cloud_connector_onboarding(w, ctx)?,
         StoryKind::ConnectorAppOtherAsn => connector_app_other_asn(w, ctx)?,
         StoryKind::CloudConnectorLongstanding => cloud_connector_longstanding(w, ctx)?,
+        StoryKind::VpsPhishedAccounts => vps_phished_accounts(w, ctx)?,
+        StoryKind::ConnectorUserOwnRule => connector_user_own_rule(w, ctx)?,
         _ => return Ok(false),
     }
     Ok(true)
@@ -413,18 +416,30 @@ fn cert_rotation(w: &mut World, ctx: &mut Ctx) -> Result<()> {
 /// The connector app of this tenant (created by the onboarding storyline).
 const CONNECTOR_APP: &str = "Calendar Sync Cloud";
 
-/// The connector's backend: three addresses of one cloud region (RFC 3849 documentation space, a pool
-/// of its own), on a cloud ASN that is NOT the attacker's. Every user of the connector signs in from
-/// one of them (shared by all users, not one address per user).
+/// A cloud backend: three addresses of one cloud region (RFC 3849 documentation space, `net` is the
+/// prefix's own pool) on the hosting ASN `HOSTING_ASNS[asn_index]`. Every user signing in through it uses
+/// one of the three (shared by all users, not one address per user).
+struct Backend {
+    net: u16,
+    asn_index: usize,
+}
+
+/// The connectors' backend: a cloud ASN that is NOT the attacker's.
+const CONNECTOR_REGION: Backend = Backend {
+    net: 4,
+    asn_index: 2,
+};
+
 fn connector_backend(
     user_k: usize,
     home: &crate::world::Location,
     lat_shift: f64,
+    backend: &Backend,
 ) -> (IpAddr, crate::world::Location) {
     let ip = IpAddr::V6(std::net::Ipv6Addr::new(
         0x2001,
         0x0db8,
-        4,
+        backend.net,
         0,
         0,
         0,
@@ -433,22 +448,26 @@ fn connector_backend(
     ));
     let mut region = home.clone();
     region.lat += lat_shift;
-    region.asn = HOSTING_ASNS[2].0;
-    region.asn_org = HOSTING_ASNS[2].1.to_string();
+    region.asn = HOSTING_ASNS[backend.asn_index].0;
+    region.asn_org = HOSTING_ASNS[backend.asn_index].1.to_string();
     (ip, region)
 }
 
-/// `days` days of sign-ins by eight users, from the connector's backend, starting
-/// `first_day` days after the storyline's time. The portal's interactive export (what investigators
-/// pull) records a connector's backend sign-ins as INTERACTIVE rows with the user's client app
-/// ("Mobile Apps and Desktop clients"), so that is the shape generated (python-httpx agent).
-fn connector_days(
+/// `days` days of sign-ins by eight users to `app`, from `backend`, starting `first_day` days after the
+/// storyline's time. The portal's interactive export (what investigators pull) records a connector's
+/// backend sign-ins as INTERACTIVE rows with the user's client app ("Mobile Apps and Desktop clients"),
+/// so that is the shape generated for a `scripted` connector (python-httpx agent); otherwise the
+/// sign-ins keep the generator's browser agent.
+#[allow(clippy::too_many_arguments)]
+fn backend_days(
     w: &mut World,
     ctx: &mut Ctx,
-    app: &App,
+    app: Uuid,
+    scripted: bool,
     first_day: i64,
     days: i64,
     lat_shift: f64,
+    backend: &Backend,
 ) -> Result<()> {
     let a: User = ctx.a.clone();
     // Eight consecutive users of the tenant starting at the actor (a connector serves whoever
@@ -459,13 +478,13 @@ fn connector_days(
         .collect();
     if staff.len() < 6 {
         return Err(crate::Error::Scenario(format!(
-            "{}: a cloud connector needs 6 users, the tenant has {}",
+            "{}: a cloud backend needs 6 users, the tenant has {}",
             ctx.spec.id,
             staff.len()
         )));
     }
     for (k, user) in staff.iter().enumerate() {
-        let (ip, region) = connector_backend(k, &a.home, lat_shift);
+        let (ip, region) = connector_backend(k, &a.home, lat_shift, backend);
         for day in first_day..first_day + days {
             let session = ctx.rng.uuid();
             let mut s = signin(
@@ -476,16 +495,39 @@ fn connector_days(
                 ip,
                 &region,
                 SignInType::Interactive,
-                app.app_id,
+                app,
                 well_known("Microsoft Graph"),
                 session,
             );
-            s.user_agent = "python-httpx/0.27.0".to_string();
-            s.client_app = "Mobile Apps and Desktop clients".to_string();
+            if scripted {
+                s.user_agent = "python-httpx/0.27.0".to_string();
+                s.client_app = "Mobile Apps and Desktop clients".to_string();
+            }
             push_signin(w, ctx, user, s, false);
         }
     }
     Ok(())
+}
+
+/// A third-party connector's backend sign-ins (see [`backend_days`]).
+fn connector_days(
+    w: &mut World,
+    ctx: &mut Ctx,
+    app: &App,
+    first_day: i64,
+    days: i64,
+    lat_shift: f64,
+) -> Result<()> {
+    backend_days(
+        w,
+        ctx,
+        app.app_id,
+        true,
+        first_day,
+        days,
+        lat_shift,
+        &CONNECTOR_REGION,
+    )
 }
 
 /// A new third-party SaaS connector onboards: its cloud backend refreshes tokens for the users of one
@@ -556,4 +598,59 @@ fn cloud_connector_longstanding(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     );
     w.apps.push(app.clone());
     connector_days(w, ctx, &app, 0, 14, 6.0)
+}
+
+/// Phished accounts used from one VPS: eight users' accounts sign in to a Microsoft FIRST-PARTY application
+/// (OfficeHome, with their browser) from a single hosting ASN of its own on four consecutive days,
+/// interactively, with no failures and no spray. By the counts alone the pair looks like a connector, but
+/// phished accounts use Office and Outlook, never a third-party app, and a first-party application is never
+/// a cloud service (the `microsoft_first_party_apps` list), so SPW-ID-002 reports every one of the sign-ins
+/// (fu-wave4-b).
+fn vps_phished_accounts(w: &mut World, ctx: &mut Ctx) -> Result<()> {
+    // Its own documentation prefix and a hosting ASN of its own (not the connectors', not the replay VPS).
+    backend_days(
+        w,
+        ctx,
+        well_known("OfficeHome"),
+        false,
+        0,
+        4,
+        0.0,
+        &Backend {
+            net: 5,
+            asn_index: 0,
+        },
+    )
+}
+
+/// A user of an established connector edits their own inbox rule from Outlook at the office forty minutes
+/// after the connector's backend signed them in. The backend is a cloud service (look-alike for
+/// SPW-ID-002), and the rule record comes from the user's own office address, not the connector's cloud, so
+/// SPW-ID-010 has nothing to correlate: a connector that signs its users in hourly would otherwise turn every
+/// rule edit of its users into a high-severity finding.
+fn connector_user_own_rule(w: &mut World, ctx: &mut Ctx) -> Result<()> {
+    let app = w.apps[app_index(w, |n| n == CONNECTOR_APP, CONNECTOR_APP)?].clone();
+    let a: User = ctx.a.clone();
+    let (ip, region) = connector_backend(0, &a.home, 0.0, &CONNECTOR_REGION);
+    let session = ctx.rng.uuid();
+    let mut s = signin(
+        w,
+        &mut ctx.rng,
+        &a,
+        ctx.t,
+        ip,
+        &region,
+        SignInType::Interactive,
+        app.app_id,
+        well_known("Microsoft Graph"),
+        session,
+    );
+    s.user_agent = "python-httpx/0.27.0".to_string();
+    s.client_app = "Mobile Apps and Desktop clients".to_string();
+    push_signin(w, ctx, &a, s, false);
+    let at = ctx.t;
+    ctx.t = at + Duration::minutes(40);
+    super::mail::outlook_client_filing_rule(w, ctx);
+    ctx.t = at;
+    Ok(())
 }

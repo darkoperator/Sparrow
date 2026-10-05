@@ -119,6 +119,10 @@ pub const POST_MIGRATION_PENDING: &str = "post_migration_pending";
 /// case's custom `credential_failure_codes` list for the environment's.
 pub const CREDENTIAL_FAILURE_CODES: &str = "credential_failure_codes";
 
+/// `case_meta` key: the first-party application ids (a JSON array of strings) the last profile run built
+/// `cloud_services` with; reused like [`CREDENTIAL_FAILURE_CODES`].
+pub const FIRST_PARTY_APPS: &str = "first_party_apps";
+
 /// Apply pending migrations, then run the post-migration step if one is pending; the ONLY way a case is migrated,
 /// and every writable open goes through it. Returns the schema version before and after: when a pending step ran,
 /// "before" is the version the marker recorded (the upgrade completed now), else the version this open found.
@@ -219,8 +223,34 @@ fn rebuild_derived(conn: &Connection) -> Result<()> {
             crate::profile::spray::credential_failure_codes(&crate::data::DataDirs::from_env())?
         }
     };
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT value FROM case_meta WHERE key = ?",
+            [FIRST_PARTY_APPS],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let first_party = match stored {
+        Some(v) => serde_json::from_str::<Vec<String>>(&v)
+            .map_err(|e| Error::Invalid(format!("case_meta {FIRST_PARTY_APPS}: {e}")))?,
+        None => {
+            crate::profile::cloud_services::first_party_apps(&crate::data::DataDirs::from_env())?
+        }
+    };
     crate::profile::spray::rebuild(conn, &codes)?;
-    crate::profile::cloud_services::rebuild(conn, &codes)?;
+    crate::profile::cloud_services::rebuild(conn, &codes, &first_party)?;
+    Ok(())
+}
+
+/// Record `apps` as the first-party application ids `cloud_services` was built with ([`FIRST_PARTY_APPS`]).
+pub fn store_first_party_apps(conn: &Connection, apps: &[String]) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO case_meta (key, value) VALUES (?, ?)",
+        duckdb::params![
+            FIRST_PARTY_APPS,
+            serde_json::to_string(apps).map_err(|e| Error::Invalid(e.to_string()))?
+        ],
+    )?;
     Ok(())
 }
 

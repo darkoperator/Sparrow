@@ -142,6 +142,10 @@ pub struct IpFacts {
 /// One (application, hosting ASN) pair's known successes: the users, the UTC days and the count.
 type PairUse<'a> = (BTreeSet<&'a str>, BTreeSet<i64>, i64);
 
+/// One preceding sign-in of SPW-ID-010's actor: its time and, for a hosting-arm entry, its address's
+/// ASN (`Some(None)`: unknown); `None` is a risk-arm entry, which has no tie.
+type Preceding = (i64, Option<Option<u32>>);
+
 /// The facts the computed conditions read, for one tree.
 #[derive(Debug, Clone)]
 pub struct Facts {
@@ -154,6 +158,8 @@ pub struct Facts {
     pub spray: BTreeSet<IpAddr>,
     /// `cloud_services` (application, ASN) pairs.
     pub cloud: BTreeSet<(String, u32)>,
+    /// Lower-case Microsoft first-party application ids (the `microsoft_first_party_apps` list).
+    first_party: BTreeSet<String>,
     codes: BTreeSet<i64>,
     agents: Vec<String>,
 }
@@ -414,6 +420,10 @@ impl Facts {
             ips,
             spray: BTreeSet::new(),
             cloud: BTreeSet::new(),
+            first_party: pack_list(sparrow_core::profile::cloud_services::FIRST_PARTY_LIST)?
+                .into_iter()
+                .map(|a| a.trim().to_lowercase())
+                .collect(),
             codes,
             agents,
         };
@@ -523,7 +533,8 @@ impl Facts {
         for ((app, asn), (users, days, hosting)) in by_asn {
             let n_sprayed = users.iter().filter(|u| sprayed.contains(*u)).count();
             let n_failing = failed_from.get(&(app, asn)).map_or(0, BTreeSet::len);
-            let disqualified = (n_sprayed > 0 && n_sprayed * 100 >= users.len() * SPRAYED_PERCENT)
+            let disqualified = self.first_party.contains(app)
+                || (n_sprayed > 0 && n_sprayed * 100 >= users.len() * SPRAYED_PERCENT)
                 || n_sprayed >= SPRAYED_USERS
                 || n_failing >= FAILING_USERS;
             if !disqualified
@@ -822,7 +833,9 @@ impl Facts {
     /// hosting sign-in or logon of a cloud service's application from its ASN does not count unless
     /// the address is a spray source (the rule header names this exclusion), and the hosting arm
     /// counts only a successful sign-in (error 0) or a logon whose result is not Failed; the risk
-    /// arm has neither condition.
+    /// arm has neither condition. The hosting arm also ties the rule record's own client address to the
+    /// infrastructure (see the rule header); the synthetic admin audit rows (Hawk 3 `Search-AdminAuditLog`
+    /// summaries) carry no address, so they are never excluded by it.
     fn risky_rule_correlation(&self) -> Result<BTreeSet<Record>> {
         let window = rule_number("SPW-ID-010", "epoch_ms(r.event_time) - ")? as i64;
         // A hosting address that is not a cloud service's own sign-in to `app` from its ASN.
@@ -834,39 +847,61 @@ impl Facts {
                     .is_some_and(|asn| self.cloud.contains(&(app.to_string(), asn)))
                     && !self.spray.contains(&ip))
         };
-        let mut risky: BTreeMap<&str, Vec<i64>> = BTreeMap::new();
+        // Per actor: (time, the hosting sign-in's ASN when it is a hosting-arm entry). The risk arm
+        // has no ASN and no tie.
+        let mut risky: BTreeMap<&str, Vec<Preceding>> = BTreeMap::new();
         for s in &self.signins {
             if let Some(u) = s.upn.as_deref() {
-                if s.risky || (s.error == 0 && hosting(s.ip, &s.app)) {
-                    risky.entry(u).or_default().push(s.t);
+                if s.risky {
+                    risky.entry(u).or_default().push((s.t, None));
+                }
+                if s.error == 0 && hosting(s.ip, &s.app) {
+                    risky
+                        .entry(u)
+                        .or_default()
+                        .push((s.t, Some(self.ip(s.ip).asn)));
                 }
             }
         }
         for x in &self.ual {
             if let (Some(u), Some(ip), "userloggedin") = (x.upn.as_deref(), x.ip, x.op.as_str()) {
                 if !x.failed && hosting(ip, x.app.as_deref().unwrap_or("")) {
-                    risky.entry(u).or_default().push(x.t);
+                    risky
+                        .entry(u)
+                        .or_default()
+                        .push((x.t, Some(self.ip(ip).asn)));
                 }
             }
         }
-        let preceded = |actor: Option<&str>, t: i64| {
-            actor
-                .and_then(|a| risky.get(a))
-                .is_some_and(|ts| ts.iter().any(|s| *s <= t && *s >= t - window))
+        // The hosting arm's tie to the rule record's own address: no address, an address of unknown
+        // ASN or a Microsoft one is not compared; otherwise the hosting sign-in's ASN, any hosting
+        // ASN, or a spray source.
+        let tied = |ip: Option<IpAddr>, arm: Option<Option<u32>>| {
+            let (Some(ip), Some(asn)) = (ip, arm) else {
+                return true;
+            };
+            let f = self.ip(ip);
+            f.asn.is_none() || f.microsoft || f.asn == asn || f.hosting || self.spray.contains(&ip)
+        };
+        let preceded = |actor: Option<&str>, t: i64, ip: Option<IpAddr>| {
+            actor.and_then(|a| risky.get(a)).is_some_and(|ts| {
+                ts.iter()
+                    .any(|(s, arm)| *s <= t && *s >= t - window && tied(ip, *arm))
+            })
         };
         let mut out = BTreeSet::new();
         for u in &self.ual {
             if matches!(
                 u.op.as_str(),
                 "new-inboxrule" | "set-inboxrule" | "updateinboxrules"
-            ) && preceded(u.upn.as_deref(), u.t)
+            ) && preceded(u.upn.as_deref(), u.t, u.ip)
             {
                 out.insert(("ual_events".to_string(), u.key.clone()));
             }
         }
         for a in &self.admin {
             if matches!(a.cmdlet.as_str(), "new-inboxrule" | "set-inboxrule")
-                && preceded(a.caller.as_deref(), a.t)
+                && preceded(a.caller.as_deref(), a.t, None)
             {
                 out.insert(("admin_audit_events".to_string(), a.key.clone()));
             }

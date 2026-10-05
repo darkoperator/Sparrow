@@ -1,0 +1,53 @@
+# Microsoft first-party application (client) ids. Public identifiers; no customer data.
+# Every id below is copied from a public Microsoft Learn page, none is guessed:
+#   [P] https://learn.microsoft.com/power-platform/admin/apps-to-allow
+#       ("Commonly used Microsoft first-party services and portal apps")
+#   [V] https://learn.microsoft.com/troubleshoot/entra/entra-id/governance/verify-first-party-apps-sign-in
+#       ("Application IDs of Microsoft tenant-owned applications")
+#   [O] https://learn.microsoft.com/entra/identity/conditional-access/reference-office-365-application-contents
+#       (the Office 365 app suite; it names the apps but gives no ids, so each Office 365 app here takes
+#       its id from [P] or [H])
+#   [H] https://learn.microsoft.com/microsoft-365/document-collaboration-partner-program/scenarios/start-page
+#       (the id of OfficeHome, the one required app none of the three pages above gives an id for)
+# Used by the cloud_services profile (a first-party app is never a tenant-wide cloud service: phished
+# accounts used from a VPS sign in to Office, Outlook and Teams, and a real SaaS connector is a
+# third-party application) and by the sparrow-synth oracle. Extend or replace with --rules DIR
+# (lists/microsoft_first_party_apps.yaml replaces this file). as_of 2026-10-05.
+name: microsoft_first_party_apps
+description: >-
+  Public Microsoft first-party application ids (Office, Outlook, Exchange Online, SharePoint,
+  Teams, OneDrive, Azure and Graph tooling) from Microsoft Learn; an (application, hosting ASN)
+  pair of one of them is never a tenant-wide cloud service. Contains no customer or capture data.
+values:
+  - 4765445b-32c6-49b0-83e6-1d93765276ca # OfficeHome [H]
+  - d3590ed6-52b3-4102-aeff-aad2292ab01c # Microsoft Office [P]
+  - 27922004-5251-4030-b22d-91ecd9a37ea4 # Outlook Mobile [P]
+  - 00000002-0000-0ff1-ce00-000000000000 # Office 365 Exchange Online [P]
+  - d326c1ce-6cc6-4de2-bebc-4591e5e13ef0 # SharePoint [P]
+  - c58637bb-e2e1-4312-8a00-04b5ffcd3403 # SharePoint Online Client Extensibility [P]
+  - 08e18876-6177-487e-b8b5-cf950c1e598c # SharePointOnlineWebClientExtensibility [P]
+  - f05ff7c9-f75a-4acd-a3b5-f4b6a870245d # SharePoint Android [P]
+  - 9bc3ab49-b65d-410a-85ad-de819febfddc # Microsoft SharePoint Online Management Shell [P]
+  - 1fec8e78-bce4-4aaf-ab1b-5451cc387264 # Microsoft Teams [P]
+  - 5e3ce6c0-2b1f-4285-8d4b-75ee78787346 # Microsoft Teams Web Client [P]
+  - cc15fd57-2c6c-4117-a88c-83b1d56b4bbe # Microsoft Teams Services [P]
+  - b26aadf8-566f-4478-926f-589f601d9c74 # OneDrive [P]
+  - ab9b8c07-8f02-4f72-87fa-80105867a763 # OneDrive SyncEngine [P]
+  - af124e86-4e96-495a-b70a-90f90ab96707 # OneDrive iOS App [P]
+  - bed12bc0-3a62-470d-998c-e47546e7b039 # OneDrive Photos [P]
+  - 89bee1f7-5e6e-4d8a-9f3d-ecd601259da7 # Office365 Shell WCSS-Client [P]
+  - 00b41c95-dab0-4487-9791-b9d2c32c80f2 # Office 365 Management [P]
+  - 66375f6b-983f-4c2c-9701-d680650f588f # Microsoft Planner [P]
+  - 22098786-6e16-43cc-a27d-191a01a1e3b5 # Microsoft To-Do client [P]
+  - 57336123-6e14-4acc-8dcf-287b6088aa28 # Microsoft Whiteboard Client [P]
+  - 4813382a-8fa7-425e-ab75-3b753aab3abb # Microsoft Authenticator App [P]
+  - 9ba1a5c7-f17a-4de9-a1f1-6178c8d51223 # Microsoft Intune Company Portal [P]
+  - dd762716-544d-4aeb-a526-687b73838a22 # Microsoft Device Registration Client [P]
+  - f44b1140-bc5e-48c6-8dc0-5cf5a53c0e34 # Microsoft Edge [P]
+  - e9c51622-460d-4d3d-952d-966a5b1da34c # Microsoft Edge [P]
+  - 04b07795-8ddb-461a-bbee-02f9e1bf7b46 # Microsoft Azure CLI [P]
+  - 1950a258-227b-4e31-a9cf-717495945fc2 # Microsoft Azure PowerShell [P]
+  - 1b730954-1685-4b74-9bfd-dac224a7b894 # Azure Active Directory PowerShell [P]
+  - c44b4083-3bb0-49c1-b47d-974e53cbdf3c # Azure Portal [P]
+  - 14d82eec-204b-4c2f-b7e8-296a70dab67e # Microsoft Graph Command Line Tools [V]
+  - de8bc8b5-d9f9-48b1-a8ad-b748da725064 # Graph Explorer [V]

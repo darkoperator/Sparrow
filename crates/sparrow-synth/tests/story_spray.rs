@@ -246,3 +246,62 @@ fn the_conference_network_is_not_a_mobile_carrier() {
         assert!(!s.location.asn_org.to_lowercase().contains("mobile"));
     }
 }
+
+/// Phished accounts on a VPS sign in to a Microsoft first-party application: by the counts a cloud
+/// service (many users, several days, one hosting ASN, no failures), but never one, because the
+/// application is on the first-party list.
+#[test]
+fn the_phished_vps_accounts_use_a_first_party_application() {
+    let (w, recs) = world();
+    let all = signins_of(&w, &recs, "s-vpsphished");
+    let users: BTreeSet<_> = all.iter().map(|s| s.user.clone()).collect();
+    let days: BTreeSet<_> = all.iter().map(|s| s.time.date_naive()).collect();
+    assert!(users.len() >= 6, "{} users", users.len());
+    assert!(days.len() >= 3, "{} days", days.len());
+    assert_eq!(all.iter().map(|s| s.asn).collect::<BTreeSet<_>>().len(), 1);
+    let first_party = sparrow_core::profile::cloud_services::first_party_apps(
+        &sparrow_core::data::DataDirs::default(),
+    )
+    .unwrap();
+    for s in &all {
+        assert_eq!(s.error_code, 0);
+        assert!(
+            first_party.contains(&s.app_id.to_string()),
+            "{} is not a first-party application",
+            s.app_id
+        );
+    }
+    // Its own ASN: not the connectors' and not the replay VPS's.
+    let connector = signins_of(&w, &recs, "s-onboard");
+    assert_ne!(all[0].asn, connector[0].asn);
+    assert_ne!(all[0].asn, signins_of(&w, &recs, "s-otherasn")[0].asn);
+}
+
+/// The ID-010 look-alike: the connector signs the user in, and 40 minutes later the user's own rule
+/// comes from their office, not from the connector's cloud.
+#[test]
+fn a_connector_users_own_rule_comes_from_their_office_after_the_connector_signin() {
+    let (w, recs) = world();
+    let rec = recs.iter().find(|r| r.id == "l-connrule").unwrap();
+    let signin = signins_of(&w, &recs, "l-connrule")[0];
+    let connector = signins_of(&w, &recs, "s-onboard");
+    assert_eq!(signin.app_id, connector[0].app_id);
+    assert_eq!(signin.asn, connector[0].asn);
+    let rules: Vec<_> = w
+        .story
+        .ual
+        .iter()
+        .filter(|u| rec.evidence.contains(&Evidence::Ual(u.id)))
+        .filter(|u| u.operation == "UpdateInboxRules")
+        .collect();
+    assert_eq!(rules.len(), 1);
+    let rule = rules[0];
+    let user = w.users.iter().find(|u| u.upn == signin.user).unwrap();
+    assert_eq!(rule.user_id, signin.user);
+    assert_eq!(rule.time - signin.time, chrono::Duration::minutes(40));
+    assert_eq!(
+        rule.audit.get("ClientIPAddress").and_then(|v| v.as_str()),
+        Some(user.office_ip.to_string().as_str())
+    );
+    assert_ne!(user.office_ip, signin.ip);
+}

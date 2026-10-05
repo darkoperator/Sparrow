@@ -458,10 +458,15 @@ rules:
       like its sign-ins. Residual:
       an attacker using the same application from the same cloud ASN as an established connector is
       excused, and a connector's first days are too (no cold start; SPW-ID-005 and the consent rules remain).
+      A Microsoft FIRST-PARTY application (rules/lists/microsoft_first_party_apps.yaml: ids from public
+      Microsoft Learn pages) is never a service, whatever its users or days: phished accounts used from a
+      VPS sign in to OfficeHome or Outlook, while a real connector is a third-party application. Residual:
+      an attacker on a third-party application (which needs a consent, APP-001 / APP-002 report it) or on a
+      first-party application the list does not have.
       An (application, ASN) is NOT a service when sprayed users (a credential failure from a spray source)
       are at least 20% of its users or at least 3 of them are sprayed, or when at least 3 distinct users have
       an interactive credential failure to the application from that ASN; 5+ PHISHED accounts used from one
-      VPS on one application for 3+ days with no failures are excused (residual), and so are up to 2
+      VPS on one THIRD-PARTY application for 3+ days with no failures are excused (residual), and so are up to 2
       distinct failing users and up to 2 sprayed users while they are under 20% of the pair's users (only when
       the pair has 11 or more users); such sprayed accounts, used from the connector's own (application, ASN)
       from an address that is not a spray source, are reported by neither ID-002, ID-003 nor SPW-ID-005
@@ -485,12 +490,17 @@ rules:
     # different hosting ASN. Known limit: a per-user collection (Hawk 4, a few users) cannot establish a
     # connector, so a connector's sign-ins of its investigated users hit there; the scenario's connector
     # users are not Hawk 4's.
+    # vps_phished_accounts: 8 phished accounts on OfficeHome from one VPS for 4 days, no failures, no spray: by the counts alone a
+    # connector, but OfficeHome is a Microsoft first-party application, which is never a service. The connector storylines
+    # (third-party app ids; mid-window or from day one) stay look-alikes: a legitimate connector onboarded mid-capture looks exactly
+    # like an (app, ASN) that appears mid-window, so the window cannot discriminate (the first-party list does).
     # The VPS positives are sign-ins only (no UAL logon): Hawk 3 delivers no sign-in log, so it cannot supply them.
     kind_collectors:
       spray_vps_login: [hawk4, invictus, portal]
       vps_password_failures: [hawk4, invictus, portal]
-    positives: [aitm_signin, inbox_rule_after_stale_risk, mfa_after_stale_risk, anonymous_link_after_stale_risk, oauth_consent, spray_vps_login, vps_password_failures, connector_app_other_asn]
-    lookalikes: [microsoft_asn_signin, cloud_connector, cloud_connector_onboarding, cloud_connector_longstanding]
+      vps_phished_accounts: [hawk4, invictus, portal]
+    positives: [aitm_signin, inbox_rule_after_stale_risk, mfa_after_stale_risk, anonymous_link_after_stale_risk, oauth_consent, spray_vps_login, vps_password_failures, connector_app_other_asn, vps_phished_accounts]
+    lookalikes: [microsoft_asn_signin, cloud_connector, cloud_connector_onboarding, cloud_connector_longstanding, connector_user_own_rule]
   - id: SPW-ID-003
     title: Impossible travel
     category: identity
@@ -531,6 +541,9 @@ rules:
       - kind: anonymous_link_after_stale_risk
         condition: impossible_travel
         reason: *far_hosting
+      - kind: vps_phished_accounts
+        condition: impossible_travel
+        reason: "the phished accounts' hosting sign-ins are no cloud service's (a first-party application), so a user's VPS sign-in forms a pair with a neighbouring home sign-in when the seeded home city is far enough and fast enough; that depends on the seed"
   - id: SPW-ID-004
     title: Adversary-in-the-middle indicators
     category: identity
@@ -698,7 +711,13 @@ rules:
       (error_code 0 or NULL) or a UAL UserLoggedIn whose result is not Failed, and skips a
       tenant-wide cloud service's own sign-ins to its application from its ASN (cloud_services; UAL
       UserLoggedIn by ual_events.app_id) unless the address is a password-spray source; the risk arm
-      has neither condition. Hawk 3.1 records New-InboxRule / Set-InboxRule in
+      has neither condition. The hosting arm also ties the rule record to the infrastructure: a record that
+      carries a non-Microsoft client address whose ASN ip_intel knows correlates with a hosting sign-in
+      only from that sign-in's ASN, from any hosting ASN, or from a spray-source address (the tie
+      SPW-ID-007 uses); no address, an unknown ASN or a Microsoft address counts as before, and the risk arm
+      has no tie. Residual: an attacker who signs in from a VPS and creates the rule from a residential
+      proxy within the hour is not reported here (ID-002 reports the VPS sign-in; ID-007 or ID-004 may see
+      the proxy). The synthetic Hawk 3 admin audit rows carry no client address, so they are never tied out. Hawk 3.1 records New-InboxRule / Set-InboxRule in
       Search-AdminAuditLog (admin_audit_events, CmdletName + Caller + RunDate) instead of the
       UAL; Phase 6 implements both sources.
     tables: [ual_events, signins, admin_audit_events]
@@ -710,7 +729,8 @@ rules:
     collectors: [hawk3, hawk4, invictus, portal]
     positives: [inbox_rule_finance]
     # residential_replay_rule: the rule follows a sign-in that is neither risky nor from a hosting ASN.
-    lookalikes: [vendor_filing_rule, inbox_rule_after_stale_risk, residential_replay_rule]
+    # connector_user_own_rule: a connector user's own rule from their office within the hour after a connector sign-in.
+    lookalikes: [vendor_filing_rule, inbox_rule_after_stale_risk, residential_replay_rule, connector_user_own_rule]
     correlation_negatives: [inbox_rule_after_stale_risk]
     computed:
       - kind: forwarding_inbox_rule

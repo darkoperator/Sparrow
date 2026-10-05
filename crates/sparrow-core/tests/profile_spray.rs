@@ -230,7 +230,9 @@ fn services(case: &Case) -> Vec<(String, String, i64)> {
 fn cloud(case: &Case) -> usize {
     rebuild(case);
     let codes = spray::credential_failure_codes(&DataDirs::default()).unwrap();
-    sparrow_core::profile::cloud_services::rebuild(case.conn(), &codes).unwrap()
+    let first_party =
+        sparrow_core::profile::cloud_services::first_party_apps(&DataDirs::default()).unwrap();
+    sparrow_core::profile::cloud_services::rebuild(case.conn(), &codes, &first_party).unwrap()
 }
 
 fn intel(case: &Case, t: &str, ip: &str, asn: i64, hosting: bool) {
@@ -1083,4 +1085,64 @@ fn sprayed_users_disqualify_a_service_from_twenty_percent_or_three_users() {
     want.sort();
     assert_eq!(service_apps(&case), want);
     assert_eq!(want.len(), 4, "the table must exercise both outcomes");
+}
+
+/// A Microsoft first-party application never makes a cloud service, whatever its users or days; the
+/// same counts on a third-party application do. Accounts phished and used from a VPS sign in to
+/// OfficeHome or Outlook, a real connector is a third-party application.
+#[test]
+fn a_first_party_application_is_never_a_cloud_service() {
+    const OFFICE_HOME: &str = "4765445b-32c6-49b0-83e6-1d93765276ca";
+    const OUTLOOK_MOBILE: &str = "27922004-5251-4030-b22d-91ecd9a37ea4";
+    const AZURE_CLI: &str = "04b07795-8ddb-461a-bbee-02f9e1bf7b46";
+    const THIRD_PARTY: &str = "c0c0c0c0-0000-4000-8000-0000000000c1";
+    let case = Case::in_memory().unwrap();
+    tenant(&case, T1);
+    intel(&case, T1, "203.0.113.50", 24940, true);
+    // Twelve users, three days, all from the hosting ASN, on each of four applications.
+    for app in [OFFICE_HOME, OUTLOOK_MOBILE, AZURE_CLI, THIRD_PARTY] {
+        connector_signins(&case, app, "203.0.113.50", 12);
+    }
+    assert_eq!(cloud(&case), 1);
+    assert_eq!(service_apps(&case), vec![THIRD_PARTY.to_string()]);
+}
+
+/// The list match ignores the case of the id in the sign-in row.
+#[test]
+fn a_first_party_application_id_matches_in_any_case() {
+    let case = Case::in_memory().unwrap();
+    tenant(&case, T1);
+    intel(&case, T1, "203.0.113.50", 24940, true);
+    connector_signins(
+        &case,
+        "4765445B-32C6-49B0-83E6-1D93765276CA",
+        "203.0.113.50",
+        8,
+    );
+    assert_eq!(cloud(&case), 0);
+}
+
+/// A custom `lists/microsoft_first_party_apps.yaml` replaces the built-in list (an environment can add
+/// the first-party ids its tenant uses), and the ids come back lower-case.
+#[test]
+fn a_custom_first_party_list_replaces_the_built_in_one() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("lists")).unwrap();
+    std::fs::write(
+        dir.path().join("lists/microsoft_first_party_apps.yaml"),
+        "name: microsoft_first_party_apps\ndescription: test\nvalues:\n  - AAAAAAAA-0000-4000-8000-000000000001\n",
+    )
+    .unwrap();
+    let dirs = DataDirs {
+        rules: vec![dir.path().to_path_buf()],
+        ..DataDirs::default()
+    };
+    let got = sparrow_core::profile::cloud_services::first_party_apps(&dirs).unwrap();
+    assert_eq!(
+        got,
+        vec!["aaaaaaaa-0000-4000-8000-000000000001".to_string()]
+    );
+    let builtin =
+        sparrow_core::profile::cloud_services::first_party_apps(&DataDirs::default()).unwrap();
+    assert!(builtin.contains(&"4765445b-32c6-49b0-83e6-1d93765276ca".to_string()));
 }

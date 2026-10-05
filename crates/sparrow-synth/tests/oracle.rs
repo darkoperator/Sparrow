@@ -275,6 +275,62 @@ fn the_oracle_reads_the_rows_sparrow_ingests() {
     assert!(diffs.is_empty(), "{}", diffs.join("\n"));
 }
 
+/// First-party rule (fu-wave4-b redo), checked against both implementations on the password-spray tree: Sparrow's
+/// `cloud_services` and the oracle's agree, the third-party connectors (new, established or in use since day one,
+/// mid-window or not) are services, and the phished accounts on a VPS are not, although their OfficeHome sign-ins
+/// meet every count (6+ users, 3+ days, one hosting ASN, no failures). Non-vacuous: the counts are checked on the
+/// generated sign-ins, and the service set holds exactly the three connectors.
+#[test]
+fn the_oracle_and_sparrow_agree_that_a_first_party_application_is_never_a_service() {
+    let scenario = load("password-spray").unwrap();
+    let mut w = sparrow_synth::world::World::build(&scenario, 1).unwrap();
+    let recs = sparrow_synth::story::apply(&mut w).unwrap();
+    let app = |name: &str| {
+        w.apps
+            .iter()
+            .find(|a| a.display_name == name)
+            .unwrap_or_else(|| panic!("no app {name}"))
+            .app_id
+            .to_string()
+            .to_lowercase()
+    };
+    let connectors = [app("Mail Archive Cloud"), app("Calendar Sync Cloud")];
+    // The phished accounts' sign-ins meet the counts of a service.
+    let evidence = &recs
+        .iter()
+        .find(|r| r.id == "s-vpsphished")
+        .unwrap()
+        .evidence;
+    let phished: Vec<_> = w
+        .story
+        .signins
+        .iter()
+        .filter(|s| evidence.contains(&sparrow_synth::story::Evidence::SignIn(s.id)))
+        .collect();
+    let users: BTreeSet<_> = phished.iter().map(|s| s.user.as_str()).collect();
+    let days: BTreeSet<_> = phished.iter().map(|s| s.time.date_naive()).collect();
+    assert!(users.len() >= 5 && days.len() >= 3);
+    assert!(
+        phished
+            .iter()
+            .all(|s| s.error_code == 0 && s.asn == phished[0].asn)
+    );
+    let office_home = phished[0].app_id.to_string().to_lowercase();
+    for c in [Collector::Invictus, Collector::Portal] {
+        let diffs = view_differences("password-spray", c);
+        assert!(diffs.is_empty(), "{c:?}: {}", diffs.join("\n"));
+        let facts: Facts = oracle_facts(&scenario, &GenerateOptions::new(c, 1)).unwrap();
+        let services: BTreeSet<&str> = facts.cloud.iter().map(|(a, _)| a.as_str()).collect();
+        for connector in &connectors {
+            assert!(services.contains(connector.as_str()), "{c:?}: {services:?}");
+        }
+        assert!(
+            !services.contains(office_home.as_str()),
+            "{c:?}: a first-party application is no service: {services:?}"
+        );
+    }
+}
+
 #[test]
 #[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn the_oracle_reads_the_rows_sparrow_ingests_on_every_scenario_and_collector() {
@@ -345,6 +401,7 @@ fn flipping_a_computed_outcome_fails_the_gate_in_both_directions() {
         ("bec-aitm", Collector::Hawk3),
         ("bec-o365-no-p1", Collector::Invictus),
         ("hawk-investigate", Collector::Invictus),
+        ("password-spray", Collector::Invictus),
     ] {
         seen.extend(flips(name, c, 1));
     }

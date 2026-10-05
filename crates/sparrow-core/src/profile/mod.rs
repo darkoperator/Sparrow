@@ -89,8 +89,10 @@ pub fn refresh(case: &mut Case, opts: &ProfileOptions) -> Result<ProfileReport> 
     report.ip_intel = Some(ip_intel);
     let codes = spray::credential_failure_codes(&opts.dirs)?;
     report.spray_sources = spray::rebuild(&tx, &codes)?;
-    report.cloud_services = cloud_services::rebuild(&tx, &codes)?;
+    let first_party = cloud_services::first_party_apps(&opts.dirs)?;
+    report.cloud_services = cloud_services::rebuild(&tx, &codes, &first_party)?;
     crate::db::store_credential_failure_codes(&tx, &codes)?;
+    crate::db::store_first_party_apps(&tx, &first_party)?;
     let ids = identities::rebuild(&tx)?;
     report.identities = ids.identities;
     if ids.conflicts > 0 {

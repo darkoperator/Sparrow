@@ -31,11 +31,18 @@
 # ASN) from an address that is not itself a spray source, they are reported by NEITHER ID-002, ID-003 NOR
 # SPW-ID-005 (ID-005 reads only successes from a spray-source address). Up to 2 distinct users with
 # credential failures from the ASN to the application. 5 or more PHISHED (not sprayed) accounts used from
-# one VPS on the same application for 3 or more days with no failures look exactly like a connector and
-# are excused. A failure row with no user name never counts toward the 3 failing users. Residual,
+# one VPS on the same THIRD-PARTY application for 3 or more days with no failures look exactly like a
+# connector and are excused. A failure row with no user name never counts toward the 3 failing users. Residual,
 # documented: an attacker using the same application from the same cloud ASN as an established connector
 # is excused, and a connector's first days (cold start) are excused too (SPW-ID-005 and the consent
-# rules, SPW-APP-001/002, remain). No application name or id is involved: the profile decides.
+# rules, SPW-APP-001/002, remain). The one application list involved is rules/lists/
+# microsoft_first_party_apps.yaml (Microsoft first-party ids from public Microsoft Learn pages): an
+# (application, ASN) pair of a first-party application (OfficeHome, Outlook, Exchange Online, SharePoint,
+# Teams, OneDrive, the Azure and Graph tools) is NEVER a service, whatever its users or days, because
+# accounts phished and used from a VPS sign in to Office and Outlook while a real connector is a
+# third-party application, which stays excused even when it is onboarded mid-capture. Residual,
+# documented: an attacker on a third-party application (it needs a consent, SPW-APP-001/002 report it)
+# or on a first-party application missing from the list.
 id: SPW-ID-002
 title: Sign-in from a hosting-provider ASN
 version: 3

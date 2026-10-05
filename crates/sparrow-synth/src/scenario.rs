@@ -255,6 +255,7 @@ story_kind! {
         VpsPasswordFailures => "vps_password_failures",
         ConnectorAppOtherAsn => "connector_app_other_asn",
         ResidentialReplayRule => "residential_replay_rule",
+        VpsPhishedAccounts => "vps_phished_accounts",
     }
     lookalike {
         RiskDismissed => "risk_dismissed",
@@ -298,6 +299,7 @@ story_kind! {
         CloudConnector => "cloud_connector",
         CloudConnectorOnboarding => "cloud_connector_onboarding",
         CloudConnectorLongstanding => "cloud_connector_longstanding",
+        ConnectorUserOwnRule => "connector_user_own_rule",
         OfficeWindowMistypes => "office_window_mistypes",
         CarrierGeoJitter => "carrier_geo_jitter",
         MiaHeavyDesktop => "mia_heavy_desktop",
