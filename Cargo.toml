@@ -5,6 +5,7 @@ members = ["crates/sparrow-cli", "crates/sparrow-core", "crates/sparrow-synth"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 # The pinned duckdb crate requires rustc 1.85.1 (`cargo +1.85.0 check` fails on it).
 rust-version = "1.85.1"
 

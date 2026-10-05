@@ -3,6 +3,7 @@ name = "sparrow-synth"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 description = "Deterministic synthetic Hawk / Microsoft-Extractor-Suite / portal-export trees with ground-truth manifests (reserved values only)"
 
 [dependencies]
