@@ -111,6 +111,8 @@ flowchart TB
 
 This reduces the amount of evidence text an agent needs to receive, but the savings depend on the case and the questions asked. No token or byte reduction is claimed here; none was measured for this README.
 
+**Agent skills.** [`skills/`](skills/README.md) holds two portable [Agent Skills](https://agentskills.io/specification), a tool-neutral M365 BEC triage playbook and a `sparrow` workflow, that work unchanged in Claude Code, Codex, OpenCode and Pi. See [skills/README.md](skills/README.md) to install them.
+
 ## Agent workflow: record decisions, then review them
 
 Every CLI write is an **agent decision**, even when a person typed the command. Pass `--agent ID` (or set `SPARROW_AGENT`; default `unnamed`) and optionally `--analyst NAME` (or `SPARROW_ANALYST`) on finding, IOC, timeline-entry, and note writes:
