@@ -187,28 +187,109 @@ pub fn ingest_collections(
     })
 }
 
-/// DuckDB's `checkpoint_threshold` while an ingest loads (its default is 16 MiB). DuckDB checkpoints automatically
-/// inside a COMMIT once the WAL passes the threshold, and each checkpoint costs more as the case grows: on the 1M-row
-/// Invictus perf tree the per-file commits took 89 of 180 s. With 1 GB the ingest took 104 s, for 1-2 GB more peak
-/// memory and an identical case (docs: reports/ingest-profile.md, experiment E2; with no threshold at all memory
-/// grew by 4.5 GB for no further gain). Each file still commits its own transaction to the WAL.
-pub const INGEST_CHECKPOINT_THRESHOLD: &str = "1GB";
+/// The highest `checkpoint_threshold` an ingest uses. DuckDB checkpoints automatically inside a COMMIT once the WAL
+/// passes the threshold (default 16 MiB), and each checkpoint costs more as the case grows: on the 1M-row Invictus
+/// perf tree the per-file commits took 89 of 180 s. With 1 GB the ingest took 104 s and the case was identical, but
+/// peak memory grew by 1-2 GB on a 32 GB machine (docs: reports/ingest-profile.md, experiment E2; with no threshold
+/// at all, by 4.5 GB for no further gain). Each file still commits its own transaction to the WAL.
+pub const INGEST_CHECKPOINT_MAX: u64 = 1_000_000_000;
 
-/// Run `load` with [`INGEST_CHECKPOINT_THRESHOLD`] on the writer, then put the previous threshold back, whether
-/// `load` returns, fails or panics, and on success fold the WAL in with one `CHECKPOINT`. An error of `load` is the
-/// one returned; a panic goes on after the restore.
+/// The ingest threshold is the writer's `memory_limit` divided by this, capped at [`INGEST_CHECKPOINT_MAX`]: the
+/// increase in peak memory stays bounded on a small machine (a 2 GiB limit gives 256 MiB).
+pub const INGEST_CHECKPOINT_MEMORY_SHARE: u64 = 8;
+
+/// DuckDB's own default `checkpoint_threshold`, which an ingest never goes below.
+pub const DUCKDB_DEFAULT_CHECKPOINT: u64 = 16 * 1024 * 1024;
+
+/// Environment variable overriding the ingest threshold: a DuckDB size (`256MB`, `1GiB`, ...) or `default` (keep
+/// DuckDB's own value).
+pub const CHECKPOINT_ENV: &str = "SPARROW_INGEST_CHECKPOINT";
+
+/// Bytes of a DuckDB size string: a non-negative decimal number and an optional unit (B / byte(s), KB..PB in
+/// powers of 1000, KiB..PiB in powers of 1024; any case; spaces allowed), as DuckDB writes `memory_limit`
+/// ("25.5 GiB") and accepts sizes. `None` for anything else.
+fn parse_size(text: &str) -> Option<u64> {
+    let t = text.trim();
+    let split = t
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(t.len());
+    let (num, unit) = t.split_at(split);
+    if num.is_empty() || num.matches('.').count() > 1 || num.starts_with('.') || num.ends_with('.')
+    {
+        return None;
+    }
+    let value: f64 = num.parse().ok()?;
+    let unit = unit.trim().to_ascii_lowercase();
+    let scale: f64 = match unit.as_str() {
+        "" | "b" | "byte" | "bytes" => 1.0,
+        "kb" => 1e3,
+        "mb" => 1e6,
+        "gb" => 1e9,
+        "tb" => 1e12,
+        "pb" => 1e15,
+        "kib" => 1024f64,
+        "mib" => 1024f64.powi(2),
+        "gib" => 1024f64.powi(3),
+        "tib" => 1024f64.powi(4),
+        "pib" => 1024f64.powi(5),
+        _ => return None,
+    };
+    let bytes = value * scale;
+    (bytes.is_finite() && bytes < u64::MAX as f64).then(|| bytes.round() as u64)
+}
+
+/// The `checkpoint_threshold` (bytes) an ingest sets on the writer, or `None` to keep DuckDB's current value.
+/// Without an override: `memory_limit` / [`INGEST_CHECKPOINT_MEMORY_SHARE`], capped at [`INGEST_CHECKPOINT_MAX`],
+/// and `None` when that is not above [`DUCKDB_DEFAULT_CHECKPOINT`] or the limit does not parse (never raised on a
+/// guess). An override ([`CHECKPOINT_ENV`]) is a size above zero or `default`; anything else is an error.
+fn ingest_checkpoint_threshold(memory_limit: &str, override_: Option<&str>) -> Result<Option<u64>> {
+    if let Some(v) = override_ {
+        if v.trim().eq_ignore_ascii_case("default") {
+            return Ok(None);
+        }
+        return match parse_size(v) {
+            Some(bytes) if bytes > 0 => Ok(Some(bytes)),
+            _ => Err(Error::Invalid(format!(
+                "{CHECKPOINT_ENV}={v:?} is not a size: use a DuckDB size such as 256MB or 1GiB, or `default` to keep DuckDB's own checkpoint threshold"
+            ))),
+        };
+    }
+    Ok(parse_size(memory_limit)
+        .map(|limit| (limit / INGEST_CHECKPOINT_MEMORY_SHARE).min(INGEST_CHECKPOINT_MAX))
+        .filter(|&t| t > DUCKDB_DEFAULT_CHECKPOINT))
+}
+
+/// [`with_ingest_checkpointing_using`] with the override from [`CHECKPOINT_ENV`].
 fn with_ingest_checkpointing<T>(
     case: &mut Case,
     load: impl FnOnce(&mut Case) -> Result<T>,
 ) -> Result<T> {
-    let previous: String =
-        case.conn()
-            .query_row("SELECT current_setting('checkpoint_threshold')", [], |r| {
+    let over = std::env::var(CHECKPOINT_ENV).ok();
+    with_ingest_checkpointing_using(case, over.as_deref(), load)
+}
+
+/// Run `load` with the ingest threshold ([`ingest_checkpoint_threshold`] of the writer's `memory_limit` and
+/// `override_`) on the writer, then put the previous threshold back, whether `load` returns, fails or panics, and on
+/// success fold the WAL in with one `CHECKPOINT`. An invalid override fails before `load` runs; an error of `load`
+/// is the one returned; a panic goes on after the restore.
+fn with_ingest_checkpointing_using<T>(
+    case: &mut Case,
+    override_: Option<&str>,
+    load: impl FnOnce(&mut Case) -> Result<T>,
+) -> Result<T> {
+    let setting = |case: &Case, name: &str| -> Result<String> {
+        Ok(case
+            .conn()
+            .query_row(&format!("SELECT current_setting('{name}')"), [], |r| {
                 r.get(0)
-            })?;
-    case.conn().execute_batch(&format!(
-        "SET checkpoint_threshold = '{INGEST_CHECKPOINT_THRESHOLD}'"
-    ))?;
+            })?)
+    };
+    let previous = setting(case, "checkpoint_threshold")?;
+    let target = ingest_checkpoint_threshold(&setting(case, "memory_limit")?, override_)?;
+    if let Some(bytes) = target {
+        case.conn()
+            .execute_batch(&format!("SET checkpoint_threshold = '{bytes} bytes'"))?;
+    }
     let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| load(&mut *case)));
     let restored = case.conn().execute_batch(&format!(
         "SET checkpoint_threshold = '{}'",
@@ -1056,47 +1137,134 @@ mod tests {
             .unwrap()
     }
 
+    const MIB: u64 = 1024 * 1024;
+    const GIB: u64 = 1024 * MIB;
+
+    #[test]
+    fn the_threshold_follows_the_memory_limit_within_its_bounds() {
+        let auto = |limit: &str| ingest_checkpoint_threshold(limit, None).unwrap();
+        // memory_limit / 8, at most 1 GB (DuckDB's 1GB: 10^9 bytes).
+        assert_eq!(auto("32 GiB"), Some(INGEST_CHECKPOINT_MAX));
+        assert_eq!(auto("29.8 GiB"), Some(INGEST_CHECKPOINT_MAX));
+        assert_eq!(auto("2 GiB"), Some(256 * MIB));
+        assert_eq!(auto("2.0 GiB"), Some(256 * MIB));
+        assert_eq!(auto("2GB"), Some(250_000_000));
+        // Never below DuckDB's default: a small limit keeps it.
+        assert_eq!(auto("64 MiB"), None);
+        assert_eq!(auto("128 MiB"), None);
+        assert_eq!(auto("136 MiB"), Some(17 * MIB));
+        // Unlimited (DuckDB shows -1 as 16383.9 PiB): the cap.
+        assert_eq!(auto("16383.9 PiB"), Some(INGEST_CHECKPOINT_MAX));
+        // A limit that does not parse never raises the threshold.
+        for bad in ["", "lots", "1e9", "GiB", "-1 GiB", "1.5.2 MiB"] {
+            assert_eq!(auto(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_override_sets_a_size_keeps_the_default_or_fails_clearly() {
+        let over = |v: &str| ingest_checkpoint_threshold("32 GiB", Some(v));
+        assert_eq!(over("256MB").unwrap(), Some(256_000_000));
+        assert_eq!(over(" 256 MiB ").unwrap(), Some(256 * MIB));
+        assert_eq!(over("2GiB").unwrap(), Some(2 * GIB));
+        assert_eq!(over("default").unwrap(), None);
+        assert_eq!(over("DEFAULT").unwrap(), None);
+        for bad in ["", "lots", "0", "0MB", "-5MB", "12 parsecs"] {
+            let e = over(bad).unwrap_err().to_string();
+            assert!(
+                e.contains(CHECKPOINT_ENV) && e.contains("default"),
+                "{bad:?}: {e}"
+            );
+        }
+    }
+
     #[test]
     fn the_ingest_threshold_applies_inside_and_the_previous_one_comes_back_on_every_exit() {
         let dir = tempfile::tempdir().unwrap();
         let mut case = Case::create_or_open(&dir.path().join("c.duckdb")).unwrap();
         let default = threshold(&case);
-        let ingest_value = {
-            let probe = Connection::open_in_memory().unwrap();
-            probe
-                .execute_batch(&format!(
-                    "SET checkpoint_threshold = '{INGEST_CHECKPOINT_THRESHOLD}'"
-                ))
+        // An override of 256 MiB applies inside.
+        let inside =
+            with_ingest_checkpointing_using(&mut case, Some("256MiB"), |c| Ok(threshold(c)))
                 .unwrap();
-            probe
-                .query_row("SELECT current_setting('checkpoint_threshold')", [], |r| {
-                    r.get::<_, String>(0)
-                })
-                .unwrap()
-        };
-        assert_ne!(default, ingest_value);
-        // Ok: the ingest value inside, the previous value after.
-        let inside = with_ingest_checkpointing(&mut case, |c| Ok(threshold(c))).unwrap();
-        assert_eq!(inside, ingest_value);
+        assert_eq!(inside, "256.0 MiB");
+        assert_eq!(threshold(&case), default);
+        // `default` keeps DuckDB's own value inside.
+        let inside =
+            with_ingest_checkpointing_using(&mut case, Some("default"), |c| Ok(threshold(c)))
+                .unwrap();
+        assert_eq!(inside, default);
+        // An invalid override fails before the load runs, and changes nothing.
+        let mut ran = false;
+        let e = with_ingest_checkpointing_using(&mut case, Some("huge"), |_| {
+            ran = true;
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(!ran && e.to_string().contains(CHECKPOINT_ENV), "{e}");
         assert_eq!(threshold(&case), default);
         // A non-default previous value is restored as it was.
         case.conn()
             .execute_batch("SET checkpoint_threshold = '64MiB'")
             .unwrap();
         let custom = threshold(&case);
-        with_ingest_checkpointing(&mut case, |_| Ok(())).unwrap();
+        with_ingest_checkpointing_using(&mut case, Some("256MiB"), |_| Ok(())).unwrap();
         assert_eq!(threshold(&case), custom);
         // Err: restored, and the ingest's error is the one returned.
-        let e = with_ingest_checkpointing::<()>(&mut case, |_| Err(Error::Invalid("boom".into())))
-            .unwrap_err();
+        let e = with_ingest_checkpointing_using::<()>(&mut case, Some("256MiB"), |_| {
+            Err(Error::Invalid("boom".into()))
+        })
+        .unwrap_err();
         assert!(e.to_string().contains("boom"), "{e}");
         assert_eq!(threshold(&case), custom);
         // Panic: restored, and the panic goes on.
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = with_ingest_checkpointing::<()>(&mut case, |_| panic!("parser bug"));
+            let _ = with_ingest_checkpointing_using::<()>(&mut case, Some("256MiB"), |_| {
+                panic!("parser bug")
+            });
         }));
         assert!(caught.is_err());
         assert_eq!(threshold(&case), custom);
+    }
+
+    #[test]
+    fn a_memory_constrained_ingest_succeeds_with_a_bounded_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::fixtures::hawk_tree(dir.path());
+        let mut case = Case::create_or_open(&dir.path().join("case.duckdb")).unwrap();
+        case.conn()
+            .execute_batch("SET memory_limit = '1GB'")
+            .unwrap();
+        let limit: String = case
+            .conn()
+            .query_row("SELECT current_setting('memory_limit')", [], |r| r.get(0))
+            .unwrap();
+        // 953.6 MiB / 8: about 119 MiB, far below the 1 GB cap.
+        let want = ingest_checkpoint_threshold(&limit, None).unwrap().unwrap();
+        assert!(want > 100 * MIB && want < 125 * MIB, "{want}");
+        let inside =
+            with_ingest_checkpointing_using(&mut case, None, |c| Ok(threshold(c))).unwrap();
+        assert!(
+            inside.ends_with("MiB") && inside.starts_with("11"),
+            "{inside}"
+        );
+        let default = threshold(&case);
+        let report = ingest_path(
+            &mut case,
+            &root,
+            &ParserRegistry::builtin(),
+            &IngestOptions::default(),
+        )
+        .unwrap();
+        assert!(!report.has_errors());
+        assert!(
+            report
+                .collections
+                .iter()
+                .flat_map(|c| &c.files)
+                .any(|f| f.status == FileStatus::Parsed && f.records_loaded > 0)
+        );
+        assert_eq!(threshold(&case), default);
     }
 
     #[test]

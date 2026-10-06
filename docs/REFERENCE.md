@@ -328,6 +328,17 @@ seq. Deleting the newest entries is detected against the head the last write rec
 outside the case. A break blocks every write until `audit verify --acknowledge` records it as an audit entry.
 Indicators from a case made before the audit trail get one reviewable `legacy_decision` entry each on `upgrade`.
 
+### Environment variables
+
+| Variable | Used by | Meaning |
+| --- | --- | --- |
+| `SPARROW_DATA` | ingest, profile, detect, rules, finding show | Default for `--data DIR` (data files overriding the embedded ones) |
+| `SPARROW_RULES` | ingest, profile, detect, rules, finding show | Default for `--rules DIR` (rule directories; several separated by the platform path separator) |
+| `SPARROW_AGENT` | every write | Default for `--agent ID` (`unnamed` when unset) |
+| `SPARROW_ANALYST` | every write | Default for `--analyst NAME` |
+| `SPARROW_INGEST_CHECKPOINT` | ingest | DuckDB's `checkpoint_threshold` while the files load. Unset: the case's `memory_limit` / 8, at most 1 GB, never below DuckDB's own 16 MiB (a limit that cannot be read keeps 16 MiB). A size (`256MB`, `1GiB`, ...) sets it; `default` keeps DuckDB's own value. Anything else stops the ingest before a file is loaded (exit 1). The previous threshold is restored afterwards, and one `CHECKPOINT` runs at the end. A bigger threshold avoids repeated checkpoints inside the per-file commits (180 s → 104 s on a 1M-row tree) and costs memory: the WAL's changes stay in memory until the checkpoint |
+| `SPARROW_INGEST_PROFILE` | ingest | `1`: print stage spans and per-file timings to stderr (off by default; the output on stdout is unchanged) |
+
 ## Agent workflow
 
 The CLI is the AI agent's tool. An agent (any program that can run a command and read JSON) drives a case from

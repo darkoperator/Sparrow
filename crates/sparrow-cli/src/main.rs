@@ -50,6 +50,11 @@ enum Command {
     /// List collector outputs under PATH and how each file is classified
     Discover { path: PathBuf },
     /// Ingest collector output into a case database
+    #[command(after_help = "Environment:\n  \
+        SPARROW_INGEST_CHECKPOINT  DuckDB checkpoint threshold while loading: a size (256MB, 1GiB) or `default` \
+        (DuckDB's own); unset: memory_limit / 8, at most 1GB, never below 16MiB\n  \
+        SPARROW_INGEST_PROFILE     set to 1 to print stage and per-file timings to stderr\n  \
+        SPARROW_DATA, SPARROW_RULES  defaults for --data and --rules")]
     Ingest {
         path: PathBuf,
         /// Case database file (created if missing)

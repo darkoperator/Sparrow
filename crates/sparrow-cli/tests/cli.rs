@@ -3479,3 +3479,49 @@ fn ingest_profile_is_printed_only_when_asked() {
     assert!(!String::from_utf8_lossy(&off.stderr).contains("ingest profile"));
     assert_eq!(on.status.code(), off.status.code());
 }
+
+/// `SPARROW_INGEST_CHECKPOINT` must be a size or `default`: anything else stops the ingest before a file is loaded,
+/// with a message naming the variable; `default` and a size ingest normally. The ingest help lists the variables.
+#[test]
+fn ingest_checkpoint_override_is_validated_before_loading() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fixtures::hawk_tree(dir.path());
+    let ingest = |case: &str, value: &str| {
+        sparrow()
+            .args(["--json", "ingest"])
+            .arg(&root)
+            .arg("--case")
+            .arg(dir.path().join(case))
+            .env("SPARROW_INGEST_CHECKPOINT", value)
+            .output()
+            .unwrap()
+    };
+    let bad = ingest("bad.duckdb", "huge");
+    assert_eq!(bad.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&bad.stderr);
+    assert!(
+        err.contains("SPARROW_INGEST_CHECKPOINT") && err.contains("256MB"),
+        "{err}"
+    );
+    let loaded: i64 = {
+        let c = sparrow_core::Case::open_read_only(&dir.path().join("bad.duckdb")).unwrap();
+        c.conn()
+            .query_row("SELECT count(*) FROM source_files", [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(loaded, 0, "no file is ingested");
+    for (case, value) in [("default.duckdb", "default"), ("sized.duckdb", "256MB")] {
+        let out = ingest(case, value);
+        assert!(
+            out.status.code() == Some(0) || out.status.code() == Some(2),
+            "{value}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let _: Value = serde_json::from_slice(&out.stdout).unwrap();
+    }
+    sparrow()
+        .args(["ingest", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("SPARROW_INGEST_CHECKPOINT").and(contains("SPARROW_INGEST_PROFILE")));
+}
