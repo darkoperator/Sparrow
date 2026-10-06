@@ -1,7 +1,7 @@
 //! Self-description of the case database (tables, columns, COMMENT ON text) for agents and UIs.
 
 use crate::{Case, Result};
-use duckdb::params;
+use duckdb::{Connection, params};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -14,6 +14,8 @@ pub struct ColumnInfo {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TableInfo {
+    /// The table or view name (`name` in JSON).
+    #[serde(rename = "name")]
     pub table: String,
     pub comment: Option<String>,
     /// "table" or "view".
@@ -22,9 +24,15 @@ pub struct TableInfo {
 }
 
 pub fn describe(case: &Case, table: Option<&str>) -> Result<Vec<TableInfo>> {
-    let mut stmt = case.conn().prepare(
+    describe_conn(case.conn(), table)
+}
+
+/// The tables and views (not DuckDB's internal ones) of `conn`'s current database, sorted by name, each with its
+/// columns in ordinal order; only `table` when given (empty when there is no such object).
+pub fn describe_conn(conn: &Connection, table: Option<&str>) -> Result<Vec<TableInfo>> {
+    let mut stmt = conn.prepare(
         "WITH objs AS (
-             SELECT database_name, schema_name, table_name AS name, comment, 'table' AS kind FROM duckdb_tables()
+             SELECT database_name, schema_name, table_name AS name, comment, 'table' AS kind FROM duckdb_tables() WHERE NOT internal
              UNION ALL
              SELECT database_name, schema_name, view_name, comment, 'view' FROM duckdb_views() WHERE NOT internal
          )

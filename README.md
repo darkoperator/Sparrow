@@ -62,11 +62,11 @@ Hawk 3.x/4.x, Invictus 4.x, and portal exports can be combined in one case. Spar
 ```bash
 sparrow capabilities --case case.duckdb --json
 sparrow summary --case case.duckdb --json
-sparrow schema --case case.duckdb
+sparrow schema --case case.duckdb --table signins
 sparrow verify ual_events RECORD_KEY --case case.duckdb
 ```
 
-Availability distinguishes evidence that was collected, partial, not licensed, not enabled, outside retention, available but not collected, or unknown. Its reason and suggested collector command help you avoid treating a gap as a clean result. `verify` checks a record against its original file and location; if the evidence tree moved, pass `--root NEW_COLLECTION_ROOT`. `schema` describes the tables and columns available for investigation.
+Availability distinguishes evidence that was collected, partial, not licensed, not enabled, outside retention, available but not collected, or unknown. Its reason and suggested collector command help you avoid treating a gap as a clean result. `verify` checks a record against its original file and location; if the evidence tree moved, pass `--root NEW_COLLECTION_ROOT`. `schema` describes the tables and views `query` can read, with each column's type and description (`--table` for one).
 
 ## Triage detections and investigate events
 
@@ -76,13 +76,15 @@ Detection runs after ingest and profile, or on demand:
 sparrow detect --case case.duckdb
 sparrow detect --case case.duckdb --rule SPW-MAIL-003
 sparrow finding list --case case.duckdb --severity high --json
+sparrow finding list --case case.duckdb --user user@contoso.example --rule SPW-ID-004 --rule SPW-MAIL-003 --limit 20 --json
 sparrow finding show FINDING_ID --case case.duckdb --json
+sparrow finding show FINDING_ID OTHER_ID --case case.duckdb --json
 sparrow timeline --case case.duckdb --finding FINDING_ID --limit 50 --json
 sparrow pivot ip 203.0.113.2 --case case.duckdb --cap 20 --json
 sparrow pivot user analyst@contoso.example --case case.duckdb --cap 20 --json
 ```
 
-The 34 rules run per tenant. Each rule attempt is recorded as `ran`, `not_applicable` with a reason, or `error`; a missing capability, unavailable evidence, or absent GeoIP is not silently counted as a negative. Findings retain their evidence across re-runs, and re-running detection never overwrites an analyst's status, assignment, or disposition. `finding show` includes guidance, evidence references, notes, and decision history (`--all` removes the default 50-evidence-row cap in plain output; JSON already includes all evidence). `timeline` filters by user, IP, category, time, or finding. `pivot` returns capped sections about one IP or user and reports truncation. Use `--limit` or `--cap` deliberately when sending results to an agent.
+The 34 rules run per tenant. Each rule attempt is recorded as `ran`, `not_applicable` with a reason, or `error`; a missing capability, unavailable evidence, or absent GeoIP is not silently counted as a negative. Findings retain their evidence across re-runs, and re-running detection never overwrites an analyst's status, assignment, or disposition. `finding list` filters combine: `--severity` is a minimum, `--rule` repeats, `--user` ignores case, and `--limit` reports what it left out. `finding show` includes guidance, evidence references, notes, and decision history (`--all` removes the default 50-evidence-row cap in plain output; JSON already includes all evidence); it takes up to 50 ids at once and lists the unknown ones (exit 2). `timeline` filters by user, IP, category, time, or finding. `pivot` returns capped sections about one IP or user and reports truncation. Use `--limit` or `--cap` deliberately when sending results to an agent.
 
 For a targeted read-only SQL question:
 

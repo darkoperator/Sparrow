@@ -55,8 +55,10 @@ fn one_of(what: &str, v: Option<&str>, allowed: &[&str]) -> Result<()> {
 #[derive(Debug, Clone, Default)]
 pub struct FindingFilter {
     pub status: Option<String>,
+    /// The minimum severity (info < low < medium < high < critical).
     pub severity: Option<String>,
-    pub rule: Option<String>,
+    /// Rule ids, exact; a finding of any of them matches (none: every rule).
+    pub rule: Vec<String>,
     /// The finding's actor (case-insensitive).
     pub user: Option<String>,
     pub tenant: Option<String>,
@@ -99,7 +101,14 @@ pub struct FindingRow {
     pub evidence_count: i64,
 }
 
-fn finding_rows(conn: &Connection, filter: &str, args: &[&dyn ToSql]) -> Result<Vec<FindingRow>> {
+/// The findings matching `filter` in list order, at most `limit` of them (all when `None`).
+fn finding_rows(
+    conn: &Connection,
+    filter: &str,
+    args: &[&dyn ToSql],
+    limit: Option<usize>,
+) -> Result<Vec<FindingRow>> {
+    let limit = limit.map(|n| format!(" LIMIT {n}")).unwrap_or_default();
     let sql = format!(
         "SELECT f.finding_id, f.tenant_key, f.rule_id, f.rule_version, f.severity, f.title, f.actor_upn, \
                 epoch_us(f.first_seen), epoch_us(f.last_seen), CAST(f.status AS VARCHAR), f.disposition_reason, \
@@ -108,7 +117,7 @@ fn finding_rows(conn: &Connection, filter: &str, args: &[&dyn ToSql]) -> Result<
                 CAST(f.review_state AS VARCHAR), f.reviewed_by, epoch_us(f.reviewed_at), f.review_comment, \
                 (SELECT count(*) FROM finding_evidence fe WHERE fe.finding_id = f.finding_id) \
          FROM findings f WHERE {filter} \
-         ORDER BY {SEVERITY_RANK}, f.last_seen DESC NULLS LAST, f.finding_id"
+         ORDER BY {SEVERITY_RANK}, f.last_seen DESC NULLS LAST, f.finding_id{limit}"
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(args, |r| {
@@ -144,6 +153,15 @@ fn finding_rows(conn: &Connection, filter: &str, args: &[&dyn ToSql]) -> Result<
 
 /// The findings matching `f`: severity (critical first), then the latest `last_seen`, then id.
 pub fn finding_list(conn: &Connection, f: &FindingFilter) -> Result<Vec<FindingRow>> {
+    Ok(finding_page(conn, f, None)?.rows)
+}
+
+/// [`finding_list`], at most `limit` rows (all when `None`), with the filtered total.
+pub fn finding_page(
+    conn: &Connection,
+    f: &FindingFilter,
+    limit: Option<usize>,
+) -> Result<Page<FindingRow>> {
     if let Some(s) = &f.status {
         FindingStatus::parse(s)?;
     }
@@ -159,10 +177,9 @@ pub fn finding_list(conn: &Connection, f: &FindingFilter) -> Result<Vec<FindingR
         add("CAST(f.status AS VARCHAR) = ?", Box::new(v.clone()));
     }
     if let Some(v) = &f.severity {
-        add("f.severity = ?", Box::new(v.clone()));
-    }
-    if let Some(v) = &f.rule {
-        add("f.rule_id = ?", Box::new(v.clone()));
+        // SEVERITIES is critical first, as SEVERITY_RANK ranks them.
+        let rank = SEVERITIES.iter().position(|s| s == v).unwrap_or(0) as i64;
+        add(&format!("{SEVERITY_RANK} <= ?"), Box::new(rank));
     }
     if let Some(v) = &f.user {
         add("lower(f.actor_upn) = lower(?)", Box::new(v.clone()));
@@ -176,8 +193,27 @@ pub fn finding_list(conn: &Connection, f: &FindingFilter) -> Result<Vec<FindingR
     if let Some(v) = &f.review_state {
         add("CAST(f.review_state AS VARCHAR) = ?", Box::new(v.clone()));
     }
+    // Any of the rule ids (after `add`'s last use: this pushes several arguments).
+    if !f.rule.is_empty() {
+        let marks = vec!["?"; f.rule.len()].join(", ");
+        filter.push(format!("f.rule_id IN ({marks})"));
+        for r in &f.rule {
+            args.push(Box::new(r.clone()));
+        }
+    }
     let refs: Vec<&dyn ToSql> = args.iter().map(|b| b.as_ref()).collect();
-    finding_rows(conn, &filter.join(" AND "), &refs)
+    let filter = filter.join(" AND ");
+    let total: i64 = conn.query_row(
+        &format!("SELECT count(*) FROM findings f WHERE {filter}"),
+        refs.as_slice(),
+        |r| r.get(0),
+    )?;
+    let rows = finding_rows(conn, &filter, &refs, limit)?;
+    Ok(Page {
+        truncated: (rows.len() as i64) < total,
+        rows,
+        total,
+    })
 }
 
 /// One evidence row of a finding: its provenance, and its timeline row when the table feeds the timeline.
@@ -206,7 +242,7 @@ pub struct FindingDetail {
 
 /// Everything about one finding.
 pub fn finding_show(conn: &Connection, id: &str, rules: &RuleSet) -> Result<FindingDetail> {
-    let finding = finding_rows(conn, "f.finding_id = ?", &[&id])?
+    let finding = finding_rows(conn, "f.finding_id = ?", &[&id], None)?
         .pop()
         .ok_or_else(|| Error::NotFound(format!("finding {id}")))?;
     let mut stmt = conn.prepare(&format!(

@@ -90,7 +90,7 @@ fn finding_list_filters() {
     assert!(sev.len() < all.len());
     let rule = f0.rule_id.clone().unwrap();
     let r = by(FindingFilter {
-        rule: Some(rule.clone()),
+        rule: vec![rule.clone()],
         ..Default::default()
     });
     assert!(

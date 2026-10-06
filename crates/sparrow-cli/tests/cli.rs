@@ -123,7 +123,7 @@ fn ingest_then_reingest_then_verify_then_schema() {
         0,
     );
     let t = &v["tables"][0];
-    assert_eq!(t["table"], "source_files");
+    assert_eq!(t["name"], "source_files");
     assert!(t["comment"].as_str().unwrap().contains("SHA-256"));
     assert!(
         t["columns"]
@@ -871,7 +871,7 @@ fn invictus_tree_end_to_end_through_the_profile_commands() {
     );
     let tables = schema["tables"].as_array().unwrap();
     assert_eq!(tables.len(), 1, "{schema}");
-    assert_eq!(tables[0]["table"], "timeline");
+    assert_eq!(tables[0]["name"], "timeline");
     assert_eq!(tables[0]["kind"], "view");
 }
 
@@ -3115,4 +3115,330 @@ fn read_commands_warn_while_a_post_migration_step_is_pending() {
         let v: Value = serde_json::from_str(&stdout).unwrap();
         assert!(!on_stderr && v.get("warnings").is_none(), "{args:?}: {v}");
     }
+}
+
+// ------------------------------------------------------------------ agent aids: schema, multi-show, list filters
+
+/// Six findings, ordered by severity then id when listed (no `last_seen`):
+/// f-c critical HAWK-003 alice, f-a high SPW-ID-004 Alice, f-f high HAWK-010 carol, f-b medium SPW-ID-004 bob,
+/// f-d low MAIL-004 alice, f-e info MAIL-004 (no actor).
+fn agent_case(dir: &std::path::Path) -> std::path::PathBuf {
+    let case = fresh_case(dir);
+    let conn = duckdb::Connection::open(&case).unwrap();
+    for (id, rule, sev, actor) in [
+        ("f-a", "SPW-ID-004", "high", Some("Alice@Contoso.example")),
+        ("f-b", "SPW-ID-004", "medium", Some("bob@contoso.example")),
+        ("f-c", "HAWK-003", "critical", Some("alice@contoso.example")),
+        ("f-d", "MAIL-004", "low", Some("alice@contoso.example")),
+        ("f-e", "MAIL-004", "info", None),
+        ("f-f", "HAWK-010", "high", Some("carol@contoso.example")),
+    ] {
+        conn.execute(
+            "INSERT INTO findings (finding_id, fingerprint, tenant_key, rule_id, rule_version, rule_sha256, \
+             severity, title, actor_upn, created_by, created_at, updated_at) \
+             VALUES (?, ?, 't1', ?, 1, 'x', ?, ?, ?, 'rule', now(), now())",
+            duckdb::params![id, format!("fp-{id}"), rule, sev, format!("title {id}"), actor],
+        )
+        .unwrap();
+    }
+    case
+}
+
+fn listed(case: &std::path::Path, args: &[&str]) -> (Vec<String>, Value) {
+    let v = json_out(
+        sparrow()
+            .args(["--json", "finding", "list"])
+            .args(args)
+            .arg("--case")
+            .arg(case),
+        0,
+    );
+    let ids = v["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["finding_id"].as_str().unwrap().to_string())
+        .collect();
+    (ids, v)
+}
+
+#[test]
+fn finding_list_filters_combine_in_sql() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = agent_case(dir.path());
+    let ids = |args: &[&str]| listed(&case, args).0;
+    assert_eq!(ids(&[]), ["f-c", "f-a", "f-f", "f-b", "f-d", "f-e"]);
+    // --user: case-insensitive on actor_upn.
+    assert_eq!(
+        ids(&["--user", "ALICE@contoso.EXAMPLE"]),
+        ["f-c", "f-a", "f-d"]
+    );
+    // --rule: exact, repeatable (any of them).
+    assert_eq!(ids(&["--rule", "SPW-ID-004"]), ["f-a", "f-b"]);
+    assert_eq!(
+        ids(&["--rule", "SPW-ID-004", "--rule", "MAIL-004"]),
+        ["f-a", "f-b", "f-d", "f-e"]
+    );
+    assert!(ids(&["--rule", "spw-id-004"]).is_empty());
+    // --severity: the minimum.
+    assert_eq!(ids(&["--severity", "high"]), ["f-c", "f-a", "f-f"]);
+    assert_eq!(ids(&["--severity", "critical"]), ["f-c"]);
+    assert_eq!(ids(&["--severity", "info"]).len(), 6);
+    // Combined: AND.
+    assert_eq!(
+        ids(&["--user", "alice@contoso.example", "--severity", "medium"]),
+        ["f-c", "f-a"]
+    );
+    assert_eq!(
+        ids(&[
+            "--user",
+            "alice@contoso.example",
+            "--rule",
+            "MAIL-004",
+            "--severity",
+            "low"
+        ]),
+        ["f-d"]
+    );
+    // --limit truncates the filtered set and says so.
+    let (got, v) = listed(&case, &["--user", "alice@contoso.example", "--limit", "2"]);
+    assert_eq!(got, ["f-c", "f-a"]);
+    assert_eq!(
+        (v["total"].as_i64(), v["truncated"].as_bool()),
+        (Some(3), Some(true))
+    );
+    let (got, v) = listed(&case, &["--severity", "high"]);
+    assert_eq!(got.len(), 3);
+    assert_eq!(
+        (v["total"].as_i64(), v["truncated"].as_bool()),
+        (Some(3), Some(false))
+    );
+    sparrow()
+        .args([
+            "finding",
+            "list",
+            "--user",
+            "alice@contoso.example",
+            "--limit",
+            "2",
+            "--case",
+        ])
+        .arg(&case)
+        .assert()
+        .success()
+        .stdout(contains("… 1 more (truncated)"));
+    // An unknown severity is refused.
+    sparrow()
+        .args(["finding", "list", "--severity", "huge", "--case"])
+        .arg(&case)
+        .assert()
+        .code(1)
+        .stderr(contains("unknown severity"));
+}
+
+#[test]
+fn finding_show_takes_several_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = agent_case(dir.path());
+    // Several: the findings in argument order (a repeated id once), the unknown ones in `missing`, exit 2.
+    let v = json_out(
+        sparrow()
+            .args([
+                "--json", "finding", "show", "f-c", "nope", "f-a", "f-c", "f-b", "gone", "--case",
+            ])
+            .arg(&case),
+        2,
+    );
+    let ids: Vec<&str> = v["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["finding"]["finding_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["f-c", "f-a", "f-b"]);
+    assert_eq!(v["missing"], serde_json::json!(["nope", "gone"]));
+    // Each entry is what the one-id form prints.
+    let one = json_out(
+        sparrow()
+            .args(["--json", "finding", "show", "f-a", "--case"])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(v["findings"][1], one);
+    assert!(one.get("findings").is_none() && one.get("missing").is_none());
+    // All found: exit 0 and an empty `missing`.
+    let v = json_out(
+        sparrow()
+            .args(["--json", "finding", "show", "f-a", "f-b", "--case"])
+            .arg(&case),
+        0,
+    );
+    assert_eq!(v["missing"], serde_json::json!([]));
+    // Plain: each block in order, separated by a rule line; the missing ids named.
+    let out = sparrow()
+        .args(["finding", "show", "f-b", "f-a", "nope", "--case"])
+        .arg(&case)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let text = String::from_utf8(out.stdout).unwrap();
+    let single = |id: &str| {
+        String::from_utf8(
+            sparrow()
+                .args(["finding", "show", id, "--case"])
+                .arg(&case)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+    };
+    let rule = "─".repeat(72);
+    assert_eq!(
+        text,
+        format!(
+            "{}{rule}\n{}{rule}\nnot found: nope\n",
+            single("f-b"),
+            single("f-a")
+        ),
+        "{text}"
+    );
+    // One unknown id alone stays an error, as before.
+    sparrow()
+        .args(["finding", "show", "nope", "--case"])
+        .arg(&case)
+        .assert()
+        .code(1)
+        .stderr(contains("finding nope"));
+    // More than 50 ids: refused.
+    let many: Vec<String> = (0..51).map(|i| format!("x{i}")).collect();
+    sparrow()
+        .args(["finding", "show"])
+        .args(&many)
+        .arg("--case")
+        .arg(&case)
+        .assert()
+        .code(1)
+        .stderr(contains("at most 50 finding ids"));
+}
+
+/// The case's own tables and views, as DuckDB's catalog has them.
+fn case_objects(case: &std::path::Path) -> Vec<String> {
+    let conn = duckdb::Connection::open(case).unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT table_name FROM duckdb_tables() WHERE database_name = current_database() AND schema_name = 'main' \
+             UNION SELECT view_name FROM duckdb_views() WHERE database_name = current_database() \
+             AND schema_name = 'main' AND NOT internal ORDER BY 1",
+        )
+        .unwrap();
+    stmt.query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+#[test]
+fn schema_lists_what_query_can_read_with_comments() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = agent_case(dir.path());
+    let v = json_out(sparrow().args(["--json", "schema", "--case"]).arg(&case), 0);
+    let tables = v["tables"].as_array().unwrap();
+    let names: Vec<String> = tables
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_string())
+        .collect();
+    // Sorted by name, and exactly the case's own objects: no DuckDB catalog or temp object.
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(names, sorted);
+    assert_eq!(names, case_objects(&case));
+    assert!(names.iter().any(|n| n == "findings") && names.iter().any(|n| n == "timeline"));
+    for t in tables {
+        let name = t["name"].as_str().unwrap();
+        assert!(
+            t["comment"].as_str().is_some_and(|c| !c.trim().is_empty()),
+            "{name} has no comment"
+        );
+        let cols = t["columns"].as_array().unwrap();
+        assert!(!cols.is_empty(), "{name}");
+        for c in cols {
+            assert!(
+                c["name"].as_str().is_some_and(|s| !s.is_empty())
+                    && c["type"].as_str().is_some_and(|s| !s.is_empty())
+                    && c["comment"].as_str().is_some_and(|s| !s.trim().is_empty()),
+                "{name}.{c}"
+            );
+        }
+        // Every listed object is one `sparrow query` reads.
+        sparrow()
+            .args([
+                "query",
+                &format!("SELECT * FROM \"{name}\" LIMIT 0"),
+                "--case",
+            ])
+            .arg(&case)
+            .assert()
+            .success();
+    }
+    // --table: one object, its columns in ordinal order.
+    let v = json_out(
+        sparrow()
+            .args(["--json", "schema", "--table", "findings", "--case"])
+            .arg(&case),
+        0,
+    );
+    let t = v["tables"].as_array().unwrap();
+    assert_eq!(t.len(), 1);
+    assert_eq!(t[0]["name"], "findings");
+    let cols: Vec<&str> = t[0]["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        &cols[..4],
+        ["finding_id", "fingerprint", "tenant_key", "rule_id"]
+    );
+    assert_eq!(*cols.last().unwrap(), "review_comment");
+    // An unknown table: exit 1, naming the tables there are.
+    let v = json_out(
+        sparrow()
+            .args(["--json", "schema", "--table", "nope", "--case"])
+            .arg(&case),
+        1,
+    );
+    let e = v["error"].as_str().unwrap();
+    assert!(
+        e.contains("no table named 'nope'") && e.contains("findings") && e.contains("timeline"),
+        "{e}"
+    );
+    // Human output: one block per table, a blank line between blocks.
+    let out = sparrow()
+        .args(["schema", "--table", "findings", "--case"])
+        .arg(&case)
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.starts_with("findings — "), "{text}");
+    assert!(
+        text.lines()
+            .any(|l| l.trim_start().starts_with("finding_id")),
+        "{text}"
+    );
+    let all = String::from_utf8(
+        sparrow()
+            .args(["schema", "--case"])
+            .arg(&case)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(
+        all.split("\n\n").count(),
+        names.len(),
+        "one block per table"
+    );
 }

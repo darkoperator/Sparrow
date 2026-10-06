@@ -14,10 +14,12 @@ use std::process::ExitCode;
 pub enum FindingCommand {
     /// List findings: severity first, then the most recent
     List(super::read::FindingListArgs),
-    /// One finding: evidence with source references, analyst guidance, notes, decision and review, history
+    /// Findings by id: evidence with source references, analyst guidance, notes, decision and review, history.
+    /// Several ids (at most 50) print each in turn; exit 2 when one is not found
     Show {
-        /// Finding id (see `finding list`)
-        id: String,
+        /// Finding id(s) (see `finding list`)
+        #[arg(required = true, num_args = 1..)]
+        ids: Vec<String>,
         /// Case database file
         #[arg(long)]
         case: PathBuf,
@@ -117,12 +119,12 @@ pub fn run(command: FindingCommand, json: bool) -> Result<ExitCode> {
     match command {
         FindingCommand::List(a) => return super::read::finding_list(a, json),
         FindingCommand::Show {
-            id,
+            ids,
             case,
             data,
             rules,
             all,
-        } => return super::read::finding_show(&case, &id, data, rules, all, json),
+        } => return super::read::finding_show(&case, &ids, data, rules, all, json),
         FindingCommand::SetStatus {
             id,
             status,

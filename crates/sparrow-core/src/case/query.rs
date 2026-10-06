@@ -106,6 +106,13 @@ fn locked(case_path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
+/// The tables and views [`run`] can read: every table and view of the case (not DuckDB's own catalog objects), with
+/// their table and column comments, read from the same locked connection; only `table` when given.
+pub fn schema(case_path: &Path, table: Option<&str>) -> Result<Vec<crate::db::TableInfo>> {
+    let conn = locked(case_path)?;
+    crate::db::describe::describe_conn(&conn, table)
+}
+
 /// Run one SELECT over the case at `case_path`, returning at most `limit` rows.
 pub fn run(case_path: &Path, sql: &str, limit: usize) -> Result<QueryResult> {
     let select = the_select(sql)?;

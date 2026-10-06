@@ -47,12 +47,12 @@ pub struct FindingListArgs {
     /// new, in_review, confirmed, false_positive, benign or needs_more_data
     #[arg(long)]
     pub status: Option<String>,
-    /// critical, high, medium, low or info
+    /// The minimum severity: info < low < medium < high < critical
     #[arg(long)]
     pub severity: Option<String>,
-    /// Rule id
-    #[arg(long)]
-    pub rule: Option<String>,
+    /// Rule id, exact (repeatable: a finding of any of them)
+    #[arg(long = "rule")]
+    pub rule: Vec<String>,
     /// The finding's actor UPN (case-insensitive)
     #[arg(long)]
     pub user: Option<String>,
@@ -66,11 +66,14 @@ pub struct FindingListArgs {
     /// pending_review, accepted or discarded
     #[arg(long)]
     pub review_state: Option<String>,
+    /// At most this many findings (default: all); the output says how many more the filters matched
+    #[arg(long)]
+    pub limit: Option<usize>,
 }
 
 pub fn finding_list(a: FindingListArgs, json: bool) -> Result<ExitCode> {
     let c = open_read(&a.case)?;
-    let rows = read::finding_list(
+    let page = read::finding_page(
         c.conn(),
         &FindingFilter {
             status: a.status,
@@ -81,12 +84,17 @@ pub fn finding_list(a: FindingListArgs, json: bool) -> Result<ExitCode> {
             rule_updated: a.rule_updated,
             review_state: a.review_state,
         },
+        a.limit,
     )?;
     if json {
-        print_json(&serde_json::json!({ "findings": rows }))?;
+        print_json(&serde_json::json!({
+            "findings": page.rows,
+            "total": page.total,
+            "truncated": page.truncated,
+        }))?;
         return Ok(ExitCode::SUCCESS);
     }
-    for f in &rows {
+    for f in &page.rows {
         let decision = match (&f.decided_by, &f.review_state) {
             (Some(by), Some(rs)) => format!("  [{} {}]", safe(by), rs),
             _ => String::new(),
@@ -104,28 +112,87 @@ pub fn finding_list(a: FindingListArgs, json: bool) -> Result<ExitCode> {
             decision
         );
     }
-    println!("{} findings", rows.len());
+    truncated_line(page.rows.len(), page.total);
+    println!("{} findings", page.total);
     Ok(ExitCode::SUCCESS)
 }
 
 /// Evidence rows `finding show` prints without `--all`.
 const SHOW_EVIDENCE: usize = 50;
 
+/// Finding ids `finding show` takes in one call.
+pub const SHOW_MAX_IDS: usize = 50;
+
+/// The rule line between findings when `finding show` prints several.
+fn show_separator() -> String {
+    "─".repeat(72)
+}
+
+/// `finding show`: one id prints its finding exactly as it always has (an unknown id is an error). Several ids print
+/// each finding in argument order (a repeated id once): `--json` `{"findings": [...], "missing": [...]}`, plain the
+/// blocks separated by a rule line, then `not found: <ids>`; exit 2 when any id is unknown.
 pub fn finding_show(
     case: &Path,
-    id: &str,
+    ids: &[String],
     data: Option<PathBuf>,
     rules: Vec<PathBuf>,
     all: bool,
     json: bool,
 ) -> Result<ExitCode> {
+    if ids.len() > SHOW_MAX_IDS {
+        anyhow::bail!(
+            "finding show takes at most {SHOW_MAX_IDS} finding ids at once, got {}",
+            ids.len()
+        );
+    }
     let c = open_read(case)?;
     let set = load_rules(&DataDirs::with_env_fallback(data, rules))?;
-    let d = read::finding_show(c.conn(), id, &set)?;
-    if json {
-        print_json(&d)?;
+    if let [id] = ids {
+        let d = read::finding_show(c.conn(), id, &set)?;
+        if json {
+            print_json(&d)?;
+        } else {
+            print_finding(&d, all);
+        }
         return Ok(ExitCode::SUCCESS);
     }
+    let mut seen = std::collections::BTreeSet::new();
+    let mut found = Vec::new();
+    let mut missing = Vec::new();
+    for id in ids.iter().filter(|id| seen.insert(id.as_str())) {
+        match read::finding_show(c.conn(), id, &set) {
+            Ok(d) => found.push(d),
+            Err(sparrow_core::Error::NotFound(_)) => missing.push(id.clone()),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    if json {
+        print_json(&serde_json::json!({ "findings": found, "missing": missing }))?;
+    } else {
+        for d in &found {
+            print_finding(d, all);
+            println!("{}", show_separator());
+        }
+        if !missing.is_empty() {
+            println!(
+                "not found: {}",
+                missing
+                    .iter()
+                    .map(|m| safe(m))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
+    Ok(if missing.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(2)
+    })
+}
+
+/// One finding's plain block, as `finding show <id>` prints it.
+fn print_finding(d: &read::FindingDetail, all: bool) {
     let f = &d.finding;
     println!("{}  {}  {}", f.finding_id, f.severity, safe(&f.title));
     println!(
@@ -231,7 +298,6 @@ pub fn finding_show(
             );
         }
     }
-    Ok(ExitCode::SUCCESS)
 }
 
 // ------------------------------------------------------------------ timeline

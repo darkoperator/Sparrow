@@ -100,6 +100,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "derived_relation_comments",
         sql: include_str!("../../migrations/0018_derived_relation_comments.sql"),
     },
+    Migration {
+        version: 19,
+        name: "schema_migrations_comments",
+        sql: include_str!("../../migrations/0019_schema_migrations_comments.sql"),
+    },
 ];
 
 /// The migration that adds the Phase 7 analyst tables and the audit trail.

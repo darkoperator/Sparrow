@@ -118,12 +118,17 @@ enum Command {
         #[arg(long)]
         case: PathBuf,
     },
-    /// Describe the case database tables and columns
+    /// Describe the tables and views `query` can read: their columns, types and comments
     Schema {
         /// Case database file
         #[arg(long)]
         case: PathBuf,
+        /// Only this table or view (exit 1 with the list of names when there is none)
+        #[arg(long = "table", conflicts_with = "table_arg")]
         table: Option<String>,
+        /// Only this table or view (same as --table)
+        #[arg(value_name = "TABLE")]
+        table_arg: Option<String>,
     },
     /// Run the detection rules over a case and merge the hits into its findings
     Detect {
@@ -698,7 +703,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
             root,
         }) => cmd_verify(&table, &record_key, &case, root.as_deref(), json),
         Some(Command::Upgrade { case }) => cmd_upgrade(&case, json),
-        Some(Command::Schema { case, table }) => cmd_schema(&case, table.as_deref(), json),
+        Some(Command::Schema {
+            case,
+            table,
+            table_arg,
+        }) => cmd_schema(&case, table.or(table_arg).as_deref(), json),
         Some(Command::Detect {
             case,
             rule,
@@ -1311,19 +1320,31 @@ struct SchemaOutput {
 }
 
 fn cmd_schema(case_path: &Path, table: Option<&str>, json: bool) -> Result<ExitCode> {
-    let case = open_read(case_path)?;
+    // Opened (and closed) first for its warnings; the catalog is read on `query`'s locked connection, so the
+    // objects listed are the ones `query` reads.
+    drop(open_read(case_path)?);
     let out = SchemaOutput {
-        tables: sparrow_core::db::describe(&case, table)?,
+        tables: sparrow_core::case::query::schema(case_path, table)?,
     };
     if let Some(t) = table {
         if out.tables.is_empty() {
-            anyhow::bail!("no table named '{t}' in the case database");
+            let names: Vec<String> = sparrow_core::case::query::schema(case_path, None)?
+                .into_iter()
+                .map(|t| t.table)
+                .collect();
+            anyhow::bail!(
+                "no table named '{t}' in the case database; tables and views: {}",
+                names.join(", ")
+            );
         }
     }
     if json {
         print_json(&out)?;
     } else {
-        for t in &out.tables {
+        for (i, t) in out.tables.iter().enumerate() {
+            if i > 0 {
+                println!();
+            }
             let suffix = if t.kind == "view" { " (view)" } else { "" };
             println!(
                 "{}{suffix} — {}",

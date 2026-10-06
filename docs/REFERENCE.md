@@ -243,7 +243,8 @@ sparrow profile --case case.duckdb                # re-run the profile step (sam
 sparrow capabilities --case case.duckdb           # what evidence the case holds, what is missing and why
 sparrow summary --case case.duckdb                # tenant, licences, coverage, top actors, gaps
 sparrow tenant domains list --case case.duckdb    # also add|remove <domain> [--tenant KEY] [--analyst NAME]
-sparrow schema --case case.duckdb                 # tables and column descriptions
+sparrow schema --case case.duckdb                 # the tables and views `query` reads: comments, columns, types
+                                                  # [--table T] (an unknown T exits 1 listing the names)
 sparrow upgrade --case case.duckdb                # bring a case made by an older sparrow up to date (also
                                                   # rebuilds spray_sources and cloud_services from its sign-ins,
                                                   # with the codes the last profile used; a failed rebuild is
@@ -259,10 +260,11 @@ sparrow timeline-entry propose --time T --title X --phase P --evidence TABLE:KEY
                                                   # also verify ID, reject ID --reason R,
                                                   # edit ID [--title ...] [--clear-narrative]
 sparrow note add finding:ID|entry:ID|ioc:ID|TABLE:KEY --text "..." --case case.duckdb
-sparrow finding list --case case.duckdb           # [--status --severity --rule --user --tenant --rule-updated
-                                                  #  --review-state]; severity first, then the most recent
-sparrow finding show ID --case case.duckdb        # evidence with source refs (first 50; --all), guidance, notes,
-                                                  # decision, history
+sparrow finding list --case case.duckdb           # [--status --severity MIN --rule ID... --user UPN --tenant
+                                                  #  --rule-updated --review-state --limit N]; severity first,
+                                                  #  then the most recent
+sparrow finding show ID [ID...] --case case.duckdb  # evidence with source refs (first 50; --all), guidance, notes,
+                                                  # decision, history; up to 50 ids at once
 sparrow timeline --case case.duckdb               # [--user --ip --category --from --to --finding --limit 200]
 sparrow timeline-entry list --case case.duckdb    # [--status --review-state]
 sparrow pivot ip|user VALUE --case case.duckdb    # every section capped by --cap 50, truncation reported
@@ -281,10 +283,27 @@ Add `--json` to any command for machine-readable output. Exit codes:
 | ---: | --- |
 | 0 | success |
 | 1 | any other error, including a refused `query` (not a single SELECT, or one that tries to write or reach outside the case) and a bad option |
-| 2 | `ingest` completed but a file failed, a record could not be parsed, or a file's record counts did not reconcile; `verify`: a record no longer matches its source; `synth coverage` / `conformance`: a gap |
+| 2 | `ingest` completed but a file failed, a record could not be parsed, or a file's record counts did not reconcile; `verify`: a record no longer matches its source; `finding show` with several ids: one or more ids were not found (the others are shown, the unknown ones listed); `synth coverage` / `conformance`: a gap |
 | 3 | the audit chain is broken (`audit verify`, and any write refused because of it) |
 | 4 | the case is open by another writer (a write, and also a read or `audit verify` while a writer holds the case) |
 | 5 | an invalid agent decision (a bad status, verdict, phase or time, a missing reason, an unknown object, an evidence reference not in the case, text over its cap: 16 KiB for notes, narratives, reasons and comments, 500 characters for titles) or an `export --out` that would overwrite the case; nothing was written |
+
+`schema` lists exactly the tables and views `query` can read: it reads DuckDB's catalog on `query`'s own locked
+connection, so it never lists a DuckDB system object. Each comes with its table comment and its columns (name,
+type, comment) in ordinal order, sorted by name; `--json` is `{"tables":[{"name","comment","kind","columns":
+[{"name","type","comment"}]}]}` (`kind` is `table` or `view`). Every table, view and column has a comment
+(migration 19 added the last ones, on `schema_migrations`). `--table T` (or `schema T`) shows one.
+
+`finding list` filters combine with AND, in SQL: `--user` matches `actor_upn` case-insensitively, `--rule` is an
+exact rule id and repeatable (a finding of any of them), `--severity` is the minimum (info < low < medium < high <
+critical), and `--limit N` keeps the first N of the filtered list. `--json` is `{"findings":[...],"total":N,
+"truncated":bool}` (`total` counts every match); plain output ends `… K more (truncated)` when capped, then `N
+findings` with the total. Findings carry no address field, so there is no `--ip` (use `timeline --ip` or `pivot ip`).
+
+`finding show` with one id prints exactly what it always has, and an unknown id is an error (exit 1). With several
+(at most 50; more exits 1), it shows each found finding in argument order, a repeated id once: `--json` is
+`{"findings":[<each as the one-id form>],"missing":[<unknown ids>]}`, plain output separates the findings with a
+rule line and ends `not found: <ids>`; exit 2 when any id is missing.
 
 Read commands open the case read-only. `query` runs exactly one SELECT (checked by DuckDB's own parser) on a
 separate in-memory DuckDB that attaches the case read-only, with external access (files, network, environment) and
