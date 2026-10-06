@@ -420,9 +420,9 @@ fn the_skills_commands_still_parse_against_the_cli() {
     check(current);
 }
 
-/// The lines that use the three commands cli-agent-aids adds. Enable after that branch merges.
+/// The lines that use the three commands cli-agent-aids added (schema --table, finding show with several ids,
+/// a repeated finding list --rule).
 #[test]
-#[ignore = "enable after cli-agent-aids merges"]
 fn the_skills_lines_using_the_new_commands_parse_against_the_cli() {
     let new: Vec<_> = command_lines()
         .into_iter()
