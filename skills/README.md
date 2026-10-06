@@ -14,6 +14,16 @@ Install both: the Sparrow skill points at the playbook for the judgement calls.
 This folder is the one canonical copy. Install by **symlink** (stays current with the repository) or **copy**. Replace
 `/path/to/sparrow` with your checkout.
 
+## Measured trade-off
+
+On a benchmark (medium synthetic tree, five seeds, Sonnet), the first version of the skills kept the accuracy of the
+Sparrow arm (F1 1.00) but raised its cost from 18 to 29 turns and from about 427K to 904K tokens: the agent applied
+the full look-alike check to every lead, and every turn re-sends the whole conversation. Skills raise thoroughness;
+this version targets turns. `sparrow-triage` opens with a fast path (scope, one `finding list`, one multi-id
+`finding show`, pivots only for accounts it will name or clear as borderline, SQL only for what no finding shows) and
+`bec-triage` runs the extended look-alike check only on accounts with mixed evidence. Smaller models also guessed
+column names, so the common columns are inlined in `sparrow-triage`.
+
 ## Claude Code
 
 Personal (all projects):

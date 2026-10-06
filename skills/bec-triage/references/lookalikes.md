@@ -1,7 +1,19 @@
 # Benign look-alikes: counter-evidence, not verdicts
 
 These patterns look like an attack in one signal. A benign pattern is **counter-evidence that lowers suspicion; it
-is never a verdict by itself.** To clear a candidate you need BOTH:
+is never a verdict by itself.**
+
+## When to run the full check
+
+| What the account shows | Do |
+| --- | --- |
+| Clear attacker evidence (sign-in from attacker infrastructure or a new network, then persistence) | Name it; skip this check. |
+| Mixed: a benign pattern fits AND something suspicious is there | Run the check below, then name or clear it. |
+| A benign-looking event and NO attacker signal on its account | No deep dive. |
+
+## The full check (mixed evidence only)
+
+To clear a candidate you need BOTH:
 
 - **(a)** the benign explanation's own positive evidence (not merely that the pattern fits), AND
 - **(b)** the absence of the attacker signals around it: a session or device change, a replayed session, a risky
