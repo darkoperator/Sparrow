@@ -67,6 +67,50 @@ Hawk artifacts with no parser (`hawk.xml`, mailbox-statistics text, raw message 
 reports, the unique-user IP file) are reported `not_supported`; every Microsoft-Extractor-Suite and portal
 artifact listed above now has one.
 
+### Adding a follow-up pull for one user
+
+During an investigation the analyst is often asked for more evidence about one account, such as its mailbox
+audit log, message trace or MailItemsAccessed records, to see what an attacker read or sent. Run the collector for
+that user, then ingest its output folder into the **same case**:
+
+```bash
+sparrow discover /evidence/followup-alice          # check that every file is recognised before loading
+sparrow ingest /evidence/followup-alice --case case.duckdb
+```
+
+The pull becomes a new collection in the case. Events it shares with earlier collections are not duplicated (each
+copy adds a sighting in `record_sources`), state from the newer collection wins, and profile and detection re-run
+over the whole case. The case file must be outside the evidence folder.
+
+Sparrow recognises files by their path and name, so keep the folder layout the collector wrote:
+
+| Pull | Collector | Path Sparrow expects | Loads into |
+| --- | --- | --- | --- |
+| Mailbox audit log | Microsoft-Extractor-Suite `Get-MailboxAuditLog` | `Mailbox Audit Log/<yyyyMMdd-HHmmss>-Legacy/...-mailboxAuditLog-....csv` | `mailbox_audit_legacy` |
+| Mailbox audit log | Hawk user investigation | `<upn>/Exchange_Mailbox_Audit_....csv` or `.json` | `mailbox_audit_legacy` |
+| Message trace | Microsoft-Extractor-Suite `Get-MessageTraceLog` | `MessageTrace/<yyyyMMdd-HHmmss>/...-MessageTrace.csv` (or `-MTL.csv`) | `message_trace` |
+| Message trace | Hawk user investigation | `<upn>/Message_Trace_....csv` or `.json` | `message_trace` |
+| Message trace | Exchange admin center message trace report (CSV) | any folder; recognised by its header | `message_trace` |
+| Mail items accessed | Microsoft-Extractor-Suite `Get-MailItemsAccessed` | `MailItemsAccessed/<yyyyMMdd-HHmmss>/...MessageIDs....csv` and `...Sessions....csv` | `mail_items_accessed` |
+| Mail items accessed | Hawk user investigation | `<upn>/MailItemsAccessed_....csv` or `.json` | `ual_events` |
+
+- A renamed or flattened file shows as `unrecognized` in `discover`. Restore the collector's layout before
+  ingesting, rather than loading a partial pull.
+- The legacy mailbox audit log (`Search-MailboxAuditLog`) and MailItemsAccessed are different sources.
+  MailItemsAccessed shows which messages were read or synced. Since 2024 it is an Audit (Standard) event, although
+  Microsoft Learn still says in places that it needs E5. `sparrow capabilities` says whether the case holds it, and
+  why it may be missing.
+- Ingesting the same folder again is safe: files already loaded are reported `duplicate_file`.
+
+Then read the user's activity across every collection:
+
+```bash
+sparrow timeline --case case.duckdb --user alice@contoso.example --limit 200 --json
+sparrow pivot user alice@contoso.example --case case.duckdb --cap 20 --json
+sparrow schema --case case.duckdb --table message_trace      # column names before writing SQL
+sparrow query "SELECT received, sender, recipient, subject, status FROM message_trace WHERE sender = 'alice@contoso.example' OR recipient = 'alice@contoso.example' ORDER BY received LIMIT 50" --case case.duckdb
+```
+
 ## Tenant profile and enrichment
 
 After loading, `sparrow ingest` runs the profile step (again at any time with `sparrow profile --case C`):
