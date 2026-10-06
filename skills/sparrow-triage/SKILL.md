@@ -53,12 +53,16 @@ sparrow summary --case case.duckdb --json
 
 ```bash
 sparrow finding list --case case.duckdb --severity high --json
+sparrow finding list --case case.duckdb --severity medium --json
 sparrow finding list --case case.duckdb --user <UPN> --json
 ```
 
    Each finding has `finding_id`, `rule_id`, `severity`, `title`, `actor_upn`, `first_seen`, `last_seen`, `status`
-   and `evidence_count`. High findings first, then medium. A finding is a lead, not a verdict: several rules fire on
-   benign look-alikes (a connector's hosting sign-ins, a user's own filing rule).
+   and `evidence_count`. `--severity` is a minimum: `--severity high` returns critical first, then high, and no
+   medium; run `--severity medium` (critical, high and medium) or an unfiltered list to include medium and below.
+   A finding is a lead, not a verdict: several rules fire on benign look-alikes (a connector's hosting sign-ins, a
+   user's own filing rule), and a look-alike is counter-evidence, not clearance, until you have checked the account
+   for attacker signals.
 
 3. **Read the findings that matter.**
 

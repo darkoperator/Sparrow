@@ -19,9 +19,12 @@ anyone.
 ## Working rules
 
 1. **Name an account only with evidence.** Each account you call compromised needs at least one concrete,
-   attacker-side fact (a sign-in, a session, a rule, a consent) that you can point to, and no benign
-   explanation from the look-alike list that fits it. If the evidence is thin, say "suspicious, not
-   established" and explain what is missing. A false accusation costs more than a hedged line.
+   attacker-side fact (a sign-in, a session, a rule, a consent) that you can point to. A benign look-alike
+   pattern is counter-evidence that lowers suspicion; it is never a verdict by itself. To clear a candidate you
+   need both the benign explanation's own positive evidence and the absence of attacker signals around it
+   (session or device change, replay, a preceding risky sign-in, other persistence, nearby suspicious actions).
+   If the evidence is thin, say "suspicious, not established" and explain what is missing. A false accusation
+   costs more than a hedged line, and so does clearing a real compromise.
 2. **One command per call.** No shell loops, no `for`/`while`, no command substitution, no chained pipelines
    of many tools. Sandboxes often deny them, and a denied call wastes a turn. Run the same simple command again
    with a different argument instead.
@@ -47,9 +50,10 @@ anyone.
 3. **Per candidate, build the story.** Entry (how the attacker got in: stolen session, spray success, phished
    password), the attacker's network (IP, ASN, country, user agent), the first attacker action time, then the
    persistence and the mail or file activity that followed. Use [references/attack-patterns.md](references/attack-patterns.md).
-4. **Try to clear it.** For every candidate, walk the look-alike list and ask what concrete evidence would
-   clear it. Look for that evidence on purpose: the user's usual network, the same action by many users, the
-   vendor sender, the owner's own session.
+4. **Try to clear it, and try to break the clearance.** For every candidate, walk the look-alike list and look
+   for the benign explanation's positive evidence on purpose (the application's publisher and consent history,
+   the vendor sender, the owner's usual network). Then look for the attacker signals around it. A familiar
+   account, client or address is not proof of who was acting: a replayed session acts as the owner.
 5. **Pivot from the confirmed attacker infrastructure.** Every address and ASN of a confirmed takeover: which
    other accounts did it touch? Another account that signed in successfully from the same attacker address is
    a candidate, and one that only failed from it was sprayed, not taken over.

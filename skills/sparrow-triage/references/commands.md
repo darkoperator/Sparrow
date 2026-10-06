@@ -144,7 +144,7 @@ Addresses with credential failures across many users, even when no source was fl
 sparrow query --case case.duckdb --json --limit 50 "SELECT ip, count(DISTINCT user_upn) AS users, count(*) AS failures FROM signins WHERE error_code IN (50126, 50053, 50057, 50034) GROUP BY ip ORDER BY users DESC"
 ```
 
-## Clearing a look-alike
+## Testing a look-alike (counter-evidence, not a verdict)
 
 Is an application a tenant-wide cloud service (a SaaS connector on a hosting ASN)? Listed services:
 
