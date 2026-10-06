@@ -1,11 +1,11 @@
 //! Re-validate evidence records against the original collector files.
 
+use crate::hash::sha256_hex;
 use crate::readers::text::{LineIndex, decode};
 use crate::readers::xlsx::read_xlsx;
 use crate::{Case, Error, Result};
 use duckdb::params;
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -144,7 +144,7 @@ fn check(s: &Sighting, root_override: Option<&Path>) -> SightingCheck {
         return result;
     };
     result.file_found = true;
-    result.file_hash_ok = hex::encode(Sha256::digest(&raw)) == s.file_sha;
+    result.file_hash_ok = sha256_hex(&raw) == s.file_sha;
     if s.rel_path.to_ascii_lowercase().ends_with(".xlsx") {
         check_sheet_row(s, &raw, &mut result);
         return result;
@@ -152,7 +152,7 @@ fn check(s: &Sighting, root_override: Option<&Path>) -> SightingCheck {
     let start = s.byte_offset as usize;
     let end = start.saturating_add(s.byte_length as usize);
     if end <= raw.len() {
-        result.record_hash_ok = hex::encode(Sha256::digest(&raw[start..end])) == s.raw_sha;
+        result.record_hash_ok = sha256_hex(&raw[start..end]) == s.raw_sha;
     }
     let decoded = decode(&raw);
     let index = LineIndex::new(&decoded.text);
@@ -172,7 +172,7 @@ fn check_sheet_row(s: &Sighting, raw: &[u8], result: &mut SightingCheck) {
     let Some(row) = table.rows.iter().find(|r| r.row == s.line_start) else {
         return;
     };
-    result.record_hash_ok = hex::encode(Sha256::digest(row.text().as_bytes())) == s.raw_sha;
+    result.record_hash_ok = sha256_hex(row.text().as_bytes()) == s.raw_sha;
     let lines: Vec<String> = row
         .fields
         .iter()

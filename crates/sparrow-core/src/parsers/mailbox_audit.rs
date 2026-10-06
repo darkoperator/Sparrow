@@ -4,6 +4,7 @@
 
 use crate::Result;
 use crate::db::state_tables::MAILBOX_AUDIT_LEGACY;
+use crate::hash::sha256_hex;
 use crate::ingest::context::ParseContext;
 use crate::ingest::parser::{ArtifactParser, ParserRegistry};
 use crate::normalize::fields::{Cell, Rec};
@@ -16,7 +17,6 @@ use crate::parsers::stage::{
 };
 use crate::readers::time::{DateOrder, zone_assumed};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 pub fn register(r: &mut ParserRegistry) {
     for id in ["hawk.user.mailbox_audit_legacy", "inv.mailbox_audit_legacy"] {
@@ -107,7 +107,7 @@ pub fn mailbox_audit_key(
         lower(rec.text("SessionId")).unwrap_or_default(),
         lower(rec.text("OperationResult")).unwrap_or_default(),
     ];
-    Some(hex::encode(Sha256::digest(parts.join("\n").as_bytes())))
+    Some(sha256_hex(parts.join("\n").as_bytes()))
 }
 
 pub struct MailboxAuditParser;

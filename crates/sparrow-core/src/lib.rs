@@ -11,6 +11,7 @@ pub mod export;
 #[cfg(any(test, feature = "test-fixtures"))]
 #[doc(hidden)]
 pub mod fixtures;
+pub mod hash;
 pub mod ingest;
 pub mod normalize;
 pub mod parsers;

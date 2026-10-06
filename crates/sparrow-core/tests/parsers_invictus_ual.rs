@@ -430,3 +430,85 @@ fn merged_combined_is_parsed_when_a_sibling_window_fails() {
         1
     );
 }
+
+/// A copy the supersede rules skip is hashed without being read whole: its stored sha256 is still the whole file's
+/// (a re-ingest then reports it as already ingested), and a blank copy keeps its empty-file warning.
+#[test]
+fn a_skipped_merged_copy_keeps_its_whole_file_hash_and_blank_warning() {
+    use sha2::{Digest, Sha256};
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("OUT");
+    let mut body = csv_line(RAW_HEADER);
+    let rec_row = raw_row(&audit(ID_1, "2026-09-01T10:20:00", "Set-Mailbox"));
+    body.push_str(&rec_row);
+    fixtures::write(
+        &out,
+        "UnifiedAuditLog/20260910-100000/UAL-20260901000000-20260902000000.csv",
+        &utf8_bom(&body),
+    );
+    // Bigger than one 1 MiB read: the same row many times (all duplicates of the window's record).
+    let mut merged = body.clone();
+    while merged.len() < 3 * 1024 * 1024 {
+        merged.push_str(&rec_row);
+    }
+    let merged = utf8_bom(&merged);
+    fixtures::write(
+        &out,
+        "UnifiedAuditLog/20260910-100000/Merged/UAL-Combined.csv",
+        &merged,
+    );
+    // A blank merged copy in a second run folder.
+    fixtures::write(
+        &out,
+        "UnifiedAuditLog/20260911-100000/UAL-20260901000000-20260902000000.csv",
+        &utf8_bom(&body),
+    );
+    fixtures::write(
+        &out,
+        "UnifiedAuditLog/20260911-100000/Merged/UAL-Combined.csv",
+        b"\xEF\xBB\xBF\r\n",
+    );
+    let mut case = Case::in_memory().unwrap();
+    let ingest_once = |case: &mut Case| {
+        ingest_path(
+            case,
+            dir.path(),
+            &ParserRegistry::builtin(),
+            &IngestOptions::default(),
+        )
+        .unwrap()
+    };
+    let report = ingest_once(&mut case);
+    let big = row(
+        &report,
+        "UnifiedAuditLog/20260910-100000/Merged/UAL-Combined.csv",
+    );
+    assert_eq!(big.status, FileStatus::SkippedSuperseded);
+    let stored = text(
+        &case,
+        "SELECT sha256 FROM source_files WHERE rel_path = 'UnifiedAuditLog/20260910-100000/Merged/UAL-Combined.csv'",
+    );
+    assert_eq!(stored, hex::encode(Sha256::digest(&merged)));
+    let blank = row(
+        &report,
+        "UnifiedAuditLog/20260911-100000/Merged/UAL-Combined.csv",
+    );
+    assert_eq!(blank.status, FileStatus::SkippedSuperseded);
+    assert!(
+        blank
+            .warnings
+            .iter()
+            .any(|w| w == sparrow_core::ingest::EMPTY_FILE_WARNING),
+        "{:?}",
+        blank.warnings
+    );
+    // Re-ingest: the same content is recognised by its stored hash.
+    let again = ingest_once(&mut case);
+    let big = row(
+        &again,
+        "UnifiedAuditLog/20260910-100000/Merged/UAL-Combined.csv",
+    );
+    assert_eq!(big.status, FileStatus::DuplicateFile);
+    assert_eq!(big.warnings, ["already ingested"]);
+    assert_eq!(count(&case, "SELECT count(*) FROM ual_events"), 1);
+}

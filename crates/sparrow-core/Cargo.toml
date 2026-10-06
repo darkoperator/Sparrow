@@ -15,6 +15,8 @@ hex.workspace = true
 ipnet.workspace = true
 maxminddb.workspace = true
 regex.workspace = true
+# Hardware SHA-256 on the ingest and verify hot paths (crate::hash); already in Cargo.lock through rustls.
+ring = "0.17"
 rust_xlsxwriter.workspace = true
 serde.workspace = true
 serde_json.workspace = true

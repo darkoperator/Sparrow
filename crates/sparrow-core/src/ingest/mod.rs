@@ -13,6 +13,7 @@ use crate::discovery::{
     Classification, CollectionFile, DiscoveredCollection, FileFormat, Registry, SNIFF_BYTES, Tool,
     canonical_root_string, discover_collections, format_from_path, list_collection_files,
 };
+use crate::hash::{Sha256Stream, sha256_hex};
 use crate::ingest::context::{FileStats, ParseContext};
 use crate::ingest::parser::ParserRegistry;
 use crate::ingest::supersede::{Handled, processing_key, truncation_warning};
@@ -21,7 +22,6 @@ use crate::readers::time::{DateOrder, ParsedTime, parse_timestamp};
 use crate::{Case, Error, Result, VERSION};
 use duckdb::{Connection, OptionalExt, params};
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::path::Path;
 
 pub const DEFAULT_MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
@@ -182,6 +182,55 @@ pub fn ingest_collections(
     opts: &IngestOptions,
 ) -> Result<IngestReport> {
     case.ensure_usable()?;
+    with_ingest_checkpointing(case, |case| {
+        ingest_collections_in_order(case, collections, parsers, opts)
+    })
+}
+
+/// DuckDB's `checkpoint_threshold` while an ingest loads (its default is 16 MiB). DuckDB checkpoints automatically
+/// inside a COMMIT once the WAL passes the threshold, and each checkpoint costs more as the case grows: on the 1M-row
+/// Invictus perf tree the per-file commits took 89 of 180 s. With 1 GB the ingest took 104 s, for 1-2 GB more peak
+/// memory and an identical case (docs: reports/ingest-profile.md, experiment E2; with no threshold at all memory
+/// grew by 4.5 GB for no further gain). Each file still commits its own transaction to the WAL.
+pub const INGEST_CHECKPOINT_THRESHOLD: &str = "1GB";
+
+/// Run `load` with [`INGEST_CHECKPOINT_THRESHOLD`] on the writer, then put the previous threshold back, whether
+/// `load` returns, fails or panics, and on success fold the WAL in with one `CHECKPOINT`. An error of `load` is the
+/// one returned; a panic goes on after the restore.
+fn with_ingest_checkpointing<T>(
+    case: &mut Case,
+    load: impl FnOnce(&mut Case) -> Result<T>,
+) -> Result<T> {
+    let previous: String =
+        case.conn()
+            .query_row("SELECT current_setting('checkpoint_threshold')", [], |r| {
+                r.get(0)
+            })?;
+    case.conn().execute_batch(&format!(
+        "SET checkpoint_threshold = '{INGEST_CHECKPOINT_THRESHOLD}'"
+    ))?;
+    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| load(&mut *case)));
+    let restored = case.conn().execute_batch(&format!(
+        "SET checkpoint_threshold = '{}'",
+        previous.replace('\'', "''")
+    ));
+    let value = match out {
+        Ok(result) => result?,
+        Err(panic) => std::panic::resume_unwind(panic),
+    };
+    restored?;
+    let _t = timing::span("ingest: final CHECKPOINT");
+    case.conn().execute_batch("CHECKPOINT")?;
+    Ok(value)
+}
+
+/// [`ingest_collections`] without the checkpoint setting: the collections oldest first.
+fn ingest_collections_in_order(
+    case: &mut Case,
+    collections: &[DiscoveredCollection],
+    parsers: &ParserRegistry,
+    opts: &IngestOptions,
+) -> Result<IngestReport> {
     let mut order: Vec<usize> = (0..collections.len()).collect();
     order.sort_by_cached_key(|&i| {
         let dc = &collections[i];
@@ -584,6 +633,77 @@ fn with_pre(pre: &[String], warnings: Vec<String>) -> Vec<String> {
     pre.iter().cloned().chain(warnings).collect()
 }
 
+/// Read size of [`stream_file`].
+const STREAM_CHUNK: usize = 1024 * 1024;
+
+/// What a streamed file keeps: its SHA-256, its first [`SNIFF_BYTES`] and whether it is blank
+/// ([`is_blank_content`] of the whole file).
+struct Streamed {
+    sha256: String,
+    head: Vec<u8>,
+    blank: bool,
+}
+
+/// Hash `path` in reads of up to `chunk` bytes (no whole-file buffer), keeping the head and the blank flag. A
+/// byte-order mark is recognised from the file's first three bytes, gathered across reads, so any chunk size gives
+/// the same result as [`is_blank_content`] on the whole file.
+fn stream_file(path: &Path, chunk: usize) -> std::io::Result<Streamed> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut hash = Sha256Stream::new();
+    let mut head: Vec<u8> = Vec::new();
+    let mut buf = vec![0u8; chunk.max(1)];
+    // Blank: whitespace only after an optional BOM; NULs count only after a UTF-16 BOM. Decided once the first
+    // three bytes (or the whole file, if shorter) are known.
+    let mut prefix: Vec<u8> = Vec::new();
+    let mut utf16: Option<bool> = None;
+    let mut blank = true;
+    let blank_byte =
+        |b: u8, utf16: bool| matches!(b, b' ' | b'\t' | b'\r' | b'\n') || (utf16 && b == 0);
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        let bytes = &buf[..n];
+        hash.update(bytes);
+        if head.len() < SNIFF_BYTES {
+            let take = (SNIFF_BYTES - head.len()).min(n);
+            head.extend_from_slice(&bytes[..take]);
+        }
+        if !blank {
+            continue;
+        }
+        let mut rest = bytes;
+        if utf16.is_none() {
+            let take = (3 - prefix.len()).min(rest.len());
+            prefix.extend_from_slice(&rest[..take]);
+            rest = &rest[take..];
+            if prefix.len() < 3 {
+                continue;
+            }
+            let (body, is16): (&[u8], bool) = match prefix.as_slice() {
+                [0xFF, 0xFE, r @ ..] | [0xFE, 0xFF, r @ ..] => (r, true),
+                [0xEF, 0xBB, 0xBF] => (&[], false),
+                p => (p, false),
+            };
+            utf16 = Some(is16);
+            blank = body.iter().all(|&b| blank_byte(b, is16));
+        }
+        let is16 = utf16.unwrap_or(false);
+        blank = blank && rest.iter().all(|&b| blank_byte(b, is16));
+    }
+    if utf16.is_none() {
+        // Fewer than three bytes in all.
+        blank = is_blank_content(&prefix);
+    }
+    Ok(Streamed {
+        sha256: hash.finish_hex(),
+        head,
+        blank,
+    })
+}
+
 /// [`ingest_file_inner`], timed per file when [`timing`] is on.
 fn ingest_file(
     case: &mut Case,
@@ -667,9 +787,37 @@ fn ingest_file_inner(
         return record_simple(case, &nf, FileStatus::Error, with_pre(&pre, vec![msg]))
             .map(Outcome::plain);
     }
-    let t_read = timing::span("file: read");
-    let raw = match std::fs::read(abs) {
-        Ok(b) => b,
+    // A copy the supersede rules already skip is never decoded or parsed: it is streamed through the hash (its
+    // stored sha256 is the same), keeping only the head the classifier and the duplicate checks need, instead of
+    // holding the whole file (the 1.9 GB merged UAL export of a large Invictus tree). XLSX is classified from the
+    // whole workbook, so it is always read.
+    let streamed = job.superseded_by.is_some() && nf.format != FileFormat::Xlsx;
+    let t_read = timing::span(if streamed {
+        "file: read + sha256 (streamed, superseded)"
+    } else {
+        "file: read"
+    });
+    let content = if streamed {
+        stream_file(abs, STREAM_CHUNK).map(|s| (Vec::new(), s))
+    } else {
+        std::fs::read(abs).map(|raw| {
+            let blank = is_blank_content(&raw);
+            let sha256 = {
+                let _t = timing::span("file: sha256");
+                sha256_hex(&raw)
+            };
+            (
+                raw,
+                Streamed {
+                    sha256,
+                    head: Vec::new(),
+                    blank,
+                },
+            )
+        })
+    };
+    let (raw, streamed_part) = match content {
+        Ok(c) => c,
         Err(e) => {
             return record_simple(
                 case,
@@ -681,13 +829,10 @@ fn ingest_file_inner(
         }
     };
     drop(t_read);
-    if is_blank_content(&raw) {
+    if streamed_part.blank {
         pre.push(EMPTY_FILE_WARNING.into());
     }
-    let sha = {
-        let _t = timing::span("file: sha256");
-        hex::encode(Sha256::digest(&raw))
-    };
+    let sha = streamed_part.sha256;
     nf.sha256 = &sha;
     let t_lookup = timing::span("file: db lookups (changed, already, identical)");
     let changed: bool = case.conn().query_row(
@@ -700,7 +845,9 @@ fn ingest_file_inner(
     if changed {
         pre.push("file content changed since an earlier ingest of this collection (different SHA-256); records from both versions are kept".into());
     }
-    let head: &[u8] = if nf.format == FileFormat::Xlsx {
+    let head: &[u8] = if streamed {
+        &streamed_part.head
+    } else if nf.format == FileFormat::Xlsx {
         &raw
     } else {
         &raw[..raw.len().min(SNIFF_BYTES)]
@@ -884,6 +1031,136 @@ fn ingest_file_inner(
             };
             let warnings = with_pre(&pre, std::iter::once(msg).chain(decode_warning).collect());
             record_simple(case, &nf, status, warnings).map(Outcome::plain)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What the whole-file path computes: (sha256, head, blank).
+    fn whole(bytes: &[u8]) -> (String, Vec<u8>, bool) {
+        (
+            sha256_hex(bytes),
+            bytes[..bytes.len().min(SNIFF_BYTES)].to_vec(),
+            is_blank_content(bytes),
+        )
+    }
+
+    fn threshold(case: &Case) -> String {
+        case.conn()
+            .query_row("SELECT current_setting('checkpoint_threshold')", [], |r| {
+                r.get(0)
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn the_ingest_threshold_applies_inside_and_the_previous_one_comes_back_on_every_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut case = Case::create_or_open(&dir.path().join("c.duckdb")).unwrap();
+        let default = threshold(&case);
+        let ingest_value = {
+            let probe = Connection::open_in_memory().unwrap();
+            probe
+                .execute_batch(&format!(
+                    "SET checkpoint_threshold = '{INGEST_CHECKPOINT_THRESHOLD}'"
+                ))
+                .unwrap();
+            probe
+                .query_row("SELECT current_setting('checkpoint_threshold')", [], |r| {
+                    r.get::<_, String>(0)
+                })
+                .unwrap()
+        };
+        assert_ne!(default, ingest_value);
+        // Ok: the ingest value inside, the previous value after.
+        let inside = with_ingest_checkpointing(&mut case, |c| Ok(threshold(c))).unwrap();
+        assert_eq!(inside, ingest_value);
+        assert_eq!(threshold(&case), default);
+        // A non-default previous value is restored as it was.
+        case.conn()
+            .execute_batch("SET checkpoint_threshold = '64MiB'")
+            .unwrap();
+        let custom = threshold(&case);
+        with_ingest_checkpointing(&mut case, |_| Ok(())).unwrap();
+        assert_eq!(threshold(&case), custom);
+        // Err: restored, and the ingest's error is the one returned.
+        let e = with_ingest_checkpointing::<()>(&mut case, |_| Err(Error::Invalid("boom".into())))
+            .unwrap_err();
+        assert!(e.to_string().contains("boom"), "{e}");
+        assert_eq!(threshold(&case), custom);
+        // Panic: restored, and the panic goes on.
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = with_ingest_checkpointing::<()>(&mut case, |_| panic!("parser bug"));
+        }));
+        assert!(caught.is_err());
+        assert_eq!(threshold(&case), custom);
+    }
+
+    #[test]
+    fn an_ingest_folds_its_wal_in_and_restores_the_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::fixtures::hawk_tree(dir.path());
+        let path = dir.path().join("case.duckdb");
+        let mut case = Case::create_or_open(&path).unwrap();
+        let default = threshold(&case);
+        ingest_path(
+            &mut case,
+            &root,
+            &ParserRegistry::builtin(),
+            &IngestOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(threshold(&case), default);
+        // The one CHECKPOINT at the end leaves nothing in the WAL.
+        let wal = dir.path().join("case.duckdb.wal");
+        let wal_len = std::fs::metadata(&wal).map_or(0, |m| m.len());
+        assert_eq!(wal_len, 0, "WAL still holds {wal_len} bytes");
+    }
+
+    #[test]
+    fn a_streamed_file_hashes_heads_and_blanks_like_the_whole_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let big_blank = vec![b' '; 3 * 1024 * 1024 + 17];
+        let mut blank_then_x = big_blank.clone();
+        blank_then_x.push(b'x');
+        let mut utf16_blank = vec![0xFF, 0xFE];
+        for _ in 0..200_000 {
+            utf16_blank.extend_from_slice(&[b' ', 0, b'\n', 0]);
+        }
+        let mut nul_without_bom = vec![b' '; 10];
+        nul_without_bom.push(0);
+        let text: Vec<u8> = (0..2_500_000u32)
+            .map(|i| b"abc,def\r\n"[(i % 9) as usize])
+            .collect();
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("empty", Vec::new()),
+            ("one byte", vec![b'\n']),
+            ("utf-8 BOM only", vec![0xEF, 0xBB, 0xBF]),
+            ("utf-8 BOM and whitespace", b"\xEF\xBB\xBF \r\n\t".to_vec()),
+            ("utf-16 BOM only", vec![0xFF, 0xFE]),
+            ("utf-16 whitespace", utf16_blank),
+            ("NUL without a BOM", nul_without_bom),
+            ("large whitespace", big_blank),
+            (
+                "whitespace then content past the first chunks",
+                blank_then_x,
+            ),
+            ("text", text),
+        ];
+        for (name, bytes) in &cases {
+            let path = dir.path().join("f");
+            std::fs::write(&path, bytes).unwrap();
+            for chunk in [1usize, 2, 3, 5, 4096, STREAM_CHUNK] {
+                let got = stream_file(&path, chunk).unwrap();
+                assert_eq!(
+                    (got.sha256, got.head, got.blank),
+                    whole(bytes),
+                    "{name}, chunk {chunk}"
+                );
+            }
         }
     }
 }

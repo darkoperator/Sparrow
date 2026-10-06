@@ -1525,6 +1525,7 @@ dependencies = [
  "ipnet",
  "maxminddb",
  "regex",
+ "ring",
  "rust_xlsxwriter",
  "serde",
  "serde_json",

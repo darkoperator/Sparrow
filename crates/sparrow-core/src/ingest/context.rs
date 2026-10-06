@@ -2,11 +2,11 @@
 
 use crate::Error;
 use crate::Result;
+use crate::hash::sha256_hex;
 use crate::ingest::IngestOptions;
 use crate::readers::text::{DecodedText, LineIndex, OffsetMapper, SourcePos, Span, locate};
 use crate::readers::time::{DateOrder, DateOrderDetector};
 use duckdb::{Connection, params};
-use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FileStats {
@@ -93,9 +93,7 @@ impl<'a> ParseContext<'a> {
         let start = pos.byte_offset as usize;
         let end = (pos.byte_offset + pos.byte_length) as usize;
         debug_assert!(end <= self.raw.len(), "record range beyond end of file");
-        hex::encode(Sha256::digest(
-            &self.raw[start.min(self.raw.len())..end.min(self.raw.len())],
-        ))
+        sha256_hex(&self.raw[start.min(self.raw.len())..end.min(self.raw.len())])
     }
 
     /// Position and raw-bytes SHA-256 of a record, for bulk loaders that write
@@ -117,7 +115,7 @@ impl<'a> ParseContext<'a> {
                 byte_offset: 0,
                 byte_length: self.raw.len() as u64,
             },
-            hex::encode(Sha256::digest(row_text.as_bytes())),
+            sha256_hex(row_text.as_bytes()),
         )
     }
 
