@@ -156,6 +156,8 @@ pub fn load_rows(
     if rows.is_empty() {
         return Ok(LoadOutcome::default());
     }
+    let _total = super::timing::span(&format!("state load total: {t}"));
+    let _all = super::timing::span("state load: total");
     let vcols: String = (0..cols.len())
         .map(|i| format!(", v{i} VARCHAR, z{i} BOOLEAN"))
         .collect();
@@ -165,6 +167,7 @@ pub fn load_rows(
              raw_sha256 VARCHAR{vcols});"
     ))?;
     {
+        let _a = super::timing::span("state load: appender (stage_state)");
         let mut app = conn.appender("stage_state")?;
         let text = |s: &Option<String>| s.clone().map_or(DbValue::Null, DbValue::Text);
         for (seq, r) in rows.iter().enumerate() {
@@ -206,6 +209,7 @@ pub fn load_rows(
         }
         app.flush()?;
     }
+    let tp = super::timing::span("state load: pick + new");
     conn.execute_batch(&format!(
         "CREATE OR REPLACE TEMP TABLE stage_pick AS SELECT * FROM stage_state
              QUALIFY row_number() OVER (PARTITION BY record_key ORDER BY ord, seq) = 1;
@@ -215,11 +219,15 @@ pub fn load_rows(
     let inserted: i64 = conn.query_row("SELECT count(*) FROM stage_new", [], |r| r.get(0))?;
     let collected_at =
         format!("(SELECT collected_at FROM collections WHERE collection_id = {collection_id})");
+    drop(tp);
+    let tu = super::timing::span("state load: update/fill existing");
     let updated = match spec.mode {
         LoadMode::LatestWins => update_existing(conn, t, &cols, collection_id, &collected_at)?,
         LoadMode::FillMissing => fill_missing(conn, t, &cols, collection_id)?,
         LoadMode::InsertOnly => 0,
     };
+    drop(tu);
+    let ti = super::timing::span("state load: insert new rows");
     let names = cols.iter().map(|c| c.name).collect::<Vec<_>>().join(", ");
     let casts = cols
         .iter()
@@ -237,6 +245,8 @@ pub fn load_rows(
         ),
         [],
     )?;
+    drop(ti);
+    let _ts = super::timing::span("state load: insert record_sources");
     conn.execute(
         &format!(
             "INSERT INTO record_sources (table_name, record_key, file_id, record_ordinal, line_start,

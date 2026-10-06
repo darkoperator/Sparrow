@@ -6,6 +6,7 @@ pub mod context;
 pub mod parser;
 pub mod state;
 pub mod supersede;
+pub mod timing;
 
 use crate::discovery::runs::run_dirs;
 use crate::discovery::{
@@ -241,9 +242,14 @@ fn ingest_collection(
     let root = canonical_root_string(&dc.root);
     let collection_id = upsert_collection(case.conn(), dc, &root)?;
     if dc.tool == Tool::Invictus {
+        let _t = timing::span("collection: collector_runs");
         record_collector_runs(case, collection_id, &dc.root)?;
     }
-    let listing = list_collection_files(&dc.root, dc.shallow)?;
+    let listing = {
+        let _t = timing::span("collection: list files");
+        list_collection_files(&dc.root, dc.shallow)?
+    };
+    let _classify = timing::span("collection: classify + order");
     let reg = Registry::builtin();
     let mut keyed: Vec<(&CollectionFile, bool, bool, Option<&'static str>, i16)> = listing
         .files
@@ -263,6 +269,7 @@ fn ingest_collection(
     keyed.sort_by_cached_key(|(f, derived, flag, _, priority)| {
         (*flag, processing_key(&f.rel, *derived, *priority))
     });
+    drop(_classify);
     let mut handled = Handled::default();
     // Note every listed file's artifact up front: the supersede rules need to know which files
     // are QuickUAL per-operation exports even before any of them is handled.
@@ -559,6 +566,7 @@ fn record_simple(
     status: FileStatus,
     warnings: Vec<String>,
 ) -> Result<FileReport> {
+    let _t = timing::span("file: record_simple (status row + commit)");
     let tx = case.conn_mut().transaction()?;
     delete_stale_rows(&tx, nf)?;
     let id = insert_file_row(&tx, nf, status, &warnings)?;
@@ -576,7 +584,42 @@ fn with_pre(pre: &[String], warnings: Vec<String>) -> Vec<String> {
     pre.iter().cloned().chain(warnings).collect()
 }
 
+/// [`ingest_file_inner`], timed per file when [`timing`] is on.
 fn ingest_file(
+    case: &mut Case,
+    job: &FileJob,
+    parsers: &ParserRegistry,
+    opts: &IngestOptions,
+) -> Result<Outcome> {
+    if !timing::enabled() {
+        return ingest_file_inner(case, job, parsers, opts);
+    }
+    let start = std::time::Instant::now();
+    let out = ingest_file_inner(case, job, parsers, opts);
+    let elapsed = start.elapsed();
+    let bytes = std::fs::metadata(job.abs).map_or(0, |m| m.len());
+    let (status, artifact, records) = match &out {
+        Ok(Outcome::Done(r, _)) => (
+            r.status.as_str().to_string(),
+            r.artifact_id.clone(),
+            r.records_read,
+        ),
+        Ok(Outcome::Deferred) => ("deferred".to_string(), None, 0),
+        Err(_) => ("failed".to_string(), None, 0),
+    };
+    timing::add(&format!("status: {status}"), elapsed);
+    timing::file(timing::FileTiming {
+        rel_path: job.rel.to_string(),
+        artifact,
+        status,
+        bytes,
+        records,
+        elapsed,
+    });
+    out
+}
+
+fn ingest_file_inner(
     case: &mut Case,
     job: &FileJob,
     parsers: &ParserRegistry,
@@ -601,6 +644,7 @@ fn ingest_file(
             "file name is not valid UTF-8; rel_path shows replacement characters and verify cannot reopen the file".into(),
         );
     }
+    let t_stat = timing::span("file: stat");
     let size = match std::fs::metadata(abs) {
         Ok(m) => m.len(),
         Err(e) => {
@@ -613,6 +657,7 @@ fn ingest_file(
             .map(Outcome::plain);
         }
     };
+    drop(t_stat);
     nf.size = size;
     if size > opts.max_file_bytes {
         let msg = format!(
@@ -622,6 +667,7 @@ fn ingest_file(
         return record_simple(case, &nf, FileStatus::Error, with_pre(&pre, vec![msg]))
             .map(Outcome::plain);
     }
+    let t_read = timing::span("file: read");
     let raw = match std::fs::read(abs) {
         Ok(b) => b,
         Err(e) => {
@@ -634,11 +680,16 @@ fn ingest_file(
             .map(Outcome::plain);
         }
     };
+    drop(t_read);
     if is_blank_content(&raw) {
         pre.push(EMPTY_FILE_WARNING.into());
     }
-    let sha = hex::encode(Sha256::digest(&raw));
+    let sha = {
+        let _t = timing::span("file: sha256");
+        hex::encode(Sha256::digest(&raw))
+    };
     nf.sha256 = &sha;
+    let t_lookup = timing::span("file: db lookups (changed, already, identical)");
     let changed: bool = case.conn().query_row(
         "SELECT count(*) > 0 FROM source_files
          WHERE collection_id = ? AND rel_path = ? AND sha256 <> ? AND sha256 <> ''
@@ -654,7 +705,10 @@ fn ingest_file(
     } else {
         &raw[..raw.len().min(SNIFF_BYTES)]
     };
-    let class: Option<Classification> = reg.classify_with_head(tool, rel, Some(head));
+    let class: Option<Classification> = {
+        let _t = timing::span("file: classify with head");
+        reg.classify_with_head(tool, rel, Some(head))
+    };
     nf.artifact_id = class.as_ref().map(|c| c.artifact_id);
     nf.subject = class.as_ref().and_then(|c| c.subject.as_deref());
 
@@ -712,6 +766,7 @@ fn ingest_file(
             .map(Outcome::plain);
         }
     }
+    drop(t_lookup);
     if let Some(other) = &job.superseded_by {
         return record_simple(
             case,
@@ -731,17 +786,24 @@ fn ingest_file(
     };
 
     // XLSX is a zip: parsers read it from the raw bytes, so it is not decoded.
+    let t_decode = timing::span("file: decode");
     let decoded = if nf.format == FileFormat::Xlsx {
         DecodedText::binary()
     } else {
         decode(&raw)
     };
+    drop(t_decode);
     nf.encoding = (nf.format != FileFormat::Xlsx).then(|| decoded.encoding.as_str());
     let decode_warning = decoded.lossy_warning();
-    let index = LineIndex::new(&decoded.text);
+    let index = {
+        let _t = timing::span("file: line index");
+        LineIndex::new(&decoded.text)
+    };
+    let t_row = timing::span("file: begin + stale rows + source_files row");
     let tx = case.conn_mut().transaction()?;
     delete_stale_rows(&tx, &nf)?;
     let file_id = insert_file_row(&tx, &nf, FileStatus::Parsed, &[])?;
+    drop(t_row);
     let mut ctx = ParseContext::new(
         &tx,
         collection_id,
@@ -759,7 +821,15 @@ fn ingest_file(
     // A parser that queued sightings and did not flush them loses none. (That covers loss, not order relative to the
     // parser's own later writes: a parser that reads `record_sources` mid-parse must flush before it reads. The
     // parsers that flush themselves, logs and Sessions, make this second flush a no-op.)
-    let parsed = parser.parse(&mut ctx).and_then(|()| ctx.flush_sources());
+    let parsed = {
+        let _t = timing::span(&format!("parse+load: {}", class.artifact_id));
+        let _all = timing::span("file: parse+load (all parsers)");
+        parser.parse(&mut ctx)
+    }
+    .and_then(|()| {
+        let _t = timing::span("file: final flush_sources");
+        ctx.flush_sources()
+    });
     match parsed {
         Ok(()) => {
             let orders = ctx.orders_seen().to_vec();
@@ -781,12 +851,14 @@ fn ingest_file(
             } else {
                 Some(serde_json::to_string(&warnings).expect("strings serialize"))
             };
+            let t_commit = timing::span("file: counts row + commit (incl. auto checkpoint)");
             tx.execute(
                 "UPDATE source_files SET records_read = ?, records_loaded = ?, records_duplicate = ?, records_error = ?,
                         warnings = CAST(? AS JSON), date_order = ? WHERE file_id = ?",
                 params![stats.read as i64, stats.loaded as i64, stats.duplicate as i64, stats.error as i64, warnings_json, date_order, file_id],
             )?;
             tx.commit()?;
+            drop(t_commit);
             Ok(Outcome::Done(
                 report_for(&nf, Some(file_id), FileStatus::Parsed, stats, warnings),
                 orders,

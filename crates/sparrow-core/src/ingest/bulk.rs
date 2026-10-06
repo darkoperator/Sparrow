@@ -178,8 +178,12 @@ pub fn load_ual_batch(
     if rows.is_empty() {
         return Ok(LoadOutcome::default());
     }
+    let _total = super::timing::span("ual load: total");
+    let t = super::timing::span("ual load: stage ddl");
     conn.execute_batch(STAGE_DDL)?;
+    drop(t);
     {
+        let _t = super::timing::span("ual load: appenders (stage_*)");
         let mut ual = conn.appender("stage_ual")?;
         let mut mia = conn.appender("stage_mia")?;
         let mut file = conn.appender("stage_file")?;
@@ -272,16 +276,25 @@ pub fn load_ual_batch(
         sharing.flush()?;
         search.flush()?;
     }
+    let t = super::timing::span("ual load: merge setup (chosen/upgrade/fresh)");
     conn.execute_batch(MERGE_SETUP)?;
     let (inserted, upgraded): (i64, i64) = conn.query_row(
         "SELECT (SELECT count(*) FROM stage_fresh), (SELECT count(*) FROM stage_upgrade)",
         [],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
+    drop(t);
+    let t = super::timing::span("ual load: upgrade + delete children");
     conn.execute(&upgrade_sql(), [])?;
     conn.execute_batch(DELETE_UPGRADED_CHILDREN)?;
+    drop(t);
+    let t = super::timing::span("ual load: insert ual_events");
     conn.execute(&insert_fresh_sql(), params![collection_id])?;
+    drop(t);
+    let t = super::timing::span("ual load: insert children (mia/file/sharing/search)");
     conn.execute_batch(INSERT_CHILDREN)?;
+    drop(t);
+    let _t = super::timing::span("ual load: insert record_sources");
     conn.execute(INSERT_SOURCES, params![file_id])?;
     Ok(LoadOutcome {
         staged: rows.len() as u64,

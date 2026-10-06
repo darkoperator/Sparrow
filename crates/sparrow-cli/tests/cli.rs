@@ -3442,3 +3442,40 @@ fn schema_lists_what_query_can_read_with_comments() {
         "one block per table"
     );
 }
+
+/// `SPARROW_INGEST_PROFILE=1` prints the ingest profile (stage spans and one line per file) to stderr; without it,
+/// nothing is printed and the output is unchanged.
+#[test]
+fn ingest_profile_is_printed_only_when_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fixtures::hawk_tree(dir.path());
+    let ingest = |case: &str, profile: bool| {
+        let mut c = sparrow();
+        c.args(["--json", "ingest"])
+            .arg(&root)
+            .arg("--case")
+            .arg(dir.path().join(case))
+            .env_remove("SPARROW_INGEST_PROFILE");
+        if profile {
+            c.env("SPARROW_INGEST_PROFILE", "1");
+        }
+        c.output().unwrap()
+    };
+    let on = ingest("on.duckdb", true);
+    let err = String::from_utf8_lossy(&on.stderr);
+    for want in [
+        "ingest profile: spans",
+        "cli: ingest (all collections)",
+        "file: sha256",
+        "file: parse+load (all parsers)",
+        "ingest profile: files",
+        "Hawk.log",
+    ] {
+        assert!(err.contains(want), "{want} missing: {err}");
+    }
+    // The JSON on stdout is still one valid document.
+    let _: Value = serde_json::from_slice(&on.stdout).unwrap();
+    let off = ingest("off.duckdb", false);
+    assert!(!String::from_utf8_lossy(&off.stderr).contains("ingest profile"));
+    assert_eq!(on.status.code(), off.status.code());
+}

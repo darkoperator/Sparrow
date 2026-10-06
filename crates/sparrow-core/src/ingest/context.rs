@@ -157,6 +157,7 @@ impl<'a> ParseContext<'a> {
     /// `record_source` would leave it. The ingest also flushes after every successful parse, so a parser that
     /// queues and forgets to flush loses nothing.
     pub fn flush_sources(&mut self) -> Result<()> {
+        let _t = super::timing::span("flush_sources (queued sightings)");
         if self.pending_sources.is_empty() {
             return Ok(());
         }

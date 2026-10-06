@@ -905,7 +905,10 @@ fn cmd_ingest(
         date_order,
         max_file_bytes: max_file_size,
     };
+    use sparrow_core::ingest::timing;
+    let t_discover = timing::span("cli: discover collections");
     let collections = discover_collections(path)?;
+    drop(t_discover);
     if collections.is_empty() {
         return Err(no_collections_error(path).into());
     }
@@ -920,15 +923,26 @@ fn cmd_ingest(
             );
         }
     }
+    let t_open = timing::span("cli: open case (+ migrations)");
     let mut case = Case::create_or_open(case_path)
         .with_context(|| format!("opening {}", case_path.display()))?;
+    drop(t_open);
+    let t_ingest = timing::span("cli: ingest (all collections)");
     let report = ingest_collections(&mut case, &collections, &ParserRegistry::builtin(), &opts)?;
+    drop(t_ingest);
+    let t_profile = timing::span("cli: profile");
     let profile = refresh(&mut case, &profile_opts).map_err(|e| {
         anyhow::anyhow!(
             "evidence loaded; the profile step failed: {e:#} (fix and run `sparrow profile --case ...`)"
         )
     })?;
+    drop(t_profile);
+    let t_detect = timing::span("cli: detect");
     let detect = run_detection(&mut case, &profile_opts, no_detect);
+    drop(t_detect);
+    let t_close = timing::span("cli: close case (final checkpoint)");
+    drop(case);
+    drop(t_close);
     if json {
         print_json(&IngestOutput {
             report: &report,
@@ -959,6 +973,9 @@ fn cmd_ingest(
         }
         print_profile_summary(&profile);
         print_detect_summary(detect.as_ref());
+    }
+    if timing::enabled() {
+        eprint!("{}", timing::report());
     }
     Ok(if report.has_errors() {
         ExitCode::from(2)
