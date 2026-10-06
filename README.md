@@ -109,7 +109,37 @@ flowchart TB
     A -->|verify a specific record| R
 ```
 
-This reduces the amount of evidence text an agent needs to receive, but the savings depend on the case and the questions asked. No token or byte reduction is claimed here; none was measured for this README.
+### Measured: an agent triaging with Sparrow vs on the raw files
+
+We gave the same AI agent (Claude Code, headless) the same BEC triage task twice: once with the raw collector output
+and ordinary text tools, once with a Sparrow case and its CLI. The captures were synthetic Microsoft-Extractor-Suite
+trees with known ground truth: compromised accounts, attacker IPs, inbox rules, forwarding, OAuth apps, plus benign
+look-alikes such as an authorised external forward or a SaaS connector. Each agent ran in an OS sandbox that could not
+see the answers. Each cell is the median of 5 seeds.
+
+Medium tenant (500 users, 30 days), Claude Sonnet:
+
+| | Raw files | Sparrow | Sparrow + skill |
+|---|---|---|---|
+| Compromised accounts found (F1) | 0.86 | **1.00** | **1.00** |
+| False accusations | 0 | 0 | 0 |
+| Tokens | 868K | 427K (49%) | **295K (34%)** |
+| Agent turns | 27 | 18 | 17 |
+| Wall-clock, including ingest | 137 s | 97 s | 92 s |
+
+Across small, medium and large tenants, the raw-file agent missed at least one compromised account in 10 of 15 runs.
+The Sparrow agent found every one in each run that produced an answer.
+
+The caveats:
+- **Large tenant (~1.15M rows):** Sparrow used 62% of the tokens and the agent finished faster, but the one-time ingest
+  (about 160 s) made the total slower than one raw-file pass. Ingest pays off when a case is asked more than one
+  question.
+- **The playbook helps everyone.** The tool-neutral playbook in [`skills/`](skills/README.md) also improved the
+  raw-file agent, to 542K tokens. Against a raw-file agent with the same playbook, Sparrow used 55% of the tokens.
+- **Model strength matters.** With a small model (Claude Haiku), Sparrow halved false accusations of benign
+  look-alikes but saved no tokens, because the model explored inefficiently either way.
+- **Scope.** These are synthetic data, one agent and two models. The savings on a real case depend on the case and the
+  questions asked.
 
 **Agent skills.** [`skills/`](skills/README.md) holds two portable [Agent Skills](https://agentskills.io/specification), a tool-neutral M365 BEC triage playbook and a `sparrow` workflow, that work unchanged in Claude Code, Codex, OpenCode and Pi. See [skills/README.md](skills/README.md) to install them.
 
