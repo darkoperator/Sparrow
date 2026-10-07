@@ -362,13 +362,17 @@ enrichment is not current (a case detected before the roll-up existed, a detecti
 a failed enrichment) the list is empty, exit 0, and `warnings` (stderr in plain output) names the reason and the fix,
 `sparrow detect`; stale rows are never offered.
 
-`finding show` adds, for a finding of a rule whose `stage:` includes persistence, consent or mfa_change, the key
-`facts` (the stored `finding_facts`: `window_start`, `actor_ips` with `user_signin_days_before`, `other_signals`,
-and `targets` for forwarding findings; a null count means it cannot be compared, shown as "unknown" in plain output,
-never 0) or, when the facts are not current, `facts_unavailable` with the reason; a finding of any other rule has
+`finding show` adds `facts` for a finding detection stored facts for (the stored `finding_facts`: `window_start`,
+`actor_ips` with `user_signin_days_before`, `other_signals`, and `targets` for forwarding findings; a null count means
+it cannot be compared, shown as "unknown" in plain output, never 0). Detection decides which findings get facts (rules
+whose `stage:` includes persistence, consent or mfa_change), so stored facts are shown whatever `--rules` the reader
+loads. When the facts are not current (detection has not run since this version, the last enrichment failed, or it is
+from an older run), a finding whose rule is in those stages per the loaded rules, or whose rule is not loaded at all
+(noted "(rule not in the loaded rule set)"), gets `facts_unavailable` with the reason instead; other findings have
 neither key. Every evidence row also carries `context` (what the rule stored with the row; `null` when none). `pivot
-user` adds an `addresses` section: the account's roll-up addresses (empty when it has no roll-up row or the
-enrichment is not current).
+user` adds an `addresses` section: the account's roll-up addresses. When the roll-up is not current the section is
+empty and carries `unavailable` with the reason (plain output: `addresses unavailable: <reason>`); an empty section
+without `unavailable` means the current roll-up has no address for that account.
 
 Read commands open the case read-only. `query` runs exactly one SELECT (checked by DuckDB's own parser) on a
 separate in-memory DuckDB that attaches the case read-only, with external access (files, network, environment) and

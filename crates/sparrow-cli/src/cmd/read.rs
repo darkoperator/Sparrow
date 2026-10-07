@@ -572,6 +572,11 @@ pub fn pivot(cmd: PivotCommand, json: bool) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     for s in &p.sections {
+        if let Some(why) = &s.unavailable {
+            println!("== {}", s.name);
+            println!("  {} unavailable: {}", s.name, safe(why));
+            continue;
+        }
         println!("== {} ({})", s.name, s.total);
         for r in &s.rows {
             println!("  {}", safe(&r.to_string()));
