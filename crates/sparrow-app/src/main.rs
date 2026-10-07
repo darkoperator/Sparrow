@@ -28,6 +28,11 @@ fn main() {
             cmd::review::commands::review_discard,
             cmd::review::commands::proposal_accept,
             cmd::review::commands::proposal_discard,
+            cmd::timeline::commands::timeline_list,
+            cmd::timeline::commands::timeline_propose,
+            cmd::timeline::commands::timeline_edit,
+            cmd::timeline::commands::timeline_verify,
+            cmd::timeline::commands::timeline_reject,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Sparrow review app");
