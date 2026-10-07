@@ -110,6 +110,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "enrichment",
         sql: include_str!("../../migrations/0020_enrichment.sql"),
     },
+    Migration {
+        version: 21,
+        name: "share",
+        sql: include_str!("../../migrations/0021_share.sql"),
+    },
 ];
 
 /// The migration that adds the Phase 7 analyst tables and the audit trail.

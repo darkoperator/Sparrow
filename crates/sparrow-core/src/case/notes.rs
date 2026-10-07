@@ -49,6 +49,16 @@ impl NoteTarget {
         })
     }
 
+    /// The text form [`NoteTarget::parse`] reads: `finding:ID`, `entry:ID`, `ioc:ID` or `<table>:<record_key>`.
+    pub fn text(&self) -> String {
+        match self {
+            NoteTarget::Finding(id) => format!("finding:{id}"),
+            NoteTarget::Entry(id) => format!("entry:{id}"),
+            NoteTarget::Indicator(id) => format!("ioc:{id}"),
+            NoteTarget::Evidence { table, key } => format!("{table}:{key}"),
+        }
+    }
+
     /// (`annotations.object_type`, `object_id`, `source_table`).
     fn columns(&self) -> (&'static str, &str, Option<&str>) {
         match self {

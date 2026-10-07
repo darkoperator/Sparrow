@@ -10,6 +10,7 @@ pub mod query;
 pub mod read;
 mod revert;
 pub mod review;
+pub mod share;
 pub mod text;
 pub mod timeline_entries;
 pub mod write;

@@ -62,6 +62,7 @@ fn fresh_case_has_provenance_tables() {
             "groups",
             "identities",
             "identity_aliases",
+            "imported_proposals",
             "inbox_rules",
             "ip_intel",
             "licenses",
@@ -291,6 +292,74 @@ fn upgrading_a_v2_case_keeps_collections_and_adds_ual_tables() {
 }
 
 #[test]
+fn upgrading_a_v20_case_keeps_decisions_and_adds_imported_proposals() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v20.duckdb");
+    {
+        let conn = duckdb::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name VARCHAR NOT NULL,
+             applied_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp);",
+        )
+        .unwrap();
+        for m in MIGRATIONS.iter().filter(|m| m.version <= 20) {
+            conn.execute_batch(m.sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
+                duckdb::params![m.version as i64, m.name],
+            )
+            .unwrap();
+        }
+        conn.execute_batch(
+            "INSERT INTO findings (finding_id, fingerprint, tenant_key, rule_id, rule_version, rule_sha256, severity, \
+             title, created_by, created_at, updated_at, status, decided_by, decided_at, review_state)
+             VALUES ('f1', 'fp1', 't1', 'SPW-ID-004', 1, 'x', 'high', 'AiTM', 'rule', now(), now(), 'confirmed',
+                     'agent:claude', now(), 'pending_review');
+             INSERT INTO annotations (annotation_id, object_type, object_id, text, actor, created_at)
+             VALUES ('n1', 'finding', 'f1', 'checked', 'agent:claude', now());",
+        )
+        .unwrap();
+    }
+    let (from, to) = Case::upgrade(&path).unwrap();
+    assert_eq!((from, to), (20, 21));
+    let case = Case::open_read_only(&path).unwrap();
+    assert_eq!(case.schema_version().unwrap(), 21);
+    let kept: (String, String, String, String) = case
+        .conn()
+        .query_row(
+            "SELECT CAST(f.status AS VARCHAR), f.decided_by, CAST(f.review_state AS VARCHAR), a.text \
+             FROM findings f JOIN annotations a ON a.object_id = f.finding_id",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        kept,
+        (
+            "confirmed".into(),
+            "agent:claude".into(),
+            "pending_review".into(),
+            "checked".into()
+        )
+    );
+    assert!(tables(&case).contains(&"imported_proposals".to_string()));
+    let n: i64 = case
+        .conn()
+        .query_row("SELECT count(*) FROM imported_proposals", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 0);
+    let comment: Option<String> = case
+        .conn()
+        .query_row(
+            "SELECT comment FROM duckdb_columns() WHERE table_name = 'findings' AND column_name = 'decided_by'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(comment.unwrap().contains("analyst:<name>"));
+}
+
+#[test]
 fn describe_lists_views_with_their_kind() {
     let case = Case::in_memory().unwrap();
     let all = sparrow_core::db::describe(&case, Some("tenant_audit_config")).unwrap();
@@ -302,7 +371,7 @@ fn describe_lists_views_with_their_kind() {
 #[test]
 fn state_table_specs_match_the_schema() {
     let case = Case::in_memory().unwrap();
-    assert_eq!(case.schema_version().unwrap(), 20);
+    assert_eq!(case.schema_version().unwrap(), 21);
     for spec in ALL {
         for common in [
             "record_key",
