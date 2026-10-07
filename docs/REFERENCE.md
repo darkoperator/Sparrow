@@ -511,7 +511,9 @@ core functions (`sparrow_core::case::review::review_accept` / `review_discard`, 
 decision being reviewed and fail if the object changed since), or the analyst works on the exported files and writes
 nothing back. Discarding a decision restores the fields it changed. The exports therefore label every decision: an
 agent decision nobody has reviewed is "AI decision — not reviewed", and `export report --reviewed-only` keeps accepted
-decisions only (pending items and agent notes are left out).
+decisions only (pending items and agent notes are left out). The review app (Phase 8) also writes analyst
+decisions (`analyst:<name>`), reviewed when made; an analyst cannot write over a pending agent decision until it is
+accepted or discarded.
 
 **The audit trail** is append-only and hash-chained (SHA-256 over the previous hash and the canonical JSON of the
 entry). It holds one entry per state-changing write and per review; a write that changes nothing (removing an

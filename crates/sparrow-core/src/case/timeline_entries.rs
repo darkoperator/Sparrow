@@ -8,7 +8,7 @@
 use crate::case::actor::Actor;
 use crate::case::audit::{self, AuditEntry};
 use crate::case::text::{check_text, check_title};
-use crate::case::write::{DECISION_TAGS, in_tx};
+use crate::case::write::{DECISION_TAGS, in_tx, refuse_if_pending_agent, self_review};
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
 use duckdb::{Connection, OptionalExt, params};
@@ -277,7 +277,7 @@ fn status_of(state: &Value) -> &str {
     state["status"].as_str().unwrap_or("")
 }
 
-/// Stamp the D.2 tags (decision at `ts`) and `updated_at` on the entry.
+/// Stamp the D.2 tags (decision at `ts`) and `updated_at` on the entry; an analyst's decision is reviewed as made.
 fn tag(conn: &Connection, actor: &Actor, id: &str, ts: &str) -> Result<()> {
     conn.execute(
         &format!(
@@ -285,7 +285,13 @@ fn tag(conn: &Connection, actor: &Actor, id: &str, ts: &str) -> Result<()> {
         ),
         params![actor.as_str(), ts, actor.on_behalf_of(), ts, id],
     )?;
-    Ok(())
+    self_review(conn, "timeline_entries", "entry_id", id, actor)
+}
+
+/// The analyst guard on an existing entry's `before` state (see [`refuse_if_pending_agent`]).
+fn refuse_if_pending(tx: &Connection, actor: &Actor, id: &str, before: &Value) -> Result<()> {
+    let latest = crate::case::review::latest_decision_seq(tx, "timeline_entry", id)?;
+    refuse_if_pending_agent(actor, "timeline entry", id, Some(before), latest)
 }
 
 fn non_empty(what: &str, s: &str) -> Result<()> {
@@ -347,6 +353,7 @@ fn insert_proposed(
         ],
     )?;
     set_evidence(tx, &id, &e.evidence)?;
+    self_review(tx, "timeline_entries", "entry_id", &id, actor)?;
     let after = existing(tx, &id)?;
     let entry = audit::append_at(
         tx,
@@ -380,6 +387,7 @@ fn decide(
 ) -> Result<AuditEntry> {
     in_tx(conn, |tx| {
         let before = existing(tx, id)?;
+        refuse_if_pending(tx, actor, id, &before)?;
         let ts = audit::now();
         let ts_text = audit::ts_text(&ts);
         let extra = apply(tx, &before, &ts_text)?;
@@ -500,6 +508,7 @@ pub fn edit(
     }
     in_tx(conn, |tx| {
         let before = existing(tx, entry_id)?;
+        refuse_if_pending(tx, actor, entry_id, &before)?;
         let current = list_where(tx, "entry_id = ?", &[entry_id])?
             .pop()
             .ok_or_else(|| Error::Decision(format!("unknown timeline entry {entry_id}")))?;

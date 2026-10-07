@@ -114,7 +114,7 @@ _Computed by Sparrow from every finding of the case, whatever its decision: fact
 
 ## Method and integrity
 
-Sparrow ingested the collector output into a case database, enriched it and ran its detection rules. Findings, indicators and timeline entries were triaged by an AI agent through the command line: every such decision is recorded in a hash-chained audit trail with who made it and when, and starts as an AI decision that no analyst has reviewed. Review happens outside Sparrow; an item shows `accepted` or `discarded` only when a reviewer's decision was recorded, and a review covers the latest decision on each object (an earlier decision that a later one replaced was not itself reviewed). Notes carry no review state and are labelled as agent notes.
+Sparrow ingested the collector output into a case database, enriched it and ran its detection rules. Findings, indicators and timeline entries were triaged by decisions, each recorded in a hash-chained audit trail with who made it and when. A decision is either an agent decision, made by an AI agent through the command line, which stays an AI decision that no analyst has reviewed until a reviewer accepts or discards it, or an analyst decision, made by an analyst in the review app and reviewed when made. An item shows `accepted` or `discarded` only when a reviewer's decision was recorded, and a review covers the latest decision on each object (an earlier decision that a later one replaced was not itself reviewed). Notes carry no review state: agent notes are never reviewed and are left out of a reviewed-only report; analyst notes are an analyst's own words and are kept.
 
 - Sparrow version: <VERSION>
 - Rule pack SHA-256: <RULE_PACK_SHA256>

@@ -103,6 +103,53 @@ pub(crate) fn finding_state(conn: &Connection, id: &str) -> Result<Value> {
 pub(crate) const DECISION_TAGS: &str = "decided_by = ?, decided_at = CAST(? AS TIMESTAMPTZ), on_behalf_of = ?, \
      review_state = 'pending_review', reviewed_by = NULL, reviewed_at = NULL, review_comment = NULL";
 
+/// An analyst's decision is reviewed when made: accepted, by the same analyst, at the decision time. Call after the
+/// decision tags are stamped and before the `after` state is read. No-op for an agent. `table`/`key_col` are only
+/// ever the constants of the three decision tables, never caller input.
+pub(crate) fn self_review(
+    tx: &Connection,
+    table: &str,
+    key_col: &str,
+    id: &str,
+    actor: &Actor,
+) -> Result<()> {
+    if !actor.is_analyst() {
+        return Ok(());
+    }
+    tx.execute(
+        &format!(
+            "UPDATE {table} SET review_state = 'accepted', reviewed_by = decided_by, reviewed_at = decided_at, \
+             review_comment = NULL WHERE {key_col} = ?"
+        ),
+        params![id],
+    )?;
+    Ok(())
+}
+
+/// An analyst may not write over a pending decision: it must be accepted or discarded first, so a review is never
+/// silently replaced. `before` is the object's state (None for a new object). Any pending decision counts, not only
+/// an agent's: an indicator from before the audit trail can be pending under `analyst:<name>` (fail closed).
+pub(crate) fn refuse_if_pending_agent(
+    actor: &Actor,
+    object_type: &str,
+    id: &str,
+    before: Option<&Value>,
+    latest_seq: Option<i64>,
+) -> Result<()> {
+    let pending = before.is_some_and(|b| b["review_state"] == "pending_review");
+    if actor.is_analyst() && pending {
+        let by = before
+            .and_then(|b| b["decided_by"].as_str())
+            .filter(|d| d.starts_with("agent:"))
+            .map_or("", |_| " agent");
+        return Err(Error::Decision(format!(
+            "{object_type} {id} has a pending{by} decision (audit seq {}); accept or discard it first",
+            latest_seq.map_or_else(|| "?".to_string(), |s| s.to_string())
+        )));
+    }
+    Ok(())
+}
+
 /// One finding decision: before, `apply` (the decision's own columns), the tags, after, the audit row; one
 /// transaction.
 fn decide(
@@ -116,6 +163,8 @@ fn decide(
 ) -> Result<AuditEntry> {
     in_tx(conn, |tx| {
         let before = finding_state(tx, id)?;
+        let latest = crate::case::review::latest_decision_seq(tx, "finding", id)?;
+        refuse_if_pending_agent(actor, "finding", id, Some(&before), latest)?;
         check(&before)?;
         let ts = audit::now();
         apply(tx)?;
@@ -128,6 +177,7 @@ fn decide(
             actor.on_behalf_of(),
             id
         ])?;
+        self_review(tx, "findings", "finding_id", id, actor)?;
         let after = finding_state(tx, id)?;
         audit::append_at(
             tx,

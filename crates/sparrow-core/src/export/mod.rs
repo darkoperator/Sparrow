@@ -36,6 +36,8 @@ pub enum DecisionClass {
     LegacyPending,
     Accepted,
     Discarded,
+    /// An analyst's own decision (reviewed by the same analyst when made).
+    Analyst,
 }
 
 /// The decision tags of one finding, indicator or timeline entry.
@@ -54,12 +56,23 @@ pub struct Provenance {
 
 pub const LABEL_AI_PENDING: &str = "AI decision — not reviewed";
 pub const LABEL_LEGACY_PENDING: &str = "decision recorded before the audit trail — not reviewed";
+/// The label of a note written by an analyst (an agent's is `report_md::LABEL_AGENT_NOTE`).
+pub const LABEL_ANALYST_NOTE: &str = "analyst note";
 
 impl Provenance {
     pub fn class(&self) -> DecisionClass {
         match self.review_state.as_deref() {
             Some("pending_review") if self.legacy => DecisionClass::LegacyPending,
             Some("pending_review") => DecisionClass::AiPending,
+            Some("accepted")
+                if self
+                    .decided_by
+                    .as_deref()
+                    .is_some_and(|d| d.starts_with("analyst:"))
+                    && self.reviewed_by == self.decided_by =>
+            {
+                DecisionClass::Analyst
+            }
             Some("accepted") => DecisionClass::Accepted,
             Some("discarded") => DecisionClass::Discarded,
             _ => DecisionClass::None,
@@ -85,6 +98,7 @@ impl Provenance {
             DecisionClass::LegacyPending => LABEL_LEGACY_PENDING.to_string(),
             DecisionClass::Accepted => reviewed("accepted"),
             DecisionClass::Discarded => reviewed("discarded"),
+            DecisionClass::Analyst => reviewed("analyst decision"),
         }
     }
 

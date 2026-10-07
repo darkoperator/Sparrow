@@ -3,7 +3,7 @@
 //! transaction. Removal is a soft delete; rules read active rows only.
 
 use crate::case::audit::{self, AuditEntry};
-use crate::case::write::{DECISION_TAGS, in_tx};
+use crate::case::write::{DECISION_TAGS, in_tx, refuse_if_pending_agent, self_review};
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
 use duckdb::{Connection, OptionalExt, params};
@@ -173,6 +173,8 @@ fn decide(
 ) -> Result<AuditEntry> {
     in_tx(conn, |tx| {
         let before = indicator_state(tx, id)?;
+        let latest = crate::case::review::latest_decision_seq(tx, "indicator", id)?;
+        refuse_if_pending_agent(actor, "indicator", id, before.as_ref(), latest)?;
         let ts = audit::now();
         let ts_text = audit::ts_text(&ts);
         apply(tx, before.as_ref(), &ts_text)?;
@@ -180,6 +182,7 @@ fn decide(
             &format!("UPDATE case_indicators SET {DECISION_TAGS} WHERE indicator_id = ?"),
             params![actor.as_str(), ts_text, actor.on_behalf_of(), id],
         )?;
+        self_review(tx, "case_indicators", "indicator_id", id, actor)?;
         let after = indicator_state(tx, id)?;
         audit::append_at(
             tx,

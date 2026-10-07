@@ -8,8 +8,8 @@ use super::facts_text::{self, ADDRESSES_SHOWN, FactRules};
 use super::header;
 use super::text::{block, indented, md_cell, single_line as one};
 use super::{
-    Provenance, entry_provenance, evidence_gaps, finding_provenance, indicator_rows, source_refs,
-    when,
+    LABEL_ANALYST_NOTE, Provenance, entry_provenance, evidence_gaps, finding_provenance,
+    indicator_rows, source_refs, when,
 };
 use crate::Result;
 use crate::case::notes::{Note, NoteTarget, notes_for};
@@ -64,22 +64,28 @@ fn keep(prov: &Provenance, reviewed_only: bool) -> bool {
     !reviewed_only || prov.review_state.as_deref() == Some("accepted")
 }
 
-/// The label of an agent note: notes carry no review state, so none of them is ever reviewed.
+/// The label of an agent note: notes carry no review state, so an agent's is never reviewed.
 pub const LABEL_AGENT_NOTE: &str = "agent note — not reviewed";
 
-/// The notes as list items, each labelled [`LABEL_AGENT_NOTE`]; none at all under `--reviewed-only` (no reviewer
-/// accepted them).
+/// The notes as list items, an analyst's labelled [`LABEL_ANALYST_NOTE`] and an agent's [`LABEL_AGENT_NOTE`]. Under
+/// `--reviewed-only` only analyst notes (an analyst's own words need no reviewer; no reviewer accepted an agent's).
 fn note_lines(out: &mut Vec<String>, notes: &[Note], reviewed_only: bool) {
-    if reviewed_only {
-        return;
-    }
     for n in notes {
+        let analyst = n.actor.starts_with("analyst:");
+        if reviewed_only && !analyst {
+            continue;
+        }
+        let label = if analyst {
+            LABEL_ANALYST_NOTE
+        } else {
+            LABEL_AGENT_NOTE
+        };
         let by = match &n.on_behalf_of {
             Some(o) => format!("{} on behalf of {o}", n.actor),
             None => n.actor.clone(),
         };
         out.push(format!(
-            "  - {LABEL_AGENT_NOTE} ({} at {} UTC): {}",
+            "  - {label} ({} at {} UTC): {}",
             one(&by),
             when(&n.created_at),
             block(&n.text).replace('\n', "\n    ")
@@ -389,12 +395,14 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
     doc.push(String::new());
     doc.push(
         "Sparrow ingested the collector output into a case database, enriched it and ran its detection rules. \
-         Findings, indicators and timeline entries were triaged by an AI agent through the command line: every such \
-         decision is recorded in a hash-chained audit trail with who made it and when, and starts as an AI decision \
-         that no analyst has reviewed. Review happens outside Sparrow; an item shows `accepted` or `discarded` only \
-         when a reviewer's decision was recorded, and a review covers the latest decision on each object (an \
-         earlier decision that a later one replaced was not itself reviewed). Notes carry no review state and are \
-         labelled as agent notes."
+         Findings, indicators and timeline entries were triaged by decisions, each recorded in a hash-chained audit \
+         trail with who made it and when. A decision is either an agent decision, made by an AI agent through the \
+         command line, which stays an AI decision that no analyst has reviewed until a reviewer accepts or discards \
+         it, or an analyst decision, made by an analyst in the review app and reviewed when made. An item shows \
+         `accepted` or `discarded` only when a reviewer's decision was recorded, and a review covers the latest \
+         decision on each object (an earlier decision that a later one replaced was not itself reviewed). Notes \
+         carry no review state: agent notes are never reviewed and are left out of a reviewed-only report; analyst \
+         notes are an analyst's own words and are kept."
             .into(),
     );
     doc.push(String::new());
