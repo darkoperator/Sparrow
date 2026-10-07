@@ -67,7 +67,7 @@ pub struct FindingFacts {
 }
 
 /// The stages whose findings get facts.
-const FAMILIES: [Stage; 3] = [Stage::Persistence, Stage::Consent, Stage::MfaChange];
+pub(crate) const FAMILIES: [Stage; 3] = [Stage::Persistence, Stage::Consent, Stage::MfaChange];
 
 /// Most items `other_signals` lists.
 const MAX_SIGNALS: i64 = 5;

@@ -2491,7 +2491,8 @@ fn read_commands_report_and_cap() {
             "mfa",
             "timeline",
             "findings",
-            "indicators"
+            "indicators",
+            "addresses"
         ]
     );
     assert!(

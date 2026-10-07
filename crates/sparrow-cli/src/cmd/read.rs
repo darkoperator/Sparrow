@@ -37,6 +37,121 @@ fn truncated_line(shown: usize, total: i64) {
     }
 }
 
+// ------------------------------------------------------------------ accounts
+
+#[derive(Args)]
+pub struct AccountsArgs {
+    /// Case database file
+    #[arg(long)]
+    pub case: PathBuf,
+    /// Only this tenant key
+    #[arg(long)]
+    pub tenant: Option<String>,
+    /// At most this many accounts (default: all); the output says how many more there are
+    #[arg(long)]
+    pub limit: Option<usize>,
+}
+
+/// The addresses a plain-text account block lists before "+N more".
+const ACCOUNT_ADDRESSES_SHOWN: usize = 5;
+
+pub fn accounts(a: AccountsArgs, json: bool) -> Result<ExitCode> {
+    let c = open_read(&a.case)?;
+    let page = read::accounts(c.conn(), a.tenant.as_deref(), a.limit)?;
+    if json {
+        print_json(&page)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    for w in &page.warnings {
+        eprintln!("warning: {w}");
+    }
+    for acc in &page.accounts {
+        println!(
+            "{}  {}  {}  ({} findings)",
+            safe(&acc.upn),
+            safe(&acc.tenant_key),
+            acc.worst_severity,
+            acc.finding_count
+        );
+        let stages: Vec<&str> = acc.stages.iter().map(|s| s.as_str()).collect();
+        println!(
+            "  stages {}  first suspicious {}",
+            if stages.is_empty() {
+                "-".to_string()
+            } else {
+                stages.join(", ")
+            },
+            acc.first_suspicious
+                .as_ref()
+                .map(ts)
+                .unwrap_or_else(|| "-".into())
+        );
+        for x in acc.addresses.iter().take(ACCOUNT_ADDRESSES_SHOWN) {
+            println!(
+                "  {}  {}{}{}",
+                safe(&x.ip),
+                x.reasons.join(", "),
+                x.asn_org
+                    .as_deref()
+                    .map(|o| format!("  {}", safe(o)))
+                    .unwrap_or_default(),
+                if x.in_user_signins {
+                    ""
+                } else {
+                    "  (never a sign-in of this account)"
+                }
+            );
+        }
+        let shown = acc.addresses.len().min(ACCOUNT_ADDRESSES_SHOWN);
+        let more = (acc.addresses_total as usize).saturating_sub(shown);
+        if more > 0 {
+            println!("  +{more} more addresses");
+        }
+    }
+    println!("{} of {} accounts", page.accounts.len(), page.total);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The facts of a finding as plain text lines (indented two spaces), from their JSON form so the wording does
+/// not depend on field types: a null count prints as "unknown", never 0.
+fn print_facts(facts: &serde_json::Value) {
+    let unknown = |v: &serde_json::Value| match v.as_u64() {
+        Some(n) => n.to_string(),
+        None => "unknown".to_string(),
+    };
+    println!(
+        "facts (window start {}):",
+        facts["window_start"].as_str().unwrap_or("unknown")
+    );
+    for ip in facts["actor_ips"].as_array().into_iter().flatten() {
+        println!(
+            "  {}  signed in by this user on {} earlier day(s) within the capture",
+            safe(ip["ip"].as_str().unwrap_or("-")),
+            unknown(&ip["user_signin_days_before"])
+        );
+    }
+    let other = &facts["other_signals"];
+    println!(
+        "  other findings on this account: {}",
+        other["total"].as_u64().unwrap_or(0)
+    );
+    for s in other["items"].as_array().into_iter().flatten() {
+        println!(
+            "    {} {}",
+            safe(s["rule_id"].as_str().unwrap_or("-")),
+            safe(s["severity"].as_str().unwrap_or("-"))
+        );
+    }
+    for t in facts["targets"].as_array().into_iter().flatten() {
+        println!(
+            "  target {}  {}  prior messages {}",
+            safe(t["address"].as_str().unwrap_or("-")),
+            safe(t["scope"].as_str().unwrap_or("-")),
+            unknown(&t["prior_messages"])
+        );
+    }
+}
+
 // ------------------------------------------------------------------ finding list / show
 
 #[derive(Args)]
@@ -237,6 +352,15 @@ fn print_finding(d: &read::FindingDetail, all: bool) {
         for line in g.lines() {
             println!("  {}", display_safe(line));
         }
+    }
+    match &d.facts {
+        Some(read::FactsField::Present { facts }) => {
+            print_facts(&serde_json::to_value(facts).unwrap_or_default());
+        }
+        Some(read::FactsField::Unavailable { facts_unavailable }) => {
+            println!("facts unavailable: {}", safe(facts_unavailable));
+        }
+        None => {}
     }
     println!("evidence ({}):", d.evidence.len());
     let shown = if all {

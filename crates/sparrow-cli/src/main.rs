@@ -106,6 +106,9 @@ enum Command {
         #[arg(long)]
         case: PathBuf,
     },
+    /// The accounts with findings, worst first: stages, first suspicious time and the addresses worth a look
+    /// (the roll-up detection builds); a case detected before it needs `sparrow detect`
+    Accounts(cmd::read::AccountsArgs),
     /// Re-check a record against its original source file(s)
     Verify {
         table: String,
@@ -701,6 +704,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         ),
         Some(Command::Capabilities { case }) => cmd_capabilities(&case, json),
         Some(Command::Summary { case }) => cmd_summary(&case, json),
+        Some(Command::Accounts(a)) => cmd::read::accounts(a, json),
         Some(Command::Verify {
             table,
             record_key,

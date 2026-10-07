@@ -432,7 +432,8 @@ fn pivot_reports_truncation() {
             "mfa",
             "timeline",
             "findings",
-            "indicators"
+            "indicators",
+            "addresses"
         ]
     );
     let tl = p.sections.iter().find(|s| s.name == "timeline").unwrap();

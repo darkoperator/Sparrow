@@ -5,6 +5,8 @@
 use crate::case::audit::{self, AuditEntry};
 use crate::case::notes::{self, Note, NoteTarget};
 use crate::case::write::FindingStatus;
+use crate::detect::enrich::accounts::{AccountRow, read_accounts};
+use crate::detect::enrich::facts::{FAMILIES, FindingFacts};
 use crate::detect::load::RuleSet;
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
@@ -227,12 +229,26 @@ pub struct EvidenceRow {
     /// `<collection folder>/<rel_path>:<line>[-<line>]` per sighting (record_source_refs).
     pub source_refs: Vec<String>,
     pub timeline: Option<TimelineRow>,
+    /// The evidence's stored `finding_evidence.context` (what the rule recorded about this row); null when none.
+    pub context: Option<Value>,
+}
+
+/// The facts of a finding in the facts families (persistence, consent, MFA change), or why they are not there.
+/// Serialised flat into `finding show`: `facts`, or `facts_unavailable` (never an empty list or object).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum FactsField {
+    Present { facts: FindingFacts },
+    Unavailable { facts_unavailable: String },
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FindingDetail {
     pub finding: FindingRow,
     pub evidence: Vec<EvidenceRow>,
+    /// `Some` only for a finding of a rule whose stage is in the facts families; absent otherwise.
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub facts: Option<FactsField>,
     /// The rule's `analyst_guidance`, when the rule is in the loaded rule set.
     pub analyst_guidance: Option<String>,
     pub notes: Vec<Note>,
@@ -247,7 +263,7 @@ pub fn finding_show(conn: &Connection, id: &str, rules: &RuleSet) -> Result<Find
         .ok_or_else(|| Error::NotFound(format!("finding {id}")))?;
     let mut stmt = conn.prepare(&format!(
         "SELECT fe.source_table, fe.record_key, CAST(fe.role AS VARCHAR), epoch_us(fe.event_time), \
-                to_json(refs.source_refs)::VARCHAR, t.record_key IS NOT NULL, {TIMELINE_COLS} \
+                to_json(refs.source_refs)::VARCHAR, t.record_key IS NOT NULL, CAST(fe.context AS VARCHAR), {TIMELINE_COLS} \
          FROM finding_evidence fe \
          LEFT JOIN record_source_refs refs ON refs.table_name = fe.source_table AND refs.record_key = fe.record_key \
          LEFT JOIN timeline t ON t.source_table = fe.source_table AND t.record_key = fe.record_key \
@@ -262,10 +278,13 @@ pub fn finding_show(conn: &Connection, id: &str, rules: &RuleSet) -> Result<Find
             event_time: r.get::<_, Option<i64>>(3)?.map(at),
             source_refs: strings(r.get(4)?),
             timeline: if r.get::<_, bool>(5)? {
-                Some(timeline_row(r, 6)?)
+                Some(timeline_row(r, 7)?)
             } else {
                 None
             },
+            context: r
+                .get::<_, Option<String>>(6)?
+                .and_then(|c| serde_json::from_str(&c).ok()),
         })
     })?;
     let evidence = rows.collect::<std::result::Result<_, _>>()?;
@@ -276,12 +295,202 @@ pub fn finding_show(conn: &Connection, id: &str, rules: &RuleSet) -> Result<Find
             .find(|l| l.rule.id == rid)
             .map(|l| l.rule.analyst_guidance.clone())
     });
+    let facts = facts_field(conn, id, finding.rule_id.as_deref(), rules)?;
     Ok(FindingDetail {
         notes: notes::notes_for(conn, &NoteTarget::Finding(id.to_string()))?,
         audit: audit::log(conn, Some(("finding", id)))?,
         finding,
         evidence,
+        facts,
         analyst_guidance,
+    })
+}
+
+// ---------------------------------------------------------------- enrichment
+
+/// A `case_meta` value.
+fn meta(conn: &Connection, key: &str) -> Result<Option<String>> {
+    Ok(conn
+        .query_row("SELECT value FROM case_meta WHERE key = ?", [key], |r| {
+            r.get(0)
+        })
+        .ok())
+}
+
+// STUB (agent accuracy T4): the single decision "may a reader show facts?" belongs to
+// `detect::enrich::enrichment_state` (Tasks 1-2 review). This local copy has the same name, variants and
+// signature; at merge, delete it and import `crate::detect::enrich::{EnrichState, enrichment_state}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EnrichState {
+    /// The tables were rebuilt by the latest detection run.
+    Ok { run_id: i64 },
+    /// No enrichment has ever run (a case detected before the feature).
+    Never,
+    /// The last enrichment failed.
+    Failed { reason: String },
+    /// Enrichment ran for an earlier detection run than the latest one.
+    Stale { enriched_run: i64, latest_run: i64 },
+}
+
+fn enrichment_state(conn: &Connection) -> Result<EnrichState> {
+    if let Some(reason) = meta(conn, "enrichment_error")? {
+        return Ok(EnrichState::Failed { reason });
+    }
+    let Some(run) = meta(conn, "enrichment_run_id")? else {
+        return Ok(EnrichState::Never);
+    };
+    let enriched_run: i64 = run.parse().map_err(|_| {
+        Error::Invalid(format!(
+            "case_meta enrichment_run_id {run:?} is not a run id"
+        ))
+    })?;
+    let latest: Option<i64> = conn
+        .query_row("SELECT max(run_id) FROM detection_runs", [], |r| r.get(0))
+        .unwrap_or(None);
+    Ok(match latest {
+        Some(latest_run) if latest_run > enriched_run => EnrichState::Stale {
+            enriched_run,
+            latest_run,
+        },
+        _ => EnrichState::Ok {
+            run_id: enriched_run,
+        },
+    })
+}
+
+/// Why the enrichment tables cannot be read as facts, `None` for [`EnrichState::Ok`]. Readers say this instead
+/// of offering an empty list or stale rows.
+fn enrichment_unavailable(conn: &Connection) -> Result<Option<String>> {
+    Ok(match enrichment_state(conn)? {
+        EnrichState::Ok { .. } => None,
+        EnrichState::Never => {
+            Some("detection has not run since this version; run `sparrow detect`".to_string())
+        }
+        EnrichState::Stale {
+            enriched_run,
+            latest_run,
+        } => Some(format!(
+            "the facts are from detection run {enriched_run} but run {latest_run} is newer; run `sparrow detect`"
+        )),
+        EnrichState::Failed { reason } => Some(format!(
+            "the last enrichment failed: {reason}; run `sparrow detect` again"
+        )),
+    })
+}
+
+/// The `facts` of finding `id`: only for a finding of a rule whose stage is in the facts families.
+fn facts_field(
+    conn: &Connection,
+    id: &str,
+    rule_id: Option<&str>,
+    rules: &RuleSet,
+) -> Result<Option<FactsField>> {
+    let in_families = rule_id.is_some_and(|rid| {
+        rules
+            .rules
+            .iter()
+            .find(|l| l.rule.id == rid)
+            .is_some_and(|l| l.rule.stage.iter().any(|s| FAMILIES.contains(s)))
+    });
+    if !in_families {
+        return Ok(None);
+    }
+    if let Some(why) = enrichment_unavailable(conn)? {
+        return Ok(Some(FactsField::Unavailable {
+            facts_unavailable: why,
+        }));
+    }
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT CAST(facts AS VARCHAR) FROM finding_facts WHERE finding_id = ?",
+            [id],
+            |r| r.get(0),
+        )
+        .ok();
+    Ok(Some(
+        match stored.map(|s| serde_json::from_str::<FindingFacts>(&s)) {
+            Some(Ok(facts)) => FactsField::Present { facts },
+            Some(Err(e)) => FactsField::Unavailable {
+                facts_unavailable: format!(
+                    "the stored facts cannot be read ({e}); run `sparrow detect`"
+                ),
+            },
+            None => FactsField::Unavailable {
+                facts_unavailable: "no facts were stored for this finding; run `sparrow detect`"
+                    .to_string(),
+            },
+        },
+    ))
+}
+
+/// The account roll-up in reader order (worst severity, stages, first suspicious, upn).
+#[derive(Debug, Clone, Serialize)]
+pub struct AccountPage {
+    pub accounts: Vec<AccountRow>,
+    /// Accounts before the limit (of the tenant, when one was asked for).
+    pub total: u64,
+    pub truncated: bool,
+    /// Why the list may be incomplete: a case detected before the roll-up existed, or a failed enrichment. Empty
+    /// when the roll-up is current.
+    pub warnings: Vec<String>,
+}
+
+/// The roll-up of `tenant` (all tenants when `None`), at most `limit` accounts. When the enrichment tables are
+/// not current (see [`enrichment_unavailable`]) the list is empty and a warning names the reason: never silently
+/// empty, and never stale rows.
+pub fn accounts(
+    conn: &Connection,
+    tenant: Option<&str>,
+    limit: Option<usize>,
+) -> Result<AccountPage> {
+    if let Some(why) = enrichment_unavailable(conn)? {
+        return Ok(AccountPage {
+            accounts: Vec::new(),
+            total: 0,
+            truncated: false,
+            warnings: vec![format!("account roll-up unavailable: {why}")],
+        });
+    }
+    let mut all = read_accounts(conn)?;
+    if let Some(t) = tenant {
+        all.retain(|a| a.tenant_key == t);
+    }
+    let total = all.len() as u64;
+    let truncated = limit.is_some_and(|l| all.len() > l);
+    if let Some(l) = limit {
+        all.truncate(l);
+    }
+    Ok(AccountPage {
+        accounts: all,
+        total,
+        truncated,
+        warnings: Vec::new(),
+    })
+}
+
+/// The `addresses` section of `pivot user`: the account's roll-up addresses (every tenant the UPN has a row in),
+/// each as the roll-up stores it. Empty when the account has no roll-up row, or the case has no roll-up yet.
+fn addresses_section(conn: &Connection, upn: &str, cap: usize) -> Result<PivotSection> {
+    let rows: Vec<AccountRow> = if enrichment_unavailable(conn)?.is_some() {
+        Vec::new()
+    } else {
+        read_accounts(conn)?
+            .into_iter()
+            .filter(|a| a.upn.eq_ignore_ascii_case(upn.trim()))
+            .collect()
+    };
+    let total: i64 = rows.iter().map(|a| i64::from(a.addresses_total)).sum();
+    let out: Vec<Value> = rows
+        .iter()
+        .flat_map(|a| a.addresses.iter())
+        .take(cap)
+        .map(|x| serde_json::to_value(x).unwrap_or(Value::Null))
+        .collect();
+    Ok(PivotSection {
+        name: "addresses".into(),
+        truncated: total > out.len() as i64,
+        total,
+        rows: out,
     })
 }
 
@@ -606,6 +815,7 @@ pub fn pivot_user(conn: &Connection, upn: &str, cap: usize) -> Result<Pivot> {
                 &[upn],
                 cap,
             )?,
+            addresses_section(conn, upn, cap)?,
         ],
     })
 }

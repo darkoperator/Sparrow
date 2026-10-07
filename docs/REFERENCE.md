@@ -304,6 +304,8 @@ sparrow timeline-entry propose --time T --title X --phase P --evidence TABLE:KEY
                                                   # also verify ID, reject ID --reason R,
                                                   # edit ID [--title ...] [--clear-narrative]
 sparrow note add finding:ID|entry:ID|ioc:ID|TABLE:KEY --text "..." --case case.duckdb
+sparrow accounts --case case.duckdb              # [--tenant T --limit N]: the accounts with findings, worst first, with
+                                                  # stages and the addresses worth a look (the roll-up detection builds)
 sparrow finding list --case case.duckdb           # [--status --severity MIN --rule ID... --user UPN --tenant
                                                   #  --rule-updated --review-state --limit N]; severity first,
                                                   #  then the most recent
@@ -349,6 +351,25 @@ findings` with the total. Findings carry no address field, so there is no `--ip`
 `{"findings":[<each as the one-id form>],"missing":[<unknown ids>]}`, plain output separates the findings with a
 rule line and ends `not found: <ids>`; exit 2 when any id is missing.
 
+`sparrow accounts` prints the account roll-up that detection rebuilds after every run (`account_rollup`), ordered by
+worst severity, then the number of stages (descending), then the first suspicious time, then the UPN. `--json` is
+`{"accounts":[...],"total":N,"truncated":bool,"warnings":[...]}`: each account has `tenant_key`, `upn`,
+`worst_severity`, `finding_count`, `by_severity`, `stages`, `first_suspicious`, `rules`, `addresses` (at most 20, each
+`{ip, reasons, tables, first_seen, last_seen, asn, asn_org, is_hosting, spray_source, in_user_signins}`),
+`addresses_total` and `addresses_truncated`; `total` counts the accounts before `--limit`. Plain output is one block
+per account (up to 5 addresses with their reasons, then `+N more addresses`) and ends `K of N accounts`. When the
+enrichment is not current (a case detected before the roll-up existed, a detection run newer than the enrichment, or
+a failed enrichment) the list is empty, exit 0, and `warnings` (stderr in plain output) names the reason and the fix,
+`sparrow detect`; stale rows are never offered.
+
+`finding show` adds, for a finding of a rule whose `stage:` includes persistence, consent or mfa_change, the key
+`facts` (the stored `finding_facts`: `window_start`, `actor_ips` with `user_signin_days_before`, `other_signals`,
+and `targets` for forwarding findings; a null count means it cannot be compared, shown as "unknown" in plain output,
+never 0) or, when the facts are not current, `facts_unavailable` with the reason; a finding of any other rule has
+neither key. Every evidence row also carries `context` (what the rule stored with the row; `null` when none). `pivot
+user` adds an `addresses` section: the account's roll-up addresses (empty when it has no roll-up row or the
+enrichment is not current).
+
 Read commands open the case read-only. `query` runs exactly one SELECT (checked by DuckDB's own parser) on a
 separate in-memory DuckDB that attaches the case read-only, with external access (files, network, environment) and
 extension loading off and the configuration locked. It sees every table and view, including `case_meta` (the case
@@ -391,8 +412,9 @@ evidence to deliverables with `--json` on every command; nothing else is needed,
 ```bash
 sparrow ingest /evidence --case case.duckdb --json          # ingest, profile and detect (exit 2: some file failed)
 sparrow capabilities --case case.duckdb --json              # what the case can and cannot show
+sparrow accounts --case case.duckdb --json                 # the accounts to look at first, with their addresses
 sparrow finding list --case case.duckdb --json --severity high
-sparrow finding show 1c8b18eff09c880c --case case.duckdb --json   # evidence rows, guidance, notes, history
+sparrow finding show 1c8b18eff09c880c --case case.duckdb --json   # evidence rows (with context), facts, guidance, notes, history
 sparrow pivot ip 203.0.113.2 --case case.duckdb --json     # everything about an IP, section by section
 sparrow query "SELECT operation, count(*) FROM timeline GROUP BY 1" --case case.duckdb --json
 
