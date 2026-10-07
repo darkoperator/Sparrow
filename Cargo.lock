@@ -3696,6 +3696,7 @@ name = "sparrow-app"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "duckdb",
  "serde",
  "serde_json",
  "sparrow-core",

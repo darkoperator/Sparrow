@@ -9,6 +9,8 @@ const CMD_ERROR_KINDS = [
   "writer_busy",
   "read_only",
   "no_case",
+  "needs_upgrade",
+  "needs_acknowledge",
   "internal",
 ] as const;
 

@@ -318,6 +318,34 @@ impl Drop for ScratchDir {
     }
 }
 
+/// What [`Case::inspect`] found.
+#[derive(Debug, Clone)]
+pub struct CaseInspection {
+    /// The file's schema version.
+    pub schema_version: u32,
+    /// This build's schema version.
+    pub latest: u32,
+    /// The audit chain's state; `None` when the schema predates the audit trail (migration 16).
+    pub audit: Option<crate::case::audit::ChainReport>,
+}
+
+/// What [`Case::open_verified`] decided, on the writer connection, before anything was written.
+pub enum VerifiedOpen {
+    /// Open for writing: the chain is intact (and an older schema has been migrated, as allowed).
+    Writable(Case),
+    /// Current schema, broken chain: the writer is released and nothing was written; open it read-only.
+    BrokenChain(crate::case::audit::ChainReport),
+    /// Older schema whose chain is broken or could not be verified: the writer is released and nothing was
+    /// written. `sparrow audit verify --acknowledge` and `sparrow upgrade` come first.
+    NeedsAcknowledge {
+        schema_version: u32,
+        first_bad_seq: Option<i64>,
+        problem: String,
+    },
+    /// Older schema, intact chain, upgrade not allowed: the writer is released and nothing was written.
+    NeedsUpgrade { schema_version: u32, latest: u32 },
+}
+
 pub struct Case {
     conn: Connection,
     path: Option<PathBuf>,
@@ -384,6 +412,106 @@ impl Case {
             poisoned: Default::default(),
             _writer: None,
             scratch: None,
+        })
+    }
+
+    /// Open an existing case for writing only after its audit chain checks out, deciding on the writer connection
+    /// itself so nothing can change the file between the check and the writes: the writer is acquired (this
+    /// process's registry and DuckDB's lock) WITHOUT migrating, the schema version is read and, from the audit
+    /// trail's migration on, the chain is verified on that connection. Only an intact chain is migrated, and an
+    /// older schema only when `allow_upgrade`; every other outcome releases the writer with nothing written. A
+    /// schema before the audit trail has no chain to break and follows the upgrade path.
+    pub fn open_verified(path: &Path, allow_upgrade: bool) -> Result<VerifiedOpen> {
+        if !path.is_file() {
+            return Err(Error::NotFound(format!("case database {}", path.display())));
+        }
+        let (conn, writer) = open_writer(path)?;
+        // A `Case` from here on, so every early return closes the connection before releasing the writer.
+        let case = Case {
+            conn,
+            path: Some(path.to_path_buf()),
+            read_only: false,
+            poisoned: Default::default(),
+            _writer: Some(writer),
+            scratch: None,
+        };
+        let schema_version = migrations::current_version(&case.conn)?;
+        let latest = migrations::latest_version();
+        if schema_version > latest {
+            return Err(Error::SchemaTooNew {
+                db: schema_version,
+                supported: latest,
+            });
+        }
+        let has_trail = schema_version >= migrations::ANALYST_VERSION;
+        if schema_version == latest {
+            let report = crate::case::audit::verify(&case.conn)?;
+            if !report.ok {
+                return Ok(VerifiedOpen::BrokenChain(report));
+            }
+            // Completes an interrupted upgrade's post-migration step, as any writable open does.
+            migrate_recorded(&case.conn)?;
+            return Ok(VerifiedOpen::Writable(case));
+        }
+        if has_trail {
+            match crate::case::audit::verify(&case.conn) {
+                Ok(r) if r.ok => {}
+                Ok(r) => {
+                    return Ok(VerifiedOpen::NeedsAcknowledge {
+                        schema_version,
+                        first_bad_seq: r.first_bad_seq,
+                        problem: r.problem.unwrap_or_else(|| "unknown problem".into()),
+                    });
+                }
+                Err(e) => {
+                    return Ok(VerifiedOpen::NeedsAcknowledge {
+                        schema_version,
+                        first_bad_seq: None,
+                        problem: format!("the audit chain could not be verified: {e}"),
+                    });
+                }
+            }
+        }
+        if !allow_upgrade {
+            return Ok(VerifiedOpen::NeedsUpgrade {
+                schema_version,
+                latest,
+            });
+        }
+        migrate_recorded(&case.conn)?;
+        let report = crate::case::audit::verify(&case.conn)?;
+        if !report.ok {
+            return Ok(VerifiedOpen::BrokenChain(report));
+        }
+        Ok(VerifiedOpen::Writable(case))
+    }
+
+    /// Look at a case file before deciding how to open it: its schema version and, from the audit trail's migration
+    /// on, its audit chain. Opened read-only without the schema-match check, so an older case is reported, never
+    /// migrated; nothing is written. A file this process already holds as writer is `WriterBusy`, as is one another
+    /// process holds (DuckDB's lock).
+    pub fn inspect(path: &Path) -> Result<CaseInspection> {
+        if !path.is_file() {
+            return Err(Error::NotFound(format!("case database {}", path.display())));
+        }
+        {
+            let w = WRITERS.lock().unwrap_or_else(|e| e.into_inner());
+            if w.contains(&FileKey::of(path)?) {
+                return Err(another_writer(path, "already open in this process"));
+            }
+        }
+        let config = Config::default().access_mode(AccessMode::ReadOnly)?;
+        let conn = Connection::open_with_flags(path, config).map_err(|e| lock_error(path, e))?;
+        let schema_version = migrations::current_version(&conn)?;
+        let audit = if schema_version >= migrations::ANALYST_VERSION {
+            Some(crate::case::audit::verify(&conn)?)
+        } else {
+            None
+        };
+        Ok(CaseInspection {
+            schema_version,
+            latest: migrations::latest_version(),
+            audit,
         })
     }
 

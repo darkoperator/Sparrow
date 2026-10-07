@@ -19,5 +19,6 @@ chrono.workspace = true
 sparrow-core = { path = "../sparrow-core" }
 
 [dev-dependencies]
+duckdb.workspace = true
 tempfile.workspace = true
 sparrow-synth = { path = "../sparrow-synth" }

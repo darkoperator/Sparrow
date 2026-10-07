@@ -38,7 +38,17 @@ describe("isCmdError", () => {
     expect(isCmdError({ kind: "invalid" })).toBe(false);
     expect(isCmdError({ kind: 1, message: "m" })).toBe(false);
     expect(isCmdError({ kind: "timeout", message: "m" })).toBe(false);
-    for (const kind of ["not_found", "invalid", "decision", "writer_busy", "read_only", "no_case", "internal"]) {
+    for (const kind of [
+      "not_found",
+      "invalid",
+      "decision",
+      "writer_busy",
+      "read_only",
+      "no_case",
+      "needs_upgrade",
+      "needs_acknowledge",
+      "internal",
+    ]) {
       expect(isCmdError({ kind, message: "m" })).toBe(true);
     }
     expect(isCmdError("invalid")).toBe(false);

@@ -1,3 +1,4 @@
+use sparrow_core::db::VerifiedOpen;
 use sparrow_core::db::migrations::{MIGRATIONS, latest_version, migrate};
 use sparrow_core::db::state_tables::{ALL, LoadMode};
 use sparrow_core::{Case, Error};
@@ -291,18 +292,120 @@ fn upgrading_a_v2_case_keeps_collections_and_adds_ual_tables() {
     assert!(tables(&case).contains(&"users".to_string()));
 }
 
+/// A case file at schema v20 (before migration 21), built migration by migration; the connection stays open for the
+/// caller's rows.
+fn v20_conn(path: &std::path::Path) -> duckdb::Connection {
+    let conn = duckdb::Connection::open(path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name VARCHAR NOT NULL,
+         applied_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp);",
+    )
+    .unwrap();
+    for m in MIGRATIONS.iter().filter(|m| m.version <= 20) {
+        conn.execute_batch(m.sql).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
+            duckdb::params![m.version as i64, m.name],
+        )
+        .unwrap();
+    }
+    conn
+}
+
+/// `n` audited agent decisions on `conn`.
+fn audited(conn: &duckdb::Connection, n: usize) {
+    for i in 0..n {
+        conn.execute_batch("BEGIN TRANSACTION").unwrap();
+        sparrow_core::case::audit::append(
+            conn,
+            "agent:t",
+            None,
+            "test",
+            "finding",
+            &format!("f{i}"),
+            None,
+            Some(&serde_json::json!({ "i": i })),
+            None,
+        )
+        .unwrap();
+        conn.execute_batch("COMMIT").unwrap();
+    }
+}
+
 #[test]
-fn upgrading_a_v20_case_keeps_decisions_and_adds_imported_proposals() {
+fn inspect_reads_schema_and_chain_without_writing() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("v20.duckdb");
+    let bytes = |p: &std::path::Path| std::fs::read(p).unwrap();
+
+    // Current and intact.
+    let current = dir.path().join("current.duckdb");
     {
-        let conn = duckdb::Connection::open(&path).unwrap();
+        let case = Case::create_or_open(&current).unwrap();
+        audited(case.conn(), 2);
+        case.conn().execute_batch("CHECKPOINT").unwrap();
+    }
+    let before = bytes(&current);
+    let i = Case::inspect(&current).unwrap();
+    assert_eq!(
+        (i.schema_version, i.latest),
+        (latest_version(), latest_version())
+    );
+    let a = i.audit.expect("a current case has an audit trail");
+    assert!(a.ok);
+    assert_eq!(a.entries, 2);
+    assert!(bytes(&current) == before, "the file changed");
+
+    // Current with a broken chain.
+    {
+        let case = Case::create_or_open(&current).unwrap();
+        case.conn()
+            .execute("UPDATE audit_trail SET reason = 'x' WHERE seq = 2", [])
+            .unwrap();
+        case.conn().execute_batch("CHECKPOINT").unwrap();
+    }
+    let before = bytes(&current);
+    let a = Case::inspect(&current).unwrap().audit.unwrap();
+    assert!(!a.ok);
+    assert_eq!(a.first_bad_seq, Some(2));
+    assert!(bytes(&current) == before, "the file changed");
+
+    // Older schema (v20), intact, then broken: reported, never migrated.
+    let old = dir.path().join("v20.duckdb");
+    {
+        let conn = v20_conn(&old);
+        audited(&conn, 3);
+        conn.execute_batch("CHECKPOINT").unwrap();
+    }
+    let before = bytes(&old);
+    let i = Case::inspect(&old).unwrap();
+    assert_eq!((i.schema_version, i.latest), (20, latest_version()));
+    assert!(i.audit.unwrap().ok);
+    assert!(bytes(&old) == before, "the file changed");
+    {
+        let conn = duckdb::Connection::open(&old).unwrap();
+        conn.execute("UPDATE audit_trail SET actor = 'x' WHERE seq = 1", [])
+            .unwrap();
+        conn.execute_batch("CHECKPOINT").unwrap();
+    }
+    let before = bytes(&old);
+    let a = Case::inspect(&old).unwrap().audit.unwrap();
+    assert_eq!((a.ok, a.first_bad_seq), (false, Some(1)));
+    assert!(bytes(&old) == before, "the file changed");
+    assert!(matches!(
+        Case::open_read_only(&old),
+        Err(Error::SchemaOutdated { db: 20, .. })
+    ));
+
+    // Before the audit trail (v15): no chain to report.
+    let pre = dir.path().join("v15.duckdb");
+    {
+        let conn = duckdb::Connection::open(&pre).unwrap();
         conn.execute_batch(
             "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name VARCHAR NOT NULL,
              applied_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp);",
         )
         .unwrap();
-        for m in MIGRATIONS.iter().filter(|m| m.version <= 20) {
+        for m in MIGRATIONS.iter().filter(|m| m.version <= 15) {
             conn.execute_batch(m.sql).unwrap();
             conn.execute(
                 "INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
@@ -310,6 +413,147 @@ fn upgrading_a_v20_case_keeps_decisions_and_adds_imported_proposals() {
             )
             .unwrap();
         }
+    }
+    let i = Case::inspect(&pre).unwrap();
+    assert_eq!(i.schema_version, 15);
+    assert!(i.audit.is_none());
+
+    // Missing file; a file this process holds as writer.
+    assert!(matches!(
+        Case::inspect(&dir.path().join("nope.duckdb")),
+        Err(Error::NotFound(_))
+    ));
+    assert!(!dir.path().join("nope.duckdb").exists());
+    let held = Case::create_or_open(&current).unwrap();
+    assert!(matches!(Case::inspect(&current), Err(Error::WriterBusy(_))));
+    drop(held);
+}
+
+fn verdict(v: &VerifiedOpen) -> &'static str {
+    match v {
+        VerifiedOpen::Writable(_) => "writable",
+        VerifiedOpen::BrokenChain(_) => "broken_chain",
+        VerifiedOpen::NeedsAcknowledge { .. } => "needs_acknowledge",
+        VerifiedOpen::NeedsUpgrade { .. } => "needs_upgrade",
+    }
+}
+
+/// The writer is released: an inspection (which refuses a file this process holds as writer) gets through.
+fn released(path: &std::path::Path) -> bool {
+    Case::inspect(path).is_ok()
+}
+
+#[test]
+fn open_verified_decides_on_the_writer_before_migrating() {
+    let dir = tempfile::tempdir().unwrap();
+    let bytes = |p: &std::path::Path| std::fs::read(p).unwrap();
+    let latest = latest_version();
+
+    // v20, broken: refused even with the upgrade allowed; nothing written, writer released.
+    let broken = dir.path().join("v20-broken.duckdb");
+    {
+        let conn = v20_conn(&broken);
+        audited(&conn, 2);
+        conn.execute("UPDATE audit_trail SET actor = 'x' WHERE seq = 1", [])
+            .unwrap();
+        conn.execute_batch("CHECKPOINT").unwrap();
+    }
+    let before = bytes(&broken);
+    for allow_upgrade in [true, false] {
+        let v = Case::open_verified(&broken, allow_upgrade).unwrap();
+        match &v {
+            VerifiedOpen::NeedsAcknowledge {
+                schema_version,
+                first_bad_seq,
+                ..
+            } => assert_eq!((*schema_version, *first_bad_seq), (20, Some(1))),
+            other => panic!("expected needs_acknowledge, got {}", verdict(other)),
+        }
+        drop(v);
+        assert!(bytes(&broken) == before, "allow_upgrade={allow_upgrade}");
+        assert!(released(&broken));
+    }
+
+    // v20, intact: needs the upgrade decision; with it, migrated and verified on the same writer.
+    let intact = dir.path().join("v20.duckdb");
+    {
+        let conn = v20_conn(&intact);
+        audited(&conn, 2);
+        conn.execute_batch("CHECKPOINT").unwrap();
+    }
+    let before = bytes(&intact);
+    let v = Case::open_verified(&intact, false).unwrap();
+    match &v {
+        VerifiedOpen::NeedsUpgrade {
+            schema_version,
+            latest: l,
+        } => assert_eq!((*schema_version, *l), (20, latest)),
+        other => panic!("expected needs_upgrade, got {}", verdict(other)),
+    }
+    drop(v);
+    assert!(bytes(&intact) == before, "the file changed");
+    assert!(released(&intact));
+    match Case::open_verified(&intact, true).unwrap() {
+        VerifiedOpen::Writable(case) => {
+            assert_eq!(case.schema_version().unwrap(), latest);
+            assert!(!case.is_read_only());
+            let r = sparrow_core::case::audit::verify(case.conn()).unwrap();
+            assert!(r.ok);
+            assert_eq!(
+                r.entries, 2,
+                "a v20 case already has its trail; no upgrade entry"
+            );
+        }
+        other => panic!("expected writable, got {}", verdict(&other)),
+    }
+    assert!(released(&intact));
+
+    // Current schema: intact → writable; broken → reported, nothing written, writer released.
+    let current = dir.path().join("current.duckdb");
+    {
+        let case = Case::create_or_open(&current).unwrap();
+        audited(case.conn(), 2);
+    }
+    match Case::open_verified(&current, false).unwrap() {
+        VerifiedOpen::Writable(case) => assert_eq!(case.schema_version().unwrap(), latest),
+        other => panic!("expected writable, got {}", verdict(&other)),
+    }
+    {
+        let case = Case::create_or_open(&current).unwrap();
+        case.conn()
+            .execute("UPDATE audit_trail SET reason = 'x' WHERE seq = 2", [])
+            .unwrap();
+        case.conn().execute_batch("CHECKPOINT").unwrap();
+    }
+    let before = bytes(&current);
+    match Case::open_verified(&current, true).unwrap() {
+        VerifiedOpen::BrokenChain(r) => assert_eq!((r.ok, r.first_bad_seq), (false, Some(2))),
+        other => panic!("expected broken_chain, got {}", verdict(&other)),
+    }
+    assert!(bytes(&current) == before, "the file changed");
+    assert!(released(&current));
+
+    // Missing file: not found, nothing created. A file this process holds: busy.
+    let missing = dir.path().join("nope.duckdb");
+    assert!(matches!(
+        Case::open_verified(&missing, true),
+        Err(Error::NotFound(_))
+    ));
+    assert!(!missing.exists());
+    let held = Case::create_or_open(&current).unwrap();
+    assert!(matches!(
+        Case::open_verified(&current, false),
+        Err(Error::WriterBusy(_))
+    ));
+    drop(held);
+}
+
+#[test]
+fn upgrading_a_v20_case_keeps_decisions_and_adds_imported_proposals() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v20.duckdb");
+    {
+        let conn = v20_conn(&path);
         conn.execute_batch(
             "INSERT INTO findings (finding_id, fingerprint, tenant_key, rule_id, rule_version, rule_sha256, severity, \
              title, created_by, created_at, updated_at, status, decided_by, decided_at, review_state)
