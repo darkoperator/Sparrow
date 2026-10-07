@@ -36,13 +36,15 @@ Read-only `sparrow query` runs exactly one parsed SELECT on a separate in-memory
 
 ```bash
 cargo build --release                    # first build compiles bundled DuckDB; allow several minutes
-cargo test --workspace
-cargo test --workspace -- --ignored
+cargo test
+cargo test -- --ignored
 ```
+
+`cargo test`, `cargo clippy` and `cargo build` at the root cover the default members (`sparrow-cli`, `sparrow-core`, `sparrow-synth`); the review app (`crates/sparrow-app`) is a workspace member but not a default one, so the default suite needs neither Node nor webview libraries. `--workspace` includes the app. The full gate is `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test`, plus the review app's checks below when the app changed.
 
 The default suite keeps a fast `bec-aitm` representative for every collector in each heavy matrix. Ignored tests carry `#[ignore = "heavy: run with cargo test --workspace -- --ignored"]` and cover every-scenario/collector matrices, volume, and performance checks; run both jobs before merging. Synthetic fixture trees are deterministic and use reserved IP ranges, example domains, and seed-derived IDs. `sparrow synth check` compares an ingested case with `manifest.json`, including positive rules, look-alikes, and benign baseline. `synth coverage` reports rule/storyline gaps; `synth conformance --tree` compares a generated tree with recorded layouts. See the synth README for options and the scenario schema.
 
-Tests share generated trees and copied case files under `target/tmp/sparrow-cache/<build fingerprint>/` (`sparrow_synth::cache`): a tree or case is built once per run, whichever test binary asks first, and each test gets its own case-file copy. The fingerprint covers generator, parsers, profile, schema, rules, scenarios, lockfile, and compiler; a source change selects a new cache and `cargo clean` removes it. `SPARROW_NO_CACHE=1 cargo test --workspace` regenerates each tree and case afresh. Both modes must produce the same results.
+Tests share generated trees and copied case files under `target/tmp/sparrow-cache/<build fingerprint>/` (`sparrow_synth::cache`): a tree or case is built once per run, whichever test binary asks first, and each test gets its own case-file copy. The fingerprint covers generator, parsers, profile, schema, rules, scenarios, lockfile, and compiler; a source change selects a new cache and `cargo clean` removes it. `SPARROW_NO_CACHE=1 cargo test` regenerates each tree and case afresh. Both modes must produce the same results.
 
 ### Goldens and conformance
 
@@ -53,3 +55,28 @@ Export and availability goldens live under `crates/sparrow-core/tests/golden/`. 
 ### Build-output housekeeping
 
 `scripts/sweep-target.sh [--days N] [--dry-run] [--force] [TARGET_DIR]` is an opt-in cleanup of stale Cargo output; it never runs automatically. It retains the newest artifact of each crate name/kind in `deps` directories and removes old incremental entries (default age: three days). It skips files modified in the last hour unless `--force` is used. Inspect the `--dry-run` result before using it; needed artifacts can be rebuilt, but the operation deletes files.
+
+## Review app
+
+The analyst's review app is a Tauri v2 desktop app: `crates/sparrow-app` is the backend (each command is a plain function over the app state, wrapped by a thin `#[tauri::command]`; all logic stays in `sparrow-core`), and `app/` is the React + TypeScript (Vite) frontend, which only renders and calls commands through `app/src/api.ts`. Untrusted text is rendered as text through `displaySafe` (`app/src/text.ts`, the same rule as the CLI's `display_safe_line`); ESLint fails on `dangerouslySetInnerHTML`.
+
+Prerequisites: Node 22 and npm, plus the platform's Tauri prerequisites (on macOS, the Xcode Command Line Tools). Dependencies are pinned by `Cargo.lock` and `app/package-lock.json`; install the frontend's from the lockfile:
+
+```bash
+npm --prefix app ci --offline            # or without --offline on a machine with an empty npm cache
+npx --prefix app tauri dev               # run from the repo root; starts Vite on :5173 and the app window
+```
+
+The Tauri CLI finds `crates/sparrow-app/tauri.conf.json` and runs its `beforeDevCommand` / `beforeBuildCommand` (`npm run dev` / `npm run build`) in `app/`. A plain debug `cargo build -p sparrow-app` loads the frontend from the dev server (`devUrl`); `tauri build` builds the frontend into `app/dist` (git-ignored) and embeds it.
+
+Checks when the app changed:
+
+```bash
+cargo test -p sparrow-app
+cargo clippy -p sparrow-app --all-targets -- -D warnings
+npm --prefix app test                    # Vitest
+npm --prefix app run lint                # ESLint
+npm --prefix app run build               # tsc type check + Vite build
+```
+
+Security settings live in `crates/sparrow-app/tauri.conf.json` (CSP: the app's own assets and IPC only) and `crates/sparrow-app/capabilities/default.json` (core defaults plus the open and save dialogs; no shell, fs, http or updater plugins).
