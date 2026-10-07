@@ -15,10 +15,13 @@ is a time window.
 - A finding has `finding_id`, `rule_id`, `severity`, `title`, `actor_upn`, `first_seen`, `last_seen`, `status` and
   `evidence_count`. A finding is a lead, not a verdict: several rules fire on benign look-alikes (a connector's
   hosting sign-ins, a user's own filing rule). A look-alike is counter-evidence, not clearance: see `bec-triage`.
-- `finding show` evidence rows have `source_table`, `record_key`, `event_time`, `source_refs` (file and line) and a
-  `timeline` object. Several ids return `{"findings": [...], "missing": [...]}`. Plain output prints 50 evidence rows;
+- `finding show` evidence rows have `source_table`, `record_key`, `event_time`, `source_refs` (file and line), a
+  `context` (what the rule stored with the row, null when none) and a `timeline` object. Persistence, consent and MFA
+  findings also carry `facts` (or `facts_unavailable`): see [commands.md](commands.md). Several ids return `{"findings": [...], "missing": [...]}`. Plain output prints 50 evidence rows;
   `--json` has all of them.
-- `pivot user` returns sections identity, directory, roles, mfa, timeline, findings, indicators. `pivot ip` returns
+- `accounts` returns the roll-up (one row per account with a finding: stages, first suspicious time, addresses with
+  reasons); see [commands.md](commands.md).
+- `pivot user` returns sections identity, directory, roles, mfa, timeline, findings, indicators, addresses. `pivot ip` returns
   ip_intel (country, ASN, hosting), spray_source, timeline, findings, indicators. Each section has `rows`, `total`
   and `truncated`; raise `--cap` only when you need more than 50 rows of one section.
 

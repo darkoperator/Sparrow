@@ -420,6 +420,36 @@ fn the_skills_commands_still_parse_against_the_cli() {
     check(current);
 }
 
+/// The drift test covers `sparrow accounts`: the skill shows it (in the fast path and in the recipes), the fast path
+/// reaches it before the findings, and every such line parses.
+#[test]
+fn the_fast_path_starts_from_sparrow_accounts() {
+    let lines = command_lines();
+    let accounts: Vec<_> = lines
+        .iter()
+        .filter(|(_, l)| l.starts_with("sparrow accounts "))
+        .cloned()
+        .collect();
+    assert!(accounts.len() >= 3, "{} accounts lines", accounts.len());
+    assert!(accounts.iter().all(|(_, l)| !uses_new_command(&words(l))));
+    check(accounts);
+    let skill = std::fs::read_to_string(skills_root().join("sparrow-triage/SKILL.md")).unwrap();
+    let at = |needle: &str| {
+        skill
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle} not in SKILL.md"))
+    };
+    assert!(at("sparrow summary") < at("sparrow accounts"));
+    assert!(at("sparrow accounts") < at("sparrow finding list"));
+    assert!(at("sparrow finding list") < at("sparrow finding show"));
+    assert!(at("sparrow finding show") < at("sparrow pivot user"));
+    assert!(
+        skill.lines().count() <= 110,
+        "SKILL.md has {} lines",
+        skill.lines().count()
+    );
+}
+
 /// The lines that use the three commands cli-agent-aids added (schema --table, finding show with several ids,
 /// a repeated finding list --rule).
 #[test]

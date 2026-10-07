@@ -25,15 +25,68 @@ truncated} ]}`.
 | --- | --- |
 | What evidence is in the case, and what is missing? | `sparrow capabilities --case case.duckdb --json` |
 | Tenant, window, row counts, top actors, gaps? | `sparrow summary --case case.duckdb --json` |
+| Which accounts have findings, what stages, which addresses? | `sparrow accounts --case case.duckdb --json` |
 | Which tables and columns exist? | `sparrow schema --case case.duckdb --json` |
 | Columns of one table? | `sparrow schema --case case.duckdb --table signins --json` |
 
 ```bash
 sparrow capabilities --case case.duckdb --json
 sparrow summary --case case.duckdb --json
+sparrow accounts --case case.duckdb --json
+sparrow accounts --case case.duckdb --limit 5 --json
 sparrow schema --case case.duckdb --json
 sparrow schema --case case.duckdb --table signins --json
 ```
+
+## Accounts (the roll-up) and facts
+
+`sparrow accounts` returns `{"accounts": [...], "total": N, "truncated": bool, "warnings": [...]}`. Each account:
+
+```json
+{"tenant_key": "...", "upn": "bryce.jacoby@contoso.example", "worst_severity": "high", "finding_count": 24,
+ "by_severity": {"high": 16, "medium": 7, "low": 1},
+ "stages": ["suspicious_sign_in", "persistence", "mail_access", "sending", "consent", "mfa_change"],
+ "first_suspicious": "2026-08-21T09:12:00.000000Z", "rules": ["SPW-ID-002", "SPW-MAIL-004"],
+ "addresses": [{"ip": "203.0.113.4", "reasons": ["finding_evidence", "acts_without_signin", "hosting"],
+   "tables": ["ual_events"], "first_seen": "...", "last_seen": "...", "asn": 14061, "asn_org": "DigitalOcean",
+   "is_hosting": true, "spray_source": false, "in_user_signins": false}],
+ "addresses_total": 3, "addresses_truncated": false}
+```
+
+- Order: worst severity, then more stages, then earlier `first_suspicious`, then UPN. `stages` come from the rules'
+  `stage:` (suspicious_sign_in, credential_takeover, persistence, mail_access, sending, consent, mfa_change).
+- `addresses` (at most 20, strongest reason first): `finding_evidence` (on one of the account's findings),
+  `acts_without_signin` (the account acts from it in the audit, mail-access or message-trace records but never signs
+  in from it: report it as an attacker candidate), `hosting`, `spray_source`, `risky_signin`. `in_user_signins` false
+  means no sign-in of this account came from it. An address is a lead, not a verdict: read its reasons and its history.
+- An empty list with a warning: the case was detected before the roll-up existed, or the enrichment failed or is
+  stale. Run `sparrow detect --case case.duckdb` and ask again.
+
+`finding show` adds `facts` for persistence, consent and MFA findings (and a `context` on each evidence row):
+
+```json
+{"facts_version": 1, "window_start": "2026-08-11T14:19:03.000000Z",
+ "actor_ips": [{"ip": "203.0.113.2", "asn": 20473, "asn_org": "Vultr", "is_hosting": true, "spray_source": false,
+   "user_signin_days_before": 1, "user_first_signin": "2026-08-21T09:15:00.000000Z"}],
+ "other_signals": {"total": 23, "items": [{"rule_id": "SPW-MAIL-003", "severity": "high", "first_seen": "..."}]},
+ "targets": [{"address": "colleague@contoso.example", "domain": "contoso.example", "scope": "internal", "prior_messages": 4},
+             {"address": "invoices@exfil-mail.test", "domain": "exfil-mail.test", "scope": "external", "prior_messages": 0}]}
+```
+
+- `window_start`: the tenant's first sign-in of any kind. Every "before" is "before, within the capture".
+- `user_signin_days_before`: distinct UTC days the finding's actor had a SUCCESSFUL sign-in from that address before
+  the evidence event; null = cannot be compared (unknown, never zero). `user_first_signin`: the first such sign-in.
+- `other_signals`: the actor's other findings (not this one), at most 5 in finding-list order, with the total.
+- `targets` (forwarding findings): every forward, redirect, copy or blind-copy address of the evidence; `scope`
+  internal (the actor's own address or a tenant domain) or external; `prior_messages` = message-trace rows between
+  the actor and the address before the event (null = no message trace, unknown). List EVERY target of an attacker
+  rule, internal ones included.
+- `facts_unavailable: <reason>` instead of `facts` means the enrichment is not current: run `sparrow detect`.
+- Facts are counter-evidence: "an address used on 9 earlier days" lowers suspicion, "never used before in this capture"
+  raises it, neither decides it (see `bec-triage`).
+
+`pivot user` has an `addresses` section: the same list as `accounts` (with `unavailable: <reason>` when the roll-up
+is not current).
 
 ## Findings
 
