@@ -793,3 +793,263 @@ fn only_a_storyline_it_follows_supplies_the_missing_half() {
     assert!(complete(true), "anchored after the AiTM sign-in");
     assert!(!complete(false), "same user, but not anchored to it");
 }
+
+// ---- the account roll-up expectations (agent accuracy T3) ---------------------------------------
+
+/// A detected case of bec-aitm (Invictus, which delivers sign-ins and the MailItemsAccessed-only address) with its
+/// manifest and the expected account of the AiTM actor that carries that address.
+fn rollup_case() -> (Case, Manifest, sparrow_synth::manifest::AccountExpect) {
+    let (dir, m) = tree("bec-aitm", Collector::Invictus);
+    let want = m
+        .accounts
+        .iter()
+        .find(|a| !a.addresses.is_empty())
+        .expect("a bec-aitm account with a MailItemsAccessed-only address")
+        .clone();
+    (dir.detected(), m, want)
+}
+
+fn accounts_problems(m: &Manifest, case: &Case) -> Vec<String> {
+    check(m, case).unwrap().detection.accounts
+}
+
+#[test]
+fn the_rollup_expectations_hold_on_a_detected_case_and_are_not_empty() {
+    let (case, m, want) = rollup_case();
+    // The manifest expects the AiTM actor with stages and the unseen address; the case meets all of it.
+    assert!(!want.stages.is_empty() && !want.storylines.is_empty());
+    assert!(m.accounts.len() >= 2, "{:?}", m.accounts);
+    let r = check(&m, &case).unwrap();
+    assert!(
+        r.detection.accounts.is_empty(),
+        "{:#?}",
+        r.detection.accounts
+    );
+    assert!(r.ok, "{:#?}", r.problems);
+}
+
+#[test]
+fn a_missing_account_row_fails_the_gate() {
+    let (case, m, want) = rollup_case();
+    case.conn()
+        .execute(
+            "DELETE FROM account_rollup WHERE lower(upn) = ?",
+            [&want.upn],
+        )
+        .unwrap();
+    let p = accounts_problems(&m, &case);
+    assert!(
+        p.iter()
+            .any(|x| x.contains(&want.upn) && x.contains("not in the roll-up")),
+        "{p:?}"
+    );
+    let r = check(&m, &case).unwrap();
+    assert!(!r.ok && r.problems.iter().any(|x| x.starts_with("accounts: ")));
+}
+
+#[test]
+fn a_missing_stage_fails_the_gate() {
+    let (case, m, want) = rollup_case();
+    let stage = want.stages[0].clone();
+    case.conn()
+        .execute(
+            "UPDATE account_rollup SET stages = to_json(list_filter(CAST(stages AS VARCHAR[]), x -> x <> ?)) \
+             WHERE lower(upn) = ?",
+            [&stage, &want.upn],
+        )
+        .unwrap();
+    let p = accounts_problems(&m, &case);
+    assert!(
+        p.iter()
+            .any(|x| x.contains(&want.upn) && x.contains(&format!("lacks the stage {stage}"))),
+        "{p:?}"
+    );
+}
+
+#[test]
+fn a_missing_address_and_a_wrong_reason_fail_the_gate() {
+    let (case, m, want) = rollup_case();
+    let ip = want.addresses[0].clone();
+    // The address is dropped from the list.
+    case.conn()
+        .execute(
+            "UPDATE account_rollup SET addresses = '[]' WHERE lower(upn) = ?",
+            [&want.upn],
+        )
+        .unwrap();
+    let p = accounts_problems(&m, &case);
+    assert!(
+        p.iter()
+            .any(|x| x.contains(&want.upn) && x.contains(&format!("does not list {ip}"))),
+        "{p:?}"
+    );
+    // Listed, but for another reason: not acts_without_signin.
+    let entry = format!(
+        r#"[{{"ip":"{ip}","reasons":["hosting"],"tables":[],"spray_source":false,"in_user_signins":true}}]"#
+    );
+    case.conn()
+        .execute(
+            "UPDATE account_rollup SET addresses = ? WHERE lower(upn) = ?",
+            [&entry, &want.upn],
+        )
+        .unwrap();
+    let p = accounts_problems(&m, &case);
+    assert!(
+        p.iter().any(|x| x.contains(&format!(
+            "lists {ip} without the reason acts_without_signin"
+        ))),
+        "{p:?}"
+    );
+}
+
+#[test]
+fn a_case_without_a_computed_rollup_fails_closed() {
+    let (case, m, _) = rollup_case();
+    case.conn()
+        .execute("DELETE FROM case_meta WHERE key = 'enrichment_run_id'", [])
+        .unwrap();
+    let p = accounts_problems(&m, &case);
+    assert_eq!(p.len(), 1, "{p:?}");
+    assert!(p[0].contains("no enrichment run"), "{p:?}");
+    case.conn()
+        .execute(
+            "INSERT OR REPLACE INTO case_meta (key, value) VALUES ('enrichment_error', 'boom')",
+            [],
+        )
+        .unwrap();
+    let p = accounts_problems(&m, &case);
+    assert_eq!(p.len(), 1, "{p:?}");
+    assert!(p[0].contains("boom"), "{p:?}");
+}
+
+/// The expectations follow what each collector delivers: Hawk 3 (no sign-in log) and Hawk 4 keep the same
+/// accounts as roll-up rows to check, and every built-in default tree meets them.
+#[test]
+fn the_rollup_gate_passes_on_the_default_trees_of_every_collector() {
+    let mut with_address = 0;
+    for name in ["bec-aitm", "password-spray"] {
+        for c in Collector::ALL {
+            let (report, m, _case) = gate(name, *c);
+            assert!(
+                report.detection.accounts.is_empty(),
+                "{name} {c:?}: {:#?}",
+                report.detection.accounts
+            );
+            assert!(report.ok, "{name} {c:?}: {:#?}", report.problems);
+            assert!(
+                !m.accounts.is_empty(),
+                "{name} {c:?}: the manifest expects no account"
+            );
+            with_address += m
+                .accounts
+                .iter()
+                .filter(|a| !a.addresses.is_empty())
+                .count();
+        }
+    }
+    assert!(
+        with_address > 0,
+        "no tree expects a MailItemsAccessed-only address"
+    );
+}
+
+/// An enrichment marker from an older run than the latest detection run (a later rebuild failed and so did its
+/// error marker) is a stale roll-up: the gate fails, as the core readers do (`enrichment_state`).
+#[test]
+fn a_stale_rollup_fails_the_gate() {
+    let (case, m, _) = rollup_case();
+    assert!(accounts_problems(&m, &case).is_empty());
+    case.conn()
+        .execute_batch(
+            "INSERT INTO detection_runs SELECT run_id + 1, tenant_key, rule_id, rule_version, rule_sha256, status, \
+             reason, hits, duration_ms, started_at FROM detection_runs \
+             WHERE run_id = (SELECT max(run_id) FROM detection_runs) LIMIT 1",
+        )
+        .unwrap();
+    let p = accounts_problems(&m, &case);
+    assert_eq!(p.len(), 1, "{p:?}");
+    assert!(p[0].contains("stale"), "{p:?}");
+}
+
+/// No expected account still needs a computed roll-up: an empty expectation means "no rows to compare", not
+/// "the roll-up may be missing".
+#[test]
+fn an_empty_expectation_still_needs_a_computed_rollup() {
+    let (case, mut m, _) = rollup_case();
+    m.accounts.clear();
+    assert!(accounts_problems(&m, &case).is_empty());
+    case.conn()
+        .execute("DELETE FROM case_meta WHERE key = 'enrichment_run_id'", [])
+        .unwrap();
+    let p = accounts_problems(&m, &case);
+    assert_eq!(p.len(), 1, "{p:?}");
+    assert!(p[0].contains("no enrichment run"), "{p:?}");
+    assert!(!check(&m, &case).unwrap().ok);
+}
+
+/// A row of `n` addresses acting without a sign-in, as the roll-up stores them.
+fn acting(ips: &[String]) -> String {
+    let rows: Vec<String> = ips
+        .iter()
+        .map(|ip| {
+            format!(
+                r#"{{"ip":"{ip}","reasons":["acts_without_signin"],"tables":["mail_items_accessed"],"spray_source":false,"in_user_signins":false}}"#
+            )
+        })
+        .collect();
+    format!("[{}]", rows.join(","))
+}
+
+/// An account with 21 expected addresses: the roll-up stores its ranked top 20 with `addresses_truncated`. The
+/// unlisted one is accepted when nothing weaker than acts_without_signin is listed and `addresses_total` covers
+/// every expected address; otherwise the gate fails.
+#[test]
+fn a_21_address_account_is_checked_against_the_cap() {
+    let (case, mut m, want) = rollup_case();
+    let mut ips: Vec<String> = (0..20).map(|i| format!("198.51.100.{}", 200 + i)).collect();
+    ips.push(want.addresses[0].clone());
+    let i = m.accounts.iter().position(|a| a.upn == want.upn).unwrap();
+    m.accounts[i].addresses = ips.clone();
+    let set_row = |listed: &str, total: i64, truncated: bool| {
+        case.conn()
+            .execute(
+                "UPDATE account_rollup SET addresses = ?, addresses_total = ?, addresses_truncated = ? \
+                 WHERE lower(upn) = ?",
+                duckdb::params![listed, total, truncated, want.upn],
+            )
+            .unwrap();
+    };
+    // The top 20 listed, the 21st below the cap: green.
+    set_row(&acting(&ips[..20]), 21, true);
+    assert!(
+        accounts_problems(&m, &case).is_empty(),
+        "{:?}",
+        accounts_problems(&m, &case)
+    );
+    // The same list without truncation: the 21st must be listed.
+    set_row(&acting(&ips[..20]), 20, false);
+    let p = accounts_problems(&m, &case);
+    assert!(
+        p.iter()
+            .any(|x| x.contains(&format!("does not list {}", ips[20]))),
+        "{p:?}"
+    );
+    // Truncated, but the total does not cover every expected address.
+    set_row(&acting(&ips[..20]), 20, true);
+    let p = accounts_problems(&m, &case);
+    assert!(p.iter().any(|x| x.contains("addresses_total 20")), "{p:?}");
+    // Truncated, but a weaker (hosting-only) address is listed while an expected one is not: it cannot have ranked
+    // below the cap.
+    let mut weaker = acting(&ips[..19]);
+    weaker.pop();
+    weaker.push_str(
+        r#",{"ip":"203.0.113.99","reasons":["hosting"],"tables":["signins"],"spray_source":false,"in_user_signins":true}]"#,
+    );
+    set_row(&weaker, 22, true);
+    let p = accounts_problems(&m, &case);
+    assert!(
+        p.iter()
+            .any(|x| x.contains(&format!("does not list {}", ips[19]))),
+        "{p:?}"
+    );
+}

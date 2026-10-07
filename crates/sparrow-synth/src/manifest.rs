@@ -47,6 +47,27 @@ pub struct Manifest {
     pub evidence: BTreeMap<String, EvidenceExpect>,
     pub storylines: Vec<StoryExpect>,
     pub rules: Vec<RuleExpect>,
+    /// The account roll-up rows the detection gate expects (`expect::account_expectations`): one per
+    /// actor of a positive storyline some rule is expected to hit. Absent in a manifest of a scenario
+    /// with none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accounts: Vec<AccountExpect>,
+}
+
+/// One account the roll-up (`account_rollup`) must list after detection, computed by the generator
+/// from the tree's own facts (never from Sparrow's output).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AccountExpect {
+    /// Lower-case UPN of the storylines' actor.
+    pub upn: String,
+    /// The positive storylines that make the account expected (each has a rule expected to hit).
+    pub storylines: Vec<String>,
+    /// Stages the roll-up row must include: those of the rules expected to hit these storylines
+    /// (`Stage` names, in the stage enum's order).
+    pub stages: Vec<String>,
+    /// Addresses the row must list with the reason `acts_without_signin`: MailItemsAccessed records of
+    /// these storylines from an address the account never signs in from. Sorted, canonical text.
+    pub addresses: Vec<String>,
 }
 
 impl Manifest {

@@ -58,6 +58,44 @@ pub fn generate_with_policy(
         &world,
         expect::delivery(opts, writers::parsed_by_sparrow("inv.licenses.tenant")),
     );
+    let rules = {
+        let mut rules = expect::rule_outcomes(&world, &records, &caps, &out);
+        rules.extend(expect::computed_outcomes(
+            &world,
+            &records,
+            &caps,
+            &out,
+            opts.collector,
+        )?);
+        let kinds: std::collections::BTreeMap<String, String> = records
+            .iter()
+            .map(|r| (r.id.clone(), r.kind.as_str().to_string()))
+            .collect();
+        // The users the collector's sign-in source covers: Hawk 4 only the investigated users
+        // (Hawk 3 exports no sign-in log), the tenant-wide exports every person.
+        let signin_users = match opts.collector {
+            Collector::Hawk3 => 0,
+            Collector::Hawk4 => crate::writers::hawk::hawk_users(&world).len(),
+            _ => world.all_people().count(),
+        };
+        expect::restrict_to_collector(&mut rules, opts.collector, &kinds, signin_users);
+        rules
+    };
+    let storylines = manifest::story_expects(&world, &records, &out);
+    // The account roll-up the detection gate expects, from the tree's own facts.
+    let accounts = {
+        let facts = crate::oracle::Facts::build(&world, opts.collector, &out)?;
+        let authors = facts.authors();
+        expect::account_expectations(
+            &storylines,
+            &rules,
+            &crate::oracle::rule_stages()?,
+            &mut expect::AccountFacts {
+                author: &|table, key| authors.get(&(table.to_string(), key.to_string())).cloned(),
+                unseen: &mut |keys| Ok(facts.unseen_activity_addresses(keys)),
+            },
+        )?
+    };
     Ok(Manifest {
         format: 1,
         generator: format!("sparrow-synth {}", env!("CARGO_PKG_VERSION")),
@@ -73,34 +111,13 @@ pub fn generate_with_policy(
         audit_profile: world.audit_profile.id.clone(),
         tenant: manifest::tenant_expect(&world, opts),
         evidence: expect::evidence(&world, opts, &out),
-        rules: {
-            let mut rules = expect::rule_outcomes(&world, &records, &caps, &out);
-            rules.extend(expect::computed_outcomes(
-                &world,
-                &records,
-                &caps,
-                &out,
-                opts.collector,
-            )?);
-            let kinds: std::collections::BTreeMap<String, String> = records
-                .iter()
-                .map(|r| (r.id.clone(), r.kind.as_str().to_string()))
-                .collect();
-            // The users the collector's sign-in source covers: Hawk 4 only the investigated users
-            // (Hawk 3 exports no sign-in log), the tenant-wide exports every person.
-            let signin_users = match opts.collector {
-                Collector::Hawk3 => 0,
-                Collector::Hawk4 => crate::writers::hawk::hawk_users(&world).len(),
-                _ => world.all_people().count(),
-            };
-            expect::restrict_to_collector(&mut rules, opts.collector, &kinds, signin_users);
-            rules
-        },
-        storylines: manifest::story_expects(&world, &records, &out),
+        rules,
+        storylines,
         capabilities: caps,
         files: out.files,
         empty_dirs: out.empty_dirs,
         tables: out.tables,
+        accounts,
     })
 }
 

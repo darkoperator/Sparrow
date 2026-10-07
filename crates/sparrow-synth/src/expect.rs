@@ -783,3 +783,107 @@ pub fn restrict_to_collector(
         }
     }
 }
+
+/// Per account, the addresses it acts from without ever signing in from them.
+pub type UnseenByAccount = BTreeMap<String, BTreeSet<std::net::IpAddr>>;
+
+/// What the account expectations read from the tree's own facts ([`oracle::Facts`]).
+pub struct AccountFacts<'a> {
+    /// The lower-case UPN that authored the delivered record `(table, key)` (a sign-in's user, a UAL record's
+    /// UserId, an admin cmdlet's caller), when the model reads one.
+    pub author: &'a dyn Fn(&str, &str) -> Option<String>,
+    /// For a set of delivered record keys, per account, the addresses the roll-up must list as
+    /// `acts_without_signin` ([`oracle::Facts::unseen_activity_addresses`]).
+    pub unseen: &'a mut dyn FnMut(&BTreeSet<String>) -> crate::Result<UnseenByAccount>,
+}
+
+/// The account roll-up rows the detection gate expects (`manifest.accounts`): one per actor (lower-case UPN) of a
+/// positive storyline that a rule is expected to HIT on a record the ACTOR authored (`rules`, outcome `hit`, computed
+/// outcomes included, after the collector restriction; the record is one the storyline delivered in a table the
+/// expectation names, authored by the actor per [`AccountFacts::author`]). A finding's actor is the user of the
+/// record it fires on, so a storyline whose records belong to someone else (an admin's cmdlet on the actor's
+/// mailbox, a colleague's sign-in) expects no row for its actor: that account is not expected through it, and a
+/// rule that hits only others' records adds no stage to the actor. `stages` maps a rule id to its `stage:` names; an
+/// account's stages are the union over the rules that hit its own records, in the stage enum's order. The
+/// addresses are asked once per account with the `ual_events` keys of its expected storylines.
+pub fn account_expectations(
+    stories: &[crate::manifest::StoryExpect],
+    rules: &[RuleExpect],
+    stages: &BTreeMap<String, Vec<String>>,
+    facts: &mut AccountFacts<'_>,
+) -> crate::Result<Vec<crate::manifest::AccountExpect>> {
+    use crate::manifest::{AccountExpect, RuleOutcome};
+    // The accounts the roll-up must list: actor -> (storylines, stages, UAL record keys).
+    #[derive(Default)]
+    struct Want {
+        storylines: Vec<String>,
+        stages: BTreeSet<String>,
+        keys: BTreeSet<String>,
+    }
+    let mut want: BTreeMap<String, Want> = BTreeMap::new();
+    for s in stories.iter().filter(|s| s.polarity == "positive") {
+        let upn = s.actor.trim().to_ascii_lowercase();
+        if upn.is_empty() {
+            continue;
+        }
+        let delivered: Vec<(&str, &str)> = s
+            .evidence
+            .iter()
+            .flat_map(|e| &e.delivered)
+            .filter_map(|l| l.record_key.as_deref().map(|k| (l.table.as_str(), k)))
+            .collect();
+        let mut hit_stages: BTreeSet<String> = BTreeSet::new();
+        let mut expected = false;
+        for r in rules
+            .iter()
+            .filter(|r| r.storyline == s.id && r.outcome == RuleOutcome::Hit)
+        {
+            // The rule hits a record of its tables that this actor authored.
+            let own = delivered.iter().any(|(table, key)| {
+                r.tables.iter().any(|t| t == table)
+                    && (facts.author)(table, key).as_deref() == Some(upn.as_str())
+            });
+            if own {
+                expected = true;
+                hit_stages.extend(stages.get(&r.rule_id).into_iter().flatten().cloned());
+            }
+        }
+        if !expected {
+            continue;
+        }
+        let w = want.entry(upn).or_default();
+        w.storylines.push(s.id.clone());
+        w.stages.extend(hit_stages);
+        w.keys.extend(
+            delivered
+                .iter()
+                .filter(|(t, _)| *t == "ual_events")
+                .map(|(_, k)| k.to_string()),
+        );
+    }
+    let order: Vec<&str> = sparrow_core::detect::rule::Stage::ALL
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
+    let mut out = Vec::new();
+    for (upn, w) in want {
+        let mut stages: Vec<String> = w.stages.into_iter().collect();
+        stages.sort_by_key(|s| order.iter().position(|o| o == s).unwrap_or(usize::MAX));
+        // The addresses this account's own storylines' records prove (one question per account).
+        let addresses = if w.keys.is_empty() {
+            Vec::new()
+        } else {
+            (facts.unseen)(&w.keys)?
+                .get(&upn)
+                .map(|set| set.iter().map(ToString::to_string).collect())
+                .unwrap_or_default()
+        };
+        out.push(AccountExpect {
+            upn,
+            storylines: w.storylines,
+            stages,
+            addresses,
+        });
+    }
+    Ok(out)
+}
