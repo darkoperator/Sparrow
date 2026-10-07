@@ -35,6 +35,7 @@ severity: high
 confidence: medium
 mitre: [T1114.002]
 tags: [bec, mail-access]
+stage: mail_access
 requires: []
 requires_evidence: [mail_items_accessed]
 sql: |

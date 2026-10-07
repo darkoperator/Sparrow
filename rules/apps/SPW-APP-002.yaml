@@ -26,6 +26,7 @@ severity: high
 confidence: medium
 mitre: [T1098.001]
 tags: [bec, apps, persistence]
+stage: persistence
 requires: []
 requires_evidence: []
 needs_geoip: true

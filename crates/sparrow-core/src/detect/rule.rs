@@ -37,6 +37,16 @@ pub struct Rule {
     /// why instead of looking like a clean result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_signin_users: Option<u32>,
+    /// The attack stage(s) a finding of the rule stands for, for the account roll-up
+    /// (`stage: persistence` or `stage: [suspicious_sign_in, persistence]`). Roll-up metadata,
+    /// not detection logic: it is left out of the rule hash, so adding one never marks findings
+    /// `rule_updated`.
+    #[serde(
+        default,
+        deserialize_with = "one_or_many",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub stage: Vec<Stage>,
     #[serde(flatten)]
     pub body: RuleBody,
     #[serde(default)]
@@ -55,6 +65,63 @@ pub struct Rule {
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+/// The attack stages of the account roll-up, in their fixed display order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Stage {
+    SuspiciousSignIn,
+    CredentialTakeover,
+    Persistence,
+    MailAccess,
+    Sending,
+    Consent,
+    MfaChange,
+}
+
+impl Stage {
+    /// Every stage, in order.
+    pub const ALL: [Stage; 7] = [
+        Stage::SuspiciousSignIn,
+        Stage::CredentialTakeover,
+        Stage::Persistence,
+        Stage::MailAccess,
+        Stage::Sending,
+        Stage::Consent,
+        Stage::MfaChange,
+    ];
+
+    /// The YAML / JSON name (`suspicious_sign_in`, ...).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Stage::SuspiciousSignIn => "suspicious_sign_in",
+            Stage::CredentialTakeover => "credential_takeover",
+            Stage::Persistence => "persistence",
+            Stage::MailAccess => "mail_access",
+            Stage::Sending => "sending",
+            Stage::Consent => "consent",
+            Stage::MfaChange => "mfa_change",
+        }
+    }
+}
+
+/// One value or a list of values.
+fn one_or_many<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany<T> {
+        One(T),
+        Many(Vec<T>),
+    }
+    Ok(match OneOrMany::<T>::deserialize(d)? {
+        OneOrMany::One(v) => vec![v],
+        OneOrMany::Many(v) => v,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -217,4 +284,67 @@ pub struct RuleTest {
     pub name: String,
     pub records: Vec<serde_json::Map<String, serde_json::Value>>,
     pub expect_hits: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::detect::load::{parse_rule, rule_sha256};
+
+    fn text(stage: &str) -> String {
+        format!(
+            "id: SPW-X-001\ntitle: t\nversion: 1\nstatus: stable\nseverity: low\n{stage}source: mailboxes\nmatch:\n  forwarding_smtp_address: {{exists: true}}\nanalyst_guidance: g\ntests:\n  - name: n\n    records: []\n    expect_hits: 0\n"
+        )
+    }
+
+    #[test]
+    fn stage_parses_from_one_value_or_a_list() {
+        let one = parse_rule(&text("stage: persistence\n"), "test").unwrap();
+        assert_eq!(one.stage, vec![Stage::Persistence]);
+        let many = parse_rule(&text("stage: [persistence, consent]\n"), "test").unwrap();
+        assert_eq!(many.stage, vec![Stage::Persistence, Stage::Consent]);
+        let none = parse_rule(&text(""), "test").unwrap();
+        assert_eq!(none.stage, Vec::<Stage>::new());
+        let all = parse_rule(
+            &text("stage: [suspicious_sign_in, credential_takeover, persistence, mail_access, sending, consent, mfa_change]\n"),
+            "test",
+        )
+        .unwrap();
+        assert_eq!(all.stage.len(), 7);
+        assert!(all.stage.windows(2).all(|w| w[0] < w[1]), "enum order");
+    }
+
+    #[test]
+    fn an_unknown_stage_is_a_load_error_naming_the_rule() {
+        for bad in [
+            "stage: lateral\n",
+            "stage: [persistence, lateral]\n",
+            "stage: 3\n",
+        ] {
+            let err = parse_rule(&text(bad), "test").unwrap_err().to_string();
+            assert!(err.contains("SPW-X-001"), "{bad}: {err}");
+            assert!(err.contains("stage"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn stage_is_not_part_of_the_rule_hash() {
+        // A stage is roll-up metadata, not detection logic: adding one must not mark every
+        // existing finding rule_updated on the next run.
+        let empty = Default::default();
+        let meta = Default::default();
+        let with = parse_rule(&text("stage: persistence\n"), "test").unwrap();
+        let without = parse_rule(&text(""), "test").unwrap();
+        assert_eq!(
+            rule_sha256(&with, &empty, &meta),
+            rule_sha256(&without, &empty, &meta)
+        );
+        let other =
+            parse_rule(&text("").replace("severity: low", "severity: high"), "test").unwrap();
+        assert_ne!(
+            rule_sha256(&other, &empty, &meta),
+            rule_sha256(&without, &empty, &meta),
+            "the hash still sees real changes"
+        );
+    }
 }

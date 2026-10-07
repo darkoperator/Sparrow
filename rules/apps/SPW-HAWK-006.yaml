@@ -13,6 +13,7 @@ severity: medium
 confidence: medium
 mitre: [T1098.003]
 tags: [apps, oauth-consent, persistence]
+stage: consent
 requires: []
 requires_evidence: []
 sources:

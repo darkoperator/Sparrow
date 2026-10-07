@@ -79,6 +79,13 @@ fn lint_rule(lr: &LoadedRule, set: &RuleSet, schema: &CaseSchema, out: &mut Vec<
             "needs a look-alike test (expect_hits == 0)",
         ));
     }
+    if r.stage.is_empty() {
+        out.push(issue(
+            &r.id,
+            LintSeverity::Warning,
+            "no stage: (its findings add no stage to the account roll-up and get no finding facts)",
+        ));
+    }
     // group_by names output columns; for `sql:` rules any other name is a `context` key.
     let is_sql = matches!(r.body, RuleBody::Sql { .. });
     for g in &r.group_by {

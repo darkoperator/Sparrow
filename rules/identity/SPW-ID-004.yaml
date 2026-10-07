@@ -44,6 +44,7 @@ severity: high
 confidence: medium
 mitre: [T1557, T1550.004]
 tags: [bec, aitm, sign-in]
+stage: suspicious_sign_in
 requires: []
 requires_evidence: []
 sql: |

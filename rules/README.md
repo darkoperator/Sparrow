@@ -39,6 +39,7 @@ severity: medium               # info | low | medium | high | critical
 confidence: medium
 mitre: [T1114.003]
 tags: [bec, forwarding]
+stage: persistence             # optional; one stage or a list — see "`stage`"
 requires: []                   # capability ids (data/capabilities.yaml)
 requires_evidence: []          # evidence ids (evidence_availability)
 needs_geoip: false
@@ -378,6 +379,25 @@ Only `ip_intel`, `capabilities` and `operation_catalog` are readable: the shared
 that is identical for every tenant. A table with neither `collection_id` nor `tenant_key` is
 rejected as unreadable.
 
+## `stage`
+
+The attack stage(s) a finding of the rule stands for: one name or a list, from
+`suspicious_sign_in`, `credential_takeover`, `persistence`, `mail_access`, `sending`, `consent`,
+`mfa_change` (an unknown name is a load error naming the rule). It is **not detection logic**: the
+runner ignores it and it is left out of the rule hash, so adding or changing a stage never marks a
+finding `rule_updated`. After every detection run the enrichment step reads it:
+
+- findings whose rule's stage includes `persistence`, `consent` or `mfa_change` get per-finding
+  facts (`finding_facts`: the actor's earlier days on each evidence address, the actor's other
+  findings, and for forwarding the targets with their internal/external scope);
+- the account roll-up (`account_rollup`) lists an account's stages as the union of its findings'
+  rule stages (`credential_takeover` is derived from SPW-ID-005's `takeover` context, no rule
+  declares it).
+
+A rule that maps to no stage leaves it out; `sparrow rules lint` lists those rules as warnings
+(`no stage:`). Shipped rules without a stage: SPW-CFG-001, SPW-FILE-001..003, SPW-HAWK-008,
+SPW-HAWK-014, SPW-HAWK-015, SPW-ID-006.
+
 ## `requires`, `requires_evidence`, `needs_geoip`
 
 Three ways a rule can be **not applicable** to a tenant. Every attempt of every rule is recorded in
@@ -485,6 +505,8 @@ detection: run 2, 27 rule runs (0 not applicable, 0 errors), 0 new findings, 0 u
 - a built-in rule with **no coverage entry** → error;
 - a coverage entry with **no rule file yet** → warning (`coverage entry has no rule file yet`);
 - `requires` / `requires_evidence` / `needs_geoip` differing from the coverage entry → error;
+- a rule with **no `stage:`** → warning (`no stage: ...`), so the rules the account roll-up cannot
+  place are listed;
 - the rule's hit table not being the **first** entry of the coverage `tables` → error. For a
   `sql:` rule, every table it emits as `source_table` must be in `tables`, and the first one must
   be among them.

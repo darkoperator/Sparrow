@@ -20,6 +20,7 @@ severity: high
 confidence: medium
 mitre: [T1114.003]
 tags: [bec, forwarding, exfiltration]
+stage: persistence
 requires: []
 requires_evidence: []
 sql: |

@@ -60,6 +60,7 @@ severity: medium
 confidence: low
 mitre: [T1078.004]
 tags: [bec, sign-in, travel]
+stage: suspicious_sign_in
 requires: []
 requires_evidence: []
 needs_geoip: true

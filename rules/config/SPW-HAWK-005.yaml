@@ -13,6 +13,7 @@ severity: high
 confidence: medium
 mitre: [T1583.001, T1606.002]
 tags: [config, domain-takeover, persistence]
+stage: persistence
 requires: []
 requires_evidence: []
 sources:

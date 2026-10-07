@@ -21,6 +21,7 @@ severity: high
 confidence: medium
 mitre: [T1098.002]
 tags: [bec, permissions, persistence]
+stage: persistence
 requires: []
 requires_evidence: []
 sql: |

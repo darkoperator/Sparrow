@@ -150,6 +150,7 @@ fn rule_schema_names_every_rule_field() {
         "confidence",
         "mitre",
         "tags",
+        "stage",
         "requires",
         "requires_evidence",
         "needs_geoip",

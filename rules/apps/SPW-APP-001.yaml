@@ -19,6 +19,7 @@ severity: high
 confidence: medium
 mitre: [T1098.003]
 tags: [apps, oauth-consent, bec]
+stage: consent
 requires: []
 requires_evidence: []
 sql: |

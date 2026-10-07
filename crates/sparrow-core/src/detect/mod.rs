@@ -3,6 +3,7 @@
 
 pub mod compile;
 pub mod coverage;
+pub mod enrich;
 pub mod findings;
 pub mod lint;
 pub mod load;

@@ -51,6 +51,7 @@ severity: medium
 confidence: medium
 mitre: [T1078.004, T1090]
 tags: [bec, sign-in, hosting]
+stage: suspicious_sign_in
 requires: []
 requires_evidence: []
 needs_geoip: true

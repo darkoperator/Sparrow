@@ -50,6 +50,7 @@ severity: medium
 confidence: low
 mitre: [T1114, T1534]
 tags: [bec, mail-send]
+stage: sending
 requires: []
 requires_evidence: [mail_send]
 sql: |

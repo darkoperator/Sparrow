@@ -16,6 +16,7 @@ severity: high
 confidence: medium
 mitre: [T1564.008, T1114.003]
 tags: [bec, inbox-rule]
+stage: persistence
 requires: []
 requires_evidence: []
 sql: |

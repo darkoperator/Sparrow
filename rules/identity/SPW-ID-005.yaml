@@ -26,6 +26,7 @@ severity: high
 confidence: medium
 mitre: [T1110.003, T1078]
 tags: [bec, sign-in, password-spray]
+stage: suspicious_sign_in
 requires: []
 requires_evidence: []
 min_signin_users: 5

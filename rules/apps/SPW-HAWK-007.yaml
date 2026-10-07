@@ -24,6 +24,7 @@ severity: high
 confidence: medium
 mitre: [T1098.003, T1528]
 tags: [apps, oauth-consent, privilege-escalation]
+stage: consent
 requires: []
 requires_evidence: []
 sql: |

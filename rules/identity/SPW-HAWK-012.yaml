@@ -9,6 +9,7 @@ severity: high
 confidence: medium
 mitre: [T1078.004]
 tags: [identity, identity-protection]
+stage: suspicious_sign_in
 requires: [identity_protection]
 requires_evidence: [signins]
 source: signins

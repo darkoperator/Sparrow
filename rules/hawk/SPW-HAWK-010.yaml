@@ -11,6 +11,7 @@ severity: high
 confidence: medium
 mitre: [T1114.003, T1564.008]
 tags: [bec, inbox-rule, forwarding]
+stage: persistence
 requires: []
 requires_evidence: []
 sources:

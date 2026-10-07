@@ -11,6 +11,7 @@ severity: medium
 confidence: medium
 mitre: [T1213]
 tags: [config, ediscovery, discovery]
+stage: mail_access
 requires: []
 requires_evidence: [ual]
 source: ual_events

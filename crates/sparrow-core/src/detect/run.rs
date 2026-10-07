@@ -7,11 +7,14 @@
 //!    required evidence is `not_licensed` / `not_enabled`), compile error, or run;
 //! 3. run every rule on a separate, locked, tenant-scoped rule instance
 //!    (`rule_conn::with_rule_conn`; the writer is released meanwhile) collecting hits in Rust;
-//! 4. merge everything into the case in one transaction on the writer.
+//! 4. merge everything into the case in one transaction on the writer;
+//! 5. rebuild the derived facts (`enrich::rebuild`) in their own transaction; a failure there is
+//!    recorded and reported, never a failed run.
 
 use crate::case::indicators::{Verdict, list_indicators};
 use crate::data::DataDirs;
 use crate::detect::compile::{CaseSchema, Compiled, compile_with_meta};
+use crate::detect::enrich::{self, EnrichReport};
 use crate::detect::findings::{Outcome, RunStatus, merge_hits, next_run_id, write_run_row};
 use crate::detect::load::{LoadedRule, RuleSet, load_rules};
 use crate::detect::phase::{self, Phase};
@@ -56,6 +59,8 @@ pub struct DetectReport {
     /// Wall time per phase of this run, in the order they ran (the sum of the per-rule
     /// `duration_ms` is only the "rules" part).
     pub phases: Vec<Phase>,
+    /// The post-detection enrichment (finding facts, account roll-up); `error` set when it failed.
+    pub enrich: EnrichReport,
 }
 
 enum Plan {
@@ -382,6 +387,19 @@ pub fn run(case: &mut Case, set: &RuleSet, opts: &DetectOptions) -> Result<Detec
     }
     tx.commit()?;
     phase::record("merge", t);
+    // 5. Enrichment, after the findings are merged. It never fails the run.
+    let t = Instant::now();
+    report.enrich =
+        enrich::rebuild(case.conn_mut(), set, run_id).unwrap_or_else(|e| EnrichReport {
+            error: Some(e.to_string()),
+            ..EnrichReport::default()
+        });
+    if let Some(e) = &report.enrich.error {
+        report.warnings.push(format!(
+            "enrichment failed, so finding facts and the account roll-up are unavailable until the next successful detection run: {e}"
+        ));
+    }
+    phase::record("enrich", t);
     report.phases = phase::take();
     Ok(report)
 }

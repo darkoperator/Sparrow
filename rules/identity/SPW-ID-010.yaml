@@ -34,6 +34,7 @@ severity: high
 confidence: medium
 mitre: [T1564.008, T1114.003]
 tags: [bec, inbox-rule, correlation]
+stage: [suspicious_sign_in, persistence]
 requires: []
 requires_evidence: []
 needs_geoip: true

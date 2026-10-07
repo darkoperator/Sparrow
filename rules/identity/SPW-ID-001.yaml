@@ -12,6 +12,7 @@ severity: high
 confidence: medium
 mitre: [T1098.005]
 tags: [bec, mfa, correlation]
+stage: [suspicious_sign_in, mfa_change]
 requires: []
 requires_evidence: []
 needs_geoip: true

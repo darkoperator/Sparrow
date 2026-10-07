@@ -17,6 +17,7 @@ severity: medium
 confidence: medium
 mitre: [T1114.002, T1114.003]
 tags: [bec, search, data-exfiltration]
+stage: mail_access
 requires: []
 requires_evidence: [search_queries]
 sql: |

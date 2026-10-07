@@ -2,7 +2,7 @@
 //! embedded by `build.rs`; every directory in `DataDirs::rules` is then overlaid in order.
 
 use crate::data::DataDirs;
-use crate::detect::rule::{Cond, Rule};
+use crate::detect::rule::{Cond, Rule, Stage};
 use crate::{Error, Result};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -73,9 +73,27 @@ fn parse_yaml<T: for<'de> Deserialize<'de>>(text: &str, origin: &str) -> Result<
 /// Parse a rule file. The condition shapes are checked first so an error names the rule id and
 /// the path (`SPW-X-1: match.all[2].f: unknown operator "eqq"`) instead of a generic
 /// untagged-enum failure.
-fn parse_rule(text: &str, origin: &str) -> Result<Rule> {
+pub(crate) fn parse_rule(text: &str, origin: &str) -> Result<Rule> {
     let value: serde_json::Value = parse_yaml(text, origin)?;
     let id = value.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+    if let Some(stage) = value.get("stage") {
+        let names: Vec<&serde_json::Value> = match stage {
+            serde_json::Value::Array(items) => items.iter().collect(),
+            v => vec![v],
+        };
+        for v in names {
+            let known = v
+                .as_str()
+                .is_some_and(|s| Stage::ALL.iter().any(|st| st.as_str() == s));
+            if !known {
+                let all: Vec<&str> = Stage::ALL.iter().map(|s| s.as_str()).collect();
+                return Err(Error::Invalid(format!(
+                    "{origin}: {id}: stage: unknown stage {v} (one of {})",
+                    all.join(", ")
+                )));
+            }
+        }
+    }
     let check = |v: &serde_json::Value, path: &str| {
         Cond::from_json(v, path)
             .map(|_| ())
@@ -277,6 +295,12 @@ pub fn rule_sha256(
     lists: &BTreeMap<String, Vec<String>>,
     list_meta: &BTreeMap<String, ListMeta>,
 ) -> String {
+    // The stage is roll-up metadata, not detection logic: hashing the rule without it keeps
+    // every hash (and so `rule_updated`) as it was before rules carried one.
+    let rule = &Rule {
+        stage: Vec::new(),
+        ..rule.clone()
+    };
     let value = serde_json::to_value(rule).expect("a rule serializes to JSON");
     let mut refs = BTreeSet::new();
     collect_list_refs(&value, &mut refs);

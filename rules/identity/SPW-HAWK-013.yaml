@@ -13,6 +13,7 @@ severity: medium
 confidence: medium
 mitre: [T1078]
 tags: [identity, mobile]
+stage: persistence
 requires: []
 requires_evidence: []
 sql: |

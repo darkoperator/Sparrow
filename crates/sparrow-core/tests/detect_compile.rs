@@ -770,6 +770,42 @@ fn builtin_rules_lint_clean() {
 }
 
 #[test]
+fn builtin_rules_without_a_stage_are_listed_by_lint() {
+    let case = Case::in_memory().unwrap();
+    let schema = CaseSchema::of(case.conn()).unwrap();
+    let set = load_rules(&DataDirs::default()).unwrap();
+    let cov = CoverageMatrix::builtin().unwrap();
+    let issues = lint(&set, &schema, Some(&cov));
+    let mut no_stage: Vec<&str> = issues
+        .iter()
+        .filter(|i| i.severity == LintSeverity::Warning && i.message.starts_with("no stage:"))
+        .map(|i| i.rule_id.as_str())
+        .collect();
+    no_stage.sort();
+    let mut want: Vec<&str> = set
+        .rules
+        .iter()
+        .filter(|r| r.rule.stage.is_empty())
+        .map(|r| r.rule.id.as_str())
+        .collect();
+    want.sort();
+    assert_eq!(no_stage, want);
+    assert_eq!(
+        no_stage,
+        [
+            "SPW-CFG-001",
+            "SPW-FILE-001",
+            "SPW-FILE-002",
+            "SPW-FILE-003",
+            "SPW-HAWK-008",
+            "SPW-HAWK-014",
+            "SPW-HAWK-015",
+            "SPW-ID-006"
+        ]
+    );
+}
+
+#[test]
 fn shipped_rule_samples_pass_their_inline_tests() {
     let set = load_rules(&DataDirs::default()).unwrap();
     let results = sparrow_core::detect::test::run_inline_tests(&set, None).unwrap();

@@ -57,6 +57,7 @@ severity: high
 confidence: medium
 mitre: [T1078.004, T1098, T1564.008]
 tags: [bec, session-replay, persistence, correlation]
+stage: [suspicious_sign_in, persistence]
 requires: []
 requires_evidence: []
 needs_geoip: true

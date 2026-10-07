@@ -32,6 +32,7 @@ fn fresh_case_has_provenance_tables() {
     assert_eq!(
         tables(&case),
         vec![
+            "account_rollup",
             "admin_audit_events",
             "annotations",
             "app_credentials",
@@ -55,6 +56,7 @@ fn fresh_case_has_provenance_tables() {
             "evidence_availability",
             "file_events",
             "finding_evidence",
+            "finding_facts",
             "findings",
             "group_members",
             "groups",
@@ -300,7 +302,7 @@ fn describe_lists_views_with_their_kind() {
 #[test]
 fn state_table_specs_match_the_schema() {
     let case = Case::in_memory().unwrap();
-    assert_eq!(case.schema_version().unwrap(), 19);
+    assert_eq!(case.schema_version().unwrap(), 20);
     for spec in ALL {
         for common in [
             "record_key",
