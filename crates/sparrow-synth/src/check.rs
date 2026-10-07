@@ -44,6 +44,9 @@ pub struct DetectionCheck {
     pub unexpected_hits: Vec<String>,
     /// A tenant-wide `not_applicable` the run log does not show, or a rule that errored.
     pub applicability: Vec<String>,
+    /// An account the manifest expects in the roll-up (`manifest.accounts`) that `account_rollup` lacks, a
+    /// stage it lacks, or an `acts_without_signin` address it does not list; or a roll-up that was not computed.
+    pub accounts: Vec<String>,
     /// Why the gate did not run: only set by [`check_without_detection`], the explicit opt-out
     /// for tests that ingest without detection. A case with no detection run fails the gate
     /// otherwise.
@@ -108,7 +111,14 @@ fn check_inner(
                 check_capabilities(manifest, case, tk, &mut problems)?;
                 check_evidence(manifest, case, tk, &mut problems)?;
                 detection = match detect {
-                    Some((set, allow)) => check_detection(manifest, case, *cid, tk, set, allow)?,
+                    Some((set, allow)) => {
+                        let mut d = check_detection(manifest, case, *cid, tk, set, allow)?;
+                        // Only when a detection run exists: the roll-up is rebuilt by every run.
+                        if d.rules_checked > 0 {
+                            d.accounts = check_accounts(manifest, case, tk)?;
+                        }
+                        d
+                    }
                     None => DetectionCheck {
                         skipped: Some("detection not checked (check_without_detection)".into()),
                         ..DetectionCheck::default()
@@ -120,7 +130,8 @@ fn check_inner(
                         .iter()
                         .chain(&detection.unexpected_hits)
                         .chain(&detection.applicability)
-                        .map(|p| format!("detection: {p}")),
+                        .map(|p| format!("detection: {p}"))
+                        .chain(detection.accounts.iter().map(|p| format!("accounts: {p}"))),
                 );
             }
             None => problems.push(format!(
@@ -585,6 +596,110 @@ fn tenant_wide_not_applicable(
                     .all(|a| a == "not_licensed" || a == "not_enabled")
         })
     })
+}
+
+/// The account roll-up gate: every account of `manifest.accounts` is a row of `account_rollup` (for the tenant) whose
+/// stages include the expected ones and whose addresses list every expected address with the reason
+/// `acts_without_signin`. A case whose roll-up was not computed (no `enrichment_run_id`, or an
+/// `enrichment_error` after the latest run) fails closed. Nothing is checked when the manifest expects no account.
+fn check_accounts(manifest: &Manifest, case: &Case, tenant_key: &str) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    if manifest.accounts.is_empty() {
+        return Ok(out);
+    }
+    let meta = |key: &str| -> Result<Option<String>> {
+        case.conn()
+            .query_row(
+                "SELECT value FROM case_meta WHERE key = ?",
+                params![key],
+                |r| r.get::<_, String>(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                duckdb::Error::QueryReturnedNoRows => Ok(None),
+                e => Err(e),
+            })
+            .map_err(db)
+    };
+    if let Some(e) = meta("enrichment_error")? {
+        out.push(format!("the roll-up was not computed: {e}"));
+        return Ok(out);
+    }
+    if meta("enrichment_run_id")?.is_none() {
+        out.push("the roll-up was not computed: the case has no enrichment run".into());
+        return Ok(out);
+    }
+    let mut stmt = case
+        .conn()
+        .prepare(
+            "SELECT lower(upn), CAST(stages AS VARCHAR), CAST(addresses AS VARCHAR), addresses_truncated \
+             FROM account_rollup WHERE tenant_key = ?",
+        )
+        .map_err(db)?;
+    let rows: BTreeMap<String, (String, String, bool)> = stmt
+        .query_map(params![tenant_key], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                (
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, bool>(3)?,
+                ),
+            ))
+        })
+        .map_err(db)?
+        .collect::<std::result::Result<_, _>>()
+        .map_err(db)?;
+    for want in &manifest.accounts {
+        let Some((stages, addresses, truncated)) = rows.get(&want.upn) else {
+            out.push(format!(
+                "{} (storylines {}) is not in the roll-up",
+                want.upn,
+                want.storylines.join(", ")
+            ));
+            continue;
+        };
+        let have: Vec<String> = serde_json::from_str(stages)
+            .map_err(|e| Error::Core(format!("account_rollup.stages of {}: {e}", want.upn)))?;
+        for stage in want.stages.iter().filter(|s| !have.contains(s)) {
+            out.push(format!(
+                "{} lacks the stage {stage} (has {}), expected from {}",
+                want.upn,
+                have.join(", "),
+                want.storylines.join(", ")
+            ));
+        }
+        let listed: Vec<serde_json::Value> = serde_json::from_str(addresses)
+            .map_err(|e| Error::Core(format!("account_rollup.addresses of {}: {e}", want.upn)))?;
+        for ip in &want.addresses {
+            let canon = |s: &str| {
+                s.parse::<std::net::IpAddr>()
+                    .map_or_else(|_| s.to_string(), |i| i.to_string())
+            };
+            let found = listed
+                .iter()
+                .find(|a| a["ip"].as_str().is_some_and(|x| canon(x) == canon(ip)));
+            match found {
+                None => out.push(format!(
+                    "{} does not list {ip}, an address it acts from in MailItemsAccessed records but never signs in from{}",
+                    want.upn,
+                    if *truncated { " (the list is truncated)" } else { "" }
+                )),
+                Some(a)
+                    if !a["reasons"]
+                        .as_array()
+                        .is_some_and(|r| r.iter().any(|x| x == "acts_without_signin")) =>
+                {
+                    out.push(format!(
+                        "{} lists {ip} without the reason acts_without_signin (reasons {})",
+                        want.upn, a["reasons"]
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// " (computed: <condition>)" for a computed expectation, else nothing.

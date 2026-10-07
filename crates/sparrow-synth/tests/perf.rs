@@ -203,6 +203,11 @@ fn tree_digest(dir: &Path) -> String {
 /// With those two entries removed from `manifest.json`, the tree still hashes to
 /// `3e037d5faa658cee372dccc2eba1b0fb85edb020c5982c2d0df387d9b9e4d812`. The value before this
 /// change was `1c45d7e934bae7b040e2cf7d218dc4f0f9e29a5d54099efc8b28fc2a3ae125bb`.
+///
+/// Re-recorded for agent accuracy T3: the manifest gains `accounts` (the account roll-up expectations,
+/// `expect::account_expectations`); every collector file is byte-identical. With `accounts` removed from
+/// `manifest.json` (re-serialised), the tree hashes to the previous value
+/// `fcd8ae1ead4bed656370d76c9096ce4b93cb7b455bcb7d99927408a229b7d499`.
 #[test]
 #[ignore = "heavy: run with cargo test --workspace -- --ignored"]
 fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
@@ -213,7 +218,7 @@ fn scaled_tree_is_byte_identical_to_the_streaming_rewrite() {
     generate_to_dir(&load("volume").unwrap(), &o, dir.path()).unwrap();
     assert_eq!(
         tree_digest(dir.path()),
-        "fcd8ae1ead4bed656370d76c9096ce4b93cb7b455bcb7d99927408a229b7d499"
+        "ace5fa205d5e1af38f10ff816727d4b658ee971fa5cad238a4c84d0c3c771162"
     );
 }
 

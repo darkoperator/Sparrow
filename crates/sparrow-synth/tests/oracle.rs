@@ -433,3 +433,72 @@ fn the_gate_passes_with_the_computed_outcomes_on_seeds_1_to_3() {
     assert!(failed.is_empty(), "{}", failed.join("\n"));
     assert_every_computed_kind_hits(&seen);
 }
+
+/// The manifest's account expectations, re-derived independently from the oracle's own rows: every expected
+/// address is a delivered MailItemsAccessed record of that account, and the account's delivered sign-ins never
+/// carry it; every expected account is the author of a delivered record of one of its storylines. Non-vacuous: some
+/// tree expects an address, and across the collectors the expectations differ with what each one delivers.
+#[test]
+fn the_account_expectations_follow_the_delivered_rows() {
+    let mut with_address = 0;
+    let mut per_collector = BTreeSet::new();
+    for name in ["bec-aitm", "password-spray"] {
+        for c in Collector::ALL {
+            let sc = load(name).unwrap();
+            let opts = GenerateOptions::new(*c, 1);
+            let m = CACHE.tree(&sc, &opts).unwrap().manifest.clone();
+            let facts = oracle_facts(&sc, &opts).unwrap();
+            let authors = facts.authors();
+            for a in &m.accounts {
+                // Authored: a delivered record of one of its storylines is the account's own.
+                let authored = m
+                    .storylines
+                    .iter()
+                    .filter(|s| a.storylines.contains(&s.id))
+                    .flat_map(|s| &s.evidence)
+                    .flat_map(|e| &e.delivered)
+                    .filter_map(|l| l.record_key.as_ref().map(|k| (l.table.clone(), k.clone())))
+                    .any(|(t, k)| authors.get(&(t, k)) == Some(&a.upn));
+                assert!(
+                    authored,
+                    "{name} {c:?}: {} authored no delivered record of {:?}",
+                    a.upn, a.storylines
+                );
+                for ip in &a.addresses {
+                    let ip: IpAddr = ip.parse().unwrap();
+                    assert!(
+                        facts.ual.iter().any(|u| u.op == "mailitemsaccessed"
+                            && u.upn.as_deref() == Some(&a.upn)
+                            && u.ip == Some(ip)),
+                        "{name} {c:?}: {ip} is in no MailItemsAccessed record of {}",
+                        a.upn
+                    );
+                    assert!(
+                        !facts
+                            .signins
+                            .iter()
+                            .any(|s| s.upn.as_deref() == Some(&a.upn) && s.ip == ip),
+                        "{name} {c:?}: {} signs in from {ip}",
+                        a.upn
+                    );
+                    with_address += 1;
+                }
+            }
+            per_collector.insert((name, format!("{c:?}"), m.accounts.len()));
+        }
+    }
+    assert!(
+        with_address > 0,
+        "no tree expects a MailItemsAccessed-only address"
+    );
+    // The collectors deliver different rows, so the expected accounts are not all alike.
+    assert!(
+        per_collector
+            .iter()
+            .map(|(_, _, n)| *n)
+            .collect::<BTreeSet<_>>()
+            .len()
+            > 1,
+        "{per_collector:?}"
+    );
+}

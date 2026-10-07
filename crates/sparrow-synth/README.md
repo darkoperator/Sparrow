@@ -375,6 +375,7 @@ Top-level fields:
 | `evidence` | Allowed availability statuses per evidence id. |
 | `storylines` | One `StoryExpect` per storyline/look-alike. |
 | `rules` | One `RuleExpect` per (rule, storyline) pair. |
+| `accounts` | One `AccountExpect` per account the account roll-up must list (omitted when none). |
 
 `FileExpect`:
 
@@ -492,9 +493,20 @@ Note that the gate reads only what the case holds: ingest the tree **with `--geo
 four `needs_geoip` rules are `not_applicable` ("no GeoIP data") and every positive that depends on
 them is reported as a missing hit. That is the gate working, not a false alarm.
 
-Any difference is a `problems` entry prefixed `detection:` and makes `sparrow synth check` exit
-**2**. With `--json` the same data is in `detection`: `rules_checked`, `missing_hits`,
-`unexpected_hits`, `applicability`, and `skipped` (a string when the gate did not run at all,
+**The account roll-up** (`manifest.accounts`, checked after the rule gate when a detection run exists): detection
+rebuilds `account_rollup` (one row per account with a finding), and the gate checks that each expected account is a
+row, that its `stages` include the stages (`stage:` of the rules) of the rules expected to hit its own records, and that
+its `addresses` list every address its storylines' `MailItemsAccessed` records come from when the account never signs
+in from it, with the reason `acts_without_signin`. Microsoft service addresses and private ones are not expected. An
+account is expected for a positive storyline only when a rule is expected to hit a record the ACTOR authored (a
+sign-in's user, a UAL record's UserId, an admin cmdlet's caller): a finding's actor is the user of the record it fires
+on, so an admin's cmdlet on the actor's mailbox expects no row for the actor. The expectations are computed from the
+tree's own delivered rows (`oracle::Facts`), never from Sparrow's output. A case with no computed roll-up
+(`case_meta.enrichment_run_id` absent, or an `enrichment_error`) fails closed.
+
+Any difference is a `problems` entry prefixed `detection:` (or `accounts:` for the roll-up) and makes
+`sparrow synth check` exit **2**. With `--json` the same data is in `detection`: `rules_checked`, `missing_hits`,
+`unexpected_hits`, `applicability`, `accounts`, and `skipped` (a string when the gate did not run at all,
 e.g. `the case holds no detection run for the tenant` — which is what `ingest --no-detect` leaves
 behind).
 

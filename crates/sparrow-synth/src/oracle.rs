@@ -254,6 +254,24 @@ fn net_eq(ip: IpAddr, net: &str, len: u32) -> bool {
     }
 }
 
+/// The `stage:` of every rule of the built-in pack (`Stage::as_str` names, in the stage enum's order).
+pub fn rule_stages() -> Result<BTreeMap<String, Vec<String>>> {
+    Ok(pack()?
+        .rules
+        .iter()
+        .map(|r| {
+            (
+                r.rule.id.clone(),
+                r.rule
+                    .stage
+                    .iter()
+                    .map(|s| s.as_str().to_string())
+                    .collect(),
+            )
+        })
+        .collect())
+}
+
 /// The built-in rule pack, loaded once.
 fn pack() -> Result<&'static sparrow_core::detect::load::RuleSet> {
     static SET: std::sync::OnceLock<
@@ -439,6 +457,60 @@ impl Facts {
 
     fn ip(&self, ip: IpAddr) -> IpFacts {
         self.ips.get(&ip).cloned().unwrap_or_default()
+    }
+
+    /// Who authored each delivered record of the tables the roll-up reads actors from: `(table, key)` to the
+    /// lower-case UPN of a sign-in's user, a UAL record's UserId, or an admin cmdlet's caller. A record
+    /// of any other table has no entry (its actor is not a column of the rows this model reads).
+    pub fn authors(&self) -> BTreeMap<(String, String), String> {
+        let mut out = BTreeMap::new();
+        for s in &self.signins {
+            if let Some(u) = &s.upn {
+                out.insert(("signins".to_string(), s.key.clone()), u.clone());
+            }
+        }
+        for u in &self.ual {
+            if let Some(a) = &u.upn {
+                out.insert(("ual_events".to_string(), u.key.clone()), a.clone());
+            }
+        }
+        for a in &self.admin {
+            if let Some(c) = &a.caller {
+                out.insert(("admin_audit_events".to_string(), a.key.clone()), c.clone());
+            }
+        }
+        out
+    }
+
+    /// The account roll-up's `acts_without_signin` addresses that a set of records proves (the account roll-up,
+    /// `sparrow_core::detect::enrich::accounts`): per account, the addresses of its delivered
+    /// `MailItemsAccessed` UAL records among `keys` (record keys) that never appear in the account's own
+    /// delivered sign-ins (any result), and that are neither a Microsoft service address nor a private one
+    /// (an Exchange front end or a LAN address says nothing about who acted: the roll-up skips them).
+    pub fn unseen_activity_addresses(
+        &self,
+        keys: &BTreeSet<String>,
+    ) -> BTreeMap<String, BTreeSet<IpAddr>> {
+        let mut out: BTreeMap<String, BTreeSet<IpAddr>> = BTreeMap::new();
+        for u in &self.ual {
+            let (Some(upn), Some(ip)) = (u.upn.as_deref(), u.ip) else {
+                continue;
+            };
+            if u.op != "mailitemsaccessed" || !keys.contains(&u.key) {
+                continue;
+            }
+            if self
+                .signins
+                .iter()
+                .any(|s| s.upn.as_deref() == Some(upn) && s.ip == ip)
+                || self.ip(ip).microsoft
+                || sparrow_core::enrich::ip::is_private(ip)
+            {
+                continue;
+            }
+            out.entry(upn.to_string()).or_default().insert(ip);
+        }
+        out
     }
 
     fn credential_failure(&self, s: &SignInRow) -> bool {
@@ -986,5 +1058,240 @@ fn ual_row(collector: Collector, u: &Ual, key: String) -> UalRow {
             .map(|s| s.to_lowercase()),
         user_agent,
         failed: text(a, "ResultStatus").is_some_and(|r| r.eq_ignore_ascii_case("failed")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    fn signin(upn: &str, addr: &str, error: i64) -> SignInRow {
+        SignInRow {
+            key: format!("s-{upn}-{addr}"),
+            t: 0,
+            upn: Some(upn.into()),
+            ip: ip(addr),
+            error,
+            interactive: true,
+            session: None,
+            mfa: false,
+            risky: false,
+            app: String::new(),
+            user_agent: String::new(),
+        }
+    }
+
+    fn ual(key: &str, upn: &str, addr: &str, op: &str) -> UalRow {
+        UalRow {
+            key: key.into(),
+            t: 0,
+            upn: Some(upn.into()),
+            ip: Some(ip(addr)),
+            op: op.into(),
+            session: None,
+            app: None,
+            user_agent: None,
+            failed: false,
+        }
+    }
+
+    fn facts(signins: Vec<SignInRow>, ual: Vec<UalRow>, microsoft: &[&str]) -> Facts {
+        let mut ips = BTreeMap::new();
+        for m in microsoft {
+            ips.insert(
+                ip(m),
+                IpFacts {
+                    microsoft: true,
+                    ..IpFacts::default()
+                },
+            );
+        }
+        Facts {
+            collector: Collector::Invictus,
+            signins,
+            ual,
+            admin: Vec::new(),
+            ips,
+            spray: BTreeSet::new(),
+            cloud: BTreeSet::new(),
+            first_party: BTreeSet::new(),
+            codes: BTreeSet::new(),
+            agents: Vec::new(),
+        }
+    }
+
+    fn keys(k: &[&str]) -> BTreeSet<String> {
+        k.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_mailitemsaccessed_address_the_account_never_signs_in_from_is_listed() {
+        let f = facts(
+            // alice signs in from A (a failure counts: the roll-up looks at any result) and from C; bob from B.
+            vec![
+                signin("alice@contoso.example", "192.0.2.1", 0),
+                signin("alice@contoso.example", "192.0.2.3", 50126),
+                signin("bob@contoso.example", "192.0.2.2", 0),
+            ],
+            vec![
+                ual(
+                    "m1",
+                    "alice@contoso.example",
+                    "192.0.2.1",
+                    "mailitemsaccessed",
+                ),
+                ual(
+                    "m2",
+                    "alice@contoso.example",
+                    "198.51.100.9",
+                    "mailitemsaccessed",
+                ),
+                ual(
+                    "m3",
+                    "alice@contoso.example",
+                    "192.0.2.3",
+                    "mailitemsaccessed",
+                ),
+                // bob signs in from B but not from this one: still alice's reading from B is unseen for alice.
+                ual(
+                    "m4",
+                    "alice@contoso.example",
+                    "192.0.2.2",
+                    "mailitemsaccessed",
+                ),
+            ],
+            &[],
+        );
+        let got = f.unseen_activity_addresses(&keys(&["m1", "m2", "m3", "m4"]));
+        assert_eq!(
+            got["alice@contoso.example"],
+            [ip("198.51.100.9"), ip("192.0.2.2")].into_iter().collect()
+        );
+        assert_eq!(got.len(), 1);
+    }
+
+    #[test]
+    fn only_the_storylines_own_mailitemsaccessed_records_count() {
+        let f = facts(
+            Vec::new(),
+            vec![
+                ual(
+                    "m1",
+                    "alice@contoso.example",
+                    "198.51.100.9",
+                    "mailitemsaccessed",
+                ),
+                // Not a MailItemsAccessed record.
+                ual(
+                    "n1",
+                    "alice@contoso.example",
+                    "198.51.100.10",
+                    "new-inboxrule",
+                ),
+                // MailItemsAccessed but not one of the storyline's records.
+                ual(
+                    "m9",
+                    "alice@contoso.example",
+                    "198.51.100.11",
+                    "mailitemsaccessed",
+                ),
+            ],
+            &[],
+        );
+        let got = f.unseen_activity_addresses(&keys(&["m1", "n1"]));
+        assert_eq!(
+            got["alice@contoso.example"],
+            [ip("198.51.100.9")].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn microsoft_and_private_addresses_are_not_listed() {
+        let f = facts(
+            Vec::new(),
+            vec![
+                ual(
+                    "m1",
+                    "alice@contoso.example",
+                    "40.107.0.1",
+                    "mailitemsaccessed",
+                ),
+                ual(
+                    "m2",
+                    "alice@contoso.example",
+                    "10.1.2.3",
+                    "mailitemsaccessed",
+                ),
+                ual(
+                    "m3",
+                    "alice@contoso.example",
+                    "198.51.100.9",
+                    "mailitemsaccessed",
+                ),
+            ],
+            &["40.107.0.1"],
+        );
+        let got = f.unseen_activity_addresses(&keys(&["m1", "m2", "m3"]));
+        assert_eq!(
+            got["alice@contoso.example"],
+            [ip("198.51.100.9")].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn authors_name_the_user_of_each_delivered_record() {
+        let mut f = facts(
+            vec![signin("alice@contoso.example", "192.0.2.1", 0)],
+            vec![ual(
+                "m1",
+                "bob@contoso.example",
+                "192.0.2.2",
+                "new-inboxrule",
+            )],
+            &[],
+        );
+        f.admin.push(AdminRow {
+            key: "a1".into(),
+            t: 0,
+            caller: Some("admin@contoso.example".into()),
+            cmdlet: "set-mailbox".into(),
+        });
+        let a = f.authors();
+        assert_eq!(
+            a[&(
+                "signins".to_string(),
+                "s-alice@contoso.example-192.0.2.1".to_string()
+            )],
+            "alice@contoso.example"
+        );
+        assert_eq!(
+            a[&("ual_events".to_string(), "m1".to_string())],
+            "bob@contoso.example"
+        );
+        assert_eq!(
+            a[&("admin_audit_events".to_string(), "a1".to_string())],
+            "admin@contoso.example"
+        );
+        assert_eq!(a.len(), 3);
+    }
+
+    #[test]
+    fn a_collector_with_no_signin_log_lists_every_address() {
+        // Hawk 3 delivers no sign-ins: nothing is ever "seen" in them.
+        let f = facts(
+            Vec::new(),
+            vec![ual(
+                "m1",
+                "alice@contoso.example",
+                "192.0.2.1",
+                "mailitemsaccessed",
+            )],
+            &[],
+        );
+        assert_eq!(f.unseen_activity_addresses(&keys(&["m1"])).len(), 1);
     }
 }
