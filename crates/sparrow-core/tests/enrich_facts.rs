@@ -11,7 +11,7 @@ use serde_json::json;
 use sparrow_core::Case;
 use sparrow_core::data::DataDirs;
 use sparrow_core::detect::enrich::facts::{FindingFacts, Target};
-use sparrow_core::detect::enrich::{FACTS_VERSION, rebuild};
+use sparrow_core::detect::enrich::{EnrichState, FACTS_VERSION, enrichment_state, rebuild};
 use sparrow_core::detect::load::{LoadedRule, RuleSet, load_rules, rule_sha256};
 use sparrow_core::detect::rule::Rule;
 use sparrow_core::detect::run::{DetectOptions, run};
@@ -185,7 +185,7 @@ fn a_forward_set_from_a_familiar_ip_reports_the_earlier_days() {
     assert_eq!(f.actor_ips.len(), 1, "{f:?}");
     let ip = &f.actor_ips[0];
     assert_eq!(ip.ip, IP);
-    assert_eq!(ip.user_signin_days_before, 3);
+    assert_eq!(ip.user_signin_days_before, Some(3));
     assert_eq!(ip.user_first_signin, Some(at(1, 9, 0)));
     assert!(!ip.spray_source);
     assert_eq!(
@@ -228,7 +228,7 @@ fn prior_messages_is_null_without_any_message_trace() {
     assert_eq!(targets[0].prior_messages, None);
     // No sign-ins at all: the window is unknown and no earlier day exists.
     assert_eq!(f.window_start, None);
-    assert_eq!(f.actor_ips[0].user_signin_days_before, 0);
+    assert_eq!(f.actor_ips[0].user_signin_days_before, Some(0));
     assert_eq!(f.actor_ips[0].user_first_signin, None);
 }
 
@@ -443,7 +443,7 @@ fn the_window_edge_is_reported() {
     run(&mut case, &builtin(), &opts()).unwrap();
     let f = facts_of(&case, "SPW-HAWK-010", ALICE);
     assert_eq!(f.window_start, Some(at(4, 10, 0)));
-    assert_eq!(f.actor_ips[0].user_signin_days_before, 0);
+    assert_eq!(f.actor_ips[0].user_signin_days_before, Some(0));
     assert_eq!(f.actor_ips[0].user_first_signin, None);
 }
 
@@ -524,5 +524,166 @@ fn a_failing_rebuild_keeps_detection_successful_and_records_the_error() {
             "SELECT count(*) FROM finding_facts WHERE computed_run_id = 7"
         ),
         before.len() as i64
+    );
+}
+
+#[test]
+fn prior_messages_is_null_for_a_tenant_without_message_trace() {
+    // Two tenants: only t2 has message trace. A t1 target must read "unknown", not "0 messages".
+    let mut case = new_case();
+    domain(&case, "contoso.example");
+    const T2: &str = "t2";
+    insert_row(&case, "tenant", T2, json!({"tenant_key": T2}));
+    detect::collection_of(&case, T2);
+    insert_row(
+        &case,
+        "tenant_domains",
+        T2,
+        json!({"tenant_key": T2, "domain": "fabrikam.example", "source": "derived_upn", "rows_seen": 1}),
+    );
+    new_inbox_rule(
+        &case,
+        ALICE,
+        IP,
+        at(4, 10, 0),
+        json!({"Name": "fw", "Mailbox": ALICE, "ForwardTo": "bob@partner.example"}),
+    );
+    let carol = "carol@fabrikam.example";
+    insert_ual(
+        &case,
+        T2,
+        json!({"operation": "New-InboxRule", "workload": "Exchange", "record_type": 1,
+               "record_type_name": "ExchangeAdmin", "result_status": "True",
+               "user_upn": carol, "client_ip": IP, "event_time": iso(at(4, 10, 0)),
+               "parameters": {"Name": "fw", "Mailbox": carol, "ForwardTo": "bob@partner.example"},
+               "data_completeness": "full"}),
+    );
+    insert_row(
+        &case,
+        "message_trace",
+        T2,
+        json!({"sender": carol, "recipient": "bob@partner.example", "received": iso(at(1, 11, 0)), "status": "Delivered"}),
+    );
+    // Alice's own mail to Bob was traced in t2's collection: still not t1 evidence.
+    insert_row(
+        &case,
+        "message_trace",
+        T2,
+        json!({"sender": ALICE, "recipient": "bob@partner.example", "received": iso(at(1, 12, 0)), "status": "Delivered"}),
+    );
+    run(&mut case, &builtin(), &opts()).unwrap();
+    let a = facts_of(&case, "SPW-HAWK-010", ALICE).targets.unwrap();
+    assert_eq!(a[0].prior_messages, None, "t1 has no message trace");
+    let c = facts_of(&case, "SPW-HAWK-010", carol).targets.unwrap();
+    assert_eq!(c[0].prior_messages, Some(1));
+}
+
+#[test]
+fn a_missing_evidence_time_gives_no_earlier_day_count() {
+    let mut case = new_case();
+    domain(&case, "contoso.example");
+    signin(&case, ALICE, IP, at(1, 9, 0), 0);
+    signin(&case, ALICE, IP, at(2, 9, 0), 0);
+    new_inbox_rule(
+        &case,
+        ALICE,
+        IP,
+        at(4, 10, 0),
+        json!({"Name": "fw", "Mailbox": ALICE, "ForwardTo": "bob@partner.example"}),
+    );
+    trace(&case, ALICE, "bob@partner.example", at(1, 11, 0));
+    let set = builtin();
+    run(&mut case, &set, &opts()).unwrap();
+    assert_eq!(
+        facts_of(&case, "SPW-HAWK-010", ALICE).actor_ips[0].user_signin_days_before,
+        Some(2)
+    );
+    // The same evidence without a time cannot be compared with the sign-ins.
+    case.conn()
+        .execute_batch("UPDATE finding_evidence SET event_time = NULL")
+        .unwrap();
+    let r = rebuild(case.conn_mut(), &set, 1).unwrap();
+    assert_eq!(r.error, None);
+    let f = facts_of(&case, "SPW-HAWK-010", ALICE);
+    assert_eq!(f.actor_ips.len(), 1);
+    assert_eq!(f.actor_ips[0].user_signin_days_before, None);
+    assert_eq!(f.actor_ips[0].user_first_signin, None);
+    assert_eq!(f.targets.unwrap()[0].prior_messages, None);
+    // The JSON says null, not 0.
+    let text: String = case
+        .conn()
+        .query_row(
+            "SELECT CAST(facts->'$.actor_ips[0].user_signin_days_before' AS VARCHAR) FROM finding_facts \
+             JOIN findings USING (finding_id) WHERE rule_id = 'SPW-HAWK-010'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(text, "null");
+}
+
+#[test]
+fn enrichment_state_is_the_reader_check() {
+    let mut case = new_case();
+    domain(&case, "contoso.example");
+    new_inbox_rule(
+        &case,
+        ALICE,
+        IP,
+        at(4, 10, 0),
+        json!({"Name": "fw", "Mailbox": ALICE, "ForwardTo": "bob@partner.example"}),
+    );
+    let set = builtin();
+    assert_eq!(enrichment_state(case.conn()).unwrap(), EnrichState::Never);
+    run(&mut case, &set, &opts()).unwrap();
+    assert_eq!(
+        enrichment_state(case.conn()).unwrap(),
+        EnrichState::Ok { run_id: 1 }
+    );
+
+    // A failed rebuild with its marker written: Failed.
+    case.conn()
+        .execute_batch("ALTER TABLE tenant_domains RENAME TO tenant_domains_away")
+        .unwrap();
+    run(&mut case, &set, &opts()).unwrap();
+    match enrichment_state(case.conn()).unwrap() {
+        EnrichState::Failed { reason } => assert!(reason.contains("tenant_domains"), "{reason}"),
+        s => panic!("{s:?}"),
+    }
+    case.conn()
+        .execute_batch("ALTER TABLE tenant_domains_away RENAME TO tenant_domains")
+        .unwrap();
+    run(&mut case, &set, &opts()).unwrap();
+    assert_eq!(
+        enrichment_state(case.conn()).unwrap(),
+        EnrichState::Ok { run_id: 3 }
+    );
+
+    // Run 4's rebuild fails AND so does writing its failure marker (case_meta unwritable): the
+    // rows and marker of run 3 remain, so the state must be Stale, never Ok.
+    case.conn()
+        .execute_batch(
+            "INSERT INTO detection_runs SELECT 4, tenant_key, rule_id, rule_version, rule_sha256, status, \
+             reason, hits, duration_ms, started_at FROM detection_runs WHERE run_id = 3 LIMIT 1; \
+             ALTER TABLE tenant_domains RENAME TO tenant_domains_away; \
+             ALTER TABLE case_meta RENAME TO case_meta_away;",
+        )
+        .unwrap();
+    assert!(
+        rebuild(case.conn_mut(), &set, 4).is_err(),
+        "the marker write failed"
+    );
+    case.conn()
+        .execute_batch(
+            "ALTER TABLE case_meta_away RENAME TO case_meta; \
+             ALTER TABLE tenant_domains_away RENAME TO tenant_domains;",
+        )
+        .unwrap();
+    assert_eq!(
+        enrichment_state(case.conn()).unwrap(),
+        EnrichState::Stale {
+            enriched_run: 3,
+            latest_run: 4
+        }
     );
 }

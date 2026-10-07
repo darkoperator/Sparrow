@@ -7,6 +7,12 @@
 //! back (the previous rows stay whole), its message goes to `case_meta.enrichment_error`, and the
 //! readers report the facts as unavailable. A successful rebuild clears that key and records its
 //! run in `case_meta.enrichment_run_id`.
+//!
+//! Readers decide whether the stored facts may be shown with [`enrichment_state`] and nothing
+//! else: the facts are valid only for [`EnrichState::Ok`], i.e. the enrichment of the LATEST
+//! detection run succeeded. The marker alone is not enough: when a rebuild fails and writing its
+//! failure marker fails too, the previous run's rows and `enrichment_run_id` remain, and only the
+//! run-id comparison shows them stale.
 
 pub mod accounts;
 pub mod facts;
@@ -25,6 +31,58 @@ pub struct EnrichReport {
     pub facts_rows: u64,
     pub accounts: u64,
     pub error: Option<String>,
+}
+
+/// Whether the stored facts and roll-up describe the case's latest detection run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum EnrichState {
+    /// The enrichment of the latest detection run (`run_id`) succeeded: the rows are valid.
+    Ok { run_id: i64 },
+    /// No enrichment ever ran (a case detected before this feature, or never detected).
+    Never,
+    /// The latest enrichment failed; `reason` is its message (`case_meta.enrichment_error`).
+    Failed { reason: String },
+    /// The rows come from an earlier run (`enriched_run`) than the latest detection run.
+    Stale { enriched_run: i64, latest_run: i64 },
+}
+
+/// THE reader check (fail closed): show `finding_facts` / `account_rollup` only when this returns
+/// [`EnrichState::Ok`]. Valid means `case_meta.enrichment_run_id` equals the latest
+/// `detection_runs.run_id` AND no `case_meta.enrichment_error` exists.
+pub fn enrichment_state(conn: &Connection) -> Result<EnrichState> {
+    let meta = |key: &str| -> Result<Option<String>> {
+        let mut st = conn.prepare("SELECT value FROM case_meta WHERE key = ?")?;
+        let mut rows = st.query([key])?;
+        Ok(match rows.next()? {
+            Some(r) => Some(r.get(0)?),
+            None => None,
+        })
+    };
+    if let Some(reason) = meta("enrichment_error")? {
+        return Ok(EnrichState::Failed { reason });
+    }
+    let Some(enriched) = meta("enrichment_run_id")? else {
+        return Ok(EnrichState::Never);
+    };
+    let Ok(enriched_run) = enriched.trim().parse::<i64>() else {
+        return Ok(EnrichState::Failed {
+            reason: format!("case_meta.enrichment_run_id is not a run id: {enriched:?}"),
+        });
+    };
+    let latest: Option<i64> =
+        conn.query_row("SELECT max(run_id) FROM detection_runs", [], |r| r.get(0))?;
+    let latest_run = latest.unwrap_or(0);
+    Ok(if latest_run == enriched_run {
+        EnrichState::Ok {
+            run_id: enriched_run,
+        }
+    } else {
+        EnrichState::Stale {
+            enriched_run,
+            latest_run,
+        }
+    })
 }
 
 /// Rebuild finding_facts and account_rollup in ONE transaction. Never returns Err for a SQL failure of the
