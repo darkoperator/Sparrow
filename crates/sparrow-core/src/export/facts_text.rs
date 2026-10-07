@@ -9,15 +9,59 @@ use crate::case::read::FactsField;
 use crate::data::DataDirs;
 use crate::detect::enrich::accounts::AccountRow;
 use crate::detect::enrich::facts::FindingFacts;
+use crate::detect::enrich::{EnrichState, enrichment_state};
 use crate::detect::load::{RuleSet, load_rules};
+use duckdb::Connection;
+use std::collections::BTreeMap;
 
 /// The addresses of an account named in the report's table before "+N more".
 pub const ADDRESSES_SHOWN: usize = 5;
 
-/// The rule set the exports use to tell which findings carry facts (the facts families): the environment's, as
-/// the read commands default to.
-pub fn rules() -> Result<RuleSet> {
-    load_rules(&DataDirs::with_env_fallback(None, Vec::new()))
+/// The rule set the exports pass to `read::finding_show`, which needs it ONLY to tell which findings should have
+/// facts when the enrichment is not current. So it is loaded lazily, from the same `DataDirs` as the other commands
+/// (`--data`, `--rules`, `SPARROW_DATA`, `SPARROW_RULES`), and only when the enrichment is not [`EnrichState::Ok`]:
+/// current stored facts are shown whatever rules are on disk. A rule set that cannot be loaded is not an export
+/// failure: the set is empty, every finding of a rule then reads "facts unavailable", and
+/// [`FactRules::note`] adds why.
+pub struct FactRules {
+    pub set: RuleSet,
+    /// Why the rules could not be loaded, when they could not.
+    pub load_error: Option<String>,
+}
+
+impl FactRules {
+    pub fn for_case(conn: &Connection, dirs: &DataDirs) -> Result<FactRules> {
+        let empty = RuleSet {
+            rules: Vec::new(),
+            lists: BTreeMap::new(),
+            list_meta: BTreeMap::new(),
+            warnings: Vec::new(),
+        };
+        if matches!(enrichment_state(conn)?, EnrichState::Ok { .. }) {
+            return Ok(FactRules {
+                set: empty,
+                load_error: None,
+            });
+        }
+        Ok(match load_rules(dirs) {
+            Ok(set) => FactRules {
+                set,
+                load_error: None,
+            },
+            Err(e) => FactRules {
+                set: empty,
+                load_error: Some(e.to_string()),
+            },
+        })
+    }
+
+    /// `reason`, with why the rules were not loaded when that is the case.
+    pub fn note(&self, reason: &str) -> String {
+        match &self.load_error {
+            Some(e) => format!("{reason} (the rules could not be loaded: {e})"),
+            None => reason.to_string(),
+        }
+    }
 }
 
 /// The sentence for facts that are not available.
@@ -95,11 +139,11 @@ pub fn fact_lines(facts: &FindingFacts) -> Vec<String> {
 }
 
 /// The facts of a finding for the Findings sheet: the stored shape as compact JSON, or `{"facts_unavailable":...}`.
-pub fn facts_json(f: &FactsField) -> String {
+pub fn facts_json(f: &FactsField, rules: &FactRules) -> String {
     match f {
         FactsField::Present { facts } => serde_json::to_string(facts).unwrap_or_default(),
         FactsField::Unavailable { facts_unavailable } => {
-            serde_json::json!({ "facts_unavailable": facts_unavailable }).to_string()
+            serde_json::json!({ "facts_unavailable": rules.note(facts_unavailable) }).to_string()
         }
     }
 }

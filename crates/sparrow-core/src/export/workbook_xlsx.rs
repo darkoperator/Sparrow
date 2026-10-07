@@ -7,12 +7,13 @@
 //! widths. Cells keep the raw stored text, as strings (a text that starts with `=` stays text). A date outside
 //! Excel's range is written as ISO text with a note.
 
-use super::facts_text;
+use super::facts_text::{self, FactRules};
 use super::header;
 use super::{
     Provenance, entry_provenance, evidence_gaps, finding_provenance, indicator_rows, legacy_objects,
 };
 use crate::case::{audit, read, timeline_entries};
+use crate::data::DataDirs;
 use crate::summary::summarize_conn;
 use crate::{Error, Result};
 use chrono::{DateTime, Datelike, Timelike, Utc};
@@ -154,7 +155,12 @@ const DECISION_COLS: [(&str, f64); 8] = [
 ];
 
 /// Write the workbook to `path`.
-pub fn write(conn: &Connection, path: &Path, generated_at: DateTime<Utc>) -> Result<()> {
+pub fn write(
+    conn: &Connection,
+    path: &Path,
+    generated_at: DateTime<Utc>,
+    dirs: &DataDirs,
+) -> Result<()> {
     let head = header::build(conn, generated_at)?;
     let legacy = legacy_objects(conn)?;
     let mut wb = Workbook::new();
@@ -196,6 +202,7 @@ pub fn write(conn: &Connection, path: &Path, generated_at: DateTime<Utc>) -> Res
     sheet(&mut wb, "Summary", &[("Item", 34.0), ("Value", 90.0)], rows)?;
 
     // ---- Accounts (facts, not decisions; empty when the roll-up is not current, the Summary says why)
+    let reviewed = super::report_md::reviewed_counts(conn)?;
     let rows = accounts
         .accounts
         .iter()
@@ -222,6 +229,12 @@ pub fn write(conn: &Connection, path: &Path, generated_at: DateTime<Utc>) -> Res
                 t(addresses),
                 Cell::Int(i64::from(a.addresses_total)),
                 Cell::Bool(a.addresses_truncated),
+                Cell::Int(i64::from(
+                    reviewed
+                        .get(&(a.tenant_key.clone(), a.upn.to_lowercase()))
+                        .copied()
+                        .unwrap_or(0),
+                )),
             ]
         })
         .collect();
@@ -240,12 +253,14 @@ pub fn write(conn: &Connection, path: &Path, generated_at: DateTime<Utc>) -> Res
             ("Addresses", 70.0),
             ("AddressesTotal", 15.0),
             ("AddressesTruncated", 18.0),
+            ("Reviewed", 10.0),
         ],
         rows,
     )?;
 
     // ---- Findings
-    let rules = facts_text::rules()?;
+    // Rules are needed only to tell which findings should have facts when the enrichment is not current.
+    let rules = FactRules::for_case(conn, dirs)?;
     let findings = read::finding_list(conn, &read::FindingFilter::default())?;
     let mut rows = Vec::new();
     for f in &findings {
@@ -265,12 +280,12 @@ pub fn write(conn: &Connection, path: &Path, generated_at: DateTime<Utc>) -> Res
             Cell::Int(f.evidence_count),
         ];
         row.extend(decision_cells(&finding_provenance(f, &legacy)));
-        let detail = read::finding_show(conn, &f.finding_id, &rules)?;
+        let detail = read::finding_show(conn, &f.finding_id, &rules.set)?;
         row.push(
             detail
                 .facts
                 .as_ref()
-                .map(|x| t(facts_text::facts_json(x)))
+                .map(|x| t(facts_text::facts_json(x, &rules)))
                 .unwrap_or(Cell::Empty),
         );
         row.push(Cell::Empty);

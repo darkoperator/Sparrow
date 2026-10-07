@@ -16,6 +16,8 @@ use sparrow_core::case::read::{self, FindingFilter};
 use sparrow_core::case::review;
 use sparrow_core::case::timeline_entries::{self as te, EvidenceRef, NewEntry, Phase};
 use sparrow_core::case::write::{self, FindingStatus};
+use sparrow_core::data::DataDirs;
+use sparrow_core::detect::load::load_rules;
 use sparrow_core::export::header;
 use sparrow_core::export::report_md::{self, ReportOpts};
 use sparrow_core::export::timeline_csv::{self, COLUMNS, CsvOpts, Scope};
@@ -249,6 +251,7 @@ fn report(case: &Case, reviewed_only: bool) -> String {
         &ReportOpts {
             reviewed_only,
             generated_at: generated_at(),
+            dirs: DataDirs::default(),
         },
     )
     .unwrap();
@@ -283,7 +286,7 @@ fn csv_records(bytes: &[u8]) -> Vec<Vec<String>> {
 
 fn workbook(case: &Case, dir: &tempfile::TempDir) -> Xlsx<std::io::BufReader<std::fs::File>> {
     let path = dir.path().join("case.xlsx");
-    workbook_xlsx::write(case.conn(), &path, generated_at()).unwrap();
+    workbook_xlsx::write(case.conn(), &path, generated_at(), &DataDirs::default()).unwrap();
     open_workbook(&path).unwrap()
 }
 
@@ -1278,7 +1281,7 @@ fn confirmed_with_facts(case: &Case) -> String {
 }
 
 fn facts_of(case: &Case, id: &str) -> sparrow_core::detect::enrich::facts::FindingFacts {
-    let rules = facts_text::rules().unwrap();
+    let rules = load_rules(&DataDirs::default()).unwrap();
     match read::finding_show(case.conn(), id, &rules).unwrap().facts {
         Some(FactsField::Present { facts }) => facts,
         other => panic!("facts expected, got {other:?}"),
@@ -1300,41 +1303,150 @@ fn the_report_has_an_accounts_section_after_the_summary_and_before_the_timeline(
     let s = scripted(false);
     let accounts = read::accounts(s.case.conn(), None, None).unwrap();
     assert!(accounts.accounts.len() >= 2 && accounts.warnings.is_empty());
-    for reviewed_only in [false, true] {
-        let md = report(&s.case, reviewed_only);
-        let at = |h: &str| md.find(h).unwrap_or_else(|| panic!("{h} missing"));
-        assert!(at("## Executive summary") < at("## Accounts"));
-        assert!(at("## Accounts") < at("## Timeline by phase"));
-        let section = &md[at("## Accounts")..at("## Timeline by phase")];
-        assert!(section.contains("facts, not decisions"), "{section}");
-        assert!(section.contains(
-            "| Account | Worst severity | Stages | First suspicious (UTC) | Addresses |"
-        ));
-        // One table row per account, worst first, each with its severity and stages.
-        let rows: Vec<&str> = section
-            .lines()
-            .filter(|l| {
-                l.starts_with("| ") && !l.starts_with("| Account") && !l.starts_with("| ---")
-            })
-            .collect();
-        assert_eq!(rows.len(), accounts.accounts.len(), "{section}");
-        for (row, a) in rows.iter().zip(&accounts.accounts) {
-            assert!(
-                row.contains(&md_escaped(&a.upn)) && row.contains(&a.worst_severity),
-                "{row}"
-            );
-        }
-        // The first account's first address and its reasons are in its row.
-        let first = &accounts.accounts[0];
-        if let Some(x) = first.addresses.first() {
-            assert!(
-                rows[0].contains(&md_escaped(&x.ip))
-                    && rows[0].contains(&md_escaped(&x.reasons[0])),
-                "{}",
-                rows[0]
-            );
-        }
+    let md = report(&s.case, false);
+    let at = |h: &str| md.find(h).unwrap_or_else(|| panic!("{h} missing"));
+    assert!(at("## Executive summary") < at("## Accounts"));
+    assert!(at("## Accounts") < at("## Timeline by phase"));
+    let section = &md[at("## Accounts")..at("## Timeline by phase")];
+    assert!(section.contains("facts, not decisions"), "{section}");
+    assert!(section.contains(
+        "| Tenant | Account | Worst severity | Stages | First suspicious (UTC) | Reviewed | Addresses |"
+    ));
+    // One table row per account, worst first, each with its tenant, severity and stages.
+    let rows: Vec<&str> = section
+        .lines()
+        .filter(|l| l.starts_with("| ") && !l.starts_with("| Tenant") && !l.starts_with("| ---"))
+        .collect();
+    assert_eq!(rows.len(), accounts.accounts.len(), "{section}");
+    for (row, a) in rows.iter().zip(&accounts.accounts) {
+        assert!(
+            row.contains(&md_escaped(&a.tenant_key))
+                && row.contains(&md_escaped(&a.upn))
+                && row.contains(&a.worst_severity),
+            "{row}"
+        );
     }
+    // The first account's first address and its reasons are in its row.
+    let first = &accounts.accounts[0];
+    if let Some(x) = first.addresses.first() {
+        assert!(
+            rows[0].contains(&md_escaped(&x.ip)) && rows[0].contains(&md_escaped(&x.reasons[0])),
+            "{}",
+            rows[0]
+        );
+    }
+}
+
+#[test]
+fn a_reviewed_only_report_has_no_accounts_table_only_the_omission_line() {
+    let s = scripted(false);
+    let md = report(&s.case, true);
+    let at = |h: &str| md.find(h).unwrap_or_else(|| panic!("{h} missing"));
+    let section = &md[at("## Accounts")..at("## Timeline by phase")];
+    assert!(
+        section.contains(
+            "_Account roll-up omitted: it is computed from all findings, including ones not yet reviewed._"
+        ),
+        "{section}"
+    );
+    assert!(!section.contains('|'), "no table: {section}");
+    // No account name of the roll-up appears in that section.
+    for a in read::accounts(s.case.conn(), None, None).unwrap().accounts {
+        assert!(!section.contains(&md_escaped(&a.upn)), "{section}");
+    }
+    // The full report keeps the table.
+    assert!(report(&s.case, false).contains("| Tenant | Account |"));
+}
+
+#[test]
+fn the_reviewed_column_counts_the_accounts_findings_with_an_accepted_review() {
+    let s = scripted(false);
+    let accepted = read::finding_list(
+        s.case.conn(),
+        &FindingFilter {
+            review_state: Some("accepted".into()),
+            ..FindingFilter::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        !accepted.is_empty(),
+        "the scripted session accepts a decision"
+    );
+    let md = report(&s.case, false);
+    let section = &md[md.find("## Accounts").unwrap()..md.find("## Timeline by phase").unwrap()];
+    let accounts = read::accounts(s.case.conn(), None, None).unwrap().accounts;
+    let mut total = 0;
+    for a in &accounts {
+        let want = accepted
+            .iter()
+            .filter(|f| {
+                f.tenant_key == a.tenant_key
+                    && f.actor_upn.as_deref().map(str::to_lowercase) == Some(a.upn.clone())
+            })
+            .count();
+        let row = section
+            .lines()
+            .find(|l| l.contains(&md_escaped(&a.upn)))
+            .unwrap();
+        let cells: Vec<&str> = row.split(" | ").collect();
+        // Tenant, Account, Worst severity, Stages, First suspicious, Reviewed, Addresses.
+        assert_eq!(cells[5].trim(), want.to_string(), "{row}");
+        total += want;
+    }
+    assert!(total >= 1, "some account has a reviewed finding");
+    // The workbook has the same column.
+    let dir = tempfile::tempdir().unwrap();
+    let mut wb = workbook(&s.case, &dir);
+    let rows = sheet_rows(&mut wb, "Accounts");
+    let c = rows[0].iter().position(|h| h == "Reviewed").unwrap();
+    let sum: usize = rows[1..]
+        .iter()
+        .map(|r| r[c].parse::<usize>().unwrap())
+        .sum();
+    assert_eq!(sum, total);
+}
+
+#[test]
+fn the_same_account_in_two_tenants_gets_two_distinct_rows_in_the_report() {
+    let s = scripted(false);
+    let c = s.case.conn();
+    let upn: String = c
+        .query_row(
+            "SELECT upn FROM account_rollup ORDER BY upn LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    c.execute(
+        "INSERT INTO account_rollup SELECT 'second-tenant', upn, 'low', 1, '{\"low\":1}', '[\"persistence\"]', first_suspicious, rules, '[]', 0, false, computed_run_id FROM account_rollup WHERE upn = ?",
+        [&upn],
+    )
+    .unwrap();
+    let md = report(&s.case, false);
+    let rows: Vec<&str> = md
+        .lines()
+        .filter(|l| l.contains(&md_escaped(&upn)) && l.starts_with("| "))
+        .collect();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    let tenants: Vec<&str> = rows
+        .iter()
+        .map(|r| r.split(" | ").next().unwrap())
+        .collect();
+    assert_ne!(tenants[0], tenants[1], "{rows:?}");
+    assert!(
+        rows.iter().any(|r| r.starts_with("| second-tenant | ")),
+        "{rows:?}"
+    );
+    // Their severities differ: they are not duplicate claims.
+    assert!(
+        rows.iter().any(|r| r.contains("| low |")) && rows.iter().any(|r| r.contains("| high |")),
+        "{rows:?}"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let mut wb = workbook(&s.case, &dir);
+    let sheet = sheet_rows(&mut wb, "Accounts");
+    assert_eq!(sheet.iter().filter(|r| r[1] == upn).count(), 2);
 }
 
 /// The account name as the report escapes it (Markdown punctuation backslash-escaped).
@@ -1508,7 +1620,7 @@ fn account_and_fact_text_is_escaped_in_the_report_and_never_a_formula_in_the_wor
 #[test]
 fn no_generated_fact_sentence_says_benign_or_malicious() {
     let s = scripted(false);
-    let rules = facts_text::rules().unwrap();
+    let rules = load_rules(&DataDirs::default()).unwrap();
     let ids: Vec<String> = {
         let mut st = s
             .case
@@ -1540,4 +1652,98 @@ fn no_generated_fact_sentence_says_benign_or_malicious() {
         let l = facts_text::unavailable_line(reason).to_lowercase();
         assert!(!l.contains("benign") && !l.contains("malicious"));
     }
+}
+
+// ---- rules are loaded only when the enrichment is not current, and a failure never aborts an export
+
+fn bad_dirs() -> DataDirs {
+    DataDirs {
+        data: None,
+        rules: vec![std::path::PathBuf::from("/nonexistent/sparrow-rules-dir")],
+    }
+}
+
+fn report_with(case: &Case, dirs: DataDirs) -> String {
+    let mut out = Vec::new();
+    report_md::write(
+        case.conn(),
+        &mut out,
+        &ReportOpts {
+            reviewed_only: false,
+            generated_at: generated_at(),
+            dirs,
+        },
+    )
+    .unwrap();
+    String::from_utf8(out).unwrap()
+}
+
+fn workbook_with(
+    case: &Case,
+    dir: &tempfile::TempDir,
+    dirs: &DataDirs,
+) -> Xlsx<std::io::BufReader<std::fs::File>> {
+    let path = dir.path().join("w.xlsx");
+    workbook_xlsx::write(case.conn(), &path, generated_at(), dirs).unwrap();
+    open_workbook(&path).unwrap()
+}
+
+#[test]
+fn unloadable_rules_do_not_matter_while_the_stored_facts_are_current() {
+    assert!(
+        load_rules(&bad_dirs()).is_err(),
+        "the fixture must really fail to load"
+    );
+    let s = scripted(false);
+    let id = confirmed_with_facts(&s.case);
+    let good = report_with(&s.case, DataDirs::default());
+    let bad = report_with(&s.case, bad_dirs());
+    assert_eq!(bad, good, "current facts need no rules");
+    assert!(bad.contains("- Facts:") && !bad.contains("could not be loaded"));
+    let dir = tempfile::tempdir().unwrap();
+    let mut wb = workbook_with(&s.case, &dir, &bad_dirs());
+    let findings = sheet_rows(&mut wb, "Findings");
+    let c = findings[0].iter().position(|h| h == "Facts").unwrap();
+    let mine = findings.iter().find(|r| r[0] == id).unwrap();
+    assert!(mine[c].contains("\"facts_version\":1"), "{}", mine[c]);
+}
+
+#[test]
+fn unloadable_rules_with_stale_facts_say_unavailable_and_the_export_still_succeeds() {
+    let s = scripted(false);
+    let id = confirmed_with_facts(&s.case);
+    pre_feature(&s.case);
+    let md = report_with(&s.case, bad_dirs());
+    // The confirmed finding's line names the facts as unavailable, the reason and why the rules were not used.
+    let line = md
+        .lines()
+        .find(|l| l.starts_with("- Facts unavailable:"))
+        .unwrap_or_else(|| panic!("no unavailable line:\n{md}"));
+    assert!(
+        line.contains("sparrow detect") && line.contains("rules could not be loaded"),
+        "{line}"
+    );
+    // The Accounts section does not need rules and says why it is empty.
+    let at = md.find("## Accounts").unwrap();
+    let section = &md[at..md.find("## Timeline by phase").unwrap()];
+    assert!(
+        section.contains("unavailable") && section.contains("sparrow detect"),
+        "{section}"
+    );
+    // The workbook too: the Facts cell of the finding says so, the Accounts sheet is empty.
+    let dir = tempfile::tempdir().unwrap();
+    let mut wb = workbook_with(&s.case, &dir, &bad_dirs());
+    let findings = sheet_rows(&mut wb, "Findings");
+    let c = findings[0].iter().position(|h| h == "Facts").unwrap();
+    let mine = findings.iter().find(|r| r[0] == id).unwrap();
+    assert!(
+        mine[c].starts_with("{\"facts_unavailable\":")
+            && mine[c].contains("rules could not be loaded"),
+        "{}",
+        mine[c]
+    );
+    assert_eq!(sheet_rows(&mut wb, "Accounts").len(), 1);
+    // With loadable rules the same case names only the findings of family rules.
+    let good = report_with(&s.case, DataDirs::default());
+    assert!(good.contains("- Facts unavailable:") && !good.contains("rules could not be loaded"));
 }

@@ -4,7 +4,7 @@
 //! "AI decision — not reviewed" unless `reviewed_only` keeps accepted decisions only. Every line that states
 //! evidence cites it as a footnote: `table:record_key` and the source file and line.
 
-use super::facts_text::{self, ADDRESSES_SHOWN};
+use super::facts_text::{self, ADDRESSES_SHOWN, FactRules};
 use super::header;
 use super::text::{block, indented, md_cell, single_line as one};
 use super::{
@@ -15,7 +15,7 @@ use crate::Result;
 use crate::case::notes::{Note, NoteTarget, notes_for};
 use crate::case::read::{self, EvidenceRow, FactsField, FindingFilter};
 use crate::case::timeline_entries::{self, Phase};
-use crate::detect::load::RuleSet;
+use crate::data::DataDirs;
 use crate::summary::summarize_conn;
 use chrono::{DateTime, Utc};
 use duckdb::Connection;
@@ -27,6 +27,9 @@ pub struct ReportOpts {
     /// Keep accepted decisions only (the default includes pending AI decisions, labelled).
     pub reviewed_only: bool,
     pub generated_at: DateTime<Utc>,
+    /// Where the rules come from when the facts need them (see [`FactRules`]): the same directories as the other
+    /// commands. `DataDirs::default()` is the built-in rules only.
+    pub dirs: DataDirs,
 }
 
 /// Source files and lines named per footnote (a record seen in several collector files lists the first few).
@@ -121,8 +124,8 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
     let legacy = super::legacy_objects(conn)?;
     let summary = summarize_conn(conn)?;
     let mut notes_fn = Footnotes::default();
-    // The rule set tells which findings carry facts (the facts families); the environment's, as the read commands.
-    let rules: RuleSet = facts_text::rules()?;
+    // Rules are needed only to tell which findings should have facts when the enrichment is not current.
+    let rules = FactRules::for_case(conn, &opts.dirs)?;
     let mut doc: Vec<String> = Vec::new();
 
     doc.push("# Sparrow case report".into());
@@ -203,7 +206,7 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
     doc.push(String::new());
     doc.push("## Accounts".into());
     doc.push(String::new());
-    accounts_section(conn, &mut doc)?;
+    accounts_section(conn, &mut doc, opts.reviewed_only)?;
 
     // ---- Timeline by phase
     doc.push(String::new());
@@ -267,7 +270,7 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
             continue;
         }
         shown_findings += 1;
-        let detail = read::finding_show(conn, &f.finding_id, &rules)?;
+        let detail = read::finding_show(conn, &f.finding_id, &rules.set)?;
         doc.push(String::new());
         doc.push(format!("### {} — {}", one(&f.severity), one(&f.title)));
         doc.push(String::new());
@@ -307,7 +310,7 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
             Some(FactsField::Unavailable { facts_unavailable }) => {
                 doc.push(format!(
                     "- {}",
-                    facts_text::unavailable_line(facts_unavailable)
+                    facts_text::unavailable_line(&rules.note(facts_unavailable))
                 ));
             }
             None => {}
@@ -406,24 +409,64 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
     Ok(())
 }
 
-/// The Accounts table: one row per account with findings, worst first. When the roll-up is not current the section
-/// says why it is empty (the same reason the read commands give) instead of listing nothing.
-fn accounts_section(conn: &Connection, doc: &mut Vec<String>) -> Result<()> {
+/// The line that replaces the Accounts table in a `--reviewed-only` report: the roll-up is computed from every
+/// finding, so listing it would present accounts supported only by unreviewed or rejected findings.
+pub const ACCOUNTS_OMITTED: &str =
+    "Account roll-up omitted: it is computed from all findings, including ones not yet reviewed.";
+
+/// Per (tenant, lower-case account): how many of its findings have an accepted review.
+pub(crate) fn reviewed_counts(conn: &Connection) -> Result<BTreeMap<(String, String), u32>> {
+    let accepted = read::finding_list(
+        conn,
+        &FindingFilter {
+            review_state: Some("accepted".into()),
+            ..FindingFilter::default()
+        },
+    )?;
+    let mut counts = BTreeMap::new();
+    for f in accepted {
+        if let Some(a) = f
+            .actor_upn
+            .as_deref()
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+        {
+            *counts
+                .entry((f.tenant_key.clone(), a.to_lowercase()))
+                .or_insert(0) += 1;
+        }
+    }
+    Ok(counts)
+}
+
+/// The Accounts table: one row per tenant and account with findings, worst first, with how many of the account's
+/// findings have an accepted review. When the roll-up is not current the section says why it is empty (the same
+/// reason the read commands give) instead of listing nothing. A `--reviewed-only` report has no table, only
+/// [`ACCOUNTS_OMITTED`].
+fn accounts_section(conn: &Connection, doc: &mut Vec<String>, reviewed_only: bool) -> Result<()> {
+    if reviewed_only {
+        doc.push(format!("_{}_", one(ACCOUNTS_OMITTED)));
+        return Ok(());
+    }
     let page = read::accounts(conn, None, None)?;
     if let Some(w) = page.warnings.first() {
         doc.push(format!("_{}._", one(w.trim_end_matches('.'))));
         return Ok(());
     }
     doc.push(
-        "_Computed by Sparrow from every finding of the case, whatever its decision: facts, not decisions._".into(),
+        "_Computed by Sparrow from every finding of the case, whatever its decision: facts, not decisions. \"Reviewed\" counts the account's findings with an accepted review._".into(),
     );
     doc.push(String::new());
     if page.accounts.is_empty() {
         doc.push("_No accounts with findings._".into());
         return Ok(());
     }
-    doc.push("| Account | Worst severity | Stages | First suspicious (UTC) | Addresses |".into());
-    doc.push("| --- | --- | --- | --- | --- |".into());
+    let reviewed = reviewed_counts(conn)?;
+    doc.push(
+        "| Tenant | Account | Worst severity | Stages | First suspicious (UTC) | Reviewed | Addresses |"
+            .into(),
+    );
+    doc.push("| --- | --- | --- | --- | --- | ---: | --- |".into());
     for a in &page.accounts {
         let stages: Vec<&str> = a.stages.iter().map(|s| s.as_str()).collect();
         let (items, more) = facts_text::address_items(a, ADDRESSES_SHOWN);
@@ -432,11 +475,16 @@ fn accounts_section(conn: &Connection, doc: &mut Vec<String>) -> Result<()> {
             cell.push(format!("+{more} more"));
         }
         doc.push(format!(
-            "| {} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {} | {} | {} | {} |",
+            md_cell(&a.tenant_key),
             md_cell(&a.upn),
             md_cell(&a.worst_severity),
             md_cell(&stages.join(", ")),
             a.first_suspicious.as_ref().map(when).unwrap_or_default(),
+            reviewed
+                .get(&(a.tenant_key.clone(), a.upn.to_lowercase()))
+                .copied()
+                .unwrap_or(0),
             cell.join("<br>")
         ));
     }

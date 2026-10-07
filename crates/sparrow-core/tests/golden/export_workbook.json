@@ -74,7 +74,8 @@
         "Rules",
         "Addresses",
         "AddressesTotal",
-        "AddressesTruncated"
+        "AddressesTruncated",
+        "Reviewed"
       ],
       [
         "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
@@ -87,7 +88,8 @@
         "SPW-APP-001; SPW-APP-002; SPW-FILE-001; SPW-FILE-002; SPW-FILE-003; SPW-HAWK-003; SPW-HAWK-006; SPW-HAWK-007; SPW-HAWK-008; SPW-HAWK-009; SPW-HAWK-010; SPW-HAWK-012; SPW-HAWK-015; SPW-ID-001; SPW-ID-002; SPW-ID-003; SPW-ID-004; SPW-ID-010; SPW-MAIL-003; SPW-MAIL-004; SPW-MAIL-005; SPW-MAIL-006; SPW-MAIL-007",
         "203.0.113.1 (finding_evidence, hosting, risky_signin); 203.0.113.2 (finding_evidence, hosting, risky_signin); 203.0.113.4 (finding_evidence, acts_without_signin, hosting)",
         "3",
-        "false"
+        "false",
+        "1"
       ],
       [
         "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
@@ -100,7 +102,8 @@
         "SPW-ID-007; SPW-MAIL-003",
         "203.0.113.6 (finding_evidence)",
         "1",
-        "false"
+        "false",
+        "0"
       ],
       [
         "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
@@ -113,7 +116,8 @@
         "SPW-HAWK-002; SPW-HAWK-014; SPW-MAIL-004",
         "203.0.113.2 (finding_evidence, acts_without_signin, hosting)",
         "1",
-        "false"
+        "false",
+        "0"
       ],
       [
         "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
@@ -126,7 +130,8 @@
         "SPW-HAWK-012; SPW-ID-002; SPW-ID-003",
         "203.0.113.1 (finding_evidence, hosting, risky_signin)",
         "1",
-        "false"
+        "false",
+        "0"
       ],
       [
         "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
@@ -139,7 +144,8 @@
         "SPW-HAWK-012; SPW-ID-002; SPW-ID-003",
         "203.0.113.1 (finding_evidence, hosting, risky_signin)",
         "1",
-        "false"
+        "false",
+        "0"
       ],
       [
         "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
@@ -152,7 +158,8 @@
         "SPW-HAWK-012; SPW-ID-002; SPW-ID-003",
         "203.0.113.1 (finding_evidence, hosting, risky_signin)",
         "1",
-        "false"
+        "false",
+        "0"
       ],
       [
         "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
@@ -165,7 +172,8 @@
         "SPW-HAWK-006",
         "192.0.2.9 (finding_evidence)",
         "1",
-        "false"
+        "false",
+        "0"
       ],
       [
         "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
@@ -178,7 +186,8 @@
         "SPW-HAWK-003",
         "192.0.2.7 (finding_evidence)",
         "1",
-        "false"
+        "false",
+        "0"
       ],
       [
         "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
@@ -191,7 +200,8 @@
         "SPW-MAIL-006",
         "198.51.100.3 (finding_evidence)",
         "1",
-        "false"
+        "false",
+        "0"
       ]
     ]
   },

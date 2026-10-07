@@ -204,6 +204,61 @@ fn the_readers_of_the_enrichment_tables_through_the_binary() {
     );
     assert!(!section["rows"].as_array().unwrap().is_empty());
 
+    // ---- exports: --rules/--data and the env vars are accepted, unloadable rules never abort an export ----
+    let report = tmp.path().join("r.md");
+    let r = run(&[
+        "export",
+        "report",
+        "--case",
+        case,
+        "--out",
+        report.to_str().unwrap(),
+        "--rules",
+        "/nonexistent/rules",
+    ]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let md = std::fs::read_to_string(&report).unwrap();
+    assert!(
+        md.contains("## Accounts") && md.contains("| Tenant | Account |"),
+        "{md}"
+    );
+    let r = run(&[
+        "export",
+        "report",
+        "--case",
+        case,
+        "--out",
+        report.to_str().unwrap(),
+        "--reviewed-only",
+    ]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let md = std::fs::read_to_string(&report).unwrap();
+    assert!(
+        md.contains("Account roll-up omitted") && !md.contains("| Tenant | Account |"),
+        "{md}"
+    );
+    let xlsx = tmp.path().join("w.xlsx");
+    let bad_env = Command::cargo_bin("sparrow")
+        .unwrap()
+        .env("SPARROW_RULES", "/nonexistent/rules")
+        .args([
+            "export",
+            "workbook",
+            "--case",
+            case,
+            "--out",
+            xlsx.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        bad_env.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&bad_env.stderr)
+    );
+    assert!(xlsx.is_file());
+
     // ---- a case detected before the feature: empty list, warning, facts_unavailable (Review Focus 1) ----
     {
         let c = sparrow_core::Case::create_or_open(&case_path).unwrap();
@@ -258,6 +313,69 @@ fn the_readers_of_the_enrichment_tables_through_the_binary() {
         plain.out.contains("addresses unavailable: ") && plain.out.contains("`sparrow detect`"),
         "{}",
         plain.out
+    );
+
+    // Not current and the rules unloadable (the env var): the export succeeds and says why.
+    let bad_env = Command::cargo_bin("sparrow")
+        .unwrap()
+        .env("SPARROW_RULES", "/nonexistent/rules")
+        .args([
+            "export",
+            "report",
+            "--case",
+            case,
+            "--out",
+            report.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        bad_env.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&bad_env.stderr)
+    );
+    let md = std::fs::read_to_string(&report).unwrap();
+    assert!(
+        md.contains("## Accounts") && md.contains("sparrow detect"),
+        "{md}"
+    );
+    // The workbook carries the facts of every finding: the family findings say why they are unavailable.
+    let bad_env = Command::cargo_bin("sparrow")
+        .unwrap()
+        .env("SPARROW_RULES", "/nonexistent/rules")
+        .args([
+            "export",
+            "workbook",
+            "--case",
+            case,
+            "--out",
+            xlsx.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        bad_env.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&bad_env.stderr)
+    );
+    let mut wb: calamine::Xlsx<_> = calamine::open_workbook(&xlsx).unwrap();
+    let range = calamine::Reader::worksheet_range(&mut wb, "Findings").unwrap();
+    let head: Vec<String> = range
+        .rows()
+        .next()
+        .unwrap()
+        .iter()
+        .map(|c| c.to_string())
+        .collect();
+    let col = head.iter().position(|h| h == "Facts").unwrap();
+    assert!(
+        range.rows().skip(1).any(|r| {
+            let t = r[col].to_string();
+            t.starts_with("{\"facts_unavailable\":") && t.contains("rules could not be loaded")
+        }),
+        "no Facts cell says why it is unavailable"
     );
 
     // ---- detection builds it again ----
