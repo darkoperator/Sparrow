@@ -122,23 +122,35 @@ Medium tenant (500 users, 30 days), Claude Sonnet:
 | | Raw files | Sparrow | Sparrow + skill |
 |---|---|---|---|
 | Compromised accounts found (F1) | 0.86 | **1.00** | **1.00** |
+| Attacker IPs found (5 runs) | — | 20 of 25 | **25 of 25** |
 | False accusations | 0 | 0 | 0 |
-| Tokens | 868K | 427K (49%) | **295K (34%)** |
-| Agent turns | 27 | 18 | 17 |
-| Wall-clock, including ingest | 137 s | 97 s | 92 s |
+| Tokens | 868K | 427K (49%) | **237K (27%)** |
+| Agent turns | 27 | 18 | 15 |
+| Wall-clock, including ingest | 137 s | 97 s | 68 s |
+
+The "Sparrow" column is the earlier round, before the account roll-up existed. "Sparrow + skill" is the agent with the [`sparrow-triage` skill](skills/README.md), which starts from `sparrow accounts`:
+one row per account with findings, its attack stages and the addresses worth a look, including an address the account
+acts from but never signs in from. The finding detail adds checkable facts, such as whether the user signed in from the
+change's IP earlier and whether a forwarding target is internal or external.
 
 Across small, medium and large tenants, the raw-file agent missed at least one compromised account in 10 of 15 runs.
 The Sparrow agent found every one in each run that produced an answer.
 
+A small model gains the most. With Claude Haiku on the same tenant, the raw-file agent (with the same playbook) found a
+median F1 of 0.67 and used 2.25M tokens; with Sparrow and the skill it found every compromised account (F1 1.00) and
+every attacker IP, with 869K tokens (39%).
+
 The caveats:
 - **Large tenant (~1.15M rows):** Sparrow used 62% of the tokens and the agent finished faster, but the one-time ingest
-  (about 160 s) made the total slower than one raw-file pass. Ingest pays off when a case is asked more than one
+  (now about 90 s) made the total slower than one raw-file pass. Ingest pays off when a case is asked more than one
   question.
 - **The playbook helps everyone.** The tool-neutral playbook in [`skills/`](skills/README.md) also improved the
-  raw-file agent, to 542K tokens. Against a raw-file agent with the same playbook, Sparrow used 55% of the tokens.
-- **Model strength matters.** With a small model (Claude Haiku), Sparrow halved false accusations of benign
-  look-alikes but saved no tokens, because the model explored inefficiently either way.
-- **Scope.** These are synthetic data, one agent and two models. The savings on a real case depend on the case and the
+  raw-file agent, to 542K tokens. Against a raw-file agent with the same playbook, Sparrow with its skill used 44% of
+  the tokens.
+- **Without the skill, agents did not discover `sparrow accounts`**, so the newest gains above need the skill (or a
+  prompt that names the command).
+- **Scope.** These are synthetic data, one agent and two models; the latest Sparrow runs are compared with raw-file
+  runs from the previous round, whose conditions did not change. The savings on a real case depend on the case and the
   questions asked.
 
 **Agent skills.** [`skills/`](skills/README.md) holds two portable [Agent Skills](https://agentskills.io/specification), a tool-neutral M365 BEC triage playbook and a `sparrow` workflow, that work unchanged in Claude Code, Codex, OpenCode and Pi. See [skills/README.md](skills/README.md) to install them.

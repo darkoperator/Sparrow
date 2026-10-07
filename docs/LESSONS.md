@@ -17,9 +17,11 @@ Treat them as indicative (one product, two models, synthetic data), not universa
 | Haiku: compromised-account F1 | 0.67 | 0.67 |
 | Haiku: tokens | 2.24M | 2.26M (101%) |
 | Haiku: false accusations (5 runs) | 11 | 6 |
+| Sonnet + skill + account roll-up: tokens | — | **237K (27%)** |
+| Haiku + skill + account roll-up: F1 / tokens | 0.67 / 2.25M (with playbook) | **1.00 / 869K** |
 
 Across all sizes with Sonnet (no skills), the raw-file agent missed at least one compromised account in 10 of 15 runs; the
-Sparrow agent missed none in the runs that produced an answer. On the largest tree the one-time ingest (159 s) cost
+Sparrow agent missed none in the runs that produced an answer. On the largest tree the one-time ingest (159 s then; about 90 s after the ingest work below) cost
 more than the whole raw run, although the agent part was faster.
 
 ## 2. Designing the tool itself
@@ -45,6 +47,22 @@ more than the whole raw run, although the agent part was faster.
 9. **Detections must not be the only door.** Findings are leads; the agent still needs pivots and SQL for what no rule
    covers. Strong models used both; the tool must make both cheap.
 
+10. **Roll the case up per entity.** One `accounts` call (stages, first suspicious time, every address worth a look across
+   all tables) replaced a findings → show → pivot chain. With it, both models found the attacker address that only
+   appeared in mail-access records (Sonnet had missed it in every earlier run) and every forwarding target.
+11. **Give facts, not verdicts, on the findings that are easy to misjudge.** Persistence findings now carry checkable facts
+   (did this user sign in from the change's IP earlier in the capture; other findings on the account; each forwarding
+   target internal or external, with prior messages). "Unknown" is never shown as zero, and stale facts are never
+   shown at all. Haiku's false accusations of benign look-alikes fell from 6 to 3 without a skill.
+12. **A capability the agent cannot discover does not exist.** Without the skill, no agent called `sparrow accounts`
+   in 10 runs; the starting commands and the tool's own output never pointed to it. Point to new capabilities from
+   the commands agents already run first (summary, capabilities, help).
+13. **Profile before optimising the tool itself.** We assumed single-threaded parsing made ingest slow. A per-stage
+   profile showed the embedded database's automatic checkpoint (every 16 MB of log, slower as the file grew) took half
+   the time and software SHA-256 another eighth. One connection setting (a larger checkpoint threshold, scaled to the
+   machine's memory, then one checkpoint at the end), hardware hashing and streaming the hash of skipped duplicate files
+   halved ingest (190 s to 90 s) with less memory and byte-identical output; the parsing pipeline was left for later.
+
 ## 3. Model capability changes everything
 
 - A strong model turns compact answers into savings. A weak model (Haiku) explored the same way it does on raw files —
@@ -52,6 +70,10 @@ more than the whole raw run, although the agent part was faster.
 - A tool cannot supply judgement. Haiku's errors were false accusations of planted benign look-alikes; better
   information halved them but did not remove them. Do not promise that a tool lets a small model replace a strong one
   without measuring it.
+
+- With the account roll-up, facts and a lean skill, the same small model caught up on accuracy: Haiku found every
+  compromised account (F1 1.00, was 0.67) and every attacker IP, with half the tokens (869K, was 1.83M). The tool
+  could not supply judgement on its own, but a well-shaped tool plus instructions moved much of it out of the model.
 
 ## 4. Skills (agent instructions shipped with the tool)
 
