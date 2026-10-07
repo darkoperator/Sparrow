@@ -54,9 +54,19 @@ more than the whole raw run, although the agent part was faster.
    (did this user sign in from the change's IP earlier in the capture; other findings on the account; each forwarding
    target internal or external, with prior messages). "Unknown" is never shown as zero, and stale facts are never
    shown at all. Haiku's false accusations of benign look-alikes fell from 6 to 3 without a skill.
-12. **A capability the agent cannot discover does not exist.** Without the skill, no agent called `sparrow accounts`
-   in 10 runs; the starting commands and the tool's own output never pointed to it. Point to new capabilities from
-   the commands agents already run first (summary, capabilities, help).
+12. **A capability the agent is not told about does not exist — and a pointer in the output is not enough.** Measured on
+   the medium tree, 10 runs per row:
+
+   | How the agent learned about `sparrow accounts` | Runs that used it |
+   |---|---|
+   | Nothing (starting commands only) | 0 of 10 |
+   | A `next: sparrow accounts` pointer and the top 3 accounts in `summary` / `capabilities` | 0 of 10 |
+   | The skill (or prompt) says to start there | **10 of 10** |
+
+   Agents read the pointer and carried on with the commands they had planned. Agents act on instructions and on the
+   content in front of them, not on hints. So: (a) tell the agent explicitly — ship the skill, or put one line in the
+   prompt ("start with `sparrow accounts`"); (b) as a fallback for agents nobody instructs, put the decisive signal itself
+   (not a pointer to it) into the output they already read.
 13. **Profile before optimising the tool itself.** We assumed single-threaded parsing made ingest slow. A per-stage
    profile showed the embedded database's automatic checkpoint (every 16 MB of log, slower as the file grew) took half
    the time and software SHA-256 another eighth. One connection setting (a larger checkpoint threshold, scaled to the
