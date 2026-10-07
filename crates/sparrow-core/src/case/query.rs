@@ -14,12 +14,17 @@
 //!    The lockdown is probed before the query runs; if a probe succeeds the query is refused.
 //! 3. **Never a writer.** The case file is only ever attached read-only, so no statement can change it.
 //!
+//!
+//! **In the review app** the case's own writer instance is locked down once after opening (`Case::lock_down`);
+//! `run_on` runs the one parsed SELECT on it inside a transaction that is always rolled back. Layers 1 and the
+//! lockdown hold; layer 3 (a read-only attach) is replaced by the rollback.
+//!
 //! The query sees every table and view of the case, including `case_meta` (the case id, the audit chain's
 //! `audit_head` and `audit_verified` bookkeeping, and `db::POST_MIGRATION_PENDING` and
 //! `db::CREDENTIAL_FAILURE_CODES`). That is harmless: they are not secret, and reading them changes
 //! nothing; the audit chain's integrity comes from `audit verify`, not from hiding them.
 
-use crate::{Error, Result};
+use crate::{Case, Error, Result};
 use duckdb::{Connection, params};
 use serde::Serialize;
 use serde_json::Value;
@@ -83,6 +88,13 @@ fn locked(case_path: &Path) -> Result<Connection> {
         .map_err(|e| crate::db::lock_error(case_path, e))?;
     crate::db::migrations::check_readable(&conn)?;
     conn.execute_batch("SET enable_external_access = false; SET lock_configuration = true;")?;
+    probe_lockdown(&conn)?;
+    Ok(conn)
+}
+
+/// Prove the lockdown holds on `conn`: each attempt to undo it or reach outside the process must fail, else
+/// `Error::Invalid`. Shared by [`locked`] and `Case::lock_down`.
+pub(crate) fn probe_lockdown(conn: &Connection) -> Result<()> {
     let probe_file =
         std::env::temp_dir().join(format!("sparrow-query-probe-{}.duckdb", std::process::id()));
     let attach_probe = format!(
@@ -103,7 +115,7 @@ fn locked(case_path: &Path) -> Result<Connection> {
             )));
         }
     }
-    Ok(conn)
+    Ok(())
 }
 
 /// The tables and views [`run`] can read: every table and view of the case (not DuckDB's own catalog objects), with
@@ -117,6 +129,11 @@ pub fn schema(case_path: &Path, table: Option<&str>) -> Result<Vec<crate::db::Ta
 pub fn run(case_path: &Path, sql: &str, limit: usize) -> Result<QueryResult> {
     let select = the_select(sql)?;
     let conn = locked(case_path)?;
+    run_select(&conn, &select, limit)
+}
+
+/// `select` (one parsed SELECT from [`the_select`]) on `conn`, at most `limit` rows.
+fn run_select(conn: &Connection, select: &str, limit: usize) -> Result<QueryResult> {
     let columns = {
         let mut stmt = conn.prepare(&format!("SELECT * FROM ({select}) LIMIT 0"))?;
         let _ = stmt.query([])?;
@@ -146,4 +163,135 @@ pub fn run(case_path: &Path, sql: &str, limit: usize) -> Result<QueryResult> {
         rows,
         truncated,
     })
+}
+
+fn need_locked(case: &Case, what: &str) -> Result<()> {
+    if case.is_locked_down()? {
+        Ok(())
+    } else {
+        Err(Error::Invalid(format!(
+            "{what} needs a locked-down case (Case::lock_down)"
+        )))
+    }
+}
+
+/// Like [`schema`], on a case this process holds open and has locked down with `Case::lock_down`.
+pub fn schema_on(case: &Case, table: Option<&str>) -> Result<Vec<crate::db::TableInfo>> {
+    need_locked(case, "schema_on")?;
+    crate::db::describe::describe_conn(case.conn(), table)
+}
+
+/// Like [`run`], on the case's own locked-down writer instance: the one parsed SELECT runs inside a transaction that
+/// is always rolled back. Refused when the case is not locked down or a transaction is already open (the caller's
+/// transaction is left alone).
+pub fn run_on(case: &Case, sql: &str, limit: usize) -> Result<QueryResult> {
+    case.ensure_usable()?;
+    need_locked(case, "run_on")?;
+    let select = the_select(sql)?;
+    in_rolled_back_tx(case, |conn| run_select(conn, &select, limit))
+}
+
+/// `f` inside a transaction that is always rolled back. A failed ROLLBACK is tried once more; if that fails too the
+/// case is made unusable (no further `run_on`, `ensure_usable` fails) and the error says so; the error of `f` wins
+/// when both fail.
+fn in_rolled_back_tx<T>(case: &Case, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+    let conn = case.conn();
+    conn.execute_batch("BEGIN TRANSACTION").map_err(|e| {
+        Error::Invalid(format!(
+            "run_on refuses to run inside an open transaction: {e}"
+        ))
+    })?;
+    let out = f(conn);
+    let ended = conn
+        .execute_batch("ROLLBACK")
+        .or_else(|_| conn.execute_batch("ROLLBACK"));
+    if let Err(e) = ended {
+        let msg = format!(
+            "the case's read-only query transaction could not be rolled back: {e}; this Case is unusable, open the case again"
+        );
+        case.poison(msg.clone());
+        return out.and(Err(Error::Invalid(msg)));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn locked_case() -> Case {
+        let c = Case::in_memory().unwrap();
+        c.lock_down().unwrap();
+        c
+    }
+
+    #[test]
+    fn a_write_inside_the_transaction_is_rolled_back() {
+        let c = locked_case();
+        let n = |c: &Case| -> i64 {
+            c.conn()
+                .query_row("SELECT count(*) FROM case_meta WHERE key = 'zz'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+        };
+        in_rolled_back_tx(&c, |conn| {
+            conn.execute_batch("INSERT INTO case_meta VALUES ('zz', '1')")?;
+            let inside: i64 =
+                conn.query_row("SELECT count(*) FROM case_meta WHERE key = 'zz'", [], |r| {
+                    r.get(0)
+                })?;
+            assert_eq!(inside, 1);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(n(&c), 0);
+        // A write outside any transaction works afterwards.
+        crate::case::write::in_tx(c.conn(), |tx| {
+            tx.execute_batch("INSERT INTO case_meta VALUES ('zz', '2')")?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(n(&c), 1);
+    }
+
+    #[test]
+    fn an_error_inside_the_transaction_still_rolls_back() {
+        let c = locked_case();
+        let e = run_on(&c, "SELECT CAST('x' AS INTEGER)", 10).unwrap_err();
+        assert!(!matches!(e, Error::NotFound(_)), "{e}");
+        c.conn()
+            .execute_batch("BEGIN TRANSACTION; ROLLBACK")
+            .unwrap();
+        assert_eq!(run_on(&c, "SELECT 1", 10).unwrap().rows.len(), 1);
+    }
+
+    #[test]
+    fn a_failed_rollback_fails_the_case_closed_and_keeps_the_query_error() {
+        // Ending the transaction inside `f` makes the ROLLBACK fail (no transaction is active), both times.
+        let c = locked_case();
+        let r: Result<()> = in_rolled_back_tx(&c, |conn| {
+            conn.execute_batch("COMMIT")?;
+            Ok(())
+        });
+        let e = r.unwrap_err();
+        assert!(
+            matches!(&e, Error::Invalid(m) if m.contains("rolled back")),
+            "{e}"
+        );
+        assert!(c.ensure_usable().is_err());
+        assert!(run_on(&c, "SELECT 1", 10).is_err());
+
+        // When the query failed too, its error is the one reported, and the case is still marked unusable.
+        let c = locked_case();
+        let r: Result<()> = in_rolled_back_tx(&c, |conn| {
+            conn.execute_batch("COMMIT")?;
+            Err(Error::Invalid("the query failed".into()))
+        });
+        assert!(
+            matches!(&r, Err(Error::Invalid(m)) if m == "the query failed"),
+            "{r:?}"
+        );
+        assert!(c.ensure_usable().is_err());
+    }
 }
