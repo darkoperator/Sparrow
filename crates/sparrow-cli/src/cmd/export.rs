@@ -5,6 +5,7 @@
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use clap::Subcommand;
+use sparrow_core::data::DataDirs;
 use sparrow_core::export::report_md::{self, ReportOpts};
 use sparrow_core::export::timeline_csv::{self, CsvOpts, Scope};
 use sparrow_core::export::workbook_xlsx;
@@ -26,9 +27,17 @@ pub enum ExportCommand {
         /// Write to this file instead of stdout
         #[arg(long)]
         out: Option<PathBuf>,
-        /// Keep accepted decisions only
+        /// Keep accepted decisions only (the Accounts table is then replaced by one line: the roll-up is
+        /// computed from all findings)
         #[arg(long)]
         reviewed_only: bool,
+        /// Directory overriding the embedded data files; default $SPARROW_DATA
+        #[arg(long)]
+        data: Option<PathBuf>,
+        /// Rule directory (repeatable), used only to say which findings lack facts when detection has not
+        /// run since the facts existed; default $SPARROW_RULES
+        #[arg(long)]
+        rules: Vec<PathBuf>,
     },
     /// The Timeline Explorer CSV (UTF-8 with a BOM)
     Timeline {
@@ -54,7 +63,7 @@ pub enum ExportCommand {
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// The XLSX workbook (Summary, Findings, Timeline, Indicators, Evidence gaps, Audit)
+    /// The XLSX workbook (Summary, Accounts, Findings, Timeline, Indicators, Evidence gaps, Audit)
     Workbook {
         /// Case database file
         #[arg(long)]
@@ -65,6 +74,13 @@ pub enum ExportCommand {
         /// The file to write (required)
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Directory overriding the embedded data files; default $SPARROW_DATA
+        #[arg(long)]
+        data: Option<PathBuf>,
+        /// Rule directory (repeatable), used only to say which findings lack facts when detection has not
+        /// run since the facts existed; default $SPARROW_RULES
+        #[arg(long)]
+        rules: Vec<PathBuf>,
     },
 }
 
@@ -212,6 +228,8 @@ pub fn run(command: ExportCommand, json: bool) -> Result<ExitCode> {
             format,
             out,
             reviewed_only,
+            data,
+            rules,
         } => {
             format_is("report", &format, "md")?;
             if let Some(o) = &out {
@@ -221,6 +239,7 @@ pub fn run(command: ExportCommand, json: bool) -> Result<ExitCode> {
             let opts = ReportOpts {
                 reviewed_only,
                 generated_at,
+                dirs: DataDirs::with_env_fallback(data, rules),
             };
             with_sink(out.as_deref(), json, |w| {
                 Ok(report_md::write(c.conn(), w, &opts)?)
@@ -262,15 +281,22 @@ pub fn run(command: ExportCommand, json: bool) -> Result<ExitCode> {
                 summary("timeline", &p, Some(n), json)?;
             }
         }
-        ExportCommand::Workbook { case, format, out } => {
+        ExportCommand::Workbook {
+            case,
+            format,
+            out,
+            data,
+            rules,
+        } => {
             format_is("workbook", &format, "xlsx")?;
             let Some(out) = out else {
                 bail!("export workbook needs --out FILE (a workbook is binary)");
             };
             check_out(&out, &case)?;
+            let dirs = DataDirs::with_env_fallback(data, rules);
             let c = crate::open_read(&case)?;
             atomic(&out, |tmp| {
-                Ok(workbook_xlsx::write(c.conn(), tmp, generated_at)?)
+                Ok(workbook_xlsx::write(c.conn(), tmp, generated_at, &dirs)?)
             })?;
             summary("workbook", &out, None, json)?;
         }

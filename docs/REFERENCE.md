@@ -490,6 +490,20 @@ The CSV is UTF-8 with a BOM; its cells keep the stored text, with one exception:
 text (rule names, subjects, user agents, display names) can be attacker-controlled. The Timestamp and id columns
 are left as they are. The workbook writes text as strings, never as formulas; numbers, booleans and dates are typed cells.
 
+The report has an "Accounts" section after the executive-summary placeholder: one row per tenant and account, worst
+severity first, with its stages, first suspicious time, how many of its findings have an accepted review
+("Reviewed") and its top addresses with their reasons. A `--reviewed-only` report has no table there, only the line
+"Account roll-up omitted: it is computed from all findings, including ones not yet reviewed." Under each confirmed
+finding that has stored facts there is a "Facts" list (fixed sentences: the addresses the user signed in from on
+earlier days within the capture, the account's other findings, the targets of a forwarding with their scope and
+earlier messages). They are facts computed by detection, never a verdict; a count that cannot be compared reads
+"unknown", and when the enrichment is not current the section and each such finding say "unavailable" with the
+reason (run `sparrow detect`). The workbook has an "Accounts" sheet (with a "Reviewed" column) and a `Facts` column
+(compact JSON) on the Findings sheet. `export report` and `export workbook` take `--data` and `--rules` (default
+`$SPARROW_DATA` / `$SPARROW_RULES`) like `finding show`: the rules are read only when the enrichment is not
+current, to tell which findings should have facts; stored current facts are shown whatever rules are on disk, and
+rules that cannot be loaded never abort an export (the finding says so).
+
 The Markdown report escapes all evidence and agent text as Markdown and HTML (so a rule named `x <!--` cannot hide
 the rest of the report, and `[text](url)`, `![](url)` and `[^3]` stay plain text). Agent notes carry no review
 state: they are labelled "agent note — not reviewed", and `--reviewed-only` leaves them out. A date Excel cannot

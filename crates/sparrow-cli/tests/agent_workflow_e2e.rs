@@ -641,6 +641,7 @@ fn an_agent_triages_a_bec_aitm_case_and_the_exports_carry_its_decisions() {
         wb.sheet_names(),
         [
             "Summary",
+            "Accounts",
             "Findings",
             "Timeline",
             "Indicators",

@@ -32,6 +32,22 @@
 
 _Analyst to write._
 
+## Accounts
+
+_Computed by Sparrow from every finding of the case, whatever its decision: facts, not decisions. "Reviewed" counts the account's findings with an accepted review._
+
+| Tenant | Account | Worst severity | Stages | First suspicious (UTC) | Reviewed | Addresses |
+| --- | --- | --- | --- | --- | ---: | --- |
+| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | marlowe.rhodes@contoso.example | high | suspicious\_sign\_in, persistence, mail\_access, sending, consent, mfa\_change | 2026-08-21 09:12:00 | 1 | 203.0.113.1 \(finding\_evidence, hosting, risky\_signin\)<br>203.0.113.2 \(finding\_evidence, hosting, risky\_signin\)<br>203.0.113.4 \(finding\_evidence, acts\_without\_signin, hosting\) |
+| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | vance.ingram@contoso.example | high | suspicious\_sign\_in, persistence | 2026-09-07 11:05:00 | 0 | 203.0.113.6 \(finding\_evidence\) |
+| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | admin@contoso.example | high | persistence | 2026-08-20 15:00:00 | 0 | 203.0.113.2 \(finding\_evidence, acts\_without\_signin, hosting\) |
+| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | ollie.carter@contoso.example | high | suspicious\_sign\_in | 2026-08-25 11:00:00 | 0 | 203.0.113.1 \(finding\_evidence, hosting, risky\_signin\) |
+| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | xander.irwin@contoso.example | high | suspicious\_sign\_in | 2026-08-25 11:00:00 | 0 | 203.0.113.1 \(finding\_evidence, hosting, risky\_signin\) |
+| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | frances.rourke@contoso.example | high | suspicious\_sign\_in | 2026-08-27 10:00:00 | 0 | 203.0.113.1 \(finding\_evidence, hosting, risky\_signin\) |
+| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | gale.yates@contoso.example | medium | consent | 2026-08-09 14:00:00 | 0 | 192.0.2.9 \(finding\_evidence\) |
+| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | ocean.vincent@contoso.example | medium | persistence | 2026-08-14 16:00:00 | 0 | 192.0.2.7 \(finding\_evidence\) |
+| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | cameron.tucker@contoso.example | medium | sending | 2026-08-15 12:34:05 | 0 | 198.51.100.3 \(finding\_evidence\) |
+
 ## Timeline by phase
 
 ### initial access
@@ -63,6 +79,11 @@ _Analyst to write._
 - Reviewer comment: agreed
 - Notes:
   - agent note — not reviewed (agent:claude on behalf of analyst:example at 2026-10-02 12:00:12 UTC): Reviewed the sign-in by hand.
+- Facts:
+  - Address 203.0.113.2 — this user signed in from it on 1 earlier day(s) within the capture (since 2026-08-11). It is in a hosting provider network (Vultr \(The Constant Company\)).
+  - Other findings on this account: 23 (SPW-MAIL-003 high, SPW-MAIL-004 high, SPW-HAWK-008 high, SPW-HAWK-009 high, SPW-FILE-003 high, +18 more).
+  - Target invoices@exfil-mail.test — external; 0 earlier message(s) with this user.
+  - Target kai.ingram@contoso.example — internal; 6 earlier message(s) with this user.
 - Evidence (6 rows):
   - 2026-08-21 09:47:00 UTC · mail\_rule · New-InboxRule · marlowe.rhodes@contoso.example · 203.0.113.2 · Exchange New-InboxRule on marlowe.rhodes@contoso.example\\AP[^4]
   - 2026-08-21 12:12:00 UTC · mail\_rule · UpdateInboxRules · marlowe.rhodes@contoso.example · 203.0.113.2 · Exchange UpdateInboxRules[^5]
