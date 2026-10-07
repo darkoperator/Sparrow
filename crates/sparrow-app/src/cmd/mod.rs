@@ -2,3 +2,4 @@
 //! thread (`async`), so opening or verifying a large case does not freeze the window.
 
 pub mod case;
+pub mod timeline;

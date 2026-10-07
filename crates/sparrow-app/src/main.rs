@@ -22,6 +22,11 @@ fn main() {
             cmd::case::settings_set_analyst,
             cmd::case::case_open,
             cmd::case::case_close,
+            cmd::timeline::commands::timeline_list,
+            cmd::timeline::commands::timeline_propose,
+            cmd::timeline::commands::timeline_edit,
+            cmd::timeline::commands::timeline_verify,
+            cmd::timeline::commands::timeline_reject,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Sparrow review app");
