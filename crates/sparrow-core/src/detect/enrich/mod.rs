@@ -1,5 +1,5 @@
 //! Post-detection enrichment (agent accuracy round): computed, checkable FACTS about findings and
-//! accounts, stored in `finding_facts` (and, from Task 2, `account_rollup`) so the CLI, the report
+//! accounts, stored in `finding_facts` and `account_rollup` so the CLI, the report
 //! and the workbook only read them. Facts only: no verdict, label or score.
 //!
 //! The rebuild runs at the end of every detection run, after the merge transaction, and rewrites
@@ -8,6 +8,7 @@
 //! readers report the facts as unavailable. A successful rebuild clears that key and records its
 //! run in `case_meta.enrichment_run_id`.
 
+pub mod accounts;
 pub mod facts;
 
 use crate::Result;
@@ -50,6 +51,7 @@ fn rebuild_in_tx(conn: &mut Connection, set: &RuleSet, run_id: i64) -> Result<En
     let tx = conn.transaction()?;
     tx.execute_batch("DELETE FROM finding_facts; DELETE FROM account_rollup;")?;
     let facts_rows = facts::rebuild(&tx, set, run_id)?;
+    let accounts = accounts::rebuild(&tx, set, run_id)?;
     tx.execute("DELETE FROM case_meta WHERE key = 'enrichment_error'", [])?;
     tx.execute(
         "INSERT OR REPLACE INTO case_meta (key, value) VALUES ('enrichment_run_id', ?)",
@@ -58,7 +60,7 @@ fn rebuild_in_tx(conn: &mut Connection, set: &RuleSet, run_id: i64) -> Result<En
     tx.commit()?;
     Ok(EnrichReport {
         facts_rows,
-        accounts: 0,
+        accounts,
         error: None,
     })
 }
