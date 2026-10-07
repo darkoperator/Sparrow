@@ -219,6 +219,53 @@ detection: run 2, 27 rule runs (0 not applicable, 0 errors), 0 new findings, 0 u
 - The `timeline` view gained `finding_count` and `finding_ids`: for each event row, the findings
   whose evidence cites it.
 
+### Finding facts and the account roll-up
+
+After every detection run (in the same writer session, after the findings are merged) detection rebuilds two derived
+tables from scratch, in one transaction: `finding_facts` and `account_rollup`. They hold computed, checkable FACTS,
+never a verdict, label or score. If the rebuild fails, detection still succeeds, the previous rows stay,
+`case_meta.enrichment_error` holds the message, and readers say "facts unavailable"; a case detected before this
+feature has no `case_meta.enrichment_run_id` and reads the same (fix: `sparrow detect`). Review decisions never change
+them. Readers: `sparrow accounts`, `finding show` (`facts`), `pivot user` (`addresses`). Every "before" fact means before, **within the capture**: the capture starts at
+`window_start`, the tenant's first sign-in of any kind (the same start `cloud_services` uses).
+
+**Rule `stage:`.** A rule may declare `stage:` (one name or a list) from `suspicious_sign_in`, `credential_takeover`,
+`persistence`, `mail_access`, `sending`, `consent`, `mfa_change`. It feeds the roll-up and decides which findings get
+facts (`persistence`, `consent`, `mfa_change`); it is not part of the rule's hash and changes no detection result.
+`sparrow rules lint` lists rules without a stage as warnings.
+
+**`finding_facts`** (one row per finding of those rules): `finding_id`, `facts_version` (1), `facts` (JSON),
+`computed_run_id`. The `facts` object:
+
+| Key | Meaning |
+| --- | --- |
+| `window_start` | The tenant's first sign-in of any kind (null when it has none). |
+| `actor_ips[]` | One entry per distinct address on the finding's evidence rows (the `timeline` ip of each row; state rows such as `inbox_rules` and `mailboxes` have none), by first evidence time: `ip`, `asn`, `asn_org`, `is_hosting` (`ip_intel`), `spray_source` (in the tenant's `spray_sources`), `user_signin_days_before`, `user_first_signin`. |
+| `user_signin_days_before` | Distinct UTC days on which the finding's actor had a SUCCESSFUL sign-in (`error_code` 0 or NULL) from that address strictly before the earliest evidence event from it; `user_first_signin` is the first such sign-in (null when none). A sprayer's failures never make an address look familiar. Null means it cannot be compared (shown "unknown", never 0). |
+| `other_signals` | `{total, items}`: the actor's other findings of the tenant (case-insensitive, never this one), at most 5 in `finding list` order, each `{rule_id, severity, first_seen}`; `total` 0 when the finding has no actor. |
+| `targets[]` | Only when the evidence carries a forwarding or redirect address: every address in `inbox_rules` `forward_to`, `forward_as_attachment_to`, `redirect_to`; `mailboxes` `forwarding_smtp_address`, `forwarding_address`; `transport_rules` `redirect_to`, `blind_copy_to`, `copy_to`, `add_to_recipients`; or the UAL and admin-audit cmdlet parameters (`ForwardingSmtpAddress`, `ForwardingAddress`, `ForwardTo`, `ForwardAsAttachmentTo`, `RedirectTo`, `RedirectMessageTo`, `BlindCopyTo`, `CopyTo`, `AddToRecipients`). Deduplicated, lower-case, `smtp:` prefix and display name removed, trailing dots stripped, sorted; a value with no address is not a target. Each `{address, domain, scope, prior_messages}`: `scope` is `internal` when the address is the actor's own (UPN or mailbox primary address) or its domain, or a parent domain, is in `tenant_domains` (analyst overrides included), else `external`; `prior_messages` counts the tenant's `message_trace` rows between the actor and the address, either direction, received strictly before the earliest evidence event carrying it (null when the case has no message trace, the finding has no actor, or that evidence has no time). |
+
+**`account_rollup`** (one row per tenant and lower-case account with at least one finding; findings without an actor
+make no row and their addresses are attributed to nobody): `tenant_key`, `upn`, `worst_severity` (critical > high >
+medium > low > info), `finding_count`, `by_severity` (JSON, only severities present), `stages` (JSON array in the fixed
+order above: the union of the `stage:` of the rules of the account's findings, plus `credential_takeover` when an
+SPW-ID-005 evidence row of the account has context `takeover = true`), `first_suspicious` (earliest `first_seen` among
+the account's findings of severity medium or higher; null when none), `rules` (distinct rule ids, sorted), `addresses`
+(at most 20), `addresses_total`, `addresses_truncated`, `computed_run_id`. Each address
+`{ip, reasons, tables, first_seen, last_seen, asn, asn_org, is_hosting, spray_source, in_user_signins}`; the reasons:
+
+| Reason | The address... |
+| --- | --- |
+| `finding_evidence` | is on the evidence rows of one of the account's findings. |
+| `acts_without_signin` | acts for the account in `ual_events`, `mail_items_accessed`, `mailbox_audit_legacy` or `message_trace` but never appears in the account's sign-ins (any result). |
+| `hosting` | has `ip_intel.is_hosting`. |
+| `spray_source` | is in the tenant's `spray_sources`. |
+| `risky_signin` | signed the account in with a sign-in or user risk of medium or high, or has a `risk_detections` row for the account and address. |
+
+Addresses are ordered by their strongest reason (`finding_evidence`, then `acts_without_signin`, then the others), then
+`first_seen`, then address; `in_user_signins` is true when the account's sign-ins carry it. Accounts are read worst
+severity first, then more stages, then earlier `first_suspicious`, then UPN.
+
 ### Rule tooling
 
 ```bash

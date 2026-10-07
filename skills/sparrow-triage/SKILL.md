@@ -24,42 +24,48 @@ sparrow capabilities --case case.duckdb --json
 sparrow summary --case case.duckdb --json
 ```
 
-2. **Findings.** `--severity` is a minimum: `medium` returns critical, high and medium.
+2. **Accounts first.** One row per account with a finding, worst first: `stages` (what the findings show together),
+   `first_suspicious`, `addresses` with their `reasons`. An address with `acts_without_signin` is one the account
+   acts from but never signs in from (for example only in mail-read records): an attacker candidate to REPORT.
+
+```bash
+sparrow accounts --case case.duckdb --json
+```
+
+   An empty list with a warning means this case was detected before the roll-up existed: run
+   `sparrow detect --case case.duckdb` once and call `accounts` again.
+
+3. **Findings of the accounts you will name or clear** (`--severity` is a minimum: `medium` = critical, high,
+   medium). Take the ids, then read them ALL in one call (up to 50 ids):
 
 ```bash
 sparrow finding list --case case.duckdb --severity medium --json
-```
-
-3. **Read them ALL in one call** (up to 50 ids). Each finding's `evidence[].timeline` has the actor, target, IP,
-   country, ASN organisation, user agent and summary; `analyst_guidance` names the known false positives.
-
-```bash
 sparrow finding show --case case.duckdb <ID1> <ID2> <ID3> --json
 ```
 
-4. **Group by account** (the finding's `actor_upn` and each evidence row's `timeline.actor_upn`). Decide per account
-   using the table in `bec-triage`: clear attacker evidence, name it; no attacker signal, leave it; mixed, check.
-5. **Only for an account you will NAME or CLEAR as borderline**, one pivot (and `pivot ip` for an address shared by
-   several accounts):
+4. **Read `facts`** on persistence, consent and MFA findings. `actor_ips[].user_signin_days_before`: the days the
+   account signed in from that address earlier IN THE CAPTURE (it starts at `window_start`): 0 = none, null = cannot be
+   compared, unknown, never zero.
+   `other_signals`: its other findings. `targets`: every forwarding target with `scope` internal or external and
+   `prior_messages` (null = unknown). Facts are counter-evidence, never verdicts: decide with the `bec-triage` table.
+   `facts_unavailable` means run `sparrow detect`. `analyst_guidance` names the known false positives.
+5. **`pivot user` only when the evidence is mixed** (one call; `pivot ip` for an address shared by accounts):
 
 ```bash
 sparrow pivot user <UPN> --case case.duckdb --json
 sparrow pivot ip <IP> --case case.duckdb --json
 ```
 
-6. **SQL only for what no finding shows** (the state of a rule, a forward target, a consent). Look up columns
-   first; never `SELECT *` to discover them:
+6. **SQL only for what no finding shows.** Look up columns first; never `SELECT *` to discover them:
 
 ```bash
 sparrow schema --case case.duckdb --table inbox_rules --json
 sparrow query --case case.duckdb --json --limit 100 "SELECT mailbox, name, forward_to, redirect_to, delete_message, mark_as_read, move_to_folder FROM inbox_rules WHERE forward_to IS NOT NULL OR redirect_to IS NOT NULL OR delete_message OR mark_as_read ORDER BY mailbox, name"
 ```
 
-7. **Write the answer** in the format the task asks for. Name an account only with evidence, say what you cleared
-   in one line each, and what you could not check. Never stop without the answer.
-
-Prefer a finding's evidence to ad-hoc SQL. Never re-run `finding list` to filter it: use `--severity`, `--rule`,
-`--user`.
+7. **Write the answer** in the format asked. List EVERY forwarding target of an attacker rule, internal ones too
+   (an attacker may forward to a colleague as well), and every attacker address, including the
+   `acts_without_signin` ones. Say what you cleared, one line each, and what you could not check.
 
 ## Column cheat-sheet (real names; `sparrow schema --table T --json` is the authority)
 
