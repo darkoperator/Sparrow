@@ -4,6 +4,7 @@
 
 pub mod actor;
 pub mod audit;
+pub mod browse;
 pub mod indicators;
 pub mod notes;
 pub mod query;
