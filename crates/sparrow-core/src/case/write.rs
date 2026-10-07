@@ -203,8 +203,24 @@ pub fn set_finding_status(
     status: FindingStatus,
     reason: Option<&str>,
 ) -> Result<AuditEntry> {
+    set_finding_status_from(conn, actor, id, status, reason, None)
+}
+
+/// [`set_finding_status`] with an audit reason that differs from the disposition (an accepted share proposal names
+/// its source there); `None` uses the disposition reason, as `set_finding_status` does.
+pub(crate) fn set_finding_status_from(
+    conn: &Connection,
+    actor: &Actor,
+    id: &str,
+    status: FindingStatus,
+    reason: Option<&str>,
+    audit_reason: Option<&str>,
+) -> Result<AuditEntry> {
     let reason = reason.map(str::trim).filter(|r| !r.is_empty());
     if let Some(r) = reason {
+        crate::case::text::check_text("a reason", r)?;
+    }
+    if let Some(r) = audit_reason {
         crate::case::text::check_text("a reason", r)?;
     }
     if status.closes() && reason.is_none() {
@@ -218,7 +234,7 @@ pub fn set_finding_status(
         actor,
         id,
         "set_status",
-        reason,
+        audit_reason.or(reason),
         |_| Ok(()),
         |tx| {
             tx.prepare_cached(

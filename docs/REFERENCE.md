@@ -515,6 +515,17 @@ decisions only (pending items and agent notes are left out). The review app (Pha
 decisions (`analyst:<name>`), reviewed when made; an analyst cannot write over a pending agent decision until it is
 accepted or discarded.
 
+**Sharing work between analysts.** The review app exports an analyst's reviewed work as a share bundle (a JSON
+file; send its SHA-256 separately so the receiver can compare it): the accepted findings, indicators and verified or
+rejected timeline entries, and the analyst's own notes, with the case's evidence identity (the SHA-256 of every
+parsed source file and the rule set of the last detection run). A bundle imports only into a case built from the
+same evidence; a different rule set is a warning. Import stores each item as a proposal and changes nothing else:
+an item is new, agrees with this case, conflicts with it, or is missing (its finding or evidence does not exist
+here). Accepting a proposal applies it as your own analyst decision, with the source analyst and bundle in the audit
+reason, and is refused if the object changed since the import; discarding one is audited too. Importing the same
+bundle again changes nothing, and a newer bundle from the same analyst supersedes that analyst's open proposals for
+the same items. A bundle says what the other analyst concluded, not how; their trail stays in their case.
+
 **The audit trail** is append-only and hash-chained (SHA-256 over the previous hash and the canonical JSON of the
 entry). It holds one entry per state-changing write and per review; a write that changes nothing (removing an
 inactive indicator) adds none, and detection and exports add none. `audit verify` reports the first bad `seq`

@@ -121,7 +121,7 @@ fn rfc3339_opt<S: Serializer>(
     }
 }
 
-fn indicator_id(tenant_key: Option<&str>, ty: IndicatorType, value: &str) -> String {
+pub(crate) fn indicator_id(tenant_key: Option<&str>, ty: IndicatorType, value: &str) -> String {
     let mut h = Sha256::new();
     h.update(tenant_key.unwrap_or("").as_bytes());
     h.update([0x1f]);
@@ -169,6 +169,7 @@ fn decide(
     actor: &Actor,
     id: &str,
     action: &str,
+    reason: Option<&str>,
     apply: impl FnOnce(&Connection, Option<&Value>, &str) -> Result<()>,
 ) -> Result<AuditEntry> {
     in_tx(conn, |tx| {
@@ -194,7 +195,7 @@ fn decide(
             id,
             before.as_ref(),
             after.as_ref(),
-            None,
+            reason,
         )
     })
 }
@@ -210,6 +211,21 @@ pub fn add_indicator(
     verdict: Verdict,
     note: Option<&str>,
 ) -> Result<String> {
+    add_indicator_from(conn, actor, tenant_key, ty, value, verdict, note, None)
+}
+
+/// [`add_indicator`] with an audit reason (an accepted share proposal names its source).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn add_indicator_from(
+    conn: &Connection,
+    actor: &Actor,
+    tenant_key: Option<&str>,
+    ty: IndicatorType,
+    value: &str,
+    verdict: Verdict,
+    note: Option<&str>,
+    reason: Option<&str>,
+) -> Result<String> {
     let value = value.trim();
     if value.is_empty() {
         return Err(Error::Decision(
@@ -220,7 +236,7 @@ pub fn add_indicator(
         crate::case::text::check_text("a note", n)?;
     }
     let id = indicator_id(tenant_key, ty, value);
-    decide(conn, actor, &id, "add_ioc", |tx, before, ts| {
+    decide(conn, actor, &id, "add_ioc", reason, |tx, before, ts| {
         if before.is_some() {
             tx.execute(
                 "UPDATE case_indicators SET verdict = CAST(? AS indicator_verdict), note = ?, added_by = ?, \
@@ -255,6 +271,7 @@ pub fn set_verdict(
         actor,
         indicator_id,
         "set_ioc_verdict",
+        None,
         |tx, before, _| {
             match before {
                 None => {
@@ -280,6 +297,16 @@ pub fn set_verdict(
 /// Remove an indicator (soft delete: `removed_at`/`removed_by`; rules stop reading it). Returns whether it was
 /// active; removing an unknown or already removed indicator changes and records nothing.
 pub fn remove_indicator(conn: &Connection, actor: &Actor, indicator_id: &str) -> Result<bool> {
+    remove_indicator_from(conn, actor, indicator_id, None)
+}
+
+/// [`remove_indicator`] with an audit reason (an accepted share proposal names its source).
+pub(crate) fn remove_indicator_from(
+    conn: &Connection,
+    actor: &Actor,
+    indicator_id: &str,
+    reason: Option<&str>,
+) -> Result<bool> {
     let active: bool = conn.query_row(
         "SELECT count(*) > 0 FROM case_indicators WHERE indicator_id = ? AND removed_at IS NULL",
         params![indicator_id],
@@ -288,18 +315,25 @@ pub fn remove_indicator(conn: &Connection, actor: &Actor, indicator_id: &str) ->
     if !active {
         return Ok(false);
     }
-    decide(conn, actor, indicator_id, "remove_ioc", |tx, before, ts| {
-        if before.is_none_or(|b| !b["removed_at"].is_null()) {
-            return Err(Error::Decision(format!(
-                "indicator {indicator_id} is not active"
-            )));
-        }
-        tx.execute(
+    decide(
+        conn,
+        actor,
+        indicator_id,
+        "remove_ioc",
+        reason,
+        |tx, before, ts| {
+            if before.is_none_or(|b| !b["removed_at"].is_null()) {
+                return Err(Error::Decision(format!(
+                    "indicator {indicator_id} is not active"
+                )));
+            }
+            tx.execute(
                 "UPDATE case_indicators SET removed_at = CAST(? AS TIMESTAMPTZ), removed_by = ? WHERE indicator_id = ?",
                 params![ts, actor.as_str(), indicator_id],
             )?;
-        Ok(())
-    })?;
+            Ok(())
+        },
+    )?;
     Ok(true)
 }
 

@@ -69,7 +69,7 @@ impl NoteTarget {
         }
     }
 
-    fn check_exists(&self, conn: &Connection) -> Result<()> {
+    pub(crate) fn check_exists(&self, conn: &Connection) -> Result<()> {
         let (sql, id) = match self {
             NoteTarget::Finding(id) => ("SELECT count(*) FROM findings WHERE finding_id = ?", id),
             NoteTarget::Entry(id) => (
@@ -123,6 +123,20 @@ pub fn add_note(
     target: NoteTarget,
     text: &str,
 ) -> Result<(String, AuditEntry)> {
+    add_note_from(conn, actor, target, text, None)
+}
+
+/// [`add_note`] with an audit reason (an accepted share proposal names its source).
+pub(crate) fn add_note_from(
+    conn: &Connection,
+    actor: &Actor,
+    target: NoteTarget,
+    text: &str,
+    reason: Option<&str>,
+) -> Result<(String, AuditEntry)> {
+    if let Some(r) = reason {
+        crate::case::text::check_text("a reason", r)?;
+    }
     if text.trim().is_empty() {
         return Err(Error::Decision("a note must not be empty".into()));
     }
@@ -175,7 +189,7 @@ pub fn add_note(
             &id,
             None,
             Some(&after),
-            None,
+            reason,
         )?;
         Ok((id, e))
     })

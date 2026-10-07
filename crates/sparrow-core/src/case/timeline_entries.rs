@@ -307,6 +307,7 @@ fn insert_proposed(
     actor: &Actor,
     e: &NewEntry,
     supersedes: Option<&str>,
+    reason: Option<&str>,
 ) -> Result<(String, AuditEntry)> {
     non_empty("a title", &e.title)?;
     check_title(&e.title)?;
@@ -365,14 +366,27 @@ fn insert_proposed(
         &id,
         None,
         Some(&after),
-        None,
+        reason,
     )?;
     Ok((id, entry))
 }
 
 /// Propose a new entry. Evidence is optional here but must exist when given; verifying needs at least one row.
 pub fn propose(conn: &Connection, actor: &Actor, entry: NewEntry) -> Result<(String, AuditEntry)> {
-    in_tx(conn, |tx| insert_proposed(tx, actor, &entry, None))
+    propose_from(conn, actor, entry, None)
+}
+
+/// [`propose`] with an audit reason (an accepted share proposal names its source).
+pub(crate) fn propose_from(
+    conn: &Connection,
+    actor: &Actor,
+    entry: NewEntry,
+    reason: Option<&str>,
+) -> Result<(String, AuditEntry)> {
+    if let Some(r) = reason {
+        check_text("a reason", r)?;
+    }
+    in_tx(conn, |tx| insert_proposed(tx, actor, &entry, None, reason))
 }
 
 /// One decision on an existing entry: before, `apply` (given the before state and the decision ts), the tags, after
@@ -415,12 +429,25 @@ fn decide(
 /// it supersedes X, X (still verified) becomes `superseded` in the same transaction; the audit `after` names it as
 /// `superseded_entry`.
 pub fn verify(conn: &Connection, actor: &Actor, entry_id: &str) -> Result<AuditEntry> {
+    verify_from(conn, actor, entry_id, None)
+}
+
+/// [`verify`] with an audit reason (an accepted share proposal names its source).
+pub(crate) fn verify_from(
+    conn: &Connection,
+    actor: &Actor,
+    entry_id: &str,
+    reason: Option<&str>,
+) -> Result<AuditEntry> {
+    if let Some(r) = reason {
+        check_text("a reason", r)?;
+    }
     decide(
         conn,
         actor,
         entry_id,
         "verify_entry",
-        None,
+        reason,
         |tx, before, ts| {
             if status_of(before) != "proposed" {
                 return Err(Error::Decision(format!(
@@ -499,6 +526,20 @@ pub fn edit(
     entry_id: &str,
     edit: EntryEdit,
 ) -> Result<(String, AuditEntry)> {
+    edit_from(conn, actor, entry_id, edit, None)
+}
+
+/// [`edit`] with an audit reason (an accepted share proposal names its source).
+pub(crate) fn edit_from(
+    conn: &Connection,
+    actor: &Actor,
+    entry_id: &str,
+    edit: EntryEdit,
+    reason: Option<&str>,
+) -> Result<(String, AuditEntry)> {
+    if let Some(r) = reason {
+        check_text("a reason", r)?;
+    }
     if let Some(t) = &edit.title {
         non_empty("a title", t)?;
         check_title(t)?;
@@ -544,7 +585,7 @@ pub fn edit(
         }
         check_evidence_exists(tx, &next.evidence)?;
         match status_of(&before) {
-            "verified" => insert_proposed(tx, actor, &next, Some(entry_id)),
+            "verified" => insert_proposed(tx, actor, &next, Some(entry_id), reason),
             "proposed" => {
                 let ts = audit::now();
                 let ts_text = audit::ts_text(&ts);
@@ -573,7 +614,7 @@ pub fn edit(
                     entry_id,
                     Some(&before),
                     Some(&after),
-                    None,
+                    reason,
                 )?;
                 Ok((entry_id.to_string(), e))
             }
