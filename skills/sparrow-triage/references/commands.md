@@ -38,6 +38,10 @@ sparrow schema --case case.duckdb --json
 sparrow schema --case case.duckdb --table signins --json
 ```
 
+`summary --json` also carries `next` (the first string is the `sparrow accounts ...` command) and `top_accounts` (up to
+3 accounts: upn, tenant_key, worst_severity, stages, first_suspicious, addresses_total) or `top_accounts_unavailable:
+<reason>`; `capabilities --json` carries `next` too.
+
 ## Accounts (the roll-up) and facts
 
 `sparrow accounts` returns `{"accounts": [...], "total": N, "truncated": bool, "warnings": [...]}`. Each account:

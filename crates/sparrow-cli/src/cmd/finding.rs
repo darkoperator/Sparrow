@@ -12,7 +12,8 @@ use std::process::ExitCode;
 
 #[derive(Subcommand)]
 pub enum FindingCommand {
-    /// List findings: severity first, then the most recent
+    /// List findings: severity first, then the most recent. To see which accounts to look at first, start with
+    /// `sparrow accounts`
     List(super::read::FindingListArgs),
     /// Findings by id: evidence with source references, analyst guidance, notes, decision and review, history.
     /// Several ids (at most 50) print each in turn; exit 2 when one is not found

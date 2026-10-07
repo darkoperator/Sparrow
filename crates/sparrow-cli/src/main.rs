@@ -94,7 +94,10 @@ enum Command {
         #[arg(long)]
         no_detect: bool,
     },
-    /// Evidence availability: what the case holds, what is missing and why (first call for agents)
+    /// Start triage here: the accounts with findings, worst first, with their stages, first suspicious time and
+    /// the addresses worth a look (the roll-up detection builds; a case detected before it needs `sparrow detect`)
+    Accounts(cmd::read::AccountsArgs),
+    /// Evidence availability: what the case holds, what is missing and why
     Capabilities {
         /// Case database file
         #[arg(long)]
@@ -106,9 +109,6 @@ enum Command {
         #[arg(long)]
         case: PathBuf,
     },
-    /// The accounts with findings, worst first: stages, first suspicious time and the addresses worth a look
-    /// (the roll-up detection builds); a case detected before it needs `sparrow detect`
-    Accounts(cmd::read::AccountsArgs),
     /// Re-check a record against its original source file(s)
     Verify {
         table: String,
@@ -1138,7 +1138,9 @@ fn cmd_capabilities(case_path: &Path, json: bool) -> Result<ExitCode> {
         );
     }
     if json {
-        print_json(&report)?;
+        let mut v = serde_json::to_value(&report)?;
+        v["next"] = serde_json::json!([accounts_next(case_path)]);
+        print_json(&v)?;
         return Ok(ExitCode::SUCCESS);
     }
     print_stale_warning(&report.stale_collections, case_path);
@@ -1179,12 +1181,53 @@ fn cmd_capabilities(case_path: &Path, json: bool) -> Result<ExitCode> {
             }
         }
     }
+    println!();
+    println!("Next:");
+    println!("  {}", accounts_next(case_path));
     Ok(ExitCode::SUCCESS)
+}
+
+/// The pointer `summary` and `capabilities` give to `sparrow accounts`, the first command of a triage.
+fn accounts_next(case_path: &Path) -> String {
+    format!(
+        "sparrow accounts --case {} --json: one row per account with findings (stages, first suspicious time, addresses worth a look)",
+        case_path.display()
+    )
+}
+
+/// The accounts `summary` shows: up to this many, in `sparrow accounts` order.
+const SUMMARY_ACCOUNTS: usize = 3;
+
+/// The top accounts of the roll-up as JSON rows (upn, tenant_key, worst_severity, stages, first_suspicious,
+/// addresses_total), `Err(reason)` when the roll-up is not current (the reason `sparrow accounts` gives).
+fn top_accounts(case: &Case) -> Result<std::result::Result<Vec<serde_json::Value>, String>> {
+    let page = sparrow_core::case::read::accounts(case.conn(), None, Some(SUMMARY_ACCOUNTS))?;
+    if let Some(why) = page.warnings.first() {
+        return Ok(Err(why.clone()));
+    }
+    let mut rows = Vec::new();
+    for a in &page.accounts {
+        let full = serde_json::to_value(a)?;
+        let mut row = serde_json::Map::new();
+        for k in [
+            "upn",
+            "tenant_key",
+            "worst_severity",
+            "stages",
+            "first_suspicious",
+            "addresses_total",
+        ] {
+            row.insert(k.to_string(), full[k].clone());
+        }
+        rows.push(serde_json::Value::Object(row));
+    }
+    Ok(Ok(rows))
 }
 
 fn cmd_summary(case_path: &Path, json: bool) -> Result<ExitCode> {
     let case = open_read(case_path)?;
     let report = summarize(&case)?;
+    let top = top_accounts(&case)?;
     if report.tenants.is_empty() {
         anyhow::bail!(
             "the case has no tenant profile; run `sparrow profile --case {}` first",
@@ -1192,7 +1235,13 @@ fn cmd_summary(case_path: &Path, json: bool) -> Result<ExitCode> {
         );
     }
     if json {
-        print_json(&report)?;
+        let mut v = serde_json::to_value(&report)?;
+        v["next"] = serde_json::json!([accounts_next(case_path)]);
+        match &top {
+            Ok(rows) => v["top_accounts"] = serde_json::Value::Array(rows.clone()),
+            Err(why) => v["top_accounts_unavailable"] = serde_json::json!(why),
+        }
+        print_json(&v)?;
         return Ok(ExitCode::SUCCESS);
     }
     print_stale_warning(&report.stale_collections, case_path);
@@ -1266,6 +1315,37 @@ fn cmd_summary(case_path: &Path, json: bool) -> Result<ExitCode> {
     for tc in &report.tables {
         println!("  {:<24} {:>10} rows", tc.table, tc.rows);
     }
+    println!();
+    match &top {
+        Ok(rows) if rows.is_empty() => println!("Accounts: no account has a finding"),
+        Ok(rows) => {
+            println!("Accounts (top {}):", rows.len());
+            for r in rows {
+                let stages: Vec<&str> = r["stages"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|s| s.as_str())
+                    .collect();
+                println!(
+                    "  {}  {}  stages {}  first suspicious {}  ({} addresses)",
+                    r["upn"].as_str().unwrap_or("-"),
+                    r["worst_severity"].as_str().unwrap_or("-"),
+                    if stages.is_empty() {
+                        "-".to_string()
+                    } else {
+                        stages.join(", ")
+                    },
+                    r["first_suspicious"].as_str().unwrap_or("-"),
+                    r["addresses_total"]
+                );
+            }
+        }
+        Err(why) => println!("Accounts: unavailable: {why}"),
+    }
+    println!();
+    println!("Next:");
+    println!("  {}", accounts_next(case_path));
     Ok(ExitCode::SUCCESS)
 }
 
