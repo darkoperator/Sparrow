@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["crates/sparrow-cli", "crates/sparrow-core", "crates/sparrow-synth"]
+members = ["crates/sparrow-cli", "crates/sparrow-core", "crates/sparrow-synth", "crates/sparrow-app"]
+default-members = ["crates/sparrow-cli", "crates/sparrow-core", "crates/sparrow-synth"]
 
 [workspace.package]
 version = "0.1.0"

@@ -28,3 +28,8 @@ build/
 
 # Microsoft-Extractor-Suite sample output from a test tenant (local only)
 /invictus/
+
+# Review app
+/app/node_modules/
+/app/dist/
+/crates/sparrow-app/gen/
