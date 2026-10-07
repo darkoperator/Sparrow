@@ -486,6 +486,15 @@ The CSV is UTF-8 with a BOM; its cells keep the stored text, with one exception:
 text (rule names, subjects, user agents, display names) can be attacker-controlled. The Timestamp and id columns
 are left as they are. The workbook writes text as strings, never as formulas; numbers, booleans and dates are typed cells.
 
+The report has an "Accounts" section after the executive-summary placeholder (one row per account, worst severity
+first, with its stages, first suspicious time and top addresses with their reasons) and a "Facts" list under each
+confirmed finding that has stored facts (fixed sentences: the addresses the user signed in from on earlier days
+within the capture, the account's other findings, the targets of a forwarding with their scope and earlier
+messages). They are facts computed by detection, never a verdict; a count that cannot be compared reads
+"unknown", and when the enrichment is not current the section and each finding say "unavailable" with the reason
+(run `sparrow detect`). The workbook has an "Accounts" sheet and a `Facts` column (compact JSON) on the Findings
+sheet. The roll-up covers every finding of the case, also under `--reviewed-only`.
+
 The Markdown report escapes all evidence and agent text as Markdown and HTML (so a rule named `x <!--` cannot hide
 the rest of the report, and `[text](url)`, `![](url)` and `[^3]` stay plain text). Agent notes carry no review
 state: they are labelled "agent note — not reviewed", and `--reviewed-only` leaves them out. A date Excel cannot

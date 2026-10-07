@@ -4,6 +4,7 @@
 //! "AI decision — not reviewed" unless `reviewed_only` keeps accepted decisions only. Every line that states
 //! evidence cites it as a footnote: `table:record_key` and the source file and line.
 
+use super::facts_text::{self, ADDRESSES_SHOWN};
 use super::header;
 use super::text::{block, indented, md_cell, single_line as one};
 use super::{
@@ -12,7 +13,7 @@ use super::{
 };
 use crate::Result;
 use crate::case::notes::{Note, NoteTarget, notes_for};
-use crate::case::read::{self, EvidenceRow, FindingFilter};
+use crate::case::read::{self, EvidenceRow, FactsField, FindingFilter};
 use crate::case::timeline_entries::{self, Phase};
 use crate::detect::load::RuleSet;
 use crate::summary::summarize_conn;
@@ -120,12 +121,8 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
     let legacy = super::legacy_objects(conn)?;
     let summary = summarize_conn(conn)?;
     let mut notes_fn = Footnotes::default();
-    let empty_rules = RuleSet {
-        rules: Vec::new(),
-        lists: BTreeMap::new(),
-        list_meta: BTreeMap::new(),
-        warnings: Vec::new(),
-    };
+    // The rule set tells which findings carry facts (the facts families); the environment's, as the read commands.
+    let rules: RuleSet = facts_text::rules()?;
     let mut doc: Vec<String> = Vec::new();
 
     doc.push("# Sparrow case report".into());
@@ -202,6 +199,12 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
     doc.push(String::new());
     doc.push("_Analyst to write._".into());
 
+    // ---- Accounts (the roll-up detection builds; facts, not decisions)
+    doc.push(String::new());
+    doc.push("## Accounts".into());
+    doc.push(String::new());
+    accounts_section(conn, &mut doc)?;
+
     // ---- Timeline by phase
     doc.push(String::new());
     doc.push("## Timeline by phase".into());
@@ -264,7 +267,7 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
             continue;
         }
         shown_findings += 1;
-        let detail = read::finding_show(conn, &f.finding_id, &empty_rules)?;
+        let detail = read::finding_show(conn, &f.finding_id, &rules)?;
         doc.push(String::new());
         doc.push(format!("### {} — {}", one(&f.severity), one(&f.title)));
         doc.push(String::new());
@@ -293,6 +296,21 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
         if !note_buf.is_empty() {
             doc.push("- Notes:".into());
             doc.extend(note_buf);
+        }
+        match &detail.facts {
+            Some(FactsField::Present { facts }) => {
+                doc.push("- Facts:".into());
+                for line in facts_text::fact_lines(facts) {
+                    doc.push(format!("  - {line}"));
+                }
+            }
+            Some(FactsField::Unavailable { facts_unavailable }) => {
+                doc.push(format!(
+                    "- {}",
+                    facts_text::unavailable_line(facts_unavailable)
+                ));
+            }
+            None => {}
         }
         if !detail.evidence.is_empty() {
             doc.push(format!("- Evidence ({} rows):", detail.evidence.len()));
@@ -384,6 +402,43 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
 
     for line in &doc {
         writeln!(out, "{line}").map_err(super::io_err)?;
+    }
+    Ok(())
+}
+
+/// The Accounts table: one row per account with findings, worst first. When the roll-up is not current the section
+/// says why it is empty (the same reason the read commands give) instead of listing nothing.
+fn accounts_section(conn: &Connection, doc: &mut Vec<String>) -> Result<()> {
+    let page = read::accounts(conn, None, None)?;
+    if let Some(w) = page.warnings.first() {
+        doc.push(format!("_{}._", one(w.trim_end_matches('.'))));
+        return Ok(());
+    }
+    doc.push(
+        "_Computed by Sparrow from every finding of the case, whatever its decision: facts, not decisions._".into(),
+    );
+    doc.push(String::new());
+    if page.accounts.is_empty() {
+        doc.push("_No accounts with findings._".into());
+        return Ok(());
+    }
+    doc.push("| Account | Worst severity | Stages | First suspicious (UTC) | Addresses |".into());
+    doc.push("| --- | --- | --- | --- | --- |".into());
+    for a in &page.accounts {
+        let stages: Vec<&str> = a.stages.iter().map(|s| s.as_str()).collect();
+        let (items, more) = facts_text::address_items(a, ADDRESSES_SHOWN);
+        let mut cell: Vec<String> = items.iter().map(|i| md_cell(i)).collect();
+        if more > 0 {
+            cell.push(format!("+{more} more"));
+        }
+        doc.push(format!(
+            "| {} | {} | {} | {} | {} |",
+            md_cell(&a.upn),
+            md_cell(&a.worst_severity),
+            md_cell(&stages.join(", ")),
+            a.first_suspicious.as_ref().map(when).unwrap_or_default(),
+            cell.join("<br>")
+        ));
     }
     Ok(())
 }

@@ -1,9 +1,13 @@
-//! The XLSX workbook (Addendum D.6). Sheets: Summary, Findings, Timeline, Indicators, Evidence gaps, Audit. Every
+//! The XLSX workbook (Addendum D.6). Sheets: Summary, Accounts, Findings, Timeline, Indicators, Evidence gaps, Audit.
+//! Accounts is the roll-up detection builds (one row per account, its addresses joined; empty, with the reason in
+//! the Summary, when the roll-up is not current) and the Findings sheet has a `Facts` column (the stored facts as
+//! compact JSON, or `{"facts_unavailable": ...}`; empty for a finding outside the facts families). Every
 //! decision sheet has `DecidedBy`, `OnBehalfOf` and `ReviewState` columns plus an empty `Analyst notes` column for
 //! work outside Sparrow. Frozen header row, filter, real date cells (`yyyy-mm-dd hh:mm:ss`, UTC) and fixed column
 //! widths. Cells keep the raw stored text, as strings (a text that starts with `=` stays text). A date outside
 //! Excel's range is written as ISO text with a note.
 
+use super::facts_text;
 use super::header;
 use super::{
     Provenance, entry_provenance, evidence_gaps, finding_provenance, indicator_rows, legacy_objects,
@@ -17,8 +21,9 @@ use rust_xlsxwriter::{ExcelDateTime, Format, Workbook, Worksheet};
 use std::path::Path;
 
 /// The sheets, in order.
-pub const SHEETS: [&str; 6] = [
+pub const SHEETS: [&str; 7] = [
     "Summary",
+    "Accounts",
     "Findings",
     "Timeline",
     "Indicators",
@@ -180,9 +185,67 @@ pub fn write(conn: &Connection, path: &Path, generated_at: DateTime<Utc>) -> Res
             t(ten.domains.join(", ")),
         ]);
     }
+    let accounts = read::accounts(conn, None, None)?;
+    rows.push(vec![
+        t("Accounts"),
+        t(match accounts.warnings.first() {
+            Some(w) => w.clone(),
+            None => format!("{} accounts with findings", accounts.total),
+        }),
+    ]);
     sheet(&mut wb, "Summary", &[("Item", 34.0), ("Value", 90.0)], rows)?;
 
+    // ---- Accounts (facts, not decisions; empty when the roll-up is not current, the Summary says why)
+    let rows = accounts
+        .accounts
+        .iter()
+        .map(|a| {
+            let addresses = a
+                .addresses
+                .iter()
+                .map(|x| format!("{} ({})", x.ip, x.reasons.join(", ")))
+                .collect::<Vec<_>>()
+                .join("; ");
+            vec![
+                t(&a.tenant_key),
+                t(&a.upn),
+                t(&a.worst_severity),
+                Cell::Int(i64::from(a.finding_count)),
+                t(serde_json::to_string(&a.by_severity).unwrap_or_default()),
+                t(a.stages
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")),
+                Cell::Time(a.first_suspicious),
+                t(a.rules.join("; ")),
+                t(addresses),
+                Cell::Int(i64::from(a.addresses_total)),
+                Cell::Bool(a.addresses_truncated),
+            ]
+        })
+        .collect();
+    sheet(
+        &mut wb,
+        "Accounts",
+        &[
+            ("Tenant", 14.0),
+            ("Account", 32.0),
+            ("WorstSeverity", 14.0),
+            ("FindingCount", 13.0),
+            ("BySeverity", 28.0),
+            ("Stages", 40.0),
+            ("FirstSuspicious", 20.0),
+            ("Rules", 40.0),
+            ("Addresses", 70.0),
+            ("AddressesTotal", 15.0),
+            ("AddressesTruncated", 18.0),
+        ],
+        rows,
+    )?;
+
     // ---- Findings
+    let rules = facts_text::rules()?;
     let findings = read::finding_list(conn, &read::FindingFilter::default())?;
     let mut rows = Vec::new();
     for f in &findings {
@@ -202,6 +265,14 @@ pub fn write(conn: &Connection, path: &Path, generated_at: DateTime<Utc>) -> Res
             Cell::Int(f.evidence_count),
         ];
         row.extend(decision_cells(&finding_provenance(f, &legacy)));
+        let detail = read::finding_show(conn, &f.finding_id, &rules)?;
+        row.push(
+            detail
+                .facts
+                .as_ref()
+                .map(|x| t(facts_text::facts_json(x)))
+                .unwrap_or(Cell::Empty),
+        );
         row.push(Cell::Empty);
         rows.push(row);
     }
@@ -221,6 +292,7 @@ pub fn write(conn: &Connection, path: &Path, generated_at: DateTime<Utc>) -> Res
         ("EvidenceCount", 14.0),
     ];
     cols.extend(DECISION_COLS);
+    cols.push(("Facts", 60.0));
     cols.push(("Analyst notes", 40.0));
     sheet(&mut wb, "Findings", &cols, rows)?;
 

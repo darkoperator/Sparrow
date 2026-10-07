@@ -54,7 +54,7 @@ pub enum ExportCommand {
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// The XLSX workbook (Summary, Findings, Timeline, Indicators, Evidence gaps, Audit)
+    /// The XLSX workbook (Summary, Accounts, Findings, Timeline, Indicators, Evidence gaps, Audit)
     Workbook {
         /// Case database file
         #[arg(long)]
