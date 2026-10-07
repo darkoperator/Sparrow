@@ -600,43 +600,44 @@ fn tenant_wide_not_applicable(
 
 /// The account roll-up gate: every account of `manifest.accounts` is a row of `account_rollup` (for the tenant) whose
 /// stages include the expected ones and whose addresses list every expected address with the reason
-/// `acts_without_signin`. A case whose roll-up was not computed (no `enrichment_run_id`, or an
-/// `enrichment_error` after the latest run) fails closed. Nothing is checked when the manifest expects no account.
+/// `acts_without_signin` (an expected address may be missing only from a truncated top-20 list that holds nothing
+/// weaker, and then `addresses_total` must count every expected address). The roll-up must be current
+/// (`enrichment_state` Ok: computed by the latest detection run, no error), even when no account is expected;
+/// otherwise the gate fails closed.
 fn check_accounts(manifest: &Manifest, case: &Case, tenant_key: &str) -> Result<Vec<String>> {
+    use sparrow_core::detect::enrich::{EnrichState, enrichment_state};
     let mut out = Vec::new();
-    if manifest.accounts.is_empty() {
-        return Ok(out);
-    }
-    let meta = |key: &str| -> Result<Option<String>> {
-        case.conn()
-            .query_row(
-                "SELECT value FROM case_meta WHERE key = ?",
-                params![key],
-                |r| r.get::<_, String>(0),
-            )
-            .map(Some)
-            .or_else(|e| match e {
-                duckdb::Error::QueryReturnedNoRows => Ok(None),
-                e => Err(e),
-            })
-            .map_err(db)
+    // The roll-up must be the current one, whatever is expected: the readers' own check (`enrichment_state`), so
+    // an old marker after a newer run (a failed rebuild whose error marker was not written) never passes, and an
+    // empty expectation means "no rows to compare", not "the roll-up may be missing".
+    let why = match enrichment_state(case.conn()).map_err(|e| Error::Core(e.to_string()))? {
+        EnrichState::Ok { .. } => None,
+        EnrichState::Never => Some("the case has no enrichment run".to_string()),
+        EnrichState::Failed { reason } => Some(reason),
+        EnrichState::Stale {
+            enriched_run,
+            latest_run,
+        } => Some(format!(
+            "it is stale: computed by detection run {enriched_run}, the latest run is {latest_run}"
+        )),
     };
-    if let Some(e) = meta("enrichment_error")? {
-        out.push(format!("the roll-up was not computed: {e}"));
+    if let Some(why) = why {
+        out.push(format!("the roll-up was not computed: {why}"));
         return Ok(out);
     }
-    if meta("enrichment_run_id")?.is_none() {
-        out.push("the roll-up was not computed: the case has no enrichment run".into());
+    if manifest.accounts.is_empty() {
         return Ok(out);
     }
     let mut stmt = case
         .conn()
         .prepare(
-            "SELECT lower(upn), CAST(stages AS VARCHAR), CAST(addresses AS VARCHAR), addresses_truncated \
+            "SELECT lower(upn), CAST(stages AS VARCHAR), CAST(addresses AS VARCHAR), addresses_truncated, \
+                    addresses_total \
              FROM account_rollup WHERE tenant_key = ?",
         )
         .map_err(db)?;
-    let rows: BTreeMap<String, (String, String, bool)> = stmt
+    type Row = (String, String, bool, i64);
+    let rows: BTreeMap<String, Row> = stmt
         .query_map(params![tenant_key], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -644,6 +645,7 @@ fn check_accounts(manifest: &Manifest, case: &Case, tenant_key: &str) -> Result<
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
                     r.get::<_, bool>(3)?,
+                    r.get::<_, i64>(4)?,
                 ),
             ))
         })
@@ -651,7 +653,7 @@ fn check_accounts(manifest: &Manifest, case: &Case, tenant_key: &str) -> Result<
         .collect::<std::result::Result<_, _>>()
         .map_err(db)?;
     for want in &manifest.accounts {
-        let Some((stages, addresses, truncated)) = rows.get(&want.upn) else {
+        let Some((stages, addresses, truncated, total)) = rows.get(&want.upn) else {
             out.push(format!(
                 "{} (storylines {}) is not in the roll-up",
                 want.upn,
@@ -671,19 +673,43 @@ fn check_accounts(manifest: &Manifest, case: &Case, tenant_key: &str) -> Result<
         }
         let listed: Vec<serde_json::Value> = serde_json::from_str(addresses)
             .map_err(|e| Error::Core(format!("account_rollup.addresses of {}: {e}", want.upn)))?;
+        // The roll-up keeps the ranked top MAX_ADDRESSES (finding_evidence, then acts_without_signin, then the
+        // weaker reasons). An expected acts_without_signin address may be left out only when the list is
+        // truncated AND holds nothing weaker than acts_without_signin (else it would have outranked that entry);
+        // the total must then still count every expected address.
+        let only_strong = listed.iter().all(|a| {
+            a["reasons"].as_array().is_some_and(|r| {
+                r.iter()
+                    .any(|x| x == "finding_evidence" || x == "acts_without_signin")
+            })
+        });
+        let may_rank_below_cap = *truncated && only_strong;
+        if may_rank_below_cap && *total < want.addresses.len() as i64 {
+            out.push(format!(
+                "{} has addresses_total {total}, fewer than the {} addresses it acts from in MailItemsAccessed \
+                 records but never signs in from",
+                want.upn,
+                want.addresses.len()
+            ));
+        }
+        let canon = |s: &str| {
+            s.parse::<std::net::IpAddr>()
+                .map_or_else(|_| s.to_string(), |i| i.to_string())
+        };
         for ip in &want.addresses {
-            let canon = |s: &str| {
-                s.parse::<std::net::IpAddr>()
-                    .map_or_else(|_| s.to_string(), |i| i.to_string())
-            };
             let found = listed
                 .iter()
                 .find(|a| a["ip"].as_str().is_some_and(|x| canon(x) == canon(ip)));
             match found {
+                None if may_rank_below_cap => {}
                 None => out.push(format!(
                     "{} does not list {ip}, an address it acts from in MailItemsAccessed records but never signs in from{}",
                     want.upn,
-                    if *truncated { " (the list is truncated)" } else { "" }
+                    if *truncated {
+                        " (the list is truncated, but holds a weaker address)"
+                    } else {
+                        ""
+                    }
                 )),
                 Some(a)
                     if !a["reasons"]

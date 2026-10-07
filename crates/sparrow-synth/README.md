@@ -501,8 +501,11 @@ in from it, with the reason `acts_without_signin`. Microsoft service addresses a
 account is expected for a positive storyline only when a rule is expected to hit a record the ACTOR authored (a
 sign-in's user, a UAL record's UserId, an admin cmdlet's caller): a finding's actor is the user of the record it fires
 on, so an admin's cmdlet on the actor's mailbox expects no row for the actor. The expectations are computed from the
-tree's own delivered rows (`oracle::Facts`), never from Sparrow's output. A case with no computed roll-up
-(`case_meta.enrichment_run_id` absent, or an `enrichment_error`) fails closed.
+tree's own delivered rows (`oracle::Facts`), never from Sparrow's output. The roll-up stores an account's ranked top
+20 addresses: an expected address may be missing only when the list is truncated and holds nothing weaker than
+`acts_without_signin`, and then `addresses_total` must count every expected address. The roll-up must be current,
+by the readers' own check (`detect::enrich::enrichment_state`: computed by the latest detection run, no
+`enrichment_error`), even for a tree that expects no account; anything else fails closed.
 
 Any difference is a `problems` entry prefixed `detection:` (or `accounts:` for the roll-up) and makes
 `sparrow synth check` exit **2**. With `--json` the same data is in `detection`: `rules_checked`, `missing_hits`,
