@@ -317,3 +317,27 @@ fn run_on_leaves_the_case_unchanged_even_for_a_side_effecting_select_shape() {
     let agent = Actor::agent("claude", Some("example")).unwrap();
     set_finding_status(c.conn(), &agent, "f1", FindingStatus::InReview, None).unwrap();
 }
+
+#[test]
+fn locked_case_still_takes_review_app_writes_and_exports() {
+    use sparrow_core::case::actor::Reviewer;
+    use sparrow_core::case::share;
+    let (_d, p) = case_file();
+    let c = Case::create_or_open(&p).unwrap();
+    c.lock_down().unwrap();
+    let carlos = Reviewer::analyst("carlos").unwrap();
+    set_finding_status(
+        c.conn(),
+        &carlos.as_actor(),
+        "f1",
+        FindingStatus::Confirmed,
+        Some("r"),
+    )
+    .unwrap();
+    let (bytes, _) = share::to_bytes(&share::export(c.conn(), &carlos).unwrap()).unwrap();
+    // Importing its own bundle: every item agrees, and the import is audited on the locked case.
+    let s = share::import(c.conn(), &carlos, &bytes).unwrap();
+    assert_eq!((s.new, s.conflicts, s.missing), (0, 0, 0));
+    assert!(s.agrees >= 1);
+    assert!(sparrow_core::case::audit::verify(c.conn()).unwrap().ok);
+}
