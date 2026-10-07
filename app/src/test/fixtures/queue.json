@@ -1,0 +1,118 @@
+[
+  {
+    "source": "decision",
+    "object_type": "finding",
+    "object_id": "1c8b18eff09c880c",
+    "decision_seq": 1,
+    "action": "set_status",
+    "actor": "agent:triage",
+    "on_behalf_of": "analyst:carlos",
+    "decided_at": "2026-10-07T23:20:12.256403Z",
+    "before": {
+      "assigned_to": null,
+      "decided_by": null,
+      "disposition_reason": null,
+      "on_behalf_of": null,
+      "review_state": null,
+      "rule_updated": false,
+      "status": "new"
+    },
+    "after": {
+      "assigned_to": null,
+      "decided_by": "agent:triage",
+      "disposition_reason": "token replay from a hosting ASN",
+      "on_behalf_of": "analyst:carlos",
+      "review_state": "pending_review",
+      "rule_updated": false,
+      "status": "in_review"
+    },
+    "reason": "token replay from a hosting ASN",
+    "account": "marlowe.rhodes@contoso.example",
+    "title": "User inbox rule deletes, forwards or redirects mail"
+  },
+  {
+    "source": "decision",
+    "object_type": "indicator",
+    "object_id": "c0138dfabda9ce43",
+    "decision_seq": 2,
+    "action": "add_ioc",
+    "actor": "agent:triage",
+    "on_behalf_of": "analyst:carlos",
+    "decided_at": "2026-10-07T23:20:12.262358Z",
+    "before": null,
+    "after": {
+      "decided_by": "agent:triage",
+      "note": "account used from the relay",
+      "on_behalf_of": "analyst:carlos",
+      "removed_at": null,
+      "removed_by": null,
+      "review_state": "pending_review",
+      "tenant_key": null,
+      "type": "upn",
+      "value": "marlowe.rhodes@contoso.example",
+      "verdict": "suspicious"
+    },
+    "reason": null,
+    "account": "marlowe.rhodes@contoso.example",
+    "title": "upn marlowe.rhodes@contoso.example"
+  },
+  {
+    "source": "decision",
+    "object_type": "timeline_entry",
+    "object_id": "8cf41c6e45bc",
+    "decision_seq": 3,
+    "action": "propose_entry",
+    "actor": "agent:triage",
+    "on_behalf_of": "analyst:carlos",
+    "decided_at": "2026-10-07T23:20:12.267862Z",
+    "before": null,
+    "after": {
+      "decided_by": "agent:triage",
+      "event_time": "2026-08-21T09:47:00.000000Z",
+      "evidence": [
+        "ual_events:02a13335-5a42-4ce8-9f05-5b5f0f489146"
+      ],
+      "narrative": "session token replayed",
+      "on_behalf_of": "analyst:carlos",
+      "phase": "initial_access",
+      "review_state": "pending_review",
+      "status": "proposed",
+      "supersedes": null,
+      "tenant_key": null,
+      "title": "Sign-in through the AiTM relay"
+    },
+    "reason": null,
+    "account": "marlowe.rhodes@contoso.example",
+    "title": "Sign-in through the AiTM relay"
+  },
+  {
+    "source": "proposal",
+    "bundle_sha256": "7c74996e28f36f5f2aa69e0ce60207310ab0eba0b49a681b361f611756c409e5",
+    "item_key": "finding:20309ce49aeb83a9",
+    "source_analyst": "analyst:ann",
+    "classification": "new",
+    "state": "open",
+    "item": {
+      "kind": "finding",
+      "finding_id": "20309ce49aeb83a9",
+      "status": "confirmed",
+      "disposition_reason": "AiTM relay"
+    },
+    "current": null
+  },
+  {
+    "source": "proposal",
+    "bundle_sha256": "7c74996e28f36f5f2aa69e0ce60207310ab0eba0b49a681b361f611756c409e5",
+    "item_key": "finding:20de6191e65a2528",
+    "source_analyst": "analyst:ann",
+    "classification": "new",
+    "state": "open",
+    "item": {
+      "kind": "finding",
+      "finding_id": "20de6191e65a2528",
+      "status": "confirmed",
+      "disposition_reason": "AiTM relay"
+    },
+    "current": null
+  }
+]

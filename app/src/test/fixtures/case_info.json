@@ -1,0 +1,11 @@
+{
+  "path": "/cases/synthetic-bec-aitm.duckdb",
+  "case_id": "741d190c-babe-4ffd-81e6-f6a9d75bf991",
+  "schema_version": 21,
+  "audit_ok": true,
+  "read_only_reason": null,
+  "tenants": [
+    "dfbdfe90-22c0-4154-b41b-ebdee4faea7e"
+  ],
+  "warnings": []
+}

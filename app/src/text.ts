@@ -50,3 +50,11 @@ export function displaySafe(s: string): string {
   }
   return out;
 }
+
+/**
+ * [`displaySafe`] for multi-line prose (rule guidance, notes): line breaks are kept (render with `white-space:
+ * pre-wrap`), every other control or format character is escaped.
+ */
+export function displaySafeMultiline(s: string): string {
+  return s.split(/\r?\n/).map(displaySafe).join("\n");
+}
