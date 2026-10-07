@@ -677,10 +677,7 @@ day by day, so a million-row tree is written in bounded memory. Manifest keys fo
 are kept only as the digest (the sorted `Vec` is used up to 5,000 keys). The library entry point
 is `scale::run_perf`, which generates, ingests, profiles and computes capabilities with timings.
 
-Note: the `--ual-rows` / `--signins` **CLI flags are accepted but currently refused** — the
-generation path exits 1 with "not supported until the scale knobs land". The scale knobs work in
-the library and are exercised by the `sparrow-synth` `perf` test; the CLI wiring is a Phase 5
-follow-up.
+The `sparrow synth --ual-rows N --signins N` flags set the same knobs from the command line.
 
 Performance harness (the ignored test prints `Timings::to_text`):
 
@@ -742,9 +739,6 @@ query (Phase 7 territory).
 
 Documented here because the code, not the plan, is the reference:
 
-- **`--ual-rows` / `--signins` are refused by the CLI.** `GenerateOptions` and
-  `World::apply_scale` support them and the `perf` test exercises them, but `sparrow synth`
-  exits 1 with "not supported until the scale knobs land" (a CLI test pins the refusal).
 - **`rules/coverage.yaml` gained `evidence_all_of`.** A correlated rule lists the evidence
   halves a storyline must reach; `sparrow synth coverage` reports a storyline that reached only
   some halves as `no_evidence`, not as a hit/no-hit.

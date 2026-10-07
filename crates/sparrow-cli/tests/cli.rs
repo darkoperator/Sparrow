@@ -1020,23 +1020,30 @@ fn synth_rejects_unknown_scenario_and_collector() {
 }
 
 #[test]
-fn synth_refuses_scale_knobs_until_they_land() {
+fn synth_scale_flags_add_exact_filler() {
     let dir = tempfile::tempdir().unwrap();
-    sparrow()
-        .args([
-            "synth",
-            "--scenario",
-            "bec-aitm",
-            "--collector",
-            "portal",
-            "--ual-rows",
-            "10",
-            "--out",
-        ])
-        .arg(dir.path().join("x"))
-        .assert()
-        .code(1)
-        .stderr(contains("scale knobs"));
+    let synth = |name: &str, extra: &[&str]| {
+        json_out(
+            sparrow()
+                .args([
+                    "--json",
+                    "synth",
+                    "--scenario",
+                    "bec-aitm",
+                    "--collector",
+                    "invictus",
+                ])
+                .args(extra)
+                .arg("--out")
+                .arg(dir.path().join(name)),
+            0,
+        )
+    };
+    let base = synth("base", &[]);
+    let scaled = synth("scaled", &["--ual-rows", "300", "--signins", "100"]);
+    let rows = |v: &Value, t: &str| v["tables"][t].as_u64().unwrap();
+    assert_eq!(rows(&scaled, "ual_events"), rows(&base, "ual_events") + 300);
+    assert_eq!(rows(&scaled, "signins"), rows(&base, "signins") + 100);
 }
 
 #[test]

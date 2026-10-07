@@ -264,10 +264,12 @@ struct SynthGenArgs {
     /// Microsoft-Extractor-Suite Get-Devices: write JSON into the .csv path
     #[arg(long)]
     devices_json: bool,
-    /// Total benign UAL rows (scale testing)
+    /// Total benign UAL filler rows over the window (scale testing; overrides the scenario's
+    /// `scale.ual_rows`)
     #[arg(long)]
     ual_rows: Option<u64>,
-    /// Total benign sign-ins (scale testing)
+    /// Total benign filler sign-ins over the window (scale testing; overrides the scenario's
+    /// `scale.signins`)
     #[arg(long)]
     signins: Option<u64>,
 }
@@ -1657,9 +1659,8 @@ fn cmd_synth_generate(args: SynthGenArgs, json: bool) -> Result<ExitCode> {
     opts.non_windows = args.non_windows;
     opts.invictus_licence_list = !args.no_licence_list;
     opts.invictus_devices_json = args.devices_json;
-    if args.ual_rows.is_some() || args.signins.is_some() {
-        anyhow::bail!("--ual-rows / --signins are not supported until the scale knobs land");
-    }
+    opts.ual_rows = args.ual_rows;
+    opts.signins = args.signins;
     let (manifest, zip) = if args.zip {
         let (m, z) = sparrow_synth::generate::generate_zip(&scenario, &opts, &out)?;
         (m, Some(z))

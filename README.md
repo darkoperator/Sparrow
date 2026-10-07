@@ -153,6 +153,9 @@ The caveats:
   runs from the previous round, whose conditions did not change. The savings on a real case depend on the case and the
   questions asked.
 
+**Using it with your agent:** give it the skill in [`skills/`](skills/README.md), or tell it to start with
+`sparrow accounts`. Agents follow instructions, not hints in tool output.
+
 **Agent skills.** [`skills/`](skills/README.md) holds two portable [Agent Skills](https://agentskills.io/specification), a tool-neutral M365 BEC triage playbook and a `sparrow` workflow, that work unchanged in Claude Code, Codex, OpenCode and Pi. See [skills/README.md](skills/README.md) to install them.
 
 ## Agent workflow: record decisions, then review them
