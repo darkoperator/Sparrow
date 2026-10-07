@@ -324,7 +324,7 @@ pub struct Case {
     read_only: bool,
     /// Set when the file could not be reopened after `with_file_released`: `conn` is then an
     /// read-only, empty placeholder database that cannot take writes.
-    poisoned: Option<String>,
+    poisoned: std::cell::RefCell<Option<String>>,
     /// Held while this `Case` is the file's writer; declared after `conn` so it is released after the connection.
     _writer: Option<WriterGuard>,
     /// Declared last so it drops after `conn`: the database is closed (and its WAL settled)
@@ -341,7 +341,7 @@ impl Case {
             conn,
             path: Some(path.to_path_buf()),
             read_only: false,
-            poisoned: None,
+            poisoned: Default::default(),
             _writer: Some(writer),
             scratch: None,
         })
@@ -381,7 +381,7 @@ impl Case {
             conn,
             path: Some(path.to_path_buf()),
             read_only: true,
-            poisoned: None,
+            poisoned: Default::default(),
             _writer: None,
             scratch: None,
         })
@@ -400,7 +400,7 @@ impl Case {
             conn,
             path: None,
             read_only: false,
-            poisoned: None,
+            poisoned: Default::default(),
             _writer: None,
             scratch: None,
         })
@@ -446,7 +446,7 @@ impl Case {
                          this Case is unusable, open the case again",
                         path.display()
                     );
-                    self.poisoned = Some(msg.clone());
+                    *self.poisoned.borrow_mut() = Some(msg.clone());
                     Err(Error::Invalid(msg))
                 }
             };
@@ -481,10 +481,42 @@ impl Case {
     /// write fails (and any read finds no tables);
     ///     /// fails as well.
     pub fn ensure_usable(&self) -> Result<()> {
-        match &self.poisoned {
+        match &*self.poisoned.borrow() {
             Some(msg) => Err(Error::Invalid(msg.clone())),
             None => Ok(()),
         }
+    }
+
+    /// Lock this instance down for good (the review app, which queries the case it holds open): no extension
+    /// install/load, no file, network or environment access, and the configuration can no longer be changed.
+    /// Probed like the `query` connection; `Error::Invalid` when a probe gets through. Writes through
+    /// [`Case::conn`] (transactions, audit rows, checkpoint) are unaffected; there is no way back short of
+    /// reopening the case.
+    pub fn lock_down(&self) -> Result<()> {
+        self.ensure_usable()?;
+        self.conn.execute_batch(
+            "SET autoinstall_known_extensions = false; SET autoload_known_extensions = false; \
+             SET allow_community_extensions = false; SET enable_external_access = false; \
+             SET lock_configuration = true;",
+        )?;
+        crate::case::query::probe_lockdown(&self.conn)
+    }
+
+    /// True when [`Case::lock_down`] has been applied: external access off and the configuration locked.
+    pub fn is_locked_down(&self) -> Result<bool> {
+        let (ext, lock): (String, String) = self.conn.query_row(
+            "SELECT current_setting('enable_external_access')::VARCHAR, \
+                    current_setting('lock_configuration')::VARCHAR",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        Ok(ext == "false" && lock == "true")
+    }
+
+    /// Make this case unusable (see [`Case::ensure_usable`]) because its connection is in a state the caller cannot
+    /// vouch for, e.g. a transaction that would not roll back.
+    pub(crate) fn poison(&self, msg: String) {
+        *self.poisoned.borrow_mut() = Some(msg);
     }
 
     pub fn conn(&self) -> &Connection {
