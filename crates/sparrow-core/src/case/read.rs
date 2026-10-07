@@ -7,6 +7,7 @@ use crate::case::notes::{self, Note, NoteTarget};
 use crate::case::write::FindingStatus;
 use crate::detect::enrich::accounts::{AccountRow, read_accounts};
 use crate::detect::enrich::facts::{FAMILIES, FindingFacts};
+use crate::detect::enrich::{EnrichState, enrichment_state};
 use crate::detect::load::RuleSet;
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
@@ -308,56 +309,6 @@ pub fn finding_show(conn: &Connection, id: &str, rules: &RuleSet) -> Result<Find
 
 // ---------------------------------------------------------------- enrichment
 
-/// A `case_meta` value.
-fn meta(conn: &Connection, key: &str) -> Result<Option<String>> {
-    Ok(conn
-        .query_row("SELECT value FROM case_meta WHERE key = ?", [key], |r| {
-            r.get(0)
-        })
-        .ok())
-}
-
-// STUB (agent accuracy T4): the single decision "may a reader show facts?" belongs to
-// `detect::enrich::enrichment_state` (Tasks 1-2 review). This local copy has the same name, variants and
-// signature; at merge, delete it and import `crate::detect::enrich::{EnrichState, enrichment_state}`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum EnrichState {
-    /// The tables were rebuilt by the latest detection run.
-    Ok { run_id: i64 },
-    /// No enrichment has ever run (a case detected before the feature).
-    Never,
-    /// The last enrichment failed.
-    Failed { reason: String },
-    /// Enrichment ran for an earlier detection run than the latest one.
-    Stale { enriched_run: i64, latest_run: i64 },
-}
-
-fn enrichment_state(conn: &Connection) -> Result<EnrichState> {
-    if let Some(reason) = meta(conn, "enrichment_error")? {
-        return Ok(EnrichState::Failed { reason });
-    }
-    let Some(run) = meta(conn, "enrichment_run_id")? else {
-        return Ok(EnrichState::Never);
-    };
-    let enriched_run: i64 = run.parse().map_err(|_| {
-        Error::Invalid(format!(
-            "case_meta enrichment_run_id {run:?} is not a run id"
-        ))
-    })?;
-    let latest: Option<i64> = conn
-        .query_row("SELECT max(run_id) FROM detection_runs", [], |r| r.get(0))
-        .unwrap_or(None);
-    Ok(match latest {
-        Some(latest_run) if latest_run > enriched_run => EnrichState::Stale {
-            enriched_run,
-            latest_run,
-        },
-        _ => EnrichState::Ok {
-            run_id: enriched_run,
-        },
-    })
-}
-
 /// Why the enrichment tables cannot be read as facts, `None` for [`EnrichState::Ok`]. Readers say this instead
 /// of offering an empty list or stale rows.
 fn enrichment_unavailable(conn: &Connection) -> Result<Option<String>> {
@@ -370,7 +321,7 @@ fn enrichment_unavailable(conn: &Connection) -> Result<Option<String>> {
             enriched_run,
             latest_run,
         } => Some(format!(
-            "the facts are from detection run {enriched_run} but run {latest_run} is newer; run `sparrow detect`"
+            "the facts are from detection run {enriched_run} but the latest run is {latest_run}; run `sparrow detect`"
         )),
         EnrichState::Failed { reason } => Some(format!(
             "the last enrichment failed: {reason}; run `sparrow detect` again"

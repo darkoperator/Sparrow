@@ -11,6 +11,7 @@ use sparrow_core::case::read::{self, FindingFilter, Page, Pivot, TimelineFilter,
 use sparrow_core::case::text::{display_safe, display_safe_line as safe};
 use sparrow_core::case::{audit, query, timeline_entries};
 use sparrow_core::data::DataDirs;
+use sparrow_core::detect::enrich::facts::FindingFacts;
 use sparrow_core::detect::load::load_rules;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -112,43 +113,45 @@ pub fn accounts(a: AccountsArgs, json: bool) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The facts of a finding as plain text lines (indented two spaces), from their JSON form so the wording does
-/// not depend on field types: a null count prints as "unknown", never 0.
-fn print_facts(facts: &serde_json::Value) {
-    let unknown = |v: &serde_json::Value| match v.as_u64() {
-        Some(n) => n.to_string(),
-        None => "unknown".to_string(),
-    };
-    println!(
+/// The facts of a finding as plain text lines. A count that cannot be compared (null) is "unknown", never 0.
+fn facts_lines(facts: &FindingFacts) -> Vec<String> {
+    let count = |n: Option<u32>| n.map_or_else(|| "unknown".to_string(), |n| n.to_string());
+    let mut out = vec![format!(
         "facts (window start {}):",
-        facts["window_start"].as_str().unwrap_or("unknown")
-    );
-    for ip in facts["actor_ips"].as_array().into_iter().flatten() {
-        println!(
+        facts
+            .window_start
+            .as_ref()
+            .map(audit::ts_text)
+            .unwrap_or_else(|| "unknown".to_string())
+    )];
+    for ip in &facts.actor_ips {
+        out.push(format!(
             "  {}  signed in by this user on {} earlier day(s) within the capture",
-            safe(ip["ip"].as_str().unwrap_or("-")),
-            unknown(&ip["user_signin_days_before"])
-        );
+            safe(&ip.ip),
+            count(ip.user_signin_days_before)
+        ));
     }
-    let other = &facts["other_signals"];
-    println!(
+    out.push(format!(
         "  other findings on this account: {}",
-        other["total"].as_u64().unwrap_or(0)
-    );
-    for s in other["items"].as_array().into_iter().flatten() {
-        println!(
-            "    {} {}",
-            safe(s["rule_id"].as_str().unwrap_or("-")),
-            safe(s["severity"].as_str().unwrap_or("-"))
-        );
+        facts.other_signals.total
+    ));
+    for s in &facts.other_signals.items {
+        out.push(format!("    {} {}", safe(&s.rule_id), safe(&s.severity)));
     }
-    for t in facts["targets"].as_array().into_iter().flatten() {
-        println!(
+    for t in facts.targets.iter().flatten() {
+        out.push(format!(
             "  target {}  {}  prior messages {}",
-            safe(t["address"].as_str().unwrap_or("-")),
-            safe(t["scope"].as_str().unwrap_or("-")),
-            unknown(&t["prior_messages"])
-        );
+            safe(&t.address),
+            safe(&t.scope),
+            count(t.prior_messages)
+        ));
+    }
+    out
+}
+
+fn print_facts(facts: &FindingFacts) {
+    for line in facts_lines(facts) {
+        println!("{line}");
     }
 }
 
@@ -355,7 +358,7 @@ fn print_finding(d: &read::FindingDetail, all: bool) {
     }
     match &d.facts {
         Some(read::FactsField::Present { facts }) => {
-            print_facts(&serde_json::to_value(facts).unwrap_or_default());
+            print_facts(facts);
         }
         Some(read::FactsField::Unavailable { facts_unavailable }) => {
             println!("facts unavailable: {}", safe(facts_unavailable));
@@ -611,4 +614,56 @@ pub fn query(case: &Path, sql: &str, limit: usize, json: bool) -> Result<ExitCod
         println!("… more rows (truncated at {limit}; raise --limit)");
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sparrow_core::detect::enrich::facts::{ActorIp, OtherSignals, Target};
+
+    fn facts(days: Option<u32>, prior: Option<u32>, window: bool) -> FindingFacts {
+        FindingFacts {
+            facts_version: 1,
+            window_start: window.then(|| DateTime::from_timestamp(1_786_000_000, 0).unwrap()),
+            actor_ips: vec![ActorIp {
+                ip: "203.0.113.7".into(),
+                asn: None,
+                asn_org: None,
+                is_hosting: None,
+                spray_source: false,
+                user_signin_days_before: days,
+                user_first_signin: None,
+            }],
+            other_signals: OtherSignals {
+                total: 0,
+                items: vec![],
+            },
+            targets: Some(vec![Target {
+                address: "bob@partner.example".into(),
+                domain: "partner.example".into(),
+                scope: "external".into(),
+                prior_messages: prior,
+            }]),
+        }
+    }
+
+    #[test]
+    fn a_null_count_is_unknown_never_zero() {
+        let text = facts_lines(&facts(None, None, false)).join("\n");
+        assert!(text.contains("window start unknown"), "{text}");
+        assert!(text.contains("on unknown earlier day(s)"), "{text}");
+        assert!(text.contains("prior messages unknown"), "{text}");
+        // A known zero is printed as 0, and is not the same text as unknown.
+        let zero = facts_lines(&facts(Some(0), Some(0), true)).join("\n");
+        assert!(
+            zero.contains("on 0 earlier day(s)") && zero.contains("prior messages 0"),
+            "{zero}"
+        );
+        assert!(!zero.contains("unknown"), "{zero}");
+        let three = facts_lines(&facts(Some(3), Some(14), true)).join("\n");
+        assert!(
+            three.contains("on 3 earlier day(s)") && three.contains("prior messages 14"),
+            "{three}"
+        );
+    }
 }

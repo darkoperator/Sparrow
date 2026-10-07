@@ -465,7 +465,7 @@ fn all_four_enrichment_states_decide_facts_accounts_and_addresses() {
             |c| enrichment_failed(c, "Binder Error: boom"),
             "Binder Error: boom",
         ),
-        ("stale", stale, "is newer; run `sparrow detect`"),
+        ("stale", stale, "but the latest run is"),
     ];
     for (name, setup, reason) in states {
         let case = detected();
@@ -506,4 +506,32 @@ fn all_four_enrichment_states_decide_facts_accounts_and_addresses() {
             assert!(addr.rows.is_empty() && addr.total == 0, "{name}");
         }
     }
+}
+
+/// The real state check is "enriched run EQUALS the latest run": a recorded run id that is not the latest is stale
+/// whichever side it is on (a case whose detection history was replaced), and readers fail closed on it too.
+#[test]
+fn an_enrichment_run_id_that_is_not_the_latest_is_stale_either_way() {
+    let case = detected();
+    let id = finding_of(&case, "SPW-T-001", ALICE);
+    case.conn()
+        .execute(
+            "INSERT OR REPLACE INTO case_meta (key, value) VALUES ('enrichment_run_id', '99')",
+            [],
+        )
+        .unwrap();
+    let d = read::finding_show(case.conn(), &id, &set()).unwrap();
+    let Some(FactsField::Unavailable { facts_unavailable }) = d.facts else {
+        panic!("facts_unavailable expected");
+    };
+    assert!(
+        facts_unavailable.contains("run 99") && facts_unavailable.contains("`sparrow detect`"),
+        "{facts_unavailable}"
+    );
+    assert!(
+        read::accounts(case.conn(), None, None)
+            .unwrap()
+            .accounts
+            .is_empty()
+    );
 }
