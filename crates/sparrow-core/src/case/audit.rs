@@ -49,7 +49,10 @@ pub fn ts_text(t: &DateTime<Utc>) -> String {
     t.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
 }
 
-fn ts_serialize<S: Serializer>(t: &DateTime<Utc>, s: S) -> std::result::Result<S::Ok, S::Error> {
+pub(crate) fn ts_serialize<S: Serializer>(
+    t: &DateTime<Utc>,
+    s: S,
+) -> std::result::Result<S::Ok, S::Error> {
     s.serialize_str(&ts_text(t))
 }
 

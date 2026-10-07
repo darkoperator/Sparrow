@@ -1,0 +1,251 @@
+{
+  "finding": {
+    "finding_id": "1c8b18eff09c880c",
+    "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
+    "rule_id": "SPW-HAWK-010",
+    "rule_version": 1,
+    "severity": "high",
+    "title": "User inbox rule deletes, forwards or redirects mail",
+    "actor_upn": "marlowe.rhodes@contoso.example",
+    "first_seen": "2026-08-21T09:47:00.000000Z",
+    "last_seen": "2026-09-10T16:15:00.000000Z",
+    "status": "in_review",
+    "disposition_reason": "token replay from a hosting ASN",
+    "created_by": "rule",
+    "assigned_to": null,
+    "rule_updated": false,
+    "created_at": "2026-09-11T14:15:00.000000Z",
+    "updated_at": "2026-10-07T23:20:12.255751Z",
+    "decided_by": "agent:triage",
+    "decided_at": "2026-10-07T23:20:12.256403Z",
+    "on_behalf_of": "analyst:carlos",
+    "review_state": "pending_review",
+    "reviewed_by": null,
+    "reviewed_at": null,
+    "review_comment": null,
+    "evidence_count": 6
+  },
+  "evidence": [
+    {
+      "source_table": "ual_events",
+      "record_key": "02a13335-5a42-4ce8-9f05-5b5f0f489146",
+      "role": "trigger",
+      "event_time": "2026-08-21T09:47:00.000000Z",
+      "source_refs": [
+        "Output/Contoso_Example/UnifiedAuditLog/20260910-161616/20260910161616-victims-UnifiedAuditLog.json:166272-166322",
+        "Output/Contoso_Example/UnifiedAuditLog/20260910-161713/20260910161713-victims-UnifiedAuditLog.jsonl:2520",
+        "Output/Triage-Contoso_Example/New-InboxRule.json:118-167",
+        "Output/Contoso_Example/UnifiedAuditLog/20260910-161500/UAL-20260821000000-20260822000000.csv:569-571",
+        "Output/Contoso_Example/UnifiedAuditLog/20260910-161647/20260910161647-victims-UnifiedAuditLog.csv:131005-131041"
+      ],
+      "timeline": {
+        "event_time": "2026-08-21T09:47:00.000000Z",
+        "time_tz_assumed": true,
+        "source_table": "ual_events",
+        "record_key": "02a13335-5a42-4ce8-9f05-5b5f0f489146",
+        "category": "mail_rule",
+        "operation": "New-InboxRule",
+        "actor_upn": "marlowe.rhodes@contoso.example",
+        "target": "marlowe.rhodes@contoso.example\\AP",
+        "ip": "203.0.113.2",
+        "ip_country": "ZA",
+        "ip_asn_org": "Vultr (The Constant Company)",
+        "user_agent": null,
+        "summary": "Exchange New-InboxRule on marlowe.rhodes@contoso.example\\AP",
+        "source_refs": [
+          "Output/Contoso_Example/UnifiedAuditLog/20260910-161616/20260910161616-victims-UnifiedAuditLog.json:166272-166322",
+          "Output/Contoso_Example/UnifiedAuditLog/20260910-161713/20260910161713-victims-UnifiedAuditLog.jsonl:2520",
+          "Output/Triage-Contoso_Example/New-InboxRule.json:118-167",
+          "Output/Contoso_Example/UnifiedAuditLog/20260910-161500/UAL-20260821000000-20260822000000.csv:569-571",
+          "Output/Contoso_Example/UnifiedAuditLog/20260910-161647/20260910161647-victims-UnifiedAuditLog.csv:131005-131041"
+        ],
+        "finding_count": 4,
+        "finding_ids": [
+          "1c8b18eff09c880c",
+          "4c8f391b141ce629",
+          "65c58f3ce81d8f0e",
+          "b184e7ffee55c9ba"
+        ]
+      },
+      "context": null
+    },
+    {
+      "source_table": "ual_events",
+      "record_key": "38f3aef6-68f9-4842-ace1-4d564480e6f8",
+      "role": "trigger",
+      "event_time": "2026-08-21T12:12:00.000000Z",
+      "source_refs": [
+        "Output/Contoso_Example/UnifiedAuditLog/20260910-161616/20260910161616-victims-UnifiedAuditLog.json:173191-173247",
+        "Output/Contoso_Example/UnifiedAuditLog/20260910-161713/20260910161713-victims-UnifiedAuditLog.jsonl:2620",
+        "Output/Contoso_Example/Mailbox Audit Log/20260910-172259/UnifiedAuditLog/20260910-172300/UAL-20260821000000-20260822000000.csv:59-61",
+        "Output/Contoso_Example/UnifiedAuditLog/20260910-161500/UAL-20260821000000-20260822000000.csv:263-265",
+        "Output/Contoso_Example/UnifiedAuditLog/20260910-161647/20260910161647-victims-UnifiedAuditLog.csv:136524-136566"
+      ],
+      "timeline": {
+        "event_time": "2026-08-21T12:12:00.000000Z",
+        "time_tz_assumed": true,
+        "source_table": "ual_events",
+        "record_key": "38f3aef6-68f9-4842-ace1-4d564480e6f8",
+        "category": "mail_rule",
+        "operation": "UpdateInboxRules",
+        "actor_upn": "marlowe.rhodes@contoso.example",
+        "target": "marlowe.rhodes@contoso.example",
+        "ip": "203.0.113.2",
+        "ip_country": "ZA",
+        "ip_asn_org": "Vultr (The Constant Company)",
+        "user_agent": "Client=OWA;Action=ViaProxy",
+        "summary": "Exchange UpdateInboxRules",
+        "source_refs": [
+          "Output/Contoso_Example/UnifiedAuditLog/20260910-161616/20260910161616-victims-UnifiedAuditLog.json:173191-173247",
+          "Output/Contoso_Example/UnifiedAuditLog/20260910-161713/20260910161713-victims-UnifiedAuditLog.jsonl:2620",
+          "Output/Contoso_Example/Mailbox Audit Log/20260910-172259/UnifiedAuditLog/20260910-172300/UAL-20260821000000-20260822000000.csv:59-61",
+          "Output/Contoso_Example/UnifiedAuditLog/20260910-161500/UAL-20260821000000-20260822000000.csv:263-265",
+          "Output/Contoso_Example/UnifiedAuditLog/20260910-161647/20260910161647-victims-UnifiedAuditLog.csv:136524-136566"
+        ],
+        "finding_count": 2,
+        "finding_ids": [
+          "1c8b18eff09c880c",
+          "3b2135313927c29d"
+        ]
+      },
+      "context": null
+    },
+    {
+      "source_table": "inbox_rules",
+      "record_key": "inbox|marlowe.rhodes@contoso.example|1117600807597104896",
+      "role": "trigger",
+      "event_time": "2026-09-10T16:15:00.000000Z",
+      "source_refs": [
+        "Output/Contoso_Example/Rules/20260910-173429/20260910-173429-MailboxRules.csv:66-73"
+      ],
+      "timeline": null,
+      "context": null
+    },
+    {
+      "source_table": "inbox_rules",
+      "record_key": "inbox|marlowe.rhodes@contoso.example|1239425345399972642",
+      "role": "trigger",
+      "event_time": "2026-09-10T16:15:00.000000Z",
+      "source_refs": [
+        "Output/Contoso_Example/Rules/20260910-173429/20260910-173429-MailboxRules.csv:60-65"
+      ],
+      "timeline": null,
+      "context": null
+    },
+    {
+      "source_table": "inbox_rules",
+      "record_key": "inbox|marlowe.rhodes@contoso.example|AAMkow1wHgwwG4WuzrXPcuNEEBq1RYckVZsyyuWHnFV3==",
+      "role": "trigger",
+      "event_time": "2026-09-10T16:15:00.000000Z",
+      "source_refs": [
+        "Output/Contoso_Example/Rules/20260910-173438/20260910-173438-MailboxRulesGraph.csv:12"
+      ],
+      "timeline": null,
+      "context": null
+    },
+    {
+      "source_table": "inbox_rules",
+      "record_key": "inbox|marlowe.rhodes@contoso.example|AAMkuNYJSJpDA9UCLeHEoSFfHDBRa5kqmFuDtYveXYip==",
+      "role": "trigger",
+      "event_time": "2026-09-10T16:15:00.000000Z",
+      "source_refs": [
+        "Output/Contoso_Example/Rules/20260910-173438/20260910-173438-MailboxRulesGraph.csv:13"
+      ],
+      "timeline": null,
+      "context": null
+    }
+  ],
+  "facts": {
+    "facts_version": 1,
+    "window_start": "2026-08-11T14:24:08.000000Z",
+    "actor_ips": [
+      {
+        "ip": "203.0.113.2",
+        "asn": 20473,
+        "asn_org": "Vultr (The Constant Company)",
+        "is_hosting": true,
+        "spray_source": false,
+        "user_signin_days_before": 1,
+        "user_first_signin": "2026-08-21T09:15:00.000000Z"
+      }
+    ],
+    "other_signals": {
+      "total": 23,
+      "items": [
+        {
+          "rule_id": "SPW-MAIL-003",
+          "severity": "high",
+          "first_seen": "2026-08-21T09:37:00.000000Z"
+        },
+        {
+          "rule_id": "SPW-MAIL-004",
+          "severity": "high",
+          "first_seen": "2026-08-21T09:47:00.000000Z"
+        },
+        {
+          "rule_id": "SPW-HAWK-008",
+          "severity": "high",
+          "first_seen": "2026-09-10T16:15:00.000000Z"
+        },
+        {
+          "rule_id": "SPW-HAWK-009",
+          "severity": "high",
+          "first_seen": "2026-08-21T09:15:00.000000Z"
+        },
+        {
+          "rule_id": "SPW-FILE-003",
+          "severity": "high",
+          "first_seen": "2026-08-21T11:37:00.000000Z"
+        }
+      ]
+    },
+    "targets": [
+      {
+        "address": "invoices@exfil-mail.test",
+        "domain": "exfil-mail.test",
+        "scope": "external",
+        "prior_messages": 0
+      },
+      {
+        "address": "kai.ingram@contoso.example",
+        "domain": "contoso.example",
+        "scope": "internal",
+        "prior_messages": 6
+      }
+    ]
+  },
+  "analyst_guidance": "A rule that deletes, forwards or redirects mail is how a BEC actor hides replies or copies a\nvictim's mail out. Read the rule's conditions (sender, subject words) and its target; a\nforward to an external address or a delete of everything from one sender is the pattern. Check\nwho created the rule, from which address, and what sign-in preceded it.\n",
+  "notes": [],
+  "audit": [
+    {
+      "seq": 1,
+      "ts": "2026-10-07T23:20:12.256403Z",
+      "actor": "agent:triage",
+      "on_behalf_of": "analyst:carlos",
+      "action": "set_status",
+      "object_type": "finding",
+      "object_id": "1c8b18eff09c880c",
+      "before": {
+        "assigned_to": null,
+        "decided_by": null,
+        "disposition_reason": null,
+        "on_behalf_of": null,
+        "review_state": null,
+        "rule_updated": false,
+        "status": "new"
+      },
+      "after": {
+        "assigned_to": null,
+        "decided_by": "agent:triage",
+        "disposition_reason": "token replay from a hosting ASN",
+        "on_behalf_of": "analyst:carlos",
+        "review_state": "pending_review",
+        "rule_updated": false,
+        "status": "in_review"
+      },
+      "reason": "token replay from a hosting ASN",
+      "prev_hash": "2226e63226289d396891df52dba7390a17ebcc7ebd2afbef43f3e6731214fc0f",
+      "hash": "00588c0b2458788358b1ceb7633a025a455cc48da5be90c5dcb632c1464ca91b"
+    }
+  ]
+}
