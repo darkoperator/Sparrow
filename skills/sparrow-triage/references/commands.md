@@ -38,7 +38,8 @@ sparrow schema --case case.duckdb --json
 sparrow schema --case case.duckdb --table signins --json
 ```
 
-`summary --json` also carries `next` (the first string is the `sparrow accounts ...` command) and `top_accounts` (up to
+`summary --json` also carries `next` (objects `{"command": "sparrow accounts --case '<case>' --json", "about": "..."}`
+with the case path shell-quoted: run `command` as given) and `top_accounts` (up to
 3 accounts: upn, tenant_key, worst_severity, stages, first_suspicious, addresses_total) or `top_accounts_unavailable:
 <reason>`; `capabilities --json` carries `next` too.
 

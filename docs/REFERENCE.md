@@ -138,11 +138,12 @@ After loading, `sparrow ingest` runs the profile step (again at any time with `s
   IP country and ASN, and `source_refs` pointing at the original lines.
 - `state_absent_in_newer`: state rows (inbox rules, permissions, ...) that a newer capture no longer has.
 - `sparrow summary`: tenant, licences, coverage, top actors and evidence gaps. It also points to the first triage
-  command: `--json` adds `next` (an array of short strings; the first is the `sparrow accounts --case <case> --json`
-  command) and `top_accounts` (up to 3 rows of the roll-up in `sparrow accounts` order: `upn`, `tenant_key`,
+  command: `--json` adds `next` (an array of `{"command", "about"}` objects; the first `command` is the runnable
+  `sparrow accounts --case '<case>' --json`, with the case path shell-quoted: single quotes with `'\''` for a quote, or an
+  ANSI-C `$'...'` word when the path has control characters; `about` says what it shows) and `top_accounts` (up to 3 rows of the roll-up in `sparrow accounts` order: `upn`, `tenant_key`,
   `worst_severity`, `stages`, `first_suspicious`, `addresses_total`), or `top_accounts_unavailable` with the same
-  reason `sparrow accounts` gives when the roll-up is not current; plain output ends with an `Accounts` block and
-  `Next:` lines. `sparrow capabilities --json` adds the same `next` (no account data: it stays about evidence).
+  reason `sparrow accounts` gives when the roll-up is not current; plain output ends with an `Accounts` block (tenant and UPN of each row, escaped like `sparrow accounts`)
+  and `Next: <command>` with the `about` text on the next line. `sparrow capabilities --json` adds the same `next` (no account data: it stays about evidence).
 
 `--data DIR` (or `SPARROW_DATA`) and `--rules DIR` (or `SPARROW_RULES`) override the embedded
 `capabilities.yaml`, `operation_catalog.yaml`, `ms365_ip_ranges.json` and `lists/hosting_asns.yaml`.

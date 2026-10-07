@@ -1181,18 +1181,56 @@ fn cmd_capabilities(case_path: &Path, json: bool) -> Result<ExitCode> {
             }
         }
     }
-    println!();
-    println!("Next:");
-    println!("  {}", accounts_next(case_path));
+    print_next(case_path);
     Ok(ExitCode::SUCCESS)
 }
 
-/// The pointer `summary` and `capabilities` give to `sparrow accounts`, the first command of a triage.
-fn accounts_next(case_path: &Path) -> String {
-    format!(
-        "sparrow accounts --case {} --json: one row per account with findings (stages, first suspicious time, addresses worth a look)",
-        case_path.display()
-    )
+/// `s` as one shell word. Plain text: POSIX single quotes with the standard `'\''` escape for an embedded quote,
+/// so a space, `;`, `$`, a backtick or a glob in a case path stays data. A string with a control character or a
+/// format character (anything `display_safe_line` would escape) cannot be one printable line inside single
+/// quotes, so it is written as an ANSI-C `$'...'` word with octal / `\u` escapes (bash, zsh and ksh): the
+/// command stays on one line and never carries a raw control character.
+fn shell_quote(s: &str) -> String {
+    use sparrow_core::case::text::display_safe_line;
+    if display_safe_line(s) == s && !s.chars().any(char::is_control) {
+        return format!("'{}'", s.replace('\'', "'\\''"));
+    }
+    let mut out = String::from("$'");
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                out.push_str(&format!("\\{:03o}", c as u32))
+            }
+            c if display_safe_line(&c.to_string()) != c.to_string() => {
+                out.push_str(&format!("\\U{:08x}", c as u32))
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// The pointer `summary` and `capabilities` give to `sparrow accounts`, the first command of a triage: a runnable
+/// command (the case path shell-quoted) and what it shows, kept apart.
+fn accounts_next(case_path: &Path) -> serde_json::Value {
+    serde_json::json!({
+        "command": format!(
+            "sparrow accounts --case {} --json",
+            shell_quote(&case_path.display().to_string())
+        ),
+        "about": "one row per account with findings (stages, first suspicious time, addresses worth a look)",
+    })
+}
+
+/// The plain-text form of [`accounts_next`]: `Next: <command>`, then the about text on its own indented line.
+fn print_next(case_path: &Path) {
+    let n = accounts_next(case_path);
+    println!();
+    println!("Next: {}", n["command"].as_str().unwrap_or_default());
+    println!("  {}", n["about"].as_str().unwrap_or_default());
 }
 
 /// The accounts `summary` shows: up to this many, in `sparrow accounts` order.
@@ -1316,6 +1354,7 @@ fn cmd_summary(case_path: &Path, json: bool) -> Result<ExitCode> {
         println!("  {:<24} {:>10} rows", tc.table, tc.rows);
     }
     println!();
+    use sparrow_core::case::text::display_safe_line;
     match &top {
         Ok(rows) if rows.is_empty() => println!("Accounts: no account has a finding"),
         Ok(rows) => {
@@ -1328,8 +1367,9 @@ fn cmd_summary(case_path: &Path, json: bool) -> Result<ExitCode> {
                     .filter_map(|s| s.as_str())
                     .collect();
                 println!(
-                    "  {}  {}  stages {}  first suspicious {}  ({} addresses)",
-                    r["upn"].as_str().unwrap_or("-"),
+                    "  {}  {}  {}  stages {}  first suspicious {}  ({} addresses)",
+                    display_safe_line(r["tenant_key"].as_str().unwrap_or("-")),
+                    display_safe_line(r["upn"].as_str().unwrap_or("-")),
                     r["worst_severity"].as_str().unwrap_or("-"),
                     if stages.is_empty() {
                         "-".to_string()
@@ -1341,11 +1381,9 @@ fn cmd_summary(case_path: &Path, json: bool) -> Result<ExitCode> {
                 );
             }
         }
-        Err(why) => println!("Accounts: unavailable: {why}"),
+        Err(why) => println!("Accounts: unavailable: {}", display_safe_line(why)),
     }
-    println!();
-    println!("Next:");
-    println!("  {}", accounts_next(case_path));
+    print_next(case_path);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -2061,6 +2099,59 @@ fn cmd_ioc(command: IocCommand, json: bool) -> Result<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the shell reads back from `printf %s <word>`.
+    fn shell_reads(shell: &str, quoted: &str) -> Vec<u8> {
+        let out = std::process::Command::new(shell)
+            .arg("-c")
+            .arg(format!("printf %s {quoted}"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{shell} {quoted}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out.stdout
+    }
+
+    #[test]
+    fn shell_quote_round_trips_through_a_posix_shell() {
+        for s in [
+            "case.duckdb",
+            "my case.duckdb",
+            "it's.duckdb",
+            "a; touch pwned",
+            "$(touch pwned) `touch pwned` $HOME ${x} *?[a]",
+            "'''",
+            "",
+            "back\\slash \"double\" !bang #hash ~tilde",
+            "unicode é 🔥",
+        ] {
+            let q = shell_quote(s);
+            assert!(!q.contains('\n') && q.starts_with('\''), "{q}");
+            assert_eq!(shell_reads("sh", &q), s.as_bytes(), "{s:?} -> {q}");
+        }
+    }
+
+    #[test]
+    fn shell_quote_keeps_control_and_format_characters_on_one_line() {
+        for s in [
+            "a\nb",
+            "tab\there",
+            "esc\u{1b}[31m",
+            "bidi \u{202E}evil",
+            "crlf \r\n end",
+            "q'uote\n",
+        ] {
+            let q = shell_quote(s);
+            assert!(
+                q.starts_with("$'") && q.chars().all(|c| !c.is_control()),
+                "{q:?}"
+            );
+            assert_eq!(shell_reads("bash", &q), s.as_bytes(), "{s:?} -> {q}");
+        }
+    }
 
     /// A real Hawk capture holds the portal exports beside it, so the Hawk `--real` run must
     /// generate the portal collector too.

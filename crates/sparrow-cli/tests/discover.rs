@@ -58,9 +58,10 @@ fn summary_and_capabilities_point_to_accounts_and_only_gain_keys() {
     let ingest = sparrow(&["ingest", tree.dir.to_str().unwrap(), "--case", case]);
     assert!(matches!(ingest.status.code(), Some(0) | Some(2)));
 
-    let first = format!(
-        "sparrow accounts --case {case} --json: one row per account with findings (stages, first suspicious time, addresses worth a look)"
-    );
+    let first = serde_json::json!({
+        "command": format!("sparrow accounts --case '{case}' --json"),
+        "about": "one row per account with findings (stages, first suspicious time, addresses worth a look)",
+    });
 
     // ---- summary: the existing keys stay, `next` and `top_accounts` are added ----
     let s = json(&["summary", "--case", case]);
@@ -86,7 +87,7 @@ fn summary_and_capabilities_point_to_accounts_and_only_gain_keys() {
         ],
         "{s}"
     );
-    assert_eq!(s["next"][0], first.as_str());
+    assert_eq!(s["next"][0], first);
     let all = json(&["accounts", "--case", case]);
     let want: Vec<&Value> = all["accounts"].as_array().unwrap().iter().take(3).collect();
     assert_eq!(want.len(), 3, "the case has at least three accounts");
@@ -125,7 +126,7 @@ fn summary_and_capabilities_point_to_accounts_and_only_gain_keys() {
         ["as_of", "next", "stale", "stale_collections", "tenants"],
         "{c}"
     );
-    assert_eq!(c["next"][0], first.as_str());
+    assert_eq!(c["next"][0], first);
     assert!(c.get("top_accounts").is_none());
 
     // ---- plain output: an Accounts block and Next: lines at the end ----
@@ -136,9 +137,17 @@ fn summary_and_capabilities_point_to_accounts_and_only_gain_keys() {
         "{plain}"
     );
     let next = plain.rfind("Next:").expect("Next: lines");
-    assert!(
-        next > at && plain[next..].contains("sparrow accounts --case"),
+    assert!(next > at, "{plain}");
+    // `Next: <command>` on one line, the about text on its own indented line.
+    let lines: Vec<&str> = plain[next..].lines().collect();
+    assert_eq!(
+        lines[0],
+        format!("Next: sparrow accounts --case '{case}' --json"),
         "{plain}"
+    );
+    assert_eq!(
+        lines[1],
+        "  one row per account with findings (stages, first suspicious time, addresses worth a look)"
     );
     let plain_caps = text(&["capabilities", "--case", case]);
     assert!(
@@ -172,12 +181,12 @@ fn summary_and_capabilities_point_to_accounts_and_only_gain_keys() {
         "the same reason `sparrow accounts` gives"
     );
     assert!(why.contains("`sparrow detect`"), "{why}");
-    assert_eq!(s["next"][0], first.as_str());
+    assert_eq!(s["next"][0], first);
     let plain = text(&["summary", "--case", case]);
     assert!(
         plain.contains("Accounts: unavailable")
             && plain.contains("sparrow detect")
-            && plain.contains("Next:"),
+            && plain.contains("Next: sparrow accounts"),
         "{plain}"
     );
 }
@@ -207,4 +216,144 @@ fn help_lists_accounts_first_among_the_read_commands_and_finding_list_points_to_
     assert!(line("ingest") < accounts && line("profile") < accounts);
     let list = text(&["finding", "list", "--help"]);
     assert!(list.contains("sparrow accounts"), "{list}");
+}
+
+/// A case path with a space, a single quote and `;` (and one with a control character): the `next` command is
+/// shell-quoted so that running it executes `sparrow accounts` on that very case, in JSON and in plain output.
+#[test]
+fn the_next_command_is_shell_quoted_and_runs_on_an_odd_case_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cache = sparrow_synth::test_cache!();
+    let scenario = sparrow_synth::scenario::load("bec-aitm").unwrap();
+    let tree = cache
+        .tree(&scenario, &GenerateOptions::new(Collector::Invictus, 17))
+        .unwrap();
+    let odd = tmp.path().join("my case's; touch pwned.duckdb");
+    let case = odd.to_str().unwrap();
+    let ingest = sparrow(&["ingest", tree.dir.to_str().unwrap(), "--case", case]);
+    assert!(matches!(ingest.status.code(), Some(0) | Some(2)));
+
+    // The binary's directory on PATH, so `sparrow ...` in the command resolves like an installed one.
+    let bin = assert_cmd::cargo::cargo_bin("sparrow");
+    let path = format!(
+        "{}:{}",
+        bin.parent().unwrap().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let expected = json(&["accounts", "--case", case]);
+
+    for cmd in ["summary", "capabilities"] {
+        let v = json(&[cmd, "--case", case]);
+        let next = &v["next"][0];
+        let command = next["command"].as_str().unwrap();
+        assert!(
+            !command.contains('\n') && command.starts_with("sparrow accounts --case '"),
+            "{command}"
+        );
+        assert!(
+            next["about"]
+                .as_str()
+                .unwrap()
+                .starts_with("one row per account")
+        );
+        // Run through `sh -c`: it executes `sparrow accounts` on that case, and nothing else.
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .env("PATH", &path)
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let got: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(got["accounts"], expected["accounts"], "{cmd}");
+        assert!(
+            !tmp.path().join("pwned.duckdb").exists(),
+            "the `;` was executed"
+        );
+        // Plain output: `Next: <command>` (the same command), then the about text.
+        let plain = text(&[cmd, "--case", case]);
+        let line = plain.lines().find(|l| l.starts_with("Next: ")).unwrap();
+        assert_eq!(line, format!("Next: {command}"));
+    }
+}
+
+/// The same account name in two tenants stays two distinguishable lines in `summary`, and a name with a control
+/// character cannot spoof output: tenant and UPN go through `display_safe_line` like `sparrow accounts`.
+#[test]
+fn plain_top_accounts_show_the_tenant_and_neutralise_control_characters() {
+    let tmp = tempfile::tempdir().unwrap();
+    let case_path = tmp.path().join("case.duckdb");
+    let case = case_path.to_str().unwrap();
+    let cache = sparrow_synth::test_cache!();
+    let scenario = sparrow_synth::scenario::load("bec-aitm").unwrap();
+    let tree = cache
+        .tree(&scenario, &GenerateOptions::new(Collector::Invictus, 17))
+        .unwrap();
+    let ingest = sparrow(&["ingest", tree.dir.to_str().unwrap(), "--case", case]);
+    assert!(matches!(ingest.status.code(), Some(0) | Some(2)));
+    let ranked = json(&["accounts", "--case", case]);
+    let upn0 = ranked["accounts"][0]["upn"].as_str().unwrap().to_string();
+    let upn1 = ranked["accounts"][1]["upn"].as_str().unwrap().to_string();
+    {
+        let c = sparrow_core::Case::create_or_open(&case_path).unwrap();
+        // The top account again in a second tenant (same UPN, same ranking keys), and the next account renamed
+        // with a newline and an escape character in its name.
+        c.conn()
+            .execute(
+                "INSERT INTO account_rollup SELECT 'second-tenant', upn, worst_severity, finding_count, by_severity, stages, first_suspicious, rules, addresses, addresses_total, addresses_truncated, computed_run_id FROM account_rollup WHERE upn = ?",
+                [&upn0],
+            )
+            .unwrap();
+        c.conn()
+            .execute(
+                "UPDATE account_rollup SET upn = 'evil' || chr(10) || 'Next: rm -rf /' || chr(27) || '[31m' WHERE upn = ?",
+                [&upn1],
+            )
+            .unwrap();
+    }
+    let json_top = json(&["summary", "--case", case])["top_accounts"].clone();
+    let plain = text(&["summary", "--case", case]);
+    let at = plain.find("Accounts (top").unwrap();
+    let block: Vec<&str> = plain[at..].lines().take_while(|l| !l.is_empty()).collect();
+    // One line per account, each starting with its tenant and UPN.
+    assert_eq!(
+        block.len() - 1,
+        json_top.as_array().unwrap().len(),
+        "{block:?}"
+    );
+    for (line, row) in block[1..].iter().zip(json_top.as_array().unwrap()) {
+        let tenant = row["tenant_key"].as_str().unwrap();
+        assert!(
+            line.trim_start().starts_with(tenant),
+            "tenant first: {line}"
+        );
+    }
+    // The same UPN in two tenants is two lines, told apart by the tenant.
+    let same: Vec<&&str> = block[1..]
+        .iter()
+        .filter(|l| l.contains(upn0.as_str()))
+        .collect();
+    assert_eq!(same.len(), 2, "{block:?}");
+    assert!(
+        same.iter()
+            .any(|l| l.trim_start().starts_with("second-tenant")),
+        "{same:?}"
+    );
+    // The control characters are escaped, never raw: no line of the output starts with the attacker's text
+    // and no escape character reaches the terminal.
+    assert!(
+        !plain.contains('\u{1b}'),
+        "an escape character reached the output"
+    );
+    assert!(plain.lines().all(|l| !l.starts_with("Next: rm")), "{plain}");
+    assert!(
+        plain.contains("\\u{000A}"),
+        "the newline is shown escaped: {plain}"
+    );
 }
