@@ -162,6 +162,7 @@ analyst_guidance: |
 false_positives:
   - VPN or mobile-carrier egress geolocating far from the user.
   - Two devices of one user on different networks (home broadband and a phone on cellular), when their countries are unknown or differ.
+  - A SaaS connector whose users the capture's sign-ins barely cover. A collection with sign-ins for only some users (Hawk's per-user sign-in logs of the investigated accounts) shows fewer than 5 of the connector's users, so it cannot be established as a tenant-wide service and its cloud sign-ins count. Check the application (a verified third-party publisher the tenant consented to) and add a tenant-wide sign-in export to the case.
 references:
   - https://learn.microsoft.com/en-us/entra/id-protection/concept-identity-protection-risks
   - https://learn.microsoft.com/en-us/purview/audit-log-activities

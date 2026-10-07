@@ -87,6 +87,7 @@ false_positives:
   - A user on a commercial VPN or a cloud-hosted desktop (VPN egress is often a hosting ASN).
   - A remote worker on a corporate proxy hosted at a cloud provider.
   - A tenant-wide cloud service signing in from its own backend is excluded (sign-ins and UserLoggedIn logons alike) when 5 or more users use the application from one hosting ASN on 3 or more days (80% of its sign-ins), unless sprayed users are 20% of them (or 3), or 3 users failed their credentials from that ASN.
+  - A SaaS connector whose users the capture's sign-ins barely cover. A collection with sign-ins for only some users (Hawk's per-user sign-in logs of the investigated accounts) shows fewer than 5 of the connector's users, so it cannot be established as a tenant-wide service and its cloud sign-ins count. Check the application (a verified third-party publisher the tenant consented to) and add a tenant-wide sign-in export to the case.
 references:
   - https://learn.microsoft.com/en-us/entra/identity/monitoring-health/reference-sign-ins-error-codes
   - https://learn.microsoft.com/en-us/purview/audit-log-activities
