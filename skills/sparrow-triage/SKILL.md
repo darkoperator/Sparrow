@@ -32,14 +32,16 @@ sparrow summary --case case.duckdb --json
 sparrow accounts --case case.duckdb --json
 ```
 
-   An empty list with a warning means this case was detected before the roll-up existed: run
-   `sparrow detect --case case.duckdb` once and call `accounts` again.
+   An empty list WITH a warning is not "no suspicious accounts": read the warning's reason (never computed, stale
+   or failed). If it says to, run `sparrow detect --case case.duckdb` once and call `accounts` again; if the warning
+   remains, report the roll-up and facts as unavailable and work from `finding list` instead.
 
-3. **Findings of the accounts you will name or clear** (`--severity` is a minimum: `medium` = critical, high,
-   medium). Take the ids, then read them ALL in one call (up to 50 ids):
+3. **Findings of the accounts you will name or clear.** `accounts` includes accounts whose findings are all low, so
+   take an UNFILTERED list (the ids of every account), then read the ones you need with `finding show`, several ids
+   per call, at most 50 ids per call (more than 50: batches of 50):
 
 ```bash
-sparrow finding list --case case.duckdb --severity medium --json
+sparrow finding list --case case.duckdb --json
 sparrow finding show --case case.duckdb <ID1> <ID2> <ID3> --json
 ```
 

@@ -53,12 +53,25 @@ sparrow schema --case case.duckdb --table signins --json
  "addresses_total": 3, "addresses_truncated": false}
 ```
 
-- Order: worst severity, then more stages, then earlier `first_suspicious`, then UPN. `stages` come from the rules'
-  `stage:` (suspicious_sign_in, credential_takeover, persistence, mail_access, sending, consent, mfa_change).
-- `addresses` (at most 20, strongest reason first): `finding_evidence` (on one of the account's findings),
-  `acts_without_signin` (the account acts from it in the audit, mail-access or message-trace records but never signs
-  in from it: report it as an attacker candidate), `hosting`, `spray_source`, `risky_signin`. `in_user_signins` false
-  means no sign-in of this account came from it. An address is a lead, not a verdict: read its reasons and its history.
+- Order: worst severity, then more stages, then earlier `first_suspicious`, then UPN. `stages` = the union of the
+  `stage:` of the rules of the account's findings (suspicious_sign_in, credential_takeover, persistence, mail_access,
+  sending, consent, mfa_change), plus `credential_takeover` when an SPW-ID-005 evidence row of the account has context
+  `takeover = true` (so that stage can appear with no rule declaring it).
+- `addresses` (at most 20, strongest reason first). Reasons:
+  - `finding_evidence`: on the evidence rows of one of the account's findings.
+  - `acts_without_signin`: the account ACTS from it and no sign-in of the account (any result) ever came from it. "Acts"
+    means exactly: a `ual_events` record of the account (UserId); a parent-less `mail_items_accessed` row (a
+    MailItemsAccessed record is in `ual_events` too); a `mailbox_audit_legacy` OWNER logon on the account's mailbox;
+    a `message_trace` row the account SENT (sender only, not received mail). A Microsoft-service address
+    (`ip_intel.is_microsoft`) or a private one (RFC 1918, RFC 4193, loopback, link-local) NEVER gets this reason:
+    Exchange's own addresses are the origin of much service and message-trace traffic. Such an address can still be
+    listed for another reason. Report an `acts_without_signin` address as an attacker candidate.
+  - `hosting` (`ip_intel.is_hosting`), `spray_source` (in the tenant's `spray_sources`), `risky_signin` (a sign-in of
+    the account from it with sign-in or user risk medium or high, or a `risk_detections` row for the account and
+    address): only for an address that appears for the account in a sign-in, an acting table above, a risk detection,
+    a directory audit (initiator), an admin audit (caller) or an Azure activity (caller).
+  - `in_user_signins` false means no sign-in of this account came from it. An address is a lead, not a verdict: read
+    its reasons and its history.
 - An empty list with a warning: the case was detected before the roll-up existed, or the enrichment failed or is
   stale. Run `sparrow detect --case case.duckdb` and ask again.
 
@@ -78,9 +91,11 @@ sparrow schema --case case.duckdb --table signins --json
   the evidence event; null = cannot be compared (unknown, never zero). `user_first_signin`: the first such sign-in.
 - `other_signals`: the actor's other findings (not this one), at most 5 in finding-list order, with the total.
 - `targets` (forwarding findings): every forward, redirect, copy or blind-copy address of the evidence; `scope`
-  internal (the actor's own address or a tenant domain) or external; `prior_messages` = message-trace rows between
-  the actor and the address before the event (null = no message trace, unknown). List EVERY target of an attacker
-  rule, internal ones included.
+  internal (the actor's own address or a tenant domain) or external. `prior_messages` = message-trace rows between the
+  actor and the address before the event. **null = unknown / not comparable**, never zero: the tenant has no message
+  trace at all, OR the finding has no actor, OR that evidence has no event time. (Check `capabilities` for the trace
+  before you hunt for a missing file: with a trace present, a null means no actor or no time.) List EVERY target of an
+  attacker rule, internal ones included.
 - `facts_unavailable: <reason>` instead of `facts` means the enrichment is not current: run `sparrow detect`.
 - Facts are counter-evidence: "an address used on 9 earlier days" lowers suspicion, "never used before in this capture"
   raises it, neither decides it (see `bec-triage`).
