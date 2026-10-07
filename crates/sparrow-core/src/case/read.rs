@@ -329,27 +329,34 @@ fn enrichment_unavailable(conn: &Connection) -> Result<Option<String>> {
     })
 }
 
-/// The `facts` of finding `id`: only for a finding of a rule whose stage is in the facts families.
+/// The `facts` of finding `id` (architect ruling acc-t4-fix):
+/// - enrichment current ([`EnrichState::Ok`]): detection already decided which findings are in a facts family,
+///   so a stored `finding_facts` row is shown whatever the loaded rule set says (the display-time rules need not
+///   be the detection-time ones), and no row means the finding is not in a family: neither key;
+/// - enrichment not current: `facts_unavailable` (with the reason) for a finding whose rule is in a facts family
+///   per the loaded rules, and also for a finding whose rule is not in the loaded set at all (noted), never
+///   silently nothing; a loaded rule outside the families (or an analyst finding) has neither key.
 fn facts_field(
     conn: &Connection,
     id: &str,
     rule_id: Option<&str>,
     rules: &RuleSet,
 ) -> Result<Option<FactsField>> {
-    let in_families = rule_id.is_some_and(|rid| {
-        rules
-            .rules
-            .iter()
-            .find(|l| l.rule.id == rid)
-            .is_some_and(|l| l.rule.stage.iter().any(|s| FAMILIES.contains(s)))
-    });
-    if !in_families {
-        return Ok(None);
-    }
     if let Some(why) = enrichment_unavailable(conn)? {
-        return Ok(Some(FactsField::Unavailable {
-            facts_unavailable: why,
-        }));
+        let Some(rid) = rule_id else {
+            return Ok(None);
+        };
+        return Ok(match rules.rules.iter().find(|l| l.rule.id == rid) {
+            Some(l) if l.rule.stage.iter().any(|s| FAMILIES.contains(s)) => {
+                Some(FactsField::Unavailable {
+                    facts_unavailable: why,
+                })
+            }
+            Some(_) => None,
+            None => Some(FactsField::Unavailable {
+                facts_unavailable: format!("{why} (rule not in the loaded rule set)"),
+            }),
+        });
     }
     let stored: Option<String> = conn
         .query_row(
@@ -358,20 +365,16 @@ fn facts_field(
             |r| r.get(0),
         )
         .ok();
-    Ok(Some(
-        match stored.map(|s| serde_json::from_str::<FindingFacts>(&s)) {
-            Some(Ok(facts)) => FactsField::Present { facts },
-            Some(Err(e)) => FactsField::Unavailable {
+    Ok(
+        stored.map(|s| match serde_json::from_str::<FindingFacts>(&s) {
+            Ok(facts) => FactsField::Present { facts },
+            Err(e) => FactsField::Unavailable {
                 facts_unavailable: format!(
                     "the stored facts cannot be read ({e}); run `sparrow detect`"
                 ),
             },
-            None => FactsField::Unavailable {
-                facts_unavailable: "no facts were stored for this finding; run `sparrow detect`"
-                    .to_string(),
-            },
-        },
-    ))
+        }),
+    )
 }
 
 /// The account roll-up in reader order (worst severity, stages, first suspicious, upn).
@@ -420,9 +423,12 @@ pub fn accounts(
 }
 
 /// The `addresses` section of `pivot user`: the account's roll-up addresses (every tenant the UPN has a row in),
-/// each as the roll-up stores it. Empty when the account has no roll-up row, or the case has no roll-up yet.
+/// each as the roll-up stores it. When the enrichment is not current the section is empty and carries
+/// `unavailable` with the reason; an empty section without it means a current roll-up with no address for the
+/// account.
 fn addresses_section(conn: &Connection, upn: &str, cap: usize) -> Result<PivotSection> {
-    let rows: Vec<AccountRow> = if enrichment_unavailable(conn)?.is_some() {
+    let unavailable = enrichment_unavailable(conn)?;
+    let rows: Vec<AccountRow> = if unavailable.is_some() {
         Vec::new()
     } else {
         read_accounts(conn)?
@@ -442,6 +448,7 @@ fn addresses_section(conn: &Connection, upn: &str, cap: usize) -> Result<PivotSe
         truncated: total > out.len() as i64,
         total,
         rows: out,
+        unavailable,
     })
 }
 
@@ -592,6 +599,10 @@ pub struct PivotSection {
     pub rows: Vec<Value>,
     pub total: i64,
     pub truncated: bool,
+    /// Why the section cannot be read (the `addresses` section while the enrichment is not current, see
+    /// [`enrichment_state`]); absent otherwise. An empty section WITHOUT it is a real "nothing".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -627,6 +638,7 @@ fn section(
         truncated: total > out.len() as i64,
         total,
         rows: out,
+        unavailable: None,
     })
 }
 

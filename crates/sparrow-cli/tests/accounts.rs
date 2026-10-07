@@ -158,6 +158,37 @@ fn the_readers_of_the_enrichment_tables_through_the_binary() {
             && !human.out.to_lowercase().contains("benign")
     );
 
+    // ---- stored facts are shown whatever rules the reader loads (a --rules override without the stage) ----
+    {
+        let d = json(&["finding", "show", &with_facts, "--case", case]);
+        let rule_id = d["finding"]["rule_id"].as_str().unwrap().to_string();
+        let builtin = find_rule_file(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../rules"),
+            &rule_id,
+        );
+        let text = std::fs::read_to_string(&builtin).unwrap();
+        let unstaged: String = text
+            .lines()
+            .filter(|l| !l.starts_with("stage:"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_ne!(unstaged, text, "{rule_id} declares a stage");
+        let dir = tmp.path().join("rules");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{rule_id}.yaml")), unstaged).unwrap();
+        let o = json(&[
+            "finding",
+            "show",
+            &with_facts,
+            "--case",
+            case,
+            "--rules",
+            dir.to_str().unwrap(),
+        ]);
+        assert_eq!(o["facts"], d["facts"], "{o}");
+        assert!(o.get("facts_unavailable").is_none());
+    }
+
     // ---- pivot user: the addresses section ----
     let p = json(&["pivot", "user", &upn, "--case", case]);
     let section = p["sections"]
@@ -166,6 +197,7 @@ fn the_readers_of_the_enrichment_tables_through_the_binary() {
         .iter()
         .find(|s| s["name"] == "addresses")
         .expect("an addresses section");
+    assert!(section.get("unavailable").is_none(), "{section}");
     assert_eq!(
         section["total"].as_u64().unwrap(),
         top["addresses_total"].as_u64().unwrap()
@@ -214,6 +246,19 @@ fn the_readers_of_the_enrichment_tables_through_the_binary() {
         .find(|s| s["name"] == "addresses")
         .unwrap();
     assert_eq!(section["rows"], serde_json::json!([]));
+    assert!(
+        section["unavailable"]
+            .as_str()
+            .is_some_and(|u| u.contains("`sparrow detect`")),
+        "{section}"
+    );
+    let plain = run(&["pivot", "user", &upn, "--case", case]);
+    assert_eq!(plain.code, 0, "{}", plain.err);
+    assert!(
+        plain.out.contains("addresses unavailable: ") && plain.out.contains("`sparrow detect`"),
+        "{}",
+        plain.out
+    );
 
     // ---- detection builds it again ----
     let d = run(&["detect", "--case", case]);
@@ -221,4 +266,18 @@ fn the_readers_of_the_enrichment_tables_through_the_binary() {
     let again = json(&["accounts", "--case", case]);
     assert_eq!(again["total"], all["total"]);
     assert_eq!(again["warnings"], serde_json::json!([]));
+}
+
+/// `<dir>/**/<id>.yaml`.
+fn find_rule_file(dir: &std::path::Path, id: &str) -> std::path::PathBuf {
+    for e in std::fs::read_dir(dir).unwrap() {
+        let p = e.unwrap().path();
+        if p.is_dir() {
+            let f = p.join(format!("{id}.yaml"));
+            if f.is_file() {
+                return f;
+            }
+        }
+    }
+    panic!("no rule file for {id} under {}", dir.display())
 }

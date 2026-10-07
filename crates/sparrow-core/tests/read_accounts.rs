@@ -296,21 +296,77 @@ fn a_recorded_enrichment_error_makes_the_facts_unavailable_with_its_message() {
     );
 }
 
+/// With a current enrichment, detection already decided which findings are in a facts family: a finding with
+/// no `finding_facts` row is not in one, whatever the loaded rules say, so it has neither key.
 #[test]
-fn a_finding_in_the_families_with_no_facts_row_is_unavailable_not_silent() {
+fn with_a_current_enrichment_a_finding_without_a_facts_row_has_neither_key() {
     let case = detected();
     let id = finding_of(&case, "SPW-T-001", ALICE);
     case.conn()
         .execute("DELETE FROM finding_facts WHERE finding_id = ?", [&id])
         .unwrap();
     let d = read::finding_show(case.conn(), &id, &set()).unwrap();
-    let Some(FactsField::Unavailable { facts_unavailable }) = d.facts else {
-        panic!("facts_unavailable expected");
+    assert!(d.facts.is_none(), "{:?}", d.facts);
+}
+
+/// Stored facts are shown when the enrichment is current, whatever rule set the reader loaded: the display-time
+/// set need not be the detection-time one (Codex review acc-t4 #2).
+#[test]
+fn stored_facts_are_shown_whatever_the_loaded_rules_say() {
+    let case = detected();
+    let id = finding_of(&case, "SPW-T-001", ALICE);
+    // No rule loaded at all.
+    let d = read::finding_show(case.conn(), &id, &set_of(vec![])).unwrap();
+    assert!(
+        matches!(d.facts, Some(FactsField::Present { .. })),
+        "{:?}",
+        d.facts
+    );
+    // The rule redefined without a stage.
+    let unstaged = rule_from(
+        "SPW-T-001",
+        "high",
+        "source: mailboxes\nmatch:\n  forwarding_smtp_address: {exists: true}\ngroup_by: [actor_upn]",
+    );
+    assert!(unstaged.rule.stage.is_empty());
+    let d = read::finding_show(case.conn(), &id, &set_of(vec![unstaged])).unwrap();
+    assert!(
+        matches!(d.facts, Some(FactsField::Present { .. })),
+        "{:?}",
+        d.facts
+    );
+}
+
+/// When the enrichment is not current, applicability comes from the loaded rules; a finding whose rule is not
+/// loaded is still `facts_unavailable` (with a note), never silently nothing. A loaded rule outside the
+/// families has neither key.
+#[test]
+fn an_unavailable_enrichment_with_the_rule_not_loaded_still_says_unavailable() {
+    let case = detected();
+    let alice = finding_of(&case, "SPW-T-001", ALICE);
+    let bob = finding_of(&case, "SPW-T-002", BOB);
+    pre_feature(&case);
+    let d = read::finding_show(case.conn(), &alice, &set_of(vec![])).unwrap();
+    let Some(FactsField::Unavailable { facts_unavailable }) = &d.facts else {
+        panic!("facts_unavailable expected: {:?}", d.facts);
     };
     assert!(
-        facts_unavailable.contains("`sparrow detect`"),
+        facts_unavailable.contains("detection has not run since this version")
+            && facts_unavailable.contains("(rule not in the loaded rule set)"),
         "{facts_unavailable}"
     );
+    // With the rule loaded (a facts family), no note.
+    let d = read::finding_show(case.conn(), &alice, &set()).unwrap();
+    let Some(FactsField::Unavailable { facts_unavailable }) = &d.facts else {
+        panic!("facts_unavailable expected: {:?}", d.facts);
+    };
+    assert!(
+        !facts_unavailable.contains("loaded rule set"),
+        "{facts_unavailable}"
+    );
+    // A loaded rule outside the families: neither key.
+    let d = read::finding_show(case.conn(), &bob, &set()).unwrap();
+    assert!(d.facts.is_none(), "{:?}", d.facts);
 }
 
 #[test]
@@ -404,13 +460,21 @@ fn pivot_user_lists_the_accounts_roll_up_addresses() {
         .find(|s| s.name == "addresses")
         .unwrap();
     assert_eq!((n.rows.len(), n.total, n.truncated), (0, 0, false));
+    assert_eq!(
+        n.unavailable, None,
+        "a current roll-up with no row for the account"
+    );
     // And in a case detected before the feature.
     pre_feature(&case);
     let p = read::pivot_user(case.conn(), ALICE, 50).unwrap();
+    let s = p.sections.iter().find(|s| s.name == "addresses").unwrap();
+    assert!(s.rows.is_empty());
     assert!(
-        p.sections
-            .iter()
-            .any(|s| s.name == "addresses" && s.rows.is_empty())
+        s.unavailable
+            .as_deref()
+            .is_some_and(|u| u.contains("`sparrow detect`")),
+        "{:?}",
+        s.unavailable
     );
 }
 
@@ -482,6 +546,9 @@ fn all_four_enrichment_states_decide_facts_accounts_and_addresses() {
             );
             assert_eq!(page.accounts.len(), 4, "{name}");
             assert!(page.warnings.is_empty() && !addr.rows.is_empty(), "{name}");
+            assert_eq!(addr.unavailable, None, "{name}");
+            let json = serde_json::to_value(addr).unwrap();
+            assert!(json.get("unavailable").is_none(), "{name}: {json}");
         } else {
             let Some(FactsField::Unavailable { facts_unavailable }) = &d.facts else {
                 panic!("{name}: facts_unavailable expected, got {:?}", d.facts);
@@ -504,6 +571,16 @@ fn all_four_enrichment_states_decide_facts_accounts_and_addresses() {
                 page.warnings
             );
             assert!(addr.rows.is_empty() && addr.total == 0, "{name}");
+            let why = addr
+                .unavailable
+                .as_deref()
+                .unwrap_or_else(|| panic!("{name}: unavailable"));
+            assert!(
+                why.contains(reason) && why.contains("`sparrow detect`"),
+                "{name}: {why}"
+            );
+            let json = serde_json::to_value(addr).unwrap();
+            assert_eq!(json["unavailable"], why, "{name}");
         }
     }
 }
