@@ -6,7 +6,10 @@
 //! - `finding_evidence`: on the evidence rows of one of the account's findings;
 //! - `acts_without_signin`: acts for the account in ual_events, mail_items_accessed (parent-less
 //!   rows), mailbox_audit_legacy (owner logons on the account's mailbox) or message_trace (mail the
-//!   account sent) but never appears in the account's sign-ins;
+//!   account sent) but never appears in the account's sign-ins, and is neither a Microsoft address
+//!   (ip_intel.is_microsoft) nor a private one (ip_intel.is_private, or RFC 1918 / RFC 4193 /
+//!   loopback / link-local by its text): service traffic and message-trace origins are often
+//!   Exchange's own addresses (architect ruling). Such an address may still qualify otherwise;
 //! - `hosting`, `spray_source`, `risky_signin`: appears for the account in any table and is a
 //!   hosting address, a spray source of the tenant, or the address of a risky sign-in of the account
 //!   (sign-in or user risk medium or high) or of a risk detection of the account.
@@ -294,18 +297,22 @@ fn addresses(conn: &Connection) -> Result<AddressMap> {
            FROM seen GROUP BY tenant_key, upn, ip
          ),
          intel AS (
-           SELECT ip, min(asn) AS asn, min(asn_org) AS asn_org, bool_or(is_hosting) AS is_hosting
+           SELECT ip, min(asn) AS asn, min(asn_org) AS asn_org, bool_or(is_hosting) AS is_hosting,
+                  bool_or(is_microsoft) AS is_microsoft, bool_or(is_private) AS is_private
            FROM ip_intel GROUP BY ip
          ),
          spray AS (SELECT DISTINCT tenant_key, ip FROM spray_sources)
          SELECT p.tenant_key, p.upn, p.ip, CAST(to_json(p.tables) AS VARCHAR),
                 epoch_us(p.first_seen), epoch_us(p.last_seen),
                 p.evidence, p.in_signins, p.acts, p.risky, i.asn, i.asn_org, i.is_hosting,
-                sp.ip IS NOT NULL
+                sp.ip IS NOT NULL, coalesce(i.is_microsoft, false) OR coalesce(i.is_private, false)
          FROM per p
          LEFT JOIN intel i ON i.ip = p.ip
          LEFT JOIN spray sp ON sp.tenant_key = p.tenant_key AND sp.ip = p.ip
-         WHERE p.evidence OR (p.acts AND NOT p.in_signins) OR coalesce(i.is_hosting, false)
+         WHERE p.evidence
+            OR (p.acts AND NOT p.in_signins AND NOT coalesce(i.is_microsoft, false)
+                AND NOT coalesce(i.is_private, false))
+            OR coalesce(i.is_hosting, false)
             OR sp.ip IS NOT NULL OR p.risky
          ORDER BY p.tenant_key, p.upn, p.ip"
     );
@@ -328,20 +335,45 @@ fn addresses(conn: &Connection) -> Result<AddressMap> {
             r.get::<_, Option<String>>(11)?,
             r.get::<_, Option<bool>>(12)?,
             r.get::<_, bool>(13)?,
+            r.get::<_, bool>(14)?,
         ))
     })?;
     let mut out: AddressMap = BTreeMap::new();
     for row in rows {
-        let (tenant, upn, ip, tables, first, last, flags, asn, asn_org, is_hosting, spray) = row?;
+        let (
+            tenant,
+            upn,
+            ip,
+            tables,
+            first,
+            last,
+            flags,
+            asn,
+            asn_org,
+            is_hosting,
+            spray,
+            ms_or_private,
+        ) = row?;
         let [evidence, in_signins, acts, risky] = flags;
         let hosting = is_hosting == Some(true);
-        let has = [evidence, acts && !in_signins, hosting, spray, risky];
+        let not_service = !ms_or_private && !is_private_text(&ip);
+        let has = [
+            evidence,
+            acts && !in_signins && not_service,
+            hosting,
+            spray,
+            risky,
+        ];
         let reasons: Vec<String> = REASONS
             .iter()
             .zip(has)
             .filter(|(_, on)| *on)
             .map(|(r, _)| r.to_string())
             .collect();
+        if reasons.is_empty() {
+            // Qualified in SQL only by acting without a sign-in, from a Microsoft or private address.
+            continue;
+        }
         out.entry((tenant, upn)).or_default().push(Address {
             ip,
             reasons,
@@ -411,4 +443,17 @@ pub fn read_accounts(conn: &Connection) -> Result<Vec<AccountRow>> {
         });
     }
     Ok(out)
+}
+
+/// RFC 1918, RFC 4193 (fc00::/7), loopback or link-local (169.254/16, fe80::/10), judged from the
+/// address text for an address `ip_intel` has no row for.
+fn is_private_text(ip: &str) -> bool {
+    match ip.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => v4.is_private() || v4.is_loopback() || v4.is_link_local(),
+        Ok(std::net::IpAddr::V6(v6)) => {
+            let first = v6.segments()[0];
+            v6.is_loopback() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
+        }
+        Err(_) => false,
+    }
 }

@@ -384,3 +384,73 @@ fn addresses_are_capped_at_twenty_with_truncation() {
         .collect();
     assert_eq!(ips, want);
 }
+
+#[test]
+fn microsoft_and_private_addresses_never_act_without_signin() {
+    let mut case = new_case();
+    forwarding_mailbox(&case, ALICE);
+    let ms = "52.96.10.20";
+    let private_intel = "192.168.1.20";
+    for (ip, microsoft, private) in [(ms, true, false), (private_intel, false, true)] {
+        insert_row(
+            &case,
+            "ip_intel",
+            T,
+            json!({"ip": ip, "is_microsoft": microsoft, "is_private": private}),
+        );
+    }
+    // MailItemsAccessed for Alice from a Microsoft front end, private addresses (one without an
+    // ip_intel row: RFC 1918, RFC 4193, loopback, link-local), and one ordinary address.
+    let other = "198.51.100.20";
+    for (i, ip) in [
+        ms,
+        private_intel,
+        "10.1.2.3",
+        "fd00::1",
+        "127.0.0.1",
+        "169.254.1.1",
+        "fe80::1",
+        other,
+    ]
+    .iter()
+    .enumerate()
+    {
+        mia(&case, ALICE, ip, at(3, 10, i as u32), &format!("mia-{i}"));
+    }
+    // Mail Alice sent, traced from a Microsoft address.
+    insert_row(
+        &case,
+        "message_trace",
+        T,
+        json!({"sender": ALICE, "recipient": "bob@contoso.example", "from_ip": ms,
+               "received": iso(at(3, 12, 0)), "status": "Delivered"}),
+    );
+    run(&mut case, &set_of(vec![forwarding_rule()]), &opts(20)).unwrap();
+    let rows = read_accounts(case.conn()).unwrap();
+    let ips: Vec<&str> = account(&rows, ALICE)
+        .addresses
+        .iter()
+        .map(|a| a.ip.as_str())
+        .collect();
+    assert_eq!(ips, vec![other]);
+}
+
+#[test]
+fn a_microsoft_address_is_still_listed_for_another_reason() {
+    let mut case = new_case();
+    let ms = "52.96.10.20";
+    insert_row(
+        &case,
+        "ip_intel",
+        T,
+        json!({"ip": ms, "is_microsoft": true, "is_private": false, "is_hosting": true}),
+    );
+    forwarding_mailbox(&case, ALICE);
+    mia(&case, ALICE, ms, at(3, 10, 0), "mia-ms");
+    run(&mut case, &set_of(vec![forwarding_rule()]), &opts(20)).unwrap();
+    let rows = read_accounts(case.conn()).unwrap();
+    let al = account(&rows, ALICE);
+    assert_eq!(al.addresses.len(), 1);
+    assert_eq!(al.addresses[0].ip, ms);
+    assert_eq!(al.addresses[0].reasons, vec!["hosting".to_string()]);
+}

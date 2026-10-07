@@ -26,7 +26,8 @@ pub struct ActorIp {
     pub asn_org: Option<String>,
     pub is_hosting: Option<bool>,
     pub spray_source: bool,
-    pub user_signin_days_before: u32,
+    /// Distinct earlier days; None when the evidence row has no time ("cannot compare", never 0).
+    pub user_signin_days_before: Option<u32>,
     #[serde(default, with = "ts_opt")]
     pub user_first_signin: Option<DateTime<Utc>>,
 }
@@ -180,14 +181,17 @@ pub(crate) fn rebuild(conn: &Connection, set: &RuleSet, run_id: i64) -> Result<u
     let mut raw_targets = target_values(conn, &elig)?;
     let domains = tenant_domains(conn)?;
     let own = own_addresses(conn)?;
-    let has_trace: bool =
-        conn.query_row("SELECT count(*) > 0 FROM message_trace", [], |r| r.get(0))?;
+    let traced = traced_tenants(conn)?;
 
-    let mut insert = conn.prepare(
-        "INSERT INTO finding_facts (finding_id, facts_version, facts, computed_run_id) \
-         VALUES (?, ?, CAST(? AS JSON), ?)",
-    )?;
-    let mut n = 0u64;
+    // Pass 1: each finding's targets, without the message counts.
+    struct Pending {
+        facts: FindingFacts,
+        // The earliest evidence time of each target, in target order.
+        times: Vec<Option<i64>>,
+        mine: BTreeSet<String>,
+        traced: bool,
+    }
+    let mut pending: Vec<(String, Pending)> = Vec::new();
     for f in &findings {
         let mine: BTreeSet<String> = match &f.actor {
             Some(a) => {
@@ -200,21 +204,14 @@ pub(crate) fn rebuild(conn: &Connection, set: &RuleSet, run_id: i64) -> Result<u
             }
             None => BTreeSet::new(),
         };
-        let targets = match raw_targets.remove(&f.finding_id) {
+        let (targets, times) = match raw_targets.remove(&f.finding_id) {
             Some(values) => {
                 let empty = BTreeSet::new();
                 let tenant_domains = domains.get(&f.tenant_key).unwrap_or(&empty);
-                let list = targets_of(
-                    conn,
-                    &values,
-                    &f.tenant_key,
-                    &mine,
-                    tenant_domains,
-                    has_trace,
-                )?;
-                (!list.is_empty()).then_some(list)
+                let (list, times) = targets_of(&values, &mine, tenant_domains);
+                ((!list.is_empty()).then_some(list), times)
             }
-            None => None,
+            None => (None, Vec::new()),
         };
         let facts = FindingFacts {
             facts_version: FACTS_VERSION,
@@ -226,9 +223,57 @@ pub(crate) fn rebuild(conn: &Connection, set: &RuleSet, run_id: i64) -> Result<u
             }),
             targets,
         };
+        pending.push((
+            f.finding_id.clone(),
+            Pending {
+                facts,
+                times,
+                mine,
+                traced: traced.contains(&f.tenant_key),
+            },
+        ));
+    }
+
+    // Pass 2: every (finding, actor address, target, before) pair counted in ONE query.
+    conn.execute_batch(
+        "CREATE OR REPLACE TEMP TABLE enrich_trace_pairs \
+         (finding_id VARCHAR, tenant_key VARCHAR, actor VARCHAR, target VARCHAR, before_us BIGINT)",
+    )?;
+    {
+        let mut add = conn.prepare("INSERT INTO enrich_trace_pairs VALUES (?, ?, ?, ?, ?)")?;
+        for ((id, p), f) in pending.iter().zip(&findings) {
+            if !p.traced {
+                continue;
+            }
+            for (t, before) in p.facts.targets.iter().flatten().zip(&p.times) {
+                let Some(before) = before else { continue };
+                for actor in &p.mine {
+                    add.execute(duckdb::params![id, f.tenant_key, actor, t.address, before])?;
+                }
+            }
+        }
+    }
+    let counts = prior_message_counts(conn)?;
+    conn.execute_batch("DROP TABLE enrich_trace_pairs")?;
+
+    let mut insert = conn.prepare(
+        "INSERT INTO finding_facts (finding_id, facts_version, facts, computed_run_id) \
+         VALUES (?, ?, CAST(? AS JSON), ?)",
+    )?;
+    let mut n = 0u64;
+    for (id, mut p) in pending {
+        let answerable = p.traced && !p.mine.is_empty();
+        for (t, before) in p.facts.targets.iter_mut().flatten().zip(&p.times) {
+            t.prior_messages = (answerable && before.is_some()).then(|| {
+                counts
+                    .get(&(id.clone(), t.address.clone()))
+                    .copied()
+                    .unwrap_or(0)
+            });
+        }
         let json =
-            serde_json::to_string(&facts).map_err(|e| crate::Error::Invalid(e.to_string()))?;
-        insert.execute(duckdb::params![f.finding_id, FACTS_VERSION, json, run_id])?;
+            serde_json::to_string(&p.facts).map_err(|e| crate::Error::Invalid(e.to_string()))?;
+        insert.execute(duckdb::params![id, FACTS_VERSION, json, run_id])?;
         n += 1;
     }
     Ok(n)
@@ -275,7 +320,8 @@ fn actor_ips(conn: &Connection, elig: &str) -> Result<BTreeMap<String, Vec<Actor
          ),
          spray AS (SELECT DISTINCT tenant_key, ip FROM spray_sources)
          SELECT fi.finding_id, fi.ip, i.asn, i.asn_org, i.is_hosting, sp.ip IS NOT NULL,
-                CAST(count(DISTINCT epoch_ms(si.event_time) // 86400000) AS BIGINT),
+                CASE WHEN fi.t IS NOT NULL
+                     THEN CAST(count(DISTINCT epoch_ms(si.event_time) // 86400000) AS BIGINT) END,
                 epoch_us(min(si.event_time))
          FROM fi
          LEFT JOIN si ON si.tenant_key = fi.tenant_key AND si.actor = fi.actor AND si.ip = fi.ip
@@ -297,7 +343,9 @@ fn actor_ips(conn: &Connection, elig: &str) -> Result<BTreeMap<String, Vec<Actor
                 asn_org: r.get(3)?,
                 is_hosting: r.get(4)?,
                 spray_source: r.get(5)?,
-                user_signin_days_before: u32::try_from(r.get::<_, i64>(6)?).unwrap_or(u32::MAX),
+                user_signin_days_before: r
+                    .get::<_, Option<i64>>(6)?
+                    .map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
                 user_first_signin: at_us(r.get(7)?),
             },
         ))
@@ -484,15 +532,59 @@ fn in_domains(domain: &str, domains: &BTreeSet<String>) -> bool {
     }
 }
 
+/// The tenants with message-trace rows: a prior-message count is only a fact for them.
+fn traced_tenants(conn: &Connection) -> Result<BTreeSet<String>> {
+    let mut st = conn.prepare(
+        "SELECT DISTINCT c.tenant_key FROM message_trace m \
+         JOIN collections c ON c.collection_id = m.collection_id WHERE c.tenant_key IS NOT NULL",
+    )?;
+    let rows = st.query_map([], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<std::result::Result<_, _>>()?)
+}
+
+/// (finding, target) -> message_trace rows of the pair's tenant between one of the actor's
+/// addresses and the target, either direction, received before the pair's time; over every pair
+/// of `enrich_trace_pairs` in one set-based query (a message counts once per finding and target).
+fn prior_message_counts(conn: &Connection) -> Result<BTreeMap<(String, String), u32>> {
+    let mut st = conn.prepare(
+        "WITH mt AS (
+           SELECT c.tenant_key, lower(m.sender) AS s, lower(m.recipient) AS r,
+                  epoch_us(m.received) AS t, m.rowid AS id
+           FROM message_trace m JOIN collections c ON c.collection_id = m.collection_id
+           WHERE m.received IS NOT NULL
+         ),
+         hits AS (
+           SELECT p.finding_id, p.target, m.id FROM enrich_trace_pairs p
+           JOIN mt m ON m.tenant_key = p.tenant_key AND m.s = p.actor AND m.r = p.target
+                    AND m.t < p.before_us
+           UNION ALL
+           SELECT p.finding_id, p.target, m.id FROM enrich_trace_pairs p
+           JOIN mt m ON m.tenant_key = p.tenant_key AND m.s = p.target AND m.r = p.actor
+                    AND m.t < p.before_us
+         )
+         SELECT finding_id, target, count(DISTINCT id) FROM hits GROUP BY finding_id, target",
+    )?;
+    let rows = st.query_map([], |r| {
+        Ok((
+            (r.get::<_, String>(0)?, r.get::<_, String>(1)?),
+            r.get::<_, i64>(2)?,
+        ))
+    })?;
+    let mut out = BTreeMap::new();
+    for row in rows {
+        let (k, n) = row?;
+        out.insert(k, u32::try_from(n).unwrap_or(u32::MAX));
+    }
+    Ok(out)
+}
+
+/// The targets in `values` (sorted, scoped, `prior_messages` unset) and, per target, the earliest
+/// evidence time carrying it (None when no such row has a time).
 fn targets_of(
-    conn: &Connection,
     values: &[(Option<i64>, String)],
-    tenant: &str,
     mine: &BTreeSet<String>,
     domains: &BTreeSet<String>,
-    has_trace: bool,
-) -> Result<Vec<Target>> {
-    // address -> earliest evidence time carrying it (None when every such row has no time).
+) -> (Vec<Target>, Vec<Option<i64>>) {
     let mut first: BTreeMap<String, Option<i64>> = BTreeMap::new();
     for (t, v) in values {
         for a in addresses_in(v) {
@@ -503,40 +595,23 @@ fn targets_of(
             };
         }
     }
-    let actor_in = mine.iter().map(|a| lit(a)).collect::<Vec<_>>().join(", ");
     let mut out = Vec::new();
+    let mut times = Vec::new();
     for (address, t) in first {
         let domain = address
             .rsplit_once('@')
             .map(|(_, d)| d.to_string())
             .unwrap_or_default();
         let internal = mine.contains(&address) || in_domains(&domain, domains);
-        let prior_messages = match t {
-            Some(t) if has_trace && !mine.is_empty() => {
-                let target = lit(&address);
-                let n: i64 = conn.query_row(
-                    &format!(
-                        "SELECT count(*) FROM message_trace m \
-                         JOIN collections c ON c.collection_id = m.collection_id \
-                         WHERE c.tenant_key = ? AND epoch_us(m.received) < ? \
-                           AND ((lower(m.sender) IN ({actor_in}) AND lower(m.recipient) = {target}) \
-                             OR (lower(m.sender) = {target} AND lower(m.recipient) IN ({actor_in})))"
-                    ),
-                    duckdb::params![tenant, t],
-                    |r| r.get(0),
-                )?;
-                Some(u32::try_from(n).unwrap_or(u32::MAX))
-            }
-            _ => None,
-        };
         out.push(Target {
             address,
             domain,
             scope: if internal { "internal" } else { "external" }.to_string(),
-            prior_messages,
+            prior_messages: None,
         });
+        times.push(t);
     }
-    Ok(out)
+    (out, times)
 }
 
 #[cfg(test)]
