@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 /// The addresses of an account named in the report's table before "+N more".
 pub const ADDRESSES_SHOWN: usize = 5;
 
-/// The rule set the exports pass to `read::finding_show`, which needs it ONLY to tell which findings should have
+/// The rule set the exports pass to `read::finding_show` / `read::finding_facts`, which need it ONLY to tell which findings should have
 /// facts when the enrichment is not current. So it is loaded lazily, from the same `DataDirs` as the other commands
 /// (`--data`, `--rules`, `SPARROW_DATA`, `SPARROW_RULES`), and only when the enrichment is not [`EnrichState::Ok`]:
 /// current stored facts are shown whatever rules are on disk. A rule set that cannot be loaded is not an export

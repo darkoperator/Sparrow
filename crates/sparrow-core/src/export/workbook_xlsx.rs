@@ -280,10 +280,9 @@ pub fn write(
             Cell::Int(f.evidence_count),
         ];
         row.extend(decision_cells(&finding_provenance(f, &legacy)));
-        let detail = read::finding_show(conn, &f.finding_id, &rules.set)?;
+        let facts = read::finding_facts(conn, &f.finding_id, f.rule_id.as_deref(), &rules.set)?;
         row.push(
-            detail
-                .facts
+            facts
                 .as_ref()
                 .map(|x| t(facts_text::facts_json(x, &rules)))
                 .unwrap_or(Cell::Empty),

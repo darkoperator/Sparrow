@@ -14,6 +14,7 @@ use chrono::{DateTime, Utc};
 use duckdb::{Connection, ToSql, params_from_iter};
 use serde::{Serialize, Serializer};
 use serde_json::Value;
+use std::collections::{BTreeSet, HashMap};
 
 const SEVERITIES: &[&str] = &["critical", "high", "medium", "low", "info"];
 const REVIEW_STATES: &[&str] = &["pending_review", "accepted", "discarded"];
@@ -262,14 +263,17 @@ pub fn finding_show(conn: &Connection, id: &str, rules: &RuleSet) -> Result<Find
     let finding = finding_rows(conn, "f.finding_id = ?", &[&id], None)?
         .pop()
         .ok_or_else(|| Error::NotFound(format!("finding {id}")))?;
+    // The source refs (`record_source_refs`, also the timeline's `source_refs`) are filled in afterwards: a join on
+    // that view aggregates every sighting of the case before it filters (0.6 s and more per finding on a
+    // 100k-sign-in case), while the keys bound as constants are pushed below its GROUP BY (m2-wb-perf).
     let mut stmt = conn.prepare(&format!(
         "SELECT fe.source_table, fe.record_key, CAST(fe.role AS VARCHAR), epoch_us(fe.event_time), \
-                to_json(refs.source_refs)::VARCHAR, t.record_key IS NOT NULL, CAST(fe.context AS VARCHAR), {TIMELINE_COLS} \
+                t.record_key IS NOT NULL, CAST(fe.context AS VARCHAR), {} \
          FROM finding_evidence fe \
-         LEFT JOIN record_source_refs refs ON refs.table_name = fe.source_table AND refs.record_key = fe.record_key \
          LEFT JOIN timeline t ON t.source_table = fe.source_table AND t.record_key = fe.record_key \
          WHERE fe.finding_id = ? \
-         ORDER BY fe.event_time NULLS LAST, fe.source_table, fe.record_key"
+         ORDER BY fe.event_time NULLS LAST, fe.source_table, fe.record_key",
+        timeline_cols_without_refs()
     ))?;
     let rows = stmt.query_map([id], |r| {
         Ok(EvidenceRow {
@@ -277,18 +281,33 @@ pub fn finding_show(conn: &Connection, id: &str, rules: &RuleSet) -> Result<Find
             record_key: r.get(1)?,
             role: r.get(2)?,
             event_time: r.get::<_, Option<i64>>(3)?.map(at),
-            source_refs: strings(r.get(4)?),
-            timeline: if r.get::<_, bool>(5)? {
-                Some(timeline_row(r, 7)?)
+            source_refs: Vec::new(),
+            timeline: if r.get::<_, bool>(4)? {
+                Some(timeline_row(r, 6)?)
             } else {
                 None
             },
             context: r
-                .get::<_, Option<String>>(6)?
+                .get::<_, Option<String>>(5)?
                 .and_then(|c| serde_json::from_str(&c).ok()),
         })
     })?;
-    let evidence = rows.collect::<std::result::Result<_, _>>()?;
+    let mut evidence: Vec<EvidenceRow> = rows.collect::<std::result::Result<_, _>>()?;
+    let keys: BTreeSet<(String, String)> = evidence
+        .iter()
+        .map(|e| (e.source_table.clone(), e.record_key.clone()))
+        .collect();
+    let refs = source_refs_of(conn, &keys)?;
+    for e in &mut evidence {
+        let r = refs
+            .get(&(e.source_table.clone(), e.record_key.clone()))
+            .cloned()
+            .unwrap_or_default();
+        if let Some(t) = e.timeline.as_mut() {
+            t.source_refs = r.clone();
+        }
+        e.source_refs = r;
+    }
     let analyst_guidance = finding.rule_id.as_deref().and_then(|rid| {
         rules
             .rules
@@ -296,7 +315,7 @@ pub fn finding_show(conn: &Connection, id: &str, rules: &RuleSet) -> Result<Find
             .find(|l| l.rule.id == rid)
             .map(|l| l.rule.analyst_guidance.clone())
     });
-    let facts = facts_field(conn, id, finding.rule_id.as_deref(), rules)?;
+    let facts = finding_facts(conn, id, finding.rule_id.as_deref(), rules)?;
     Ok(FindingDetail {
         notes: notes::notes_for(conn, &NoteTarget::Finding(id.to_string()))?,
         audit: audit::log(conn, Some(("finding", id)))?,
@@ -336,7 +355,10 @@ fn enrichment_unavailable(conn: &Connection) -> Result<Option<String>> {
 /// - enrichment not current: `facts_unavailable` (with the reason) for a finding whose rule is in a facts family
 ///   per the loaded rules, and also for a finding whose rule is not in the loaded set at all (noted), never
 ///   silently nothing; a loaded rule outside the families (or an analyst finding) has neither key.
-fn facts_field(
+///
+/// `rule_id` is the finding's rule. [`finding_show`] reads it through this; a reader that needs only the facts
+/// (the workbook) calls it directly and skips the evidence, notes and history.
+pub fn finding_facts(
     conn: &Connection,
     id: &str,
     rule_id: Option<&str>,
@@ -458,6 +480,51 @@ fn addresses_section(conn: &Connection, upn: &str, cap: usize) -> Result<PivotSe
 const TIMELINE_COLS: &str = "epoch_us(t.event_time), t.time_tz_assumed, t.source_table, t.record_key, \
      CAST(t.category AS VARCHAR), t.operation, t.actor_upn, t.target, t.ip, t.ip_country, t.ip_asn_org, \
      t.user_agent, t.summary, to_json(t.source_refs)::VARCHAR, t.finding_count, to_json(t.finding_ids)::VARCHAR";
+
+/// [`TIMELINE_COLS`] with `source_refs` read as NULL, for a query that fills it in with [`source_refs_of`].
+fn timeline_cols_without_refs() -> String {
+    const REFS: &str = "to_json(t.source_refs)::VARCHAR";
+    assert!(TIMELINE_COLS.contains(REFS));
+    TIMELINE_COLS.replace(REFS, "NULL")
+}
+
+/// Keys bound per `record_source_refs` lookup.
+const REFS_CHUNK: usize = 256;
+
+/// The [`source_refs_of`] lookup of `n` keys, each bound as two parameters (table, record key).
+fn source_refs_sql(n: usize) -> String {
+    let tuples = vec!["(?, ?)"; n].join(", ");
+    format!(
+        "SELECT table_name, record_key, to_json(source_refs)::VARCHAR FROM record_source_refs \
+         WHERE (table_name, record_key) IN ({tuples})"
+    )
+}
+
+/// `record_source_refs.source_refs` of each (table, record key) in `keys`; a key without sightings is absent. The
+/// keys are bound as constants, which DuckDB pushes below the view's GROUP BY, so only their sightings are
+/// aggregated (a join or a semi-join on the view aggregates every sighting of the case first).
+fn source_refs_of(
+    conn: &Connection,
+    keys: &BTreeSet<(String, String)>,
+) -> Result<HashMap<(String, String), Vec<String>>> {
+    let keys: Vec<&(String, String)> = keys.iter().collect();
+    let mut out = HashMap::new();
+    for chunk in keys.chunks(REFS_CHUNK) {
+        let mut stmt = conn.prepare(&source_refs_sql(chunk.len()))?;
+        let args: Vec<&dyn ToSql> = chunk
+            .iter()
+            .flat_map(|(t, k)| [t as &dyn ToSql, k as &dyn ToSql])
+            .collect();
+        let rows = stmt.query_map(args.as_slice(), |r| {
+            Ok(((r.get(0)?, r.get(1)?), strings(r.get(2)?)))
+        })?;
+        for row in rows {
+            let (k, v) = row?;
+            out.insert(k, v);
+        }
+    }
+    Ok(out)
+}
 
 /// One row of the `timeline` view.
 #[derive(Debug, Clone, Serialize)]
@@ -781,4 +848,83 @@ pub fn pivot_user(conn: &Connection, upn: &str, cap: usize) -> Result<Pivot> {
             addresses_section(conn, upn, cap)?,
         ],
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Case;
+
+    /// The nodes of a DuckDB profile tree below (and including) `n`.
+    fn nodes(n: &Value) -> Vec<&Value> {
+        let mut out = vec![n];
+        for c in n["children"].as_array().into_iter().flatten() {
+            out.extend(nodes(c));
+        }
+        out
+    }
+
+    /// Regression guard (m2-wb-perf): the source-refs lookup aggregates only the sightings of the keys it is
+    /// given. Joined on `record_source_refs` instead, DuckDB aggregated every sighting of the case per finding
+    /// (26 s for a 31-finding workbook on a 100k-sign-in case). Checked by behaviour, not plan shape: on a case of
+    /// 20,000 sightings in two tables that share their record keys, the rows that reach the view's GROUP BY must be
+    /// the requested keys' own sightings, so both bound values (table and record key) must filter below it. A
+    /// DuckDB upgrade or a `record_source_refs` rewrite that loses this fails here, not in an analyst's export.
+    #[test]
+    fn the_source_refs_lookup_aggregates_only_its_own_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let case = Case::create_or_open(&dir.path().join("case.duckdb")).unwrap();
+        // k<n> is in both tables (10,000 each); ual_events k1 has a second sighting.
+        case.conn()
+            .execute_batch(
+                "INSERT INTO collections (collection_id, tool, root_path, sparrow_version) VALUES (1, 'hawk', '/c/Out', 't');
+                 INSERT INTO source_files (file_id, collection_id, rel_path, size_bytes, sha256, status)
+                     VALUES (1, 1, 'a.json', 1, 'x', 'parsed'), (2, 1, 'b.json', 1, 'x', 'parsed');
+                 INSERT INTO record_sources
+                     SELECT t, 'k' || i, 1, i, i + 1, i + 1, 0, 1, 'x'
+                     FROM range(10000) r(i), (VALUES ('ual_events'), ('signins')) v(t);
+                 INSERT INTO record_sources VALUES ('ual_events', 'k1', 2, 0, 7, 9, 0, 1, 'x');",
+            )
+            .unwrap();
+        let keys: BTreeSet<(String, String)> = [("ual_events", "k1"), ("signins", "k2")]
+            .iter()
+            .map(|(t, k)| (t.to_string(), k.to_string()))
+            .collect();
+        let got = source_refs_of(case.conn(), &keys).unwrap();
+        assert_eq!(got.len(), 2);
+        assert_eq!(
+            got[&("ual_events".to_string(), "k1".to_string())],
+            ["Out/a.json:2", "Out/b.json:7-9"]
+        );
+        assert_eq!(
+            got[&("signins".to_string(), "k2".to_string())],
+            ["Out/a.json:3"]
+        );
+
+        let profile: String = case
+            .conn()
+            .query_row(
+                &format!("EXPLAIN (ANALYZE, FORMAT json) {}", source_refs_sql(2)),
+                ["ual_events", "k1", "signins", "k2"],
+                |r| r.get(1),
+            )
+            .unwrap();
+        let profile: Value = serde_json::from_str(&profile).unwrap();
+        let aggs: Vec<&Value> = nodes(&profile)
+            .into_iter()
+            .filter(|n| n["operator_name"] == "HASH_GROUP_BY")
+            .collect();
+        assert_eq!(aggs.len(), 1, "{profile:#}");
+        let into_agg: u64 = aggs[0]["children"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["operator_cardinality"].as_u64().unwrap())
+            .sum();
+        // The three sightings of the two keys; a record_key-only filter lets 5 through, no filter 20,001.
+        assert!(
+            into_agg <= 3,
+            "{into_agg} rows reach the aggregate: {profile:#}"
+        );
+    }
 }
