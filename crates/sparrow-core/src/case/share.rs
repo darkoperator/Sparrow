@@ -313,6 +313,9 @@ pub struct ImportSummary {
     pub agrees: usize,
     pub conflicts: usize,
     pub missing: usize,
+    /// Items stored (or, for a preview, that would be stored) as `superseded`: a newer open proposal from the same
+    /// analyst already covers them.
+    pub superseded: usize,
     pub already_imported: bool,
     /// Rule-set difference (warning only): rules in the bundle not in this case, and the reverse.
     pub rules_only_in_bundle: Vec<String>,
@@ -843,11 +846,13 @@ fn plan(conn: &Connection, bundle: &Bundle, sha: &str) -> Result<Plan> {
         "conflict" => s.conflicts += 1,
         _ => s.missing += 1,
     };
-    let stored: Vec<String> = {
+    let stored: Vec<(String, String)> = {
         let mut stmt = conn.prepare(
-            "SELECT classification FROM imported_proposals WHERE bundle_sha256 = ? ORDER BY item_key",
+            "SELECT classification, state FROM imported_proposals WHERE bundle_sha256 = ? ORDER BY item_key",
         )?;
-        let rows = stmt.query_map(params![sha], |r| r.get::<_, String>(0))?;
+        let rows = stmt.query_map(params![sha], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
         rows.collect::<std::result::Result<_, _>>()?
     };
     // The audited import is the duplicate marker (a bundle with no items stores no proposal rows).
@@ -858,8 +863,9 @@ fn plan(conn: &Connection, bundle: &Bundle, sha: &str) -> Result<Plan> {
         &[sha],
     )?;
     if imported || !stored.is_empty() {
-        for c in &stored {
+        for (c, state) in &stored {
             tally(&mut summary, c);
+            summary.superseded += usize::from(state == "superseded");
         }
         summary.already_imported = true;
         return Ok(Plan::Already(summary));
@@ -908,6 +914,7 @@ fn plan(conn: &Connection, bundle: &Bundle, sha: &str) -> Result<Plan> {
             _ if newer_open => "superseded",
             _ => "open",
         };
+        summary.superseded += usize::from(state == "superseded");
         rows.push(PlannedRow {
             key,
             keys,

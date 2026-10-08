@@ -813,6 +813,7 @@ fn record_fixtures() {
     let queue = review_queue(&state).unwrap();
     let detail = finding_detail(&state, &s.finding).unwrap();
     let accounts = sparrow_app::cmd::accounts::accounts_list(&state, None).unwrap();
+    let more = record_m3_fixtures(tmp.path());
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../app/src/test/fixtures");
     std::fs::create_dir_all(&dir).unwrap();
     let write = |name: &str, v: serde_json::Value| {
@@ -827,6 +828,9 @@ fn record_fixtures() {
         "finding_detail.json",
         serde_json::to_value(&detail).unwrap(),
     );
+    for (name, v) in more {
+        write(&name, v);
+    }
 }
 
 // ---- timeline ----
@@ -1385,4 +1389,1009 @@ fn a_symlink_target_is_refused_and_an_earlier_export_is_overwritten() {
     export_report(&state, &out, true).unwrap();
     assert_ne!(std::fs::read(&out).unwrap(), b"old");
     assert!(leftovers(tmp.path()).is_empty());
+}
+
+// ---- M3: pivot, browse, SQL with cancel, indicators, share files, highlights ----
+
+use sparrow_app::cmd::browse::{browse_page as browse_page_id, browse_tables};
+use sparrow_app::cmd::indicators::indicators_active;
+use sparrow_app::cmd::pivot::{cap_of, pivot_ip, pivot_user};
+use sparrow_app::cmd::share::{share_export, share_import, share_preview};
+use sparrow_app::cmd::sql::query_cancel;
+use sparrow_app::cmd::sql::{sql_run as sql_run_id, sql_schema};
+use sparrow_app::settings::{
+    HighlightRule, HighlightSet, highlights_clear, highlights_get, highlights_set,
+};
+
+/// The calls that do not care about cancelling run under a fixed id.
+fn sql_run(
+    state: &AppState,
+    sql: &str,
+    limit: Option<usize>,
+) -> sparrow_app::CmdResult<query::QueryResult> {
+    sql_run_id(state, sql, limit, "t")
+}
+
+fn browse_page(
+    state: &AppState,
+    table: &str,
+    filters: &[Filter],
+    sort: Option<&browse::Sort>,
+    offset: usize,
+    limit: usize,
+) -> sparrow_app::CmdResult<browse::BrowsePage> {
+    browse_page_id(state, table, filters, sort, offset, limit, "t")
+}
+use sparrow_core::case::browse::{self, Filter};
+
+/// Two private copies of the detected case, each open in its own app with the analyst `name`.
+fn two_apps(tmp: &Path, a_name: &str, b_name: &str) -> (AppState, AppState) {
+    let open = |sub: &str, name: &str| {
+        let dir = tmp.join(sub);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = case_file(&dir);
+        let state = state_with_settings(&dir.join("settings"));
+        settings_set_analyst(&state, name).unwrap();
+        case_open(&state, &path, false).unwrap();
+        state
+    };
+    (open("a", a_name), open("b", b_name))
+}
+
+fn confirm_findings(state: &AppState, n: usize) -> Vec<String> {
+    let me = analyst(state).unwrap();
+    with_writable(state, |open| {
+        let ids = findings_by_id(&open.case);
+        assert!(ids.len() >= n, "{ids:?}");
+        for id in &ids[..n] {
+            write::set_finding_status(
+                open.case.conn(),
+                &me.as_actor(),
+                id,
+                write::FindingStatus::Confirmed,
+                Some("AiTM relay"),
+            )?;
+        }
+        Ok(ids[..n].to_vec())
+    })
+    .unwrap()
+}
+
+fn rows(state: &AppState, sql: &str) -> i64 {
+    with_case(state, |open| {
+        Ok(open.case.conn().query_row(sql, [], |r| r.get(0)).unwrap())
+    })
+    .unwrap()
+}
+
+/// A query that runs for minutes unless interrupted.
+const LONG: &str = "SELECT sum(hash(a)) FROM range(100000000000) a";
+
+/// Run `f` on a thread while this thread calls `cancel` every 50 ms until `f` returns (a cancel before the query
+/// starts is a no-op by design, so it repeats). Gives the result and how long `f` ran after the first cancel.
+fn cancelling<T: Send>(
+    f: impl FnOnce() -> T + Send,
+    cancel: impl Fn(),
+    give_up: std::time::Duration,
+) -> (T, std::time::Duration) {
+    let started = std::time::Instant::now();
+    std::thread::scope(|scope| {
+        let runner = scope.spawn(f);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let first = std::time::Instant::now();
+        while !runner.is_finished() {
+            assert!(started.elapsed() < give_up, "the query ended too late");
+            cancel();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        (runner.join().unwrap(), first.elapsed())
+    })
+}
+
+#[test]
+fn cancel_interrupts_a_long_query() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, s) = open_seeded(tmp.path());
+    let (result, took) = cancelling(
+        || sql_run_id(&state, LONG, None, "q-1"),
+        || query_cancel(&state, "q-1").unwrap(),
+        std::time::Duration::from_secs(30),
+    );
+    let e = result.unwrap_err();
+    assert_eq!(e.kind, "interrupted", "{e:?}");
+    assert!(took < std::time::Duration::from_secs(2), "{took:?}");
+    assert!(
+        state.active.lock().unwrap().is_none(),
+        "the entry is cleared"
+    );
+    // The case is usable afterwards: reads, and a write.
+    assert_eq!(
+        sql_run(&state, "SELECT 1 AS one", None).unwrap().rows.len(),
+        1
+    );
+    let queue = review_queue(&state).unwrap();
+    let seq = decision(&queue, "timeline_entry", &s.entry).decision_seq;
+    review_accept(&state, "timeline_entry", &s.entry, seq, None).unwrap();
+    with_case(&state, |open| {
+        open.case.ensure_usable()?;
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// A medium query (about a second) run straight on the connection, so only an interrupt can end it early.
+const MEDIUM: &str = "SELECT (sum(hash(a)) % 7)::BIGINT FROM range(1500000000) a";
+
+fn direct(open: &sparrow_app::state::OpenCase, sql: &str) -> sparrow_app::CmdResult<()> {
+    open.case
+        .conn()
+        .query_row(sql, [], |r| r.get::<_, Option<i64>>(0).map(|_| ()))
+        .map_err(sparrow_core::Error::from)?;
+    Ok(())
+}
+
+#[test]
+fn cancel_with_a_wrong_id_or_nothing_running_does_nothing() {
+    let state = AppState::default();
+    query_cancel(&state, "q-1").unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, _) = open_seeded(tmp.path());
+    query_cancel(&state, "q-1").unwrap();
+    assert_eq!(
+        sql_run(&state, "SELECT 1 AS one", None).unwrap().rows.len(),
+        1
+    );
+    // Ids are checked.
+    for bad in ["", &"x".repeat(65), "a\nb"] {
+        assert_eq!(
+            query_cancel(&state, bad).unwrap_err().kind,
+            "invalid",
+            "{bad:?}"
+        );
+        assert_eq!(
+            sql_run_id(&state, "SELECT 1", None, bad).unwrap_err().kind,
+            "invalid"
+        );
+    }
+    assert!(query_cancel(&state, &"x".repeat(64)).is_ok());
+    // A query running as "q-1" is not touched by cancels for other ids, and finishes with its result.
+    let started = std::time::Instant::now();
+    let (result, _) = cancelling(
+        || {
+            sql_run_id(
+                &state,
+                "SELECT sum(hash(a)) AS s FROM range(1500000000) a",
+                None,
+                "q-1",
+            )
+        },
+        || {
+            query_cancel(&state, "q-2").unwrap();
+            query_cancel(&state, "q-1 ").unwrap();
+            query_cancel(&state, "Q-1").unwrap();
+        },
+        std::time::Duration::from_secs(60),
+    );
+    assert_eq!(result.unwrap().rows.len(), 1);
+    assert!(
+        started.elapsed() > std::time::Duration::from_millis(250),
+        "the query must have been running"
+    );
+    // After close the entry is gone: a cancel is a no-op again.
+    case_close(&state).unwrap();
+    query_cancel(&state, "q-1").unwrap();
+    assert!(state.active.lock().unwrap().is_none());
+}
+
+#[test]
+fn cancel_of_another_case_generation_does_not_touch_the_query() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, _) = open_seeded(tmp.path());
+    // Another case replaces the first one (a new generation).
+    let other = tmp.path().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let other = case_file(&other);
+    let old_generation = state.generation.load(std::sync::atomic::Ordering::SeqCst);
+    case_open(&state, &other, false).unwrap();
+    assert!(state.generation.load(std::sync::atomic::Ordering::SeqCst) > old_generation);
+    let register = |generation: u64| {
+        with_case(&state, |open| {
+            *state.active.lock().unwrap() = Some(sparrow_app::state::ActiveQuery {
+                id: "q-1".into(),
+                generation,
+                handle: open.case.conn().interrupt_handle(),
+            });
+            Ok(())
+        })
+        .unwrap();
+    };
+    let run = |generation: u64| {
+        register(generation);
+        let r = cancelling(
+            || with_case(&state, |open| direct(open, MEDIUM)),
+            || query_cancel(&state, "q-1").unwrap(),
+            std::time::Duration::from_secs(60),
+        )
+        .0;
+        *state.active.lock().unwrap() = None;
+        r
+    };
+    // An entry left from the old generation is never interrupted, even with the right id.
+    run(old_generation).unwrap();
+    // The same entry of the current generation is (so the test above is not vacuous).
+    let e = run(state.generation.load(std::sync::atomic::Ordering::SeqCst)).unwrap_err();
+    assert_eq!(e.kind, "interrupted", "{e:?}");
+}
+
+#[test]
+fn a_write_running_concurrently_is_not_interrupted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, s) = open_seeded(tmp.path());
+    let (result, _) = cancelling(
+        || {
+            with_writable(&state, |open| {
+                direct(open, MEDIUM)?;
+                // Still a working transaction afterwards.
+                write::in_tx(open.case.conn(), |tx| {
+                    tx.execute_batch("INSERT INTO case_meta VALUES ('zz_cancel', '1')")?;
+                    Ok(())
+                })?;
+                Ok(())
+            })
+        },
+        // Every id a screen could be using.
+        || {
+            for id in ["t", "q-1", "q-2"] {
+                query_cancel(&state, id).unwrap();
+            }
+        },
+        std::time::Duration::from_secs(60),
+    );
+    result.unwrap();
+    assert_eq!(
+        rows(
+            &state,
+            "SELECT count(*) FROM case_meta WHERE key = 'zz_cancel'"
+        ),
+        1
+    );
+    // A review write (the audited path) is equally unaffected, with a cancellable query not in flight.
+    let queue = review_queue(&state).unwrap();
+    let seq = decision(&queue, "timeline_entry", &s.entry).decision_seq;
+    review_accept(&state, "timeline_entry", &s.entry, seq, None).unwrap();
+    // A write registers nothing.
+    with_writable(&state, |_| {
+        assert!(state.active.lock().unwrap().is_none());
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn a_cancelled_browse_page_leaves_the_case_usable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, s) = open_seeded(tmp.path());
+    // A view over two billion rows: a text filter on it scans for minutes unless interrupted.
+    with_writable(&state, |open| {
+        write::in_tx(open.case.conn(), |tx| {
+            tx.execute_batch(
+                "CREATE VIEW zz_big AS SELECT i, 'x' || (i % 1000)::VARCHAR AS s FROM range(2000000000) t(i)",
+            )?;
+            Ok(())
+        })?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(
+        browse_tables(&state)
+            .unwrap()
+            .contains(&"zz_big".to_string())
+    );
+    let filters = vec![Filter::Contains {
+        column: "s".into(),
+        value: "zzz".into(),
+    }];
+    let (result, took) = cancelling(
+        || browse_page_id(&state, "zz_big", &filters, None, 0, 50, "b-1"),
+        || query_cancel(&state, "b-1").unwrap(),
+        std::time::Duration::from_secs(60),
+    );
+    let e = result.unwrap_err();
+    assert_eq!(e.kind, "interrupted", "{e:?}");
+    assert!(took < std::time::Duration::from_secs(2), "{took:?}");
+    assert!(state.active.lock().unwrap().is_none());
+    // Usable: a page, SQL, a write.
+    assert_eq!(
+        browse_page(&state, "signins", &[], None, 0, 5)
+            .unwrap()
+            .rows
+            .len(),
+        5
+    );
+    assert_eq!(
+        sql_run(&state, "SELECT 1 AS one", None).unwrap().rows.len(),
+        1
+    );
+    let queue = review_queue(&state).unwrap();
+    let seq = decision(&queue, "timeline_entry", &s.entry).decision_seq;
+    review_accept(&state, "timeline_entry", &s.entry, seq, None).unwrap();
+}
+
+#[test]
+fn text_that_looks_like_the_interrupt_message_is_not_an_interruption() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, _) = open_seeded(tmp.path());
+    let e = browse_page(&state, "INTERRUPT Error", &[], None, 0, 5).unwrap_err();
+    assert_eq!(e.kind, "invalid", "{e:?}");
+    let bad = vec![Filter::IsNull {
+        column: "INTERRUPT Error".into(),
+    }];
+    let e = browse_page(&state, "signins", &bad, None, 0, 5).unwrap_err();
+    assert_eq!(e.kind, "invalid", "{e:?}");
+    let e = sql_run(&state, "SELECT * FROM \"INTERRUPT Error\"", None).unwrap_err();
+    assert_ne!(e.kind, "interrupted", "{e:?}");
+    // SQL that makes DuckDB raise an error quoting that text after its own class prefix.
+    let e = sql_run(
+        &state,
+        "SELECT CAST('INTERRUPT Error: Interrupted!' AS INTEGER)",
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        e.message.contains("INTERRUPT Error"),
+        "the error quotes the text: {e:?}"
+    );
+    assert_ne!(e.kind, "interrupted", "{e:?}");
+    // And a value that is that text matches nothing, quietly.
+    let eq = vec![Filter::Eq {
+        column: "user_principal_name".into(),
+        value: serde_json::json!("INTERRUPT Error"),
+    }];
+    if let Err(e) = browse_page(&state, "signins", &eq, None, 0, 5) {
+        assert_ne!(e.kind, "interrupted", "{e:?}");
+    }
+}
+
+#[test]
+fn import_refuses_a_file_changed_after_preview() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (a, b) = two_apps(tmp.path(), "ann", "bob");
+    let file = tmp.path().join("work.sparrow-share.json");
+    confirm_findings(&a, 1);
+    share_export(&a, &file).unwrap();
+    let preview = share_preview(&b, &file).unwrap();
+    // The file is replaced by a different bundle after the preview.
+    confirm_findings(&a, 2);
+    let replaced = share_export(&a, &file).unwrap();
+    assert_ne!(replaced.sha256, preview.sha256);
+    let e = share_import(&b, &file, &preview.sha256).unwrap_err();
+    assert_eq!(e.kind, "invalid", "{e:?}");
+    assert!(
+        e.message.contains("changed since the preview"),
+        "{}",
+        e.message
+    );
+    assert_eq!(rows(&b, "SELECT count(*) FROM imported_proposals"), 0);
+    assert_eq!(
+        rows(
+            &b,
+            "SELECT count(*) FROM audit_trail WHERE action = 'import_share'"
+        ),
+        0
+    );
+    // The new bytes import with their own sha.
+    let fresh = share_preview(&b, &file).unwrap();
+    assert_eq!(fresh.sha256, replaced.sha256);
+    let summary = share_import(&b, &file, &fresh.sha256).unwrap();
+    assert!(
+        summary.new + summary.agrees + summary.conflicts >= 1,
+        "{summary:?}"
+    );
+}
+
+#[test]
+fn share_round_trip_through_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (a, b) = two_apps(tmp.path(), "ann", "bob");
+    let confirmed = confirm_findings(&a, 2);
+    let file = tmp.path().join("work.sparrow-share.json");
+    let exported = share_export(&a, &file).unwrap();
+    assert!(exported.items >= 2, "{exported:?}");
+    assert_eq!(
+        std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".sparrow-export-")
+            })
+            .count(),
+        0,
+        "no work folder is left behind"
+    );
+
+    let queue_before = review_queue(&b).unwrap().len();
+    let preview = share_preview(&b, &file).unwrap();
+    assert_eq!(preview.sha256, exported.sha256);
+    assert_eq!(preview.analyst, "analyst:ann");
+    assert_eq!(preview.items, exported.items);
+    assert!(chrono::DateTime::parse_from_rfc3339(&preview.exported_at).is_ok());
+    assert!(!preview.summary.already_imported);
+    assert_eq!(preview.summary.superseded, 0);
+    assert!(preview.summary.new + preview.summary.conflicts >= confirmed.len());
+    // Nothing stored by the preview.
+    assert_eq!(rows(&b, "SELECT count(*) FROM imported_proposals"), 0);
+    assert_eq!(review_queue(&b).unwrap().len(), queue_before);
+
+    let summary = share_import(&b, &file, &preview.sha256).unwrap();
+    assert_eq!(summary, preview.summary);
+    let proposals = review_queue(&b)
+        .unwrap()
+        .iter()
+        .filter(|q| matches!(q, QueueItem::Proposal(_)))
+        .count();
+    assert_eq!(proposals, summary.new + summary.conflicts);
+    assert!(proposals >= 2);
+    // Again: previewed and imported before.
+    assert!(share_preview(&b, &file).unwrap().summary.already_imported);
+}
+
+#[test]
+fn share_files_are_checked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (a, b) = two_apps(tmp.path(), "ann", "bob");
+    let missing = tmp.path().join("nope.json");
+    assert_eq!(share_preview(&b, &missing).unwrap_err().kind, "not_found");
+    let junk = tmp.path().join("junk.json");
+    std::fs::write(&junk, b"{}").unwrap();
+    assert_eq!(share_preview(&b, &junk).unwrap_err().kind, "invalid");
+    assert_eq!(share_import(&b, &junk, "00").unwrap_err().kind, "invalid");
+    // Over the size limit: refused before parsing.
+    let big = tmp.path().join("big.json");
+    let f = std::fs::File::create(&big).unwrap();
+    f.set_len(share::MAX_BUNDLE_BYTES as u64 + 1).unwrap();
+    let e = share_preview(&b, &big).unwrap_err();
+    assert_eq!(e.kind, "invalid", "{e:?}");
+    assert!(e.message.contains("16 MiB"), "{}", e.message);
+    // A directory, and an export over the open case.
+    assert_eq!(share_preview(&b, tmp.path()).unwrap_err().kind, "invalid");
+    let case_path = with_case(&a, |open| Ok(open.path.clone())).unwrap();
+    let e = share_export(&a, &case_path).unwrap_err();
+    assert_eq!(e.kind, "invalid", "{e:?}");
+    assert!(std::fs::metadata(&case_path).unwrap().len() > 1000);
+    // Exports and imports need the analyst name.
+    let nameless = state_with_settings(&tmp.path().join("nameless"));
+    assert_eq!(
+        share_export(&nameless, &tmp.path().join("x.json"))
+            .unwrap_err()
+            .kind,
+        "invalid"
+    );
+}
+
+#[test]
+fn pivot_rejects_bad_input() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, _) = open_seeded(tmp.path());
+    let huge = "9".repeat(10 * 1024);
+    for bad in [
+        "not-an-ip",
+        "",
+        "   ",
+        "1.2.3.4 ",
+        "1.2.3.4\n",
+        "999.1.1.1",
+        &huge,
+    ] {
+        let e = pivot_ip(&state, bad, None).unwrap_err();
+        assert_eq!(e.kind, "invalid", "{bad:?}: {e:?}");
+    }
+    let long_upn = format!("{}@example.com", "a".repeat(320));
+    for bad in [
+        "",
+        "  ",
+        "a\u{0}@b.example",
+        "a\n@b.example",
+        "a\u{202e}\u{7}@b",
+        &huge,
+        &long_upn,
+    ] {
+        // U+202E alone is not a control character; the BEL after it is.
+        let e = pivot_user(&state, bad, None).unwrap_err();
+        assert_eq!(e.kind, "invalid", "{bad:?}: {e:?}");
+    }
+    // Valid input never errors, even for values the case has never seen.
+    let p = pivot_ip(&state, "203.0.113.250", None).unwrap();
+    assert!(!p.sections.is_empty());
+    assert!(p.sections.iter().all(|s| s.rows.is_empty()));
+    assert!(pivot_ip(&state, "2001:db8::1", None).is_ok());
+    assert!(pivot_user(&state, "nobody@nowhere.example", None).is_ok());
+    // The cap is clamped to 1..=1000, default 200.
+    assert_eq!(
+        (cap_of(None), cap_of(Some(0)), cap_of(Some(99_999))),
+        (200, 1, 1000)
+    );
+    // It is applied: a real account with more than one row in some section comes back truncated at 1.
+    let upn: String = with_case(&state, |open| {
+        Ok(open
+            .case
+            .conn()
+            .query_row(
+                "SELECT actor_upn FROM findings ORDER BY finding_id LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap())
+    })
+    .unwrap();
+    let capped = pivot_user(&state, &upn, Some(0)).unwrap();
+    let full = pivot_user(&state, &upn, None).unwrap();
+    let mut checked = 0;
+    for (c, f) in capped.sections.iter().zip(&full.sections) {
+        assert_eq!(c.name, f.name);
+        assert!(c.rows.len() <= 1);
+        assert_eq!(c.total, f.total);
+        if f.total > 1 {
+            assert!(c.truncated && c.rows.len() == 1, "{}", c.name);
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "no section had more than one row to cap");
+}
+
+#[test]
+fn sql_run_limits_and_refusals() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, _) = open_seeded(tmp.path());
+    let before = rows(&state, "SELECT count(*) FROM findings");
+    for bad in [
+        "DELETE FROM findings",
+        "INSERT INTO case_meta VALUES ('k', 'v')",
+        "SELECT 1; SELECT 2",
+        "ATTACH 'x.db' AS x",
+        "SELECT * FROM read_csv('/etc/hosts')",
+        "",
+    ] {
+        let e = sql_run(&state, bad, None).unwrap_err();
+        assert!(["invalid", "internal"].contains(&e.kind), "{bad:?}: {e:?}");
+    }
+    assert_eq!(rows(&state, "SELECT count(*) FROM findings"), before);
+    let e = sql_run(
+        &state,
+        &format!("SELECT '{}'", "x".repeat(2 * 1024 * 1024)),
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(e.kind, "invalid", "{e:?}");
+
+    let n = |limit| sql_run(&state, "SELECT * FROM range(20000) t(i)", limit).unwrap();
+    let default = n(None);
+    assert_eq!((default.rows.len(), default.truncated), (1000, true));
+    let big = n(Some(50_000));
+    assert_eq!((big.rows.len(), big.truncated), (10_000, true));
+    let zero = n(Some(0));
+    assert_eq!(zero.rows.len(), 1);
+    let all = sql_run(&state, "SELECT * FROM range(5) t(i)", Some(10)).unwrap();
+    assert_eq!((all.rows.len(), all.truncated), (5, false));
+
+    let schema = sql_schema(&state, None).unwrap();
+    assert!(schema.len() > 5);
+    let one = sql_schema(&state, Some("findings")).unwrap();
+    assert_eq!(one.len(), 1);
+    assert!(!one[0].columns.is_empty());
+}
+
+#[test]
+fn read_only_case_runs_sql_and_browses_but_refuses_writes() {
+    // Decision (probed): lock_down works on a read-only connection, so a broken-chain case is locked down at open
+    // and SQL / browse / pivot work on it; share_import and the other writes are refused as read_only.
+    let tmp = tempfile::tempdir().unwrap();
+    let path = case_file(tmp.path());
+    {
+        let case = Case::create_or_open(&path).unwrap();
+        let id = first_finding(&case);
+        let e = write::set_finding_status(
+            case.conn(),
+            &Actor::agent("triage", None).unwrap(),
+            &id,
+            write::FindingStatus::InReview,
+            None,
+        )
+        .unwrap();
+        case.conn()
+            .execute("UPDATE audit_trail SET reason = 'x' WHERE seq = ?", [e.seq])
+            .unwrap();
+    }
+    let state = state_with_settings(&tmp.path().join("settings"));
+    settings_set_analyst(&state, "carlos").unwrap();
+    let info = case_open(&state, &path, false).unwrap();
+    assert!(info.read_only_reason.is_some());
+    with_case(&state, |open| {
+        assert!(open.case.is_read_only() && open.case.is_locked_down()?);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        sql_run(&state, "SELECT count(*) AS n FROM findings", None)
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+    assert!(!sql_schema(&state, None).unwrap().is_empty());
+    assert!(
+        browse_tables(&state)
+            .unwrap()
+            .contains(&"findings".to_string())
+    );
+    assert!(pivot_ip(&state, "203.0.113.9", None).is_ok());
+    let junk = tmp.path().join("b.json");
+    std::fs::write(&junk, b"{}").unwrap();
+    // The write is refused as read-only before the bundle is even looked at.
+    let e = share_import(&state, &junk, "00").unwrap_err();
+    assert_eq!(e.kind, "read_only", "{e:?}");
+    let ok_file = tmp.path().join("x.json");
+    let e = share_export(&state, &ok_file).unwrap_err();
+    assert_eq!(e.kind, "invalid", "a broken chain cannot export: {e:?}");
+}
+
+#[test]
+fn browse_page_passes_filters_through() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, _) = open_seeded(tmp.path());
+    let tables = browse_tables(&state).unwrap();
+    assert!(tables.contains(&"signins".to_string()), "{tables:?}");
+    let first = browse_page(&state, "signins", &[], None, 0, 5).unwrap();
+    assert!(!first.rows.is_empty() && first.total > 1, "{}", first.total);
+    // A filter on the first non-null text cell of the first row.
+    let (col, value) = first
+        .columns
+        .iter()
+        .enumerate()
+        .find_map(|(i, c)| match &first.rows[0][i] {
+            serde_json::Value::String(s) if !s.is_empty() => Some((c.clone(), s.clone())),
+            _ => None,
+        })
+        .expect("a text cell");
+    let filters = vec![Filter::Eq {
+        column: col,
+        value: serde_json::Value::String(value),
+    }];
+    let got = browse_page(&state, "signins", &filters, None, 0, 500).unwrap();
+    let want = with_case(&state, |open| {
+        Ok(browse::page(
+            open.case.conn(),
+            "signins",
+            &filters,
+            None,
+            0,
+            500,
+        )?)
+    })
+    .unwrap();
+    assert!(got.total >= 1);
+    assert_eq!(
+        (got.total, got.total_capped, got.rows.len()),
+        (want.total, want.total_capped, want.rows.len())
+    );
+    assert_eq!(got.rows, want.rows);
+    // Paging goes through too.
+    let second = browse_page(&state, "signins", &[], None, 2, 2).unwrap();
+    assert_eq!(second.offset, 2);
+    assert_eq!(second.rows.len(), 2);
+    // Refusals are core's: an unknown table or column is invalid, never SQL.
+    let e = browse_page(&state, "findings; DROP TABLE findings", &[], None, 0, 5).unwrap_err();
+    assert_eq!(e.kind, "invalid", "{e:?}");
+    let bad = vec![Filter::IsNull {
+        column: "nope".into(),
+    }];
+    assert_eq!(
+        browse_page(&state, "signins", &bad, None, 0, 5)
+            .unwrap_err()
+            .kind,
+        "invalid"
+    );
+    assert_eq!(
+        browse_page(&AppState::default(), "signins", &[], None, 0, 5)
+            .unwrap_err()
+            .kind,
+        "no_case"
+    );
+}
+
+#[test]
+fn indicators_active_lists_malicious_and_suspicious_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, s) = open_seeded(tmp.path());
+    let me = analyst(&state).unwrap();
+    with_writable(&state, |open| {
+        let add = |ty: &str, value: &str, verdict: &str| {
+            add_indicator(
+                open.case.conn(),
+                &me.as_actor(),
+                None,
+                IndicatorType::parse(ty).unwrap(),
+                value,
+                Verdict::parse(verdict).unwrap(),
+                None,
+            )
+        };
+        add("ip", "203.0.113.50", "malicious")?;
+        add("ip", "203.0.113.51", "benign")?;
+        let gone = add("ip", "203.0.113.52", "malicious")?;
+        sparrow_core::case::indicators::remove_indicator(open.case.conn(), &me.as_actor(), &gone)?;
+        Ok(())
+    })
+    .unwrap();
+    let got = indicators_active(&state).unwrap();
+    let find = |v: &str| got.iter().find(|i| i.value == v);
+    assert_eq!(find("203.0.113.50").unwrap().verdict, "malicious");
+    assert_eq!(find("203.0.113.50").unwrap().ioc_type, "ip");
+    assert!(find("203.0.113.51").is_none(), "benign");
+    assert!(find("203.0.113.52").is_none(), "removed");
+    // The seeded agent-proposed suspicious indicator is listed (not removed).
+    let seeded_value: String = with_case(&state, |open| {
+        Ok(open
+            .case
+            .conn()
+            .query_row(
+                "SELECT value FROM case_indicators WHERE indicator_id = ?",
+                [&s.indicator],
+                |r| r.get(0),
+            )
+            .unwrap())
+    })
+    .unwrap();
+    assert_eq!(find(&seeded_value).unwrap().verdict, "suspicious");
+    assert!(
+        got.iter()
+            .all(|i| ["malicious", "suspicious"].contains(&i.verdict.as_str()))
+    );
+    assert_eq!(
+        indicators_active(&AppState::default()).unwrap_err().kind,
+        "no_case"
+    );
+}
+
+fn rule(column: Option<&str>, op: &str, value: &str, colour: &str) -> HighlightRule {
+    HighlightRule {
+        column: column.map(str::to_string),
+        op: op.into(),
+        value: value.into(),
+        colour: colour.into(),
+    }
+}
+
+fn set_of(name: &str, rules: Vec<HighlightRule>) -> HighlightSet {
+    HighlightSet {
+        name: name.into(),
+        rules,
+    }
+}
+
+#[test]
+fn highlights_round_trip_with_caps() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("settings");
+    let state = state_with_settings(&dir);
+    assert!(highlights_get(&state, "case-1").unwrap().is_empty());
+    // A hostile value is stored and returned raw (the screen escapes it when drawing).
+    let hostile = "<img src=x onerror=alert(1)>\u{202e}\u{0}\n";
+    let sets = vec![
+        set_of(
+            "relay",
+            vec![
+                rule(Some("ip"), "eq", "203.0.113.9", "red"),
+                rule(None, "contains", hostile, "amber"),
+            ],
+        ),
+        set_of("empty", vec![]),
+    ];
+    assert_eq!(
+        highlights_set(&state, "case-1", sets.clone()).unwrap(),
+        sets
+    );
+    assert_eq!(highlights_get(&state, "case-1").unwrap(), sets);
+    // Per case id, and it survives a restart (a new state over the same directory).
+    let other = vec![set_of("other", vec![rule(None, "eq", "x", "blue")])];
+    highlights_set(&state, "case-2", other.clone()).unwrap();
+    let restarted = state_with_settings(&dir);
+    assert_eq!(highlights_get(&restarted, "case-1").unwrap(), sets);
+    assert_eq!(highlights_get(&restarted, "case-2").unwrap(), other);
+    // The settings keep their shape: highlights are not part of them.
+    let v = serde_json::to_value(settings_get(&state).unwrap()).unwrap();
+    assert_eq!(
+        v.as_object().unwrap().keys().collect::<Vec<_>>(),
+        ["analyst", "recent"]
+    );
+    // Clear removes one case only.
+    highlights_clear(&state, "case-1").unwrap();
+    assert!(highlights_get(&state, "case-1").unwrap().is_empty());
+    assert_eq!(highlights_get(&state, "case-2").unwrap(), other);
+    highlights_clear(&state, "never-set").unwrap();
+
+    // Caps: 50 sets / 100 rules / 1 KiB values; the limits themselves are fine.
+    let n_sets = |n: usize| {
+        (0..n)
+            .map(|i| set_of(&format!("s{i}"), vec![]))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        highlights_set(&state, "caps", n_sets(50)).unwrap().len(),
+        50
+    );
+    assert_eq!(
+        highlights_set(&state, "caps", n_sets(51)).unwrap_err().kind,
+        "invalid"
+    );
+    assert_eq!(
+        highlights_get(&state, "caps").unwrap().len(),
+        50,
+        "a refused set stores nothing"
+    );
+    let n_rules = |n: usize| {
+        vec![set_of(
+            "r",
+            (0..n).map(|_| rule(None, "eq", "v", "green")).collect(),
+        )]
+    };
+    assert!(highlights_set(&state, "caps", n_rules(100)).is_ok());
+    assert_eq!(
+        highlights_set(&state, "caps", n_rules(101))
+            .unwrap_err()
+            .kind,
+        "invalid"
+    );
+    let valued = |len: usize| {
+        vec![set_of(
+            "v",
+            vec![rule(None, "eq", &"é".repeat(len / 2), "purple")],
+        )]
+    };
+    assert!(highlights_set(&state, "caps", valued(1024)).is_ok());
+    assert_eq!(
+        highlights_set(&state, "caps", valued(1026))
+            .unwrap_err()
+            .kind,
+        "invalid"
+    );
+    // Enums and names.
+    for bad in [
+        vec![set_of("c", vec![rule(None, "eq", "v", "pink")])],
+        vec![set_of("c", vec![rule(None, "regex", "v", "red")])],
+        vec![set_of("", vec![])],
+        vec![set_of("bad\nname", vec![])],
+        vec![set_of(&"n".repeat(101), vec![])],
+        vec![set_of("c", vec![rule(Some(""), "eq", "v", "red")])],
+        vec![set_of("c", vec![rule(Some("a\u{0}b"), "eq", "v", "red")])],
+    ] {
+        assert_eq!(
+            highlights_set(&state, "caps", bad).unwrap_err().kind,
+            "invalid"
+        );
+    }
+    for bad_id in ["", "a\nb"] {
+        assert_eq!(highlights_get(&state, bad_id).unwrap_err().kind, "invalid");
+        assert_eq!(
+            highlights_set(&state, bad_id, vec![]).unwrap_err().kind,
+            "invalid"
+        );
+    }
+    // Without a settings directory (no app config) the commands say so instead of losing the data.
+    assert_eq!(
+        highlights_get(&AppState::default(), "c").unwrap_err().kind,
+        "internal"
+    );
+}
+
+/// The M3 fixtures: pivot, a filtered browse page, a SQL result, the schema, a share preview and the active
+/// indicators, from the seeded synthetic case (two copies for the share).
+fn record_m3_fixtures(tmp: &Path) -> Vec<(String, serde_json::Value)> {
+    let (a, b) = two_apps(&tmp.join("m3"), "ann", "bob");
+    confirm_findings(&a, 2);
+    let file = tmp.join("m3-work.sparrow-share.json");
+    share_export(&a, &file).unwrap();
+    let preview = share_preview(&b, &file).unwrap();
+    // The case with an indicator in it, for the pivot and the highlight set.
+    let me = analyst(&a).unwrap();
+    let (upn, ip): (String, String) = with_case(&a, |open| {
+        Ok(open
+            .case
+            .conn()
+            .query_row(
+                "SELECT f.actor_upn, t.ip FROM findings f JOIN timeline t ON lower(t.actor_upn) = lower(f.actor_upn) \
+                 WHERE t.ip IS NOT NULL ORDER BY f.finding_id, t.event_time LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap())
+    })
+    .unwrap();
+    with_writable(&a, |open| {
+        add_indicator(
+            open.case.conn(),
+            &me.as_actor(),
+            None,
+            IndicatorType::parse("ip").unwrap(),
+            &ip,
+            Verdict::parse("malicious").unwrap(),
+            Some("relay"),
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let signins = browse_page(&a, "signins", &[], None, 0, 5).unwrap();
+    let (col, value) = signins
+        .columns
+        .iter()
+        .enumerate()
+        .find_map(|(i, c)| match &signins.rows[0][i] {
+            serde_json::Value::String(s) if !s.is_empty() => Some((c.clone(), s.clone())),
+            _ => None,
+        })
+        .expect("a text cell");
+    let filters = vec![Filter::Eq {
+        column: col,
+        value: serde_json::Value::String(value),
+    }];
+    let page = browse_page(&a, "signins", &filters, None, 0, 20).unwrap();
+    let json = |v: &dyn erased::Ser| v.value();
+    vec![
+        ("pivot_ip.json".into(), json(&pivot_ip(&a, &ip, Some(20)).unwrap())),
+        ("pivot_user.json".into(), json(&pivot_user(&a, &upn, Some(20)).unwrap())),
+        ("browse_page.json".into(), json(&page)),
+        (
+            "sql_result.json".into(),
+            json(&sql_run(&a, "SELECT rule_id, severity, count(*) AS n FROM findings GROUP BY ALL ORDER BY ALL", None).unwrap()),
+        ),
+        ("schema.json".into(), json(&sql_schema(&a, None).unwrap())),
+        ("share_preview.json".into(), json(&preview)),
+        ("indicators.json".into(), json(&indicators_active(&a).unwrap())),
+    ]
+}
+
+mod erased {
+    pub trait Ser {
+        fn value(&self) -> serde_json::Value;
+    }
+    impl<T: serde::Serialize> Ser for T {
+        fn value(&self) -> serde_json::Value {
+            serde_json::to_value(self).unwrap()
+        }
+    }
+}
+
+#[test]
+fn a_damaged_highlights_file_is_an_error_and_is_left_untouched() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("settings");
+    let state = state_with_settings(&dir);
+    let sets = vec![set_of(
+        "relay",
+        vec![rule(None, "eq", "203.0.113.9", "red")],
+    )];
+    highlights_set(&state, "case-1", sets).unwrap();
+    let file = dir.join("highlights.json");
+    let whole = std::fs::read(&file).unwrap();
+    let truncated = &whole[..whole.len() / 2];
+    std::fs::write(&file, truncated).unwrap();
+    for e in [
+        highlights_get(&state, "case-1").unwrap_err(),
+        highlights_set(&state, "case-2", vec![]).unwrap_err(),
+        highlights_clear(&state, "case-1").unwrap_err(),
+    ] {
+        assert_eq!(e.kind, "internal", "{e:?}");
+        assert!(e.message.contains("highlights.json"), "{}", e.message);
+    }
+    assert_eq!(
+        std::fs::read(&file).unwrap(),
+        truncated,
+        "the file is not rewritten"
+    );
+    // Only a missing file means "none yet".
+    std::fs::remove_file(&file).unwrap();
+    assert!(highlights_get(&state, "case-1").unwrap().is_empty());
+    highlights_set(&state, "case-2", vec![]).unwrap();
 }

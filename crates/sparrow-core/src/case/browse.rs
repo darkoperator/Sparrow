@@ -368,7 +368,10 @@ pub fn page(
     let q = quote(&info.table);
 
     // A value that does not cast (a time that is not a time) fails here, before any row is read.
-    let bad_value = |e: duckdb::Error| Error::Invalid(format!("filter on {table}: {e}"));
+    let bad_value = |e: duckdb::Error| match Error::from(e) {
+        Error::Db(e) => Error::Invalid(format!("filter on {table}: {e}")),
+        other => other,
+    };
     let counted: u64 = conn
         .query_row(
             &format!(

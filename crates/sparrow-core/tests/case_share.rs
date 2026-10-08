@@ -1335,3 +1335,27 @@ fn preview_refuses_a_malformed_bundle() {
     let (_a, b) = two_copies();
     assert!(share::preview(b.conn(), b"{}").is_err());
 }
+
+#[test]
+fn superseded_items_are_counted_by_preview_and_import() {
+    let (a, b) = two_copies();
+    let fid = first_finding(&a);
+    let ann = Reviewer::analyst("ann").unwrap();
+    let bob = Reviewer::analyst("bob").unwrap();
+    set_finding_status(a.conn(), &ann.as_actor(), &fid, S::Confirmed, Some("r1")).unwrap();
+    let (old, _) = share::to_bytes(&share::export(a.conn(), &ann).unwrap()).unwrap();
+    set_finding_status(a.conn(), &ann.as_actor(), &fid, S::Benign, Some("r2")).unwrap();
+    let (new, _) = share::to_bytes(&share::export(a.conn(), &ann).unwrap()).unwrap();
+    // Nothing imported yet: neither bundle supersedes anything.
+    assert_eq!(share::preview(b.conn(), &old).unwrap().superseded, 0);
+    assert_eq!(share::import(b.conn(), &bob, &new).unwrap().superseded, 0);
+    // The older bundle, imported later, is covered by the newer open proposal.
+    let p = share::preview(b.conn(), &old).unwrap();
+    assert_eq!(p.superseded, 1, "{p:?}");
+    let i = share::import(b.conn(), &bob, &old).unwrap();
+    assert_eq!(i, p);
+    // And a repeat reports what was stored.
+    let again = share::preview(b.conn(), &old).unwrap();
+    assert!(again.already_imported);
+    assert_eq!(again.superseded, 1);
+}

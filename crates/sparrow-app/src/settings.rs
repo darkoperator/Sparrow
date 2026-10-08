@@ -5,6 +5,7 @@ use crate::error::{CmdError, CmdResult};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use sparrow_core::case::actor::Reviewer;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::MutexGuard;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -96,6 +97,178 @@ pub fn record_recent(state: &AppState, path: &str) -> CmdResult<()> {
     let mut s = load(&dir);
     s.push_recent(path);
     save_or_err(&dir, &s)
+}
+
+// ---------------------------------------------------------------- highlights
+
+const HIGHLIGHTS_FILE: &str = "highlights.json";
+/// Highlight sets per case, rules per set, bytes per value, cases remembered at all.
+pub const MAX_SETS: usize = 50;
+pub const MAX_RULES: usize = 100;
+pub const MAX_VALUE_BYTES: usize = 1024;
+pub const MAX_CASES: usize = 500;
+const MAX_NAME_CHARS: usize = 100;
+const MAX_COLUMN_CHARS: usize = 128;
+const OPS: [&str; 2] = ["eq", "contains"];
+const COLOURS: [&str; 5] = ["red", "amber", "green", "blue", "purple"];
+
+/// One highlight: a row whose `column` (any column when `None`) equals / contains `value` is coloured.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct HighlightRule {
+    pub column: Option<String>,
+    pub op: String,
+    pub value: String,
+    pub colour: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct HighlightSet {
+    pub name: String,
+    pub rules: Vec<HighlightRule>,
+}
+
+/// Local highlight sets keyed by case id: case data the analyst chose to keep on this machine, in a file of its own
+/// next to the settings. Never written to the case, never audited, never in a bundle.
+type HighlightStore = BTreeMap<String, Vec<HighlightSet>>;
+
+/// The stored highlights. Only a missing file means "none yet"; a file that cannot be read or parsed is an error
+/// (naming the file) and is left untouched, so a later save never overwrites what the analyst had.
+fn load_highlights(dir: &Path) -> CmdResult<HighlightStore> {
+    let path = dir.join(HIGHLIGHTS_FILE);
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HighlightStore::new()),
+        Err(e) => {
+            return Err(CmdError::new(
+                "internal",
+                format!("cannot read {}: {e}", path.display()),
+            ));
+        }
+    };
+    serde_json::from_slice(&bytes).map_err(|e| {
+        CmdError::new(
+            "internal",
+            format!(
+                "{} is damaged ({e}); fix or delete it to use highlights again",
+                path.display()
+            ),
+        )
+    })
+}
+
+fn save_highlights(dir: &Path, h: &HighlightStore) -> std::io::Result<()> {
+    static N: AtomicU64 = AtomicU64::new(0);
+    std::fs::create_dir_all(dir)?;
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    let tmp = dir.join(format!(
+        "{HIGHLIGHTS_FILE}.{}.{n}.partial",
+        std::process::id()
+    ));
+    let out = std::fs::write(
+        &tmp,
+        serde_json::to_vec_pretty(h).map_err(std::io::Error::other)?,
+    )
+    .and_then(|()| std::fs::rename(&tmp, dir.join(HIGHLIGHTS_FILE)));
+    if out.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    out
+}
+
+fn bad(msg: String) -> CmdError {
+    CmdError::new("invalid", msg)
+}
+
+fn plain(what: &str, s: &str, max_chars: usize) -> CmdResult<()> {
+    if s.trim().is_empty() {
+        return Err(bad(format!("{what} is empty")));
+    }
+    if s.chars().count() > max_chars {
+        return Err(bad(format!("{what} is longer than {max_chars} characters")));
+    }
+    if s.chars().any(char::is_control) {
+        return Err(bad(format!("{what} holds control characters")));
+    }
+    Ok(())
+}
+
+fn check_case_id(case_id: &str) -> CmdResult<()> {
+    plain("the case id", case_id, 200)
+}
+
+/// The caps and enums of the contract. Names and columns are plain text; a value may hold anything up to 1 KiB (it
+/// is shown escaped and matched raw).
+pub fn validate_highlights(sets: &[HighlightSet]) -> CmdResult<()> {
+    if sets.len() > MAX_SETS {
+        return Err(bad(format!(
+            "at most {MAX_SETS} highlight sets per case (got {})",
+            sets.len()
+        )));
+    }
+    for set in sets {
+        plain("a highlight set name", &set.name, MAX_NAME_CHARS)?;
+        if set.rules.len() > MAX_RULES {
+            return Err(bad(format!(
+                "at most {MAX_RULES} rules per highlight set (set has {})",
+                set.rules.len()
+            )));
+        }
+        for r in &set.rules {
+            if let Some(c) = &r.column {
+                plain("a highlight column", c, MAX_COLUMN_CHARS)?;
+            }
+            if !OPS.contains(&r.op.as_str()) {
+                return Err(bad(format!("unknown highlight operator {:?}", r.op)));
+            }
+            if !COLOURS.contains(&r.colour.as_str()) {
+                return Err(bad(format!("unknown highlight colour {:?}", r.colour)));
+            }
+            if r.value.len() > MAX_VALUE_BYTES {
+                return Err(bad(format!(
+                    "a highlight value is longer than {MAX_VALUE_BYTES} bytes"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn highlights_get(state: &AppState, case_id: &str) -> CmdResult<Vec<HighlightSet>> {
+    check_case_id(case_id)?;
+    let (_guard, dir) = locked(state)?;
+    Ok(load_highlights(&dir)?.remove(case_id).unwrap_or_default())
+}
+
+/// Replace the case's sets (validated, capped); returns what was stored.
+pub fn highlights_set(
+    state: &AppState,
+    case_id: &str,
+    sets: Vec<HighlightSet>,
+) -> CmdResult<Vec<HighlightSet>> {
+    check_case_id(case_id)?;
+    validate_highlights(&sets)?;
+    let (_guard, dir) = locked(state)?;
+    let mut all = load_highlights(&dir)?;
+    if !all.contains_key(case_id) && all.len() >= MAX_CASES {
+        return Err(bad(format!(
+            "highlights are kept for at most {MAX_CASES} cases; clear the highlights of another case first"
+        )));
+    }
+    all.insert(case_id.to_string(), sets.clone());
+    save_highlights(&dir, &all)
+        .map_err(|e| CmdError::new("internal", format!("cannot save the highlights: {e}")))?;
+    Ok(sets)
+}
+
+pub fn highlights_clear(state: &AppState, case_id: &str) -> CmdResult<()> {
+    check_case_id(case_id)?;
+    let (_guard, dir) = locked(state)?;
+    let mut all = load_highlights(&dir)?;
+    if all.remove(case_id).is_some() {
+        save_highlights(&dir, &all)
+            .map_err(|e| CmdError::new("internal", format!("cannot save the highlights: {e}")))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -3,7 +3,11 @@ use std::path::Path;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("database error: {0}")]
-    Db(#[from] duckdb::Error),
+    Db(duckdb::Error),
+    /// A running query was stopped by `InterruptHandle::interrupt` (the review app's Cancel). Detected from DuckDB's
+    /// error type, never from message text; the connection stays usable.
+    #[error("the query was interrupted")]
+    Interrupted,
     #[error("I/O error on {path}: {source}")]
     Io {
         path: String,
@@ -46,6 +50,34 @@ pub enum Error {
     /// the rest of its collection, with the day/month order the other files show.
     #[error("ambiguous day/month order; retried after the other files of the collection")]
     DateOrderDeferred,
+}
+
+impl From<duckdb::Error> for Error {
+    fn from(e: duckdb::Error) -> Self {
+        if is_interrupt(&e) {
+            Error::Interrupted
+        } else {
+            Error::Db(e)
+        }
+    }
+}
+
+/// Whether DuckDB reports `e` as an interrupted query. By DuckDB's error type (`DUCKDB_ERROR_INTERRUPT`) when
+/// duckdb-rs keeps it; on the streaming query path duckdb-rs reports a generic failure code and only DuckDB's own
+/// error-class prefix survives, so that prefix is accepted on a `duckdb::Error` itself. DuckDB starts every message
+/// with its class ("Binder Error: ...", "Invalid Input Error: ..."), so data the analyst controls (table names,
+/// filter values, SQL text, `error('...')`) comes after the prefix and cannot forge it; core's own messages are
+/// `Error::Invalid` etc., never inspected here.
+pub fn is_interrupt(e: &duckdb::Error) -> bool {
+    match e {
+        duckdb::Error::DuckDBFailure(f, message) => {
+            f.extended_code == duckdb::ffi::duckdb_error_type_DUCKDB_ERROR_INTERRUPT
+                || message
+                    .as_deref()
+                    .is_some_and(|m| m.starts_with("INTERRUPT Error:"))
+        }
+        _ => false,
+    }
 }
 
 impl Error {

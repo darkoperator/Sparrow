@@ -37,6 +37,20 @@ fn main() {
             cmd::export::commands::export_report,
             cmd::export::commands::export_timeline_csv,
             cmd::export::commands::export_workbook,
+            cmd::pivot::commands::pivot_ip,
+            cmd::pivot::commands::pivot_user,
+            cmd::browse::commands::browse_tables,
+            cmd::browse::commands::browse_page,
+            cmd::sql::commands::sql_schema,
+            cmd::sql::commands::sql_run,
+            cmd::sql::commands::query_cancel,
+            cmd::indicators::commands::indicators_active,
+            cmd::share::commands::share_export,
+            cmd::share::commands::share_preview,
+            cmd::share::commands::share_import,
+            cmd::highlights::commands::highlights_get,
+            cmd::highlights::commands::highlights_set,
+            cmd::highlights::commands::highlights_clear,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Sparrow review app");

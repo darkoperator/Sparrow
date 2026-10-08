@@ -11,6 +11,7 @@ const CMD_ERROR_KINDS = [
   "no_case",
   "needs_upgrade",
   "needs_acknowledge",
+  "interrupted",
   "internal",
 ] as const;
 

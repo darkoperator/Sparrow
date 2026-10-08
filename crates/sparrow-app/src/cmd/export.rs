@@ -112,7 +112,7 @@ fn resolve_target(path: &Path) -> CmdResult<Target> {
 /// Run `write` on a file inside a fresh private directory (random name, created exclusively, mode 0700) beside the
 /// target, then rename it onto the target. Nobody else can plant or swap a link inside the private directory, and a
 /// pre-existing `<name>.partial` is never touched. Only the private directory is removed, on success or failure.
-fn atomic(
+pub(crate) fn atomic(
     open: &OpenCase,
     path: &Path,
     write: impl FnOnce(&Path) -> CmdResult<()>,

@@ -10,14 +10,30 @@ use sparrow_core::data::DataDirs;
 use sparrow_core::db::VerifiedOpen;
 use sparrow_core::detect::load::{RuleSet, load_rules};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 #[derive(Default)]
 pub struct AppState {
     pub open: Mutex<Option<OpenCase>>,
     /// The app config directory (set at startup); `None` in tests that do not need settings.
     pub settings_dir: Mutex<Option<PathBuf>>,
+    /// The one cancellable query now running (`sql_run` / `browse_page`), kept outside `open` so `query_cancel` never
+    /// waits for the lock the query holds. Registered after the case lock is taken, cleared when the call returns.
+    /// Writes and share imports are never registered, so Cancel cannot reach them.
+    pub active: Mutex<Option<ActiveQuery>>,
+    /// Bumped on every open and close; an [`ActiveQuery`] of another generation is never interrupted.
+    pub generation: AtomicU64,
 }
+
+pub struct ActiveQuery {
+    pub id: String,
+    pub generation: u64,
+    pub handle: Arc<duckdb::InterruptHandle>,
+}
+
+/// The longest query id the frontend may send.
+pub const MAX_QUERY_ID: usize = 64;
 
 pub struct OpenCase {
     pub case: Case,
@@ -47,7 +63,8 @@ fn lock(state: &AppState) -> MutexGuard<'_, Option<OpenCase>> {
 /// connection, before anything is written (`Case::open_verified`):
 /// - intact chain (current schema, or older and `allow_upgrade`, which migrates it): open for writing, locked down
 ///   for the in-process read-only SQL;
-/// - current schema, broken chain: the writer is released and the case opens read-only;
+/// - current schema, broken chain: the writer is released and the case opens read-only (locked down too, so SQL
+///   and the table browser work on it);
 /// - older schema with a broken (or unverifiable) chain: refused (`needs_acknowledge`), nothing written;
 /// - older schema, intact chain, upgrade not allowed: refused (`needs_upgrade`), nothing written.
 ///
@@ -57,6 +74,7 @@ pub fn case_open(state: &AppState, path: &Path, allow_upgrade: bool) -> CmdResul
     let mut slot = lock(state);
     // Release the current case's writer first: reopening the same file would otherwise find it busy.
     *slot = None;
+    state.generation.fetch_add(1, Ordering::SeqCst);
     if !path.is_file() {
         return Err(CmdError::new(
             "not_found",
@@ -71,7 +89,12 @@ pub fn case_open(state: &AppState, path: &Path, allow_upgrade: bool) -> CmdResul
             (case, None, true)
         }
         VerifiedOpen::BrokenChain(report) => (
-            Case::open_read_only(path).map_err(open_error)?,
+            {
+                // Read-only is no reason to refuse SELECTs: lock the read-only connection down like the writer.
+                let case = Case::open_read_only(path).map_err(open_error)?;
+                case.lock_down()?;
+                case
+            },
             Some(format!(
                 "the audit chain is broken at seq {}: {}; run sparrow audit verify --acknowledge",
                 report.first_bad_seq.unwrap_or_default(),
@@ -161,8 +184,63 @@ fn tenants(case: &Case) -> CmdResult<Vec<String>> {
         .map_err(sparrow_core::Error::from)?)
 }
 
+/// A caller-generated query id: 1..=64 characters, no control characters.
+pub fn check_query_id(id: &str) -> CmdResult<()> {
+    if id.is_empty() || id.chars().count() > MAX_QUERY_ID || id.chars().any(char::is_control) {
+        return Err(CmdError::new(
+            "invalid",
+            format!("a query id is 1 to {MAX_QUERY_ID} characters without control characters"),
+        ));
+    }
+    Ok(())
+}
+
+/// Clears the active-query entry when the query's call returns, on every path (also an error or a panic).
+struct ActiveGuard<'a>(&'a AppState);
+
+impl Drop for ActiveGuard<'_> {
+    fn drop(&mut self) {
+        *self.0.active.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    }
+}
+
+/// Like [`with_case`], for a query the analyst can cancel with [`query_cancel`] (`id`): the query is registered once
+/// the case lock is held and unregistered when `f` returns.
+pub fn with_cancellable<T>(
+    state: &AppState,
+    id: &str,
+    f: impl FnOnce(&OpenCase) -> CmdResult<T>,
+) -> CmdResult<T> {
+    check_query_id(id)?;
+    with_case(state, |open| {
+        *state.active.lock().unwrap_or_else(|p| p.into_inner()) = Some(ActiveQuery {
+            id: id.to_string(),
+            // Open and close bump the generation under the case lock this call holds, so it is this case's.
+            generation: state.generation.load(Ordering::SeqCst),
+            handle: open.case.conn().interrupt_handle(),
+        });
+        let _clear = ActiveGuard(state);
+        f(open)
+    })
+}
+
+/// Interrupt the running cancellable query whose id is `id`. Anything else is a no-op: no query running, another
+/// query's id, an entry of another case generation, a write (never registered). Does not take the open-case lock (a
+/// running query holds it). The entry's lock is held while interrupting, so the entry cannot be replaced meanwhile.
+pub fn query_cancel(state: &AppState, id: &str) -> CmdResult<()> {
+    check_query_id(id)?;
+    let active = state.active.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(q) = active.as_ref() {
+        if q.id == id && q.generation == state.generation.load(Ordering::SeqCst) {
+            q.handle.interrupt();
+        }
+    }
+    Ok(())
+}
+
 pub fn case_close(state: &AppState) -> CmdResult<()> {
     *lock(state) = None;
+    state.generation.fetch_add(1, Ordering::SeqCst);
     Ok(())
 }
 
