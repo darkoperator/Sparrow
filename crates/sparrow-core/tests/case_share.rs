@@ -1284,3 +1284,54 @@ fn a_zero_item_bundle_reimport_is_a_noop() {
         1
     );
 }
+
+#[test]
+fn preview_matches_import_and_writes_nothing() {
+    let (a, b) = two_copies();
+    let ann = Reviewer::analyst("ann").unwrap();
+    let bob = Reviewer::analyst("bob").unwrap();
+    let (f1, f2) = two_findings(&a);
+    set_finding_status(a.conn(), &ann.as_actor(), &f1, S::Confirmed, Some("r")).unwrap();
+    set_finding_status(a.conn(), &ann.as_actor(), &f2, S::Benign, Some("vendor")).unwrap();
+    set_finding_status(b.conn(), &bob.as_actor(), &f2, S::Confirmed, Some("no")).unwrap();
+    let (bytes, _) = share::to_bytes(&share::export(a.conn(), &ann).unwrap()).unwrap();
+    let audit_before = count(&b, "SELECT count(*) FROM audit_trail");
+    let p = share::preview(b.conn(), &bytes).unwrap();
+    assert_eq!(count(&b, "SELECT count(*) FROM imported_proposals"), 0);
+    assert_eq!(count(&b, "SELECT count(*) FROM audit_trail"), audit_before);
+    let i = share::import(b.conn(), &bob, &bytes).unwrap();
+    assert!(p.new + p.agrees + p.conflicts + p.missing >= 2, "{p:?}");
+    assert!(p.conflicts >= 1, "f2 differs between the copies: {p:?}");
+    assert_eq!(p, i);
+    assert!(!p.already_imported);
+    let again = share::preview(b.conn(), &bytes).unwrap();
+    assert!(again.already_imported);
+    assert_eq!(
+        (again.new, again.agrees, again.conflicts, again.missing),
+        (i.new, i.agrees, i.conflicts, i.missing)
+    );
+}
+
+#[test]
+fn preview_refuses_other_evidence_like_import() {
+    let (a, b) = two_copies();
+    let ann = Reviewer::analyst("ann").unwrap();
+    let mut bundle = share::export(a.conn(), &ann).unwrap();
+    bundle.evidence.source_files.push("00".repeat(32));
+    bundle.evidence.source_files.sort();
+    let (bytes, _) = share::to_bytes(&bundle).unwrap();
+    let audit_before = count(&b, "SELECT count(*) FROM audit_trail");
+    let e = share::preview(b.conn(), &bytes).unwrap_err();
+    assert!(
+        matches!(&e, Error::Invalid(m) if m.contains("evidence") && m.contains("1 files only in the bundle, 0 only here")),
+        "{e}"
+    );
+    assert_eq!(count(&b, "SELECT count(*) FROM imported_proposals"), 0);
+    assert_eq!(count(&b, "SELECT count(*) FROM audit_trail"), audit_before);
+}
+
+#[test]
+fn preview_refuses_a_malformed_bundle() {
+    let (_a, b) = two_copies();
+    assert!(share::preview(b.conn(), b"{}").is_err());
+}

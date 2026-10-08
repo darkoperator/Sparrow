@@ -806,6 +806,130 @@ fn difference(a: &[String], b: &[String]) -> (Vec<String>, Vec<String>) {
     )
 }
 
+/// One bundle item as import would store it.
+struct PlannedRow {
+    key: String,
+    /// The proposals this item replaces: its own key and, for an entry, the keys of the entries it superseded.
+    keys: Vec<String>,
+    item: Item,
+    current: Option<String>,
+    class: &'static str,
+    state: &'static str,
+    newer_open: bool,
+}
+
+/// What importing a bundle would do, decided without writing anything.
+enum Plan {
+    /// Imported before: the stored counts.
+    Already(ImportSummary),
+    Fresh(ImportSummary, Vec<PlannedRow>),
+}
+
+/// Validate the bundle against this case and classify every item. Reads only. A row's `state` sees the rows
+/// planned before it in the same bundle, as the stored rows would be seen by the next item.
+fn plan(conn: &Connection, bundle: &Bundle, sha: &str) -> Result<Plan> {
+    let here = evidence_of(conn)?;
+    let (rules_only_in_bundle, rules_only_here) = difference(&bundle.evidence.rules, &here.rules);
+    let mut summary = ImportSummary {
+        bundle_sha256: sha.to_string(),
+        analyst: bundle.analyst.clone(),
+        rules_only_in_bundle,
+        rules_only_here,
+        ..ImportSummary::default()
+    };
+    let tally = |s: &mut ImportSummary, class: &str| match class {
+        "new" => s.new += 1,
+        "agrees" => s.agrees += 1,
+        "conflict" => s.conflicts += 1,
+        _ => s.missing += 1,
+    };
+    let stored: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT classification FROM imported_proposals WHERE bundle_sha256 = ? ORDER BY item_key",
+        )?;
+        let rows = stmt.query_map(params![sha], |r| r.get::<_, String>(0))?;
+        rows.collect::<std::result::Result<_, _>>()?
+    };
+    // The audited import is the duplicate marker (a bundle with no items stores no proposal rows).
+    let imported = exists(
+        conn,
+        "SELECT EXISTS (SELECT 1 FROM audit_trail WHERE action = 'import_share' AND object_type = 'share_bundle' \
+         AND object_id = ?)",
+        &[sha],
+    )?;
+    if imported || !stored.is_empty() {
+        for c in &stored {
+            tally(&mut summary, c);
+        }
+        summary.already_imported = true;
+        return Ok(Plan::Already(summary));
+    }
+    let (only_bundle, only_here) = difference(&bundle.evidence.source_files, &here.source_files);
+    if !only_bundle.is_empty() || !only_here.is_empty() {
+        return Err(Error::Invalid(format!(
+            "the bundle's evidence differs from this case: {} files only in the bundle, {} only here",
+            only_bundle.len(),
+            only_here.len()
+        )));
+    }
+    let pending = proposed_entry_ids(&bundle.items);
+    let mut rows: Vec<PlannedRow> = Vec::new();
+    for item in &bundle.items {
+        let key = item.key();
+        let current = current_of(conn, item, &bundle.source_case_id, &pending)?;
+        let class = classify(item, &current);
+        tally(&mut summary, class);
+        let mut keys = vec![key.clone()];
+        if let Item::TimelineEntry { supersedes, .. } = item {
+            keys.extend(supersedes.iter().map(|s| format!("timeline_entry:{s}")));
+        }
+        // Earlier open rows of this same bundle share its exported_at, so they count as "at or after".
+        let mut newer_open = rows
+            .iter()
+            .any(|r| r.state == "open" && keys.contains(&r.key));
+        for k in &keys {
+            newer_open |= exists(
+                conn,
+                "SELECT EXISTS (SELECT 1 FROM imported_proposals WHERE source_analyst = ? AND item_key = ? \
+                 AND state = 'open' AND exported_at >= CAST(? AS TIMESTAMPTZ))",
+                &[&bundle.analyst, k, &bundle.exported_at],
+            )?;
+        }
+        if let Item::TimelineEntry { entry_id, .. } = item {
+            newer_open |=
+                rows.iter().any(|r| {
+                    r.state == "open"
+                        && matches!(&r.item, Item::TimelineEntry { supersedes, .. }
+                        if supersedes.iter().any(|s| s == entry_id))
+                }) || newer_open_successor(conn, &bundle.analyst, &bundle.exported_at, entry_id)?;
+        }
+        let state = match class {
+            "agrees" => "agrees",
+            _ if newer_open => "superseded",
+            _ => "open",
+        };
+        rows.push(PlannedRow {
+            key,
+            keys,
+            item: item.clone(),
+            current: current.json().map(|v| v.to_string()),
+            class,
+            state,
+            newer_open,
+        });
+    }
+    Ok(Plan::Fresh(summary, rows))
+}
+
+/// What [`import`] would report for these bytes, writing nothing (no proposals, no audit row): the same parsing,
+/// evidence check and classification. `already_imported` is reported as import would.
+pub fn preview(conn: &Connection, bytes: &[u8]) -> Result<ImportSummary> {
+    let (bundle, sha) = parse(bytes)?;
+    match plan(conn, &bundle, &sha)? {
+        Plan::Already(s) | Plan::Fresh(s, _) => Ok(s),
+    }
+}
+
 /// Check evidence identity and store every item as a proposal (one transaction, one `import_share` audit row).
 /// Refused (storing nothing) when the bundle's source files differ from this case's. A bundle imported before is a
 /// no-op: its stored counts come back with `already_imported`. An open proposal from the same analyst for the same
@@ -813,85 +937,15 @@ fn difference(a: &[String], b: &[String]) -> (Vec<String>, Vec<String>) {
 pub fn import(conn: &Connection, reviewer: &Reviewer, bytes: &[u8]) -> Result<ImportSummary> {
     let (bundle, sha) = parse(bytes)?;
     in_tx(conn, |tx| {
-        let here = evidence_of(tx)?;
-        let (rules_only_in_bundle, rules_only_here) =
-            difference(&bundle.evidence.rules, &here.rules);
-        let mut summary = ImportSummary {
-            bundle_sha256: sha.clone(),
-            analyst: bundle.analyst.clone(),
-            rules_only_in_bundle,
-            rules_only_here,
-            ..ImportSummary::default()
+        let (summary, rows) = match plan(tx, &bundle, &sha)? {
+            Plan::Already(s) => return Ok(s),
+            Plan::Fresh(s, rows) => (s, rows),
         };
-        let tally = |s: &mut ImportSummary, class: &str| match class {
-            "new" => s.new += 1,
-            "agrees" => s.agrees += 1,
-            "conflict" => s.conflicts += 1,
-            _ => s.missing += 1,
-        };
-        let stored: Vec<String> = {
-            let mut stmt = tx.prepare(
-                "SELECT classification FROM imported_proposals WHERE bundle_sha256 = ? ORDER BY item_key",
-            )?;
-            let rows = stmt.query_map(params![sha], |r| r.get::<_, String>(0))?;
-            rows.collect::<std::result::Result<_, _>>()?
-        };
-        // The audited import is the duplicate marker (a bundle with no items stores no proposal rows).
-        let imported = exists(
-            tx,
-            "SELECT EXISTS (SELECT 1 FROM audit_trail WHERE action = 'import_share' AND object_type = 'share_bundle' \
-             AND object_id = ?)",
-            &[&sha],
-        )?;
-        if imported || !stored.is_empty() {
-            for c in &stored {
-                tally(&mut summary, c);
-            }
-            summary.already_imported = true;
-            return Ok(summary);
-        }
-        let (only_bundle, only_here) =
-            difference(&bundle.evidence.source_files, &here.source_files);
-        if !only_bundle.is_empty() || !only_here.is_empty() {
-            return Err(Error::Invalid(format!(
-                "the bundle's evidence differs from this case: {} files only in the bundle, {} only here",
-                only_bundle.len(),
-                only_here.len()
-            )));
-        }
         let ts = audit::now();
         let ts_text = audit::ts_text(&ts);
-        let pending = proposed_entry_ids(&bundle.items);
-        for item in &bundle.items {
-            let key = item.key();
-            let current = current_of(tx, item, &bundle.source_case_id, &pending)?;
-            let class = classify(item, &current);
-            tally(&mut summary, class);
-            // The proposals this item replaces: its own key and, for an entry, the keys of the entries it superseded.
-            let mut keys = vec![key.clone()];
-            if let Item::TimelineEntry { supersedes, .. } = item {
-                keys.extend(supersedes.iter().map(|s| format!("timeline_entry:{s}")));
-            }
-            let mut newer_open = false;
-            for k in &keys {
-                newer_open |= exists(
-                    tx,
-                    "SELECT EXISTS (SELECT 1 FROM imported_proposals WHERE source_analyst = ? AND item_key = ? \
-                     AND state = 'open' AND exported_at >= CAST(? AS TIMESTAMPTZ))",
-                    &[&bundle.analyst, k, &bundle.exported_at],
-                )?;
-            }
-            if let Item::TimelineEntry { entry_id, .. } = item {
-                newer_open |=
-                    newer_open_successor(tx, &bundle.analyst, &bundle.exported_at, entry_id)?;
-            }
-            let state = match class {
-                "agrees" => "agrees",
-                _ if newer_open => "superseded",
-                _ => "open",
-            };
-            if !newer_open {
-                for k in &keys {
+        for row in &rows {
+            if !row.newer_open {
+                for k in &row.keys {
                     tx.execute(
                         "UPDATE imported_proposals SET state = 'superseded' WHERE source_analyst = ? AND item_key = ? \
                          AND state = 'open' AND exported_at < CAST(? AS TIMESTAMPTZ)",
@@ -906,15 +960,15 @@ pub fn import(conn: &Connection, reviewer: &Reviewer, bytes: &[u8]) -> Result<Im
                          CAST(? AS JSON), ?, ?)",
                 params![
                     sha,
-                    key,
+                    row.key,
                     bundle.analyst,
                     bundle.source_case_id,
                     bundle.exported_at,
                     ts_text,
-                    serde_json::to_string(item).map_err(|e| Error::Invalid(e.to_string()))?,
-                    current.json().map(|v| v.to_string()),
-                    class,
-                    state
+                    serde_json::to_string(&row.item).map_err(|e| Error::Invalid(e.to_string()))?,
+                    row.current,
+                    row.class,
+                    row.state
                 ],
             )?;
         }
