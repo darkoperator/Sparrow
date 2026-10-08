@@ -109,7 +109,7 @@ approved.
 
 Some built-in trees deliberately reproduce collector-side lookup failures (for example an
 AllRoles row whose `Get-MgUser` returned `Error retrieving data`). `sparrow ingest` reports
-those rows as `records_error` and exits 2, while `sparrow synth check` still passes: the parser
+those rows as `records_error` (and `records_collector_lost`) and exits 6, while `sparrow synth check` still passes: the parser
 is expected to reject exactly those rows.
 
 ### Exit codes

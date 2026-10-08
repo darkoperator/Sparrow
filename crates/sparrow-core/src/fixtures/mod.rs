@@ -34,6 +34,39 @@ pub fn utf8_bom(s: &str) -> Vec<u8> {
     v
 }
 
+/// Hawk's message trace of [`hawk_unparseable_trace_tree`].
+pub const HAWK_TRACE: &str = "alice@contoso.example/Message_Trace_alice@contoso.example.json";
+
+/// A Hawk root whose message trace holds one good record and one without its MessageTraceId,
+/// which the parser cannot load (a genuine parse error, not a collector loss). Returns the root.
+pub fn hawk_unparseable_trace_tree(base: &Path) -> PathBuf {
+    let root = base.join(HAWK_ROOT_NAME);
+    write(&root, "Hawk.log", HAWK_LOG.as_bytes());
+    let trace = |id: Option<&str>, recipient: &str| {
+        serde_json::json!({
+            "Organization": "contoso.onmicrosoft.com", "MessageId": "<m3@contoso.example>",
+            "Received": "2026-09-01T10:20:00.1234567", "SenderAddress": "Alice@contoso.example",
+            "RecipientAddress": recipient, "Subject": "Updated bank details", "Status": "Delivered",
+            "ToIP": null, "FromIP": "203.0.113.10", "Size": 2048, "MessageTraceId": id,
+            "StartDate": "2026-08-01T00:00:00.0000000Z", "EndDate": "2026-09-10T00:00:00.0000000Z",
+            "Index": 0
+        })
+    };
+    write(
+        &root,
+        HAWK_TRACE,
+        ps_json(&serde_json::json!([
+            trace(
+                Some("0e0e0e0e-0000-4000-8000-000000000003"),
+                "x@fabrikam.example"
+            ),
+            trace(None, "y@fabrikam.example")
+        ]))
+        .as_bytes(),
+    );
+    root
+}
+
 pub const HAWK_ROOT_NAME: &str = "Hawk_Contoso_Ltd_20260910_141500";
 
 /// 11 physical lines, 10 log entries (line 10 continues entry 9).

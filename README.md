@@ -198,8 +198,9 @@ Add `--json` to any command for machine-readable output; errors are JSON on stdo
 | 3 | Broken audit chain (`audit verify` or a write it blocks). |
 | 4 | Case open by another writer. |
 | 5 | Invalid agent decision, or an export path that would overwrite the case. Nothing was written. |
+| 6 | Ingest completed and the only records not loaded are ones the collector lost (it wrote placeholder or error rows instead of data). A real problem anywhere makes it 2. |
 
-DuckDB permits one writer process for a case file. A reader can also be refused while a writer holds it. If an ingest exits 2, inspect its per-file errors and evidence-availability report; the case may still contain usable evidence.
+DuckDB permits one writer process for a case file. A reader can also be refused while a writer holds it. If an ingest exits 2 or 6, inspect its per-file errors (plain output notes "N records rejected (M lost by the collector)"; `--json` has `records_error` and `records_collector_lost`) and evidence-availability report; the case may still contain usable evidence.
 
 ## For developers
 

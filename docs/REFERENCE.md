@@ -388,6 +388,7 @@ Add `--json` to any command for machine-readable output. Exit codes:
 | 3 | the audit chain is broken (`audit verify`, and any write refused because of it) |
 | 4 | the case is open by another writer (a write, and also a read or `audit verify` while a writer holds the case) |
 | 5 | an invalid agent decision (a bad status, verdict, phase or time, a missing reason, an unknown object, an evidence reference not in the case, text over its cap: 16 KiB for notes, narratives, reasons and comments, 500 characters for titles) or an `export --out` that would overwrite the case; nothing was written |
+| 6 | `ingest` completed and the only records not loaded are ones the collector lost: it wrote placeholder or error rows instead of data (their `parse_errors` start `collector lost the record: `). Any file, parse or reconciliation problem makes it 2 instead. The plain line of such a file says `N records rejected (M lost by the collector)`, or `M records lost by the collector` when all are; `--json` has `records_error` and `records_collector_lost` per file |
 
 `schema` lists exactly the tables and views `query` can read: it reads DuckDB's catalog on `query`'s own locked
 connection, so it never lists a DuckDB system object. Each comes with its table comment and its columns (name,
@@ -469,7 +470,7 @@ The CLI is the AI agent's tool. An agent (any program that can run a command and
 evidence to deliverables with `--json` on every command; nothing else is needed, and there is no server.
 
 ```bash
-sparrow ingest /evidence --case case.duckdb --json          # ingest, profile and detect (exit 2: some file failed)
+sparrow ingest /evidence --case case.duckdb --json          # ingest, profile and detect (exit 2: some file failed; 6: only collector-lost records)
 sparrow capabilities --case case.duckdb --json              # what the case can and cannot show
 sparrow accounts --case case.duckdb --json                 # the accounts to look at first, with their addresses
 sparrow finding list --case case.duckdb --json --severity high

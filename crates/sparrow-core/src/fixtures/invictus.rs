@@ -388,3 +388,59 @@ pub fn invictus_output_tree(base: &Path) -> PathBuf {
     write(&root, ".DS_Store", b"junk");
     root
 }
+
+/// The AllRoles export of [`roles_tree`].
+pub const ROLES_ALL: &str = "Roles/20260910-100500/20260910-100500-AllRoles.csv";
+
+/// A Microsoft-Extractor-Suite `Output` root whose only artifact is an AllRoles export with one
+/// real role member and, when `lost`, the row Get-Roles.ps1 writes when Get-MgUser fails for a
+/// member (Get-Roles.ps1:134-165): the parser rejects it as a record the collector lost.
+/// Returns the Output root.
+pub fn roles_tree(base: &Path, lost: bool) -> PathBuf {
+    let root = base.join("Output");
+    let mut body = csv_line(&[
+        "Role",
+        "UserName",
+        "UserId",
+        "DisplayName",
+        "Department",
+        "JobTitle",
+        "AccountEnabled",
+        "CreatedDateTime",
+        "LastInteractiveSignIn",
+        "LastNonInteractiveSignIn",
+        "DaysSinceLastSignIn",
+    ]);
+    body.push_str(&csv_line(&[
+        "User Administrator",
+        ALICE,
+        "0e0e0e0e-0000-4000-8000-0000000000a1",
+        "Alice Example",
+        "Finance",
+        "Analyst",
+        "True",
+        "6/27/2025 11:05:39 AM",
+        "",
+        "",
+        "No sign-in data",
+    ]));
+    if lost {
+        let e = "Error retrieving data";
+        body.push_str(&csv_line(&[
+            "Bob Example",
+            BOB,
+            "0e0e0e0e-0000-4000-8000-0000000000b1",
+            "Bob Example",
+            e,
+            e,
+            e,
+            e,
+            e,
+            e,
+            e,
+        ]));
+    }
+    write(&root, ROLES_ALL, body.as_bytes());
+    write(&root, "LogFile.txt", b"2026-09-10 10:00:00: Starting\r\n");
+    root
+}

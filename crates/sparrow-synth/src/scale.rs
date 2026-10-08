@@ -10,9 +10,8 @@ use chrono::Duration;
 use sparrow_core::Case;
 use sparrow_core::data::DataDirs;
 use sparrow_core::detect;
-use sparrow_core::ingest::FileStatus;
 use sparrow_core::ingest::parser::ParserRegistry;
-use sparrow_core::ingest::{IngestOptions, ingest_path};
+use sparrow_core::ingest::{IngestOptions, IngestOutcome, ingest_path};
 use sparrow_core::profile::availability::capabilities_report;
 use sparrow_core::profile::{ProfileOptions, refresh};
 use std::path::Path;
@@ -108,18 +107,13 @@ pub fn run_perf(scenario: &Scenario, opts: &GenerateOptions, dir: &Path) -> Resu
             ..IngestOptions::default()
         },
     ))?;
-    if report.has_errors() {
+    // The collector's own losses (the planted Get-Roles.ps1 failure rows) are not an ingest failure.
+    if report.outcome() == IngestOutcome::Problems {
         let bad: Vec<String> = report
             .collections
             .iter()
             .flat_map(|c| &c.files)
-            .filter(|f| {
-                f.status == FileStatus::Error
-                    || f.records_error > 0
-                    || f.warnings
-                        .iter()
-                        .any(|w| w.starts_with("reconciliation mismatch"))
-            })
+            .filter(|f| f.has_problems())
             .map(|f| {
                 format!(
                     "{} [{}] errors={} warnings={:?}",

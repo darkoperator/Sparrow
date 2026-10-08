@@ -14,6 +14,9 @@ pub struct FileStats {
     pub loaded: u64,
     pub duplicate: u64,
     pub error: u64,
+    /// Of `error`, records the collector lost: it wrote a failure placeholder instead of data
+    /// ([`crate::ingest::COLLECTOR_LOSS`]).
+    pub collector_lost: u64,
 }
 
 pub struct ParseContext<'a> {

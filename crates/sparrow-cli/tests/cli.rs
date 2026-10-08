@@ -2319,7 +2319,8 @@ fn ingested(dir: &std::path::Path) -> std::path::PathBuf {
     );
     let root = out.join(v["root"].as_str().unwrap());
     let case = dir.join("case.duckdb");
-    // Exit 2: bec-aitm's AllRoles.csv carries a deliberate Role carry-over row, and nothing else fails.
+    // Exit 6: bec-aitm's AllRoles.csv carries a deliberate failure row the collector wrote (its loss also gives
+    // the next row the Role carry-over), and nothing else fails.
     let v = json_out(
         sparrow()
             .args(["--json", "ingest"])
@@ -2328,7 +2329,7 @@ fn ingested(dir: &std::path::Path) -> std::path::PathBuf {
             .arg(&case)
             .arg("--geoip-dir")
             .arg(out.join("geoip")),
-        2,
+        6,
     );
     fn failing<'a>(v: &'a Value, out: &mut Vec<&'a Value>) {
         match v {
@@ -2366,6 +2367,10 @@ fn ingested(dir: &std::path::Path) -> std::path::PathBuf {
     );
     assert!(
         bad[0]["warnings"].to_string().contains("Role carry-over"),
+        "{bad:?}"
+    );
+    assert_eq!(
+        bad[0]["records_collector_lost"], bad[0]["records_error"],
         "{bad:?}"
     );
     case
@@ -3532,4 +3537,96 @@ fn ingest_checkpoint_override_is_validated_before_loading() {
         .assert()
         .success()
         .stdout(contains("SPARROW_INGEST_CHECKPOINT").and(contains("SPARROW_INGEST_PROFILE")));
+}
+
+/// Exit 6 when the only records not loaded are ones the collector lost, 2 when a record also failed to parse,
+/// 0 when clean; the plain output names the rejected records either way.
+#[test]
+fn ingest_exit_code_tells_collector_loss_from_parse_failures() {
+    use sparrow_core::fixtures::invictus;
+    let run = |lost: bool, unparseable: bool| {
+        let dir = tempfile::tempdir().unwrap();
+        invictus::roles_tree(dir.path(), lost);
+        if unparseable {
+            fixtures::hawk_unparseable_trace_tree(dir.path());
+        }
+        let case = dir.path().join("case.duckdb");
+        let plain = sparrow()
+            .arg("ingest")
+            .arg(dir.path())
+            .arg("--case")
+            .arg(&case)
+            .arg("--no-detect")
+            .output()
+            .unwrap();
+        let rerun = dir.path().join("rerun.duckdb");
+        let out = sparrow()
+            .args(["--json", "ingest"])
+            .arg(dir.path())
+            .arg("--case")
+            .arg(&rerun)
+            .arg("--no-detect")
+            .output()
+            .unwrap();
+        assert_eq!(plain.status.code(), out.status.code());
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let files: Vec<Value> = v["collections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|c| c["files"].as_array().unwrap().clone())
+            .collect();
+        (
+            plain.status.code(),
+            String::from_utf8(plain.stdout).unwrap(),
+            files,
+        )
+    };
+    let file = |files: &[Value], rel: &str| -> Value {
+        files
+            .iter()
+            .find(|f| f["rel_path"] == rel)
+            .unwrap_or_else(|| panic!("{rel} in {files:?}"))
+            .clone()
+    };
+    let line = |text: &str, rel: &str| -> String {
+        text.lines()
+            .find(|l| l.contains(rel))
+            .unwrap_or_else(|| panic!("{rel} in {text}"))
+            .to_string()
+    };
+
+    // Only the collector's placeholder row: exit 6, and the line says the record was lost by the collector.
+    let (code, text, files) = run(true, false);
+    assert_eq!(code, Some(6), "{text}");
+    let roles = file(&files, invictus::ROLES_ALL);
+    assert_eq!(roles["records_error"], 1);
+    assert_eq!(roles["records_collector_lost"], 1);
+    let l = line(&text, invictus::ROLES_ALL);
+    assert!(l.contains("1 record lost by the collector"), "{l}");
+    assert!(!l.contains("rejected"), "{l}");
+
+    // The same plus a record Sparrow could not parse: exit 2 wins, and that file's line counts it.
+    let (code, text, files) = run(true, true);
+    assert_eq!(code, Some(2), "{text}");
+    let trace = file(&files, fixtures::HAWK_TRACE);
+    assert_eq!(trace["records_error"], 1);
+    assert_eq!(trace["records_collector_lost"], 0);
+    let l = line(&text, fixtures::HAWK_TRACE);
+    assert!(l.contains("1 record rejected"), "{l}");
+    assert!(!l.contains("collector"), "{l}");
+    assert!(
+        line(&text, invictus::ROLES_ALL).contains("1 record lost by the collector"),
+        "{text}"
+    );
+
+    // Clean: exit 0, nothing rejected, no note.
+    let (code, text, files) = run(false, false);
+    assert_eq!(code, Some(0), "{text}");
+    assert_eq!(
+        file(&files, invictus::ROLES_ALL)["records_collector_lost"],
+        0
+    );
+    let l = line(&text, invictus::ROLES_ALL);
+    assert!(!l.contains("rejected") && !l.contains("collector"), "{l}");
 }
