@@ -118,7 +118,9 @@ pub fn reject_collector_loss(
     r: &SourceRecord,
     msg: &str,
 ) -> Result<()> {
-    reject(ctx, r, &format!("{}{msg}", crate::ingest::COLLECTOR_LOSS))
+    reject(ctx, r, &format!("{}{msg}", crate::ingest::COLLECTOR_LOSS))?;
+    ctx.stats.collector_lost += 1;
+    Ok(())
 }
 
 /// Count a record as read and record why it could not be loaded, at its span or sheet row.

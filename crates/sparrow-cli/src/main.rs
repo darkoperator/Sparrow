@@ -6,7 +6,8 @@ use sparrow_core::data::DataDirs;
 use sparrow_core::discovery::{Registry, discover_collections, list_collection_files};
 use sparrow_core::ingest::parser::ParserRegistry;
 use sparrow_core::ingest::{
-    DEFAULT_MAX_FILE_BYTES, IngestOptions, ingest_collections, no_collections_error,
+    DEFAULT_MAX_FILE_BYTES, FileReport, IngestOptions, IngestOutcome, ingest_collections,
+    no_collections_error,
 };
 use sparrow_core::profile::availability::capabilities_report;
 use sparrow_core::profile::tenant::{
@@ -34,7 +35,8 @@ mod cmd;
 are agent decisions recorded in the audit trail with --agent and --analyst; review happens outside the CLI.\n\
 \n\
 Exit codes: 0 success; 1 other error (including a refused query); 2 completed with problems (ingest, verify, synth coverage/conformance); \
-3 audit chain broken; 4 case open by another writer; 5 invalid agent decision, or an export --out over the case.\n\
+3 audit chain broken; 4 case open by another writer; 5 invalid agent decision, or an export --out over the case; \
+6 ingest completed and the only records not loaded are ones the collector lost (it wrote placeholder or error rows).\n\
 See the README, section \"Agent workflow\"."
 )]
 struct Cli {
@@ -969,15 +971,19 @@ fn cmd_ingest(
                 c.root
             );
             for f in &c.files {
+                let notes: Vec<String> = rejected_note(f)
+                    .into_iter()
+                    .chain(f.warnings.clone())
+                    .collect();
                 println!(
                     "  {:<18} {:>7} rec  {}{}",
                     f.status.as_str(),
                     f.records_loaded,
                     f.rel_path,
-                    if f.warnings.is_empty() {
+                    if notes.is_empty() {
                         String::new()
                     } else {
-                        format!("  [{}]", f.warnings.join("; "))
+                        format!("  [{}]", notes.join("; "))
                     }
                 );
             }
@@ -988,11 +994,27 @@ fn cmd_ingest(
     if timing::enabled() {
         eprint!("{}", timing::report());
     }
-    Ok(if report.has_errors() {
-        ExitCode::from(2)
-    } else {
-        ExitCode::SUCCESS
+    Ok(match report.outcome() {
+        IngestOutcome::Clean => ExitCode::SUCCESS,
+        IngestOutcome::CollectorLossOnly => ExitCode::from(6),
+        IngestOutcome::Problems => ExitCode::from(2),
     })
+}
+
+/// The plain-output note for a file's rejected records: "N records rejected (M lost by the collector)", or
+/// "M records lost by the collector" when the collector lost them all.
+fn rejected_note(f: &FileReport) -> Option<String> {
+    let records = |n: u64| format!("{n} record{}", if n == 1 { "" } else { "s" });
+    let (error, lost) = (f.records_error, f.records_collector_lost);
+    match (error, lost) {
+        (0, _) => None,
+        (e, 0) => Some(format!("{} rejected", records(e))),
+        (e, l) if l >= e => Some(format!("{} lost by the collector", records(l))),
+        (e, l) => Some(format!(
+            "{} rejected ({l} lost by the collector)",
+            records(e)
+        )),
+    }
 }
 
 #[derive(Serialize)]
@@ -2100,6 +2122,38 @@ fn cmd_ioc(command: IocCommand, json: bool) -> Result<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejected_note_names_the_collector_losses() {
+        let note = |error: u64, lost: u64| {
+            rejected_note(&FileReport {
+                file_id: Some(1),
+                rel_path: "f.csv".into(),
+                artifact_id: None,
+                status: sparrow_core::ingest::FileStatus::Parsed,
+                records_read: 9,
+                records_loaded: 9 - error,
+                records_duplicate: 0,
+                records_error: error,
+                records_collector_lost: lost,
+                warnings: Vec::new(),
+            })
+        };
+        assert_eq!(note(0, 0), None);
+        assert_eq!(note(1, 0).as_deref(), Some("1 record rejected"));
+        assert_eq!(
+            note(3, 1).as_deref(),
+            Some("3 records rejected (1 lost by the collector)")
+        );
+        assert_eq!(
+            note(1, 1).as_deref(),
+            Some("1 record lost by the collector")
+        );
+        assert_eq!(
+            note(2, 2).as_deref(),
+            Some("2 records lost by the collector")
+        );
+    }
 
     /// What the shell reads back from `printf %s <word>`.
     fn shell_reads(shell: &str, quoted: &str) -> Vec<u8> {

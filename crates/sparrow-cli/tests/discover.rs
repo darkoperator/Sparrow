@@ -54,9 +54,9 @@ fn summary_and_capabilities_point_to_accounts_and_only_gain_keys() {
     let tree = cache
         .tree(&scenario, &GenerateOptions::new(Collector::Invictus, 17))
         .unwrap();
-    // Exit 2 is the deliberate AllRoles row, as the end-to-end tests know.
+    // Exit 6 is the deliberate AllRoles row the collector lost, as the end-to-end tests know.
     let ingest = sparrow(&["ingest", tree.dir.to_str().unwrap(), "--case", case]);
-    assert!(matches!(ingest.status.code(), Some(0) | Some(2)));
+    assert!(matches!(ingest.status.code(), Some(0) | Some(6)));
 
     let first = serde_json::json!({
         "command": format!("sparrow accounts --case '{case}' --json"),
@@ -231,7 +231,7 @@ fn the_next_command_is_shell_quoted_and_runs_on_an_odd_case_path() {
     let odd = tmp.path().join("my case's; touch pwned.duckdb");
     let case = odd.to_str().unwrap();
     let ingest = sparrow(&["ingest", tree.dir.to_str().unwrap(), "--case", case]);
-    assert!(matches!(ingest.status.code(), Some(0) | Some(2)));
+    assert!(matches!(ingest.status.code(), Some(0) | Some(6)));
 
     // The binary's directory on PATH, so `sparrow ...` in the command resolves like an installed one.
     let bin = assert_cmd::cargo::cargo_bin("sparrow");
@@ -296,7 +296,7 @@ fn plain_top_accounts_show_the_tenant_and_neutralise_control_characters() {
         .tree(&scenario, &GenerateOptions::new(Collector::Invictus, 17))
         .unwrap();
     let ingest = sparrow(&["ingest", tree.dir.to_str().unwrap(), "--case", case]);
-    assert!(matches!(ingest.status.code(), Some(0) | Some(2)));
+    assert!(matches!(ingest.status.code(), Some(0) | Some(6)));
     let ranked = json(&["accounts", "--case", case]);
     let upn0 = ranked["accounts"][0]["upn"].as_str().unwrap().to_string();
     let upn1 = ranked["accounts"][1]["upn"].as_str().unwrap().to_string();

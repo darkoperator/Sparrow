@@ -149,8 +149,9 @@ fn an_agent_triages_a_bec_aitm_case_and_the_exports_carry_its_decisions() {
         .tree(&scenario, &GenerateOptions::new(Collector::Invictus, 17))
         .unwrap();
     let tree_dir = tree.dir.to_str().unwrap();
-    // Exactly 2: the deliberate AllRoles "Role carry-over" row (one row lost its role name). Nothing else fails.
-    let ingest = json(&["ingest", tree_dir, "--case", case, "--no-detect"], 2);
+    // Exactly 6: the only rejected record is the deliberate AllRoles failure row the collector wrote for the
+    // role-assignable group (its loss also leaves the next row without a role name). Nothing else fails.
+    let ingest = json(&["ingest", tree_dir, "--case", case, "--no-detect"], 6);
     let files = ingest["collections"][0]["files"].as_array().unwrap();
     let failing: Vec<&Value> = files
         .iter()
@@ -809,6 +810,7 @@ fn every_agent_workflow_option_is_documented_in_help() {
         "3 audit chain broken",
         "4 case open by another writer",
         "5 invalid agent decision",
+        "6 ingest completed and the only records not loaded are ones the collector lost",
         "Agent workflow",
     ] {
         assert!(

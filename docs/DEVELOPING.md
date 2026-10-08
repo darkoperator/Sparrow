@@ -10,7 +10,7 @@ This page holds implementation and test detail moved out of the investigator-fac
 - Event sources map into `signins`, `directory_audits`, `message_trace`, `mailbox_audit_legacy`, `admin_audit_events`, and `azure_activity`. Duplicate events keep the first known value and fill missing fields from later copies. `collection_log` contains Hawk/PSFramework logs. Ambiguous dates in a small file may be resolved from its collection's culture with a warning. XLSX provenance uses sheet rows.
 - Invictus MailItemsAccessed Sessions and MessageIDs enrich a loaded UAL record where possible; otherwise Sessions may create partial UAL rows and MessageIDs may create parent-less `mail_items_accessed` rows. `mailbox_permissions`, mailbox audit status, security defaults, organization audit settings, and exported headers populate their respective evidence/state tables. `collector_runs` includes empty runs; empty exports produce warnings. Known unsupported Hawk artifacts are reported `not_supported`, not silently dropped.
 
-Each accepted record carries a source file, line or sheet row, byte range where available, and hash. `sparrow verify TABLE RECORD_KEY --case C [--root MOVED_ROOT]` rechecks that provenance. Ingest reports file errors, record errors, and count reconciliation separately; a partial ingest exits 2.
+Each accepted record carries a source file, line or sheet row, byte range where available, and hash. `sparrow verify TABLE RECORD_KEY --case C [--root MOVED_ROOT]` rechecks that provenance. Ingest reports file errors, record errors, and count reconciliation separately; a partial ingest exits 2, or 6 when the only records not loaded are ones the collector lost.
 
 ## Profile and detection data
 

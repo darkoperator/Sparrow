@@ -120,7 +120,22 @@ pub struct FileReport {
     pub records_loaded: u64,
     pub records_duplicate: u64,
     pub records_error: u64,
+    /// Of `records_error`, records the collector lost (placeholder or error rows it wrote instead of data).
+    pub records_collector_lost: u64,
     pub warnings: Vec<String>,
+}
+
+impl FileReport {
+    /// True when the file failed, a record failed to parse for a reason other than the collector losing it, or the
+    /// record counts did not reconcile.
+    pub fn has_problems(&self) -> bool {
+        self.status == FileStatus::Error
+            || self.records_error > self.records_collector_lost
+            || self
+                .warnings
+                .iter()
+                .any(|w| w.starts_with("reconciliation mismatch"))
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -136,17 +151,35 @@ pub struct IngestReport {
     pub collections: Vec<CollectionReport>,
 }
 
+/// How an ingest ended, for its exit code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IngestOutcome {
+    /// Every record read was loaded or a duplicate.
+    Clean,
+    /// The only records not loaded are ones the collector lost (exit code 6).
+    CollectorLossOnly,
+    /// A file failed, a record failed to parse, or record counts did not reconcile (exit code 2).
+    Problems,
+}
+
 impl IngestReport {
-    /// True when any file failed, any record failed to parse, or a file's record counts
-    /// did not reconcile (spec §11: exit code 2).
+    /// True when any file failed, any record was rejected (the collector's losses included), or a file's record
+    /// counts did not reconcile.
     pub fn has_errors(&self) -> bool {
-        self.collections.iter().flat_map(|c| &c.files).any(|f| {
-            f.status == FileStatus::Error
-                || f.records_error > 0
-                || f.warnings
-                    .iter()
-                    .any(|w| w.starts_with("reconciliation mismatch"))
-        })
+        self.outcome() != IngestOutcome::Clean
+    }
+
+    /// [`IngestOutcome::Problems`] when any file [has problems](FileReport::has_problems), else
+    /// [`IngestOutcome::CollectorLossOnly`] when the collector lost a record, else [`IngestOutcome::Clean`].
+    pub fn outcome(&self) -> IngestOutcome {
+        let files = || self.collections.iter().flat_map(|c| &c.files);
+        if files().any(FileReport::has_problems) {
+            IngestOutcome::Problems
+        } else if files().any(|f| f.records_collector_lost > 0) {
+            IngestOutcome::CollectorLossOnly
+        } else {
+            IngestOutcome::Clean
+        }
     }
 }
 
@@ -665,6 +698,7 @@ fn report_for(
         records_loaded: stats.loaded,
         records_duplicate: stats.duplicate,
         records_error: stats.error,
+        records_collector_lost: stats.collector_lost,
         warnings,
     }
 }

@@ -44,9 +44,9 @@ fn the_readers_of_the_enrichment_tables_through_the_binary() {
     let tree = cache
         .tree(&scenario, &GenerateOptions::new(Collector::Invictus, 17))
         .unwrap();
-    // The ingest stops at exit 2 for the deliberate AllRoles row, as the end-to-end test knows.
+    // The ingest exits 6 for the deliberate AllRoles row the collector lost, as the end-to-end test knows.
     let ingest = run(&["ingest", tree.dir.to_str().unwrap(), "--case", case]);
-    assert!(ingest.code == 0 || ingest.code == 2, "{}", ingest.err);
+    assert!(ingest.code == 0 || ingest.code == 6, "{}", ingest.err);
 
     // ---- accounts: JSON shape, order, limit, tenant ----
     let all = json(&["accounts", "--case", case]);
