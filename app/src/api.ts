@@ -349,3 +349,74 @@ export const exportReport = (path: string, reviewedOnly: boolean) =>
   call<null>("export_report", { path, reviewedOnly });
 export const exportTimelineCsv = (path: string) => call<null>("export_timeline_csv", { path });
 export const exportWorkbook = (path: string) => call<null>("export_workbook", { path });
+
+// ---------------------------------------------------------------- SQL and share (core serde shapes)
+
+/** `db::describe::ColumnInfo`. */
+export interface ColumnInfo {
+  name: string;
+  type: string;
+  comment: string | null;
+}
+
+/** `db::describe::TableInfo`. `kind`: "table" or "view". */
+export interface TableInfo {
+  name: string;
+  comment: string | null;
+  kind: string;
+  columns: ColumnInfo[];
+}
+
+/** `case::query::QueryResult`; each value is DuckDB's `to_json` of the column. */
+export interface QueryResult {
+  columns: string[];
+  rows: unknown[][];
+  truncated: boolean;
+}
+
+/** `case::share::ImportSummary`. */
+export interface ImportSummary {
+  bundle_sha256: string;
+  analyst: string;
+  new: number;
+  agrees: number;
+  conflicts: number;
+  missing: number;
+  /**
+   * Items stored (for a preview: that would be stored) as `superseded`, because a newer open proposal from the same
+   * analyst already covers them. A subset of new + conflicts + missing (an agreeing item is never superseded).
+   */
+  superseded: number;
+  already_imported: boolean;
+  rules_only_in_bundle: string[];
+  rules_only_here: string[];
+}
+
+export interface ShareExported {
+  sha256: string;
+  items: number;
+}
+
+export interface SharePreview {
+  sha256: string;
+  summary: ImportSummary;
+  /** `analyst:<name>`, as in the bundle. */
+  analyst: string;
+  /** RFC 3339, as in the bundle. */
+  exported_at: string;
+  items: number;
+}
+
+export const sqlSchema = (table?: string) => call<TableInfo[]>("sql_schema", { table });
+/** `queryId` names this run for `queryCancel` (≤ 64 chars, no control characters; a fresh one per run). */
+export const sqlRun = (sql: string, limit: number | undefined, queryId: string) =>
+  call<QueryResult>("sql_run", { sql, limit, queryId });
+/**
+ * Interrupts the running `sql_run` / `browse_page` with this id, if any (any other id: nothing happens); that call
+ * then rejects with kind `interrupted`.
+ */
+export const queryCancel = (queryId: string) => call<null>("query_cancel", { queryId });
+export const shareExport = (path: string) => call<ShareExported>("share_export", { path });
+export const sharePreview = (path: string) => call<SharePreview>("share_preview", { path });
+/** Refused (`invalid`) when the file's SHA-256 is no longer `sha256`, the one its preview showed. */
+export const shareImport = (path: string, sha256: string) => call<ImportSummary>("share_import", { path, sha256 });

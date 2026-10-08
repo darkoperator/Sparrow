@@ -9,18 +9,22 @@ import ExportMenu from "./ExportMenu";
 import OpenCase, { type UpgradePrompt } from "./OpenCase";
 import ReadOnlyBanner from "./ReadOnlyBanner";
 
-export type ScreenId = "review" | "timeline" | "accounts";
+export type ScreenId = "review" | "timeline" | "accounts" | "sql" | "share";
 
 const NAV: ReadonlyArray<{ id: ScreenId; label: string }> = [
   { id: "review", label: "Review queue" },
   { id: "timeline", label: "Timeline" },
   { id: "accounts", label: "Accounts" },
+  { id: "sql", label: "SQL" },
+  { id: "share", label: "Share" },
 ];
 
 export interface ScreenProps {
   canWrite: boolean;
   /** Show the review queue filtered to this account. */
   showAccount: (upn: string) => void;
+  /** Show the review queue, unfiltered. */
+  showQueue: () => void;
 }
 
 interface ShellProps {
@@ -104,6 +108,10 @@ export default function Shell({ screens = {} }: ShellProps) {
     setAccountFilter(upn);
     setScreen("review");
   };
+  const showQueue = () => {
+    setAccountFilter(null);
+    setScreen("review");
+  };
   const body = (() => {
     if (screen === "review") {
       return (
@@ -111,7 +119,7 @@ export default function Shell({ screens = {} }: ShellProps) {
       );
     }
     const render = screens[screen];
-    if (render) return render({ canWrite, showAccount });
+    if (render) return render({ canWrite, showAccount, showQueue });
     const label = NAV.find((n) => n.id === screen)?.label ?? screen;
     return <p>{label} is not built yet.</p>;
   })();

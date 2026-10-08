@@ -213,6 +213,26 @@ describe("Shell", () => {
     expect(screen.queryByRole("button", { name: /^filtered to/ })).toBeNull();
   });
 
+  it("SQL and Share are in the sidebar; Share's queue link returns to the review queue", async () => {
+    dialogOpen.mockResolvedValue("/synthetic/case-a.duckdb");
+    const user = userEvent.setup();
+    render(
+      <Shell
+        screens={{
+          sql: () => <p>sql screen</p>,
+          share: (p) => <button onClick={p.showQueue}>{`share canWrite=${String(p.canWrite)}`}</button>,
+        }}
+      />,
+    );
+    await user.click(await screen.findByRole("button", { name: "Open a case" }));
+    await screen.findByText("queue canWrite=true");
+    await user.click(screen.getByRole("button", { name: "SQL" }));
+    expect(screen.getByText("sql screen")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Share" }));
+    await user.click(screen.getByRole("button", { name: "share canWrite=true" }));
+    expect(screen.getByText("queue canWrite=true")).toBeInTheDocument();
+  });
+
   it("offers the export menu while a case is open", async () => {
     expect(await (async () => {
       await openViaDialog();

@@ -21,6 +21,11 @@ describe("call", () => {
     await expect(call("case_open")).rejects.toEqual({ kind: "writer_busy", message: "busy" });
   });
 
+  it("keeps an interrupted query's kind (a cancelled sql_run)", async () => {
+    invoke.mockRejectedValue({ kind: "interrupted", message: "the query was cancelled" });
+    await expect(call("sql_run")).rejects.toEqual({ kind: "interrupted", message: "the query was cancelled" });
+  });
+
   it("turns any other rejection into an internal command error", async () => {
     invoke.mockRejectedValue("command case_x not found");
     await expect(call("case_x")).rejects.toEqual({ kind: "internal", message: "command case_x not found" });
