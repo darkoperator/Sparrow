@@ -8,7 +8,22 @@ import accountsJson from "./fixtures/accounts.json";
 import schemaJson from "./fixtures/schema.json";
 import sqlResultJson from "./fixtures/sql_result.json";
 import sharePreviewJson from "./fixtures/share_preview.json";
-import type { AccountPage, CaseInfo, FindingDetail, QueryResult, QueueItem, SharePreview, TableInfo } from "../api";
+import pivotIpJson from "./fixtures/pivot_ip.json";
+import pivotUserJson from "./fixtures/pivot_user.json";
+import browsePageJson from "./fixtures/browse_page.json";
+import indicatorsJson from "./fixtures/indicators.json";
+import type {
+  AccountPage,
+  ActiveIndicator,
+  BrowsePage,
+  CaseInfo,
+  FindingDetail,
+  Pivot,
+  QueryResult,
+  QueueItem,
+  SharePreview,
+  TableInfo,
+} from "../api";
 
 function need(where: string, o: unknown, keys: string[]): asserts o is Record<string, unknown> {
   if (typeof o !== "object" || o === null) throw new Error(`fixture ${where}: not an object`);
@@ -78,9 +93,48 @@ export function accounts(): AccountPage {
   return v as unknown as AccountPage;
 }
 
-// sql_schema, sql_run and share_preview, recorded by the backend (db::TableInfo, query::QueryResult,
-// cmd::share::SharePreview with share::ImportSummary).
+const SECTION = ["name", "rows", "total", "truncated"];
 
+function checkPivot(name: string, json: unknown): Pivot {
+  const v: unknown = clone(json);
+  need(name, v, ["sections"]);
+  if (!Array.isArray(v.sections) || v.sections.length === 0) throw new Error(`fixture ${name}: no sections`);
+  v.sections.forEach((s: unknown, i) => {
+    need(`${name}.sections[${i}]`, s, SECTION);
+    if (typeof s.name !== "string") throw new Error(`fixture ${name}.sections[${i}]: name is not a string`);
+    if (!Array.isArray(s.rows)) throw new Error(`fixture ${name}.sections[${i}]: rows is not an array`);
+    if (typeof s.total !== "number") throw new Error(`fixture ${name}.sections[${i}]: total is not a number`);
+    if (typeof s.truncated !== "boolean") throw new Error(`fixture ${name}.sections[${i}]: truncated is not a boolean`);
+    if ("unavailable" in s && typeof s.unavailable !== "string") {
+      throw new Error(`fixture ${name}.sections[${i}]: unavailable is not a string`);
+    }
+  });
+  return v as unknown as Pivot;
+}
+
+/** `read::Pivot` for an IP, recorded from a synthetic case. */
+export const pivotIp = (): Pivot => checkPivot("pivot_ip", pivotIpJson);
+/** `read::Pivot` for an account (its `addresses` section is the only one that can be `unavailable`). */
+export const pivotUser = (): Pivot => checkPivot("pivot_user", pivotUserJson);
+
+const BROWSE = ["table", "columns", "rows", "offset", "total", "total_capped"];
+
+/** `browse::BrowsePage` for `signins`, recorded from a synthetic case. */
+export function browsePage(): BrowsePage {
+  const v: unknown = clone(browsePageJson);
+  need("browse_page", v, BROWSE);
+  if (!Array.isArray(v.columns) || v.columns.length === 0) throw new Error("fixture browse_page: no columns");
+  if (!Array.isArray(v.rows) || v.rows.length === 0) throw new Error("fixture browse_page: no rows");
+  v.rows.forEach((r: unknown, i) => {
+    if (!Array.isArray(r) || r.length !== (v.columns as unknown[]).length) {
+      throw new Error(`fixture browse_page.rows[${i}]: not one value per column`);
+    }
+  });
+  if (typeof v.total !== "number" || typeof v.total_capped !== "boolean") throw new Error("fixture browse_page: bad total");
+  return v as unknown as BrowsePage;
+}
+
+/** `db::describe::TableInfo[]` of the whole synthetic case. */
 export function schema(): TableInfo[] {
   const v: unknown = clone(schemaJson);
   if (!Array.isArray(v) || v.length === 0) throw new Error("fixture schema: not a non-empty array");
@@ -89,8 +143,18 @@ export function schema(): TableInfo[] {
     if (!Array.isArray(t.columns) || t.columns.length === 0) throw new Error(`fixture schema[${i}]: no columns`);
     t.columns.forEach((c: unknown, j) => need(`schema[${i}].columns[${j}]`, c, ["name", "type", "comment"]));
   });
-  return v as TableInfo[];
+  return v as unknown as TableInfo[];
 }
+
+export function indicators(): ActiveIndicator[] {
+  const v: unknown = clone(indicatorsJson);
+  if (!Array.isArray(v) || v.length === 0) throw new Error("fixture indicators: not a non-empty array");
+  v.forEach((x: unknown, i) => need(`indicators[${i}]`, x, ["ioc_type", "value", "verdict"]));
+  return v as unknown as ActiveIndicator[];
+}
+
+// sql_run and share_preview, recorded by the backend (query::QueryResult, cmd::share::SharePreview with
+// share::ImportSummary).
 
 export function sqlResult(): QueryResult {
   const v: unknown = clone(sqlResultJson);

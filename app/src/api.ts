@@ -350,7 +350,64 @@ export const exportReport = (path: string, reviewedOnly: boolean) =>
 export const exportTimelineCsv = (path: string) => call<null>("export_timeline_csv", { path });
 export const exportWorkbook = (path: string) => call<null>("export_workbook", { path });
 
-// ---------------------------------------------------------------- SQL and share (core serde shapes)
+// ---------------------------------------------------------------- pivots and highlights (core serde shapes)
+
+/** `read::PivotSection`: `rows` are JSON objects (DuckDB `to_json` of each row); `unavailable` says why the section cannot be read. */
+export interface PivotSection {
+  name: string;
+  rows: unknown[];
+  total: number;
+  truncated: boolean;
+  unavailable?: string;
+}
+
+export interface Pivot {
+  sections: PivotSection[];
+}
+
+export const pivotIp = (value: string, cap?: number) => call<Pivot>("pivot_ip", { value, cap });
+export const pivotUser = (value: string, cap?: number) => call<Pivot>("pivot_user", { value, cap });
+
+export const HIGHLIGHT_COLOURS = ["red", "amber", "green", "blue", "purple"] as const;
+export type HighlightColour = (typeof HIGHLIGHT_COLOURS)[number];
+
+/** `column: null` matches any column. `eq` is exact on the raw value; `contains` is a case-insensitive substring. */
+export interface HighlightRule {
+  column: string | null;
+  op: "eq" | "contains";
+  value: string;
+  colour: HighlightColour;
+}
+
+export interface HighlightSet {
+  name: string;
+  rules: HighlightRule[];
+}
+
+// ---------------------------------------------------------------- tables, schema, indicators, highlights
+
+/** `browse::Filter` (serde tag `op`, snake_case). Times are RFC 3339 UTC strings. */
+export type Filter =
+  | { op: "eq" | "ne"; column: string; value: unknown }
+  | { op: "contains"; column: string; value: string }
+  | { op: "between"; column: string; low: unknown; high: unknown }
+  | { op: "in"; column: string; values: unknown[] }
+  | { op: "is_null" | "not_null"; column: string };
+
+export interface Sort {
+  column: string;
+  descending: boolean;
+}
+
+/** `browse::BrowsePage`: `total` counts matching rows up to a cap; `total_capped` says there are more. */
+export interface BrowsePage {
+  table: string;
+  columns: string[];
+  rows: unknown[][];
+  offset: number;
+  total: number;
+  total_capped: boolean;
+}
 
 /** `db::describe::ColumnInfo`. */
 export interface ColumnInfo {
@@ -366,6 +423,41 @@ export interface TableInfo {
   kind: string;
   columns: ColumnInfo[];
 }
+
+export interface ActiveIndicator {
+  ioc_type: string;
+  value: string;
+  verdict: string;
+}
+
+/** A caller-generated id naming one running query, so `queryCancel` stops that query and no other. */
+export function newQueryId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+export const browseTables = () => call<string[]>("browse_tables");
+export const browsePage = (
+  table: string,
+  filters: Filter[],
+  sort: Sort | null,
+  offset: number,
+  limit: number,
+  queryId: string,
+) => call<BrowsePage>("browse_page", { table, filters, sort, offset, limit, queryId });
+export const sqlSchema = (table?: string) => call<TableInfo[]>("sql_schema", { table });
+/**
+ * Interrupts the running `sql_run` / `browse_page` with this id, if any (any other id: nothing happens); that call
+ * then rejects with kind `interrupted`.
+ */
+export const queryCancel = (queryId: string) => call<null>("query_cancel", { queryId });
+export const indicatorsActive = () => call<ActiveIndicator[]>("indicators_active");
+export const highlightsGet = (caseId: string) => call<HighlightSet[]>("highlights_get", { caseId });
+export const highlightsSet = (caseId: string, sets: HighlightSet[]) =>
+  call<HighlightSet[]>("highlights_set", { caseId, sets });
+export const highlightsClear = (caseId: string) => call<null>("highlights_clear", { caseId });
+
+// ---------------------------------------------------------------- SQL and share (core serde shapes)
 
 /** `case::query::QueryResult`; each value is DuckDB's `to_json` of the column. */
 export interface QueryResult {
@@ -407,15 +499,9 @@ export interface SharePreview {
   items: number;
 }
 
-export const sqlSchema = (table?: string) => call<TableInfo[]>("sql_schema", { table });
 /** `queryId` names this run for `queryCancel` (≤ 64 chars, no control characters; a fresh one per run). */
 export const sqlRun = (sql: string, limit: number | undefined, queryId: string) =>
   call<QueryResult>("sql_run", { sql, limit, queryId });
-/**
- * Interrupts the running `sql_run` / `browse_page` with this id, if any (any other id: nothing happens); that call
- * then rejects with kind `interrupted`.
- */
-export const queryCancel = (queryId: string) => call<null>("query_cancel", { queryId });
 export const shareExport = (path: string) => call<ShareExported>("share_export", { path });
 export const sharePreview = (path: string) => call<SharePreview>("share_preview", { path });
 /** Refused (`invalid`) when the file's SHA-256 is no longer `sha256`, the one its preview showed. */

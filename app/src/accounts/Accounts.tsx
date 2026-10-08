@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { accountsList, isCmdError, type AccountPage, type AccountRow } from "../api";
+import { useNav } from "../shell/nav";
 import { displaySafe } from "../text";
 
 const STAGE_LABELS: Record<string, string> = {
@@ -25,6 +26,7 @@ function addressText(a: AccountRow["addresses"][number]): string {
 export default function Accounts({ onSelect }: { onSelect: (upn: string) => void }) {
   const [page, setPage] = useState<AccountPage | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const nav = useNav();
 
   useEffect(() => {
     let live = true;
@@ -73,6 +75,15 @@ export default function Accounts({ onSelect }: { onSelect: (upn: string) => void
                   >
                     {displaySafe(a.upn)}
                   </button>
+                  {nav && (
+                    <button
+                      className="link"
+                      aria-label={`Pivot on account ${displaySafe(a.upn)}`}
+                      onClick={() => nav.openPivot("account", a.upn)}
+                    >
+                      Pivot
+                    </button>
+                  )}
                   <div className="meta">{displaySafe(a.tenant_key)}</div>
                 </td>
                 <td>{displaySafe(a.worst_severity)}</td>
@@ -82,7 +93,21 @@ export default function Accounts({ onSelect }: { onSelect: (upn: string) => void
                 <td>
                   <ul className="plain">
                     {a.addresses.map((x) => (
-                      <li key={x.ip}>{displaySafe(addressText(x))}</li>
+                      <li key={x.ip}>
+                        {displaySafe(addressText(x))}
+                        {nav && (
+                          <>
+                            {" "}
+                            <button
+                              className="link"
+                              aria-label={`Pivot on IP ${displaySafe(x.ip)}`}
+                              onClick={() => nav.openPivot("ip", x.ip)}
+                            >
+                              Pivot
+                            </button>
+                          </>
+                        )}
+                      </li>
                     ))}
                   </ul>
                   {a.addresses_total > a.addresses.length && (

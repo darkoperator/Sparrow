@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
-import { isCmdError, queryCancel, sqlRun, sqlSchema, type QueryResult, type TableInfo } from "../api";
+import { isCmdError, newQueryId, queryCancel, sqlRun, sqlSchema, type QueryResult, type TableInfo } from "../api";
 import Grid from "../grid/Grid";
 import { displaySafe, displaySafeMultiline } from "../text";
 import SchemaSidebar from "./SchemaSidebar";
@@ -70,7 +70,7 @@ export default function Sql() {
 
   const run = async () => {
     if (running || sql.trim() === "") return;
-    const id = crypto.randomUUID();
+    const id = newQueryId();
     activeId.current = id;
     setRunning(true);
     setOutcome(null);
