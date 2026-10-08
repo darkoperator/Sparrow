@@ -383,3 +383,71 @@ export interface HighlightSet {
   name: string;
   rules: HighlightRule[];
 }
+
+// ---------------------------------------------------------------- tables, schema, indicators, highlights
+
+/** `browse::Filter` (serde tag `op`, snake_case). Times are RFC 3339 UTC strings. */
+export type Filter =
+  | { op: "eq" | "ne"; column: string; value: unknown }
+  | { op: "contains"; column: string; value: string }
+  | { op: "between"; column: string; low: unknown; high: unknown }
+  | { op: "in"; column: string; values: unknown[] }
+  | { op: "is_null" | "not_null"; column: string };
+
+export interface Sort {
+  column: string;
+  descending: boolean;
+}
+
+/** `browse::BrowsePage`: `total` counts matching rows up to a cap; `total_capped` says there are more. */
+export interface BrowsePage {
+  table: string;
+  columns: string[];
+  rows: unknown[][];
+  offset: number;
+  total: number;
+  total_capped: boolean;
+}
+
+/** `db::describe::ColumnInfo` / `TableInfo` (`name` is the table name). */
+export interface ColumnInfo {
+  name: string;
+  type: string;
+  comment: string | null;
+}
+
+export interface TableInfo {
+  name: string;
+  comment: string | null;
+  kind: string;
+  columns: ColumnInfo[];
+}
+
+export interface ActiveIndicator {
+  ioc_type: string;
+  value: string;
+  verdict: string;
+}
+
+/** A caller-generated id naming one running query, so `queryCancel` stops that query and no other. */
+export function newQueryId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+export const browseTables = () => call<string[]>("browse_tables");
+export const browsePage = (
+  table: string,
+  filters: Filter[],
+  sort: Sort | null,
+  offset: number,
+  limit: number,
+  queryId: string,
+) => call<BrowsePage>("browse_page", { table, filters, sort, offset, limit, queryId });
+export const sqlSchema = (table?: string) => call<TableInfo[]>("sql_schema", { table });
+export const queryCancel = (queryId: string) => call<null>("query_cancel", { queryId });
+export const indicatorsActive = () => call<ActiveIndicator[]>("indicators_active");
+export const highlightsGet = (caseId: string) => call<HighlightSet[]>("highlights_get", { caseId });
+export const highlightsSet = (caseId: string, sets: HighlightSet[]) =>
+  call<HighlightSet[]>("highlights_set", { caseId, sets });
+export const highlightsClear = (caseId: string) => call<null>("highlights_clear", { caseId });

@@ -1,0 +1,7 @@
+[
+  {
+    "ioc_type": "ip",
+    "value": "192.0.2.2",
+    "verdict": "malicious"
+  }
+]

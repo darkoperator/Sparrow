@@ -7,7 +7,10 @@ import queueJson from "./fixtures/queue.json";
 import accountsJson from "./fixtures/accounts.json";
 import pivotIpJson from "./fixtures/pivot_ip.json";
 import pivotUserJson from "./fixtures/pivot_user.json";
-import type { AccountPage, CaseInfo, FindingDetail, Pivot, QueueItem } from "../api";
+import browsePageJson from "./fixtures/browse_page.json";
+import schemaJson from "./fixtures/schema.json";
+import indicatorsJson from "./fixtures/indicators.json";
+import type { AccountPage, ActiveIndicator, BrowsePage, CaseInfo, FindingDetail, Pivot, QueueItem, TableInfo } from "../api";
 
 function need(where: string, o: unknown, keys: string[]): asserts o is Record<string, unknown> {
   if (typeof o !== "object" || o === null) throw new Error(`fixture ${where}: not an object`);
@@ -100,3 +103,39 @@ function checkPivot(name: string, json: unknown): Pivot {
 export const pivotIp = (): Pivot => checkPivot("pivot_ip", pivotIpJson);
 /** `read::Pivot` for an account (its `addresses` section is the only one that can be `unavailable`). */
 export const pivotUser = (): Pivot => checkPivot("pivot_user", pivotUserJson);
+
+const BROWSE = ["table", "columns", "rows", "offset", "total", "total_capped"];
+
+/** `browse::BrowsePage` for `signins`, recorded from a synthetic case. */
+export function browsePage(): BrowsePage {
+  const v: unknown = clone(browsePageJson);
+  need("browse_page", v, BROWSE);
+  if (!Array.isArray(v.columns) || v.columns.length === 0) throw new Error("fixture browse_page: no columns");
+  if (!Array.isArray(v.rows) || v.rows.length === 0) throw new Error("fixture browse_page: no rows");
+  v.rows.forEach((r: unknown, i) => {
+    if (!Array.isArray(r) || r.length !== (v.columns as unknown[]).length) {
+      throw new Error(`fixture browse_page.rows[${i}]: not one value per column`);
+    }
+  });
+  if (typeof v.total !== "number" || typeof v.total_capped !== "boolean") throw new Error("fixture browse_page: bad total");
+  return v as unknown as BrowsePage;
+}
+
+/** `db::describe::TableInfo[]` of the whole synthetic case. */
+export function schema(): TableInfo[] {
+  const v: unknown = clone(schemaJson);
+  if (!Array.isArray(v) || v.length === 0) throw new Error("fixture schema: not a non-empty array");
+  v.forEach((t: unknown, i) => {
+    need(`schema[${i}]`, t, ["name", "comment", "kind", "columns"]);
+    if (!Array.isArray(t.columns) || t.columns.length === 0) throw new Error(`fixture schema[${i}]: no columns`);
+    t.columns.forEach((c: unknown, j) => need(`schema[${i}].columns[${j}]`, c, ["name", "type", "comment"]));
+  });
+  return v as unknown as TableInfo[];
+}
+
+export function indicators(): ActiveIndicator[] {
+  const v: unknown = clone(indicatorsJson);
+  if (!Array.isArray(v) || v.length === 0) throw new Error("fixture indicators: not a non-empty array");
+  v.forEach((x: unknown, i) => need(`indicators[${i}]`, x, ["ioc_type", "value", "verdict"]));
+  return v as unknown as ActiveIndicator[];
+}

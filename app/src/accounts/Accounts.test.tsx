@@ -52,7 +52,7 @@ describe("Accounts", () => {
     const openPivot = vi.fn();
     const user = userEvent.setup();
     render(
-      <NavContext.Provider value={{ openPivot }}>
+      <NavContext.Provider value={{ openPivot, openTable: vi.fn() }}>
         <Accounts onSelect={() => {}} />
       </NavContext.Provider>,
     );

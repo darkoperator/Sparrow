@@ -10,6 +10,8 @@ vi.mock("../api", async (orig) => ({
   settingsSetAnalyst: vi.fn(),
   caseOpen: vi.fn(),
   caseClose: vi.fn(),
+  highlightsGet: vi.fn(async () => []),
+  indicatorsActive: vi.fn(async () => []),
 }));
 const dialogOpen = vi.fn();
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: (...a: unknown[]) => dialogOpen(...a) }));
@@ -36,6 +38,12 @@ vi.mock("../pivot/Pivot", () => ({
     <div>{initial ? `pivot ${initial.kind} ${initial.value}` : "pivot empty"}</div>
   ),
 }));
+vi.mock("../tables/Tables", () => ({
+  default: ({ initial }: { initial?: { table: string; filters: unknown[] } }) => (
+    <div>{initial ? `tables ${initial.table} ${JSON.stringify(initial.filters)}` : "tables empty"}</div>
+  ),
+}));
+vi.mock("../highlights/Highlights", () => ({ default: () => <div>highlights panel</div> }));
 vi.mock("./ExportMenu", () => ({ default: () => <button>Export</button> }));
 
 import * as api from "../api";
@@ -278,5 +286,45 @@ describe("Shell", () => {
     await screen.findByText(/queue canWrite=true/);
     await user.click(screen.getByRole("button", { name: "Pivot" }));
     expect(screen.getByText("pivot empty")).toBeInTheDocument();
+  });
+
+  it("openTable (from the context and from props) switches to the tables screen with the table and filters", async () => {
+    dialogOpen.mockResolvedValue("/synthetic/case-a.duckdb");
+    const user = userEvent.setup();
+    const f = [{ op: "eq", column: "ip", value: "203.0.113.1" }];
+    function TableOpener() {
+      const nav = useNav();
+      return <button onClick={() => nav?.openTable("signins", f as never)}>open signins</button>;
+    }
+    render(
+      <Shell
+        screens={{
+          accounts: (p) => (
+            <>
+              <TableOpener />
+              <button onClick={() => p.openTable("ual_events", [])}>via props</button>
+            </>
+          ),
+        }}
+      />,
+    );
+    await user.click(await screen.findByRole("button", { name: "Open a case" }));
+    await screen.findByText(/queue canWrite=true/);
+    await user.click(screen.getByRole("button", { name: "Accounts" }));
+    await user.click(screen.getByRole("button", { name: "open signins" }));
+    expect(screen.getByText(`tables signins ${JSON.stringify(f)}`)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Tables" })).toHaveAttribute("aria-current", "page");
+    await user.click(screen.getByRole("button", { name: "Accounts" }));
+    await user.click(screen.getByRole("button", { name: "via props" }));
+    expect(screen.getByText("tables ual_events []")).toBeInTheDocument();
+  });
+
+  it("the Tables and Highlights entries open their screens", async () => {
+    const user = await openViaDialog();
+    await screen.findByText("queue canWrite=true");
+    await user.click(screen.getByRole("button", { name: "Tables" }));
+    expect(screen.getByText("tables empty")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Highlights" }));
+    expect(screen.getByText("highlights panel")).toBeInTheDocument();
   });
 });

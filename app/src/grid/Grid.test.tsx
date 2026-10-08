@@ -69,7 +69,7 @@ describe("Grid cell actions", () => {
     return screen.getByRole("menu");
   };
   const withNav = (ui: React.ReactElement, openPivot = vi.fn()) => (
-    <NavContext.Provider value={{ openPivot }}>{ui}</NavContext.Provider>
+    <NavContext.Provider value={{ openPivot, openTable: vi.fn() }}>{ui}</NavContext.Provider>
   );
 
   it("offers Pivot on IP only for an IP value, Pivot on account only for an account-shaped one", () => {

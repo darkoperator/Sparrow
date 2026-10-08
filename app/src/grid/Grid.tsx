@@ -3,8 +3,9 @@
 // sections, the table browser and SQL results.
 import { createColumnHelper, flexRender, getCoreRowModel, useReactTable } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useCallback, useMemo, useRef, useState } from "react";
-import { HIGHLIGHT_COLOURS, type HighlightRule } from "../api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { HIGHLIGHT_COLOURS, type HighlightRule, type Sort } from "../api";
+import { useHighlights } from "../highlights/useHighlights";
 import { useNav } from "../shell/nav";
 import { displaySafe } from "../text";
 import { rawText, valueKind } from "../value";
@@ -22,6 +23,11 @@ export interface GridProps {
   columns: string[];
   rows: Cell[][];
   cellActions?: CellActions;
+  /** Column sort: the current sort, and a click on a header. Without `onSort` headers are plain text. */
+  sort?: Sort | null;
+  onSort?: (column: string) => void;
+  /** Called when the visible window comes within a screenful of the last row (the host fetches the next page). */
+  onNearEnd?: () => void;
   /** Rows holding a cell that matches a rule get the rule's colour class (the first matching rule wins). */
   highlights?: HighlightRule[];
   onRowClick?: (row: Cell[], index: number) => void;
@@ -61,8 +67,25 @@ interface MenuAt {
   col: number;
 }
 
-export default function Grid({ columns, rows, cellActions, highlights, onRowClick, height = 320 }: GridProps) {
+const NEAR_END = 40;
+
+export default function Grid({
+  columns,
+  rows,
+  cellActions,
+  highlights,
+  sort,
+  onSort,
+  onNearEnd,
+  onRowClick,
+  height = 320,
+}: GridProps) {
   const nav = useNav();
+  // Without a `highlights` prop the grid applies the app's shared highlights, when it is inside a provider.
+  const shared = useHighlights();
+  const rules = highlights ?? shared?.rules;
+  const onHighlight =
+    cellActions?.onHighlight ?? (shared ? (column: string, value: Cell) => void shared.highlightValue(column, value) : undefined);
   const [menu, setMenu] = useState<MenuAt | null>(null);
   const opener = useRef<HTMLElement | null>(null);
   const closeMenu = useCallback(() => {
@@ -80,9 +103,7 @@ export default function Grid({ columns, rows, cellActions, highlights, onRowClic
     const column = columns[m.col];
     const out: MenuItem[] = [{ label: "Copy", run: () => void navigator.clipboard.writeText(rawText(value)) }];
     if (cellActions?.onFilter) out.push({ label: "Filter by this value", run: () => cellActions.onFilter!(column, value) });
-    if (cellActions?.onHighlight) {
-      out.push({ label: "Highlight this value", run: () => cellActions.onHighlight!(column, value) });
-    }
+    if (onHighlight) out.push({ label: "Highlight this value", run: () => onHighlight(column, value) });
     const kind = nav ? valueKind(value) : null;
     if (nav && kind) {
       const text = rawText(value);
@@ -126,10 +147,14 @@ export default function Grid({ columns, rows, cellActions, highlights, onRowClic
     },
   });
   const rowClass = (row: Cell[]) => {
-    const hit = highlights?.find((r) => ruleMatches(r, columns, row));
+    const hit = rules?.find((r) => ruleMatches(r, columns, row));
     const cls = hit ? colourClass(hit.colour) : undefined;
     return cls ? `grid-row ${cls}` : "grid-row";
   };
+  const lastVisible = virt.getVirtualItems().at(-1)?.index ?? -1;
+  useEffect(() => {
+    if (onNearEnd && rows.length > 0 && lastVisible >= rows.length - 1 - NEAR_END) onNearEnd();
+  }, [onNearEnd, rows.length, lastVisible]);
   const template = `repeat(${Math.max(columns.length, 1)}, minmax(120px, 1fr))`;
 
   if (rows.length === 0) {
@@ -138,11 +163,21 @@ export default function Grid({ columns, rows, cellActions, highlights, onRowClic
   return (
     <div className="grid" role="table" aria-rowcount={rows.length}>
       <div className="grid-head" role="row" style={{ display: "grid", gridTemplateColumns: template }}>
-        {table.getHeaderGroups()[0].headers.map((h) => (
-          <div key={h.id} role="columnheader" className="grid-cell grid-header">
-            {flexRender(h.column.columnDef.header, h.getContext())}
-          </div>
-        ))}
+        {table.getHeaderGroups()[0].headers.map((h, i) => {
+          const sorted = sort?.column === columns[i] ? (sort.descending ? "descending" : "ascending") : undefined;
+          return (
+            <div key={h.id} role="columnheader" aria-sort={onSort ? (sorted ?? "none") : undefined} className="grid-cell grid-header">
+              {onSort ? (
+                <button className="grid-sort" onClick={() => onSort(columns[i])}>
+                  {flexRender(h.column.columnDef.header, h.getContext())}
+                  <span aria-hidden="true">{sorted === "ascending" ? " ▲" : sorted === "descending" ? " ▼" : ""}</span>
+                </button>
+              ) : (
+                flexRender(h.column.columnDef.header, h.getContext())
+              )}
+            </div>
+          );
+        })}
       </div>
       <div ref={scroller} className="grid-body" style={{ height, overflow: "auto", position: "relative" }}>
         <div style={{ height: virt.getTotalSize(), position: "relative" }}>

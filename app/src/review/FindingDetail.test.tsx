@@ -25,7 +25,7 @@ describe("FindingDetail pivot links", () => {
     expect(upn).toBeTruthy();
     const openPivot = vi.fn();
     render(
-      <NavContext.Provider value={{ openPivot }}>
+      <NavContext.Provider value={{ openPivot, openTable: vi.fn() }}>
         <FindingDetail findingId={detail.finding.finding_id} />
       </NavContext.Provider>,
     );
@@ -42,7 +42,7 @@ describe("FindingDetail pivot links", () => {
   it("offers none for a finding without an account", async () => {
     detail.finding.actor_upn = null;
     render(
-      <NavContext.Provider value={{ openPivot: vi.fn() }}>
+      <NavContext.Provider value={{ openPivot: vi.fn(), openTable: vi.fn() }}>
         <FindingDetail findingId={detail.finding.finding_id} />
       </NavContext.Provider>,
     );
