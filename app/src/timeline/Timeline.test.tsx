@@ -14,6 +14,7 @@ const api = vi.hoisted(() => ({
 vi.mock("../api", async (orig) => ({ ...(await orig<typeof import("../api")>()), ...api }));
 
 import { Timeline } from "./Timeline";
+import { findingDetail as recordedFindingDetail } from "../test/fixtures";
 
 function entry(over: Partial<TimelineEntry> & { entry_id: string }): TimelineEntry {
   return {
@@ -261,11 +262,15 @@ describe("Timeline", () => {
   });
 
   it("the picker adds signins refs from a finding's evidence", async () => {
+    // The recorded detail, with its evidence replaced by two sign-in rows the picker can add.
+    const recorded = recordedFindingDetail();
+    const row = recorded.evidence[0];
     const detail: FindingDetail = {
-      finding: { finding_id: "f1", title: "AiTM sign-in" },
+      ...recorded,
+      finding: { ...recorded.finding, finding_id: "f1" },
       evidence: [
-        { source_table: "signins", record_key: "k-a", role: "trigger", event_time: null, source_refs: [], context: null },
-        { source_table: "signins", record_key: "k-b", role: "context", event_time: null, source_refs: [], context: null },
+        { ...row, source_table: "signins", record_key: "k-a", role: "trigger" },
+        { ...row, source_table: "signins", record_key: "k-b", role: "context" },
       ],
     };
     api.findingDetail.mockResolvedValue(detail);

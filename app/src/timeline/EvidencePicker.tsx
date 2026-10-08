@@ -1,11 +1,11 @@
 import { useState } from "react";
-import { findingDetail, isCmdError, type FindingEvidenceRow } from "../api";
+import { findingDetail, isCmdError, type EvidenceRow } from "../api";
 import { displaySafe } from "../text";
 
 /** Adds `<table>:<record_key>` references taken from the evidence rows of a finding. */
 export function EvidencePicker({ existing, onAdd }: { existing: string[]; onAdd: (ref: string) => void }) {
   const [findingId, setFindingId] = useState("");
-  const [rows, setRows] = useState<FindingEvidenceRow[] | null>(null);
+  const [rows, setRows] = useState<EvidenceRow[] | null>(null);
   const [title, setTitle] = useState("");
   const [error, setError] = useState<string | null>(null);
 

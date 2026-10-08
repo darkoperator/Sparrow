@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { displaySafe } from "./text";
+import { displaySafe, displaySafeMultiline } from "./text";
 
 describe("displaySafe", () => {
   it("escapes control and bidi characters", () => {
@@ -9,5 +9,11 @@ describe("displaySafe", () => {
   });
   it("leaves ordinary text alone", () => {
     expect(displaySafe("Inbox rule <b>AP</b> → é\tz")).toBe("Inbox rule <b>AP</b> → é\tz");
+  });
+});
+
+describe("displaySafeMultiline", () => {
+  it("keeps line breaks and escapes everything else", () => {
+    expect(displaySafeMultiline("a\r\nb‮c\nd\u0000")).toBe("a\nb\\u{202E}c\nd\\u{0000}");
   });
 });

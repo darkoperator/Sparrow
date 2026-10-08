@@ -49,11 +49,21 @@ export async function call<T>(cmd: string, args?: Record<string, unknown>): Prom
   }
 }
 
-// ---- timeline (core serde shapes) ----
+// ---------------------------------------------------------------- shapes (the Rust serde shapes unchanged)
 
-export interface EvidenceRef {
-  source_table: string;
-  record_key: string;
+export interface Settings {
+  analyst: string | null;
+  recent: string[];
+}
+
+export interface CaseInfo {
+  path: string;
+  case_id: string;
+  schema_version: number;
+  audit_ok: boolean;
+  read_only_reason: string | null;
+  tenants: string[];
+  warnings: string[];
 }
 
 export interface AuditEntry {
@@ -69,6 +79,165 @@ export interface AuditEntry {
   reason: string | null;
   prev_hash: string;
   hash: string;
+}
+
+/** `sparrow_core::case::review::PendingDecision`. */
+export interface PendingDecision {
+  object_type: string;
+  object_id: string;
+  decision_seq: number;
+  action: string;
+  actor: string;
+  on_behalf_of: string | null;
+  decided_at: string;
+  before: unknown;
+  after: unknown;
+  reason: string | null;
+  account: string | null;
+  title: string;
+}
+
+/** `sparrow_core::case::share::Item` (tagged by `kind`). */
+export type ProposalItem =
+  | { kind: "finding"; finding_id: string; status: string; disposition_reason: string | null }
+  | {
+      kind: "indicator";
+      tenant_key: string | null;
+      ioc_type: string;
+      value: string;
+      verdict: string;
+      note: string | null;
+      active: boolean;
+    }
+  | {
+      kind: "timeline_entry";
+      entry_id: string;
+      tenant_key: string | null;
+      event_time: string;
+      title: string;
+      narrative: string | null;
+      phase: string;
+      status: string;
+      evidence: string[];
+      supersedes: string[];
+    }
+  | { kind: "note"; target: string; text: string };
+
+/** `sparrow_core::case::share::Proposal`. `classification`: new | agrees | conflict | missing. */
+export interface Proposal {
+  bundle_sha256: string;
+  item_key: string;
+  source_analyst: string;
+  classification: string;
+  state: string;
+  item: ProposalItem;
+  current: unknown;
+}
+
+/** `QueueItem` (serde tag `source`, the payload flattened). */
+export type QueueItem = ({ source: "decision" } & PendingDecision) | ({ source: "proposal" } & Proposal);
+
+export interface TimelineRow {
+  event_time: string;
+  time_tz_assumed: boolean | null;
+  source_table: string;
+  record_key: string;
+  category: string;
+  operation: string | null;
+  actor_upn: string | null;
+  target: string | null;
+  ip: string | null;
+  ip_country: string | null;
+  ip_asn_org: string | null;
+  user_agent: string | null;
+  summary: string | null;
+  source_refs: string[];
+  finding_count: number;
+  finding_ids: string[];
+}
+
+export interface EvidenceRow {
+  source_table: string;
+  record_key: string;
+  role: string;
+  event_time: string | null;
+  source_refs: string[];
+  timeline: TimelineRow | null;
+  context: unknown;
+}
+
+export interface FindingRow {
+  finding_id: string;
+  tenant_key: string;
+  rule_id: string | null;
+  rule_version: number | null;
+  severity: string;
+  title: string;
+  actor_upn: string | null;
+  first_seen: string | null;
+  last_seen: string | null;
+  status: string;
+  disposition_reason: string | null;
+  created_by: string;
+  assigned_to: string | null;
+  rule_updated: boolean;
+  created_at: string;
+  updated_at: string;
+  decided_by: string | null;
+  decided_at: string | null;
+  on_behalf_of: string | null;
+  review_state: string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  review_comment: string | null;
+  evidence_count: number;
+}
+
+export interface Note {
+  annotation_id: string;
+  object_type: string;
+  object_id: string;
+  source_table: string | null;
+  text: string;
+  actor: string;
+  on_behalf_of: string | null;
+  created_at: string;
+}
+
+/** `read::FindingDetail`; `facts` / `facts_unavailable` are flattened in, at most one present. */
+export interface FindingDetail {
+  finding: FindingRow;
+  evidence: EvidenceRow[];
+  facts?: unknown;
+  facts_unavailable?: string;
+  analyst_guidance: string | null;
+  notes: Note[];
+  audit: AuditEntry[];
+}
+
+// ---------------------------------------------------------------- commands
+
+export const settingsGet = () => call<Settings>("settings_get");
+export const settingsSetAnalyst = (name: string) => call<Settings>("settings_set_analyst", { name });
+export const caseOpen = (path: string, allowUpgrade = false) => call<CaseInfo>("case_open", { path, allowUpgrade });
+export const caseClose = () => call<null>("case_close");
+
+export const reviewQueue = () => call<QueueItem[]>("review_queue");
+export const findingDetail = (findingId: string) => call<FindingDetail>("finding_detail", { findingId });
+export const reviewAccept = (objectType: string, objectId: string, decisionSeq: number, comment?: string) =>
+  call<AuditEntry>("review_accept", { objectType, objectId, decisionSeq, comment });
+export const reviewDiscard = (objectType: string, objectId: string, decisionSeq: number, comment?: string) =>
+  call<AuditEntry>("review_discard", { objectType, objectId, decisionSeq, comment });
+export const proposalAccept = (bundleSha256: string, itemKey: string) =>
+  call<AuditEntry[]>("proposal_accept", { bundleSha256, itemKey });
+export const proposalDiscard = (bundleSha256: string, itemKey: string, comment?: string) =>
+  call<AuditEntry>("proposal_discard", { bundleSha256, itemKey, comment });
+
+// ---------------------------------------------------------------- timeline (core serde shapes)
+
+export interface EvidenceRef {
+  source_table: string;
+  record_key: string;
 }
 
 export type EntryStatus = "proposed" | "verified" | "rejected" | "superseded";
@@ -124,22 +293,3 @@ export const timelineEdit = (entryId: string, args: EntryEditArgs) =>
 export const timelineVerify = (entryId: string) => call<AuditEntry>("timeline_verify", { entryId });
 export const timelineReject = (entryId: string, reason?: string) =>
   call<AuditEntry>("timeline_reject", { entryId, reason });
-
-// ---- finding detail (the parts the timeline's evidence picker reads) ----
-
-export interface FindingEvidenceRow {
-  source_table: string;
-  record_key: string;
-  role: string;
-  event_time: string | null;
-  source_refs: string[];
-  context: unknown;
-}
-
-export interface FindingDetail {
-  finding: { finding_id: string; title: string; [k: string]: unknown };
-  evidence: FindingEvidenceRow[];
-  [k: string]: unknown;
-}
-
-export const findingDetail = (findingId: string) => call<FindingDetail>("finding_detail", { findingId });

@@ -1,9 +1,7 @@
-// The window shell (sidebar, case opening, analyst prompt) arrives with the shell task; this is the scaffold.
+import Shell from "./shell/Shell";
+import { Timeline } from "./timeline/Timeline";
+
 export default function App() {
-  return (
-    <main>
-      <h1>Sparrow</h1>
-      <p>No case open.</p>
-    </main>
-  );
+  // `canWrite` is false for a read-only case or before the analyst name is set: the timeline's writes follow it.
+  return <Shell screens={{ timeline: (p) => <Timeline readOnly={!p.canWrite} /> }} />;
 }
