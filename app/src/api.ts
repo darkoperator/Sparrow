@@ -11,6 +11,7 @@ const CMD_ERROR_KINDS = [
   "no_case",
   "needs_upgrade",
   "needs_acknowledge",
+  "interrupted",
   "internal",
 ] as const;
 
@@ -348,3 +349,59 @@ export const exportReport = (path: string, reviewedOnly: boolean) =>
   call<null>("export_report", { path, reviewedOnly });
 export const exportTimelineCsv = (path: string) => call<null>("export_timeline_csv", { path });
 export const exportWorkbook = (path: string) => call<null>("export_workbook", { path });
+
+// ---------------------------------------------------------------- SQL and share (core serde shapes)
+
+/** `db::describe::ColumnInfo`. */
+export interface ColumnInfo {
+  name: string;
+  type: string;
+  comment: string | null;
+}
+
+/** `db::describe::TableInfo`. `kind`: "table" or "view". */
+export interface TableInfo {
+  name: string;
+  comment: string | null;
+  kind: string;
+  columns: ColumnInfo[];
+}
+
+/** `case::query::QueryResult`; each value is DuckDB's `to_json` of the column. */
+export interface QueryResult {
+  columns: string[];
+  rows: unknown[][];
+  truncated: boolean;
+}
+
+/** `case::share::ImportSummary`. */
+export interface ImportSummary {
+  bundle_sha256: string;
+  analyst: string;
+  new: number;
+  agrees: number;
+  conflicts: number;
+  missing: number;
+  already_imported: boolean;
+  rules_only_in_bundle: string[];
+  rules_only_here: string[];
+}
+
+export interface ShareExported {
+  sha256: string;
+  items: number;
+}
+
+export interface SharePreview {
+  sha256: string;
+  summary: ImportSummary;
+}
+
+export const sqlSchema = (table?: string) => call<TableInfo[]>("sql_schema", { table });
+export const sqlRun = (sql: string, limit?: number) => call<QueryResult>("sql_run", { sql, limit });
+/** Interrupts the running `sql_run` / `browse_page`, if any; that call then rejects with kind `interrupted`. */
+export const queryCancel = () => call<null>("query_cancel");
+export const shareExport = (path: string) => call<ShareExported>("share_export", { path });
+export const sharePreview = (path: string) => call<SharePreview>("share_preview", { path });
+/** Refused (`invalid`) when the file's SHA-256 is no longer `sha256`, the one its preview showed. */
+export const shareImport = (path: string, sha256: string) => call<ImportSummary>("share_import", { path, sha256 });

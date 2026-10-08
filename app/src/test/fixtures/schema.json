@@ -1,0 +1,33 @@
+[
+  {
+    "name": "findings",
+    "comment": "One row per finding a detection rule or the agent raised.",
+    "kind": "table",
+    "columns": [
+      { "name": "finding_id", "type": "VARCHAR", "comment": null },
+      { "name": "severity", "type": "VARCHAR", "comment": null },
+      { "name": "actor_upn", "type": "VARCHAR", "comment": null }
+    ]
+  },
+  {
+    "name": "signins",
+    "comment": "Entra ID sign-ins.",
+    "kind": "table",
+    "columns": [
+      { "name": "record_key", "type": "VARCHAR", "comment": null },
+      { "name": "event_time", "type": "TIMESTAMP WITH TIME ZONE", "comment": "Sign-in time (Graph createdDateTime, portal Date (UTC))." },
+      { "name": "user_upn", "type": "VARCHAR", "comment": "UserPrincipalName (portal Username), lower-case." },
+      { "name": "ip", "type": "VARCHAR", "comment": "Client IP address, normalized like ual_events.client_ip." },
+      { "name": "status", "type": "VARCHAR", "comment": null }
+    ]
+  },
+  {
+    "name": "timeline",
+    "comment": null,
+    "kind": "view",
+    "columns": [
+      { "name": "event_time", "type": "TIMESTAMP WITH TIME ZONE", "comment": null },
+      { "name": "category", "type": "VARCHAR", "comment": null }
+    ]
+  }
+]

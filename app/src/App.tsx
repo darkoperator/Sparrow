@@ -1,5 +1,7 @@
 import Accounts from "./accounts/Accounts";
+import Share from "./share/Share";
 import Shell from "./shell/Shell";
+import Sql from "./sql/Sql";
 import { Timeline } from "./timeline/Timeline";
 
 export default function App() {
@@ -9,6 +11,8 @@ export default function App() {
       screens={{
         timeline: (p) => <Timeline readOnly={!p.canWrite} />,
         accounts: (p) => <Accounts onSelect={p.showAccount} />,
+        sql: () => <Sql />,
+        share: (p) => <Share canImport={p.canWrite} onShowQueue={p.showQueue} />,
       }}
     />
   );

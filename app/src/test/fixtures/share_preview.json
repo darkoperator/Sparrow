@@ -1,0 +1,14 @@
+{
+  "sha256": "7c74996e28f36f5f2aa69e0ce60207310ab0eba0b49a681b361f611756c409e5",
+  "summary": {
+    "bundle_sha256": "7c74996e28f36f5f2aa69e0ce60207310ab0eba0b49a681b361f611756c409e5",
+    "analyst": "analyst:ann",
+    "new": 2,
+    "agrees": 1,
+    "conflicts": 1,
+    "missing": 0,
+    "already_imported": false,
+    "rules_only_in_bundle": ["SPR-AUTH-007:3f2a9c"],
+    "rules_only_here": []
+  }
+}
