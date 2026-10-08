@@ -2,30 +2,36 @@
 // by name; a screen that is not built yet renders a placeholder.
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { caseClose, caseOpen, isCmdError, settingsGet, type CaseInfo, type Settings } from "../api";
+import Pivot, { type PivotRequest } from "../pivot/Pivot";
 import ReviewQueue from "../review/ReviewQueue";
 import { displaySafe } from "../text";
+import type { PivotKind } from "../value";
 import AnalystPrompt from "./AnalystPrompt";
 import ExportMenu from "./ExportMenu";
+import { NavContext } from "./nav";
 import OpenCase, { type UpgradePrompt } from "./OpenCase";
 import ReadOnlyBanner from "./ReadOnlyBanner";
 
-export type ScreenId = "review" | "timeline" | "accounts";
+export type ScreenId = "review" | "timeline" | "accounts" | "pivot";
 
 const NAV: ReadonlyArray<{ id: ScreenId; label: string }> = [
   { id: "review", label: "Review queue" },
   { id: "timeline", label: "Timeline" },
   { id: "accounts", label: "Accounts" },
+  { id: "pivot", label: "Pivot" },
 ];
 
 export interface ScreenProps {
   canWrite: boolean;
   /** Show the review queue filtered to this account. */
   showAccount: (upn: string) => void;
+  /** Open the pivot screen on an IP or an account. */
+  openPivot: (kind: PivotKind, value: string) => void;
 }
 
 interface ShellProps {
   /** Screens built elsewhere, by id; anything missing renders a placeholder. */
-  screens?: Partial<Record<Exclude<ScreenId, "review">, (p: ScreenProps) => ReactNode>>;
+  screens?: Partial<Record<Exclude<ScreenId, "review" | "pivot">, (p: ScreenProps) => ReactNode>>;
 }
 
 export default function Shell({ screens = {} }: ShellProps) {
@@ -34,6 +40,8 @@ export default function Shell({ screens = {} }: ShellProps) {
   const [screen, setScreen] = useState<ScreenId>("review");
   // The review queue's account filter lives here: the accounts screen sets it, the queue shows it.
   const [accountFilter, setAccountFilter] = useState<string | null>(null);
+  // The pivot request that opened the pivot screen; `nonce` remounts the screen for each new request.
+  const [pivotReq, setPivotReq] = useState<(PivotRequest & { nonce: number }) | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [upgrade, setUpgrade] = useState<UpgradePrompt | null>(null);
 
@@ -63,6 +71,7 @@ export default function Shell({ screens = {} }: ShellProps) {
       setInfo(await caseOpen(path, allowUpgrade));
       setScreen("review");
       setAccountFilter(null);
+      setPivotReq(null);
       await refreshSettings();
     } catch (e) {
       if (isCmdError(e) && e.kind === "needs_upgrade") {
@@ -81,6 +90,7 @@ export default function Shell({ screens = {} }: ShellProps) {
       setError(isCmdError(e) ? e.message : String(e));
     }
     setInfo(null);
+    setPivotReq(null);
   };
 
   if (!info) {
@@ -104,14 +114,19 @@ export default function Shell({ screens = {} }: ShellProps) {
     setAccountFilter(upn);
     setScreen("review");
   };
+  const openPivot = (kind: PivotKind, value: string) => {
+    setPivotReq((r) => ({ kind, value, nonce: (r?.nonce ?? 0) + 1 }));
+    setScreen("pivot");
+  };
   const body = (() => {
     if (screen === "review") {
       return (
         <ReviewQueue canWrite={canWrite} accountFilter={accountFilter} onClearFilter={() => setAccountFilter(null)} />
       );
     }
+    if (screen === "pivot") return <Pivot key={pivotReq?.nonce ?? 0} initial={pivotReq ?? undefined} />;
     const render = screens[screen];
-    if (render) return render({ canWrite, showAccount });
+    if (render) return render({ canWrite, showAccount, openPivot });
     const label = NAV.find((n) => n.id === screen)?.label ?? screen;
     return <p>{label} is not built yet.</p>;
   })();
@@ -140,7 +155,9 @@ export default function Shell({ screens = {} }: ShellProps) {
             </button>
           ))}
         </nav>
-        <main>{body}</main>
+        <NavContext.Provider value={{ openPivot }}>
+          <main>{body}</main>
+        </NavContext.Provider>
       </div>
     </div>
   );

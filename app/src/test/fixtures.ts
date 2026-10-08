@@ -5,7 +5,9 @@ import caseInfoJson from "./fixtures/case_info.json";
 import findingDetailJson from "./fixtures/finding_detail.json";
 import queueJson from "./fixtures/queue.json";
 import accountsJson from "./fixtures/accounts.json";
-import type { AccountPage, CaseInfo, FindingDetail, QueueItem } from "../api";
+import pivotIpJson from "./fixtures/pivot_ip.json";
+import pivotUserJson from "./fixtures/pivot_user.json";
+import type { AccountPage, CaseInfo, FindingDetail, Pivot, QueueItem } from "../api";
 
 function need(where: string, o: unknown, keys: string[]): asserts o is Record<string, unknown> {
   if (typeof o !== "object" || o === null) throw new Error(`fixture ${where}: not an object`);
@@ -74,3 +76,27 @@ export function accounts(): AccountPage {
   });
   return v as unknown as AccountPage;
 }
+
+const SECTION = ["name", "rows", "total", "truncated"];
+
+function checkPivot(name: string, json: unknown): Pivot {
+  const v: unknown = clone(json);
+  need(name, v, ["sections"]);
+  if (!Array.isArray(v.sections) || v.sections.length === 0) throw new Error(`fixture ${name}: no sections`);
+  v.sections.forEach((s: unknown, i) => {
+    need(`${name}.sections[${i}]`, s, SECTION);
+    if (typeof s.name !== "string") throw new Error(`fixture ${name}.sections[${i}]: name is not a string`);
+    if (!Array.isArray(s.rows)) throw new Error(`fixture ${name}.sections[${i}]: rows is not an array`);
+    if (typeof s.total !== "number") throw new Error(`fixture ${name}.sections[${i}]: total is not a number`);
+    if (typeof s.truncated !== "boolean") throw new Error(`fixture ${name}.sections[${i}]: truncated is not a boolean`);
+    if ("unavailable" in s && typeof s.unavailable !== "string") {
+      throw new Error(`fixture ${name}.sections[${i}]: unavailable is not a string`);
+    }
+  });
+  return v as unknown as Pivot;
+}
+
+/** `read::Pivot` for an IP, recorded from a synthetic case. */
+export const pivotIp = (): Pivot => checkPivot("pivot_ip", pivotIpJson);
+/** `read::Pivot` for an account (its `addresses` section is the only one that can be `unavailable`). */
+export const pivotUser = (): Pivot => checkPivot("pivot_user", pivotUserJson);

@@ -30,10 +30,22 @@ vi.mock("../review/ReviewQueue", () => ({
     </div>
   ),
 }));
+// The pivot screen has its own tests; here it only has to show which request opened it.
+vi.mock("../pivot/Pivot", () => ({
+  default: ({ initial }: { initial?: { kind: string; value: string } }) => (
+    <div>{initial ? `pivot ${initial.kind} ${initial.value}` : "pivot empty"}</div>
+  ),
+}));
 vi.mock("./ExportMenu", () => ({ default: () => <button>Export</button> }));
 
 import * as api from "../api";
+import { useNav } from "./nav";
 import Shell from "./Shell";
+
+function Opener({ kind, value }: { kind: "ip" | "account"; value: string }) {
+  const nav = useNav();
+  return <button onClick={() => nav?.openPivot(kind, value)}>{`pivot ${value}`}</button>;
+}
 
 const info = caseInfo();
 const m = {
@@ -218,5 +230,53 @@ describe("Shell", () => {
       await openViaDialog();
       return screen.findByRole("button", { name: "Export" });
     })()).toBeInTheDocument();
+  });
+
+  it("openPivot (from the screens' context and props) switches to the pivot screen with that request", async () => {
+    dialogOpen.mockResolvedValue("/synthetic/case-a.duckdb");
+    const user = userEvent.setup();
+    render(
+      <Shell
+        screens={{
+          accounts: (p) => (
+            <>
+              <Opener kind="ip" value="203.0.113.1" />
+              <button onClick={() => p.openPivot("account", "a@b.example")}>via props</button>
+            </>
+          ),
+        }}
+      />,
+    );
+    await user.click(await screen.findByRole("button", { name: "Open a case" }));
+    await screen.findByText(/queue canWrite=true/);
+    await user.click(screen.getByRole("button", { name: "Accounts" }));
+    await user.click(screen.getByRole("button", { name: "pivot 203.0.113.1" }));
+    expect(screen.getByText("pivot ip 203.0.113.1")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pivot" })).toHaveAttribute("aria-current", "page");
+    await user.click(screen.getByRole("button", { name: "Accounts" }));
+    await user.click(screen.getByRole("button", { name: "via props" }));
+    expect(screen.getByText("pivot account a@b.example")).toBeInTheDocument();
+  });
+
+  it("the Pivot entry opens an empty pivot form", async () => {
+    const user = await openViaDialog();
+    await screen.findByText("queue canWrite=true");
+    await user.click(screen.getByRole("button", { name: "Pivot" }));
+    expect(screen.getByText("pivot empty")).toBeInTheDocument();
+  });
+
+  it("a pivot request does not survive closing the case", async () => {
+    dialogOpen.mockResolvedValue("/synthetic/case-a.duckdb");
+    const user = userEvent.setup();
+    render(<Shell screens={{ accounts: () => <Opener kind="ip" value="203.0.113.1" /> }} />);
+    await user.click(await screen.findByRole("button", { name: "Open a case" }));
+    await screen.findByText(/queue canWrite=true/);
+    await user.click(screen.getByRole("button", { name: "Accounts" }));
+    await user.click(screen.getByRole("button", { name: "pivot 203.0.113.1" }));
+    await user.click(screen.getByRole("button", { name: "Close case" }));
+    await user.click(await screen.findByRole("button", { name: "Open a case" }));
+    await screen.findByText(/queue canWrite=true/);
+    await user.click(screen.getByRole("button", { name: "Pivot" }));
+    expect(screen.getByText("pivot empty")).toBeInTheDocument();
   });
 });

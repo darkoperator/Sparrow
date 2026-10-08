@@ -2,6 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { accounts as accountsFixture } from "../test/fixtures";
+import { NavContext } from "../shell/nav";
 import type { AccountPage } from "../api";
 
 vi.mock("../api", async (orig) => ({
@@ -45,5 +46,27 @@ describe("Accounts", () => {
     render(<Accounts onSelect={onSelect} />);
     await user.click(await screen.findByRole("button", { name: page.accounts[0].upn }));
     expect(onSelect).toHaveBeenCalledExactlyOnceWith(page.accounts[0].upn);
+  });
+
+  it("inside a shell, offers a pivot per account and per address with the raw values", async () => {
+    const openPivot = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <NavContext.Provider value={{ openPivot }}>
+        <Accounts onSelect={() => {}} />
+      </NavContext.Provider>,
+    );
+    const first = page.accounts[0];
+    await user.click(await screen.findByRole("button", { name: `Pivot on account ${first.upn}` }));
+    expect(openPivot).toHaveBeenLastCalledWith("account", first.upn);
+    const row = screen.getByRole("button", { name: first.upn }).closest("tr")!;
+    await user.click(within(row).getByRole("button", { name: `Pivot on IP ${first.addresses[0].ip}` }));
+    expect(openPivot).toHaveBeenLastCalledWith("ip", first.addresses[0].ip);
+  });
+
+  it("offers no pivot buttons outside a shell", async () => {
+    render(<Accounts onSelect={() => {}} />);
+    await screen.findByRole("button", { name: page.accounts[0].upn });
+    expect(screen.queryByRole("button", { name: /^Pivot on/ })).toBeNull();
   });
 });

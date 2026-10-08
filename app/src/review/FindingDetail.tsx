@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { findingDetail, isCmdError, type FindingDetail as Detail } from "../api";
 import Grid from "../grid/Grid";
+import { useNav } from "../shell/nav";
 import { displaySafe, displaySafeMultiline } from "../text";
 
 const EVIDENCE_COLUMNS = ["time", "table", "key", "role", "summary", "context"];
@@ -9,6 +10,7 @@ const EVIDENCE_COLUMNS = ["time", "table", "key", "role", "summary", "context"];
 export default function FindingDetail({ findingId }: { findingId: string }) {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const nav = useNav();
 
   useEffect(() => {
     let current = true;
@@ -52,6 +54,18 @@ export default function FindingDetail({ findingId }: { findingId: string }) {
           `${f.finding_id} · ${f.severity} · ${f.status}${f.rule_id ? ` · ${f.rule_id}` : ""}${
             f.actor_upn ? ` · ${f.actor_upn}` : ""
           }`,
+        )}
+        {nav && f.actor_upn && (
+          <>
+            {" "}
+            <button
+              className="link"
+              aria-label={`Pivot on account ${displaySafe(f.actor_upn)}`}
+              onClick={() => nav.openPivot("account", f.actor_upn!)}
+            >
+              Pivot
+            </button>
+          </>
         )}
       </p>
       {detail.analyst_guidance && (
