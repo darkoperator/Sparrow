@@ -6,7 +6,8 @@ use crate::state::{AppState, with_cancellable, with_case};
 use sparrow_core::case::browse::{self, BrowsePage, Filter, Sort};
 
 pub fn browse_tables(state: &AppState) -> CmdResult<Vec<String>> {
-    with_case(state, |open| Ok(browse::tables(open.case.conn())?))
+    let ticket = state.ticket();
+    with_case(state, ticket, |open| Ok(browse::tables(open.case.conn())?))
 }
 
 /// One page of `table`. Core allow-lists the table, validates every column and binds every value; a cancelled
@@ -20,7 +21,8 @@ pub fn browse_page(
     limit: usize,
     query_id: &str,
 ) -> CmdResult<BrowsePage> {
-    with_cancellable(state, query_id, |open| {
+    let ticket = state.ticket();
+    with_cancellable(state, ticket, query_id, |open| {
         Ok(browse::page(
             open.case.conn(),
             table,

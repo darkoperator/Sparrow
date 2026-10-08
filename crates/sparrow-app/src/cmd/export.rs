@@ -154,7 +154,8 @@ fn to_file(tmp: &Path, write: impl FnOnce(&mut dyn Write) -> CmdResult<()>) -> C
 
 /// The Markdown report; `reviewed_only` keeps accepted decisions only (analyst decisions are accepted as made).
 pub fn export_report(state: &AppState, path: &Path, reviewed_only: bool) -> CmdResult<()> {
-    with_case(state, |open| {
+    let ticket = state.ticket();
+    with_case(state, ticket, |open| {
         atomic(open, path, |tmp| {
             let opts = report_md::ReportOpts {
                 reviewed_only,
@@ -168,7 +169,8 @@ pub fn export_report(state: &AppState, path: &Path, reviewed_only: bool) -> CmdR
 
 /// The Timeline Explorer CSV of the verified entries (the CLI's default scope).
 pub fn export_timeline_csv(state: &AppState, path: &Path) -> CmdResult<()> {
-    with_case(state, |open| {
+    let ticket = state.ticket();
+    with_case(state, ticket, |open| {
         atomic(open, path, |tmp| {
             let opts = CsvOpts {
                 scope: Scope::Verified,
@@ -186,7 +188,8 @@ pub fn export_timeline_csv(state: &AppState, path: &Path) -> CmdResult<()> {
 }
 
 pub fn export_workbook(state: &AppState, path: &Path) -> CmdResult<()> {
-    with_case(state, |open| {
+    let ticket = state.ticket();
+    with_case(state, ticket, |open| {
         atomic(open, path, |tmp| {
             Ok(workbook_xlsx::write(
                 open.case.conn(),

@@ -44,15 +44,17 @@ fn check_upn(v: &str) -> CmdResult<&str> {
 }
 
 pub fn pivot_ip(state: &AppState, value: &str, cap: Option<usize>) -> CmdResult<Pivot> {
+    let ticket = state.ticket();
     let ip = check_ip(value)?;
-    with_case(state, |open| {
+    with_case(state, ticket, |open| {
         Ok(read::pivot_ip(open.case.conn(), ip, cap_of(cap))?)
     })
 }
 
 pub fn pivot_user(state: &AppState, value: &str, cap: Option<usize>) -> CmdResult<Pivot> {
+    let ticket = state.ticket();
     let upn = check_upn(value)?;
-    with_case(state, |open| {
+    with_case(state, ticket, |open| {
         Ok(read::pivot_user(open.case.conn(), upn, cap_of(cap))?)
     })
 }

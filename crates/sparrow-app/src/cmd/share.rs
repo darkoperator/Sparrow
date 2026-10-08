@@ -3,7 +3,7 @@
 
 use crate::cmd::export::atomic;
 use crate::error::{CmdError, CmdResult};
-use crate::state::{AppState, analyst, with_case, with_writable};
+use crate::state::{AppState, Ticket, analyst, with_case, with_writable};
 use serde::Serialize;
 use sparrow_core::case::share::{self, ImportSummary, MAX_BUNDLE_BYTES};
 use std::io::Read;
@@ -68,8 +68,9 @@ fn read_bundle(path: &Path) -> CmdResult<Vec<u8>> {
 
 /// Export the open case's reviewed work as the analyst, written atomically like the other exports.
 pub fn share_export(state: &AppState, path: &Path) -> CmdResult<ExportResult> {
+    let ticket = state.ticket();
     let me = analyst(state)?;
-    with_case(state, |open| {
+    with_case(state, ticket, |open| {
         let bundle = share::export(open.case.conn(), &me)?;
         let items = bundle.items.len();
         let (bytes, sha256) = share::to_bytes(&bundle)?;
@@ -84,8 +85,14 @@ pub fn share_export(state: &AppState, path: &Path) -> CmdResult<ExportResult> {
 
 /// What importing the file would do; nothing is stored.
 pub fn share_preview(state: &AppState, path: &Path) -> CmdResult<SharePreview> {
+    share_preview_at(state, state.ticket(), path)
+}
+
+/// [`share_preview`] for a request submitted at `ticket`: the file is read first, and the request is still refused
+/// if the case was switched meanwhile.
+pub fn share_preview_at(state: &AppState, ticket: Ticket, path: &Path) -> CmdResult<SharePreview> {
     let bytes = read_bundle(path)?;
-    with_case(state, |open| {
+    with_case(state, ticket, |open| {
         let (bundle, sha256) = share::parse(&bytes)?;
         let summary = share::preview(open.case.conn(), &bytes)?;
         Ok(SharePreview {
@@ -100,9 +107,19 @@ pub fn share_preview(state: &AppState, path: &Path) -> CmdResult<SharePreview> {
 
 /// Import the file as proposals, only when its bytes still hash to `sha256` (the preview's).
 pub fn share_import(state: &AppState, path: &Path, sha256: &str) -> CmdResult<ImportSummary> {
+    share_import_at(state, state.ticket(), path, sha256)
+}
+
+/// [`share_import`] for a request submitted at `ticket` (see [`share_preview_at`]).
+pub fn share_import_at(
+    state: &AppState,
+    ticket: Ticket,
+    path: &Path,
+    sha256: &str,
+) -> CmdResult<ImportSummary> {
     let me = analyst(state)?;
     let bytes = read_bundle(path)?;
-    with_writable(state, |open| {
+    with_writable(state, ticket, |open| {
         let (_, now) = share::parse(&bytes)?;
         if !now.eq_ignore_ascii_case(sha256.trim()) {
             return Err(CmdError::new(

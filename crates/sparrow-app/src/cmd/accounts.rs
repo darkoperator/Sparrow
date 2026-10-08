@@ -8,7 +8,8 @@ use tauri::State;
 /// The roll-up of `tenant` (all tenants when `None`). A roll-up that is not current comes back empty with a warning
 /// saying why (core's rule): the screen shows the warning, never a silently empty table.
 pub fn accounts_list(state: &AppState, tenant: Option<&str>) -> CmdResult<AccountPage> {
-    with_case(state, |open| {
+    let ticket = state.ticket();
+    with_case(state, ticket, |open| {
         Ok(read::accounts(open.case.conn(), tenant, None)?)
     })
 }

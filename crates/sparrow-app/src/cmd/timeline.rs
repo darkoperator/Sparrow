@@ -77,12 +77,14 @@ fn evidence(refs: &[String]) -> CmdResult<Vec<EvidenceRef>> {
 }
 
 pub fn timeline_list(state: &AppState) -> CmdResult<Vec<Entry>> {
-    with_case(state, |open| {
+    let ticket = state.ticket();
+    with_case(state, ticket, |open| {
         Ok(timeline_entries::list(open.case.conn(), None, None)?)
     })
 }
 
 pub fn timeline_propose(state: &AppState, args: NewEntryArgs) -> CmdResult<EntryWritten> {
+    let ticket = state.ticket();
     // Arguments first: a malformed one is refused without touching the case.
     let entry = NewEntry {
         tenant_key: args.tenant_key,
@@ -92,7 +94,7 @@ pub fn timeline_propose(state: &AppState, args: NewEntryArgs) -> CmdResult<Entry
         phase: phase(&args.phase)?,
         evidence: evidence(&args.evidence)?,
     };
-    with_writable(state, |open| {
+    with_writable(state, ticket, |open| {
         let actor = analyst(state)?.as_actor();
         let (entry_id, audit) = timeline_entries::propose(open.case.conn(), &actor, entry)?;
         Ok(EntryWritten { entry_id, audit })
@@ -105,6 +107,7 @@ pub fn timeline_edit(
     entry_id: &str,
     args: EntryEditArgs,
 ) -> CmdResult<EntryWritten> {
+    let ticket = state.ticket();
     let edit = EntryEdit {
         event_time: args.event_time.as_deref().map(time).transpose()?,
         title: args.title,
@@ -112,7 +115,7 @@ pub fn timeline_edit(
         phase: args.phase.as_deref().map(phase).transpose()?,
         evidence: args.evidence.as_deref().map(evidence).transpose()?,
     };
-    with_writable(state, |open| {
+    with_writable(state, ticket, |open| {
         let actor = analyst(state)?.as_actor();
         let (entry_id, audit) = timeline_entries::edit(open.case.conn(), &actor, entry_id, edit)?;
         Ok(EntryWritten { entry_id, audit })
@@ -121,7 +124,8 @@ pub fn timeline_edit(
 
 /// Core's verify takes no reason: the audit row says what was verified.
 pub fn timeline_verify(state: &AppState, entry_id: &str) -> CmdResult<AuditEntry> {
-    with_writable(state, |open| {
+    let ticket = state.ticket();
+    with_writable(state, ticket, |open| {
         let actor = analyst(state)?.as_actor();
         Ok(timeline_entries::verify(
             open.case.conn(),
@@ -137,7 +141,8 @@ pub fn timeline_reject(
     entry_id: &str,
     reason: Option<&str>,
 ) -> CmdResult<AuditEntry> {
-    with_writable(state, |open| {
+    let ticket = state.ticket();
+    with_writable(state, ticket, |open| {
         let actor = analyst(state)?.as_actor();
         Ok(timeline_entries::reject(
             open.case.conn(),

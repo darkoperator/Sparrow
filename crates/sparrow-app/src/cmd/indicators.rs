@@ -15,7 +15,8 @@ pub struct ActiveIndicator {
 /// Every indicator not removed whose verdict is malicious or suspicious (a benign verdict is a judgement that the
 /// value is fine, not something to highlight), in core's order: type, value, id.
 pub fn indicators_active(state: &AppState) -> CmdResult<Vec<ActiveIndicator>> {
-    with_case(state, |open| {
+    let ticket = state.ticket();
+    with_case(state, ticket, |open| {
         Ok(indicators::list_indicators(open.case.conn(), None, false)?
             .into_iter()
             .filter(|i| matches!(i.verdict, Verdict::Malicious | Verdict::Suspicious))

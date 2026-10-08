@@ -18,7 +18,8 @@ pub enum QueueItem {
 
 /// Pending agent decisions (oldest first), then open proposals (oldest bundle first).
 pub fn review_queue(state: &AppState) -> CmdResult<Vec<QueueItem>> {
-    with_case(state, |open| {
+    let ticket = state.ticket();
+    with_case(state, ticket, |open| {
         let conn = open.case.conn();
         let mut items: Vec<QueueItem> = review::pending(conn)?
             .into_iter()
@@ -30,7 +31,8 @@ pub fn review_queue(state: &AppState) -> CmdResult<Vec<QueueItem>> {
 }
 
 pub fn finding_detail(state: &AppState, finding_id: &str) -> CmdResult<FindingDetail> {
-    with_case(state, |open| {
+    let ticket = state.ticket();
+    with_case(state, ticket, |open| {
         Ok(read::finding_show(
             open.case.conn(),
             finding_id,
@@ -46,7 +48,8 @@ pub fn review_accept(
     decision_seq: i64,
     comment: Option<&str>,
 ) -> CmdResult<AuditEntry> {
-    with_writable(state, |open| {
+    let ticket = state.ticket();
+    with_writable(state, ticket, |open| {
         let who = analyst(state)?;
         Ok(review::review_accept(
             open.case.conn(),
@@ -66,7 +69,8 @@ pub fn review_discard(
     decision_seq: i64,
     comment: Option<&str>,
 ) -> CmdResult<AuditEntry> {
-    with_writable(state, |open| {
+    let ticket = state.ticket();
+    with_writable(state, ticket, |open| {
         let who = analyst(state)?;
         Ok(review::review_discard(
             open.case.conn(),
@@ -84,7 +88,8 @@ pub fn proposal_accept(
     bundle_sha256: &str,
     item_key: &str,
 ) -> CmdResult<Vec<AuditEntry>> {
-    with_writable(state, |open| {
+    let ticket = state.ticket();
+    with_writable(state, ticket, |open| {
         let who = analyst(state)?;
         Ok(share::accept(
             open.case.conn(),
@@ -101,7 +106,8 @@ pub fn proposal_discard(
     item_key: &str,
     comment: Option<&str>,
 ) -> CmdResult<AuditEntry> {
-    with_writable(state, |open| {
+    let ticket = state.ticket();
+    with_writable(state, ticket, |open| {
         let who = analyst(state)?;
         Ok(share::discard(
             open.case.conn(),

@@ -9,8 +9,9 @@ use sparrow_core::case::audit;
 use sparrow_core::data::DataDirs;
 use sparrow_core::db::VerifiedOpen;
 use sparrow_core::detect::load::{RuleSet, load_rules};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 #[derive(Default)]
@@ -21,16 +22,38 @@ pub struct AppState {
     /// The one cancellable query now running (`sql_run` / `browse_page`), kept outside `open` so `query_cancel` never
     /// waits for the lock the query holds. Registered after the case lock is taken, cleared when the call returns.
     /// Writes and share imports are never registered, so Cancel cannot reach them.
-    pub active: Mutex<Option<ActiveQuery>>,
+    pub active: Arc<Mutex<Option<ActiveQuery>>>,
+    /// Ids cancelled before their query registered (it was still waiting for the case lock, or the cancel overtook
+    /// the run), tagged with the case generation, newest last, at most [`MAX_PENDING_CANCELS`]. Always locked after
+    /// `active`.
+    pub cancelled: Mutex<VecDeque<(u64, String)>>,
     /// Bumped on every open and close; an [`ActiveQuery`] of another generation is never interrupted.
     pub generation: AtomicU64,
 }
 
 pub struct ActiveQuery {
     pub id: String,
-    pub generation: u64,
     pub handle: Arc<duckdb::InterruptHandle>,
+    /// Set by `query_cancel` when it matched this entry: the operation's result is then discarded as `interrupted`.
+    pub cancelled: Arc<AtomicBool>,
+    /// Set when the operation returned (the entry is cleared): ends the repeated interrupts.
+    pub done: Arc<AtomicBool>,
 }
+
+/// The case generation a request saw when it was submitted (its first statement). `with_case` and friends refuse the
+/// request, after taking the lock, when the case was switched or closed in between.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ticket(u64);
+
+impl AppState {
+    /// Capture a [`Ticket`]. Every public command does this as its first statement, before any I/O.
+    pub fn ticket(&self) -> Ticket {
+        Ticket(self.generation.load(Ordering::SeqCst))
+    }
+}
+
+/// How many cancelled-before-start ids are remembered; the oldest is forgotten first.
+pub const MAX_PENDING_CANCELS: usize = 64;
 
 /// The longest query id the frontend may send.
 pub const MAX_QUERY_ID: usize = 64;
@@ -71,10 +94,12 @@ fn lock(state: &AppState) -> MutexGuard<'_, Option<OpenCase>> {
 /// The whole transition, recording the recent path included, holds the open-case lock, so overlapping opens and
 /// closes apply in one order and each response describes the case that was open when it returned.
 pub fn case_open(state: &AppState, path: &Path, allow_upgrade: bool) -> CmdResult<CaseInfo> {
+    // Requests already queued for the current case are void from now on, whichever gets the lock first.
+    new_generation(state);
     let mut slot = lock(state);
     // Release the current case's writer first: reopening the same file would otherwise find it busy.
     *slot = None;
-    state.generation.fetch_add(1, Ordering::SeqCst);
+    new_generation(state);
     if !path.is_file() {
         return Err(CmdError::new(
             "not_found",
@@ -184,6 +209,16 @@ fn tenants(case: &Case) -> CmdResult<Vec<String>> {
         .map_err(sparrow_core::Error::from)?)
 }
 
+/// A new case generation: requests that captured the old one are refused, ids cancelled for it are forgotten.
+fn new_generation(state: &AppState) {
+    state.generation.fetch_add(1, Ordering::SeqCst);
+    state
+        .cancelled
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clear();
+}
+
 /// A caller-generated query id: 1..=64 characters, no control characters.
 pub fn check_query_id(id: &str) -> CmdResult<()> {
     if id.is_empty() || id.chars().count() > MAX_QUERY_ID || id.chars().any(char::is_control) {
@@ -195,70 +230,159 @@ pub fn check_query_id(id: &str) -> CmdResult<()> {
     Ok(())
 }
 
-/// Clears the active-query entry when the query's call returns, on every path (also an error or a panic).
-struct ActiveGuard<'a>(&'a AppState);
+/// Ends the query's registration when its call returns, on every path (an error and a panic too): marks it `done`
+/// and clears the entry while holding the `active` mutex, so no interrupt can follow the teardown.
+struct ActiveGuard<'a>(&'a AppState, Arc<AtomicBool>);
 
 impl Drop for ActiveGuard<'_> {
     fn drop(&mut self) {
-        *self.0.active.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        let mut active = self.0.active.lock().unwrap_or_else(|p| p.into_inner());
+        self.1.store(true, Ordering::SeqCst);
+        *active = None;
     }
 }
 
+/// Interrupt `handle` every 50 ms until `done`: a cancel that lands after the query registered but before it
+/// executes would otherwise hit an idle connection and be lost. `done` is checked and the interrupt is sent while
+/// holding the `active` mutex, which [`ActiveGuard`] also holds to set `done`, so nothing follows the teardown.
+fn keep_interrupting(
+    active: Arc<Mutex<Option<ActiveQuery>>>,
+    handle: Arc<duckdb::InterruptHandle>,
+    done: Arc<AtomicBool>,
+) {
+    std::thread::spawn(move || {
+        loop {
+            {
+                let _held = active.lock().unwrap_or_else(|p| p.into_inner());
+                if done.load(Ordering::SeqCst) {
+                    return;
+                }
+                handle.interrupt();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    });
+}
+
 /// Like [`with_case`], for a query the analyst can cancel with [`query_cancel`] (`id`): the query is registered once
-/// the case lock is held and unregistered when `f` returns.
+/// the case lock is held and unregistered when `f` returns. A cancel that matched while it ran makes the call return
+/// `interrupted` even when `f` finished (its result is discarded).
 pub fn with_cancellable<T>(
     state: &AppState,
+    ticket: Ticket,
     id: &str,
     f: impl FnOnce(&OpenCase) -> CmdResult<T>,
 ) -> CmdResult<T> {
     check_query_id(id)?;
-    with_case(state, |open| {
-        *state.active.lock().unwrap_or_else(|p| p.into_inner()) = Some(ActiveQuery {
+    locked_case(state, ticket, |open, generation| {
+        let (cancelled, done) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let mut active = state.active.lock().unwrap_or_else(|p| p.into_inner());
+        *active = Some(ActiveQuery {
             id: id.to_string(),
-            // Open and close bump the generation under the case lock this call holds, so it is this case's.
-            generation: state.generation.load(Ordering::SeqCst),
             handle: open.case.conn().interrupt_handle(),
+            cancelled: cancelled.clone(),
+            done: done.clone(),
         });
-        let _clear = ActiveGuard(state);
-        f(open)
+        let _clear = ActiveGuard(state, done);
+        // A cancel that arrived first was recorded under the `active` lock this call now holds: registering the
+        // entry and reading the record are one step, so a cancel is either seen here or interrupts the entry.
+        let cancelled_before = {
+            let mut pending = state.cancelled.lock().unwrap_or_else(|p| p.into_inner());
+            let before = pending.len();
+            pending.retain(|(g, i)| !(*g == generation && i == id));
+            pending.len() != before
+        };
+        drop(active);
+        if cancelled_before {
+            return Err(sparrow_core::Error::Interrupted.into());
+        }
+        let out = f(open);
+        if cancelled.load(Ordering::SeqCst) && out.is_ok() {
+            return Err(sparrow_core::Error::Interrupted.into());
+        }
+        out
     })
 }
 
-/// Interrupt the running cancellable query whose id is `id`. Anything else is a no-op: no query running, another
-/// query's id, an entry of another case generation, a write (never registered). Does not take the open-case lock (a
-/// running query holds it). The entry's lock is held while interrupting, so the entry cannot be replaced meanwhile.
+/// Interrupt the running cancellable query whose id is `id`. The active entry is matched by id alone: it is the
+/// query holding the case right now and is cleared when it returns. A write (never registered) and another query's
+/// id are not touched. An id with no running query is remembered for the current case generation, so a cancel that overtakes its query (still waiting for the case lock) makes it return `interrupted`
+/// without running. Does not take the open-case lock (a running query holds it). The `active` lock is held while
+/// deciding, so the entry cannot be replaced meanwhile.
 pub fn query_cancel(state: &AppState, id: &str) -> CmdResult<()> {
     check_query_id(id)?;
     let active = state.active.lock().unwrap_or_else(|p| p.into_inner());
+    let generation = state.generation.load(Ordering::SeqCst);
     if let Some(q) = active.as_ref() {
-        if q.id == id && q.generation == state.generation.load(Ordering::SeqCst) {
+        if q.id == id {
             q.handle.interrupt();
+            // Once: keep interrupting until the operation returns, so a cancel that landed before the query
+            // started executing still stops it.
+            if !q.cancelled.swap(true, Ordering::SeqCst) {
+                keep_interrupting(state.active.clone(), q.handle.clone(), q.done.clone());
+            }
+            return Ok(());
+        }
+    }
+    let mut pending = state.cancelled.lock().unwrap_or_else(|p| p.into_inner());
+    if !pending.iter().any(|(g, i)| *g == generation && i == id) {
+        pending.push_back((generation, id.to_string()));
+        while pending.len() > MAX_PENDING_CANCELS {
+            pending.pop_front();
         }
     }
     Ok(())
 }
 
 pub fn case_close(state: &AppState) -> CmdResult<()> {
-    *lock(state) = None;
-    state.generation.fetch_add(1, Ordering::SeqCst);
+    new_generation(state);
+    let mut slot = lock(state);
+    *slot = None;
+    new_generation(state);
     Ok(())
 }
 
 /// Run `f` on the open case for a read.
-pub fn with_case<T>(state: &AppState, f: impl FnOnce(&OpenCase) -> CmdResult<T>) -> CmdResult<T> {
+pub fn with_case<T>(
+    state: &AppState,
+    ticket: Ticket,
+    f: impl FnOnce(&OpenCase) -> CmdResult<T>,
+) -> CmdResult<T> {
+    locked_case(state, ticket, |open, _| f(open))
+}
+
+/// Take the open-case lock for a request. The ticket (the case generation, captured when the command started): a request that
+/// queued while the case was switched or closed (the generation moved, see [`new_generation`]) is refused instead of
+/// running on whatever case is open now. `f` also gets that generation.
+fn locked_case<T>(
+    state: &AppState,
+    ticket: Ticket,
+    f: impl FnOnce(&OpenCase, u64) -> CmdResult<T>,
+) -> CmdResult<T> {
+    let generation = ticket.0;
     let slot = lock(state);
+    if state.generation.load(Ordering::SeqCst) != generation {
+        return Err(CmdError::new(
+            "no_case",
+            "the case changed while this request was waiting; reload",
+        ));
+    }
     let open = slot
         .as_ref()
         .ok_or_else(|| CmdError::new("no_case", "no case is open"))?;
-    f(open)
+    f(open, generation)
 }
 
 /// Run `f` on the open case for a write: no case, a read-only case and an unusable case are refused first.
 pub fn with_writable<T>(
     state: &AppState,
+    ticket: Ticket,
     f: impl FnOnce(&OpenCase) -> CmdResult<T>,
 ) -> CmdResult<T> {
-    with_case(state, |open| {
+    with_case(state, ticket, |open| {
         if let Some(reason) = &open.read_only_reason {
             return Err(CmdError::new("read_only", reason.clone()));
         }

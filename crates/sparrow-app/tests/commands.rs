@@ -5,7 +5,23 @@ use sparrow_app::cmd::review::{
     review_queue,
 };
 use sparrow_app::settings::{self, Settings, record_recent, settings_get, settings_set_analyst};
-use sparrow_app::state::{AppState, analyst, case_close, case_open, with_case, with_writable};
+use sparrow_app::state::{AppState, analyst, case_close, case_open};
+use sparrow_app::state::{OpenCase, with_case as with_case_at, with_writable as with_writable_at};
+
+/// The tests that do not care about the ticket take one right at the call.
+fn with_case<T>(
+    state: &AppState,
+    f: impl FnOnce(&OpenCase) -> sparrow_app::CmdResult<T>,
+) -> sparrow_app::CmdResult<T> {
+    with_case_at(state, state.ticket(), f)
+}
+
+fn with_writable<T>(
+    state: &AppState,
+    f: impl FnOnce(&OpenCase) -> sparrow_app::CmdResult<T>,
+) -> sparrow_app::CmdResult<T> {
+    with_writable_at(state, state.ticket(), f)
+}
 use sparrow_core::Case;
 use sparrow_core::case::actor::{Actor, Reviewer};
 use sparrow_core::case::indicators::{IndicatorType, Verdict, add_indicator};
@@ -1533,10 +1549,10 @@ fn direct(open: &sparrow_app::state::OpenCase, sql: &str) -> sparrow_app::CmdRes
 #[test]
 fn cancel_with_a_wrong_id_or_nothing_running_does_nothing() {
     let state = AppState::default();
-    query_cancel(&state, "q-1").unwrap();
+    query_cancel(&state, "idle-1").unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let (state, _) = open_seeded(tmp.path());
-    query_cancel(&state, "q-1").unwrap();
+    query_cancel(&state, "idle-1").unwrap();
     assert_eq!(
         sql_run(&state, "SELECT 1 AS one", None).unwrap().rows.len(),
         1
@@ -1579,48 +1595,134 @@ fn cancel_with_a_wrong_id_or_nothing_running_does_nothing() {
     );
     // After close the entry is gone: a cancel is a no-op again.
     case_close(&state).unwrap();
-    query_cancel(&state, "q-1").unwrap();
+    query_cancel(&state, "idle-2").unwrap();
     assert!(state.active.lock().unwrap().is_none());
 }
 
 #[test]
-fn cancel_of_another_case_generation_does_not_touch_the_query() {
+fn cancel_reaches_a_running_query_while_a_switch_is_queued_behind_it() {
     let tmp = tempfile::tempdir().unwrap();
     let (state, _) = open_seeded(tmp.path());
-    // Another case replaces the first one (a new generation).
     let other = tmp.path().join("other");
     std::fs::create_dir_all(&other).unwrap();
     let other = case_file(&other);
-    let old_generation = state.generation.load(std::sync::atomic::Ordering::SeqCst);
-    case_open(&state, &other, false).unwrap();
-    assert!(state.generation.load(std::sync::atomic::Ordering::SeqCst) > old_generation);
-    let register = |generation: u64| {
+    let g0 = state.generation.load(std::sync::atomic::Ordering::SeqCst);
+    let (result, opened, took) = std::thread::scope(|scope| {
+        let runner = scope.spawn(|| sql_run_id(&state, LONG, None, "s-1"));
+        let t = std::time::Instant::now();
+        while state.active.lock().unwrap().is_none() {
+            assert!(
+                t.elapsed() < std::time::Duration::from_secs(10),
+                "never registered"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // The switch is requested (generation bumped) and queues behind the running query.
+        let opener = scope.spawn(|| case_open(&state, &other, false));
+        while state.generation.load(std::sync::atomic::Ordering::SeqCst) == g0 {
+            assert!(t.elapsed() < std::time::Duration::from_secs(10));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!runner.is_finished() && !opener.is_finished());
+        let cancelled = std::time::Instant::now();
+        // The active entry is matched by id alone, whatever generation the case is moving to.
+        while !runner.is_finished() {
+            assert!(
+                cancelled.elapsed() < std::time::Duration::from_secs(30),
+                "not interrupted"
+            );
+            query_cancel(&state, "s-1").unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let took = cancelled.elapsed();
+        (runner.join().unwrap(), opener.join().unwrap(), took)
+    });
+    assert_eq!(result.unwrap_err().kind, "interrupted");
+    assert!(took < std::time::Duration::from_secs(2), "{took:?}");
+    // The switch then completed.
+    assert_eq!(opened.unwrap().path, other.display().to_string());
+    assert_eq!(
+        sql_run_id(&state, "SELECT 1 AS one", None, "s-2")
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn a_cancel_is_never_followed_by_an_interrupt_of_the_next_operation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, _) = open_seeded(tmp.path());
+    for i in 0..200u64 {
+        let id = format!("h-{i}");
+        let r = sparrow_app::state::with_cancellable(&state, state.ticket(), &id, |open| {
+            query_cancel(&state, &id).unwrap();
+            // The repeated interrupt fires at different phases of the operation.
+            std::thread::sleep(std::time::Duration::from_millis((i % 5) * 15));
+            direct(open, "SELECT count(*) FROM range(2000000)")
+        });
+        assert_eq!(r.unwrap_err().kind, "interrupted", "iteration {i}");
+        // Straight after the teardown, on the same connection: a read, a SQL run and a write, none interrupted.
         with_case(&state, |open| {
-            *state.active.lock().unwrap() = Some(sparrow_app::state::ActiveQuery {
-                id: "q-1".into(),
-                generation,
-                handle: open.case.conn().interrupt_handle(),
-            });
+            direct(open, "SELECT count(*) FROM range(1000000)")
+        })
+        .unwrap_or_else(|e| panic!("iteration {i}: follow-on read: {e:?}"));
+        sql_run_id(
+            &state,
+            "SELECT count(*) AS n FROM range(1000000)",
+            None,
+            &format!("f-{i}"),
+        )
+        .unwrap_or_else(|e| panic!("iteration {i}: follow-on run: {e:?}"));
+        with_writable(&state, |open| {
+            write::in_tx(open.case.conn(), |tx| {
+                tx.execute_batch(&format!("INSERT INTO case_meta VALUES ('zz_h{i}', '1')"))?;
+                Ok(())
+            })?;
             Ok(())
         })
-        .unwrap();
-    };
-    let run = |generation: u64| {
-        register(generation);
-        let r = cancelling(
-            || with_case(&state, |open| direct(open, MEDIUM)),
-            || query_cancel(&state, "q-1").unwrap(),
-            std::time::Duration::from_secs(60),
-        )
-        .0;
-        *state.active.lock().unwrap() = None;
-        r
-    };
-    // An entry left from the old generation is never interrupted, even with the right id.
-    run(old_generation).unwrap();
-    // The same entry of the current generation is (so the test above is not vacuous).
-    let e = run(state.generation.load(std::sync::atomic::Ordering::SeqCst)).unwrap_err();
-    assert_eq!(e.kind, "interrupted", "{e:?}");
+        .unwrap_or_else(|e| panic!("iteration {i}: follow-on write: {e:?}"));
+    }
+    assert_eq!(
+        rows(
+            &state,
+            "SELECT count(*) FROM case_meta WHERE key LIKE 'zz_h%'"
+        ),
+        200
+    );
+    assert!(state.active.lock().unwrap().is_none());
+}
+
+#[test]
+fn a_file_read_before_the_case_lock_does_not_outlive_a_case_switch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (a, b) = two_apps(tmp.path(), "ann", "bob");
+    confirm_findings(&a, 1);
+    let file = tmp.path().join("work.sparrow-share.json");
+    let exported = share_export(&a, &file).unwrap();
+    // The request is submitted (ticket) ...
+    let ticket = b.ticket();
+    // ... and the case is switched before it reaches the lock (here: after its file was "read").
+    let b_path = with_case(&b, |open| Ok(open.path.clone())).unwrap();
+    case_open(&b, &b_path, false).unwrap();
+    let e = sparrow_app::cmd::share::share_preview_at(&b, ticket, &file).unwrap_err();
+    assert_eq!(e.kind, "no_case", "{e:?}");
+    let e =
+        sparrow_app::cmd::share::share_import_at(&b, ticket, &file, &exported.sha256).unwrap_err();
+    assert_eq!(e.kind, "no_case", "{e:?}");
+    assert_eq!(rows(&b, "SELECT count(*) FROM imported_proposals"), 0);
+    assert_eq!(
+        rows(
+            &b,
+            "SELECT count(*) FROM audit_trail WHERE action = 'import_share'"
+        ),
+        0
+    );
+    // A request submitted after the switch is unaffected.
+    assert_eq!(share_preview(&b, &file).unwrap().sha256, exported.sha256);
+    share_import(&b, &file, &exported.sha256).unwrap();
 }
 
 #[test]
@@ -2394,4 +2496,273 @@ fn a_damaged_highlights_file_is_an_error_and_is_left_untouched() {
     std::fs::remove_file(&file).unwrap();
     assert!(highlights_get(&state, "case-1").unwrap().is_empty());
     highlights_set(&state, "case-2", vec![]).unwrap();
+}
+
+// ---- a cancel that overtakes its query ----
+
+#[test]
+fn a_cancel_before_the_query_registers_makes_it_return_interrupted_without_running() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, _) = open_seeded(tmp.path());
+    let (result, after_release) = std::thread::scope(|scope| {
+        let mut runner = None;
+        // The case lock is held here, so the query waits for it.
+        with_case(&state, |_| {
+            runner = Some(scope.spawn(|| sql_run_id(&state, LONG, None, "p-1")));
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            assert!(
+                !runner.as_ref().unwrap().is_finished(),
+                "it must be waiting"
+            );
+            assert!(state.active.lock().unwrap().is_none(), "not registered yet");
+            query_cancel(&state, "p-1").unwrap();
+            Ok(())
+        })
+        .unwrap();
+        let released = std::time::Instant::now();
+        let r = runner.unwrap().join().unwrap();
+        (r, released.elapsed())
+    });
+    let e = result.unwrap_err();
+    assert_eq!(e.kind, "interrupted", "{e:?}");
+    // LONG would run for minutes: it never ran.
+    assert!(
+        after_release < std::time::Duration::from_secs(2),
+        "{after_release:?}"
+    );
+    assert!(state.active.lock().unwrap().is_none());
+    assert!(
+        state.cancelled.lock().unwrap().is_empty(),
+        "the record is consumed"
+    );
+    // The id is free again, and the case is usable.
+    assert_eq!(
+        sql_run_id(&state, "SELECT 1 AS one", None, "p-1")
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+    // A browse page behaves the same.
+    query_cancel(&state, "p-2").unwrap();
+    let e = browse_page_id(&state, "signins", &[], None, 0, 5, "p-2").unwrap_err();
+    assert_eq!(e.kind, "interrupted", "{e:?}");
+    assert_eq!(
+        browse_page_id(&state, "signins", &[], None, 0, 5, "p-2")
+            .unwrap()
+            .rows
+            .len(),
+        5
+    );
+}
+
+#[test]
+fn a_cancel_recorded_for_a_previous_case_generation_does_not_block_a_new_run() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, _) = open_seeded(tmp.path());
+    query_cancel(&state, "g-1").unwrap();
+    assert_eq!(state.cancelled.lock().unwrap().len(), 1);
+    // Reopening forgets it.
+    let again = tmp.path().join("again");
+    std::fs::create_dir_all(&again).unwrap();
+    case_open(&state, &case_file(&again), false).unwrap();
+    assert!(state.cancelled.lock().unwrap().is_empty());
+    assert_eq!(
+        sql_run_id(&state, "SELECT 1 AS one", None, "g-1")
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+    // Even a stale record that survived (an older generation tag) is ignored.
+    let old = state.generation.load(std::sync::atomic::Ordering::SeqCst) - 1;
+    state
+        .cancelled
+        .lock()
+        .unwrap()
+        .push_back((old, "g-2".into()));
+    assert_eq!(
+        sql_run_id(&state, "SELECT 1 AS one", None, "g-2")
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+    // Closing forgets too.
+    query_cancel(&state, "g-3").unwrap();
+    case_close(&state).unwrap();
+    assert!(state.cancelled.lock().unwrap().is_empty());
+}
+
+#[test]
+fn the_remembered_cancels_never_grow_past_their_cap() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, _) = open_seeded(tmp.path());
+    let cap = sparrow_app::state::MAX_PENDING_CANCELS;
+    assert_eq!(cap, 64);
+    for n in 0..(cap * 3) {
+        query_cancel(&state, &format!("c-{n}")).unwrap();
+        assert!(state.cancelled.lock().unwrap().len() <= cap);
+    }
+    // The same id twice is one record.
+    query_cancel(&state, &format!("c-{}", cap * 3 - 1)).unwrap();
+    let ids: Vec<String> = state
+        .cancelled
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, i)| i.clone())
+        .collect();
+    assert_eq!(ids.len(), cap);
+    assert_eq!(ids.last().unwrap(), &format!("c-{}", cap * 3 - 1));
+    assert_eq!(ids.first().unwrap(), &format!("c-{}", cap * 2));
+    // The newest still cancels its query; the forgotten oldest does not.
+    let e = sql_run_id(&state, "SELECT 1", None, &format!("c-{}", cap * 3 - 1)).unwrap_err();
+    assert_eq!(e.kind, "interrupted");
+    assert_eq!(
+        sql_run_id(&state, "SELECT 1 AS one", None, "c-0")
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+}
+
+// ---- round 2: a cancel between registration and execution; a case switch while queued ----
+
+#[test]
+fn a_cancel_after_registration_but_before_execution_still_stops_the_query() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, s) = open_seeded(tmp.path());
+    let started = std::time::Instant::now();
+    // The closure runs after registration; the cancel lands before the query starts (an idle connection).
+    let e = sparrow_app::state::with_cancellable(&state, state.ticket(), "r-1", |open| {
+        query_cancel(&state, "r-1").unwrap();
+        direct(open, LONG)
+    })
+    .unwrap_err();
+    assert_eq!(e.kind, "interrupted", "{e:?}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(state.active.lock().unwrap().is_none());
+    // A query that finishes anyway has its result discarded.
+    let r = sparrow_app::state::with_cancellable(&state, state.ticket(), "r-2", |open| {
+        query_cancel(&state, "r-2").unwrap();
+        direct(open, "SELECT 1")
+    });
+    assert_eq!(r.unwrap_err().kind, "interrupted");
+    // Nothing is left interrupting: the case is fully usable, a normal run is not affected, and a write works.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert_eq!(
+        sql_run_id(&state, "SELECT 1 AS one", None, "r-3")
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+    let slow = sql_run_id(
+        &state,
+        "SELECT (sum(hash(a)) % 7)::BIGINT FROM range(300000000) a",
+        None,
+        "r-4",
+    );
+    assert!(slow.is_ok(), "{slow:?}");
+    let queue = review_queue(&state).unwrap();
+    let seq = decision(&queue, "timeline_entry", &s.entry).decision_seq;
+    review_accept(&state, "timeline_entry", &s.entry, seq, None).unwrap();
+    with_case(&state, |open| {
+        open.case.ensure_usable()?;
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn requests_queued_for_a_case_that_is_then_replaced_are_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, s) = open_seeded(tmp.path());
+    let b_dir = tmp.path().join("b");
+    std::fs::create_dir_all(&b_dir).unwrap();
+    let b = case_file(&b_dir);
+    let queue = review_queue(&state).unwrap();
+    let seq = decision(&queue, "timeline_entry", &s.entry).decision_seq;
+    let audit_a = rows(&state, "SELECT count(*) FROM audit_trail");
+    let (sql, accept, opened) = std::thread::scope(|scope| {
+        let (mut q, mut w, mut o) = (None, None, None);
+        let g0 = state.generation.load(std::sync::atomic::Ordering::SeqCst);
+        // The case lock is held while both requests are submitted for case A and the switch to B is requested.
+        with_case(&state, |_| {
+            q = Some(scope.spawn(|| sql_run_id(&state, "SELECT 1 AS one", None, "n-1")));
+            w = Some(scope.spawn(|| review_accept(&state, "timeline_entry", &s.entry, seq, None)));
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            o = Some(scope.spawn(|| case_open(&state, &b, false)));
+            // Wait until the switch has been requested (it is queued behind the lock too).
+            let t = std::time::Instant::now();
+            while state.generation.load(std::sync::atomic::Ordering::SeqCst) == g0 {
+                assert!(t.elapsed() < std::time::Duration::from_secs(10));
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Ok(())
+        })
+        .unwrap();
+        (
+            q.unwrap().join().unwrap(),
+            w.unwrap().join().unwrap(),
+            o.unwrap().join().unwrap(),
+        )
+    });
+    opened.unwrap();
+    let e = sql.unwrap_err();
+    assert_eq!(e.kind, "no_case", "{e:?}");
+    assert!(
+        e.message.contains("changed while this request was waiting"),
+        "{}",
+        e.message
+    );
+    let e = accept.unwrap_err();
+    assert_eq!(e.kind, "no_case", "{e:?}");
+    // Nothing ran on B (no audit rows beyond a fresh case's), and A was not written either.
+    let on_b = rows(&state, "SELECT count(*) FROM audit_trail");
+    assert!(on_b <= audit_a, "B is a fresh copy: {on_b} vs {audit_a}");
+    assert_eq!(
+        rows(
+            &state,
+            "SELECT count(*) FROM audit_trail WHERE action = 'accept'"
+        ),
+        0
+    );
+    // A genuinely new request after the switch is unaffected.
+    assert_eq!(
+        sql_run_id(&state, "SELECT 1 AS one", None, "n-2")
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+    assert!(review_queue(&state).is_ok());
+    // Closing refuses queued requests the same way.
+    let closed = std::thread::scope(|scope| {
+        let (mut q, mut c) = (None, None);
+        let g0 = state.generation.load(std::sync::atomic::Ordering::SeqCst);
+        with_case(&state, |_| {
+            q = Some(scope.spawn(|| accounts_for_test(&state)));
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            c = Some(scope.spawn(|| case_close(&state)));
+            while state.generation.load(std::sync::atomic::Ordering::SeqCst) == g0 {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Ok(())
+        })
+        .unwrap();
+        c.unwrap().join().unwrap().unwrap();
+        q.unwrap().join().unwrap()
+    });
+    assert_eq!(closed.unwrap_err().kind, "no_case");
+}
+
+fn accounts_for_test(state: &AppState) -> sparrow_app::CmdResult<()> {
+    sparrow_app::cmd::accounts::accounts_list(state, None).map(|_| ())
 }

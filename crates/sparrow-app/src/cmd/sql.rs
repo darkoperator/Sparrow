@@ -12,7 +12,10 @@ pub const MAX_LIMIT: usize = 10_000;
 pub const MAX_SQL_BYTES: usize = 1024 * 1024;
 
 pub fn sql_schema(state: &AppState, table: Option<&str>) -> CmdResult<Vec<TableInfo>> {
-    with_case(state, |open| Ok(query::schema_on(&open.case, table)?))
+    let ticket = state.ticket();
+    with_case(state, ticket, |open| {
+        Ok(query::schema_on(&open.case, table)?)
+    })
 }
 
 /// One SELECT, at most `limit` rows (default 1000, clamped to 1..=10000). Core refuses anything but one SELECT; an
@@ -23,6 +26,7 @@ pub fn sql_run(
     limit: Option<usize>,
     query_id: &str,
 ) -> CmdResult<QueryResult> {
+    let ticket = state.ticket();
     if sql.len() > MAX_SQL_BYTES {
         return Err(CmdError::new(
             "invalid",
@@ -30,7 +34,7 @@ pub fn sql_run(
         ));
     }
     let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
-    with_cancellable(state, query_id, |open| {
+    with_cancellable(state, ticket, query_id, |open| {
         Ok(query::run_on(&open.case, sql, limit)?)
     })
 }
