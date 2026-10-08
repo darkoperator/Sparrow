@@ -33,6 +33,10 @@ fn main() {
             cmd::timeline::commands::timeline_edit,
             cmd::timeline::commands::timeline_verify,
             cmd::timeline::commands::timeline_reject,
+            cmd::accounts::commands::accounts_list,
+            cmd::export::commands::export_report,
+            cmd::export::commands::export_timeline_csv,
+            cmd::export::commands::export_workbook,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Sparrow review app");

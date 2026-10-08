@@ -4,7 +4,8 @@
 import caseInfoJson from "./fixtures/case_info.json";
 import findingDetailJson from "./fixtures/finding_detail.json";
 import queueJson from "./fixtures/queue.json";
-import type { CaseInfo, FindingDetail, QueueItem } from "../api";
+import accountsJson from "./fixtures/accounts.json";
+import type { AccountPage, CaseInfo, FindingDetail, QueueItem } from "../api";
 
 function need(where: string, o: unknown, keys: string[]): asserts o is Record<string, unknown> {
   if (typeof o !== "object" || o === null) throw new Error(`fixture ${where}: not an object`);
@@ -53,4 +54,23 @@ export function findingDetail(): FindingDetail {
   if (!Array.isArray(v.audit) || v.audit.length === 0) throw new Error("fixture finding_detail: no audit");
   v.audit.forEach((a: unknown, i) => need(`finding_detail.audit[${i}]`, a, AUDIT));
   return v as unknown as FindingDetail;
+}
+
+const ACCOUNT = [
+  "tenant_key", "upn", "worst_severity", "finding_count", "by_severity", "stages", "first_suspicious", "rules",
+  "addresses", "addresses_total", "addresses_truncated",
+];
+const ADDRESS = ["ip", "reasons", "tables", "first_seen", "last_seen", "asn", "asn_org", "is_hosting", "spray_source"];
+
+export function accounts(): AccountPage {
+  const v: unknown = clone(accountsJson);
+  need("accounts", v, ["accounts", "total", "truncated", "warnings"]);
+  if (!Array.isArray(v.accounts) || v.accounts.length === 0) throw new Error("fixture accounts: no accounts");
+  if (!Array.isArray(v.warnings)) throw new Error("fixture accounts: warnings is not an array");
+  v.accounts.forEach((a: unknown, i) => {
+    need(`accounts[${i}]`, a, ACCOUNT);
+    if (!Array.isArray(a.addresses)) throw new Error(`fixture accounts[${i}]: addresses is not an array`);
+    a.addresses.forEach((x: unknown, j) => need(`accounts[${i}].addresses[${j}]`, x, ADDRESS));
+  });
+  return v as unknown as AccountPage;
 }

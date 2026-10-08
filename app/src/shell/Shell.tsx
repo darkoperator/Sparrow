@@ -5,6 +5,7 @@ import { caseClose, caseOpen, isCmdError, settingsGet, type CaseInfo, type Setti
 import ReviewQueue from "../review/ReviewQueue";
 import { displaySafe } from "../text";
 import AnalystPrompt from "./AnalystPrompt";
+import ExportMenu from "./ExportMenu";
 import OpenCase, { type UpgradePrompt } from "./OpenCase";
 import ReadOnlyBanner from "./ReadOnlyBanner";
 
@@ -18,6 +19,8 @@ const NAV: ReadonlyArray<{ id: ScreenId; label: string }> = [
 
 export interface ScreenProps {
   canWrite: boolean;
+  /** Show the review queue filtered to this account. */
+  showAccount: (upn: string) => void;
 }
 
 interface ShellProps {
@@ -29,6 +32,8 @@ export default function Shell({ screens = {} }: ShellProps) {
   const [settings, setSettings] = useState<Settings>({ analyst: null, recent: [] });
   const [info, setInfo] = useState<CaseInfo | null>(null);
   const [screen, setScreen] = useState<ScreenId>("review");
+  // The review queue's account filter lives here: the accounts screen sets it, the queue shows it.
+  const [accountFilter, setAccountFilter] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [upgrade, setUpgrade] = useState<UpgradePrompt | null>(null);
 
@@ -57,6 +62,7 @@ export default function Shell({ screens = {} }: ShellProps) {
     try {
       setInfo(await caseOpen(path, allowUpgrade));
       setScreen("review");
+      setAccountFilter(null);
       await refreshSettings();
     } catch (e) {
       if (isCmdError(e) && e.kind === "needs_upgrade") {
@@ -94,10 +100,18 @@ export default function Shell({ screens = {} }: ShellProps) {
   }
 
   const canWrite = info.read_only_reason === null && settings.analyst !== null;
+  const showAccount = (upn: string) => {
+    setAccountFilter(upn);
+    setScreen("review");
+  };
   const body = (() => {
-    if (screen === "review") return <ReviewQueue canWrite={canWrite} />;
+    if (screen === "review") {
+      return (
+        <ReviewQueue canWrite={canWrite} accountFilter={accountFilter} onClearFilter={() => setAccountFilter(null)} />
+      );
+    }
     const render = screens[screen];
-    if (render) return render({ canWrite });
+    if (render) return render({ canWrite, showAccount });
     const label = NAV.find((n) => n.id === screen)?.label ?? screen;
     return <p>{label} is not built yet.</p>;
   })();
@@ -107,7 +121,7 @@ export default function Shell({ screens = {} }: ShellProps) {
       <header className="titlebar">
         <strong>Sparrow</strong> <span title={info.path}>{displaySafe(info.case_id)}</span>{" "}
         {settings.analyst && <span>Analyst: {displaySafe(settings.analyst)}</span>}{" "}
-        <button onClick={() => void closeCase()}>Close case</button>
+        <ExportMenu /> <button onClick={() => void closeCase()}>Close case</button>
       </header>
       {info.read_only_reason !== null && <ReadOnlyBanner reason={info.read_only_reason} />}
       {info.warnings.length > 0 && (

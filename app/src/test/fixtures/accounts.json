@@ -1,0 +1,438 @@
+{
+  "accounts": [
+    {
+      "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
+      "upn": "marlowe.rhodes@contoso.example",
+      "worst_severity": "high",
+      "finding_count": 24,
+      "by_severity": {
+        "high": 16,
+        "low": 1,
+        "medium": 7
+      },
+      "stages": [
+        "suspicious_sign_in",
+        "persistence",
+        "mail_access",
+        "sending",
+        "consent",
+        "mfa_change"
+      ],
+      "first_suspicious": "2026-08-21T09:12:00.000000Z",
+      "rules": [
+        "SPW-APP-001",
+        "SPW-APP-002",
+        "SPW-FILE-001",
+        "SPW-FILE-002",
+        "SPW-FILE-003",
+        "SPW-HAWK-003",
+        "SPW-HAWK-006",
+        "SPW-HAWK-007",
+        "SPW-HAWK-008",
+        "SPW-HAWK-009",
+        "SPW-HAWK-010",
+        "SPW-HAWK-012",
+        "SPW-HAWK-015",
+        "SPW-ID-001",
+        "SPW-ID-002",
+        "SPW-ID-003",
+        "SPW-ID-004",
+        "SPW-ID-010",
+        "SPW-MAIL-003",
+        "SPW-MAIL-004",
+        "SPW-MAIL-005",
+        "SPW-MAIL-006",
+        "SPW-MAIL-007"
+      ],
+      "addresses": [
+        {
+          "ip": "203.0.113.1",
+          "reasons": [
+            "finding_evidence",
+            "hosting",
+            "risky_signin"
+          ],
+          "tables": [
+            "signins",
+            "ual_events"
+          ],
+          "first_seen": "2026-08-21T09:11:38.000000Z",
+          "last_seen": "2026-08-21T09:12:00.000000Z",
+          "asn": 14061,
+          "asn_org": "DigitalOcean",
+          "is_hosting": true,
+          "spray_source": false,
+          "in_user_signins": true
+        },
+        {
+          "ip": "203.0.113.2",
+          "reasons": [
+            "finding_evidence",
+            "hosting",
+            "risky_signin"
+          ],
+          "tables": [
+            "directory_audits",
+            "mailbox_audit_legacy",
+            "message_trace",
+            "risk_detections",
+            "signins",
+            "ual_events"
+          ],
+          "first_seen": "2026-08-21T09:15:00.000000Z",
+          "last_seen": "2026-08-21T14:12:00.000000Z",
+          "asn": 20473,
+          "asn_org": "Vultr (The Constant Company)",
+          "is_hosting": true,
+          "spray_source": false,
+          "in_user_signins": true
+        },
+        {
+          "ip": "203.0.113.4",
+          "reasons": [
+            "finding_evidence",
+            "acts_without_signin",
+            "hosting"
+          ],
+          "tables": [
+            "ual_events"
+          ],
+          "first_seen": "2026-08-21T10:12:00.000000Z",
+          "last_seen": "2026-08-21T10:21:10.000000Z",
+          "asn": 14061,
+          "asn_org": "DigitalOcean",
+          "is_hosting": true,
+          "spray_source": false,
+          "in_user_signins": false
+        }
+      ],
+      "addresses_total": 3,
+      "addresses_truncated": false
+    },
+    {
+      "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
+      "upn": "vance.ingram@contoso.example",
+      "worst_severity": "high",
+      "finding_count": 2,
+      "by_severity": {
+        "high": 2
+      },
+      "stages": [
+        "suspicious_sign_in",
+        "persistence"
+      ],
+      "first_suspicious": "2026-09-07T11:05:00.000000Z",
+      "rules": [
+        "SPW-ID-007",
+        "SPW-MAIL-003"
+      ],
+      "addresses": [
+        {
+          "ip": "203.0.113.6",
+          "reasons": [
+            "finding_evidence"
+          ],
+          "tables": [
+            "signins",
+            "ual_events"
+          ],
+          "first_seen": "2026-09-07T10:50:00.000000Z",
+          "last_seen": "2026-09-07T11:05:00.000000Z",
+          "asn": 64509,
+          "asn_org": "Documentation Residential ISP",
+          "is_hosting": false,
+          "spray_source": false,
+          "in_user_signins": true
+        }
+      ],
+      "addresses_total": 1,
+      "addresses_truncated": false
+    },
+    {
+      "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
+      "upn": "admin@contoso.example",
+      "worst_severity": "high",
+      "finding_count": 3,
+      "by_severity": {
+        "high": 2,
+        "medium": 1
+      },
+      "stages": [
+        "persistence"
+      ],
+      "first_suspicious": "2026-08-20T15:00:00.000000Z",
+      "rules": [
+        "SPW-HAWK-002",
+        "SPW-HAWK-014",
+        "SPW-MAIL-004"
+      ],
+      "addresses": [
+        {
+          "ip": "203.0.113.2",
+          "reasons": [
+            "finding_evidence",
+            "acts_without_signin",
+            "hosting"
+          ],
+          "tables": [
+            "ual_events"
+          ],
+          "first_seen": "2026-08-23T23:10:00.000000Z",
+          "last_seen": "2026-08-23T23:40:00.000000Z",
+          "asn": 20473,
+          "asn_org": "Vultr (The Constant Company)",
+          "is_hosting": true,
+          "spray_source": false,
+          "in_user_signins": false
+        }
+      ],
+      "addresses_total": 1,
+      "addresses_truncated": false
+    },
+    {
+      "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
+      "upn": "ollie.carter@contoso.example",
+      "worst_severity": "high",
+      "finding_count": 3,
+      "by_severity": {
+        "high": 1,
+        "medium": 2
+      },
+      "stages": [
+        "suspicious_sign_in"
+      ],
+      "first_suspicious": "2026-08-25T11:00:00.000000Z",
+      "rules": [
+        "SPW-HAWK-012",
+        "SPW-ID-002",
+        "SPW-ID-003"
+      ],
+      "addresses": [
+        {
+          "ip": "203.0.113.1",
+          "reasons": [
+            "finding_evidence",
+            "hosting",
+            "risky_signin"
+          ],
+          "tables": [
+            "signins",
+            "ual_events"
+          ],
+          "first_seen": "2026-08-25T11:00:00.000000Z",
+          "last_seen": "2026-08-25T11:00:00.000000Z",
+          "asn": 14061,
+          "asn_org": "DigitalOcean",
+          "is_hosting": true,
+          "spray_source": false,
+          "in_user_signins": true
+        }
+      ],
+      "addresses_total": 1,
+      "addresses_truncated": false
+    },
+    {
+      "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
+      "upn": "xander.irwin@contoso.example",
+      "worst_severity": "high",
+      "finding_count": 3,
+      "by_severity": {
+        "high": 1,
+        "medium": 2
+      },
+      "stages": [
+        "suspicious_sign_in"
+      ],
+      "first_suspicious": "2026-08-25T11:00:00.000000Z",
+      "rules": [
+        "SPW-HAWK-012",
+        "SPW-ID-002",
+        "SPW-ID-003"
+      ],
+      "addresses": [
+        {
+          "ip": "203.0.113.1",
+          "reasons": [
+            "finding_evidence",
+            "hosting",
+            "risky_signin"
+          ],
+          "tables": [
+            "signins",
+            "ual_events"
+          ],
+          "first_seen": "2026-08-25T11:00:00.000000Z",
+          "last_seen": "2026-08-25T11:00:00.000000Z",
+          "asn": 14061,
+          "asn_org": "DigitalOcean",
+          "is_hosting": true,
+          "spray_source": false,
+          "in_user_signins": true
+        }
+      ],
+      "addresses_total": 1,
+      "addresses_truncated": false
+    },
+    {
+      "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
+      "upn": "frances.rourke@contoso.example",
+      "worst_severity": "high",
+      "finding_count": 3,
+      "by_severity": {
+        "high": 1,
+        "medium": 2
+      },
+      "stages": [
+        "suspicious_sign_in"
+      ],
+      "first_suspicious": "2026-08-27T10:00:00.000000Z",
+      "rules": [
+        "SPW-HAWK-012",
+        "SPW-ID-002",
+        "SPW-ID-003"
+      ],
+      "addresses": [
+        {
+          "ip": "203.0.113.1",
+          "reasons": [
+            "finding_evidence",
+            "hosting",
+            "risky_signin"
+          ],
+          "tables": [
+            "signins",
+            "ual_events"
+          ],
+          "first_seen": "2026-08-27T10:00:00.000000Z",
+          "last_seen": "2026-08-27T10:00:00.000000Z",
+          "asn": 14061,
+          "asn_org": "DigitalOcean",
+          "is_hosting": true,
+          "spray_source": false,
+          "in_user_signins": true
+        }
+      ],
+      "addresses_total": 1,
+      "addresses_truncated": false
+    },
+    {
+      "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
+      "upn": "gale.yates@contoso.example",
+      "worst_severity": "medium",
+      "finding_count": 1,
+      "by_severity": {
+        "medium": 1
+      },
+      "stages": [
+        "consent"
+      ],
+      "first_suspicious": "2026-08-09T14:00:00.000000Z",
+      "rules": [
+        "SPW-HAWK-006"
+      ],
+      "addresses": [
+        {
+          "ip": "192.0.2.9",
+          "reasons": [
+            "finding_evidence"
+          ],
+          "tables": [
+            "mailbox_audit_legacy",
+            "message_trace",
+            "signins",
+            "ual_events"
+          ],
+          "first_seen": "2026-08-04T00:27:00.000000Z",
+          "last_seen": "2026-09-09T10:29:06.000000Z",
+          "asn": 64500,
+          "asn_org": "Documentation ISP 5",
+          "is_hosting": false,
+          "spray_source": false,
+          "in_user_signins": true
+        }
+      ],
+      "addresses_total": 1,
+      "addresses_truncated": false
+    },
+    {
+      "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
+      "upn": "ocean.vincent@contoso.example",
+      "worst_severity": "medium",
+      "finding_count": 1,
+      "by_severity": {
+        "medium": 1
+      },
+      "stages": [
+        "persistence"
+      ],
+      "first_suspicious": "2026-08-14T16:00:00.000000Z",
+      "rules": [
+        "SPW-HAWK-003"
+      ],
+      "addresses": [
+        {
+          "ip": "192.0.2.7",
+          "reasons": [
+            "finding_evidence"
+          ],
+          "tables": [
+            "mailbox_audit_legacy",
+            "message_trace",
+            "signins",
+            "ual_events"
+          ],
+          "first_seen": "2026-08-03T00:43:29.000000Z",
+          "last_seen": "2026-09-08T18:45:52.000000Z",
+          "asn": 64499,
+          "asn_org": "Documentation ISP 4",
+          "is_hosting": false,
+          "spray_source": false,
+          "in_user_signins": true
+        }
+      ],
+      "addresses_total": 1,
+      "addresses_truncated": false
+    },
+    {
+      "tenant_key": "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
+      "upn": "cameron.tucker@contoso.example",
+      "worst_severity": "medium",
+      "finding_count": 1,
+      "by_severity": {
+        "medium": 1
+      },
+      "stages": [
+        "sending"
+      ],
+      "first_suspicious": "2026-08-15T12:34:05.000000Z",
+      "rules": [
+        "SPW-MAIL-006"
+      ],
+      "addresses": [
+        {
+          "ip": "198.51.100.3",
+          "reasons": [
+            "finding_evidence"
+          ],
+          "tables": [
+            "mailbox_audit_legacy",
+            "signins",
+            "ual_events"
+          ],
+          "first_seen": "2026-08-15T07:00:00.000000Z",
+          "last_seen": "2026-09-09T20:24:19.000000Z",
+          "asn": 64500,
+          "asn_org": "Documentation ISP 5",
+          "is_hosting": false,
+          "spray_source": false,
+          "in_user_signins": true
+        }
+      ],
+      "addresses_total": 1,
+      "addresses_truncated": false
+    }
+  ],
+  "total": 9,
+  "truncated": false,
+  "warnings": []
+}

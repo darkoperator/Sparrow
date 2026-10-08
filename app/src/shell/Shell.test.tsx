@@ -15,8 +15,22 @@ const dialogOpen = vi.fn();
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: (...a: unknown[]) => dialogOpen(...a) }));
 // The review screen has its own tests; here it only has to know whether writes are enabled.
 vi.mock("../review/ReviewQueue", () => ({
-  default: ({ canWrite }: { canWrite: boolean }) => <div>queue canWrite={String(canWrite)}</div>,
+  default: ({
+    canWrite,
+    accountFilter,
+    onClearFilter,
+  }: {
+    canWrite: boolean;
+    accountFilter?: string | null;
+    onClearFilter?: () => void;
+  }) => (
+    <div>
+      queue canWrite={String(canWrite)}
+      {accountFilter != null && <button onClick={onClearFilter}>{`filtered to ${accountFilter}`}</button>}
+    </div>
+  ),
 }));
+vi.mock("./ExportMenu", () => ({ default: () => <button>Export</button> }));
 
 import * as api from "../api";
 import Shell from "./Shell";
@@ -176,5 +190,33 @@ describe("Shell", () => {
     await user.click(screen.getByRole("button", { name: "Close case" }));
     await waitFor(() => expect(m.close).toHaveBeenCalled());
     expect(await screen.findByRole("button", { name: "Open a case" })).toBeInTheDocument();
+  });
+
+  it("an account chosen on the accounts screen filters the review queue, and clearing lifts it", async () => {
+    dialogOpen.mockResolvedValue("/synthetic/case-a.duckdb");
+    const user = userEvent.setup();
+    render(
+      <Shell
+        screens={{
+          accounts: (p) => <button onClick={() => p.showAccount("marlowe.rhodes@contoso.example")}>pick account</button>,
+        }}
+      />,
+    );
+    await user.click(await screen.findByRole("button", { name: "Open a case" }));
+    await screen.findByText(/queue canWrite=true/);
+    expect(screen.queryByRole("button", { name: /^filtered to/ })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Accounts" }));
+    await user.click(screen.getByRole("button", { name: "pick account" }));
+    // Back on the review queue, filtered.
+    const chip = await screen.findByRole("button", { name: "filtered to marlowe.rhodes@contoso.example" });
+    await user.click(chip);
+    expect(screen.queryByRole("button", { name: /^filtered to/ })).toBeNull();
+  });
+
+  it("offers the export menu while a case is open", async () => {
+    expect(await (async () => {
+      await openViaDialog();
+      return screen.findByRole("button", { name: "Export" });
+    })()).toBeInTheDocument();
   });
 });

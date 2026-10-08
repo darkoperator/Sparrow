@@ -293,3 +293,58 @@ export const timelineEdit = (entryId: string, args: EntryEditArgs) =>
 export const timelineVerify = (entryId: string) => call<AuditEntry>("timeline_verify", { entryId });
 export const timelineReject = (entryId: string, reason?: string) =>
   call<AuditEntry>("timeline_reject", { entryId, reason });
+
+// ---------------------------------------------------------------- accounts and exports
+
+/** `detect::rule::Stage` (serde snake_case). */
+export type Stage =
+  | "suspicious_sign_in"
+  | "credential_takeover"
+  | "persistence"
+  | "mail_access"
+  | "sending"
+  | "consent"
+  | "mfa_change";
+
+/** `detect::enrich::accounts::Address`. `reasons` lists why it is worth a look, strongest first. */
+export interface Address {
+  ip: string;
+  reasons: string[];
+  tables: string[];
+  first_seen: string | null;
+  last_seen: string | null;
+  asn: number | null;
+  asn_org: string | null;
+  is_hosting: boolean | null;
+  spray_source: boolean;
+  in_user_signins: boolean;
+}
+
+/** `detect::enrich::accounts::AccountRow`. */
+export interface AccountRow {
+  tenant_key: string;
+  upn: string;
+  worst_severity: string;
+  finding_count: number;
+  by_severity: Record<string, number>;
+  stages: Stage[];
+  first_suspicious: string | null;
+  rules: string[];
+  addresses: Address[];
+  addresses_total: number;
+  addresses_truncated: boolean;
+}
+
+/** `read::AccountPage`; a non-empty `warnings` says why `accounts` may be empty or incomplete. */
+export interface AccountPage {
+  accounts: AccountRow[];
+  total: number;
+  truncated: boolean;
+  warnings: string[];
+}
+
+export const accountsList = (tenant?: string) => call<AccountPage>("accounts_list", { tenant });
+export const exportReport = (path: string, reviewedOnly: boolean) =>
+  call<null>("export_report", { path, reviewedOnly });
+export const exportTimelineCsv = (path: string) => call<null>("export_timeline_csv", { path });
+export const exportWorkbook = (path: string) => call<null>("export_workbook", { path });

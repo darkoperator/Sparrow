@@ -309,4 +309,36 @@ describe("ReviewQueue", () => {
     render(<ReviewQueue canWrite />);
     expect(await screen.findByRole("alert")).toHaveTextContent("no case is open");
   });
+
+  it("an account filter shows only that account's decisions, case-insensitively, and hides proposals", async () => {
+    const user = userEvent.setup();
+    const onClear = vi.fn();
+    render(<ReviewQueue canWrite accountFilter={ACCOUNT.toUpperCase()} onClearFilter={onClear} />);
+    await screen.findByTestId(FINDING);
+    const decisions = queue.filter((q) => q.source === "decision" && q.account === ACCOUNT);
+    expect(decisions.length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent)).toEqual([ACCOUNT]);
+    expect(screen.queryByTestId(PROP_A)).toBeNull();
+    expect(screen.queryByRole("button", { name: /Accept all from/ })).toBeNull();
+    expect(screen.getByText(new RegExp(`\\(${decisions.length} of ${queue.length}\\)`))).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Show all" }));
+    expect(onClear).toHaveBeenCalledOnce();
+  });
+
+  it("an account filter that matches nothing says so instead of showing nothing", async () => {
+    render(<ReviewQueue canWrite accountFilter="nobody@contoso.example" />);
+    expect(await screen.findByText("Nothing to review for this account.")).toBeInTheDocument();
+  });
+
+  it("the keyboard only reaches the filtered items", async () => {
+    const user = userEvent.setup();
+    render(<ReviewQueue canWrite accountFilter={ACCOUNT} />);
+    await screen.findByTestId(FINDING);
+    await user.keyboard("jjjjjjjj");
+    await user.keyboard("a");
+    // Whatever is selected after running past the end is a visible decision, never a hidden proposal.
+    const calls = [...m.accept.mock.calls, ...m.pAccept.mock.calls];
+    expect(calls).toHaveLength(1);
+    expect(m.pAccept).not.toHaveBeenCalled();
+  });
 });

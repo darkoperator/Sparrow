@@ -53,8 +53,15 @@ function errorText(e: unknown): string {
   return isCmdError(e) ? e.message : String(e);
 }
 
-export default function ReviewQueue({ canWrite }: { canWrite: boolean }) {
-  const [items, setItems] = useState<QueueItem[]>([]);
+interface Props {
+  canWrite: boolean;
+  /** Show only the decisions about this account (case-insensitive); the shell owns it. */
+  accountFilter?: string | null;
+  onClearFilter?: () => void;
+}
+
+export default function ReviewQueue({ canWrite, accountFilter = null, onClearFilter }: Props) {
+  const [all, setItems] = useState<QueueItem[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [comment, setComment] = useState("");
@@ -73,6 +80,14 @@ export default function ReviewQueue({ canWrite }: { canWrite: boolean }) {
     setSelected(key);
     setComment("");
   }, []);
+
+  // A filtered queue shows decisions about the account only: proposals have no account here, so they are hidden, and
+  // "Accept all" never acts on items that are not on screen.
+  const items = useMemo(() => {
+    if (accountFilter === null) return all;
+    const want = accountFilter.toLowerCase();
+    return all.filter((q) => q.source === "decision" && q.account?.toLowerCase() === want);
+  }, [all, accountFilter]);
 
   const groups = useMemo(() => group(items), [items]);
   const flat = useMemo(() => groups.flatMap((g) => g.items), [groups]);
@@ -200,6 +215,14 @@ export default function ReviewQueue({ canWrite }: { canWrite: boolean }) {
   return (
     <section className="review-queue">
       <h2>Review queue</h2>
+      {accountFilter !== null && (
+        <div className="filter-chip">
+          <span>
+            Account: {displaySafe(accountFilter)} ({items.length} of {all.length})
+          </span>
+          <button onClick={onClearFilter}>Show all</button>
+        </div>
+      )}
       {notice && <div role={notice.kind === "error" ? "alert" : "status"}>{displaySafe(notice.text)}</div>}
       {bundleAnalysts.length > 0 && (
         <div className="bundles">
@@ -212,7 +235,9 @@ export default function ReviewQueue({ canWrite }: { canWrite: boolean }) {
       )}
       <div className="queue-layout">
         <div className="queue-list">
-          {loaded && items.length === 0 && <p>Nothing to review.</p>}
+          {loaded && items.length === 0 && (
+            <p>{accountFilter === null ? "Nothing to review." : "Nothing to review for this account."}</p>
+          )}
           {groups.map((g) => (
             <div key={g.name}>
               <h3>{displaySafe(g.name)}</h3>

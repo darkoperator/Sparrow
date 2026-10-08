@@ -812,6 +812,7 @@ fn record_fixtures() {
     info.path = "/cases/synthetic-bec-aitm.duckdb".into();
     let queue = review_queue(&state).unwrap();
     let detail = finding_detail(&state, &s.finding).unwrap();
+    let accounts = sparrow_app::cmd::accounts::accounts_list(&state, None).unwrap();
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../app/src/test/fixtures");
     std::fs::create_dir_all(&dir).unwrap();
     let write = |name: &str, v: serde_json::Value| {
@@ -821,6 +822,7 @@ fn record_fixtures() {
     };
     write("case_info.json", serde_json::to_value(&info).unwrap());
     write("queue.json", serde_json::to_value(&queue).unwrap());
+    write("accounts.json", serde_json::to_value(&accounts).unwrap());
     write(
         "finding_detail.json",
         serde_json::to_value(&detail).unwrap(),
@@ -1151,4 +1153,236 @@ fn timeline_writes_are_refused_on_a_read_only_case() {
         "read_only"
     );
     assert_eq!(timeline_list(&state).unwrap().len(), all.len());
+}
+
+// ---- accounts and exports ----
+
+use sparrow_app::cmd::accounts::accounts_list;
+use sparrow_app::cmd::export::{export_report, export_timeline_csv, export_workbook};
+
+#[test]
+fn accounts_list_matches_core() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = open_as_analyst(tmp.path());
+    let page = accounts_list(&state, None).unwrap();
+    let core = with_case(&state, |open| {
+        Ok(sparrow_core::case::read::accounts(
+            open.case.conn(),
+            None,
+            None,
+        )?)
+    })
+    .unwrap();
+    assert!(!core.accounts.is_empty(), "the synthetic case has accounts");
+    assert_eq!(
+        serde_json::to_value(&page).unwrap(),
+        serde_json::to_value(&core).unwrap()
+    );
+    // A tenant filter reaches core: an unknown tenant has no accounts.
+    let none = accounts_list(&state, Some("no-such-tenant")).unwrap();
+    assert!(none.accounts.is_empty());
+    let tenant = page.accounts[0].tenant_key.clone();
+    let one = accounts_list(&state, Some(&tenant)).unwrap();
+    assert!(!one.accounts.is_empty() && one.accounts.iter().all(|a| a.tenant_key == tenant));
+}
+
+#[test]
+fn accounts_need_an_open_case() {
+    let e = accounts_list(&AppState::default(), None).unwrap_err();
+    assert_eq!(e.kind, "no_case");
+}
+
+fn leftovers(dir: &Path) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".partial") || n.starts_with(".sparrow-export-"))
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn export_report_reviewed_only_writes_file_atomically() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, s) = open_seeded(tmp.path());
+    // The analyst's own decision on the finding is reviewed as made.
+    let analyst = Reviewer::analyst("carlos").unwrap();
+    // Resolve the agent's pending decision first (core refuses to write over it), then decide as the analyst.
+    let q = review_queue(&state).unwrap();
+    let d = decision(&q, "finding", &s.finding);
+    review_accept(&state, "finding", &s.finding, d.decision_seq, None).unwrap();
+    with_writable(&state, |open| {
+        write::set_finding_status(
+            open.case.conn(),
+            &analyst.as_actor(),
+            &s.finding,
+            write::FindingStatus::Confirmed,
+            Some("confirmed by the analyst"),
+        )
+        .unwrap();
+        Ok(())
+    })
+    .unwrap();
+    let out = tmp.path().join("report.md");
+    export_report(&state, &out, true).unwrap();
+    let text = std::fs::read_to_string(&out).unwrap();
+    assert!(text.contains("analyst decision"), "{text}");
+    assert!(
+        leftovers(tmp.path()).is_empty(),
+        "{:?}",
+        leftovers(tmp.path())
+    );
+    // The reviewed-only report leaves out the still-pending agent decisions the full one labels.
+    let all = tmp.path().join("all.md");
+    export_report(&state, &all, false).unwrap();
+    assert_ne!(text, std::fs::read_to_string(&all).unwrap());
+}
+
+#[test]
+fn export_timeline_csv_and_workbook_write_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, _) = open_seeded(tmp.path());
+    let csv = tmp.path().join("timeline.csv");
+    export_timeline_csv(&state, &csv).unwrap();
+    assert!(
+        std::fs::read(&csv)
+            .unwrap()
+            .starts_with(&[0xEF, 0xBB, 0xBF])
+    );
+    let xlsx = tmp.path().join("case.xlsx");
+    export_workbook(&state, &xlsx).unwrap();
+    // An .xlsx is a zip.
+    assert!(std::fs::read(&xlsx).unwrap().starts_with(b"PK"));
+    assert!(leftovers(tmp.path()).is_empty());
+}
+
+#[test]
+fn export_to_missing_dir_is_invalid() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, _) = open_seeded(tmp.path());
+    let out = tmp.path().join("no-such-dir").join("report.md");
+    let e = export_report(&state, &out, true).unwrap_err();
+    assert_eq!(e.kind, "invalid", "{e:?}");
+    assert!(!tmp.path().join("no-such-dir").exists());
+    assert_eq!(export_workbook(&state, &out).unwrap_err().kind, "invalid");
+    assert_eq!(
+        export_timeline_csv(&state, &out).unwrap_err().kind,
+        "invalid"
+    );
+}
+
+#[test]
+fn export_never_overwrites_the_case_and_a_failure_leaves_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, s) = open_seeded(tmp.path());
+    let before = std::fs::metadata(&s.path).unwrap().len();
+    let e = export_report(&state, &s.path, true).unwrap_err();
+    assert_eq!(e.kind, "invalid", "{e:?}");
+    assert_eq!(std::fs::metadata(&s.path).unwrap().len(), before);
+    // A directory as the target: the rename fails and the partial file is removed.
+    let dir = tmp.path().join("target-dir");
+    std::fs::create_dir(&dir).unwrap();
+    assert!(export_report(&state, &dir, true).is_err());
+    assert!(leftovers(tmp.path()).is_empty());
+    // A case-less app refuses.
+    assert_eq!(
+        export_report(&AppState::default(), &tmp.path().join("x.md"), true)
+            .unwrap_err()
+            .kind,
+        "no_case"
+    );
+}
+
+#[test]
+fn a_partial_symlink_to_the_case_is_never_followed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, s) = open_seeded(tmp.path());
+    let before = std::fs::read(&s.path).unwrap();
+    let out = tmp.path().join("report.md");
+    let wal = PathBuf::from(format!("{}.wal", s.path.display()));
+    std::os::unix::fs::symlink(&s.path, tmp.path().join("report.md.partial")).unwrap();
+    export_report(&state, &out, true).unwrap();
+    assert!(!std::fs::read_to_string(&out).unwrap().is_empty());
+    // The link is still there, untouched, and the case is byte for byte what it was.
+    assert!(
+        std::fs::symlink_metadata(tmp.path().join("report.md.partial"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(std::fs::read(&s.path).unwrap(), before);
+    // The workbook writer gets a path of its own too, and a link to the WAL fares no better.
+    let _ = std::fs::write(&wal, b"");
+    std::os::unix::fs::symlink(&wal, tmp.path().join("case.xlsx.partial")).unwrap();
+    export_workbook(&state, &tmp.path().join("case.xlsx")).unwrap();
+    assert_eq!(std::fs::read(&s.path).unwrap(), before);
+    assert_eq!(std::fs::metadata(&wal).unwrap().len(), 0);
+    let _ = std::fs::remove_file(&wal);
+    // The case still opens.
+    let again = AppState::default();
+    drop(state);
+    case_open(&again, &s.path, false).unwrap();
+}
+
+#[test]
+fn a_pre_existing_partial_file_is_left_intact() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, _) = open_seeded(tmp.path());
+    let partial = tmp.path().join("report.md.partial");
+    std::fs::write(&partial, b"someone else's file").unwrap();
+    export_report(&state, &tmp.path().join("report.md"), true).unwrap();
+    assert_eq!(std::fs::read(&partial).unwrap(), b"someone else's file");
+    assert!(
+        leftovers(tmp.path()).len() == 1,
+        "only the user's own .partial: {:?}",
+        leftovers(tmp.path())
+    );
+}
+
+#[test]
+fn differently_cased_case_and_wal_names_are_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, s) = open_seeded(tmp.path());
+    let before = std::fs::read(&s.path).unwrap();
+    let dir = s.path.parent().unwrap();
+    for name in [
+        "CASE.duckdb",
+        "case.DUCKDB.wal",
+        "Case.Duckdb",
+        "case.duckdb.wal",
+    ] {
+        let e = export_report(&state, &dir.join(name), true).unwrap_err();
+        assert_eq!(e.kind, "invalid", "{name}: {e:?}");
+        let e = export_workbook(&state, &dir.join(name)).unwrap_err();
+        assert_eq!(e.kind, "invalid", "{name}: {e:?}");
+    }
+    assert_eq!(std::fs::read(&s.path).unwrap(), before);
+    assert!(leftovers(tmp.path()).is_empty());
+}
+
+#[test]
+fn a_symlink_target_is_refused_and_an_earlier_export_is_overwritten() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, s) = open_seeded(tmp.path());
+    let before = std::fs::read(&s.path).unwrap();
+    let link = tmp.path().join("link.md");
+    std::os::unix::fs::symlink(&s.path, &link).unwrap();
+    let e = export_report(&state, &link, true).unwrap_err();
+    assert_eq!(e.kind, "invalid", "{e:?}");
+    assert_eq!(std::fs::read(&s.path).unwrap(), before);
+    // A hard link to the case is the same file by identity.
+    let hard = tmp.path().join("hard.md");
+    std::fs::hard_link(&s.path, &hard).unwrap();
+    assert_eq!(
+        export_report(&state, &hard, true).unwrap_err().kind,
+        "invalid"
+    );
+    assert_eq!(std::fs::read(&s.path).unwrap(), before);
+    // An ordinary earlier export is replaced.
+    let out = tmp.path().join("report.md");
+    std::fs::write(&out, b"old").unwrap();
+    export_report(&state, &out, true).unwrap();
+    assert_ne!(std::fs::read(&out).unwrap(), b"old");
+    assert!(leftovers(tmp.path()).is_empty());
 }
