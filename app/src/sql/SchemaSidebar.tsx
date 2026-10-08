@@ -42,7 +42,7 @@ export default function SchemaSidebar({ tables, onInsert }: Props) {
               </button>{" "}
               <span className="tag">{displaySafe(t.kind)}</span>
               {shown && (
-                <ul className="plain schema-columns">
+                <ul className="plain schema-columns" aria-label={`Columns of ${t.name}`}>
                   {t.columns.map((c) => (
                     <li key={c.name}>
                       <button className="link" onClick={() => onInsert(c.name)}>

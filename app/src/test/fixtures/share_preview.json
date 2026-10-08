@@ -1,14 +1,18 @@
 {
-  "sha256": "7c74996e28f36f5f2aa69e0ce60207310ab0eba0b49a681b361f611756c409e5",
+  "sha256": "2998ffcfe949bdb49538f15f29e61c511e99010f179ade42adc750225571e732",
   "summary": {
-    "bundle_sha256": "7c74996e28f36f5f2aa69e0ce60207310ab0eba0b49a681b361f611756c409e5",
+    "bundle_sha256": "2998ffcfe949bdb49538f15f29e61c511e99010f179ade42adc750225571e732",
     "analyst": "analyst:ann",
     "new": 2,
-    "agrees": 1,
-    "conflicts": 1,
+    "agrees": 0,
+    "conflicts": 0,
     "missing": 0,
+    "superseded": 0,
     "already_imported": false,
-    "rules_only_in_bundle": ["SPR-AUTH-007:3f2a9c"],
+    "rules_only_in_bundle": [],
     "rules_only_here": []
-  }
+  },
+  "analyst": "analyst:ann",
+  "exported_at": "2026-10-08T20:01:44.265714Z",
+  "items": 2
 }

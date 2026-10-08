@@ -81,24 +81,48 @@ describe("Share — export", () => {
 });
 
 describe("Share — import", () => {
-  it("previews the bundle (nothing imported yet): analyst, counts, rule-set difference, SHA", async () => {
+  it("previews the bundle (nothing imported yet): analyst, export time, items, counts, SHA", async () => {
+    // Distinct counts, so each one is checked against its own label.
+    Object.assign(preview.summary, { new: 4, agrees: 3, conflicts: 2, missing: 1, superseded: 5 });
     const user = setup();
     const card = await previewFile(user);
     expect(m.preview).toHaveBeenCalledExactlyOnceWith("/in/ann.sparrow-share.json");
     expect(m.imp).not.toHaveBeenCalled();
     const s = preview.summary;
-    expect(card).toHaveTextContent(s.analyst);
+    expect(within(card).getByText(preview.analyst)).toBeInTheDocument();
+    expect(preview.exported_at).toBe("2026-10-08T20:01:44.265714Z");
+    expect(card).toHaveTextContent("Exported 2026-10-08 20:01:44 UTC");
+    expect(card).toHaveTextContent(`${preview.items} items`);
     expect(within(card).getByText(preview.sha256)).toBeInTheDocument();
     for (const [label, n] of [
       ["New", s.new],
       ["Agrees", s.agrees],
       ["Conflicts", s.conflicts],
       ["Missing here", s.missing],
+      ["Superseded", s.superseded],
     ] as const) {
       expect(within(card).getByRole("term", { name: label }).nextElementSibling).toHaveTextContent(String(n));
     }
-    expect(within(card).getByText(s.rules_only_in_bundle[0])).toBeInTheDocument();
+    expect(card).toHaveTextContent(/replaced by a newer bundle from the same analyst/);
+    // The recorded bundle has the same rule set as the case: no warning.
+    expect(card).not.toHaveTextContent(/rule set differs/i);
+  });
+
+  it("warns when the rule sets differ, listing both sides", async () => {
+    preview.summary.rules_only_in_bundle = ["SPW-APP-001:aa11", "SPW-APP-002:bb22"];
+    preview.summary.rules_only_here = ["SPW-FILE-001:cc33"];
+    const user = setup();
+    const card = await previewFile(user);
     expect(card).toHaveTextContent(/rule set differs/i);
+    expect(card).toHaveTextContent("Only in the bundle: SPW-APP-001:aa11, SPW-APP-002:bb22");
+    expect(card).toHaveTextContent("Only in this case: SPW-FILE-001:cc33");
+  });
+
+  it("an export time that is not a valid timestamp is shown as given, escaped", async () => {
+    preview.exported_at = "yesterday\u0007";
+    const user = setup();
+    const card = await previewFile(user);
+    expect(card).toHaveTextContent("Exported yesterday\\u{0007}");
   });
 
   it("Confirm imports the same file with the previewed SHA and links to the queue", async () => {
@@ -108,10 +132,23 @@ describe("Share — import", () => {
     await user.click(within(card).getByRole("button", { name: "Confirm import" }));
     expect(m.imp).toHaveBeenCalledExactlyOnceWith("/in/ann.sparrow-share.json", preview.sha256);
     const s = preview.summary;
+    expect(s.superseded).toBe(0);
     const added = s.new + s.conflicts + s.missing;
+    expect(added).toBeGreaterThan(0);
     expect(await screen.findByRole("status")).toHaveTextContent(`${added} proposals added to the review queue`);
     await user.click(screen.getByRole("button", { name: "Open the review queue" }));
     expect(onShowQueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("superseded items are not counted as added (they are a subset of new/conflicts/missing)", async () => {
+    Object.assign(preview.summary, { new: 4, agrees: 1, conflicts: 2, missing: 1, superseded: 3 });
+    const user = setup();
+    const card = await previewFile(user);
+    await user.click(within(card).getByRole("button", { name: "Confirm import" }));
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent("4 proposals added to the review queue");
+    expect(status).toHaveTextContent("1 already agree");
+    expect(status).toHaveTextContent("3 superseded by a newer bundle from the same analyst");
   });
 
   it("Cancel stores nothing", async () => {
@@ -168,7 +205,7 @@ describe("Share — import", () => {
   });
 
   it("bundle text is shown escaped", async () => {
-    preview.summary.analyst = "analyst:ann‮<i>x</i>";
+    preview.analyst = "analyst:ann‮<i>x</i>";
     preview.summary.rules_only_here = ["SPR-X\u0007:1"];
     const user = setup();
     const card = await previewFile(user);

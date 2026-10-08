@@ -114,7 +114,10 @@ export default function Share({ canImport, onShowQueue }: Props) {
         {imported && (
           <p role="status">
             {added(imported)} proposals added to the review queue
-            {imported.agrees > 0 && ` (${imported.agrees} already agree)`}.{" "}
+            {imported.agrees > 0 && `; ${imported.agrees} already agree`}
+            {imported.superseded > 0 &&
+              `; ${imported.superseded} superseded by a newer bundle from the same analyst`}
+            .{" "}
             <button className="link" onClick={onShowQueue}>
               Open the review queue
             </button>
@@ -127,8 +130,20 @@ export default function Share({ canImport, onShowQueue }: Props) {
   );
 }
 
-// Items that enter the queue as open proposals; agreeing items are stored as `agrees` and need no action.
-const added = (s: ImportSummary) => s.new + s.conflicts + s.missing;
+// Items stored as open proposals. Every item is counted once in new / agrees / conflicts / missing; `superseded`
+// counts those of new / conflicts / missing that a newer open proposal from the same analyst already covers (core
+// share::plan: an agreeing item is stored `agrees`, never `superseded`), so it is subtracted. Agreeing items need
+// no action.
+const added = (s: ImportSummary) => s.new + s.conflicts + s.missing - s.superseded;
+
+const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
+/** The bundle's export time in UTC to the second; anything that is not an RFC 3339 time is shown as given. */
+function utc(ts: string): string {
+  const d = new Date(ts);
+  if (!RFC3339.test(ts) || Number.isNaN(d.getTime())) return displaySafe(ts);
+  return `${d.toISOString().slice(0, 19).replace("T", " ")} UTC`;
+}
 
 function PreviewCard({
   preview,
@@ -149,12 +164,16 @@ function PreviewCard({
     ["Agrees", s.agrees],
     ["Conflicts", s.conflicts],
     ["Missing here", s.missing],
+    ["Superseded", s.superseded],
   ];
   const rulesDiffer = s.rules_only_in_bundle.length > 0 || s.rules_only_here.length > 0;
   return (
     <div role="region" aria-label="Bundle preview" className="share-card">
       <p>
-        From <strong>{displaySafe(s.analyst)}</strong> — <code>{displaySafe(preview.path)}</code>
+        From <strong>{displaySafe(preview.analyst)}</strong> — <code>{displaySafe(preview.path)}</code>
+      </p>
+      <p>
+        Exported {utc(preview.exported_at)} · {preview.items === 1 ? "1 item" : `${preview.items} items`}
       </p>
       <p>
         SHA-256: <code className="sha">{preview.sha256}</code>
@@ -170,6 +189,7 @@ function PreviewCard({
           </div>
         ))}
       </dl>
+      <p className="meta">Superseded: replaced by a newer bundle from the same analyst; not added to the queue.</p>
       {rulesDiffer && (
         <div className="warnings">
           <p>The rule set differs from this case's (a warning; the import still works).</p>

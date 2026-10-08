@@ -78,8 +78,8 @@ export function accounts(): AccountPage {
   return v as unknown as AccountPage;
 }
 
-// sql_schema, sql_run and share_preview: minimal core-shaped fixtures (db::TableInfo, query::QueryResult,
-// share::ImportSummary) until the backend records them; same checks either way.
+// sql_schema, sql_run and share_preview, recorded by the backend (db::TableInfo, query::QueryResult,
+// cmd::share::SharePreview with share::ImportSummary).
 
 export function schema(): TableInfo[] {
   const v: unknown = clone(schemaJson);
@@ -106,13 +106,13 @@ export function sqlResult(): QueryResult {
 }
 
 const SUMMARY = [
-  "bundle_sha256", "analyst", "new", "agrees", "conflicts", "missing", "already_imported", "rules_only_in_bundle",
-  "rules_only_here",
+  "bundle_sha256", "analyst", "new", "agrees", "conflicts", "missing", "superseded", "already_imported",
+  "rules_only_in_bundle", "rules_only_here",
 ];
 
 export function sharePreview(): SharePreview {
   const v: unknown = clone(sharePreviewJson);
-  need("share_preview", v, ["sha256", "summary"]);
+  need("share_preview", v, ["sha256", "summary", "analyst", "exported_at", "items"]);
   need("share_preview.summary", v.summary, SUMMARY);
   if (v.summary.bundle_sha256 !== v.sha256) throw new Error("fixture share_preview: summary sha differs from sha256");
   return v as unknown as SharePreview;

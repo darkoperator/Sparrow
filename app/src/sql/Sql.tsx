@@ -39,12 +39,13 @@ export default function Sql() {
   // A query still running when the screen goes away is cancelled, and its late outcome ignored: the backend holds
   // the case for it, and nothing would show its result.
   const mounted = useRef(true);
-  const runningRef = useRef(false);
+  // The id of the run in flight: Cancel and leaving the screen cancel that run only.
+  const activeId = useRef<string | null>(null);
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
-      if (runningRef.current) queryCancel().catch(() => {});
+      if (activeId.current !== null) queryCancel(activeId.current).catch(() => {});
     };
   }, []);
 
@@ -69,26 +70,28 @@ export default function Sql() {
 
   const run = async () => {
     if (running || sql.trim() === "") return;
-    runningRef.current = true;
+    const id = crypto.randomUUID();
+    activeId.current = id;
     setRunning(true);
     setOutcome(null);
     setCancelError(null);
     let next: Outcome;
     try {
-      next = { kind: "result", result: await sqlRun(sql, limit), limit };
+      next = { kind: "result", result: await sqlRun(sql, limit, id), limit };
     } catch (e) {
       const cancelled = isCmdError(e) && e.kind === "interrupted";
       next = cancelled ? { kind: "cancelled" } : { kind: "error", message: message(e) };
     }
-    runningRef.current = false;
+    activeId.current = null;
     if (!mounted.current) return;
     setOutcome(next);
     setRunning(false);
   };
 
   const cancel = async () => {
+    if (activeId.current === null) return;
     try {
-      await queryCancel();
+      await queryCancel(activeId.current);
     } catch (e) {
       if (mounted.current) setCancelError(message(e));
     }

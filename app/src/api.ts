@@ -382,6 +382,11 @@ export interface ImportSummary {
   agrees: number;
   conflicts: number;
   missing: number;
+  /**
+   * Items stored (for a preview: that would be stored) as `superseded`, because a newer open proposal from the same
+   * analyst already covers them. A subset of new + conflicts + missing (an agreeing item is never superseded).
+   */
+  superseded: number;
   already_imported: boolean;
   rules_only_in_bundle: string[];
   rules_only_here: string[];
@@ -395,12 +400,22 @@ export interface ShareExported {
 export interface SharePreview {
   sha256: string;
   summary: ImportSummary;
+  /** `analyst:<name>`, as in the bundle. */
+  analyst: string;
+  /** RFC 3339, as in the bundle. */
+  exported_at: string;
+  items: number;
 }
 
 export const sqlSchema = (table?: string) => call<TableInfo[]>("sql_schema", { table });
-export const sqlRun = (sql: string, limit?: number) => call<QueryResult>("sql_run", { sql, limit });
-/** Interrupts the running `sql_run` / `browse_page`, if any; that call then rejects with kind `interrupted`. */
-export const queryCancel = () => call<null>("query_cancel");
+/** `queryId` names this run for `queryCancel` (≤ 64 chars, no control characters; a fresh one per run). */
+export const sqlRun = (sql: string, limit: number | undefined, queryId: string) =>
+  call<QueryResult>("sql_run", { sql, limit, queryId });
+/**
+ * Interrupts the running `sql_run` / `browse_page` with this id, if any (any other id: nothing happens); that call
+ * then rejects with kind `interrupted`.
+ */
+export const queryCancel = (queryId: string) => call<null>("query_cancel", { queryId });
 export const shareExport = (path: string) => call<ShareExported>("share_export", { path });
 export const sharePreview = (path: string) => call<SharePreview>("share_preview", { path });
 /** Refused (`invalid`) when the file's SHA-256 is no longer `sha256`, the one its preview showed. */

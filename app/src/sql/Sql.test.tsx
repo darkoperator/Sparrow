@@ -32,26 +32,33 @@ async function setup() {
   return user;
 }
 
+const QUERY = "SELECT user_upn, ip, count(*) n FROM signins GROUP BY ALL";
 const editor = () => screen.getByRole("textbox", { name: "SQL" }) as HTMLTextAreaElement;
 
 describe("Sql", () => {
   it("runs the typed query with the default limit, then the chosen one", async () => {
     const user = await setup();
     expect(screen.getByRole("button", { name: "Run" })).toBeDisabled();
-    await user.type(editor(), "SELECT user_upn, ip, count(*) n FROM signins GROUP BY ALL");
+    await user.type(editor(), QUERY);
     await user.click(screen.getByRole("button", { name: "Run" }));
-    expect(m.run).toHaveBeenLastCalledWith("SELECT user_upn, ip, count(*) n FROM signins GROUP BY ALL", 1000);
+    expect(m.run).toHaveBeenLastCalledWith(QUERY, 1000, expect.any(String));
     // The result is shown in the grid, every recorded row.
     const table = await screen.findByRole("table");
     expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).toEqual(result.columns);
-    expect(within(table).getAllByText("marlowe.rhodes@contoso.example")).toHaveLength(2);
+    const first = String(result.rows[0][0]);
+    const same = result.rows.filter((r) => String(r[0]) === first).length;
+    expect(within(table).getAllByText(first)).toHaveLength(same);
     expect(screen.getByText(`${result.rows.length} rows`)).toBeInTheDocument();
     expect(screen.queryByText(/raise the limit/i)).toBeNull();
 
     await user.selectOptions(screen.getByRole("combobox", { name: "Row limit" }), "10000");
     await user.click(screen.getByRole("button", { name: "Run" }));
-    expect(m.run).toHaveBeenLastCalledWith("SELECT user_upn, ip, count(*) n FROM signins GROUP BY ALL", 10000);
+    expect(m.run).toHaveBeenLastCalledWith(QUERY, 10000, expect.any(String));
     expect(m.run).toHaveBeenCalledTimes(2);
+    // A fresh query id per run.
+    const [a, b] = m.run.mock.calls.map((c) => c[2]);
+    expect(a).toBeTruthy();
+    expect(a).not.toBe(b);
   });
 
   it("offers no limit above 10000", async () => {
@@ -71,7 +78,7 @@ describe("Sql", () => {
     expect(editor().value).toBe("SELECT 1\n");
     await user.keyboard("{Meta>}{Enter}{/Meta}");
     expect(m.run).toHaveBeenCalledTimes(1);
-    expect(m.run).toHaveBeenLastCalledWith("SELECT 1\n", 1000);
+    expect(m.run).toHaveBeenLastCalledWith("SELECT 1\n", 1000, expect.any(String));
     await screen.findByRole("table");
     await user.keyboard("{Control>}{Enter}{/Control}");
     expect(m.run).toHaveBeenCalledTimes(2);
@@ -94,7 +101,8 @@ describe("Sql", () => {
     await user.click(screen.getByRole("button", { name: "Run" }));
     expect(screen.getByRole("button", { name: "Run" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(m.cancel).toHaveBeenCalledTimes(1);
+    // Cancel names the running query, nothing else.
+    expect(m.cancel).toHaveBeenCalledExactlyOnceWith(m.run.mock.calls[0][2]);
     await act(async () => reject({ kind: "interrupted", message: "INTERRUPT Error: Interrupted!" }));
     expect(await screen.findByRole("status")).toHaveTextContent("Query cancelled.");
     expect(screen.queryByRole("alert")).toBeNull();
@@ -114,7 +122,7 @@ describe("Sql", () => {
     await user.click(screen.getByRole("button", { name: "Run" }));
     expect(m.cancel).not.toHaveBeenCalled();
     view.unmount();
-    expect(m.cancel).toHaveBeenCalledTimes(1);
+    expect(m.cancel).toHaveBeenCalledExactlyOnceWith(m.run.mock.calls[0][2]);
     await act(async () => resolve(result));
     expect(errors).not.toHaveBeenCalled();
     errors.mockRestore();
@@ -147,13 +155,20 @@ describe("Sql", () => {
     const user = await setup();
     const tables = schemaFixture();
     for (const t of tables) expect(screen.getByRole("button", { name: t.name })).toBeInTheDocument();
-    expect(screen.getByText("view")).toBeInTheDocument();
+    const views = tables.filter((t) => t.kind === "view").length;
+    expect(views).toBeGreaterThan(0);
+    expect(screen.getAllByText("view")).toHaveLength(views);
     expect(screen.queryByRole("button", { name: "user_upn" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Show columns of signins" }));
     const signins = tables.find((t) => t.name === "signins")!;
-    for (const c of signins.columns) expect(screen.getByRole("button", { name: c.name })).toBeInTheDocument();
-    expect(screen.getByText("TIMESTAMP WITH TIME ZONE")).toBeInTheDocument();
-    expect(screen.getByText("UserPrincipalName (portal Username), lower-case.")).toBeInTheDocument();
+    const cols = screen.getByRole("list", { name: "Columns of signins" });
+    for (const c of signins.columns) expect(within(cols).getByRole("button", { name: c.name })).toBeInTheDocument();
+    const upn = signins.columns.find((c) => c.name === "user_upn")!;
+    expect(upn.comment).toBeTruthy();
+    expect(within(cols).getByText(upn.comment!)).toBeInTheDocument();
+    const tz = signins.columns.filter((c) => c.type === "TIMESTAMP WITH TIME ZONE").length;
+    expect(tz).toBeGreaterThan(0);
+    expect(within(cols).getAllByText("TIMESTAMP WITH TIME ZONE")).toHaveLength(tz);
   });
 
   it("clicking a table or column name inserts it at the cursor", async () => {
