@@ -1,5 +1,6 @@
 import { EditorView } from "@codemirror/view";
-import { CompletionContext } from "@codemirror/autocomplete";
+import { CompletionContext, completionStatus, startCompletion } from "@codemirror/autocomplete";
+import { PostgreSQL, sql } from "@codemirror/lang-sql";
 import { EditorState } from "@codemirror/state";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -19,7 +20,7 @@ vi.mock("../dialog", () => ({ save: vi.fn(), open: vi.fn() }));
 
 import * as api from "../api";
 import * as dialog from "../dialog";
-import { schemaCompletions } from "./completion";
+import { keywordCompletions, schemaCompletions } from "./completion";
 import Sql from "./Sql";
 
 const m = {
@@ -114,7 +115,7 @@ describe("Sql", () => {
     const user = await setup();
     await typeSql("SELECT * FROM signins");
     await user.click(screen.getByRole("button", { name: "Run" }));
-    expect(await screen.findByText(/first 1,000 rows.*raise the limit/i)).toBeInTheDocument();
+    expect(await screen.findByText(/first 1,000 rows.*load next 1,000, raise the limit, or narrow the query/i)).toBeInTheDocument();
   });
 
   it("Cancel interrupts the running query and says it was cancelled", async () => {
@@ -234,7 +235,7 @@ describe("Sql", () => {
   describe("completion", () => {
     const source = () => schemaCompletions(schemaFixture());
     const complete = async (doc: string, explicit = true) => {
-      const state = EditorState.create({ doc });
+      const state = EditorState.create({ doc, extensions: [sql({ dialect: PostgreSQL })] });
       return source()(new CompletionContext(state, doc.length, explicit));
     };
 
@@ -259,12 +260,87 @@ describe("Sql", () => {
       expect(r.options.map((o) => o.detail)).toEqual(signins.columns.map((c) => c.type));
     });
 
+    describe("by syntax tree", () => {
+      const signins = () => schemaFixture().find((t) => t.name === "signins")!;
+      const odd = { name: 'a"b', comment: null, kind: "table" as const, columns: [{ name: "c1", type: "INTEGER", comment: null }] };
+      const labels = async (doc: string) => {
+        const r = await schemaCompletions([...schemaFixture(), odd])(
+          new CompletionContext(EditorState.create({ doc, extensions: [sql({ dialect: PostgreSQL })] }), doc.length, true),
+        );
+        return r === null ? null : r.options.map((o) => o.label);
+      };
+      const only = (t: { columns: { name: string }[] }) => t.columns.map((c) => c.name);
+
+      it("bare, quoted and schema-qualified qualifiers offer only that table's columns", async () => {
+        expect(only(signins()).length).toBeGreaterThan(1);
+        for (const doc of ["SELECT signins.", 'SELECT "signins".', "SELECT main.signins.", 'SELECT "main"."signins".', 'SELECT main."signins".u']) {
+          expect(await labels(doc), doc).toEqual(only(signins()));
+        }
+        expect(await labels('SELECT "a""b".')).toEqual(["c1"]);
+      });
+
+      it("offers nothing inside a string literal or a comment (schema or keywords)", async () => {
+        for (const doc of ["SELECT 'signins.", "SELECT 'sig", "SELECT 1 -- signins.", "SELECT 1 -- sig", "SELECT /* signins.", "SELECT /* sig"]) {
+          expect(await labels(doc), doc).toBeNull();
+          const kw = await keywordCompletions()(
+            new CompletionContext(EditorState.create({ doc, extensions: [sql({ dialect: PostgreSQL })] }), doc.length, true),
+          );
+          expect(kw, doc).toBeNull();
+        }
+        // After the comment/string has ended, code completes again.
+        expect(await labels("SELECT 'x' || sig")).not.toBeNull();
+        expect(await labels("SELECT /* c */ sig")).not.toBeNull();
+        expect(await labels("-- c\nSELECT sig")).not.toBeNull();
+      });
+
+      it("keywords are not offered after a quoted or schema-qualified prefix", async () => {
+        for (const doc of ['SELECT "signins".', "SELECT main.signins."]) {
+          const kw = await keywordCompletions()(
+            new CompletionContext(EditorState.create({ doc, extensions: [sql({ dialect: PostgreSQL })] }), doc.length, true),
+          );
+          expect(kw, doc).toBeNull();
+        }
+      });
+    });
+
     it("quotes names that are not plain identifiers when applied", async () => {
       const src = schemaCompletions([
         { name: "t", comment: null, kind: "table", columns: [{ name: "odd col", type: "VARCHAR", comment: null }] },
       ]);
-      const r = (await src(new CompletionContext(EditorState.create({ doc: "o" }), 1, true)))!;
+      const r = (await src(new CompletionContext(EditorState.create({ doc: "o", extensions: [sql({ dialect: PostgreSQL })] }), 1, true)))!;
       expect(r.options.find((o) => o.label === "odd col")!.apply).toBe('"odd col"');
+    });
+
+    it("keywords are offered at a plain position but not after a `qualifier.`", async () => {
+      const at = (doc: string) => keywordCompletions()(new CompletionContext(EditorState.create({ doc, extensions: [sql({ dialect: PostgreSQL })] }), doc.length, true));
+      const plain = await at("SEL");
+      expect(plain).not.toBeNull();
+      expect(plain!.options.length).toBeGreaterThan(0);
+      expect(await at("SELECT signins.")).toBeNull();
+      expect(await at("SELECT signins.us")).toBeNull();
+    });
+
+    it("the popup after `signins.` lists the table's columns and no keyword; Run and Cmd+Enter close it", async () => {
+      const signins = schemaFixture().find((t) => t.name === "signins")!;
+      const user = await setup();
+      const open = async (doc: string) => {
+        await typeSql(doc);
+        act(() => startCompletion(view()));
+        await waitFor(() => expect(completionStatus(view().state)).toBe("active"), { timeout: 3000 });
+      };
+      await open("SELECT signins.");
+      const labels = [...document.querySelectorAll(".cm-completionLabel")].map((e) => e.textContent);
+      expect(labels.length).toBeGreaterThan(0);
+      expect(labels.sort()).toEqual(signins.columns.map((c) => c.name).sort());
+
+      await open("SELECT sig");
+      await user.click(screen.getByRole("button", { name: "Run" }));
+      expect(completionStatus(view().state)).toBeNull();
+      await screen.findByRole("table");
+
+      await open("SELECT sig");
+      cmdEnter();
+      expect(completionStatus(view().state)).toBeNull();
     });
 
     it("offers nothing on an unrelated qualifier or an empty implicit position", async () => {

@@ -1,16 +1,18 @@
-import { autocompletion } from "@codemirror/autocomplete";
-import { PostgreSQL, keywordCompletionSource, sql } from "@codemirror/lang-sql";
+import { autocompletion, closeCompletion } from "@codemirror/autocomplete";
+import { PostgreSQL, sql } from "@codemirror/lang-sql";
 import { linter, lintGutter, type Action, type Diagnostic } from "@codemirror/lint";
 import { Compartment, EditorState, Prec } from "@codemirror/state";
-import { EditorView, keymap, placeholder } from "@codemirror/view";
+import { EditorView, keymap, placeholder, tooltips } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import type { SqlCheck, TableInfo } from "../api";
-import { schemaCompletions } from "./completion";
+import { keywordCompletions, schemaCompletions } from "./completion";
 
 export interface SqlEditorHandle {
   /** Replace the selection with this text and put the cursor after it. */
   insert: (text: string) => void;
+  /** Close the completion popup, if open. */
+  closeCompletion: () => void;
 }
 
 /** What the check says outside the editor: the check itself refused, or an error with no position to mark. */
@@ -52,6 +54,9 @@ const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(props, r
   const checkSeq = useRef(0);
 
   useImperativeHandle(ref, () => ({
+    closeCompletion() {
+      if (view.current) closeCompletion(view.current);
+    },
     insert(text) {
       const v = view.current;
       if (!v) return;
@@ -109,9 +114,12 @@ const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(props, r
       extensions: [
         basicSetup,
         sql({ dialect: PostgreSQL, upperCaseKeywords: true }),
-        completion.current.of(autocompletion({ override: [keywordCompletionSource(PostgreSQL, true)] })),
+        completion.current.of(autocompletion({ override: [keywordCompletions()] })),
         linter(source, { delay: LINT_DELAY_MS }),
         lintGutter(),
+        // Tooltips live in <body>, fixed: a first-line tooltip is not clipped by the editor or the window top and
+        // flips below when there is no room above.
+        tooltips({ parent: document.body, position: "fixed" }),
         theme,
         placeholder("SELECT … (one read-only statement; Cmd/Ctrl+Enter runs it)"),
         Prec.highest(keymap.of([
@@ -141,7 +149,7 @@ const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(props, r
   useEffect(() => {
     view.current?.dispatch({
       effects: completion.current.reconfigure(
-        autocompletion({ override: [schemaCompletions(props.tables), keywordCompletionSource(PostgreSQL, true)] }),
+        autocompletion({ override: [schemaCompletions(props.tables), keywordCompletions()] }),
       ),
     });
   }, [props.tables]);

@@ -89,6 +89,7 @@ export default function Sql() {
   const busy = running || exporting;
 
   const run = async () => {
+    editor.current?.closeCompletion();
     if (slot.current || sql.trim() === "") return;
     slot.current = true;
     const id = newQueryId();
@@ -269,7 +270,7 @@ export default function Sql() {
               {loaded.truncated &&
                 loaded.pages === 1 &&
                 ` — showing the first ${loaded.limit.toLocaleString("en-US")} rows; the query returned more.` +
-                  " Raise the limit or narrow the query."}
+                  ` Load next ${loaded.limit.toLocaleString("en-US")}, raise the limit, or narrow the query.`}
             </p>
             <div className="sql-actions">
               <button disabled={busy || !hasMore} onClick={() => void loadMore(loaded)}>
