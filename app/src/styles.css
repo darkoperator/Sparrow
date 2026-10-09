@@ -76,3 +76,25 @@ code.sha { overflow-wrap: anywhere; }
 .swatch.hl-green { background: #2e7d32; }
 .swatch.hl-blue { background: #1976d2; }
 .swatch.hl-purple { background: #7b1fa2; }
+/* ui-fixes-1: wide content scrolls inside its grid, never the page. */
+.layout > * { min-width: 0; }
+.layout, body { overflow-x: hidden; }
+.grid-bounded { max-width: 100%; min-width: 0; }
+.grid-scroll { overflow: auto; position: relative; max-width: 100%; }
+.grid-head-sticky { position: sticky; top: 0; z-index: 2; background: Canvas; }
+.grid-header { position: relative; }
+.grid-resize { position: absolute; right: 0; top: 0; bottom: 0; width: 6px; cursor: col-resize; user-select: none; touch-action: none; }
+.grid-resize:hover { background: Highlight; }
+.value-viewer { position: fixed; inset: 10% 10%; z-index: 20; display: flex; flex-direction: column; padding: 12px; border: 1px solid #8886; border-radius: 6px; background: Canvas; box-shadow: 0 4px 24px #0006; }
+.value-viewer-head { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.value-viewer-head strong { flex: 1; }
+.value-viewer-body { flex: 1; margin: 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.queue-layout > * { min-width: 0; }
+.detail-fields { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 6px 0; }
+.detail-fields dt { font-weight: 600; }
+.detail-fields dd { margin: 0; overflow-wrap: anywhere; }
+/* ui-fixes-1 fix: plain wide wrappers scroll locally instead of being clipped at the page. */
+.table-scroll { overflow-x: auto; max-width: 100%; }
+.queue-detail, .finding-detail, .share-card, .row-detail { min-width: 0; max-width: 100%; overflow-x: auto; }
+.share-card code { overflow-wrap: anywhere; }
+pre.prose { max-width: 100%; overflow-x: auto; }

@@ -41,6 +41,7 @@ fn main() {
             cmd::pivot::commands::pivot_user,
             cmd::browse::commands::browse_tables,
             cmd::browse::commands::browse_page,
+            cmd::browse::commands::evidence_filter,
             cmd::sql::commands::sql_schema,
             cmd::sql::commands::sql_run,
             cmd::sql::commands::query_cancel,

@@ -12,7 +12,7 @@ import {
   type QueueItem,
 } from "../api";
 import { displaySafe } from "../text";
-import FindingDetail from "./FindingDetail";
+import QueueItemDetail from "./QueueItemDetail";
 import QueueItemRow, { identity, itemKey } from "./QueueItemRow";
 
 const OTHER = "Other";
@@ -40,11 +40,6 @@ function group(items: QueueItem[]): Group[] {
   return [...by.entries()]
     .sort(([a], [b]) => (a === OTHER ? 1 : b === OTHER ? -1 : a.localeCompare(b)))
     .map(([name, items]) => ({ name, items }));
-}
-
-function findingIdOf(q: QueueItem): string | null {
-  if (q.source === "decision") return q.object_type === "finding" ? q.object_id : null;
-  return q.item.kind === "finding" ? q.item.finding_id : null;
 }
 
 type Notice = { kind: "error" | "info"; text: string };
@@ -193,6 +188,8 @@ export default function ReviewQueue({ canWrite, accountFilter = null, onClearFil
       ) {
         return;
       }
+      // Not while a dialog or menu is open, or focus is inside one: a, d and j/k belong to that widget then.
+      if (document.querySelector('[role="dialog"], [role="menu"]')) return;
       const keys = flat.map(identity);
       const at = selectedRef.current === null ? -1 : keys.indexOf(selectedRef.current);
       if (ev.key === "j") {
@@ -210,7 +207,6 @@ export default function ReviewQueue({ canWrite, accountFilter = null, onClearFil
   const bundleAnalysts = [
     ...new Set(items.flatMap((q) => (q.source === "proposal" && q.state === "open" ? [q.source_analyst] : []))),
   ].sort();
-  const findingId = current ? findingIdOf(current) : null;
 
   return (
     <section className="review-queue">
@@ -268,7 +264,7 @@ export default function ReviewQueue({ canWrite, accountFilter = null, onClearFil
                   Discard
                 </button>
               </div>
-              {findingId !== null && <FindingDetail findingId={findingId} />}
+              <QueueItemDetail item={current} />
             </>
           ) : (
             <p>Select an item (j/k), then a to accept or d to discard.</p>

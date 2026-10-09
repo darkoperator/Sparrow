@@ -597,3 +597,71 @@ fn views_browse_and_the_count_is_capped() {
     assert_eq!(exact.total, browse::COUNT_CAP);
     assert!(!exact.total_capped);
 }
+
+#[test]
+fn evidence_filter_finds_exactly_the_referenced_record() {
+    let c = Case::in_memory().unwrap();
+    let id = "02A13335-5A42-4CE8-9F05-5B5F0F489146";
+    let other = "12a13335-5a42-4ce8-9f05-5b5f0f489146";
+    detect::insert_ual(&c, "t1", json!({"record_id": id.to_ascii_lowercase()}));
+    detect::insert_ual(&c, "t1", json!({"record_id": other}));
+    detect::insert_row(&c, "signins", "t1", json!({"record_key": "sign-1"}));
+    detect::insert_row(&c, "signins", "t1", json!({"record_key": "sign-2"}));
+    detect::insert_row(
+        &c,
+        "mail_items_accessed",
+        "t1",
+        json!({"item_key": "item-1"}),
+    );
+    detect::insert_row(
+        &c,
+        "mail_items_accessed",
+        "t1",
+        json!({"item_key": "item-2"}),
+    );
+    for (table, key) in [
+        ("ual_events", id),
+        ("ual_events", &id.to_ascii_lowercase()),
+        ("signins", "sign-1"),
+        ("mail_items_accessed", "item-1"),
+    ] {
+        let f = browse::evidence_filter(c.conn(), table, key).unwrap();
+        let p = browse::page(c.conn(), table, &f, None, 0, 10).unwrap();
+        assert_eq!(p.total, 1, "{table}:{key} -> {f:?}");
+    }
+}
+
+#[test]
+fn evidence_filter_covers_every_browsable_table() {
+    let c = Case::in_memory().unwrap();
+    let mut keyed = 0;
+    for t in browse::tables(c.conn()).unwrap() {
+        let r = browse::evidence_filter(c.conn(), &t, "k");
+        let info = sparrow_core::db::describe::describe_conn(c.conn(), Some(&t)).unwrap();
+        let info = info.iter().find(|i| i.table == t).unwrap();
+        let has_key = info.columns.iter().any(|c| c.name == "record_key");
+        let evidence_like = t == "ual_events"
+            || t == "mail_items_accessed"
+            || (has_key
+                && info.kind == "table"
+                && ![
+                    "finding_evidence",
+                    "record_sources",
+                    "timeline_entry_evidence",
+                ]
+                .contains(&t.as_str()));
+        match r {
+            Ok(f) => {
+                assert!(evidence_like, "{t} resolved but is not evidence: {f:?}");
+                keyed += 1;
+            }
+            Err(Error::Invalid(_)) => assert!(!evidence_like, "{t} should resolve"),
+            Err(e) => panic!("{t}: {e}"),
+        }
+    }
+    assert!(keyed >= 10, "only {keyed} tables resolved");
+    assert!(matches!(
+        browse::evidence_filter(c.conn(), "no_such_table", "k"),
+        Err(Error::Invalid(_))
+    ));
+}

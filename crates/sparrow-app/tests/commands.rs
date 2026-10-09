@@ -2766,3 +2766,32 @@ fn requests_queued_for_a_case_that_is_then_replaced_are_refused() {
 fn accounts_for_test(state: &AppState) -> sparrow_app::CmdResult<()> {
     sparrow_app::cmd::accounts::accounts_list(state, None).map(|_| ())
 }
+
+#[test]
+fn evidence_filter_resolves_ual_and_record_key_tables_to_one_row() {
+    use sparrow_app::cmd::browse::evidence_filter;
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, _) = open_seeded(tmp.path());
+    // A real record key from each of a UAL table and a record_key table.
+    let (ual_col, signin_col) = ("record_id", "record_key");
+    let cell = |table: &str, col: &str| {
+        with_case(&state, |open| {
+            let sql = format!("SELECT CAST({col} AS VARCHAR) FROM {table} LIMIT 1");
+            Ok(open
+                .case
+                .conn()
+                .query_row(&sql, [], |r| r.get::<_, String>(0))
+                .map_err(sparrow_core::Error::from)?)
+        })
+        .unwrap()
+    };
+    for (table, col) in [("ual_events", ual_col), ("signins", signin_col)] {
+        let key = cell(table, col);
+        let target = evidence_filter(&state, table, &key).unwrap();
+        assert_eq!(target.table, table);
+        let page = browse_page(&state, table, &target.filters, None, 0, 10).unwrap();
+        assert_eq!(page.total, 1, "{table}:{key}");
+    }
+    let e = evidence_filter(&state, "no_such_table", "k").unwrap_err();
+    assert_eq!(serde_json::to_value(&e).unwrap()["kind"], "invalid");
+}

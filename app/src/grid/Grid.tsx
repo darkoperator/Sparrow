@@ -10,6 +10,7 @@ import { useNav } from "../shell/nav";
 import { displaySafe } from "../text";
 import { rawText, valueKind } from "../value";
 import CellMenu, { type MenuItem } from "./CellMenu";
+import ValueViewer from "./ValueViewer";
 
 export type Cell = unknown;
 
@@ -36,6 +37,8 @@ export interface GridProps {
 }
 
 const ROW_HEIGHT = 26;
+const DEFAULT_COLUMN_WIDTH = 180;
+const MIN_COLUMN_WIDTH = 60;
 
 export function cellText(v: Cell): string {
   if (v === null || v === undefined) return "";
@@ -98,10 +101,29 @@ export default function Grid({
     opener.current = e.currentTarget as HTMLElement;
     setMenu({ ...rect, row, col });
   };
+  const [viewing, setViewing] = useState<{ row: number; col: number } | null>(null);
+  const viewerOpener = useRef<HTMLElement | null>(null);
+  const openViewer = (el: HTMLElement, row: number, col: number) => {
+    viewerOpener.current = el;
+    setViewing({ row, col });
+  };
+  const restoreViewerFocus = useRef(false);
+  const closeViewer = useCallback(() => {
+    // Focus goes back once the dialog is gone: while it is mounted it pulls focus back in.
+    restoreViewerFocus.current = true;
+    setViewing(null);
+  }, []);
+  useEffect(() => {
+    if (viewing === null && restoreViewerFocus.current) {
+      restoreViewerFocus.current = false;
+      viewerOpener.current?.focus();
+    }
+  }, [viewing]);
   const items = (m: MenuAt): MenuItem[] => {
     const value = rows[m.row]?.[m.col];
     const column = columns[m.col];
     const out: MenuItem[] = [{ label: "Copy", run: () => void navigator.clipboard.writeText(rawText(value)) }];
+    out.push({ label: "Show full value", run: () => openViewer(opener.current ?? document.body, m.row, m.col) });
     if (cellActions?.onFilter) out.push({ label: "Filter by this value", run: () => cellActions.onFilter!(column, value) });
     if (onHighlight) out.push({ label: "Highlight this value", run: () => onHighlight(column, value) });
     const kind = nav ? valueKind(value) : null;
@@ -122,12 +144,20 @@ export default function Grid({
   );
   // TanStack Table's hook is not memoisable by the React Compiler; the grid does not rely on that.
   // eslint-disable-next-line react-hooks/incompatible-library
-  const table = useReactTable({ data: rows, columns: defs, getCoreRowModel: getCoreRowModel() });
+  const table = useReactTable({
+    data: rows,
+    columns: defs,
+    defaultColumn: { size: DEFAULT_COLUMN_WIDTH, minSize: MIN_COLUMN_WIDTH },
+    columnResizeMode: "onChange",
+    getCoreRowModel: getCoreRowModel(),
+  });
   const tableRows = table.getRowModel().rows;
   const scroller = useRef<HTMLDivElement>(null);
   const virt = useVirtualizer({
     count: tableRows.length,
     getScrollElement: () => scroller.current,
+    scrollMargin: ROW_HEIGHT,
+    scrollPaddingStart: ROW_HEIGHT,
     estimateSize: () => ROW_HEIGHT,
     overscan: 12,
     initialRect: { width: 800, height },
@@ -146,6 +176,53 @@ export default function Grid({
       return () => ro.disconnect();
     },
   });
+  // Roving tabindex: one cell is the grid's tab stop; arrows move it, scrolling the virtualizer to rows that are not
+  // rendered yet and focusing the target once it is.
+  const [active, setActive] = useState({ row: 0, col: 0 });
+  const activeRow = Math.min(active.row, Math.max(rows.length - 1, 0));
+  const activeCol = Math.min(active.col, Math.max(columns.length - 1, 0));
+  // When the active row is not mounted (scrolled out of the window), the tab stop moves to the first visible row, so
+  // the grid always has exactly one tabbable cell.
+  const mounted = virt.getVirtualItems();
+  const tabRow = mounted.some((v) => v.index === activeRow) ? activeRow : (virt.range?.startIndex ?? mounted[0]?.index ?? 0);
+  const pendingFocus = useRef<{ row: number; col: number } | null>(null);
+  const moveTo = (row: number, col: number) => {
+    const target = { row: Math.min(Math.max(row, 0), rows.length - 1), col: Math.min(Math.max(col, 0), columns.length - 1) };
+    pendingFocus.current = target;
+    setActive(target);
+    virt.scrollToIndex(target.row, { align: "auto" });
+  };
+  useEffect(() => {
+    const want = pendingFocus.current;
+    if (!want) return;
+    const el = scroller.current?.querySelector<HTMLElement>(`[data-row="${want.row}"] [data-col="${want.col}"]`);
+    if (el) {
+      pendingFocus.current = null;
+      el.focus();
+    }
+  });
+  const onCellKey = (e: React.KeyboardEvent<HTMLElement>, row: number, col: number) => {
+    const page = Math.max(Math.floor(height / ROW_HEIGHT) - 1, 1);
+    const to: Record<string, [number, number]> = {
+      ArrowDown: [row + 1, col],
+      ArrowUp: [row - 1, col],
+      ArrowRight: [row, col + 1],
+      ArrowLeft: [row, col - 1],
+      PageDown: [row + page, col],
+      PageUp: [row - page, col],
+      Home: [row, 0],
+      End: [row, columns.length - 1],
+    };
+    const next = to[e.key];
+    if (next) {
+      e.preventDefault();
+      moveTo(next[0], next[1]);
+      return;
+    }
+    if (e.key !== "Enter") return;
+    const r = e.currentTarget.getBoundingClientRect();
+    openMenu(e, { x: r.left, y: r.bottom }, row, col);
+  };
   const rowClass = (row: Cell[]) => {
     const hit = rules?.find((r) => ruleMatches(r, columns, row));
     const cls = hit ? colourClass(hit.colour) : undefined;
@@ -155,76 +232,88 @@ export default function Grid({
   useEffect(() => {
     if (onNearEnd && rows.length > 0 && lastVisible >= rows.length - 1 - NEAR_END) onNearEnd();
   }, [onNearEnd, rows.length, lastVisible]);
-  const template = `repeat(${Math.max(columns.length, 1)}, minmax(120px, 1fr))`;
+  const columnSizes = table.getVisibleLeafColumns().map((c) => c.getSize());
+  const template = columnSizes.map((w) => `${w}px`).join(" ");
+  const totalWidth = columnSizes.reduce((a, b) => a + b, 0);
 
   if (rows.length === 0) {
     return <p className="grid-empty">No rows.</p>;
   }
   return (
-    <div className="grid" role="table" aria-rowcount={rows.length}>
-      <div className="grid-head" role="row" style={{ display: "grid", gridTemplateColumns: template }}>
-        {table.getHeaderGroups()[0].headers.map((h, i) => {
-          const sorted = sort?.column === columns[i] ? (sort.descending ? "descending" : "ascending") : undefined;
-          return (
-            <div key={h.id} role="columnheader" aria-sort={onSort ? (sorted ?? "none") : undefined} className="grid-cell grid-header">
-              {onSort ? (
-                <button className="grid-sort" onClick={() => onSort(columns[i])}>
-                  {flexRender(h.column.columnDef.header, h.getContext())}
-                  <span aria-hidden="true">{sorted === "ascending" ? " ▲" : sorted === "descending" ? " ▼" : ""}</span>
-                </button>
-              ) : (
-                flexRender(h.column.columnDef.header, h.getContext())
-              )}
-            </div>
-          );
-        })}
-      </div>
-      <div ref={scroller} className="grid-body" style={{ height, overflow: "auto", position: "relative" }}>
-        <div style={{ height: virt.getTotalSize(), position: "relative" }}>
-          {virt.getVirtualItems().map((v) => {
-            const row = tableRows[v.index];
-            return (
-              <div
-                key={row.id}
-                role="row"
-                data-row={v.index}
-                className={rowClass(row.original)}
-                onClick={onRowClick ? () => onRowClick(row.original, v.index) : undefined}
-                style={{
-                  position: "absolute",
-                  top: 0,
-                  left: 0,
-                  width: "100%",
-                  height: ROW_HEIGHT,
-                  transform: `translateY(${v.start}px)`,
-                  display: "grid",
-                  gridTemplateColumns: template,
-                  cursor: onRowClick ? "pointer" : undefined,
-                }}
-              >
-                {row.getVisibleCells().map((c, col) => (
+    <div className="grid grid-bounded" role="table" aria-rowcount={rows.length}>
+      <div ref={scroller} className="grid-scroll" style={{ height: height + ROW_HEIGHT }}>
+        <div style={{ width: totalWidth, minWidth: "100%" }}>
+          <div className="grid-head grid-head-sticky" role="row" style={{ display: "grid", gridTemplateColumns: template, height: ROW_HEIGHT }}>
+            {table.getHeaderGroups()[0].headers.map((h, i) => {
+              const sorted = sort?.column === columns[i] ? (sort.descending ? "descending" : "ascending") : undefined;
+              return (
+                <div key={h.id} role="columnheader" aria-sort={onSort ? (sorted ?? "none") : undefined} className="grid-cell grid-header">
+                  {onSort ? (
+                    <button className="grid-sort" onClick={() => onSort(columns[i])}>
+                      {flexRender(h.column.columnDef.header, h.getContext())}
+                      <span aria-hidden="true">{sorted === "ascending" ? " ▲" : sorted === "descending" ? " ▼" : ""}</span>
+                    </button>
+                  ) : (
+                    flexRender(h.column.columnDef.header, h.getContext())
+                  )}
                   <div
-                    key={c.id}
-                    role="cell"
-                    className="grid-cell"
-                    tabIndex={0}
-                    title={cellText(c.getValue())}
-                    onContextMenu={(e) => openMenu(e, { x: e.clientX, y: e.clientY }, v.index, col)}
-                    onKeyDown={(e) => {
-                      if (e.key !== "Enter") return;
-                      const r = e.currentTarget.getBoundingClientRect();
-                      openMenu(e, { x: r.left, y: r.bottom }, v.index, col);
-                    }}
-                  >
-                    {flexRender(c.column.columnDef.cell, c.getContext())}
-                  </div>
-                ))}
-              </div>
-            );
-          })}
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label={`Resize ${displaySafe(columns[i])}`}
+                    className="grid-resize"
+                    onMouseDown={h.getResizeHandler()}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ height: virt.getTotalSize(), position: "relative" }}>
+            {virt.getVirtualItems().map((v) => {
+              const row = tableRows[v.index];
+              return (
+                <div
+                  key={row.id}
+                  role="row"
+                  data-row={v.index}
+                  className={rowClass(row.original)}
+                  onClick={onRowClick ? () => onRowClick(row.original, v.index) : undefined}
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    width: "100%",
+                    height: ROW_HEIGHT,
+                    transform: `translateY(${v.start - ROW_HEIGHT}px)`,
+                    display: "grid",
+                    gridTemplateColumns: template,
+                    cursor: onRowClick ? "pointer" : undefined,
+                  }}
+                >
+                  {row.getVisibleCells().map((c, col) => (
+                    <div
+                      key={c.id}
+                      role="cell"
+                      className="grid-cell"
+                      data-col={col}
+                      tabIndex={v.index === tabRow && col === activeCol ? 0 : -1}
+                      onFocus={() => setActive({ row: v.index, col })}
+                      title={cellText(c.getValue())}
+                      onContextMenu={(e) => openMenu(e, { x: e.clientX, y: e.clientY }, v.index, col)}
+                      onDoubleClick={(e) => openViewer(e.currentTarget, v.index, col)}
+                      onKeyDown={(e) => onCellKey(e, v.index, col)}
+                    >
+                      {flexRender(c.column.columnDef.cell, c.getContext())}
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
       {menu && <CellMenu x={menu.x} y={menu.y} items={items(menu)} onClose={closeMenu} />}
+      {viewing && <ValueViewer column={columns[viewing.col]} value={rows[viewing.row]?.[viewing.col]} onClose={closeViewer} />}
     </div>
   );
 }

@@ -34,6 +34,24 @@ pub fn browse_page(
     })
 }
 
+/// Where an evidence reference opens in the table browser: the table and the filters that select exactly its record.
+/// The key column differs per table, so core decides it; an unknown table is `invalid`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EvidenceTarget {
+    pub table: String,
+    pub filters: Vec<Filter>,
+}
+
+pub fn evidence_filter(state: &AppState, table: &str, key: &str) -> CmdResult<EvidenceTarget> {
+    let ticket = state.ticket();
+    with_case(state, ticket, |open| {
+        Ok(EvidenceTarget {
+            table: table.to_string(),
+            filters: browse::evidence_filter(open.case.conn(), table, key)?,
+        })
+    })
+}
+
 pub mod commands {
     use super::*;
     use tauri::State;
@@ -62,5 +80,14 @@ pub mod commands {
             limit,
             &query_id,
         )
+    }
+
+    #[tauri::command(async)]
+    pub fn evidence_filter(
+        state: State<'_, AppState>,
+        table: String,
+        key: String,
+    ) -> CmdResult<EvidenceTarget> {
+        super::evidence_filter(&state, &table, &key)
     }
 }

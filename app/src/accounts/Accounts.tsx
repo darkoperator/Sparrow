@@ -53,6 +53,7 @@ export default function Accounts({ onSelect }: { onSelect: (upn: string) => void
       {page && page.truncated && <p>Showing {page.accounts.length} of {page.total} accounts.</p>}
       {page && page.accounts.length === 0 && page.warnings.length === 0 && <p>No accounts have findings.</p>}
       {page && page.accounts.length > 0 && (
+        <div className="table-scroll">
         <table>
           <thead>
             <tr>
@@ -118,6 +119,7 @@ export default function Accounts({ onSelect }: { onSelect: (upn: string) => void
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </section>
   );

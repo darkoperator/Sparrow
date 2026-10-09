@@ -303,6 +303,37 @@ fn unique_key(info: &TableInfo) -> Option<Vec<&'static str>> {
     declared.map(<[_]>::to_vec)
 }
 
+/// The browse filter that opens exactly the record an evidence reference (`source_table`, `record_key`) names.
+/// Evidence keys are not one column everywhere: `ual_events` is keyed by `record_id` (a UUID, matched as lower-case
+/// text), `mail_items_accessed` references its parent-less rows by `item_key` (as `review::USER_SOURCES` does), and
+/// every other state/event table by `record_key`. Anything else (views, bookkeeping tables, unknown names) is
+/// `Error::Invalid`: it cannot be evidence.
+pub fn evidence_filter(conn: &Connection, table: &str, key: &str) -> Result<Vec<Filter>> {
+    let info = describe_conn(conn, Some(table))?
+        .into_iter()
+        .find(|t| t.table == table && t.kind == "table")
+        .ok_or_else(|| Error::Invalid(format!("unknown evidence table {table:?}")))?;
+    let (column, value) = match table {
+        "ual_events" => ("record_id", key.to_ascii_lowercase()),
+        "mail_items_accessed" => ("item_key", key.to_string()),
+        "finding_evidence" | "record_sources" | "timeline_entry_evidence" => {
+            return Err(Error::Invalid(format!(
+                "{table:?} holds no evidence records"
+            )));
+        }
+        _ if info.columns.iter().any(|c| c.name == "record_key") => ("record_key", key.to_string()),
+        _ => {
+            return Err(Error::Invalid(format!(
+                "{table:?} holds no evidence records"
+            )));
+        }
+    };
+    Ok(vec![Filter::Eq {
+        column: column.to_string(),
+        value: Value::String(value),
+    }])
+}
+
 /// The order: the sort column (NULLs last) first, then a total order so pages never overlap or skip: the table's
 /// proven-unique key, or every column as text where there is none.
 fn order_by(info: &TableInfo, sort: Option<&Sort>) -> Result<String> {

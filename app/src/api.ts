@@ -436,6 +436,10 @@ export function newQueryId(): string {
   return `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
+/** Where an evidence reference opens in the table browser; the backend decides each table's key column. */
+export const evidenceFilter = (table: string, key: string) =>
+  call<{ table: string; filters: Filter[] }>("evidence_filter", { table, key });
+
 export const browseTables = () => call<string[]>("browse_tables");
 export const browsePage = (
   table: string,

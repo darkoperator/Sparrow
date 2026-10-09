@@ -143,6 +143,7 @@ export function Timeline({ readOnly = false }: { readOnly?: boolean }) {
       {groups.map((g) => (
         <section key={g.phase} aria-label={phaseLabel(g.phase)}>
           <h3>{phaseLabel(g.phase)}</h3>
+          <div className="table-scroll">
           <table>
             <thead>
               <tr>
@@ -234,6 +235,7 @@ export function Timeline({ readOnly = false }: { readOnly?: boolean }) {
               ))}
             </tbody>
           </table>
+          </div>
         </section>
       ))}
     </section>

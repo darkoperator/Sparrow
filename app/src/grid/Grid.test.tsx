@@ -90,7 +90,7 @@ describe("Grid cell actions", () => {
   it("hides the pivot actions outside a shell, and Filter/Highlight unless the host supports them", () => {
     render(<Grid columns={columns} rows={rows} />);
     const menu = openMenu("203.0.113.1");
-    expect(within(menu).getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Copy"]);
+    expect(within(menu).getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Copy", "Show full value"]);
   });
 
   it("Pivot calls the shell with the kind and the raw value, and closes the menu", async () => {
@@ -196,3 +196,204 @@ describe("Grid highlights", () => {
   });
 });
 
+
+describe("Grid layout", () => {
+  it("header and body share one scroll container, and the header is sticky", () => {
+    render(<Grid columns={["a", "b"]} rows={[["x", "y"]]} />);
+    const scroller = document.querySelector(".grid-scroll") as HTMLElement;
+    expect(scroller).not.toBeNull();
+    const header = screen.getByText("a").closest(".grid-head") as HTMLElement;
+    expect(scroller.contains(header)).toBe(true);
+    expect(header).toHaveClass("grid-head-sticky");
+    expect(scroller.contains(screen.getByText("x"))).toBe(true);
+  });
+  it("the grid container is bounded and scrolls inside itself", () => {
+    render(<Grid columns={["a"]} rows={[["x"]]} />);
+    const grid = document.querySelector(".grid") as HTMLElement;
+    expect(grid).toHaveClass("grid-bounded");
+    expect(grid.querySelector(".grid-scroll")).not.toBeNull();
+  });
+  it("dragging a header edge resizes that column for header and rows", () => {
+    render(<Grid columns={["a", "b"]} rows={[["x", "y"]]} />);
+    const head = document.querySelector(".grid-head") as HTMLElement;
+    const row = screen.getByText("x").closest('[role="row"]') as HTMLElement;
+    const before = head.style.gridTemplateColumns;
+    expect(before).toBe("180px 180px");
+    const handle = screen.getAllByRole("separator")[0];
+    fireEvent.mouseDown(handle, { clientX: 100 });
+    fireEvent.mouseMove(document, { clientX: 160 });
+    fireEvent.mouseUp(document, { clientX: 160 });
+    expect(head.style.gridTemplateColumns).toBe("240px 180px");
+    expect(row.style.gridTemplateColumns).toBe("240px 180px");
+  });
+});
+
+describe("Grid value viewer", () => {
+  const long = "line one\nline two <b>x</b>‮" + "z".repeat(300);
+  it("double-click opens a dialog with the complete value, escaped, and the column name", async () => {
+    render(<Grid columns={["note"]} rows={[[long]]} />);
+    fireEvent.doubleClick(screen.getByRole("cell"));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("note")).toBeInTheDocument();
+    const body = dialog.querySelector("pre") as HTMLElement;
+    expect(body.textContent).toBe("line one\nline two <b>x</b>\\u{202E}" + "z".repeat(300));
+    expect(dialog.querySelector("b")).toBeNull();
+  });
+  it("pretty-prints objects and JSON text", () => {
+    render(<Grid columns={["o", "s"]} rows={[[{ a: 1, b: [2] }, '{"k":"v"}']]} />);
+    const cells = screen.getAllByRole("cell");
+    fireEvent.doubleClick(cells[0]);
+    expect(screen.getByRole("dialog").querySelector("pre")!.textContent).toBe(JSON.stringify({ a: 1, b: [2] }, null, 2));
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    fireEvent.doubleClick(cells[1]);
+    expect(screen.getByRole("dialog").querySelector("pre")!.textContent).toBe('{\n  "k": "v"\n}');
+  });
+  it("Copy copies the raw value, not the escaped one", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+    render(<Grid columns={["note"]} rows={[[long]]} />);
+    fireEvent.doubleClick(screen.getByRole("cell"));
+    await user.click(screen.getByRole("button", { name: "Copy" }));
+    expect(writeText).toHaveBeenCalledExactlyOnceWith(long);
+  });
+  it("Escape closes it and focus returns to the cell", () => {
+    render(<Grid columns={["note"]} rows={[["v"]]} />);
+    const cell = screen.getByRole("cell");
+    cell.focus();
+    fireEvent.doubleClick(cell);
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(cell).toHaveFocus();
+  });
+  it("the cell menu offers Show full value", async () => {
+    render(<Grid columns={["note"]} rows={[["v"]]} />);
+    fireEvent.contextMenu(screen.getByRole("cell"));
+    await userEvent.setup().click(screen.getByRole("menuitem", { name: "Show full value" }));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+});
+
+describe("Grid keyboard navigation", () => {
+  const many = Array.from({ length: 300 }, (_, i) => [`r${i}-a`, `r${i}-b`]);
+  // jsdom has no layout: give the scroller its sizes, and make scrollTo set scrollTop and raise the scroll event the
+  // virtualizer listens to.
+  const withScrollTo = () => {
+    const proto = HTMLElement.prototype as unknown as { scrollTo?: unknown };
+    const saved = proto.scrollTo;
+    const heights = Object.defineProperties(HTMLElement.prototype, {
+      scrollHeight: { configurable: true, get: () => 26 * 301 },
+      clientHeight: { configurable: true, get: () => 226 },
+    });
+    void heights;
+    proto.scrollTo = function (this: HTMLElement, o: { top?: number }) {
+      Object.defineProperty(this, "scrollTop", { value: o.top ?? 0, configurable: true, writable: true });
+      this.dispatchEvent(new Event("scroll"));
+    };
+    return () => {
+      proto.scrollTo = saved;
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollHeight;
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientHeight;
+    };
+  };
+  it("has one tab stop, and arrows move between cells", async () => {
+    render(<Grid columns={["a", "b"]} rows={many} height={200} />);
+    expect(screen.getAllByRole("cell").filter((c) => c.tabIndex === 0)).toHaveLength(1);
+    const user = userEvent.setup();
+    screen.getByText("r0-a").focus();
+    await user.keyboard("{ArrowRight}");
+    expect(screen.getByText("r0-b")).toHaveFocus();
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByText("r1-b")).toHaveFocus();
+    await user.keyboard("{ArrowLeft}{ArrowUp}");
+    expect(screen.getByText("r0-a")).toHaveFocus();
+    expect(screen.getAllByRole("cell").filter((c) => c.tabIndex === 0)).toHaveLength(1);
+  });
+  it("moving past the rendered window scrolls to the row and focuses it", async () => {
+    const restore = withScrollTo();
+    try {
+      render(<Grid columns={["a", "b"]} rows={many} height={200} />);
+      expect(screen.queryByText("r132-a")).toBeNull();
+      screen.getByText("r0-a").focus();
+      const user = userEvent.setup();
+      // PageDown steps (6 rows each at this height) until the target row is far beyond the initial window.
+      for (let i = 0; i < 22; i++) await user.keyboard("{PageDown}");
+      const cell = await screen.findByText("r132-a");
+      await vi.waitFor(() => expect(cell).toHaveFocus());
+    } finally {
+      restore();
+    }
+  });
+  it("when the active row scrolls out of the window, a visible cell becomes the tab stop", async () => {
+    const restore = withScrollTo();
+    try {
+      render(
+        <>
+          <button>before</button>
+          <Grid columns={["a", "b"]} rows={many} height={200} />
+        </>,
+      );
+      const scroller = document.querySelector(".grid-scroll") as HTMLElement;
+      expect(screen.getByText("r0-a")).toHaveAttribute("tabindex", "0");
+      scroller.scrollTo({ top: 26 * 200 });
+      await vi.waitFor(() => expect(screen.queryByText("r0-a")).toBeNull());
+      const stops = screen.getAllByRole("cell").filter((c) => c.tabIndex === 0);
+      expect(stops).toHaveLength(1);
+      screen.getByRole("button", { name: "before" }).focus();
+      await userEvent.setup().tab();
+      const row = Number(document.activeElement?.closest("[data-row]")?.getAttribute("data-row"));
+      expect(document.activeElement).toBe(stops[0]);
+      expect(row).toBeGreaterThan(150);
+    } finally {
+      restore();
+    }
+  });
+  it("Tab leaves the grid instead of walking cells", async () => {
+    render(
+      <>
+        <Grid columns={["a", "b"]} rows={many} height={200} />
+        <button>after</button>
+      </>,
+    );
+    screen.getByText("r0-a").focus();
+    await userEvent.setup().tab();
+    expect(screen.getByRole("button", { name: "after" })).toHaveFocus();
+  });
+});
+
+describe("Grid value viewer focus", () => {
+  it("Tab and Shift+Tab stay inside the dialog; Escape still closes after tabbing", async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <button>outside</button>
+        <Grid columns={["note"]} rows={[["v"]]} />
+      </>,
+    );
+    const cell = screen.getByRole("cell");
+    cell.focus();
+    fireEvent.doubleClick(cell);
+    const dialog = screen.getByRole("dialog");
+    for (let i = 0; i < 5; i++) {
+      await user.tab();
+      expect(dialog.contains(document.activeElement)).toBe(true);
+    }
+    for (let i = 0; i < 5; i++) {
+      await user.tab({ shift: true });
+      expect(dialog.contains(document.activeElement)).toBe(true);
+    }
+    await user.tab();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(cell).toHaveFocus();
+  });
+  it("focus returns to the cell when closed with the Close button", async () => {
+    const user = userEvent.setup();
+    render(<Grid columns={["note"]} rows={[["v"]]} />);
+    const cell = screen.getByRole("cell");
+    cell.focus();
+    fireEvent.doubleClick(cell);
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(cell).toHaveFocus();
+  });
+});

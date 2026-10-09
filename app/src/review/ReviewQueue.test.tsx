@@ -7,6 +7,7 @@ import type { CmdError, FindingDetail, Proposal, QueueItem } from "../api";
 vi.mock("../api", async (orig) => ({
   ...(await orig<typeof import("../api")>()),
   reviewQueue: vi.fn(),
+  evidenceFilter: vi.fn(),
   findingDetail: vi.fn(),
   reviewAccept: vi.fn(),
   reviewDiscard: vi.fn(),
@@ -15,6 +16,7 @@ vi.mock("../api", async (orig) => ({
 }));
 
 import * as api from "../api";
+import { NavContext } from "../shell/nav";
 import ReviewQueue from "./ReviewQueue";
 
 // The recorded queue: three agent decisions on one account (finding set_status, indicator add_ioc, timeline
@@ -340,5 +342,115 @@ describe("ReviewQueue", () => {
     const calls = [...m.accept.mock.calls, ...m.pAccept.mock.calls];
     expect(calls).toHaveLength(1);
     expect(m.pAccept).not.toHaveBeenCalled();
+  });
+});
+
+describe("ReviewQueue detail for every item", () => {
+  const nav = () => ({ openPivot: vi.fn(), openTable: vi.fn() });
+  async function open(testId: string) {
+    const n = nav();
+    const user = userEvent.setup();
+    render(
+      <NavContext.Provider value={n}>
+        <ReviewQueue canWrite />
+      </NavContext.Provider>,
+    );
+    await user.click(await screen.findByTestId(testId));
+    return { user, n, detail: document.querySelector(".queue-detail") as HTMLElement };
+  }
+
+  it("an indicator decision shows its fields and pivots on the value", async () => {
+    const { user, n, detail } = await open(INDICATOR);
+    const d = within(detail);
+    expect(d.getByText("upn")).toBeInTheDocument();
+    expect(d.getAllByText(ACCOUNT).length).toBeGreaterThan(0);
+    expect(d.getByText("suspicious")).toBeInTheDocument();
+    expect(d.getByText("account used from the relay")).toBeInTheDocument();
+    expect(d.getByText("agent:triage")).toBeInTheDocument();
+    await user.click(d.getByRole("button", { name: `Pivot on account ${ACCOUNT}` }));
+    expect(n.openPivot).toHaveBeenCalledWith("account", ACCOUNT);
+  });
+
+  it("a timeline-entry decision shows its narrative and links each evidence ref to Tables", async () => {
+    const { user, n, detail } = await open(TIMELINE);
+    const d = within(detail);
+    expect(d.getByText("initial_access")).toBeInTheDocument();
+    expect(d.getAllByText("Sign-in through the AiTM relay").length).toBeGreaterThan(0);
+    expect(d.getByText("session token replayed")).toBeInTheDocument();
+    expect(d.getByText("2026-08-21T09:47:00.000000Z")).toBeInTheDocument();
+    vi.mocked(api.evidenceFilter).mockResolvedValue({
+      table: "ual_events",
+      filters: [{ op: "eq", column: "record_id", value: "02a13335-5a42-4ce8-9f05-5b5f0f489146" }],
+    });
+    await user.click(d.getByRole("button", { name: /ual_events/ }));
+    expect(api.evidenceFilter).toHaveBeenCalledWith("ual_events", "02a13335-5a42-4ce8-9f05-5b5f0f489146");
+    await vi.waitFor(() =>
+      expect(n.openTable).toHaveBeenCalledWith("ual_events", [
+        { op: "eq", column: "record_id", value: "02a13335-5a42-4ce8-9f05-5b5f0f489146" },
+      ]),
+    );
+  });
+
+  it("an evidence link whose table cannot be resolved shows the error and opens nothing", async () => {
+    const { user, n, detail } = await open(TIMELINE);
+    vi.mocked(api.evidenceFilter).mockRejectedValue({ kind: "invalid", message: "unknown evidence table" });
+    await user.click(within(detail).getByRole("button", { name: /ual_events/ }));
+    expect(await within(detail).findByRole("alert")).toHaveTextContent("unknown evidence table");
+    expect(n.openTable).not.toHaveBeenCalled();
+  });
+
+  it("a and d do nothing while the value viewer is open", async () => {
+    const { user } = await open(FINDING);
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    const btn = document.createElement("button");
+    dialog.appendChild(btn);
+    document.body.appendChild(dialog);
+    btn.focus();
+    await user.keyboard("ad");
+    dialog.remove();
+    expect(m.accept).not.toHaveBeenCalled();
+    expect(m.discard).not.toHaveBeenCalled();
+    await user.keyboard("d");
+    expect(m.discard).toHaveBeenCalledTimes(1);
+  });
+
+  it("a non-finding proposal shows the proposed item against the current value in full", async () => {
+    const sha = "ab".repeat(32);
+    queue.push({
+      source: "proposal",
+      bundle_sha256: sha,
+      item_key: "indicator:k1",
+      source_analyst: "analyst:ann",
+      classification: "conflict",
+      state: "open",
+      item: { kind: "indicator", tenant_key: null, ioc_type: "ip", value: "203.0.113.9", verdict: "malicious", note: "relay <b>egress</b>", active: true },
+      current: { verdict: "benign", note: "old note" },
+    });
+    const { detail } = await open(`item-${sha}:indicator:k1`);
+    const d = within(detail);
+    expect(d.getByText("203.0.113.9")).toBeInTheDocument();
+    expect(d.getByText("malicious")).toBeInTheDocument();
+    expect(d.getByText("relay <b>egress</b>")).toBeInTheDocument();
+    expect(detail.querySelector("b")).toBeNull();
+    expect(d.getAllByText(/old note/).length).toBeGreaterThan(0);
+    expect(d.getByRole("button", { name: "Pivot on IP 203.0.113.9" })).toBeInTheDocument();
+  });
+
+  it("a note proposal shows the target and the text", async () => {
+    const sha = "cd".repeat(32);
+    queue.push({
+      source: "proposal",
+      bundle_sha256: sha,
+      item_key: "note:n1",
+      source_analyst: "analyst:ann",
+      classification: "new",
+      state: "open",
+      item: { kind: "note", target: "finding:abc", text: "full note text" },
+      current: null,
+    });
+    const { detail } = await open(`item-${sha}:note:n1`);
+    expect(within(detail).getByText("full note text")).toBeInTheDocument();
+    expect(within(detail).getByText("finding:abc")).toBeInTheDocument();
   });
 });

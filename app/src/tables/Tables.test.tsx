@@ -62,7 +62,7 @@ async function pickSignins() {
 const lastArgs = () => m.page.mock.calls.at(-1)!;
 const pick = (label: string, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
 const rowLoaded = () => screen.findAllByText(browseFixture().rows[0][0] as string);
-const scrollBody = () => document.querySelector(".grid-body")!;
+const scrollBody = () => document.querySelector(".grid-scroll")!;
 
 describe("Tables", () => {
   it("lists the tables, loads the first page with server paging and shows the rows", async () => {
