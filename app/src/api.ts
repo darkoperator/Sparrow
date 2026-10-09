@@ -470,6 +470,24 @@ export interface QueryResult {
   columns: string[];
   rows: unknown[][];
   truncated: boolean;
+  /** True when the user's top-level SELECT has ORDER BY (DuckDB's parser decides); unordered pages may overlap. */
+  ordered?: boolean;
+}
+
+/** `sql_check`: `from`/`to` are UTF-16 offsets into the checked text (what CodeMirror uses). */
+export interface SqlCheckError {
+  message: string;
+  kind: "syntax" | "binder" | "catalog" | "other";
+  from?: number;
+  to?: number;
+  suggestions: string[];
+}
+export type SqlCheck = { ok: true } | { ok: false; error: SqlCheckError };
+
+/** `sql_export_csv`: the whole result, capped at 1,000,000 rows (`capped` when more existed). */
+export interface CsvExported {
+  rows: number;
+  capped: boolean;
 }
 
 /** `case::share::ImportSummary`. */
@@ -506,8 +524,13 @@ export interface SharePreview {
 }
 
 /** `queryId` names this run for `queryCancel` (≤ 64 chars, no control characters; a fresh one per run). */
-export const sqlRun = (sql: string, limit: number | undefined, queryId: string) =>
-  call<QueryResult>("sql_run", { sql, limit, queryId });
+export const sqlRun = (sql: string, limit: number | undefined, queryId: string, offset?: number) =>
+  call<QueryResult>("sql_run", { sql, limit, queryId, offset });
+/** Never executes the text; reports the syntax / binder / catalog error and where it is. */
+export const sqlCheck = (sql: string) => call<SqlCheck>("sql_check", { sql });
+/** Cancellable by `queryCancel(queryId)`. */
+export const sqlExportCsv = (sql: string, path: string, queryId: string) =>
+  call<CsvExported>("sql_export_csv", { sql, path, queryId });
 export const shareExport = (path: string) => call<ShareExported>("share_export", { path });
 export const sharePreview = (path: string) => call<SharePreview>("share_preview", { path });
 /** Refused (`invalid`) when the file's SHA-256 is no longer `sha256`, the one its preview showed. */

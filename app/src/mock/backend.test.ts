@@ -44,6 +44,17 @@ describe("mock backend", () => {
     expect(upns.some((u) => u.includes("<"))).toBe(true);
   });
 
+  it("answers sql_check with a located error, and sql_run with offset and ordered", async () => {
+    const bad = await mockCall<{ ok: boolean; error: { from: number; to: number } }>("sql_check", { sql: "select error" });
+    expect(bad.ok).toBe(false);
+    expect([bad.error.from, bad.error.to]).toEqual([7, 12]);
+    const p0 = await mockCall<QueryResult>("sql_run", { sql: "SELECT * FROM signins ORDER BY 1", limit: 50, offset: 0, queryId: "a" });
+    const p1 = await mockCall<QueryResult>("sql_run", { sql: "SELECT * FROM signins", limit: 50, offset: 50, queryId: "b" });
+    expect(p0.ordered).toBe(true);
+    expect(p1.ordered).toBe(false);
+    expect(p1.rows[0]).not.toEqual(p0.rows[0]);
+  });
+
   it("pages, sorts, filters and caps browse_page", async () => {
     const page = (a: Record<string, unknown>) =>
       mockCall<BrowsePage>("browse_page", { table: "signins", filters: [], sort: null, offset: 0, limit: 100, queryId: "q", ...a });
@@ -146,6 +157,8 @@ const TABLE: { cmd: string; args?: Obj; check: (r: unknown) => void }[] = [
   { cmd: "browse_page", args: { table: "signins", filters: [], sort: null, offset: 0, limit: 10, queryId: "q" }, check: (r) => { keys(r, ["table", "columns", "rows", "offset", "total", "total_capped"]); const p = r as BrowsePage; expect(p.rows.length).toBe(10); expect(p.rows.every((x) => x.length === p.columns.length)).toBe(true); } },
   { cmd: "sql_schema", args: {}, check: (r) => arrOf(r, ["name", "comment", "kind", "columns"]) },
   { cmd: "sql_run", args: { sql: "select 1", limit: 5, queryId: "q" }, check: (r) => { keys(r, ["columns", "rows", "truncated"]); const q = r as QueryResult; expect(q.rows.every((x) => x.length === q.columns.length)).toBe(true); } },
+  { cmd: "sql_check", args: { sql: "select 1" }, check: (r) => expect(r).toEqual({ ok: true }) },
+  { cmd: "sql_export_csv", args: { sql: "select 1", path: "/o.csv", queryId: "q" }, check: (r) => keys(r, ["rows", "capped"]) },
   { cmd: "query_cancel", args: { queryId: "nothing-runs" }, check: (r) => expect(r).toBeNull() },
   { cmd: "indicators_active", check: (r) => arrOf(r, ["ioc_type", "value", "verdict"]) },
   { cmd: "share_export", args: { path: "/b.json" }, check: (r) => { keys(r, ["sha256", "items"]); expect((r as Obj).items).toBeGreaterThan(0); } },

@@ -120,14 +120,17 @@ function pivot(base: Pivot, cap: unknown): Pivot {
 function sqlRun(a: Record<string, unknown> | undefined): Promise<QueryResult> {
   const sql = str(a, "sql");
   const limit = typeof a?.limit === "number" ? a.limit : 1000;
+  const offset = typeof a?.offset === "number" ? a.offset : 0;
+  const ordered = /\border\s+by\b/i.test(sql);
   const slow = /slow/i.test(sql);
   return interruptible(a?.queryId, slow ? 10_000 : 0, () => {
     if (/\berror\b/i.test(sql)) return fail("invalid", "mock SQL error: syntax error near 'error'");
     if (/select\s+\*|\bwide\b/i.test(sql)) {
       const rows = selectRows([], null);
-      return { columns: GEN_COLUMNS, rows: rows.slice(0, limit), truncated: rows.length > limit };
+      return { columns: GEN_COLUMNS, rows: rows.slice(offset, offset + limit), truncated: rows.length > offset + limit, ordered };
     }
-    return fx.sqlResult();
+    const r = fx.sqlResult();
+    return { ...r, rows: r.rows.slice(offset, offset + limit), ordered };
   });
 }
 
@@ -262,6 +265,14 @@ const handlers: Record<string, (a: Args) => unknown> = {
     return t ? fx.schema().filter((x) => x.name === t) : fx.schema();
   },
   sql_run: sqlRun,
+  sql_check: (a) => {
+    const sql = str(a, "sql");
+    const at = sql.search(/\berror\b/i);
+    if (at < 0) return { ok: true };
+    return { ok: false, error: { message: "mock syntax error near 'error'", kind: "syntax", from: at, to: at + 5, suggestions: ["select"] } };
+  },
+  sql_export_csv: (a) =>
+    interruptible(a?.queryId, /slow/i.test(str(a, "sql")) ? 10_000 : 0, () => ({ rows: 1234, capped: false })),
   query_cancel: (a) => {
     running.get(str(a, "queryId"))?.({ kind: "interrupted", message: "query interrupted (mock)" });
     return null;
