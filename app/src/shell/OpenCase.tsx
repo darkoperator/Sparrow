@@ -1,4 +1,4 @@
-import { open } from "@tauri-apps/plugin-dialog";
+import { open } from "../dialog";
 import { displaySafe } from "../text";
 
 export interface UpgradePrompt {

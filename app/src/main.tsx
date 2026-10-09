@@ -3,6 +3,9 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./styles.css";
 
+// Dev-only mock backend (`npm run dev:mock`): the banner marks it.
+if (__SPARROW_MOCK__) void import("./mock/banner").then((m) => m.mountMockBanner());
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <App />

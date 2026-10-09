@@ -1,4 +1,4 @@
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { open, save } from "../dialog";
 import { useState } from "react";
 import {
   isCmdError,

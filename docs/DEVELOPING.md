@@ -69,6 +69,10 @@ npx --prefix app tauri dev               # run from the repo root; starts Vite o
 
 The Tauri CLI finds `crates/sparrow-app/tauri.conf.json` and runs its `beforeDevCommand` / `beforeBuildCommand` (`npm run dev` / `npm run build`) in `app/`. A plain debug `cargo build -p sparrow-app` loads the frontend from the dev server (`devUrl`); `tauri build` builds the frontend into `app/dist` (git-ignored) and embeds it.
 
+### UI debugging in a browser
+
+`npm --prefix app run dev:mock` starts Vite on :5173 in `mock` mode (which sets the compile-time constant `__SPARROW_MOCK__`; no env variable is read, and `npm run dev`, `vite build` in any mode and Vitest compile it to `false`); open <http://localhost:5173> in a normal browser to inspect every screen against a fake backend with no Tauri window and no case. `app/src/mock/backend.ts` answers every command in `app/src/api.ts` with the recorded test fixtures plus generated stress data (a 40-column, 5,000-row table with a 2 KB `raw` cell, long user agents and hostile strings for `browse_page`/`sql_run`, 200-row pivot sections); decisions, timeline edits and highlights live in memory and reset on reload. A SQL text containing `slow` waits 10 s (try Cancel), one containing `error` fails, a case path containing `readonly` opens read-only and one containing `upgrade` asks for the upgrade. A "MOCK BACKEND — synthetic data" badge stays in the corner. The mock is loaded by a dynamic import behind that constant, so a build contains none of it.
+
 Checks when the app changed:
 
 ```bash

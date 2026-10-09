@@ -1,4 +1,4 @@
-import { save } from "@tauri-apps/plugin-dialog";
+import { save } from "../dialog";
 import { useState } from "react";
 import { exportReport, exportTimelineCsv, exportWorkbook, isCmdError } from "../api";
 import { displaySafe } from "../text";

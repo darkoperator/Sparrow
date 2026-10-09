@@ -38,6 +38,8 @@ export function isCmdError(e: unknown): e is CmdError {
  */
 export async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   try {
+    // Dev-only mock backend (`npm run dev:mock`): `__SPARROW_MOCK__` is false in every other build, so the import is dropped.
+    if (__SPARROW_MOCK__) return await (await import("./mock/backend")).mockCall<T>(cmd, args);
     return await invoke<T>(cmd, args);
   } catch (e) {
     if (isCmdError(e)) throw e;
