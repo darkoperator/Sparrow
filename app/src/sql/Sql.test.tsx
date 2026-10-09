@@ -333,6 +333,43 @@ describe("Sql", () => {
       expect(marks()).toHaveLength(0);
     });
 
+    it("an error with no position shows its message and suggestions as text, with no mark and no quick-fix", async () => {
+      m.check.mockResolvedValue({
+        ok: false,
+        error: { message: 'Catalog Error: Table "sigins" does not exist', kind: "catalog", suggestions: ["signins"] },
+      });
+      await setup();
+      await typeSql("SELECT * FROM sigins");
+      const alert = await screen.findByRole("alert", {}, { timeout: 3000 });
+      expect(alert).toHaveTextContent('Catalog Error: Table "sigins" does not exist');
+      expect(alert).toHaveTextContent("Did you mean: signins");
+      expect(alert).not.toHaveTextContent("SQL check unavailable");
+      expect(marks()).toHaveLength(0);
+      const { forEachDiagnostic } = await import("@codemirror/lint");
+      let n = 0;
+      forEachDiagnostic(view().state, () => n++);
+      expect(n).toBe(0);
+    });
+
+    it("an old refusal arriving right after an edit is ignored, and the banner clears on edit", async () => {
+      let reject: (e: unknown) => void = () => {};
+      m.check.mockImplementationOnce(() => new Promise((_, rj) => (reject = rj)));
+      m.check.mockResolvedValue({ ok: true });
+      await setup();
+      await typeSql("SELECT 1");
+      await waitFor(() => expect(m.check).toHaveBeenCalledTimes(1), { timeout: 3000 });
+      await typeSql("SELECT 2");
+      await act(async () => reject({ kind: "read_only", message: "old refusal" }));
+      expect(screen.queryByRole("alert")).toBeNull();
+      // A shown banner goes as soon as the text changes, before the next check answers.
+      m.check.mockRejectedValueOnce({ kind: "read_only", message: "second refusal" });
+      await typeSql("SELECT 3");
+      expect(await screen.findByRole("alert", {}, { timeout: 3000 })).toHaveTextContent("second refusal");
+      m.check.mockImplementation(() => new Promise(() => {}));
+      await typeSql("SELECT 4");
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+
     it("does not check an empty editor", async () => {
       await setup();
       await typeSql("   ");
@@ -467,6 +504,52 @@ describe("Sql", () => {
       await act(async () => reject({ kind: "interrupted", message: "Interrupted" }));
       expect(await screen.findByRole("status")).toHaveTextContent("Export cancelled.");
       expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+    });
+
+    it("holds the operation slot while the save dialog is open: no Run, no second export, and leaving cancels the export", async () => {
+      let pick: (p: string | null) => void = () => {};
+      m.save.mockImplementation(() => new Promise((rs) => (pick = rs)));
+      let finish: (r: api.SqlExported) => void = () => {};
+      m.exportCsv.mockImplementation(() => new Promise((rs) => (finish = rs)));
+      const user = userEvent.setup();
+      const view_ = render(<Sql />);
+      await screen.findByRole("button", { name: "signins" });
+      await typeSql("SELECT 1");
+      await user.click(screen.getByRole("button", { name: "Export CSV…" }));
+      expect(screen.getByRole("button", { name: "Run" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Export CSV…" })).toBeDisabled();
+      cmdEnter();
+      fireEvent.click(screen.getByRole("button", { name: "Run" }));
+      expect(m.run).not.toHaveBeenCalled();
+      expect(m.save).toHaveBeenCalledTimes(1);
+      await act(async () => pick("/out/q.csv"));
+      expect(m.exportCsv).toHaveBeenCalledExactlyOnceWith("SELECT 1", "/out/q.csv", expect.any(String));
+      cmdEnter();
+      expect(m.run).not.toHaveBeenCalled();
+      view_.unmount();
+      expect(m.cancel).toHaveBeenCalledExactlyOnceWith(m.exportCsv.mock.calls[0][2]);
+      await act(async () => finish({ rows: 1, capped: false }));
+    });
+
+    it("a dismissed save dialog frees the slot", async () => {
+      m.save.mockResolvedValue(null);
+      const user = await setup();
+      await typeSql("SELECT 1");
+      await user.click(screen.getByRole("button", { name: "Export CSV…" }));
+      await waitFor(() => expect(screen.getByRole("button", { name: "Run" })).toBeEnabled());
+    });
+
+    it("a failing save dialog is shown and clears an older 'rows written' status", async () => {
+      m.exportCsv.mockResolvedValue({ rows: 3, capped: false });
+      const user = await setup();
+      await typeSql("SELECT 1");
+      await user.click(screen.getByRole("button", { name: "Export CSV…" }));
+      expect(await screen.findByRole("status")).toHaveTextContent("3 rows written");
+      m.save.mockRejectedValueOnce(new Error("dialog plugin unavailable"));
+      await user.click(screen.getByRole("button", { name: "Export CSV…" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent("dialog plugin unavailable");
+      expect(screen.queryByText(/rows written/)).toBeNull();
+      expect(screen.getByRole("button", { name: "Run" })).toBeEnabled();
     });
 
     it("shows a refusal", async () => {

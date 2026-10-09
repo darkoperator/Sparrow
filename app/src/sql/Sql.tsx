@@ -15,7 +15,7 @@ import Grid from "../grid/Grid";
 import { displaySafe, displaySafeMultiline } from "../text";
 import { identifier } from "./completion";
 import SchemaSidebar from "./SchemaSidebar";
-import SqlEditor, { type SqlEditorHandle } from "./SqlEditor";
+import SqlEditor, { type CheckNote, type SqlEditorHandle } from "./SqlEditor";
 
 // The backend clamps to 10000 as well; the default matches `sql_run`'s.
 const LIMITS = [100, 1000, 5000, 10000] as const;
@@ -51,7 +51,7 @@ export default function Sql() {
   const [limit, setLimit] = useState<number>(DEFAULT_LIMIT);
   const [tables, setTables] = useState<TableInfo[]>([]);
   const [schemaError, setSchemaError] = useState<string | null>(null);
-  const [checkError, setCheckError] = useState<string | null>(null);
+  const [checkError, setCheckError] = useState<CheckNote | null>(null);
   const [running, setRunning] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
@@ -83,10 +83,14 @@ export default function Sql() {
     };
   }, []);
 
+  // One operation at a time. The slot is taken synchronously (state would lag a keypress) and, for the export,
+  // before the save dialog opens; `busy` mirrors it for rendering.
+  const slot = useRef(false);
   const busy = running || exporting;
 
   const run = async () => {
-    if (busy || sql.trim() === "") return;
+    if (slot.current || sql.trim() === "") return;
+    slot.current = true;
     const id = newQueryId();
     activeId.current = id;
     setRunning(true);
@@ -113,14 +117,16 @@ export default function Sql() {
     } catch (e) {
       next = interrupted(e) ? { kind: "cancelled" } : { kind: "error", message: message(e) };
     }
-    activeId.current = null;
+    if (activeId.current === id) activeId.current = null;
+    slot.current = false;
     if (!mounted.current) return;
     setOutcome(next);
     setRunning(false);
   };
 
   const loadMore = async (loaded: Loaded) => {
-    if (busy) return;
+    if (slot.current) return;
+    slot.current = true;
     const id = newQueryId();
     activeId.current = id;
     setRunning(true);
@@ -133,7 +139,8 @@ export default function Sql() {
     } catch (e) {
       note = interrupted(e) ? { alert: false, text: "Query cancelled." } : { alert: true, text: message(e) };
     }
-    activeId.current = null;
+    if (activeId.current === id) activeId.current = null;
+    slot.current = false;
     if (!mounted.current) return;
     if (page !== null) {
       const p = page;
@@ -153,17 +160,23 @@ export default function Sql() {
   };
 
   const exportCsv = async () => {
-    if (busy || sql.trim() === "") return;
-    const path = await save({ defaultPath: "sparrow-query.csv", filters: [{ name: "CSV", extensions: ["csv"] }] });
-    if (path === null || !mounted.current) return;
-    const id = newQueryId();
-    activeId.current = id;
+    if (slot.current || sql.trim() === "") return;
+    slot.current = true;
+    const text = sql;
     setExporting(true);
     setExportNote(null);
     setCancelError(null);
-    let note: { alert: boolean; text: string };
+    const id = newQueryId();
+    let note: { alert: boolean; text: string } | null;
     try {
-      const r = await sqlExportCsv(sql, path, id);
+      const path = await save({ defaultPath: "sparrow-query.csv", filters: [{ name: "CSV", extensions: ["csv"] }] });
+      if (path === null || !mounted.current) {
+        slot.current = false;
+        if (mounted.current) setExporting(false);
+        return;
+      }
+      activeId.current = id;
+      const r = await sqlExportCsv(text, path, id);
       note = {
         alert: false,
         text:
@@ -173,7 +186,8 @@ export default function Sql() {
     } catch (e) {
       note = interrupted(e) ? { alert: false, text: "Export cancelled." } : { alert: true, text: message(e) };
     }
-    activeId.current = null;
+    if (activeId.current === id) activeId.current = null;
+    slot.current = false;
     if (!mounted.current) return;
     setExportNote(note);
     setExporting(false);
@@ -204,11 +218,12 @@ export default function Sql() {
           onChange={setSql}
           onRun={() => void run()}
           check={sqlCheck}
-          onCheckFailed={setCheckError}
+          onCheckNote={setCheckError}
         />
         {checkError !== null && (
           <p role="alert" className="prose">
-            SQL check unavailable: {displaySafeMultiline(checkError)}
+            {checkError.unavailable && "SQL check unavailable: "}
+            {displaySafeMultiline(checkError.text)}
           </p>
         )}
         <div className="sql-actions">

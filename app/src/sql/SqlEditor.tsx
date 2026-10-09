@@ -13,13 +13,19 @@ export interface SqlEditorHandle {
   insert: (text: string) => void;
 }
 
+/** What the check says outside the editor: the check itself refused, or an error with no position to mark. */
+export interface CheckNote {
+  unavailable: boolean;
+  text: string;
+}
+
 interface Props {
   tables: readonly TableInfo[];
   onChange: (text: string) => void;
   onRun: () => void;
-  /** `sql_check`; a rejection is the check itself being refused, reported through `onCheckFailed`. */
+  /** `sql_check`; a rejection is the check itself being refused, reported through `onCheckNote`. */
   check: (text: string) => Promise<SqlCheck>;
-  onCheckFailed: (message: string | null) => void;
+  onCheckNote: (note: CheckNote | null) => void;
 }
 
 const LINT_DELAY_MS = 500;
@@ -60,7 +66,7 @@ const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(props, r
       const text = v.state.doc.toString();
       const seq = ++checkSeq.current;
       if (text.trim() === "") {
-        latest.current.onCheckFailed(null);
+        latest.current.onCheckNote(null);
         return [];
       }
       let result: SqlCheck;
@@ -69,22 +75,28 @@ const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(props, r
       } catch (e) {
         if (seq === checkSeq.current) {
           const m = typeof e === "object" && e !== null && "message" in e ? String((e as { message: unknown }).message) : String(e);
-          latest.current.onCheckFailed(m);
+          latest.current.onCheckNote({ unavailable: true, text: m });
         }
         return [];
       }
       if (seq !== checkSeq.current) return [];
-      latest.current.onCheckFailed(null);
+      latest.current.onCheckNote(null);
       if (result.ok) return [];
       const { error } = result;
       const len = v.state.doc.length;
-      const from = Math.min(Math.max(error.from ?? 0, 0), len);
-      const to = Math.min(Math.max(error.to ?? len, from), len);
+      const { from, to } = error;
+      if (from === undefined || !Number.isInteger(from) || from < 0 || from > len) {
+        // Nothing to mark: say it as text, without quick-fixes (they would replace a range we do not know).
+        const hint = error.suggestions.length > 0 ? `\nDid you mean: ${error.suggestions.join(", ")}` : "";
+        latest.current.onCheckNote({ unavailable: false, text: error.message + hint });
+        return [];
+      }
+      const end = to !== undefined && Number.isInteger(to) ? Math.min(Math.max(to, from), len) : Math.min(from + 1, len);
       const actions: Action[] = error.suggestions.map((s) => ({
         name: s,
         apply: (view, f, t) => view.dispatch({ changes: { from: f, to: t, insert: s } }),
       }));
-      return [{ from, to, severity: "error", message: error.message, actions }];
+      return [{ from, to: end, severity: "error", message: error.message, actions }];
     };
 
     const runKey = (): boolean => {
@@ -108,7 +120,12 @@ const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(props, r
           ])),
         EditorView.contentAttributes.of({ "aria-label": "SQL" }),
         EditorView.updateListener.of((u) => {
-          if (u.docChanged) latest.current.onChange(u.state.doc.toString());
+          if (u.docChanged) {
+            // Whatever a check was about to say concerns the old text.
+            seq.current++;
+            latest.current.onCheckNote(null);
+            latest.current.onChange(u.state.doc.toString());
+          }
         }),
       ],
     });
