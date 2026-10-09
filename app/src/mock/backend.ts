@@ -145,7 +145,7 @@ function mark(sql: string, token: string): { from?: number; to?: number } {
 
 /**
  * A fake `sql_check`: a non-SELECT or a second statement is `syntax`, the words `FRM` / `findngs` / `rule_idd` stand
- * for a syntax, catalog and binder error; anything else is ok.
+ * for a syntax, catalog and binder error, and the word `error` is a syntax error there; anything else is ok.
  */
 function sqlCheck(a: Record<string, unknown> | undefined): SqlCheck {
   const sql = str(a, "sql");
@@ -155,6 +155,10 @@ function sqlCheck(a: Record<string, unknown> | undefined): SqlCheck {
   }
   if (body.includes(";")) {
     return { ok: false, error: { kind: "syntax", message: "query accepts exactly one SELECT statement, got 2", suggestions: [] } };
+  }
+  const err = sql.search(/\berror\b/i);
+  if (err >= 0) {
+    return { ok: false, error: { message: "mock syntax error near 'error'", kind: "syntax", from: err, to: err + 5, suggestions: ["select"] } };
   }
   if (/\bFRM\b/.test(sql)) {
     return { ok: false, error: { kind: "syntax", message: 'query accepts one SELECT statement only: syntax error at or near "FRM"', suggestions: [], ...mark(sql, "FRM") } };

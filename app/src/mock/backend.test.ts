@@ -44,6 +44,17 @@ describe("mock backend", () => {
     expect(upns.some((u) => u.includes("<"))).toBe(true);
   });
 
+  it("answers sql_check with a located error, and sql_run with offset and ordered", async () => {
+    const bad = await mockCall<{ ok: boolean; error: { from: number; to: number } }>("sql_check", { sql: "select error" });
+    expect(bad.ok).toBe(false);
+    expect([bad.error.from, bad.error.to]).toEqual([7, 12]);
+    const p0 = await mockCall<QueryResult>("sql_run", { sql: "SELECT * FROM signins ORDER BY 1", limit: 50, offset: 0, queryId: "a" });
+    const p1 = await mockCall<QueryResult>("sql_run", { sql: "SELECT * FROM signins", limit: 50, offset: 50, queryId: "b" });
+    expect(p0.ordered).toBe(true);
+    expect(p1.ordered).toBe(false);
+    expect(p1.rows[0]).not.toEqual(p0.rows[0]);
+  });
+
   it("pages, sorts, filters and caps browse_page", async () => {
     const page = (a: Record<string, unknown>) =>
       mockCall<BrowsePage>("browse_page", { table: "signins", filters: [], sort: null, offset: 0, limit: 100, queryId: "q", ...a });

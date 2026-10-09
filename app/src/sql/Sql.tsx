@@ -1,25 +1,46 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
-import { isCmdError, newQueryId, queryCancel, sqlRun, sqlSchema, type QueryResult, type TableInfo } from "../api";
+import { useEffect, useRef, useState } from "react";
+import {
+  isCmdError,
+  newQueryId,
+  queryCancel,
+  sqlCheck,
+  sqlExportCsv,
+  sqlRun,
+  sqlSchema,
+  type QueryResult,
+  type TableInfo,
+} from "../api";
+import { save } from "../dialog";
 import Grid from "../grid/Grid";
 import { displaySafe, displaySafeMultiline } from "../text";
+import { identifier } from "./completion";
 import SchemaSidebar from "./SchemaSidebar";
+import SqlEditor, { type SqlEditorHandle } from "./SqlEditor";
 
 // The backend clamps to 10000 as well; the default matches `sql_run`'s.
 const LIMITS = [100, 1000, 5000, 10000] as const;
 const DEFAULT_LIMIT = 1000;
+const EXPORT_CAP = 1_000_000;
 
-type Outcome =
-  | { kind: "result"; result: QueryResult; limit: number }
-  | { kind: "error"; message: string }
-  | { kind: "cancelled" };
-
-/** An identifier as typed into the editor: bare when plain, else double-quoted. Editor convenience only. */
-function identifier(name: string): string {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : `"${name.replace(/"/g, '""')}"`;
+/** The pages loaded so far for one Run: `sql` is what ran (later pages re-run exactly that text). */
+interface Loaded {
+  sql: string;
+  limit: number;
+  columns: string[];
+  rows: unknown[][];
+  /** The latest page's `truncated`. */
+  truncated: boolean;
+  ordered: boolean;
+  /** Rows in the latest page: a page shorter than the limit was the last. */
+  lastPage: number;
+  pages: number;
 }
+
+type Outcome = { kind: "result"; loaded: Loaded } | { kind: "error"; message: string } | { kind: "cancelled" };
 
 const rowCount = (n: number) => (n === 1 ? "1 row" : `${n.toLocaleString("en-US")} rows`);
 const message = (e: unknown) => (isCmdError(e) ? e.message : String(e));
+const interrupted = (e: unknown) => isCmdError(e) && e.kind === "interrupted";
 
 /**
  * Read-only SQL: one SELECT run by the backend (`sql_run`, the CLI's `query` limits and refusals), the result in the
@@ -30,12 +51,14 @@ export default function Sql() {
   const [limit, setLimit] = useState<number>(DEFAULT_LIMIT);
   const [tables, setTables] = useState<TableInfo[]>([]);
   const [schemaError, setSchemaError] = useState<string | null>(null);
+  const [checkError, setCheckError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
+  const [pageNote, setPageNote] = useState<{ alert: boolean; text: string } | null>(null);
+  const [exportNote, setExportNote] = useState<{ alert: boolean; text: string } | null>(null);
   const [cancelError, setCancelError] = useState<string | null>(null);
-  const editor = useRef<HTMLTextAreaElement>(null);
-  // Where to put the cursor after an insert, applied once the new text is rendered.
-  const cursor = useRef<number | null>(null);
+  const editor = useRef<SqlEditorHandle>(null);
   // A query still running when the screen goes away is cancelled, and its late outcome ignored: the backend holds
   // the case for it, and nothing would show its result.
   const mounted = useRef(true);
@@ -60,32 +83,100 @@ export default function Sql() {
     };
   }, []);
 
-  useLayoutEffect(() => {
-    if (cursor.current !== null && editor.current) {
-      editor.current.setSelectionRange(cursor.current, cursor.current);
-      editor.current.focus();
-      cursor.current = null;
-    }
-  }, [sql]);
+  const busy = running || exporting;
 
   const run = async () => {
-    if (running || sql.trim() === "") return;
+    if (busy || sql.trim() === "") return;
     const id = newQueryId();
     activeId.current = id;
     setRunning(true);
     setOutcome(null);
+    setPageNote(null);
+    setExportNote(null);
     setCancelError(null);
     let next: Outcome;
     try {
-      next = { kind: "result", result: await sqlRun(sql, limit, id), limit };
+      const r = await sqlRun(sql, limit, id, 0);
+      next = {
+        kind: "result",
+        loaded: {
+          sql,
+          limit,
+          columns: r.columns,
+          rows: r.rows,
+          truncated: r.truncated,
+          ordered: r.ordered,
+          lastPage: r.rows.length,
+          pages: 1,
+        },
+      };
     } catch (e) {
-      const cancelled = isCmdError(e) && e.kind === "interrupted";
-      next = cancelled ? { kind: "cancelled" } : { kind: "error", message: message(e) };
+      next = interrupted(e) ? { kind: "cancelled" } : { kind: "error", message: message(e) };
     }
     activeId.current = null;
     if (!mounted.current) return;
     setOutcome(next);
     setRunning(false);
+  };
+
+  const loadMore = async (loaded: Loaded) => {
+    if (busy) return;
+    const id = newQueryId();
+    activeId.current = id;
+    setRunning(true);
+    setPageNote(null);
+    setCancelError(null);
+    let page: QueryResult | null = null;
+    let note: { alert: boolean; text: string } | null = null;
+    try {
+      page = await sqlRun(loaded.sql, loaded.limit, id, loaded.rows.length);
+    } catch (e) {
+      note = interrupted(e) ? { alert: false, text: "Query cancelled." } : { alert: true, text: message(e) };
+    }
+    activeId.current = null;
+    if (!mounted.current) return;
+    if (page !== null) {
+      const p = page;
+      setOutcome({
+        kind: "result",
+        loaded: {
+          ...loaded,
+          rows: [...loaded.rows, ...p.rows],
+          truncated: p.truncated,
+          lastPage: p.rows.length,
+          pages: loaded.pages + 1,
+        },
+      });
+    }
+    setPageNote(note);
+    setRunning(false);
+  };
+
+  const exportCsv = async () => {
+    if (busy || sql.trim() === "") return;
+    const path = await save({ defaultPath: "sparrow-query.csv", filters: [{ name: "CSV", extensions: ["csv"] }] });
+    if (path === null || !mounted.current) return;
+    const id = newQueryId();
+    activeId.current = id;
+    setExporting(true);
+    setExportNote(null);
+    setCancelError(null);
+    let note: { alert: boolean; text: string };
+    try {
+      const r = await sqlExportCsv(sql, path, id);
+      note = {
+        alert: false,
+        text:
+          `${r.rows.toLocaleString("en-US")} ${r.rows === 1 ? "row" : "rows"} written` +
+          (r.capped ? ` (capped at ${EXPORT_CAP.toLocaleString("en-US")})` : ""),
+      };
+    } catch (e) {
+      note = interrupted(e) ? { alert: false, text: "Export cancelled." } : { alert: true, text: message(e) };
+    }
+    activeId.current = null;
+    if (!mounted.current) return;
+    setExportNote(note);
+    setExporting(false);
   };
 
   const cancel = async () => {
@@ -97,45 +188,34 @@ export default function Sql() {
     }
   };
 
-  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      void run();
-    }
-  };
-
-  const insert = (name: string) => {
-    const text = identifier(name);
-    const el = editor.current;
-    const start = el?.selectionStart ?? sql.length;
-    const end = el?.selectionEnd ?? sql.length;
-    cursor.current = start + text.length;
-    setSql(sql.slice(0, start) + text + sql.slice(end));
-  };
+  const loaded = outcome?.kind === "result" ? outcome.loaded : null;
+  const hasMore = loaded !== null && loaded.lastPage >= loaded.limit;
 
   return (
     <div className="sql-screen">
       <div>
         {schemaError !== null && <p role="alert">{displaySafe(schemaError)}</p>}
-        <SchemaSidebar tables={tables} onInsert={insert} />
+        <SchemaSidebar tables={tables} onInsert={(name) => editor.current?.insert(identifier(name))} />
       </div>
       <section className="sql-main">
-        <textarea
+        <SqlEditor
           ref={editor}
-          aria-label="SQL"
-          className="sql-editor"
-          rows={8}
-          spellCheck={false}
-          value={sql}
-          onChange={(e) => setSql(e.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder="SELECT … (one read-only statement; Cmd/Ctrl+Enter runs it)"
+          tables={tables}
+          onChange={setSql}
+          onRun={() => void run()}
+          check={sqlCheck}
+          onCheckFailed={setCheckError}
         />
+        {checkError !== null && (
+          <p role="alert" className="prose">
+            SQL check unavailable: {displaySafeMultiline(checkError)}
+          </p>
+        )}
         <div className="sql-actions">
-          <button disabled={running || sql.trim() === ""} onClick={() => void run()}>
+          <button disabled={busy || sql.trim() === ""} onClick={() => void run()}>
             Run
           </button>
-          {running && <button onClick={() => void cancel()}>Cancel</button>}
+          {busy && <button onClick={() => void cancel()}>Cancel</button>}
           <label>
             Row limit{" "}
             <select value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
@@ -146,25 +226,53 @@ export default function Sql() {
               ))}
             </select>
           </label>
-          {running && <span className="meta">Running…</span>}
+          <button disabled={busy || sql.trim() === ""} onClick={() => void exportCsv()}>
+            Export CSV…
+          </button>
+          {busy && <span className="meta">{exporting ? "Exporting…" : "Running…"}</span>}
         </div>
         <p className="meta">Leaving this screen cancels a running query.</p>
         {cancelError !== null && <p role="alert">{displaySafe(cancelError)}</p>}
+        {exportNote !== null &&
+          (exportNote.alert ? (
+            <p role="alert" className="prose">
+              {displaySafeMultiline(exportNote.text)}
+            </p>
+          ) : (
+            <p role="status">{displaySafe(exportNote.text)}</p>
+          ))}
         {outcome?.kind === "cancelled" && <p role="status">Query cancelled.</p>}
         {outcome?.kind === "error" && (
           <p role="alert" className="prose">
             {displaySafeMultiline(outcome.message)}
           </p>
         )}
-        {outcome?.kind === "result" && (
+        {loaded !== null && (
           <>
             <p className="meta">
-              {rowCount(outcome.result.rows.length)}
-              {outcome.result.truncated &&
-                ` — showing the first ${outcome.limit.toLocaleString("en-US")} rows; the query returned more.` +
+              {rowCount(loaded.rows.length)}
+              {loaded.truncated &&
+                loaded.pages === 1 &&
+                ` — showing the first ${loaded.limit.toLocaleString("en-US")} rows; the query returned more.` +
                   " Raise the limit or narrow the query."}
             </p>
-            <Grid columns={outcome.result.columns} rows={outcome.result.rows} height={420} />
+            <div className="sql-actions">
+              <button disabled={busy || !hasMore} onClick={() => void loadMore(loaded)}>
+                Load next {loaded.limit.toLocaleString("en-US")}
+              </button>
+              {loaded.ordered === false && (hasMore || loaded.pages > 1) && (
+                <span className="meta">No ORDER BY — pages may overlap or skip rows.</span>
+              )}
+            </div>
+            {pageNote !== null &&
+              (pageNote.alert ? (
+                <p role="alert" className="prose">
+                  {displaySafeMultiline(pageNote.text)}
+                </p>
+              ) : (
+                <p role="status">{displaySafe(pageNote.text)}</p>
+              ))}
+            <Grid columns={loaded.columns} rows={loaded.rows} height={420} />
           </>
         )}
       </section>
