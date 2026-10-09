@@ -453,7 +453,7 @@ export const browsePage = (
 ) => call<BrowsePage>("browse_page", { table, filters, sort, offset, limit, queryId });
 export const sqlSchema = (table?: string) => call<TableInfo[]>("sql_schema", { table });
 /**
- * Interrupts the running `sql_run` / `browse_page` with this id, if any (any other id: nothing happens); that call
+ * Interrupts the running `sql_run` / `sql_export_csv` / `browse_page` with this id, if any (any other id: nothing happens); that call
  * then rejects with kind `interrupted`.
  */
 export const queryCancel = (queryId: string) => call<null>("query_cancel", { queryId });
@@ -470,6 +470,35 @@ export interface QueryResult {
   columns: string[];
   rows: unknown[][];
   truncated: boolean;
+  /**
+   * True when the query's top-level SELECT has an ORDER BY (DuckDB's parse): only then are pages at different
+   * offsets slices of one stable order.
+   */
+  ordered: boolean;
+}
+
+/** `case::query::CheckKind`. */
+export type SqlCheckKind = "syntax" | "binder" | "catalog" | "other";
+
+/** `case::query::CheckError`. */
+export interface SqlCheckError {
+  /** DuckDB's message without its `LINE n:` excerpt (the editor marks the place instead). */
+  message: string;
+  kind: SqlCheckKind;
+  /** UTF-16 offsets into the checked text (CodeMirror positions): the offending token; absent without a position. */
+  from?: number;
+  to?: number;
+  /** DuckDB's "Did you mean" / "Candidate bindings" names. */
+  suggestions: string[];
+}
+
+/** `case::query::Check`. */
+export type SqlCheck = { ok: true } | { ok: false; error: SqlCheckError };
+
+/** `case::query::Exported`: data rows written; `capped` when the result had more than 1,000,000 rows. */
+export interface SqlExported {
+  rows: number;
+  capped: boolean;
 }
 
 /** `case::share::ImportSummary`. */
@@ -505,9 +534,20 @@ export interface SharePreview {
   items: number;
 }
 
-/** `queryId` names this run for `queryCancel` (≤ 64 chars, no control characters; a fresh one per run). */
-export const sqlRun = (sql: string, limit: number | undefined, queryId: string) =>
-  call<QueryResult>("sql_run", { sql, limit, queryId });
+/**
+ * `queryId` names this run for `queryCancel` (≤ 64 chars, no control characters; a fresh one per run). `offset`
+ * (default 0, ≤ 100,000,000) pages the result: "next 1000" is the same query at offset + 1000.
+ */
+export const sqlRun = (sql: string, limit: number | undefined, queryId: string, offset?: number) =>
+  call<QueryResult>("sql_run", { sql, limit, queryId, offset });
+/** Checks one SELECT without running it (binds it on the case); not cancellable. Text over 1 MiB is `invalid`. */
+export const sqlCheck = (sql: string) => call<SqlCheck>("sql_check", { sql });
+/**
+ * Writes the whole result (at most 1,000,000 rows) as CSV at `path`, cancellable with `queryCancel(queryId)`; a
+ * failed or cancelled export leaves no file, and the open case or its WAL is refused (`invalid`).
+ */
+export const sqlExportCsv = (sql: string, path: string, queryId: string) =>
+  call<SqlExported>("sql_export_csv", { sql, path, queryId });
 export const shareExport = (path: string) => call<ShareExported>("share_export", { path });
 export const sharePreview = (path: string) => call<SharePreview>("share_preview", { path });
 /** Refused (`invalid`) when the file's SHA-256 is no longer `sha256`, the one its preview showed. */

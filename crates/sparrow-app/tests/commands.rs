@@ -100,6 +100,7 @@ fn open_reports_case_info_and_locks_down() {
             &open.case,
             "SELECT count(*) AS n FROM findings",
             10,
+            0,
         )?)
     })
     .unwrap();
@@ -2794,4 +2795,318 @@ fn evidence_filter_resolves_ual_and_record_key_tables_to_one_row() {
     }
     let e = evidence_filter(&state, "no_such_table", "k").unwrap_err();
     assert_eq!(serde_json::to_value(&e).unwrap()["kind"], "invalid");
+}
+
+// ---- SQL features: check, paging, CSV export ----
+
+use sparrow_app::cmd::sql::{sql_check, sql_export_csv, sql_export_csv_capped, sql_run_page};
+use sparrow_app::state::with_cancellable_commit;
+use sparrow_core::case::query::{CheckKind, Exported};
+
+/// The UTF-16 offsets of the last `needle` in `s` and of its end.
+fn span16(s: &str, needle: &str) -> (usize, usize) {
+    let b = s.rfind(needle).unwrap();
+    let from = s[..b].encode_utf16().count();
+    (from, from + needle.encode_utf16().count())
+}
+
+#[test]
+fn sql_check_marks_the_wrong_part_of_the_users_text() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, _) = open_seeded(tmp.path());
+    let cases = [
+        (
+            "SELECT 'ünïcødé 😀',\n       rule_idd\nFROM findings",
+            "rule_idd",
+            CheckKind::Binder,
+            "rule_id",
+        ),
+        (
+            "-- 日本語\nSELECT *\nFROM finding",
+            "finding",
+            CheckKind::Catalog,
+            "findings",
+        ),
+        ("SELECT '😀😀', FROM WHERE", "WHERE", CheckKind::Syntax, ""),
+    ];
+    let mut checked = 0;
+    for (sql, token, kind, suggestion) in cases {
+        let c = sql_check(&state, sql).unwrap();
+        let e = c.error.as_ref().unwrap();
+        assert!(!c.ok);
+        assert_eq!(e.kind, kind, "{sql:?}: {e:?}");
+        let (from, to) = span16(sql, token);
+        assert_eq!((e.from, e.to), (Some(from), Some(to)), "{sql:?}: {e:?}");
+        if !suggestion.is_empty() {
+            assert!(e.suggestions.iter().any(|s| s == suggestion), "{e:?}");
+        }
+        checked += 1;
+    }
+    assert_eq!(checked, 3);
+    // The wire shape: camelCase-free fields, lowercase kind, absent offsets omitted.
+    let v = serde_json::to_value(sql_check(&state, "SELECT nope FROM findings").unwrap()).unwrap();
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["error"]["kind"], "binder");
+    assert!(v["error"]["from"].is_u64() && v["error"]["suggestions"].is_array());
+    let v = serde_json::to_value(sql_check(&state, "SELECT 1; SELECT 2").unwrap()).unwrap();
+    assert_eq!(v["error"]["kind"], "syntax");
+    assert!(v["error"].get("from").is_none(), "{v}");
+    assert_eq!(
+        serde_json::to_value(sql_check(&state, "SELECT count(*) FROM findings").unwrap()).unwrap(),
+        serde_json::json!({ "ok": true })
+    );
+    let big = format!("SELECT '{}'", "x".repeat(2 * 1024 * 1024));
+    assert_eq!(sql_check(&state, &big).unwrap_err().kind, "invalid");
+    assert_eq!(
+        sql_check(&AppState::default(), "SELECT 1")
+            .unwrap_err()
+            .kind,
+        "no_case"
+    );
+}
+
+#[test]
+fn sql_check_never_executes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, _) = open_seeded(tmp.path());
+    let started = std::time::Instant::now();
+    assert!(sql_check(&state, LONG).unwrap().ok);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    let boom = "SELECT CASE WHEN i = 2 THEN error('boom') ELSE 'x' END AS v FROM range(3) t(i)";
+    assert!(sql_check(&state, boom).unwrap().ok);
+    assert!(sql_run(&state, boom, None).is_err());
+    // The case is usable and not left in a transaction.
+    assert_eq!(
+        sql_run(&state, "SELECT 1 AS one", None).unwrap().rows.len(),
+        1
+    );
+}
+
+#[test]
+fn sql_run_pages_are_slices_of_an_ordered_query() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, _) = open_seeded(tmp.path());
+    let sql = "SELECT i, hash(i) AS h FROM range(5000) t(i) ORDER BY h, i";
+    let all = sql_run(&state, sql, Some(3000)).unwrap();
+    assert!(all.ordered);
+    let mut checked = 0;
+    for page in 0..3usize {
+        let p = sql_run_page(&state, sql, Some(1000), "p", Some(page * 1000)).unwrap();
+        assert!(p.ordered);
+        assert_eq!(
+            p.rows[..],
+            all.rows[page * 1000..(page + 1) * 1000],
+            "page {page}"
+        );
+        checked += p.rows.len();
+    }
+    assert_eq!(checked, 3000);
+    let tail = sql_run_page(&state, sql, Some(1000), "p", Some(4500)).unwrap();
+    assert_eq!((tail.rows.len(), tail.truncated), (500, false));
+    assert!(
+        !sql_run(&state, "SELECT finding_id FROM findings", None)
+            .unwrap()
+            .ordered
+    );
+    assert!(
+        sql_run(&state, "SELECT finding_id FROM findings ORDER BY 1", None)
+            .unwrap()
+            .ordered
+    );
+    let e = sql_run_page(&state, sql, None, "p", Some(100_000_001)).unwrap_err();
+    assert_eq!(e.kind, "invalid", "{e:?}");
+    assert!(
+        sql_run_page(&state, sql, None, "p", Some(100_000_000))
+            .unwrap()
+            .rows
+            .is_empty()
+    );
+}
+
+fn read_csv(path: &Path) -> Vec<Vec<String>> {
+    let text = std::fs::read_to_string(path).unwrap();
+    let text = text.strip_prefix('\u{feff}').unwrap();
+    let mut r = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .from_reader(text.as_bytes());
+    r.records()
+        .map(|x| x.unwrap().iter().map(String::from).collect())
+        .collect()
+}
+
+#[test]
+fn sql_export_csv_writes_the_whole_result_capped() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, _) = open_seeded(tmp.path());
+    let n = rows(&state, "SELECT count(*) FROM findings");
+    assert!(n > 3, "{n}");
+    let sql = "SELECT finding_id, rule_id FROM findings ORDER BY finding_id";
+    let out = tmp.path().join("all.csv");
+    let e = sql_export_csv(&state, sql, &out, "x").unwrap();
+    assert_eq!(
+        e,
+        Exported {
+            rows: n as u64,
+            capped: false
+        }
+    );
+    let got = read_csv(&out);
+    assert_eq!(got[0], ["finding_id", "rule_id"]);
+    assert_eq!(got.len() as i64, n + 1);
+    let first: Vec<String> = sql_run(&state, sql, Some(1)).unwrap().rows[0]
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(got[1], first);
+    // A small injected cap.
+    let capped = tmp.path().join("capped.csv");
+    let e = sql_export_csv_capped(&state, sql, &capped, "x", 3).unwrap();
+    assert_eq!(
+        e,
+        Exported {
+            rows: 3,
+            capped: true
+        }
+    );
+    assert_eq!(read_csv(&capped).len(), 4);
+    let exact = sql_export_csv_capped(&state, sql, &capped, "x", n as u64).unwrap();
+    assert_eq!(
+        exact,
+        Exported {
+            rows: n as u64,
+            capped: false
+        }
+    );
+    // Formula neutralisation, like the timeline CSV; numbers and timestamps as they are.
+    let f = tmp.path().join("f.csv");
+    sql_export_csv(
+        &state,
+        "SELECT '=HYPERLINK(\"http://x\")' AS \"+h\", '@SUM(1)' AS a, -3 AS n, \
+         TIMESTAMP '2026-08-14 10:00:00' AS ts, 'a=b' AS m",
+        &f,
+        "x",
+    )
+    .unwrap();
+    assert_eq!(
+        read_csv(&f),
+        vec![
+            vec!["'+h", "a", "n", "ts", "m"],
+            vec![
+                "'=HYPERLINK(\"http://x\")",
+                "'@SUM(1)",
+                "-3",
+                "2026-08-14T10:00:00.000000Z",
+                "a=b"
+            ],
+        ]
+    );
+    assert!(leftovers(tmp.path()).is_empty());
+}
+
+#[test]
+fn sql_export_csv_refuses_the_case_and_bad_queries_and_leaves_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, s) = open_seeded(tmp.path());
+    let before = std::fs::read(&s.path).unwrap();
+    let wal = PathBuf::from(format!("{}.wal", s.path.display()));
+    let upper = s
+        .path
+        .with_file_name(s.path.file_name().unwrap().to_string_lossy().to_uppercase());
+    for target in [&s.path, &wal, &upper] {
+        let e = sql_export_csv(&state, "SELECT 1", target, "x").unwrap_err();
+        assert_eq!(e.kind, "invalid", "{target:?}: {e:?}");
+    }
+    assert_eq!(std::fs::read(&s.path).unwrap(), before);
+    let out = tmp.path().join("bad.csv");
+    for bad in [
+        "DELETE FROM findings",
+        "SELECT nope FROM findings",
+        "SELECT 1; SELECT 2",
+    ] {
+        assert!(sql_export_csv(&state, bad, &out, "x").is_err(), "{bad}");
+        assert!(!out.exists());
+    }
+    let e = sql_export_csv(
+        &state,
+        "SELECT 1",
+        &tmp.path().join("no-such-dir/x.csv"),
+        "x",
+    )
+    .unwrap_err();
+    assert_eq!(e.kind, "invalid");
+    let big = format!("SELECT '{}'", "x".repeat(2 * 1024 * 1024));
+    assert_eq!(
+        sql_export_csv(&state, &big, &out, "x").unwrap_err().kind,
+        "invalid"
+    );
+    assert_eq!(
+        sql_export_csv(&state, "SELECT 1", &out, "bad\nid")
+            .unwrap_err()
+            .kind,
+        "invalid"
+    );
+    assert!(leftovers(tmp.path()).is_empty());
+    assert_eq!(std::fs::read(&s.path).unwrap(), before);
+}
+
+#[test]
+fn a_cancelled_sql_export_leaves_no_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, _) = open_seeded(tmp.path());
+    let out = tmp.path().join("long.csv");
+    let (result, took) = cancelling(
+        || sql_export_csv(&state, LONG, &out, "e-1"),
+        || query_cancel(&state, "e-1").unwrap(),
+        std::time::Duration::from_secs(30),
+    );
+    let e = result.unwrap_err();
+    assert_eq!(e.kind, "interrupted", "{e:?}");
+    assert!(took < std::time::Duration::from_secs(2), "{took:?}");
+    assert!(!out.exists());
+    assert!(leftovers(tmp.path()).is_empty());
+    assert!(state.active.lock().unwrap().is_none());
+    // The case is usable, and the next export works.
+    let e = sql_export_csv(&state, "SELECT 1 AS one", &out, "e-2").unwrap();
+    assert_eq!(
+        e,
+        Exported {
+            rows: 1,
+            capped: false
+        }
+    );
+    assert_eq!(read_csv(&out), vec![vec!["one"], vec!["1"]]);
+}
+
+#[test]
+fn a_cancel_decides_the_commit_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, _) = open_seeded(tmp.path());
+    // Cancelled before the commit: the visible step never runs.
+    let mut ran = false;
+    let r = with_cancellable_commit(&state, state.ticket(), "c-1", |_, commit| {
+        query_cancel(&state, "c-1").unwrap();
+        commit.commit(|| {
+            ran = true;
+            Ok(())
+        })
+    });
+    assert_eq!(r.unwrap_err().kind, "interrupted");
+    assert!(!ran);
+    // Cancelled after the commit: the result stands (the file exists), not `interrupted`.
+    let r = with_cancellable_commit(&state, state.ticket(), "c-2", |_, commit| {
+        let v = commit.commit(|| Ok(7))?;
+        query_cancel(&state, "c-2").unwrap();
+        Ok(v)
+    });
+    assert_eq!(r.unwrap(), 7);
+    // Without a commit, a late cancel still discards the result.
+    let r = with_cancellable_commit(&state, state.ticket(), "c-3", |_, _| {
+        query_cancel(&state, "c-3").unwrap();
+        Ok(1)
+    });
+    assert_eq!(r.unwrap_err().kind, "interrupted");
 }

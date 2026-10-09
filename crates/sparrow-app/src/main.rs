@@ -44,6 +44,8 @@ fn main() {
             cmd::browse::commands::evidence_filter,
             cmd::sql::commands::sql_schema,
             cmd::sql::commands::sql_run,
+            cmd::sql::commands::sql_check,
+            cmd::sql::commands::sql_export_csv,
             cmd::sql::commands::query_cancel,
             cmd::indicators::commands::indicators_active,
             cmd::share::commands::share_export,

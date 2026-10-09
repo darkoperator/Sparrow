@@ -21,4 +21,5 @@ tempfile.workspace = true
 sparrow-core = { path = "../sparrow-core" }
 
 [dev-dependencies]
+csv.workspace = true
 sparrow-synth = { path = "../sparrow-synth" }

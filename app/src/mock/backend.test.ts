@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { MOCK_COMMANDS, mockCall, mockOpen, mockSave } from "./backend";
 import { GEN_COLUMNS, GEN_ROWS, genRows } from "./generated";
 import apiSource from "../api.ts?raw";
-import type { BrowsePage, CmdError, QueueItem, QueryResult } from "../api";
+import type { BrowsePage, CmdError, QueueItem, QueryResult, SqlCheck } from "../api";
 
 const apiCommands = [...apiSource.matchAll(/\bcall(?:<[^(]*>)?\(\s*"([a-z_]+)"/g)].map((m) => m[1]);
 
@@ -86,6 +86,28 @@ describe("mock backend", () => {
     expect(wide.truncated).toBe(true);
   });
 
+  it("pages sql_run, flags ORDER BY, checks and exports like the backend's contract", async () => {
+    const run = (a: Record<string, unknown>) => mockCall<QueryResult>("sql_run", { sql: "SELECT * FROM signins", limit: 100, queryId: "p", ...a });
+    const p0 = await run({});
+    const p1 = await run({ offset: 100 });
+    expect(p1.rows[0]).not.toEqual(p0.rows[0]);
+    expect(p0.ordered).toBe(false);
+    expect((await run({ sql: "SELECT * FROM signins ORDER BY ip" })).ordered).toBe(true);
+    expect(await mockCall("sql_check", { sql: "SELECT 1 AS n -- fine" })).toEqual({ ok: true });
+    for (const [sql, kind] of [["DELETE FROM findings", "syntax"], ["SELECT 1; SELECT 2", "syntax"], ["SELECT *\nFROM findngs", "catalog"], ["SELECT 1 FRM t", "syntax"]]) {
+      const c = await mockCall<SqlCheck>("sql_check", { sql });
+      expect(c.ok ? null : c.error.kind).toBe(kind);
+    }
+    const c = await mockCall<SqlCheck>("sql_check", { sql: "SELECT *\nFROM findngs" });
+    if (c.ok) throw new Error("expected an error");
+    expect([c.error.from, c.error.to, c.error.suggestions]).toEqual([14, 21, ["findings"]]);
+    const slow = mockCall("sql_export_csv", { sql: "SELECT slow", path: "/o.csv", queryId: "e-slow" });
+    const settled = slow.then(() => "done", (e: CmdError) => e.kind);
+    await new Promise((r) => setTimeout(r, 100));
+    await mockCall("query_cancel", { queryId: "e-slow" });
+    expect(await settled).toBe("interrupted");
+  });
+
   it("names an unknown command in an internal error", async () => {
     await expect(mockCall("no_such_command")).rejects.toMatchObject({ kind: "internal", message: expect.stringContaining("no_such_command") });
   });
@@ -145,7 +167,9 @@ const TABLE: { cmd: string; args?: Obj; check: (r: unknown) => void }[] = [
   { cmd: "browse_tables", check: (r) => { expect(Array.isArray(r)).toBe(true); expect((r as unknown[]).every((x) => typeof x === "string")).toBe(true); expect((r as unknown[]).length).toBeGreaterThan(0); } },
   { cmd: "browse_page", args: { table: "signins", filters: [], sort: null, offset: 0, limit: 10, queryId: "q" }, check: (r) => { keys(r, ["table", "columns", "rows", "offset", "total", "total_capped"]); const p = r as BrowsePage; expect(p.rows.length).toBe(10); expect(p.rows.every((x) => x.length === p.columns.length)).toBe(true); } },
   { cmd: "sql_schema", args: {}, check: (r) => arrOf(r, ["name", "comment", "kind", "columns"]) },
-  { cmd: "sql_run", args: { sql: "select 1", limit: 5, queryId: "q" }, check: (r) => { keys(r, ["columns", "rows", "truncated"]); const q = r as QueryResult; expect(q.rows.every((x) => x.length === q.columns.length)).toBe(true); } },
+  { cmd: "sql_run", args: { sql: "select 1", limit: 5, queryId: "q", offset: 0 }, check: (r) => { keys(r, ["columns", "rows", "truncated", "ordered"]); const q = r as QueryResult; expect(q.rows.every((x) => x.length === q.columns.length)).toBe(true); } },
+  { cmd: "sql_check", args: { sql: "SELECT rule_idd FROM findings" }, check: (r) => { keys(r, ["ok", "error"]); keys((r as Obj).error, ["message", "kind", "from", "to", "suggestions"]); } },
+  { cmd: "sql_export_csv", args: { sql: "SELECT * FROM signins", path: "/o.csv", queryId: "e" }, check: (r) => { keys(r, ["rows", "capped"]); expect((r as Obj).rows).toBeGreaterThan(0); } },
   { cmd: "query_cancel", args: { queryId: "nothing-runs" }, check: (r) => expect(r).toBeNull() },
   { cmd: "indicators_active", check: (r) => arrOf(r, ["ioc_type", "value", "verdict"]) },
   { cmd: "share_export", args: { path: "/b.json" }, check: (r) => { keys(r, ["sha256", "items"]); expect((r as Obj).items).toBeGreaterThan(0); } },

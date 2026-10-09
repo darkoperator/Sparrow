@@ -3696,6 +3696,7 @@ name = "sparrow-app"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "csv",
  "duckdb",
  "serde",
  "serde_json",
@@ -3749,6 +3750,8 @@ dependencies = [
  "sparrow-synth",
  "tempfile",
  "thiserror 2.0.21",
+ "unicode-segmentation",
+ "unicode-width",
  "uuid",
  "walkdir",
 ]

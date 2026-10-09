@@ -15,10 +15,12 @@ import type {
   QueueItem,
   Settings,
   Sort,
+  SqlCheck,
+  SqlExported,
   TimelineEntry,
 } from "../api";
 import * as fx from "../test/fixtures";
-import { GEN_COLUMNS, genObjects, selectRows } from "./generated";
+import { GEN_COLUMNS, GEN_ROWS, genObjects, selectRows } from "./generated";
 
 export const MOCK_MARKER = "sparrow-mock-backend-9f3c1e";
 
@@ -120,14 +122,59 @@ function pivot(base: Pivot, cap: unknown): Pivot {
 function sqlRun(a: Record<string, unknown> | undefined): Promise<QueryResult> {
   const sql = str(a, "sql");
   const limit = typeof a?.limit === "number" ? a.limit : 1000;
+  const offset = typeof a?.offset === "number" ? a.offset : 0;
   const slow = /slow/i.test(sql);
+  // Not DuckDB's parse: good enough for a fake (the real flag ignores ORDER BY in subqueries and comments).
+  const ordered = /\border\s+by\b/i.test(sql);
   return interruptible(a?.queryId, slow ? 10_000 : 0, () => {
     if (/\berror\b/i.test(sql)) return fail("invalid", "mock SQL error: syntax error near 'error'");
     if (/select\s+\*|\bwide\b/i.test(sql)) {
       const rows = selectRows([], null);
-      return { columns: GEN_COLUMNS, rows: rows.slice(0, limit), truncated: rows.length > limit };
+      return { columns: GEN_COLUMNS, rows: rows.slice(offset, offset + limit), truncated: rows.length > offset + limit, ordered };
     }
-    return fx.sqlResult();
+    const r = fx.sqlResult();
+    return { ...r, rows: r.rows.slice(offset, offset + limit), truncated: r.rows.length > offset + limit, ordered };
+  });
+}
+
+/** UTF-16 offsets of `token` in `sql`, as the real `sql_check` reports them. */
+function mark(sql: string, token: string): { from?: number; to?: number } {
+  const at = sql.indexOf(token);
+  return at < 0 ? {} : { from: at, to: at + token.length };
+}
+
+/**
+ * A fake `sql_check`: a non-SELECT or a second statement is `syntax`, the words `FRM` / `findngs` / `rule_idd` stand
+ * for a syntax, catalog and binder error; anything else is ok.
+ */
+function sqlCheck(a: Record<string, unknown> | undefined): SqlCheck {
+  const sql = str(a, "sql");
+  const body = sql.replace(/--[^\n]*/g, "").trim().replace(/;\s*$/, "");
+  if (!/^(select|with|from)\b/i.test(body)) {
+    return { ok: false, error: { kind: "syntax", message: "query accepts one SELECT statement only: not a SELECT (mock)", suggestions: [] } };
+  }
+  if (body.includes(";")) {
+    return { ok: false, error: { kind: "syntax", message: "query accepts exactly one SELECT statement, got 2", suggestions: [] } };
+  }
+  if (/\bFRM\b/.test(sql)) {
+    return { ok: false, error: { kind: "syntax", message: 'query accepts one SELECT statement only: syntax error at or near "FRM"', suggestions: [], ...mark(sql, "FRM") } };
+  }
+  if (sql.includes("findngs")) {
+    return { ok: false, error: { kind: "catalog", message: 'Catalog Error: Table with name findngs does not exist!\nDid you mean "findings"?', suggestions: ["findings"], ...mark(sql, "findngs") } };
+  }
+  if (sql.includes("rule_idd")) {
+    return { ok: false, error: { kind: "binder", message: 'Binder Error: Referenced column "rule_idd" not found in FROM clause!\nCandidate bindings: "rule_id"', suggestions: ["rule_id"], ...mark(sql, "rule_idd") } };
+  }
+  return { ok: true };
+}
+
+/** A fake `sql_export_csv`: writes nothing; `slow` in the query waits 10 s so Cancel can be tried. */
+function sqlExportCsv(a: Record<string, unknown> | undefined): Promise<SqlExported> {
+  const sql = str(a, "sql");
+  if (!str(a, "path")) fail("invalid", "no path (mock)");
+  return interruptible(a?.queryId, /slow/i.test(sql) ? 10_000 : 0, () => {
+    if (/\berror\b/i.test(sql)) return fail("invalid", "mock SQL error: syntax error near 'error'");
+    return { rows: GEN_ROWS, capped: false };
   });
 }
 
@@ -262,6 +309,8 @@ const handlers: Record<string, (a: Args) => unknown> = {
     return t ? fx.schema().filter((x) => x.name === t) : fx.schema();
   },
   sql_run: sqlRun,
+  sql_check: sqlCheck,
+  sql_export_csv: sqlExportCsv,
   query_cancel: (a) => {
     running.get(str(a, "queryId"))?.({ kind: "interrupted", message: "query interrupted (mock)" });
     return null;

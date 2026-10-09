@@ -31,6 +31,8 @@ serde_norway = "0.9.42"
 sha2 = "0.10"
 tempfile = "3"
 thiserror = "2"
+unicode-segmentation = "1"
+unicode-width = "0.2"
 uuid = { version = "1", features = ["v5"] }
 walkdir = "2"
 zip = { version = "=7.2.0", default-features = false }

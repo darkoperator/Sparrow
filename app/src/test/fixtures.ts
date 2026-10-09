@@ -158,7 +158,7 @@ export function indicators(): ActiveIndicator[] {
 
 export function sqlResult(): QueryResult {
   const v: unknown = clone(sqlResultJson);
-  need("sql_result", v, ["columns", "rows", "truncated"]);
+  need("sql_result", v, ["columns", "rows", "truncated", "ordered"]);
   if (!Array.isArray(v.columns) || v.columns.length === 0) throw new Error("fixture sql_result: no columns");
   if (!Array.isArray(v.rows) || v.rows.length === 0) throw new Error("fixture sql_result: no rows");
   const width = v.columns.length;

@@ -273,6 +273,41 @@ pub fn with_cancellable<T>(
     id: &str,
     f: impl FnOnce(&OpenCase) -> CmdResult<T>,
 ) -> CmdResult<T> {
+    with_cancellable_commit(state, ticket, id, |open, _| f(open))
+}
+
+/// Given to an operation run by [`with_cancellable_commit`], for the one step that makes its result visible.
+pub struct Commit<'a> {
+    state: &'a AppState,
+    cancelled: Arc<AtomicBool>,
+    committed: AtomicBool,
+}
+
+impl Commit<'_> {
+    /// Run `f`, the step that makes the result visible (renaming a finished file into place), unless the operation
+    /// was cancelled, which is `interrupted` and `f` never runs. Decided and run while holding the `active` lock, the
+    /// one `query_cancel` takes: a cancel lands either before (nothing is made visible) or after `f`, and then no
+    /// longer turns the call into `interrupted` (the result exists).
+    pub fn commit<T>(&self, f: impl FnOnce() -> CmdResult<T>) -> CmdResult<T> {
+        let _held = self.state.active.lock().unwrap_or_else(|p| p.into_inner());
+        if self.cancelled.load(Ordering::SeqCst) {
+            return Err(sparrow_core::Error::Interrupted.into());
+        }
+        let out = f()?;
+        self.committed.store(true, Ordering::SeqCst);
+        Ok(out)
+    }
+}
+
+/// [`with_cancellable`] for an operation whose result becomes visible in one final step (a file written by an
+/// export): `f` runs that step through [`Commit::commit`], so a cancel never reports `interrupted` for a result that
+/// was made visible, and never makes one visible after it was cancelled.
+pub fn with_cancellable_commit<T>(
+    state: &AppState,
+    ticket: Ticket,
+    id: &str,
+    f: impl FnOnce(&OpenCase, &Commit<'_>) -> CmdResult<T>,
+) -> CmdResult<T> {
     check_query_id(id)?;
     locked_case(state, ticket, |open, generation| {
         let (cancelled, done) = (
@@ -299,8 +334,16 @@ pub fn with_cancellable<T>(
         if cancelled_before {
             return Err(sparrow_core::Error::Interrupted.into());
         }
-        let out = f(open);
-        if cancelled.load(Ordering::SeqCst) && out.is_ok() {
+        let commit = Commit {
+            state,
+            cancelled: cancelled.clone(),
+            committed: AtomicBool::new(false),
+        };
+        let out = f(open, &commit);
+        if cancelled.load(Ordering::SeqCst)
+            && out.is_ok()
+            && !commit.committed.load(Ordering::SeqCst)
+        {
             return Err(sparrow_core::Error::Interrupted.into());
         }
         out

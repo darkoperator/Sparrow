@@ -153,7 +153,7 @@ fn the_case_meta_keys_are_visible() {
 fn run_on_refuses_unlocked_case() {
     let c = Case::in_memory().unwrap();
     assert!(!c.is_locked_down().unwrap());
-    let e = query::run_on(&c, "SELECT 1", 10).unwrap_err();
+    let e = query::run_on(&c, "SELECT 1", 10, 0).unwrap_err();
     assert!(matches!(&e, Error::Invalid(m) if m.contains("lock")), "{e}");
     let e = query::schema_on(&c, None).unwrap_err();
     assert!(matches!(&e, Error::Invalid(m) if m.contains("lock")), "{e}");
@@ -167,7 +167,7 @@ fn run_on_matches_run_and_cannot_write() {
     let c = Case::create_or_open(&p).unwrap();
     c.lock_down().unwrap();
     assert!(c.is_locked_down().unwrap());
-    let got = query::run_on(&c, "SELECT finding_id FROM findings ORDER BY 1", 100).unwrap();
+    let got = query::run_on(&c, "SELECT finding_id FROM findings ORDER BY 1", 100, 0).unwrap();
     assert_eq!(got.columns, expected.columns);
     assert_eq!(got.rows, expected.rows);
     let probe = d.path().join("probe");
@@ -184,10 +184,10 @@ fn run_on_matches_run_and_cannot_write() {
         "CHECKPOINT".into(),
         String::new(),
     ] {
-        assert!(query::run_on(&c, &bad, 10).is_err(), "{bad}");
+        assert!(query::run_on(&c, &bad, 10, 0).is_err(), "{bad}");
     }
     // Nothing changed and the connection is not left in a transaction.
-    let n = query::run_on(&c, "SELECT count(*) FROM findings", 10).unwrap();
+    let n = query::run_on(&c, "SELECT count(*) FROM findings", 10, 0).unwrap();
     assert_eq!(n.rows, vec![vec![serde_json::json!(1)]]);
     c.conn()
         .execute_batch("BEGIN TRANSACTION; ROLLBACK")
@@ -196,7 +196,7 @@ fn run_on_matches_run_and_cannot_write() {
     assert_eq!(t.len(), 1);
     assert!(query::schema_on(&c, None).unwrap().len() > 1);
     // Truncation works the same as `run`.
-    let r = query::run_on(&c, "SELECT ip FROM ip_intel ORDER BY ip", 10).unwrap();
+    let r = query::run_on(&c, "SELECT ip FROM ip_intel ORDER BY ip", 10, 0).unwrap();
     assert_eq!((r.rows.len(), r.truncated), (10, true));
     assert!(!probe.with_extension("csv").exists());
 }
@@ -207,7 +207,7 @@ fn run_on_refuses_inside_an_open_transaction_and_leaves_it_alone() {
     let c = Case::create_or_open(&p).unwrap();
     c.lock_down().unwrap();
     c.conn().execute_batch("BEGIN TRANSACTION").unwrap();
-    assert!(query::run_on(&c, "SELECT 1", 10).is_err());
+    assert!(query::run_on(&c, "SELECT 1", 10, 0).is_err());
     // The caller's transaction is still open: COMMIT succeeds.
     c.conn().execute_batch("COMMIT").unwrap();
 }
@@ -306,14 +306,14 @@ fn run_on_leaves_the_case_unchanged_even_for_a_side_effecting_select_shape() {
         "SELECT * FROM query('DELETE FROM ip_intel RETURNING ip')",
         "WITH d AS (DELETE FROM ip_intel RETURNING ip) SELECT count(*) FROM d",
     ] {
-        if query::run_on(&c, sql, 10).is_ok() {
+        if query::run_on(&c, sql, 10, 0).is_ok() {
             ran += 1;
         }
         assert_eq!(before(&c), b, "{sql}");
     }
     eprintln!("side-effecting SELECT shapes that ran: {ran}");
     // A query that fails at execution after BEGIN leaves no transaction behind; a write then works.
-    assert!(query::run_on(&c, "SELECT CAST('x' AS INTEGER)", 10).is_err());
+    assert!(query::run_on(&c, "SELECT CAST('x' AS INTEGER)", 10, 0).is_err());
     let agent = Actor::agent("claude", Some("example")).unwrap();
     set_finding_status(c.conn(), &agent, "f1", FindingStatus::InReview, None).unwrap();
 }
@@ -340,4 +340,337 @@ fn locked_case_still_takes_review_app_writes_and_exports() {
     assert_eq!((s.new, s.conflicts, s.missing), (0, 0, 0));
     assert!(s.agrees >= 1);
     assert!(sparrow_core::case::audit::verify(c.conn()).unwrap().ok);
+}
+
+// ---- SQL screen: check, paging, CSV export ----
+
+use query::{Check, CheckKind};
+
+fn locked_mem() -> Case {
+    let c = Case::in_memory().unwrap();
+    c.lock_down().unwrap();
+    c
+}
+
+/// The UTF-16 offset of the LAST `needle` in `s`, and of its end.
+fn span16(s: &str, needle: &str) -> (usize, usize) {
+    let b = s.rfind(needle).unwrap();
+    let from = s[..b].encode_utf16().count();
+    (from, from + needle.encode_utf16().count())
+}
+
+fn failed(c: &Check) -> &query::CheckError {
+    assert!(!c.ok, "{c:?}");
+    c.error.as_ref().unwrap()
+}
+
+#[test]
+fn check_marks_syntax_errors_in_utf16_offsets() {
+    let c = locked_mem();
+    for (sql, token) in [
+        ("SELECT a,\n  FROM WHERE x", "WHERE"),
+        ("SELECT 'é😀日本' AS x,\r\n 1 FROM FROM", "FROM"),
+        ("-- note é\nSELECT 1 +\n\n FROM t", "FROM"),
+    ] {
+        let got = query::check_on(&c, sql).unwrap();
+        let e = failed(&got);
+        assert_eq!(e.kind, CheckKind::Syntax, "{sql:?}: {e:?}");
+        assert_eq!(
+            (e.from, e.to),
+            {
+                let (f, t) = span16(sql, token);
+                (Some(f), Some(t))
+            },
+            "{sql:?}: {e:?}"
+        );
+        assert!(e.message.contains("syntax error"), "{e:?}");
+    }
+    // At the end of the text: a zero-width mark at the end, never past it.
+    let sql = "SELECT (1";
+    let e = query::check_on(&c, sql).unwrap().error.unwrap();
+    let n = sql.encode_utf16().count();
+    assert_eq!(
+        (e.kind, e.from, e.to),
+        (CheckKind::Syntax, Some(n), Some(n)),
+        "{e:?}"
+    );
+}
+
+#[test]
+fn check_marks_binder_and_catalog_errors_in_the_users_text() {
+    let c = locked_mem();
+    // Multi-line, non-ASCII (wide and astral) before the error, a tab, and a line long enough that DuckDB truncates
+    // its excerpt: the caret refers to the user's text, not a wrapped query.
+    let long = "x".repeat(150);
+    let cases: Vec<(String, &str, CheckKind, &str)> = vec![
+        (
+            "SELECT 'é😀日本',\n  finding_idd\nFROM findings".into(),
+            "finding_idd",
+            CheckKind::Binder,
+            "finding_id",
+        ),
+        (
+            "SELECT\tfinding_idd FROM findings".into(),
+            "finding_idd",
+            CheckKind::Binder,
+            "finding_id",
+        ),
+        (
+            format!("SELECT '{long}', 'ü', finding_idd, '{long}' FROM findings"),
+            "finding_idd",
+            CheckKind::Binder,
+            "finding_id",
+        ),
+        (
+            "SELECT f.x, 'ñ'\nFROM findings f\nWHERE zz.severity = 'high'".into(),
+            "zz.severity",
+            CheckKind::Binder,
+            "f",
+        ),
+        (
+            "SELECT *\n  -- é😀\n  FROM  findngs".into(),
+            "findngs",
+            CheckKind::Catalog,
+            "findings",
+        ),
+        (
+            "SELECT \"😀\" FROM findings".into(),
+            "\"😀\"",
+            CheckKind::Binder,
+            "",
+        ),
+    ];
+    for (sql, token, kind, suggestion) in &cases {
+        let got = query::check_on(&c, sql).unwrap();
+        let e = failed(&got);
+        assert_eq!(e.kind, *kind, "{sql:?}: {e:?}");
+        let (from, to) = span16(sql, token);
+        let want_to = if token.starts_with("zz") {
+            from + 2
+        } else {
+            to
+        };
+        assert_eq!(
+            (e.from, e.to),
+            (Some(from), Some(want_to)),
+            "{sql:?}: {e:?}"
+        );
+        if !suggestion.is_empty() {
+            assert!(
+                e.suggestions.iter().any(|s| s == suggestion),
+                "{sql:?}: {e:?}"
+            );
+        }
+        assert!(!e.message.contains("LINE "), "{e:?}");
+        assert!(!e.message.is_empty());
+    }
+    let ok = query::check_on(&c, "SELECT finding_id,\n severity FROM findings -- é\n;").unwrap();
+    assert_eq!(
+        ok,
+        Check {
+            ok: true,
+            error: None
+        }
+    );
+}
+
+#[test]
+fn check_refuses_non_selects_as_syntax_and_needs_a_lock() {
+    let c = locked_mem();
+    for sql in [
+        "DELETE FROM findings",
+        "SELECT 1; SELECT 2",
+        "",
+        "ATTACH 'x' AS y",
+    ] {
+        let got = query::check_on(&c, sql).unwrap();
+        let e = failed(&got);
+        assert_eq!(e.kind, CheckKind::Syntax, "{sql:?}: {e:?}");
+        assert!(e.message.starts_with("query accepts"), "{e:?}");
+    }
+    let open = Case::in_memory().unwrap();
+    assert!(
+        matches!(query::check_on(&open, "SELECT 1"), Err(Error::Invalid(m)) if m.contains("lock"))
+    );
+}
+
+#[test]
+fn check_never_executes() {
+    let c = locked_mem();
+    // Minutes when executed; binding alone is instant.
+    let started = std::time::Instant::now();
+    let got = query::check_on(&c, "SELECT sum(hash(a)) FROM range(100000000000) a").unwrap();
+    assert!(got.ok, "{got:?}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    // A failing function is only an error when it runs.
+    let boom = "SELECT CASE WHEN i = 2 THEN error('boom') ELSE 'x' END AS v FROM range(3) t(i)";
+    assert!(query::check_on(&c, boom).unwrap().ok);
+    assert!(query::run_on(&c, boom, 10, 0).is_err());
+    // The connection is not left in a transaction.
+    c.conn()
+        .execute_batch("BEGIN TRANSACTION; ROLLBACK")
+        .unwrap();
+}
+
+#[test]
+fn pages_are_slices_of_an_ordered_query() {
+    let c = locked_mem();
+    let sql = "SELECT i, hash(i) AS h FROM range(30000) t(i) ORDER BY h, i";
+    let all = query::run_on(&c, sql, 10_000, 0).unwrap();
+    assert_eq!(all.rows.len(), 10_000);
+    assert!(all.ordered);
+    let mut checked = 0;
+    for page in 0..3 {
+        let p = query::run_on(&c, sql, 1000, page * 1000).unwrap();
+        assert!(p.ordered && p.truncated);
+        assert_eq!(
+            p.rows[..],
+            all.rows[page * 1000..(page + 1) * 1000],
+            "page {page}"
+        );
+        checked += p.rows.len();
+    }
+    assert_eq!(checked, 3000);
+    let last = query::run_on(&c, sql, 1000, 29_500).unwrap();
+    assert_eq!((last.rows.len(), last.truncated), (500, false));
+    assert!(query::run_on(&c, sql, 10, 40_000).unwrap().rows.is_empty());
+    let e = query::run_on(&c, sql, 10, query::MAX_OFFSET + 1).unwrap_err();
+    assert!(
+        matches!(&e, Error::Invalid(m) if m.contains("offset")),
+        "{e}"
+    );
+}
+
+#[test]
+fn ordered_comes_from_the_top_level_select() {
+    let c = locked_mem();
+    for (sql, want) in [
+        ("SELECT 1 AS a ORDER BY a", true),
+        ("SELECT 1 AS a UNION ALL SELECT 2 ORDER BY 1", true),
+        (
+            "WITH x AS (SELECT 1 AS a) SELECT * FROM x ORDER BY ALL LIMIT 5",
+            true,
+        ),
+        ("FROM range(3) t(i) ORDER BY i DESC", true),
+        ("SELECT 1 AS a", false),
+        ("SELECT * FROM (SELECT 1 AS a ORDER BY a)", false),
+        ("SELECT 'ORDER BY' AS t -- ORDER BY t", false),
+        ("SELECT a FROM (SELECT 1 AS a) GROUP BY a", false),
+    ] {
+        assert_eq!(
+            query::run_on(&c, sql, 10, 0).unwrap().ordered,
+            want,
+            "{sql}"
+        );
+    }
+}
+
+fn export(c: &Case, sql: &str, cap: u64) -> (query::Exported, String) {
+    let mut out = Vec::new();
+    let e = query::export_csv_on(c, sql, &mut out, cap).unwrap();
+    (e, String::from_utf8(out).unwrap())
+}
+
+#[test]
+fn export_writes_every_row_with_the_timeline_cell_rules() {
+    let c = locked_mem();
+    let sql = "SELECT '=1+1' AS \"=f\", '-x' AS t, -5 AS n, 1.5::DOUBLE AS d, true AS b, NULL AS nul, \
+               TIMESTAMP '2026-08-14 10:00:01.5' AS ts, TIMESTAMPTZ '2026-08-14 10:00:00+00' AS tz, \
+               DATE '2026-08-14' AS day, ['a', '=b'] AS l, 'a,b \"q\"\nline' AS q, '@x' AS a, 'mid=dle' AS m";
+    let (e, text) = export(&c, sql, 10);
+    assert_eq!(
+        e,
+        query::Exported {
+            rows: 1,
+            capped: false
+        }
+    );
+    let text = text
+        .strip_prefix('\u{feff}')
+        .expect("a UTF-8 BOM, like the timeline CSV");
+    let mut r = csv::Reader::from_reader(text.as_bytes());
+    let head: Vec<String> = r.headers().unwrap().iter().map(String::from).collect();
+    assert_eq!(
+        head,
+        [
+            "'=f", "t", "n", "d", "b", "nul", "ts", "tz", "day", "l", "q", "a", "m"
+        ]
+    );
+    let rows: Vec<Vec<String>> = r
+        .records()
+        .map(|x| x.unwrap().iter().map(String::from).collect())
+        .collect();
+    assert_eq!(
+        rows,
+        vec![vec![
+            "'=1+1",
+            "'-x",
+            "-5",
+            "1.5",
+            "true",
+            "",
+            "2026-08-14T10:00:01.500000Z",
+            "2026-08-14T10:00:00.000000Z",
+            "2026-08-14",
+            "[\"a\",\"=b\"]",
+            "a,b \"q\"\nline",
+            "'@x",
+            "mid=dle",
+        ]]
+    );
+}
+
+#[test]
+fn export_caps_and_streams_the_whole_query() {
+    let c = locked_mem();
+    let (e, text) = export(&c, "SELECT i FROM range(25) t(i) ORDER BY i", 10);
+    assert_eq!(
+        e,
+        query::Exported {
+            rows: 10,
+            capped: true
+        }
+    );
+    assert_eq!(text.lines().count(), 11);
+    assert!(text.lines().last().unwrap() == "9");
+    let (e, text) = export(&c, "SELECT i FROM range(10) t(i)", 10);
+    assert_eq!(
+        e,
+        query::Exported {
+            rows: 10,
+            capped: false
+        }
+    );
+    assert_eq!(text.lines().count(), 11);
+    // More rows than sql_run's 10,000 limit, no LIMIT of its own.
+    let (e, _) = export(&c, "SELECT i FROM range(25000) t(i)", query::EXPORT_CAP);
+    assert_eq!(
+        e,
+        query::Exported {
+            rows: 25_000,
+            capped: false
+        }
+    );
+    let (e, text) = export(&c, "SELECT i AS \"x\" FROM range(0) t(i)", 10);
+    assert_eq!((e.rows, text.trim_start_matches('\u{feff}')), (0, "x\n"));
+    // Refusals and errors write nothing.
+    for bad in [
+        "DELETE FROM findings",
+        "SELECT nope FROM findings",
+        "SELECT 1; SELECT 2",
+    ] {
+        let mut out = Vec::new();
+        assert!(
+            query::export_csv_on(&c, bad, &mut out, 10).is_err(),
+            "{bad}"
+        );
+        assert!(out.is_empty(), "{bad}");
+    }
+    c.conn()
+        .execute_batch("BEGIN TRANSACTION; ROLLBACK")
+        .unwrap();
 }

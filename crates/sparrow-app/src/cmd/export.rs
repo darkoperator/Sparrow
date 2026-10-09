@@ -117,6 +117,17 @@ pub(crate) fn atomic(
     path: &Path,
     write: impl FnOnce(&Path) -> CmdResult<()>,
 ) -> CmdResult<()> {
+    atomic_then(open, path, write, |finish| finish())
+}
+
+/// [`atomic`], with the final check-and-rename handed to `commit`, which runs it or refuses (a cancelled export,
+/// see `state::Commit`).
+pub(crate) fn atomic_then(
+    open: &OpenCase,
+    path: &Path,
+    write: impl FnOnce(&Path) -> CmdResult<()>,
+    commit: impl FnOnce(&dyn Fn() -> CmdResult<()>) -> CmdResult<()>,
+) -> CmdResult<()> {
     let target = resolve_target(path)?;
     check_target(open, &target)?;
     let private = tempfile::Builder::new()
@@ -133,17 +144,22 @@ pub(crate) fn atomic(
         })?;
     let tmp = private.path().join(&target.file);
     write(&tmp)?;
-    check_target(open, &target)?;
-    std::fs::rename(&tmp, target.path()).map_err(|e| {
-        CmdError::new(
-            "internal",
-            format!("cannot write {}: {e}", target.path().display()),
-        )
+    commit(&|| {
+        check_target(open, &target)?;
+        std::fs::rename(&tmp, target.path()).map_err(|e| {
+            CmdError::new(
+                "internal",
+                format!("cannot write {}: {e}", target.path().display()),
+            )
+        })
     })
 }
 
 /// Run `write` on a buffered file at `tmp`, flushed before it returns.
-fn to_file(tmp: &Path, write: impl FnOnce(&mut dyn Write) -> CmdResult<()>) -> CmdResult<()> {
+pub(crate) fn to_file(
+    tmp: &Path,
+    write: impl FnOnce(&mut dyn Write) -> CmdResult<()>,
+) -> CmdResult<()> {
     let file = File::create(tmp)
         .map_err(|e| CmdError::new("internal", format!("cannot create {}: {e}", tmp.display())))?;
     let mut w = BufWriter::new(file);
