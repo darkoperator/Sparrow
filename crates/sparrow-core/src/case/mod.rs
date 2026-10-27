@@ -5,6 +5,7 @@
 pub mod actor;
 pub mod audit;
 pub mod browse;
+pub mod devices;
 pub mod indicators;
 pub mod notes;
 pub mod query;
