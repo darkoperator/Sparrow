@@ -1,0 +1,257 @@
+[
+  {
+    "tenant_key": "t-contoso",
+    "device_id": "aaaaaaaa-0000-0000-0000-00000000000a",
+    "object_id": null,
+    "display_name": "Workstation",
+    "os": "Windows10",
+    "trust_type": "0",
+    "is_compliant": null,
+    "is_managed": null,
+    "confidence": "high",
+    "reasons": [
+      {
+        "kind": "indicator",
+        "ip": "198.51.100.7",
+        "verdict": "malicious"
+      }
+    ],
+    "users": [
+      "alice@contoso.example"
+    ],
+    "malicious_ips": [
+      "198.51.100.7"
+    ],
+    "other_ips": [
+      {
+        "ip": "192.0.2.9",
+        "asn": 64500,
+        "asn_org": "Contoso ISP",
+        "country_iso": "US",
+        "is_hosting": false
+      }
+    ],
+    "sightings": [
+      {
+        "tenant_key": "t-contoso",
+        "device_id": "aaaaaaaa-0000-0000-0000-00000000000a",
+        "display_name": "Workstation",
+        "os": "Windows10",
+        "trust_type": "0",
+        "user_upn": "alice@contoso.example",
+        "ip": "198.51.100.7",
+        "event_time": "2026-03-01T08:00:00.000000Z",
+        "activity": "UserLoggedIn",
+        "source_table": "ual_events",
+        "record_key": "00000000-0000-4000-8000-000000000001"
+      },
+      {
+        "tenant_key": "t-contoso",
+        "device_id": "aaaaaaaa-0000-0000-0000-00000000000a",
+        "display_name": "Workstation",
+        "os": "Windows10",
+        "trust_type": "0",
+        "user_upn": "alice@contoso.example",
+        "ip": "192.0.2.9",
+        "event_time": "2026-03-05T09:00:00.000000Z",
+        "activity": "Office 365",
+        "source_table": "signins",
+        "record_key": "si-0003"
+      },
+      {
+        "tenant_key": "t-contoso",
+        "device_id": "aaaaaaaa-0000-0000-0000-00000000000a",
+        "display_name": "Workstation",
+        "os": "Windows10",
+        "trust_type": "0",
+        "user_upn": "alice@contoso.example",
+        "ip": "198.51.100.7",
+        "event_time": null,
+        "activity": "Office 365",
+        "source_table": "signins",
+        "record_key": "si-0004"
+      }
+    ],
+    "lifecycle": {
+      "status": "active_after_removal",
+      "registered": {
+        "at": "2026-02-20T10:00:00.000000Z",
+        "source_table": "ual_events",
+        "record_key": "00000000-0000-4000-8000-0000000000a1"
+      },
+      "removed": {
+        "at": "2026-03-02T09:00:00.000000Z",
+        "source_table": "ual_events",
+        "record_key": "00000000-0000-4000-8000-0000000000a2"
+      },
+      "disabled": null,
+      "last_active": {
+        "at": "2026-03-05T09:00:00.000000Z",
+        "source_table": "signins",
+        "record_key": "si-0003"
+      },
+      "latest_inventory_at": null
+    }
+  },
+  {
+    "tenant_key": "t-contoso",
+    "device_id": "bbbbbbbb-0000-0000-0000-00000000000b",
+    "object_id": null,
+    "display_name": "Workstation",
+    "os": "Windows10",
+    "trust_type": "0",
+    "is_compliant": null,
+    "is_managed": null,
+    "confidence": "high",
+    "reasons": [
+      {
+        "kind": "finding",
+        "ip": "198.51.100.7",
+        "finding_id": "f0e1d2c3b4a59687",
+        "rule_id": "SPW-ID-002"
+      }
+    ],
+    "users": [
+      "bob@contoso.example"
+    ],
+    "malicious_ips": [
+      "198.51.100.7"
+    ],
+    "other_ips": [],
+    "sightings": [
+      {
+        "tenant_key": "t-contoso",
+        "device_id": "bbbbbbbb-0000-0000-0000-00000000000b",
+        "display_name": "Workstation",
+        "os": "Windows10",
+        "trust_type": "0",
+        "user_upn": "bob@contoso.example",
+        "ip": "198.51.100.7",
+        "event_time": "2026-03-04T07:30:00.000000Z",
+        "activity": "Office 365",
+        "source_table": "signins",
+        "record_key": "si-0005"
+      }
+    ],
+    "lifecycle": {
+      "status": "unknown",
+      "registered": null,
+      "removed": null,
+      "disabled": null,
+      "last_active": {
+        "at": "2026-03-04T07:30:00.000000Z",
+        "source_table": "signins",
+        "record_key": "si-0005"
+      },
+      "latest_inventory_at": null
+    }
+  },
+  {
+    "tenant_key": "t-contoso",
+    "device_id": "cccccccc-0000-0000-0000-00000000000c",
+    "object_id": null,
+    "display_name": "Laptop",
+    "os": "Windows10",
+    "trust_type": "0",
+    "is_compliant": null,
+    "is_managed": null,
+    "confidence": "low",
+    "reasons": [
+      {
+        "kind": "travel_leg",
+        "ip": "203.0.113.40",
+        "finding_id": "0a1b2c3d4e5f6071"
+      }
+    ],
+    "users": [
+      "bob@contoso.example"
+    ],
+    "malicious_ips": [
+      "203.0.113.40"
+    ],
+    "other_ips": [],
+    "sightings": [
+      {
+        "tenant_key": "t-contoso",
+        "device_id": "cccccccc-0000-0000-0000-00000000000c",
+        "display_name": "Laptop",
+        "os": "Windows10",
+        "trust_type": "0",
+        "user_upn": "bob@contoso.example",
+        "ip": "203.0.113.40",
+        "event_time": "2026-03-03T12:00:00.000000Z",
+        "activity": "Office 365",
+        "source_table": "signins",
+        "record_key": "si-0006"
+      }
+    ],
+    "lifecycle": {
+      "status": "not_in_latest_inventory",
+      "registered": null,
+      "removed": null,
+      "disabled": null,
+      "last_active": {
+        "at": "2026-03-03T12:00:00.000000Z",
+        "source_table": "signins",
+        "record_key": "si-0006"
+      },
+      "latest_inventory_at": "2026-03-10T00:00:00.000000Z"
+    }
+  },
+  {
+    "tenant_key": "t-contoso",
+    "device_id": "dddddddd-0000-0000-0000-00000000000d",
+    "object_id": null,
+    "display_name": "Phone",
+    "os": "Windows10",
+    "trust_type": "0",
+    "is_compliant": null,
+    "is_managed": null,
+    "confidence": "high",
+    "reasons": [
+      {
+        "kind": "indicator",
+        "ip": "198.51.100.7",
+        "verdict": "suspicious"
+      }
+    ],
+    "users": [
+      "alice@contoso.example"
+    ],
+    "malicious_ips": [
+      "198.51.100.7"
+    ],
+    "other_ips": [],
+    "sightings": [
+      {
+        "tenant_key": "t-contoso",
+        "device_id": "dddddddd-0000-0000-0000-00000000000d",
+        "display_name": "Phone",
+        "os": "Windows10",
+        "trust_type": "0",
+        "user_upn": "alice@contoso.example",
+        "ip": "198.51.100.7",
+        "event_time": "2026-03-01T06:00:00.000000Z",
+        "activity": "Office 365",
+        "source_table": "signins",
+        "record_key": "si-0007"
+      }
+    ],
+    "lifecycle": {
+      "status": "removed",
+      "registered": null,
+      "removed": {
+        "at": "2026-03-02T09:30:00.000000Z",
+        "source_table": "ual_events",
+        "record_key": "00000000-0000-4000-8000-0000000000d1"
+      },
+      "disabled": null,
+      "last_active": {
+        "at": "2026-03-01T06:00:00.000000Z",
+        "source_table": "signins",
+        "record_key": "si-0007"
+      },
+      "latest_inventory_at": null
+    }
+  }
+]

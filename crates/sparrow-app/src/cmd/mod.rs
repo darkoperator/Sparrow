@@ -4,6 +4,7 @@
 pub mod accounts;
 pub mod browse;
 pub mod case;
+pub mod devices;
 pub mod export;
 pub mod highlights;
 pub mod indicators;

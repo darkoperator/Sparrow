@@ -841,6 +841,15 @@ fn record_fixtures() {
     write("case_info.json", serde_json::to_value(&info).unwrap());
     write("queue.json", serde_json::to_value(&queue).unwrap());
     write("accounts.json", serde_json::to_value(&accounts).unwrap());
+    let devices = sparrow_app::cmd::devices::devices_list(&state, None).unwrap();
+    assert!(
+        !devices.is_empty(),
+        "the synthetic case has a suspect device"
+    );
+    write(
+        "devices_recorded.json",
+        serde_json::to_value(&devices).unwrap(),
+    );
     write(
         "finding_detail.json",
         serde_json::to_value(&detail).unwrap(),
@@ -1205,6 +1214,42 @@ fn accounts_list_matches_core() {
     let tenant = page.accounts[0].tenant_key.clone();
     let one = accounts_list(&state, Some(&tenant)).unwrap();
     assert!(!one.accounts.is_empty() && one.accounts.iter().all(|a| a.tenant_key == tenant));
+}
+
+use sparrow_app::cmd::devices::devices_list;
+
+#[test]
+fn devices_list_matches_core() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = open_as_analyst(tmp.path());
+    let list = devices_list(&state, None).unwrap();
+    let core = with_case(&state, |open| {
+        Ok(sparrow_core::case::devices::suspect_devices(
+            open.case.conn(),
+            None,
+        )?)
+    })
+    .unwrap();
+    assert!(!core.is_empty(), "the synthetic case has a suspect device");
+    assert_eq!(
+        serde_json::to_value(&list).unwrap(),
+        serde_json::to_value(&core).unwrap()
+    );
+    // A tenant filter reaches core.
+    assert!(
+        devices_list(&state, Some("no-such-tenant"))
+            .unwrap()
+            .is_empty()
+    );
+    let tenant = list[0].tenant_key.clone().unwrap();
+    let one = devices_list(&state, Some(&tenant)).unwrap();
+    assert!(!one.is_empty() && one.iter().all(|d| d.tenant_key.as_deref() == Some(&tenant)));
+}
+
+#[test]
+fn devices_need_an_open_case() {
+    let e = devices_list(&AppState::default(), None).unwrap_err();
+    assert_eq!(e.kind, "no_case");
 }
 
 #[test]

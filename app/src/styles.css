@@ -99,3 +99,12 @@ code.sha { overflow-wrap: anywhere; }
 .queue-detail, .finding-detail, .share-card, .row-detail { min-width: 0; max-width: 100%; overflow-x: auto; }
 .share-card code { overflow-wrap: anywhere; }
 pre.prose { max-width: 100%; overflow-x: auto; }
+.devices { padding: 12px 16px; }
+.devices table { border-collapse: collapse; }
+.devices th, .devices td { text-align: left; vertical-align: top; padding: 4px 10px; border-bottom: 1px solid #8884; }
+.status { padding: 0 4px; border: 1px solid #8886; border-radius: 3px; }
+/* A device seen after its removal: bold, a heavy red border and a background, plus the warning sign in the text, so
+   the cue does not depend on colour. The tints are translucent, so they read on light and dark. */
+.status-alert { font-weight: 700; border: 2px solid #b00020; background: #b0002026; }
+.malicious { font-weight: 700; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

@@ -289,6 +289,7 @@ const handlers: Record<string, (a: Args) => unknown> = {
   timeline_reject: (a) => setStatus(str(a, "entryId"), "rejected", str(a, "reason") || null),
 
   accounts_list: () => fx.accounts(),
+  devices_list: () => fx.devices(),
   export_report: () => null,
   export_timeline_csv: () => null,
   export_workbook: () => null,

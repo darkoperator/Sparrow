@@ -552,3 +552,83 @@ export const shareExport = (path: string) => call<ShareExported>("share_export",
 export const sharePreview = (path: string) => call<SharePreview>("share_preview", { path });
 /** Refused (`invalid`) when the file's SHA-256 is no longer `sha256`, the one its preview showed. */
 export const shareImport = (path: string, sha256: string) => call<ImportSummary>("share_import", { path, sha256 });
+
+// ---------------------------------------------------------------- devices
+
+/** `case::devices::SuspectReason` (serde tag `kind`, snake_case). */
+export type SuspectReason =
+  | { kind: "indicator"; ip: string; verdict: string }
+  | { kind: "finding"; ip: string; finding_id: string; rule_id: string }
+  | { kind: "travel_leg"; ip: string; finding_id: string }
+  | { kind: "same_name"; name: string; of_device_id: string };
+
+/** `case::devices::DeviceStatus`, in list order. */
+export type DeviceStatus =
+  | "active_after_removal"
+  | "active"
+  | "unknown"
+  | "not_in_latest_inventory"
+  | "disabled"
+  | "removed";
+
+/** `case::devices::DeviceSighting`; `event_time` is null for a stored row without a time. */
+export interface DeviceSighting {
+  tenant_key: string | null;
+  device_id: string;
+  display_name: string | null;
+  os: string | null;
+  trust_type: string | null;
+  user_upn: string | null;
+  ip: string | null;
+  event_time: string | null;
+  activity: string;
+  source_table: string;
+  record_key: string;
+}
+
+/** `case::devices::OtherIp`. */
+export interface OtherIp {
+  ip: string;
+  asn: number | null;
+  asn_org: string | null;
+  country_iso: string | null;
+  is_hosting: boolean | null;
+}
+
+/** `case::devices::LifecycleMark`: the record that sets a lifecycle date. */
+export interface LifecycleMark {
+  at: string;
+  source_table: string;
+  record_key: string;
+}
+
+/** `case::devices::Lifecycle`. */
+export interface Lifecycle {
+  status: DeviceStatus;
+  registered: LifecycleMark | null;
+  removed: LifecycleMark | null;
+  disabled: LifecycleMark | null;
+  last_active: LifecycleMark | null;
+  latest_inventory_at: string | null;
+}
+
+/** `case::devices::SuspectDevice`; the list arrives sorted by status, confidence, last active. */
+export interface SuspectDevice {
+  tenant_key: string | null;
+  device_id: string;
+  object_id: string | null;
+  display_name: string | null;
+  os: string | null;
+  trust_type: string | null;
+  is_compliant: boolean | null;
+  is_managed: boolean | null;
+  confidence: "high" | "low";
+  reasons: SuspectReason[];
+  users: string[];
+  malicious_ips: string[];
+  other_ips: OtherIp[];
+  sightings: DeviceSighting[];
+  lifecycle: Lifecycle;
+}
+
+export const devicesList = (tenant?: string) => call<SuspectDevice[]>("devices_list", { tenant });

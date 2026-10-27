@@ -5,6 +5,8 @@ import caseInfoJson from "./fixtures/case_info.json";
 import findingDetailJson from "./fixtures/finding_detail.json";
 import queueJson from "./fixtures/queue.json";
 import accountsJson from "./fixtures/accounts.json";
+import devicesJson from "./fixtures/devices.json";
+import devicesRecordedJson from "./fixtures/devices_recorded.json";
 import schemaJson from "./fixtures/schema.json";
 import sqlResultJson from "./fixtures/sql_result.json";
 import sharePreviewJson from "./fixtures/share_preview.json";
@@ -17,6 +19,7 @@ import type {
   ActiveIndicator,
   BrowsePage,
   CaseInfo,
+  SuspectDevice,
   FindingDetail,
   Pivot,
   QueryResult,
@@ -181,3 +184,67 @@ export function sharePreview(): SharePreview {
   if (v.summary.bundle_sha256 !== v.sha256) throw new Error("fixture share_preview: summary sha differs from sha256");
   return v as unknown as SharePreview;
 }
+
+const DEVICE = [
+  "tenant_key", "device_id", "object_id", "display_name", "os", "trust_type", "is_compliant", "is_managed", "confidence",
+  "reasons", "users", "malicious_ips", "other_ips", "sightings", "lifecycle",
+];
+const SIGHTING = [
+  "tenant_key", "device_id", "display_name", "os", "trust_type", "user_upn", "ip", "event_time", "activity",
+  "source_table", "record_key",
+];
+const LIFECYCLE = ["status", "registered", "removed", "disabled", "last_active", "latest_inventory_at"];
+const OTHER_IP = ["ip", "asn", "asn_org", "country_iso", "is_hosting"];
+const MARK = ["at", "source_table", "record_key"];
+const STATUSES = ["active_after_removal", "active", "unknown", "not_in_latest_inventory", "disabled", "removed"];
+const REASON_FIELDS: Record<string, string[]> = {
+  indicator: ["ip", "verdict"],
+  finding: ["ip", "finding_id", "rule_id"],
+  travel_leg: ["ip", "finding_id"],
+  same_name: ["name", "of_device_id"],
+};
+
+const isStringOrNull = (v: unknown) => v === null || typeof v === "string";
+
+/** Validates the nested serde shape of a `devices_list` response (enum values, nullable fields, tagged reasons). */
+function checkDevices(name: string, json: unknown): SuspectDevice[] {
+  const v: unknown = clone(json);
+  if (!Array.isArray(v) || v.length === 0) throw new Error(`fixture ${name}: no devices`);
+  v.forEach((d: unknown, i) => {
+    const at = `${name}[${i}]`;
+    need(at, d, DEVICE);
+    if (d.confidence !== "high" && d.confidence !== "low") throw new Error(`fixture ${at}: confidence ${String(d.confidence)}`);
+    for (const k of ["users", "malicious_ips"] as const) {
+      if (!Array.isArray(d[k]) || !d[k].every((x) => typeof x === "string")) throw new Error(`fixture ${at}: ${k} is not a string array`);
+    }
+    if (!Array.isArray(d.reasons) || d.reasons.length === 0) throw new Error(`fixture ${at}: no reasons`);
+    d.reasons.forEach((r: unknown, j) => {
+      need(`${at}.reasons[${j}]`, r, ["kind"]);
+      const fields = typeof r.kind === "string" ? REASON_FIELDS[r.kind] : undefined;
+      if (!fields) throw new Error(`fixture ${at}.reasons[${j}]: kind ${String(r.kind)}`);
+      need(`${at}.reasons[${j}]`, r, fields);
+    });
+    if (!Array.isArray(d.other_ips)) throw new Error(`fixture ${at}: other_ips is not an array`);
+    d.other_ips.forEach((o: unknown, j) => need(`${at}.other_ips[${j}]`, o, OTHER_IP));
+    need(`${at}.lifecycle`, d.lifecycle, LIFECYCLE);
+    const lc = d.lifecycle as Record<string, unknown>;
+    if (typeof lc.status !== "string" || !STATUSES.includes(lc.status)) throw new Error(`fixture ${at}: status ${String(lc.status)}`);
+    for (const k of ["registered", "removed", "disabled", "last_active"]) {
+      if (lc[k] !== null) need(`${at}.lifecycle.${k}`, lc[k], MARK);
+    }
+    if (!isStringOrNull(lc.latest_inventory_at)) throw new Error(`fixture ${at}: latest_inventory_at`);
+    if (!Array.isArray(d.sightings) || d.sightings.length === 0) throw new Error(`fixture ${at}: no sightings`);
+    d.sightings.forEach((s: unknown, j) => {
+      need(`${at}.sightings[${j}]`, s, SIGHTING);
+      if (!isStringOrNull(s.event_time)) throw new Error(`fixture ${at}.sightings[${j}]: event_time`);
+      if (typeof s.source_table !== "string" || typeof s.record_key !== "string") throw new Error(`fixture ${at}.sightings[${j}]: source`);
+    });
+  });
+  return v as unknown as SuspectDevice[];
+}
+
+/** `case::devices::SuspectDevice` list: synthetic, one device per status the screen distinguishes, in list order. */
+export const devices = (): SuspectDevice[] => checkDevices("devices", devicesJson);
+
+/** The `devices_list` response recorded from the synthetic Rust case by the backend recorder. */
+export const devicesRecorded = (): SuspectDevice[] => checkDevices("devices_recorded", devicesRecordedJson);

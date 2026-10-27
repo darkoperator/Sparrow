@@ -166,6 +166,7 @@ const TABLE: { cmd: string; args?: Obj; check: (r: unknown) => void }[] = [
   { cmd: "timeline_verify", args: { entryId: "mock-entry-01" }, check: (r) => keys(r, AUDIT) },
   { cmd: "timeline_reject", args: { entryId: "mock-entry-02", reason: "dup" }, check: (r) => keys(r, AUDIT) },
   { cmd: "accounts_list", args: {}, check: (r) => { keys(r, ["accounts", "total", "truncated", "warnings"]); arrOf((r as Obj).accounts, ["tenant_key", "upn", "worst_severity", "finding_count", "stages", "addresses"]); } },
+  { cmd: "devices_list", args: {}, check: (r) => { arrOf(r, ["tenant_key", "device_id", "confidence", "reasons", "users", "malicious_ips", "other_ips", "sightings", "lifecycle"]); const d = (r as Obj[])[0]; keys(d.lifecycle, ["status", "registered", "removed", "disabled", "last_active", "latest_inventory_at"]); arrOf(d.sightings, ["device_id", "event_time", "activity", "source_table", "record_key"]); } },
   { cmd: "export_report", args: { path: "/o.md", reviewedOnly: true }, check: (r) => expect(r).toBeNull() },
   { cmd: "export_timeline_csv", args: { path: "/o.csv" }, check: (r) => expect(r).toBeNull() },
   { cmd: "export_workbook", args: { path: "/o.xlsx" }, check: (r) => expect(r).toBeNull() },

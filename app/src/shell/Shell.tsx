@@ -15,12 +15,13 @@ import { NavContext } from "./nav";
 import OpenCase, { type UpgradePrompt } from "./OpenCase";
 import ReadOnlyBanner from "./ReadOnlyBanner";
 
-export type ScreenId = "review" | "timeline" | "accounts" | "pivot" | "tables" | "sql" | "share" | "highlights";
+export type ScreenId = "review" | "timeline" | "accounts" | "devices" | "pivot" | "tables" | "sql" | "share" | "highlights";
 
 const NAV: ReadonlyArray<{ id: ScreenId; label: string }> = [
   { id: "review", label: "Review queue" },
   { id: "timeline", label: "Timeline" },
   { id: "accounts", label: "Accounts" },
+  { id: "devices", label: "Devices" },
   { id: "pivot", label: "Pivot" },
   { id: "tables", label: "Tables" },
   { id: "sql", label: "SQL" },
