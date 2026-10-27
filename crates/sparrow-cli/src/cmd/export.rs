@@ -1,4 +1,4 @@
-//! `sparrow export report|timeline|workbook` (Addendum D.6): the Markdown customer report, the Timeline Explorer CSV
+//! `sparrow export report|timeline|workbook|devices` (Addendum D.6): the Markdown customer report, the Timeline Explorer CSV
 //! and the XLSX workbook. Each opens the case read-only and writes nothing to it. `--out` defaults to stdout for
 //! the Markdown and the CSV; the workbook needs `--out`. `--json` prints a one-object summary and needs `--out`.
 
@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use clap::Subcommand;
 use sparrow_core::data::DataDirs;
+use sparrow_core::export::devices_csv;
 use sparrow_core::export::report_md::{self, ReportOpts};
 use sparrow_core::export::timeline_csv::{self, CsvOpts, Scope};
 use sparrow_core::export::workbook_xlsx;
@@ -63,7 +64,16 @@ pub enum ExportCommand {
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// The XLSX workbook (Summary, Accounts, Findings, Timeline, Indicators, Evidence gaps, Audit)
+    /// The devices to contain: suspect devices and every sighting, with file and line (times in UTC)
+    Devices {
+        /// Case database file
+        #[arg(long)]
+        case: PathBuf,
+        /// Directory to write devices.csv and device-sightings.csv into (created if missing)
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// The XLSX workbook (Summary, Accounts, Findings, Timeline, Indicators, Devices, Evidence gaps, Audit)
     Workbook {
         /// Case database file
         #[arg(long)]
@@ -279,6 +289,38 @@ pub fn run(command: ExportCommand, json: bool) -> Result<ExitCode> {
             })?;
             if let Some(p) = out {
                 summary("timeline", &p, Some(n), json)?;
+            }
+        }
+        ExportCommand::Devices { case, out } => {
+            std::fs::create_dir_all(&out)
+                .with_context(|| format!("cannot create {}", out.display()))?;
+            let devices_path = out.join("devices.csv");
+            let sightings_path = out.join("device-sightings.csv");
+            check_out(&devices_path, &case)?;
+            check_out(&sightings_path, &case)?;
+            let c = crate::open_read(&case)?;
+            let devices = with_sink(Some(&devices_path), json, |w| {
+                Ok(devices_csv::write_devices(c.conn(), w)?)
+            })?;
+            let sightings = with_sink(Some(&sightings_path), json, |w| {
+                Ok(devices_csv::write_sightings(c.conn(), w)?)
+            })?;
+            if json {
+                let v = serde_json::json!({
+                    "export": "devices",
+                    "devices": {"out": devices_path.display().to_string(), "rows": devices},
+                    "sightings": {"out": sightings_path.display().to_string(), "rows": sightings},
+                });
+                println!("{}", crate::with_warnings(&v)?);
+            } else {
+                println!(
+                    "wrote devices ({devices} rows) to {}",
+                    devices_path.display()
+                );
+                println!(
+                    "wrote device sightings ({sightings} rows) to {}",
+                    sightings_path.display()
+                );
             }
         }
         ExportCommand::Workbook {

@@ -769,7 +769,67 @@ pub fn pivot_ip(conn: &Connection, ip: &str, cap: usize) -> Result<Pivot> {
                 &[ip],
                 cap,
             )?,
+            devices_section(conn, ip, cap)?,
         ],
+    })
+}
+
+/// The `devices` section of `pivot ip`: every device with a sighting on `ip`, with its status when it is a suspect
+/// device (null otherwise), how many of its sightings were on this IP and the first and last of them. Most recent
+/// first.
+fn devices_section(conn: &Connection, ip: &str, cap: usize) -> Result<PivotSection> {
+    use crate::case::devices::{device_sightings_on_ip, suspect_devices};
+    let on_ip = device_sightings_on_ip(conn, ip)?;
+    // The lifecycle is computed over the whole case, so only when some device was seen on this IP.
+    let suspects = if on_ip.is_empty() {
+        Vec::new()
+    } else {
+        suspect_devices(conn, None)?
+    };
+    let mut by_device: std::collections::BTreeMap<(Option<String>, String), Vec<_>> =
+        Default::default();
+    for s in &on_ip {
+        by_device
+            .entry((s.tenant_key.clone(), s.device_id.clone()))
+            .or_default()
+            .push(s);
+    }
+    let mut rows: Vec<(Option<DateTime<Utc>>, Value)> = by_device
+        .into_iter()
+        .map(|((tenant, id), ss)| {
+            let suspect = suspects
+                .iter()
+                .find(|d| d.tenant_key == tenant && d.device_id == id);
+            let times: Vec<DateTime<Utc>> = ss.iter().filter_map(|s| s.event_time).collect();
+            let (first, last) = (times.iter().min().copied(), times.iter().max().copied());
+            let name = suspect
+                .and_then(|d| d.display_name.clone())
+                .or_else(|| ss.iter().rev().find_map(|s| s.display_name.clone()));
+            let text = |t: Option<DateTime<Utc>>| t.map(|t| audit::ts_text(&t));
+            (
+                last,
+                serde_json::json!({
+                    "tenant_key": tenant,
+                    "device_id": id,
+                    "display_name": name,
+                    "status": suspect.map(|d| d.lifecycle.status.as_str()),
+                    "suspect": suspect.is_some(),
+                    "sightings_on_ip": ss.len(),
+                    "first_seen": text(first),
+                    "last_seen": text(last),
+                }),
+            )
+        })
+        .collect();
+    rows.sort_by_key(|r| std::cmp::Reverse(r.0));
+    let total = rows.len() as i64;
+    let rows: Vec<Value> = rows.into_iter().take(cap).map(|(_, v)| v).collect();
+    Ok(PivotSection {
+        name: "devices".into(),
+        truncated: total > rows.len() as i64,
+        total,
+        rows,
+        unavailable: None,
     })
 }
 

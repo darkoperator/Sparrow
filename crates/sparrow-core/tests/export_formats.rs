@@ -18,6 +18,7 @@ use sparrow_core::case::timeline_entries::{self as te, EvidenceRef, NewEntry, Ph
 use sparrow_core::case::write::{self, FindingStatus};
 use sparrow_core::data::DataDirs;
 use sparrow_core::detect::load::load_rules;
+use sparrow_core::export::devices_csv;
 use sparrow_core::export::header;
 use sparrow_core::export::report_md::{self, ReportOpts};
 use sparrow_core::export::timeline_csv::{self, COLUMNS, CsvOpts, Scope};
@@ -671,6 +672,7 @@ fn workbook_reopens_with_expected_sheets() {
             "Findings",
             "Timeline",
             "Indicators",
+            "Devices",
             "Evidence gaps",
             "Audit"
         ]
@@ -1746,4 +1748,374 @@ fn unloadable_rules_with_stale_facts_say_unavailable_and_the_export_still_succee
     // With loadable rules the same case names only the findings of family rules.
     let good = report_with(&s.case, DataDirs::default());
     assert!(good.contains("- Facts unavailable:") && !good.contains("rules could not be loaded"));
+}
+
+// ------------------------------------------------------------------ devices
+
+const D_REMOVED: &str = "dddddddd-0000-0000-0000-00000000000d";
+const E_UNKNOWN: &str = "eeeeeeee-0000-0000-0000-00000000000e";
+const DEL_ID: &str = "00000000-0000-4000-8000-000000000042";
+const BAD_NAME: &str = "=cmd|' /C calc'!A0";
+const HOST_IP: &str = "198.51.100.7";
+
+fn dev_insert(case: &Case, table: &str, fields: serde_json::Value, seed: &str) {
+    sparrow_core::detect::test::insert_record(case, "t1", table, &fields, seed).unwrap();
+}
+
+/// Device D (removed by a Delete device event at line 42) and device E (never removed, named like a formula), both
+/// seen on a malicious IP; provenance for each record.
+fn devices_case() -> Case {
+    use serde_json::json;
+    let case = Case::in_memory().unwrap();
+    dev_insert(&case, "tenant", json!({"tenant_key": "t1"}), "tenant");
+    indicators::add_indicator(
+        case.conn(),
+        &Actor::analyst("tester").unwrap(),
+        Some("t1"),
+        IndicatorType::Ip,
+        HOST_IP,
+        Verdict::Malicious,
+        None,
+    )
+    .unwrap();
+    let dev = |id: &str, name: Option<&str>| {
+        json!({"device_id": id, "display_name": name, "os": null, "browser": null,
+               "is_compliant": null, "is_managed": null, "trust_type": null})
+    };
+    for (key, id, name, h) in [
+        ("si-d", D_REMOVED, None, 8),
+        ("si-e", E_UNKNOWN, Some(BAD_NAME), 9),
+    ] {
+        dev_insert(
+            &case,
+            "signins",
+            json!({"record_key": key, "user_upn": "alice@contoso.example", "ip": HOST_IP,
+                   "event_time": format!("2026-03-01T{h:02}:00:00Z"), "app_name": "Office 365", "device": dev(id, name)}),
+            key,
+        );
+    }
+    dev_insert(
+        &case,
+        "ual_events",
+        json!({"record_id": DEL_ID, "event_time": "2026-03-02T09:00:00Z", "workload": "AzureActiveDirectory",
+               "operation": "Delete device.", "user_upn": "admin@contoso.example", "client_ip": "192.0.2.200",
+               "audit_data": {"Operation": "Delete device.", "ModifiedProperties": [
+                   {"Name": "TargetId.DeviceId", "NewValue": format!("[\r\n  \"{D_REMOVED}\"\r\n]"), "OldValue": "[]"}]}}),
+        "del",
+    );
+    case.conn()
+        .execute_batch(&format!(
+            "INSERT INTO source_files (file_id, collection_id, rel_path, size_bytes, sha256, status) \
+               SELECT 1, collection_id, 'signins.csv', 1, 'sha-signins', 'parsed' FROM collections WHERE tenant_key = 't1';
+             INSERT INTO source_files (file_id, collection_id, rel_path, size_bytes, sha256, status) \
+               SELECT 2, collection_id, 'ual.json', 1, 'sha-ual', 'parsed' FROM collections WHERE tenant_key = 't1';
+             INSERT INTO record_sources VALUES ('signins', 'si-d', 1, 0, 5, 5, 0, 1, 'x'), ('signins', 'si-e', 1, 1, 6, 6, 0, 1, 'x'),
+               ('ual_events', '{DEL_ID}', 2, 0, 42, 44, 0, 1, 'x');"
+        ))
+        .unwrap();
+    case
+}
+
+fn devices_csv_records(case: &Case) -> (Vec<Vec<String>>, u64) {
+    let mut out = Vec::new();
+    let n = devices_csv::write_devices(case.conn(), &mut out).unwrap();
+    (csv_records(&out), n)
+}
+
+#[test]
+fn devices_csv_has_status_and_provenance() {
+    let case = devices_case();
+    let (rows, n) = devices_csv_records(&case);
+    assert_eq!(n, 2);
+    assert_eq!(rows[0], devices_csv::DEVICE_COLUMNS);
+    assert_eq!(
+        devices_csv::DEVICE_COLUMNS.join(","),
+        "status,confidence,tenant_key,device_id,object_id,display_name,os,trust_type,is_compliant,is_managed,\
+         registered_utc,registered_source,removed_utc,removed_source,disabled_utc,disabled_source,last_active_utc,\
+         last_active_source,users,malicious_ips,other_ips,reasons,note"
+    );
+    let col = |name: &str| rows[0].iter().position(|c| c == name).unwrap();
+    // Unknown devices list before removed ones.
+    let e = &rows[1];
+    let d = &rows[2];
+    assert_eq!(
+        (e[col("device_id")].as_str(), e[col("status")].as_str()),
+        (E_UNKNOWN, "unknown")
+    );
+    assert_eq!(
+        (d[col("device_id")].as_str(), d[col("status")].as_str()),
+        (D_REMOVED, "removed")
+    );
+    assert_eq!(d[col("confidence")], "high");
+    assert_eq!(d[col("removed_utc")], "2026-03-02 09:00:00");
+    assert_eq!(d[col("removed_source")], "t1/ual.json:42-44");
+    assert!(d[col("removed_source")].contains(":42"));
+    assert_eq!(d[col("last_active_source")], "t1/signins.csv:5");
+    assert_eq!(d[col("malicious_ips")], HOST_IP);
+    assert_eq!(d[col("note")], "");
+    assert!(d[col("reasons")].starts_with("indicator 198.51.100.7 (malicious)"));
+    // The unknown device carries the containment note; its formula-like name is neutralised.
+    assert_eq!(
+        e[col("note")],
+        "treat as active — collect Get-Devices to confirm"
+    );
+    assert_eq!(e[col("display_name")], format!("'{BAD_NAME}"));
+    assert_eq!(e[col("removed_utc")], "");
+    assert_eq!(e[col("removed_source")], "");
+}
+
+#[test]
+fn device_sightings_csv_resolves_file_and_lines() {
+    let case = devices_case();
+    insert_intel(&case);
+    let mut out = Vec::new();
+    let n = devices_csv::write_sightings(case.conn(), &mut out).unwrap();
+    let rows = csv_records(&out);
+    assert_eq!(n, 2);
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0], devices_csv::SIGHTING_COLUMNS);
+    let col = |name: &str| rows[0].iter().position(|c| c == name).unwrap();
+    for r in &rows[1..] {
+        assert!(!r[col("source_file")].is_empty(), "{r:?}");
+        assert!(!r[col("line_start")].is_empty());
+        assert_eq!(r[col("ip_malicious")], "true");
+        assert_eq!(r[col("ip_asn_org")], "Krixe");
+        assert_eq!(r[col("ip_country")], "SG");
+    }
+    let d = rows[1..]
+        .iter()
+        .find(|r| r[col("device_id")] == D_REMOVED)
+        .unwrap();
+    assert_eq!(d[col("source_file")], "t1/signins.csv");
+    assert_eq!(
+        (d[col("line_start")].as_str(), d[col("line_end")].as_str()),
+        ("5", "5")
+    );
+    assert_eq!(d[col("source_file_sha256")], "sha-signins");
+    assert_eq!(d[col("event_time_utc")], "2026-03-01 08:00:00");
+    assert_eq!(d[col("record_key")], "si-d");
+}
+
+fn insert_intel(case: &Case) {
+    dev_insert(
+        case,
+        "ip_intel",
+        serde_json::json!({"ip": HOST_IP, "asn": 213122, "asn_org": "Krixe", "country_iso": "SG", "is_hosting": true}),
+        "intel",
+    );
+}
+
+#[test]
+fn report_lists_devices_to_contain() {
+    let case = devices_case();
+    let md = report(&case, false);
+    let i = md.find("## Devices to contain").expect("section");
+    let j = md[i..].find("## Evidence gaps").unwrap() + i;
+    // After Indicators, before Evidence gaps.
+    assert!(md.find("## Indicators").unwrap() < i);
+    let section = &md[i..j];
+    assert!(section.contains(E_UNKNOWN), "{section}");
+    assert!(section.contains("treat as active"), "{section}");
+    // The last-active date names its file and line.
+    assert!(
+        section.contains("2026-03-01 09:00:00 UTC \\(t1/signins.csv:6\\)"),
+        "{section}"
+    );
+    // The removed device is not on the contain list.
+    assert!(!section.contains(D_REMOVED), "{section}");
+    // The formula-like name is shown escaped, never raw.
+    assert!(!section.contains(&format!("| {BAD_NAME}")), "{section}");
+}
+
+#[test]
+fn report_says_when_no_device_was_seen() {
+    let case = Case::in_memory().unwrap();
+    let md = report(&case, false);
+    assert!(md.contains("## Devices to contain"));
+    assert!(md.contains("No device was seen on a malicious IP."));
+}
+
+#[test]
+fn report_marks_low_confidence_devices() {
+    let case = devices_case();
+    // Make E's only link an impossible-travel leg: a tenant-less case with a travel finding.
+    case.conn()
+        .execute_batch(
+            "UPDATE case_indicators SET removed_at = now(), removed_by = 'x';
+             INSERT INTO findings (finding_id, fingerprint, tenant_key, rule_id, severity, title, actor_upn, status, created_by, created_at, updated_at)
+               VALUES ('f-travel', 'fp', 't1', 'SPW-ID-003', 'medium', 'travel', 'alice@contoso.example', 'new', 'rule', now(), now());
+             INSERT INTO finding_evidence (finding_id, source_table, record_key, role, added_run_id)
+               VALUES ('f-travel', 'signins', 'si-e', 'trigger', 1);",
+        )
+        .unwrap();
+    let md = report(&case, false);
+    let i = md.find("## Devices to contain").unwrap();
+    let section = &md[i..md[i..].find("## Evidence gaps").unwrap() + i];
+    assert!(section.contains(E_UNKNOWN), "{section}");
+    assert!(section.contains("low confidence"), "{section}");
+    assert!(
+        section.contains("impossible\\-travel leg only")
+            || section.contains("impossible-travel leg only"),
+        "{section}"
+    );
+}
+
+#[test]
+fn workbook_has_devices_sheet() {
+    let case = devices_case();
+    let dir = tempfile::tempdir().unwrap();
+    let mut wb = workbook(&case, &dir);
+    assert!(wb.sheet_names().contains(&"Devices".to_string()));
+    let rows = sheet_rows(&mut wb, "Devices");
+    // Every suspect device, removed ones included.
+    assert_eq!(rows.len() - 1, 2);
+    assert_eq!(rows[0], devices_csv::DEVICE_COLUMNS);
+    let col = |name: &str| rows[0].iter().position(|c| c == name).unwrap();
+    let removed = rows[1..]
+        .iter()
+        .find(|r| r[col("device_id")] == D_REMOVED)
+        .unwrap();
+    assert_eq!(removed[col("status")], "removed");
+    assert_eq!(removed[col("removed_utc")], "2026-03-02 09:00:00");
+    assert_eq!(removed[col("removed_source")], "t1/ual.json:42-44");
+    let unknown = rows[1..]
+        .iter()
+        .find(|r| r[col("device_id")] == E_UNKNOWN)
+        .unwrap();
+    // A workbook cell keeps the raw text, as a string.
+    assert_eq!(unknown[col("display_name")], BAD_NAME);
+}
+
+#[test]
+fn sightings_keep_the_name_their_own_record_carried() {
+    use serde_json::json;
+    let case = devices_case();
+    // Device D later appears under another name, from another line of the same file.
+    dev_insert(
+        &case,
+        "signins",
+        json!({"record_key": "si-d2", "user_upn": "alice@contoso.example", "ip": HOST_IP,
+               "event_time": "2026-03-04T08:00:00Z", "app_name": "Office 365",
+               "device": {"device_id": D_REMOVED, "display_name": "Renamed", "os": null, "browser": null,
+                          "is_compliant": null, "is_managed": null, "trust_type": null}}),
+        "si-d2",
+    );
+    case.conn()
+        .execute_batch(
+            "INSERT INTO record_sources VALUES ('signins', 'si-d2', 1, 2, 9, 9, 0, 1, 'x');",
+        )
+        .unwrap();
+    let mut out = Vec::new();
+    devices_csv::write_sightings(case.conn(), &mut out).unwrap();
+    let rows = csv_records(&out);
+    let col = |name: &str| rows[0].iter().position(|c| c == name).unwrap();
+    let mut d: Vec<&Vec<String>> = rows[1..]
+        .iter()
+        .filter(|r| r[col("device_id")] == D_REMOVED)
+        .collect();
+    d.sort_by(|a, b| a[col("event_time_utc")].cmp(&b[col("event_time_utc")]));
+    assert_eq!(d.len(), 2);
+    // The first record carried no name; the later one carried "Renamed". Each keeps its own, with its own line.
+    assert_eq!(
+        (
+            d[0][col("display_name")].as_str(),
+            d[0][col("line_start")].as_str()
+        ),
+        ("", "5")
+    );
+    assert_eq!(
+        (
+            d[1][col("display_name")].as_str(),
+            d[1][col("line_start")].as_str()
+        ),
+        ("Renamed", "9")
+    );
+    // The device row itself shows the current (latest) name.
+    let (devs, _) = devices_csv_records(&case);
+    let dcol = |name: &str| devs[0].iter().position(|c| c == name).unwrap();
+    let row = devs[1..]
+        .iter()
+        .find(|r| r[dcol("device_id")] == D_REMOVED)
+        .unwrap();
+    assert_eq!(row[dcol("display_name")], "Renamed");
+}
+
+/// 405 sightings of one device, each from its own IPv6 documentation address, with its own source line and its own
+/// `ip_intel` row; the first address is malicious. Straddles the 400-per-query batch size of both lookups.
+#[test]
+fn sightings_export_is_complete_across_the_batch_boundary() {
+    use serde_json::json;
+    const N: usize = 405;
+    let case = Case::in_memory().unwrap();
+    dev_insert(&case, "tenant", json!({"tenant_key": "t1"}), "tenant");
+    let ip = |i: usize| format!("2001:db8::{i:x}");
+    indicators::add_indicator(
+        case.conn(),
+        &Actor::analyst("tester").unwrap(),
+        Some("t1"),
+        IndicatorType::Ip,
+        &ip(0),
+        Verdict::Malicious,
+        None,
+    )
+    .unwrap();
+    for i in 0..N {
+        dev_insert(
+            &case,
+            "signins",
+            json!({"record_key": format!("s-{i:04}"), "user_upn": "alice@contoso.example", "ip": ip(i),
+                   "event_time": format!("2026-03-01T00:{:02}:{:02}Z", i / 60, i % 60), "app_name": "Office 365",
+                   "device": {"device_id": D_REMOVED, "display_name": null, "os": null, "browser": null,
+                              "is_compliant": null, "is_managed": null, "trust_type": null}}),
+            &format!("s-{i}"),
+        );
+    }
+    case.conn()
+        .execute_batch(&format!(
+            "INSERT INTO source_files (file_id, collection_id, rel_path, size_bytes, sha256, status) \
+               SELECT 1, collection_id, 'signins.csv', 1, 'sha-signins', 'parsed' FROM collections WHERE tenant_key = 't1';
+             INSERT INTO record_sources SELECT 'signins', 's-' || lpad(CAST(i AS VARCHAR), 4, '0'), 1, i, i + 1000, i + 1000, 0, 1, 'x'
+               FROM range({N}) r(i);
+             INSERT INTO ip_intel (ip, asn, asn_org, country_iso, is_hosting, is_microsoft, is_private)
+               SELECT '2001:db8::' || lower(printf('%x', i)), 64500 + i, 'Org-' || i, 'US', false, false, false FROM range({N}) r(i);"
+        ))
+        .unwrap();
+
+    let mut out = Vec::new();
+    let n = devices_csv::write_sightings(case.conn(), &mut out).unwrap();
+    assert_eq!(n as usize, N);
+    let rows = csv_records(&out);
+    assert_eq!(rows.len(), N + 1);
+    let col = |name: &str| rows[0].iter().position(|c| c == name).unwrap();
+    let mut seen = std::collections::BTreeSet::new();
+    for r in &rows[1..] {
+        let key = r[col("record_key")].clone();
+        let i: usize = key[2..].parse().unwrap();
+        assert!(seen.insert(i), "{key} appears twice");
+        // Its own source, its own address and that address's own enrichment.
+        assert_eq!(r[col("line_start")], (i + 1000).to_string(), "{key}");
+        assert_eq!(r[col("source_file")], "t1/signins.csv", "{key}");
+        assert_eq!(r[col("ip")], ip(i), "{key}");
+        assert_eq!(r[col("ip_asn_org")], format!("Org-{i}"), "{key}");
+        assert_eq!(r[col("ip_malicious")], (i == 0).to_string(), "{key}");
+    }
+    assert_eq!(seen.len(), N);
+    // Both sides of the boundary: the 400th and 401st rows (0-based 399, 400), plus the first and the last.
+    for i in [0, 399, 400, N - 1] {
+        assert!(seen.contains(&i));
+    }
+
+    // The device row's other_ips are enriched for the first and last address, past the batch size.
+    let (devs, _) = devices_csv_records(&case);
+    let dcol = |name: &str| devs[0].iter().position(|c| c == name).unwrap();
+    let others = &devs[1][dcol("other_ips")];
+    assert_eq!(others.matches("; ").count() + 1, N - 1);
+    assert!(
+        others.contains(&format!("{} (Org-1, US)", ip(1))),
+        "first other IP"
+    );
+    assert!(
+        others.contains(&format!("{} (Org-{}, US)", ip(N - 1), N - 1)),
+        "last other IP"
+    );
 }

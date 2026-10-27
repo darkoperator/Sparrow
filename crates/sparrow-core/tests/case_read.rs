@@ -491,7 +491,8 @@ fn pivot_ip_gathers_its_sections() {
             "spray_source",
             "timeline",
             "findings",
-            "indicators"
+            "indicators",
+            "devices"
         ]
     );
     let get = |n: &str| p.sections.iter().find(|s| s.name == n).unwrap();
@@ -564,4 +565,91 @@ fn ip_matching_ignores_case() {
     let p = read::pivot_ip(c.conn(), "2001:db8::a1", 50).unwrap();
     let get = |n: &str| p.sections.iter().find(|s| s.name == n).unwrap();
     assert_eq!((get("timeline").total, get("findings").total), (1, 1));
+}
+
+#[test]
+fn pivot_ip_lists_devices() {
+    use serde_json::json;
+    let case = Case::in_memory().unwrap();
+    detect::collection_of(&case, "t1");
+    let dev = |id: &str, name: &str| {
+        json!({"device_id": id, "display_name": name, "os": null, "browser": null,
+               "is_compliant": null, "is_managed": null, "trust_type": null})
+    };
+    let d = "dddddddd-0000-0000-0000-00000000000d";
+    let e = "eeeeeeee-0000-0000-0000-00000000000e";
+    for (key, id, name, ip, when) in [
+        (
+            "s1",
+            d,
+            "Workstation",
+            "198.51.100.7",
+            "2026-03-01T08:00:00Z",
+        ),
+        (
+            "s2",
+            d,
+            "Workstation",
+            "198.51.100.7",
+            "2026-03-03T08:00:00Z",
+        ),
+        ("s3", d, "Workstation", "192.0.2.9", "2026-03-05T08:00:00Z"),
+        ("s4", e, "Laptop", "192.0.2.9", "2026-03-06T08:00:00Z"),
+    ] {
+        detect::insert_row(
+            &case,
+            "signins",
+            "t1",
+            json!({"record_key": key, "user_upn": "alice@contoso.example", "ip": ip, "event_time": when,
+                   "app_name": "Office 365", "device": dev(id, name)}),
+        );
+    }
+    sparrow_core::case::indicators::add_indicator(
+        case.conn(),
+        &agent(),
+        None,
+        sparrow_core::case::indicators::IndicatorType::Ip,
+        "198.51.100.7",
+        sparrow_core::case::indicators::Verdict::Malicious,
+        None,
+    )
+    .unwrap();
+    let section = |ip: &str| {
+        read::pivot_ip(case.conn(), ip, 50)
+            .unwrap()
+            .sections
+            .into_iter()
+            .find(|s| s.name == "devices")
+            .unwrap()
+    };
+    // The malicious IP: device D, two sightings on it (not the third), a suspect with a status.
+    let s = section("198.51.100.7");
+    assert_eq!((s.total, s.rows.len(), s.truncated), (1, 1, false));
+    let row = &s.rows[0];
+    assert_eq!(row["device_id"], d);
+    assert_eq!(row["display_name"], "Workstation");
+    assert_eq!(row["status"], "unknown");
+    assert_eq!(row["suspect"], true);
+    assert_eq!(row["sightings_on_ip"], 2);
+    assert_eq!(row["first_seen"], "2026-03-01T08:00:00.000000Z");
+    assert_eq!(row["last_seen"], "2026-03-03T08:00:00.000000Z");
+    // The clean IP: D (also a suspect) and E (not a suspect: status null), most recent first.
+    let s = section("192.0.2.9");
+    assert_eq!(s.total, 2);
+    assert_eq!(s.rows[0]["device_id"], e);
+    assert_eq!(s.rows[0]["suspect"], false);
+    assert!(s.rows[0]["status"].is_null());
+    assert_eq!(s.rows[1]["device_id"], d);
+    assert_eq!(s.rows[1]["suspect"], true);
+    // An IP no device used.
+    let s = section("203.0.113.99");
+    assert_eq!((s.total, s.rows.len()), (0, 0));
+    // The cap truncates and says so.
+    let capped = read::pivot_ip(case.conn(), "192.0.2.9", 1).unwrap();
+    let s = capped
+        .sections
+        .iter()
+        .find(|s| s.name == "devices")
+        .unwrap();
+    assert_eq!((s.total, s.rows.len(), s.truncated), (2, 1, true));
 }

@@ -2861,6 +2861,54 @@ fn export_report_timeline_and_workbook_through_the_cli() {
 }
 
 #[test]
+fn export_devices_writes_both_csvs() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fixtures::hawk_tree(dir.path());
+    let case = dir.path().join("case.duckdb");
+    json_out(
+        sparrow()
+            .args(["--json", "ingest"])
+            .arg(&root)
+            .arg("--case")
+            .arg(&case),
+        0,
+    );
+    let out_dir = dir.path().join("devices-out");
+    sparrow()
+        .args(["export", "devices", "--case"])
+        .arg(&case)
+        .arg("--out")
+        .arg(&out_dir)
+        .assert()
+        .success()
+        .stdout(contains("devices.csv").and(contains("device-sightings.csv")));
+    let devices = std::fs::read_to_string(out_dir.join("devices.csv")).unwrap();
+    assert!(
+        devices.starts_with("\u{feff}status,confidence,tenant_key,device_id,"),
+        "{devices}"
+    );
+    let sightings = std::fs::read_to_string(out_dir.join("device-sightings.csv")).unwrap();
+    assert!(sightings.starts_with("\u{feff}device_id,display_name,event_time_utc,"));
+    let v = json_out(
+        sparrow()
+            .args(["--json", "export", "devices", "--out"])
+            .arg(&out_dir)
+            .arg("--case")
+            .arg(&case),
+        0,
+    );
+    assert_eq!(v["export"], "devices");
+    assert_eq!(
+        v["devices"]["rows"].as_u64().unwrap() as usize,
+        devices.lines().count() - 1
+    );
+    assert_eq!(
+        v["sightings"]["rows"].as_u64().unwrap() as usize,
+        sightings.lines().count() - 1
+    );
+}
+
+#[test]
 fn export_refuses_to_write_over_the_case_and_leaves_no_partial_files() {
     let dir = tempfile::tempdir().unwrap();
     let root = fixtures::hawk_tree(dir.path());

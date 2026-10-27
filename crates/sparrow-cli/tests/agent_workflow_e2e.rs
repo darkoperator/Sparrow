@@ -646,6 +646,7 @@ fn an_agent_triages_a_bec_aitm_case_and_the_exports_carry_its_decisions() {
             "Findings",
             "Timeline",
             "Indicators",
+            "Devices",
             "Evidence gaps",
             "Audit"
         ]

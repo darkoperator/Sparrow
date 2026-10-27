@@ -3,6 +3,7 @@
 //! version, the rule-pack hash, the generation time, the audit-chain status, the head hash and the decision counts
 //! ([`header`]), and every decided item shows its provenance ([`Provenance`]).
 
+pub mod devices_csv;
 pub mod facts_text;
 pub mod header;
 pub mod report_md;

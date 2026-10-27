@@ -1,6 +1,6 @@
 //! The Markdown customer report (Addendum D.6). Sections in a fixed order: Scope, Executive summary (a placeholder
 //! for the analyst, never a conclusion), Timeline by phase (verified entries), Findings (confirmed), Indicators
-//! (malicious and suspicious), Evidence gaps, Method and integrity. Pending AI decisions are included and labelled
+//! (malicious and suspicious), Devices to contain, Evidence gaps, Method and integrity. Pending AI decisions are included and labelled
 //! "AI decision — not reviewed" unless `reviewed_only` keeps accepted decisions only. Every line that states
 //! evidence cites it as a footnote: `table:record_key` and the source file and line.
 
@@ -363,6 +363,59 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
                 md_cell(&i.verdict),
                 md_cell(i.note.as_deref().unwrap_or("")),
                 md_cell(&format!("{} ({})", i.prov.label(), i.prov.decided_text()))
+            ));
+        }
+    }
+
+    // ---- Devices to contain (every suspect device that is not removed; the lifecycle comes from the case tables)
+    doc.push(String::new());
+    doc.push("## Devices to contain".into());
+    doc.push(String::new());
+    let devices: Vec<_> = crate::case::devices::suspect_devices(conn, None)?
+        .into_iter()
+        .filter(|d| d.lifecycle.status != crate::case::devices::DeviceStatus::Removed)
+        .collect();
+    let sources =
+        super::devices_csv::first_sources(conn, &super::devices_csv::mark_keys(&devices))?;
+    if devices.is_empty() {
+        doc.push("No device was seen on a malicious IP.".into());
+    } else {
+        doc.push(
+            "| Status | Device | Name | Last active | Users | Malicious IPs | Other IPs |".into(),
+        );
+        doc.push("| --- | --- | --- | --- | --- | --- | --- |".into());
+        for d in &devices {
+            let mut status = d.lifecycle.status.as_str().to_string();
+            let note = super::devices_csv::note(d.lifecycle.status);
+            if !note.is_empty() {
+                status.push_str(&format!(" — {note}"));
+            }
+            let mut device = d.device_id.clone();
+            if d.confidence == crate::case::devices::Confidence::Low {
+                device.push_str(" (low confidence — impossible-travel leg only)");
+            }
+            doc.push(format!(
+                "| {} | {} | {} | {} | {} | {} | {} |",
+                md_cell(&status),
+                md_cell(&device),
+                md_cell(d.display_name.as_deref().unwrap_or("")),
+                md_cell(&{
+                    let src = super::devices_csv::mark_source(&sources, &d.lifecycle.last_active);
+                    match (&d.lifecycle.last_active, src.is_empty()) {
+                        (None, _) => String::new(),
+                        (Some(m), true) => format!("{} UTC", when(&m.at)),
+                        (Some(m), false) => format!("{} UTC ({src})", when(&m.at)),
+                    }
+                }),
+                md_cell(&d.users.join("; ")),
+                md_cell(&d.malicious_ips.join("; ")),
+                md_cell(
+                    &d.other_ips
+                        .iter()
+                        .map(super::devices_csv::other_ip_text)
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ),
             ));
         }
     }

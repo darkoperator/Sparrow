@@ -1,4 +1,4 @@
-//! The XLSX workbook (Addendum D.6). Sheets: Summary, Accounts, Findings, Timeline, Indicators, Evidence gaps, Audit.
+//! The XLSX workbook (Addendum D.6). Sheets: Summary, Accounts, Findings, Timeline, Indicators, Devices, Evidence gaps, Audit.
 //! Accounts is the roll-up detection builds (one row per account, its addresses joined; empty, with the reason in
 //! the Summary, when the roll-up is not current) and the Findings sheet has a `Facts` column (the stored facts as
 //! compact JSON, or `{"facts_unavailable": ...}`; empty for a finding outside the facts families). Every
@@ -7,6 +7,7 @@
 //! widths. Cells keep the raw stored text, as strings (a text that starts with `=` stays text). A date outside
 //! Excel's range is written as ISO text with a note.
 
+use super::devices_csv::{self, DEVICE_COLUMNS};
 use super::facts_text::{self, FactRules};
 use super::header;
 use super::{
@@ -22,12 +23,13 @@ use rust_xlsxwriter::{ExcelDateTime, Format, Workbook, Worksheet};
 use std::path::Path;
 
 /// The sheets, in order.
-pub const SHEETS: [&str; 7] = [
+pub const SHEETS: [&str; 8] = [
     "Summary",
     "Accounts",
     "Findings",
     "Timeline",
     "Indicators",
+    "Devices",
     "Evidence gaps",
     "Audit",
 ];
@@ -380,6 +382,60 @@ pub fn write(
     cols.extend(DECISION_COLS);
     cols.push(("Analyst notes", 40.0));
     sheet(&mut wb, "Indicators", &cols, rows)?;
+
+    // ---- Devices (every suspect device, removed ones included; the `devices.csv` columns)
+    let mut rows = Vec::new();
+    let devices = crate::case::devices::suspect_devices(conn, None)?;
+    let sources = devices_csv::first_sources(conn, &devices_csv::mark_keys(&devices))?;
+    for d in devices {
+        let lc = &d.lifecycle;
+        let src = |m: &Option<crate::case::devices::LifecycleMark>| -> Cell {
+            m.as_ref()
+                .map(|_| t(devices_csv::mark_source(&sources, m)))
+                .unwrap_or(Cell::Empty)
+        };
+        let time =
+            |m: &Option<crate::case::devices::LifecycleMark>| Cell::Time(m.as_ref().map(|m| m.at));
+        rows.push(vec![
+            t(lc.status.as_str()),
+            t(d.confidence.as_str()),
+            ot(d.tenant_key.as_deref()),
+            t(&d.device_id),
+            ot(d.object_id.as_deref()),
+            ot(d.display_name.as_deref()),
+            ot(d.os.as_deref()),
+            ot(d.trust_type.as_deref()),
+            d.is_compliant.map(Cell::Bool).unwrap_or(Cell::Empty),
+            d.is_managed.map(Cell::Bool).unwrap_or(Cell::Empty),
+            time(&lc.registered),
+            src(&lc.registered),
+            time(&lc.removed),
+            src(&lc.removed),
+            time(&lc.disabled),
+            src(&lc.disabled),
+            time(&lc.last_active),
+            src(&lc.last_active),
+            t(d.users.join("; ")),
+            t(d.malicious_ips.join("; ")),
+            t(d.other_ips
+                .iter()
+                .map(devices_csv::other_ip_text)
+                .collect::<Vec<_>>()
+                .join("; ")),
+            t(d.reasons
+                .iter()
+                .map(devices_csv::reason_text)
+                .collect::<Vec<_>>()
+                .join("; ")),
+            t(devices_csv::note(lc.status)),
+        ]);
+    }
+    let widths = [
+        18.0, 10.0, 14.0, 38.0, 38.0, 24.0, 14.0, 12.0, 12.0, 12.0, 20.0, 40.0, 20.0, 40.0, 20.0,
+        40.0, 20.0, 40.0, 30.0, 30.0, 50.0, 60.0, 50.0,
+    ];
+    let cols: Vec<(&str, f64)> = DEVICE_COLUMNS.iter().copied().zip(widths).collect();
+    sheet(&mut wb, "Devices", &cols, rows)?;
 
     // ---- Evidence gaps
     let rows = evidence_gaps(conn)?

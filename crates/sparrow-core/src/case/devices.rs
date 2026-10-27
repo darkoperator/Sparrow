@@ -206,15 +206,29 @@ fn property(props: &[Value], name: &str) -> Option<String> {
 /// Every device sighting in the case (one tenant when asked): `signins.device` (Graph and portal exports) and the
 /// `DeviceProperties` of `AzureActiveDirectory` UAL records. Time order, untimed sightings last.
 pub fn device_sightings(conn: &Connection, tenant: Option<&str>) -> Result<Vec<DeviceSighting>> {
+    sightings(conn, tenant, None)
+}
+
+/// The sightings from one IP (case-insensitive), in the order of [`device_sightings`].
+pub fn device_sightings_on_ip(conn: &Connection, ip: &str) -> Result<Vec<DeviceSighting>> {
+    sightings(conn, None, Some(ip))
+}
+
+fn sightings(
+    conn: &Connection,
+    tenant: Option<&str>,
+    ip: Option<&str>,
+) -> Result<Vec<DeviceSighting>> {
     let mut out = Vec::new();
     let mut st = conn.prepare(
         "SELECT c.tenant_key, s.device.device_id, s.device.display_name, s.device.os, s.device.trust_type, \
                 s.user_upn, s.ip, epoch_us(s.event_time), coalesce(s.app_name, s.resource_name, ''), s.record_key \
          FROM signins s JOIN collections c ON c.collection_id = s.collection_id \
          WHERE s.device.device_id IS NOT NULL \
-           AND (CAST(? AS VARCHAR) IS NULL OR c.tenant_key = ?)",
+           AND (CAST(? AS VARCHAR) IS NULL OR c.tenant_key = ?) \
+           AND (CAST(? AS VARCHAR) IS NULL OR lower(s.ip) = lower(?))",
     )?;
-    let rows = st.query_map(duckdb::params![tenant, tenant], |r| {
+    let rows = st.query_map(duckdb::params![tenant, tenant, ip, ip], |r| {
         Ok((
             r.get::<_, Option<String>>(0)?,
             r.get::<_, String>(1)?,
@@ -254,13 +268,14 @@ pub fn device_sightings(conn: &Connection, tenant: Option<&str>) -> Result<Vec<D
                     CASE WHEN json_type(u.audit_data) = 'OBJECT' THEN \
                          list_filter(json_keys(u.audit_data), lambda k: lower(k) = 'deviceproperties')[1] END AS dk \
                     FROM ual_events u JOIN collections c ON c.collection_id = u.collection_id \
-                    WHERE u.workload = 'AzureActiveDirectory' AND (CAST(? AS VARCHAR) IS NULL OR c.tenant_key = ?)), \
+                    WHERE u.workload = 'AzureActiveDirectory' AND (CAST(? AS VARCHAR) IS NULL OR c.tenant_key = ?) \
+                      AND (CAST(? AS VARCHAR) IS NULL OR lower(u.client_ip) = lower(?))), \
               b AS (SELECT *, json_extract(audit_data, '$.\"' || dk || '\"') AS dp FROM a WHERE dk IS NOT NULL) \
          SELECT tenant_key, CAST(dp AS VARCHAR), user_upn, client_ip, epoch_us(event_time), coalesce(operation, ''), \
                 CAST(record_id AS VARCHAR) \
          FROM b WHERE json_type(dp) IN ('ARRAY', 'VARCHAR') AND contains(lower(CAST(dp AS VARCHAR)), 'id')",
     )?;
-    let rows = st.query_map(duckdb::params![tenant, tenant], |r| {
+    let rows = st.query_map(duckdb::params![tenant, tenant, ip, ip], |r| {
         Ok((
             r.get::<_, Option<String>>(0)?,
             r.get::<_, String>(1)?,
@@ -326,6 +341,30 @@ pub const SAME_NAME_TENANT_MAX: usize = 3;
 pub enum Confidence {
     High,
     Low,
+}
+
+impl Confidence {
+    /// The serde name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::High => "high",
+            Self::Low => "low",
+        }
+    }
+}
+
+impl DeviceStatus {
+    /// The serde name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ActiveAfterRemoval => "active_after_removal",
+            Self::Active => "active",
+            Self::Unknown => "unknown",
+            Self::NotInLatestInventory => "not_in_latest_inventory",
+            Self::Disabled => "disabled",
+            Self::Removed => "removed",
+        }
+    }
 }
 
 /// An address a suspect device used that is not (yet) malicious, with what `ip_intel` knows of it.
@@ -457,33 +496,39 @@ fn inventory(conn: &Connection, tenant: Option<&str>) -> Result<BTreeMap<DeviceK
     Ok(out)
 }
 
-/// `ip_intel` of every given (lower-cased) IP in one query.
-fn ip_intel(conn: &Connection, ips: &BTreeSet<String>) -> Result<HashMap<String, OtherIp>> {
+/// Records (or IPs) per batched, bound lookup: shared by the provenance and `ip_intel` lookups.
+pub(crate) const LOOKUP_CHUNK: usize = 400;
+
+/// `ip_intel` of every given (lower-cased) IP, in bound queries of at most [`LOOKUP_CHUNK`] IPs.
+pub(crate) fn ip_intel(
+    conn: &Connection,
+    ips: &BTreeSet<String>,
+) -> Result<HashMap<String, OtherIp>> {
     let mut out = HashMap::new();
-    if ips.is_empty() {
-        return Ok(out);
-    }
-    // The IPs are bound values: the SQL text holds only `?` markers, never case data.
-    let markers = vec!["?"; ips.len()].join(", ");
-    let mut st = conn.prepare(&format!(
-        "SELECT lower(ip), asn, asn_org, country_iso, is_hosting FROM ip_intel WHERE lower(ip) IN ({markers})"
-    ))?;
-    let rows = st.query_map(duckdb::params_from_iter(ips.iter()), |r| {
-        let key: String = r.get(0)?;
-        Ok((
-            key.clone(),
-            OtherIp {
-                ip: key,
-                asn: r.get(1)?,
-                asn_org: r.get(2)?,
-                country_iso: r.get(3)?,
-                is_hosting: r.get(4)?,
-            },
-        ))
-    })?;
-    for row in rows {
-        let (k, v) = row?;
-        out.insert(k, v);
+    let ips: Vec<&String> = ips.iter().collect();
+    for chunk in ips.chunks(LOOKUP_CHUNK) {
+        // The IPs are bound values: the SQL text holds only `?` markers, never case data.
+        let markers = vec!["?"; chunk.len()].join(", ");
+        let mut st = conn.prepare(&format!(
+            "SELECT lower(ip), asn, asn_org, country_iso, is_hosting FROM ip_intel WHERE lower(ip) IN ({markers})"
+        ))?;
+        let rows = st.query_map(duckdb::params_from_iter(chunk.iter()), |r| {
+            let key: String = r.get(0)?;
+            Ok((
+                key.clone(),
+                OtherIp {
+                    ip: key,
+                    asn: r.get(1)?,
+                    asn_org: r.get(2)?,
+                    country_iso: r.get(3)?,
+                    is_hosting: r.get(4)?,
+                },
+            ))
+        })?;
+        for row in rows {
+            let (k, v) = row?;
+            out.insert(k, v);
+        }
     }
     Ok(out)
 }

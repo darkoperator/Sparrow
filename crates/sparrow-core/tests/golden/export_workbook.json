@@ -1429,6 +1429,61 @@
     ]
   },
   {
+    "sheet": "Devices",
+    "rows": [
+      [
+        "status",
+        "confidence",
+        "tenant_key",
+        "device_id",
+        "object_id",
+        "display_name",
+        "os",
+        "trust_type",
+        "is_compliant",
+        "is_managed",
+        "registered_utc",
+        "registered_source",
+        "removed_utc",
+        "removed_source",
+        "disabled_utc",
+        "disabled_source",
+        "last_active_utc",
+        "last_active_source",
+        "users",
+        "malicious_ips",
+        "other_ips",
+        "reasons",
+        "note"
+      ],
+      [
+        "not_in_latest_inventory",
+        "high",
+        "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
+        "76f8b195-1701-47c6-b6fe-f4065afcc88e",
+        "",
+        "VANCE.INGRAM-LAPTOP",
+        "Windows 11",
+        "Azure AD joined",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "2026-09-09 16:29:32",
+        "Output/Contoso_Example/Sign-In logs/EntraID/20260910-161751-SignInLogs/interactiveUser & nonInteractiveUser/20260910161754-interactiveUser-nonInteractiveUser-SignInLogs.json:608-674",
+        "vance.ingram@contoso.example",
+        "203.0.113.6",
+        "192.0.2.17 (Documentation ISP 3, DE); 192.0.2.18 (Documentation ISP 3, DE); 203.0.113.5 (Documentation ISP 7, CA)",
+        "finding 87fdec19fe5e7a1c (SPW-ID-007) on 203.0.113.6",
+        "treat as active — collect Get-Devices to confirm"
+      ]
+    ]
+  },
+  {
     "sheet": "Evidence gaps",
     "rows": [
       [
