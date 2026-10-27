@@ -367,33 +367,58 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
         }
     }
 
-    // ---- Devices to contain (every suspect device that is not removed; the lifecycle comes from the case tables)
+    // ---- Devices to contain (the high-confidence suspect devices that are not removed; low-confidence ones are counted)
     doc.push(String::new());
     doc.push("## Devices to contain".into());
     doc.push(String::new());
-    let devices: Vec<_> = crate::case::devices::suspect_devices(conn, None)?
+    let suspects = crate::case::devices::suspect_devices(conn, None)?;
+    let any_suspect = !suspects.is_empty();
+    let (removed, devices): (Vec<_>, Vec<_>) = suspects
         .into_iter()
-        .filter(|d| d.lifecycle.status != crate::case::devices::DeviceStatus::Removed)
-        .collect();
+        .partition(|d| d.lifecycle.status == crate::case::devices::DeviceStatus::Removed);
+    // Devices reached only through impossible-travel legs are weak evidence: counted here, listed in devices.csv, the
+    // workbook and the app.
+    let (devices, low): (Vec<_>, Vec<_>) = devices
+        .into_iter()
+        .partition(|d| d.confidence == crate::case::devices::Confidence::High);
     let sources =
         super::devices_csv::first_sources(conn, &super::devices_csv::mark_keys(&devices))?;
-    if devices.is_empty() {
+    if !any_suspect {
         doc.push("No device was seen on a malicious IP.".into());
     } else {
-        doc.push(
-            "| Status | Device | Name | Last active | Users | Malicious IPs | Other IPs |".into(),
-        );
-        doc.push("| --- | --- | --- | --- | --- | --- | --- |".into());
+        if devices.is_empty() {
+            // Decided from the unfiltered list: say why nothing is listed.
+            if removed.is_empty() {
+                doc.push("No high-confidence device was seen on a malicious IP.".into());
+            } else {
+                let n = removed.len();
+                let listed = if n == 1 {
+                    "1 removed device is listed in devices.csv".to_string()
+                } else {
+                    format!("{n} removed devices are listed in devices.csv")
+                };
+                doc.push(if low.is_empty() {
+                    // Everything seen was removed.
+                    format!("Every device seen on a malicious IP has been removed ({listed}).")
+                } else {
+                    // Low-confidence devices that are not removed remain, so not every device was removed.
+                    format!("No high-confidence device is left to contain; {listed}.")
+                });
+            }
+        } else {
+            doc.push(
+                "| Status | Device | Name | Last active | Users | Malicious IPs | Other IPs |"
+                    .into(),
+            );
+            doc.push("| --- | --- | --- | --- | --- | --- | --- |".into());
+        }
         for d in &devices {
             let mut status = d.lifecycle.status.as_str().to_string();
             let note = super::devices_csv::note(d.lifecycle.status);
             if !note.is_empty() {
                 status.push_str(&format!(" — {note}"));
             }
-            let mut device = d.device_id.clone();
-            if d.confidence == crate::case::devices::Confidence::Low {
-                device.push_str(" (low confidence — impossible-travel leg only)");
-            }
+            let device = d.device_id.clone();
             doc.push(format!(
                 "| {} | {} | {} | {} | {} | {} | {} |",
                 md_cell(&status),
@@ -417,6 +442,19 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
                         .join("; ")
                 ),
             ));
+        }
+        if !low.is_empty() {
+            if !devices.is_empty() {
+                doc.push(String::new());
+            }
+            doc.push(if low.len() == 1 {
+                "1 more low-confidence device (reached only through impossible-travel legs) is listed in devices.csv and the app.".to_string()
+            } else {
+                format!(
+                    "{} more low-confidence devices (reached only through impossible-travel legs) are listed in devices.csv and the app.",
+                    low.len()
+                )
+            });
         }
     }
 

@@ -673,6 +673,7 @@ fn workbook_reopens_with_expected_sheets() {
             "Timeline",
             "Indicators",
             "Devices",
+            "Devices (low confidence)",
             "Evidence gaps",
             "Audit"
         ]
@@ -1935,10 +1936,8 @@ fn report_says_when_no_device_was_seen() {
     assert!(md.contains("No device was seen on a malicious IP."));
 }
 
-#[test]
-fn report_marks_low_confidence_devices() {
-    let case = devices_case();
-    // Make E's only link an impossible-travel leg: a tenant-less case with a travel finding.
+/// Makes device E's only link an impossible-travel leg (the indicator is removed; a travel finding cites its sign-in).
+fn make_e_low(case: &Case) {
     case.conn()
         .execute_batch(
             "UPDATE case_indicators SET removed_at = now(), removed_by = 'x';
@@ -1948,16 +1947,113 @@ fn report_marks_low_confidence_devices() {
                VALUES ('f-travel', 'signins', 'si-e', 'trigger', 1);",
         )
         .unwrap();
-    let md = report(&case, false);
+}
+
+fn devices_section(md: &str) -> &str {
     let i = md.find("## Devices to contain").unwrap();
-    let section = &md[i..md[i..].find("## Evidence gaps").unwrap() + i];
+    &md[i..md[i..].find("## Evidence gaps").unwrap() + i]
+}
+
+const N_MORE: &str = "more low-confidence devices (reached only through impossible-travel legs) are listed in devices.csv and the app.";
+const ONE_MORE: &str = "1 more low-confidence device (reached only through impossible-travel legs) is listed in devices.csv and the app.";
+
+#[test]
+fn report_lists_high_confidence_devices_and_counts_the_low_ones() {
+    let case = devices_case();
+    // D (removed) stays out; E is high. Add two low-confidence devices reached only through a travel leg.
+    for (n, id) in [
+        ("a", "11111111-0000-0000-0000-000000000001"),
+        ("b", "22222222-0000-0000-0000-000000000002"),
+    ] {
+        dev_insert(
+            &case,
+            "signins",
+            serde_json::json!({"record_key": format!("si-low-{n}"), "user_upn": "bob@contoso.example", "ip": "192.0.2.77",
+                   "event_time": "2026-03-01T10:00:00Z", "app_name": "Office 365",
+                   "device": {"device_id": id, "display_name": null, "os": null, "browser": null,
+                              "is_compliant": null, "is_managed": null, "trust_type": null}}),
+            &format!("low-{n}"),
+        );
+        case.conn()
+            .execute_batch(&format!(
+                "INSERT INTO findings (finding_id, fingerprint, tenant_key, rule_id, severity, title, actor_upn, status, created_by, created_at, updated_at)
+                   VALUES ('f-t-{n}', 'fp-{n}', 't1', 'SPW-ID-003', 'medium', 'travel', 'bob@contoso.example', 'new', 'rule', now(), now());
+                 INSERT INTO finding_evidence (finding_id, source_table, record_key, role, added_run_id)
+                   VALUES ('f-t-{n}', 'signins', 'si-low-{n}', 'trigger', 1);"
+            ))
+            .unwrap();
+    }
+    let section = devices_section(&report(&case, false)).to_string();
     assert!(section.contains(E_UNKNOWN), "{section}");
-    assert!(section.contains("low confidence"), "{section}");
+    assert!(!section.contains(D_REMOVED), "{section}");
     assert!(
-        section.contains("impossible\\-travel leg only")
-            || section.contains("impossible-travel leg only"),
+        !section.contains("11111111-0000") && !section.contains("22222222-0000"),
         "{section}"
     );
+    assert!(section.contains(&format!("2 {N_MORE}")), "{section}");
+    // The per-row marker is gone: low devices no longer appear in the report.
+    assert!(!section.contains("(low confidence"), "{section}");
+    assert!(!section.contains("No high-confidence"), "{section}");
+}
+
+#[test]
+fn report_with_only_low_confidence_devices_says_so() {
+    let case = devices_case();
+    make_e_low(&case);
+    // D is gone altogether, so E is the one suspect, and low.
+    case.conn()
+        .execute_batch("DELETE FROM signins WHERE record_key = 'si-d';")
+        .unwrap();
+    let section = devices_section(&report(&case, false)).to_string();
+    assert!(
+        section.contains("No high-confidence device was seen on a malicious IP."),
+        "{section}"
+    );
+    assert!(section.contains(ONE_MORE), "{section}");
+    assert!(!section.contains(E_UNKNOWN), "{section}");
+    assert!(!section.contains("| Status |"), "no table: {section}");
+    assert!(!section.contains("has been removed"), "{section}");
+    assert!(
+        !section.contains("No device was seen on a malicious IP."),
+        "{section}"
+    );
+}
+
+#[test]
+fn report_with_only_a_removed_suspect_says_it_was_removed() {
+    let case = devices_case();
+    // Device E is not seen at all: D, removed, is the only suspect.
+    case.conn()
+        .execute_batch("DELETE FROM signins WHERE record_key = 'si-e';")
+        .unwrap();
+    let section = devices_section(&report(&case, false)).to_string();
+    assert!(
+        section.contains("Every device seen on a malicious IP has been removed (1 removed device is listed in devices.csv)."),
+        "{section}"
+    );
+    assert!(
+        !section.contains("No device was seen on a malicious IP."),
+        "{section}"
+    );
+    assert!(!section.contains("| Status |"), "{section}");
+    assert!(!section.contains("low-confidence"), "{section}");
+}
+
+#[test]
+fn report_with_removed_and_low_devices_says_both() {
+    let case = devices_case();
+    make_e_low(&case);
+    // D (removed) and E (not removed) are both low: the removed wording, then the low line.
+    let section = devices_section(&report(&case, false)).to_string();
+    assert!(
+        section.contains("No high-confidence device is left to contain; 1 removed device is listed in devices.csv."),
+        "{section}"
+    );
+    // A low-confidence device is still outstanding, so "every device has been removed" would be false.
+    assert!(!section.contains("has been removed"), "{section}");
+    assert!(!section.contains("Every device"), "{section}");
+    assert!(section.contains(ONE_MORE), "{section}");
+    assert!(!section.contains(E_UNKNOWN), "{section}");
 }
 
 #[test]
@@ -2118,4 +2214,38 @@ fn sightings_export_is_complete_across_the_batch_boundary() {
         others.contains(&format!("{} (Org-{}, US)", ip(N - 1), N - 1)),
         "last other IP"
     );
+}
+
+#[test]
+fn workbook_splits_devices_by_confidence() {
+    let case = devices_case();
+    // Before: both devices are high.
+    let dir = tempfile::tempdir().unwrap();
+    let mut wb = workbook(&case, &dir);
+    let names = wb.sheet_names();
+    let i = names.iter().position(|n| n == "Devices").unwrap();
+    assert_eq!(names[i + 1], "Devices (low confidence)");
+    assert_eq!(sheet_rows(&mut wb, "Devices").len() - 1, 2);
+    assert_eq!(
+        sheet_rows(&mut wb, "Devices (low confidence)").len(),
+        1,
+        "header only"
+    );
+    // After: the shared address is only an impossible-travel leg, so D and E are both low-confidence.
+    make_e_low(&case);
+    let dir = tempfile::tempdir().unwrap();
+    let mut wb = workbook(&case, &dir);
+    let high = sheet_rows(&mut wb, "Devices");
+    let low = sheet_rows(&mut wb, "Devices (low confidence)");
+    assert_eq!(high.len(), 1, "no high-confidence device");
+    assert_eq!(low.len(), 3);
+    assert_eq!(low[0], devices_csv::DEVICE_COLUMNS);
+    let col = |name: &str| low[0].iter().position(|c| c == name).unwrap();
+    assert!(low[1..].iter().all(|r| r[col("confidence")] == "low"));
+    let mut ids: Vec<&str> = low[1..]
+        .iter()
+        .map(|r| r[col("device_id")].as_str())
+        .collect();
+    ids.sort();
+    assert_eq!(ids, [D_REMOVED, E_UNKNOWN]);
 }

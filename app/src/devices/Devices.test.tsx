@@ -28,20 +28,46 @@ const rowsOf = async () => {
 };
 
 describe("Devices", () => {
-  it("lists the devices in the order the backend returns them, status first", async () => {
+  it("lists the high-confidence devices in the backend's order, status first, and hides the low ones", async () => {
     render(<Devices />);
     const rows = await rowsOf();
-    expect(rows).toHaveLength(list.length);
-    expect(list.map((d) => d.lifecycle.status)).toEqual([
-      "active_after_removal",
-      "unknown",
-      "not_in_latest_inventory",
-      "removed",
-    ]);
+    const high = list.filter((d) => d.confidence === "high");
+    expect(list.length - high.length).toBeGreaterThan(0);
+    expect(high.map((d) => d.lifecycle.status)).toEqual(["active_after_removal", "unknown", "removed"]);
+    expect(rows).toHaveLength(high.length);
     rows.forEach((row, i) => {
-      expect(within(row).getByTestId("status")).toHaveAttribute("data-status", list[i].lifecycle.status);
-      expect(within(row).getByRole("button", { name: new RegExp(list[i].device_id) })).toBeInTheDocument();
+      expect(within(row).getByTestId("status")).toHaveAttribute("data-status", high[i].lifecycle.status);
+      expect(within(row).getByRole("button", { name: new RegExp(high[i].device_id) })).toBeInTheDocument();
     });
+    // The low-confidence device is behind the toggle, which says how many there are.
+    expect(screen.queryByText(new RegExp(list.find((d) => d.confidence === "low")!.device_id))).toBeNull();
+    expect(await screen.findByRole("button", { name: "Show 1 low-confidence devices" })).toBeInTheDocument();
+  });
+
+  it("the toggle reveals the low-confidence devices in the same list order, marked, and hides them again", async () => {
+    const user = userEvent.setup();
+    render(<Devices />);
+    await rowsOf();
+    await user.click(await screen.findByRole("button", { name: "Show 1 low-confidence devices" }));
+    const rows = await rowsOf();
+    expect(rows.map((r) => within(r).getByTestId("status").getAttribute("data-status"))).toEqual(
+      list.map((d) => d.lifecycle.status),
+    );
+    const low = rows[list.findIndex((d) => d.confidence === "low")];
+    expect(within(low).getByText(/low confidence/)).toBeInTheDocument();
+    expect(within(rows[0]).queryByText(/low confidence/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Hide 1 low-confidence devices" }));
+    expect(await rowsOf()).toHaveLength(list.length - 1);
+  });
+
+  it("with only low-confidence devices the toggle is above an explanation and no table", async () => {
+    const user = userEvent.setup();
+    list = list.filter((d) => d.confidence === "low");
+    render(<Devices />);
+    expect(await screen.findByText("No high-confidence device was seen on a malicious IP.")).toBeInTheDocument();
+    expect(screen.queryByRole("table")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Show 1 low-confidence devices" }));
+    expect(await rowsOf()).toHaveLength(1);
   });
 
   it("marks a device seen after its removal with a cue that does not depend on colour", async () => {
@@ -63,18 +89,15 @@ describe("Devices", () => {
   });
 
   it("tells the analyst to treat an unknown device as active", async () => {
+    const user = userEvent.setup();
     render(<Devices />);
+    await user.click(await screen.findByRole("button", { name: /Show 1 low-confidence/ }));
     const rows = await rowsOf();
-    expect(within(rows[1]).getByText(/treat as active/)).toBeInTheDocument();
-    expect(within(rows[2]).getByText(/treat as active/)).toBeInTheDocument();
-    expect(within(rows[3]).queryByText(/treat as active/)).toBeNull();
-  });
-
-  it("marks a low-confidence device", async () => {
-    render(<Devices />);
-    const rows = await rowsOf();
-    expect(within(rows[2]).getByText(/low confidence/)).toBeInTheDocument();
-    expect(within(rows[0]).queryByText(/low confidence/)).toBeNull();
+    for (const [i, d] of list.entries()) {
+      const note = within(rows[i]).queryByText(/treat as active/);
+      const expected = d.lifecycle.status === "unknown" || d.lifecycle.status === "not_in_latest_inventory";
+      expect(note !== null, d.lifecycle.status).toBe(expected);
+    }
   });
 
   it("clicking a device lists its sightings in time order with the malicious IPs marked", async () => {

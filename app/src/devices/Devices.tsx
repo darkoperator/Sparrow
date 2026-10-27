@@ -121,6 +121,9 @@ export default function Devices() {
   const [list, setList] = useState<SuspectDevice[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  // Per viewer, in component state only: low-confidence devices (reached only through impossible-travel legs) are hidden
+  // until asked for.
+  const [showLow, setShowLow] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -133,7 +136,9 @@ export default function Devices() {
     };
   }, []);
 
-  const current = list?.find((d) => keyOf(d) === selected) ?? null;
+  const lowCount = list?.filter((d) => d.confidence === "low").length ?? 0;
+  const shown = list?.filter((d) => showLow || d.confidence !== "low") ?? [];
+  const current = shown.find((d) => keyOf(d) === selected) ?? null;
 
   return (
     <section className="devices">
@@ -142,7 +147,17 @@ export default function Devices() {
       {list && list.length === 0 && (
         <p>No device was seen on a malicious IP. Mark IPs malicious with an indicator, or run detection.</p>
       )}
-      {list && list.length > 0 && (
+      {list && lowCount > 0 && (
+        <p>
+          <button className="link" onClick={() => setShowLow((v) => !v)}>
+            {showLow ? "Hide" : "Show"} {lowCount} low-confidence devices
+          </button>
+        </p>
+      )}
+      {list && list.length > 0 && lowCount === list.length && !showLow && (
+        <p>No high-confidence device was seen on a malicious IP.</p>
+      )}
+      {shown.length > 0 && (
         <div className="table-scroll">
           <table aria-label="Devices to contain">
             <thead>
@@ -155,7 +170,7 @@ export default function Devices() {
               </tr>
             </thead>
             <tbody>
-              {list.map((d) => {
+              {shown.map((d) => {
                 const status = d.lifecycle.status;
                 const note = NOTES[status];
                 return (

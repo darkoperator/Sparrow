@@ -1484,6 +1484,36 @@
     ]
   },
   {
+    "sheet": "Devices (low confidence)",
+    "rows": [
+      [
+        "status",
+        "confidence",
+        "tenant_key",
+        "device_id",
+        "object_id",
+        "display_name",
+        "os",
+        "trust_type",
+        "is_compliant",
+        "is_managed",
+        "registered_utc",
+        "registered_source",
+        "removed_utc",
+        "removed_source",
+        "disabled_utc",
+        "disabled_source",
+        "last_active_utc",
+        "last_active_source",
+        "users",
+        "malicious_ips",
+        "other_ips",
+        "reasons",
+        "note"
+      ]
+    ]
+  },
+  {
     "sheet": "Evidence gaps",
     "rows": [
       [

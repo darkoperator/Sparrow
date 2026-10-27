@@ -1,4 +1,4 @@
-//! The XLSX workbook (Addendum D.6). Sheets: Summary, Accounts, Findings, Timeline, Indicators, Devices, Evidence gaps, Audit.
+//! The XLSX workbook (Addendum D.6). Sheets: Summary, Accounts, Findings, Timeline, Indicators, Devices, Devices (low confidence), Evidence gaps, Audit.
 //! Accounts is the roll-up detection builds (one row per account, its addresses joined; empty, with the reason in
 //! the Summary, when the roll-up is not current) and the Findings sheet has a `Facts` column (the stored facts as
 //! compact JSON, or `{"facts_unavailable": ...}`; empty for a finding outside the facts families). Every
@@ -23,13 +23,14 @@ use rust_xlsxwriter::{ExcelDateTime, Format, Workbook, Worksheet};
 use std::path::Path;
 
 /// The sheets, in order.
-pub const SHEETS: [&str; 8] = [
+pub const SHEETS: [&str; 9] = [
     "Summary",
     "Accounts",
     "Findings",
     "Timeline",
     "Indicators",
     "Devices",
+    "Devices (low confidence)",
     "Evidence gaps",
     "Audit",
 ];
@@ -383,8 +384,10 @@ pub fn write(
     cols.push(("Analyst notes", 40.0));
     sheet(&mut wb, "Indicators", &cols, rows)?;
 
-    // ---- Devices (every suspect device, removed ones included; the `devices.csv` columns)
+    // ---- Devices: every suspect device, removed ones included, with the `devices.csv` columns. The high-confidence
+    // ones are on `Devices`, the ones reached only through impossible-travel legs on `Devices (low confidence)`.
     let mut rows = Vec::new();
+    let mut low_rows = Vec::new();
     let devices = crate::case::devices::suspect_devices(conn, None)?;
     let sources = devices_csv::first_sources(conn, &devices_csv::mark_keys(&devices))?;
     for d in devices {
@@ -396,7 +399,7 @@ pub fn write(
         };
         let time =
             |m: &Option<crate::case::devices::LifecycleMark>| Cell::Time(m.as_ref().map(|m| m.at));
-        rows.push(vec![
+        let row = vec![
             t(lc.status.as_str()),
             t(d.confidence.as_str()),
             ot(d.tenant_key.as_deref()),
@@ -428,7 +431,12 @@ pub fn write(
                 .collect::<Vec<_>>()
                 .join("; ")),
             t(devices_csv::note(lc.status)),
-        ]);
+        ];
+        if d.confidence == crate::case::devices::Confidence::Low {
+            low_rows.push(row);
+        } else {
+            rows.push(row);
+        }
     }
     let widths = [
         18.0, 10.0, 14.0, 38.0, 38.0, 24.0, 14.0, 12.0, 12.0, 12.0, 20.0, 40.0, 20.0, 40.0, 20.0,
@@ -436,6 +444,7 @@ pub fn write(
     ];
     let cols: Vec<(&str, f64)> = DEVICE_COLUMNS.iter().copied().zip(widths).collect();
     sheet(&mut wb, "Devices", &cols, rows)?;
+    sheet(&mut wb, "Devices (low confidence)", &cols, low_rows)?;
 
     // ---- Evidence gaps
     let rows = evidence_gaps(conn)?
