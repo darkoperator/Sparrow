@@ -30,6 +30,7 @@ fn builtin_hosting_list_holds_the_incident_networks() {
         (137409, "GSL Networks", "vpn"),
         (206092, "F.N.S. Holdings", "vpn"),
         (36352, "ColoCrossing (HostPapa)", "vps"),
+        (213122, "Krixe Pte. Ltd.", "vps"),
     ] {
         let entry = hosting
             .iter()
@@ -38,7 +39,7 @@ fn builtin_hosting_list_holds_the_incident_networks() {
         assert_eq!((entry.name.as_str(), entry.kind.as_str()), (name, kind));
     }
     let listed = &load_rules(&dirs).unwrap().lists["hosting_asns"];
-    for asn in ["931", "137409", "206092"] {
+    for asn in ["931", "137409", "206092", "213122"] {
         assert!(
             listed.iter().any(|a| a == asn),
             "AS{asn} not in the rule list"

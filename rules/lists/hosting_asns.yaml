@@ -29,3 +29,4 @@ asns:
   - {asn: 60068, name: Datacamp (CDN77), kind: vpn}
   - {asn: 137409, name: GSL Networks, kind: vpn}
   - {asn: 206092, name: F.N.S. Holdings, kind: vpn}
+  - {asn: 213122, name: Krixe Pte. Ltd., kind: vps}
