@@ -138,7 +138,7 @@ pub static EVIDENCE: &[EvidenceDef] = &[
         needs_ual: true,
         invictus: Some("Get-UAL -StartDate {start} -EndDate {end}"),
         hawk: Some("Start-HawkTenantInvestigation (Hawk searches selected operations only)"),
-        portal: Some("Purview portal > Audit > New search, export (50,000 rows per export)"),
+        portal: Some("Purview portal > Audit > New search, export (50,000 rows per export, 1,000,000 with Audit Premium)"),
         ..source!(
             "ual_events x", "x.event_time", "count(DISTINCT lower(x.user_upn))",
             "'ual_events'", "CAST(x.record_id AS VARCHAR)"

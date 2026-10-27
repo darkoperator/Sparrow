@@ -364,6 +364,13 @@ fn truncation_warnings_at_known_caps() {
             .contains("known export cap 50000")
     );
     assert_eq!(truncation_warning("portal.ual", 49_999), None);
+    // Audit (Premium) exports stop at 1,000,000 rows.
+    assert!(
+        truncation_warning("portal.ual", 1_000_000)
+            .unwrap()
+            .contains("known export cap 1000000")
+    );
+    assert_eq!(truncation_warning("portal.ual", 999_999), None);
     assert!(truncation_warning("portal.entra_signins", 100_000).is_some());
     assert!(
         truncation_warning("hawk.user.raw_ual", 10_000)

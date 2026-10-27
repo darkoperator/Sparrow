@@ -20,6 +20,32 @@ fn builtin_rules_and_lists_load() {
     assert_eq!(ids, sorted);
 }
 
+/// VPS/VPN networks seen carrying an adversary's sign-ins in a real case (2026-10-27).
+#[test]
+fn builtin_hosting_list_holds_the_incident_networks() {
+    let dirs = DataDirs::default();
+    let hosting = sparrow_core::data::hosting_asns(&dirs).unwrap();
+    for (asn, name, kind) in [
+        (931, "Hyonix", "vps"),
+        (137409, "GSL Networks", "vpn"),
+        (206092, "F.N.S. Holdings", "vpn"),
+        (36352, "ColoCrossing (HostPapa)", "vps"),
+    ] {
+        let entry = hosting
+            .iter()
+            .find(|h| h.asn == asn)
+            .unwrap_or_else(|| panic!("AS{asn} missing"));
+        assert_eq!((entry.name.as_str(), entry.kind.as_str()), (name, kind));
+    }
+    let listed = &load_rules(&dirs).unwrap().lists["hosting_asns"];
+    for asn in ["931", "137409", "206092"] {
+        assert!(
+            listed.iter().any(|a| a == asn),
+            "AS{asn} not in the rule list"
+        );
+    }
+}
+
 #[test]
 fn a_custom_rule_replaces_the_builtin_with_a_warning() {
     let dir = tempfile::tempdir().unwrap();

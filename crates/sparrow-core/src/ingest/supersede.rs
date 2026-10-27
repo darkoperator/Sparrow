@@ -228,14 +228,16 @@ pub fn truncation_warning(artifact_id: &str, records: u64) -> Option<String> {
             "row count equals the 5000-record Search-UnifiedAuditLog page Get-UAL requests per window — the collector writes partial data when it cannot shrink the window further; check LogFile.txt for \"SOME EVENTS IN THIS RANGE ARE NOT CAPTURED\"".into(),
         );
     }
-    let cap = match artifact_id {
-        "portal.ual" => Some(50_000),
-        "portal.entra_signins" => Some(100_000),
-        _ => None,
+    // Purview audit search exports stop at 50,000 rows for Audit (Standard) and 1,000,000 for
+    // Audit (Premium).
+    let caps: &[u64] = match artifact_id {
+        "portal.ual" => &[50_000, 1_000_000],
+        "portal.entra_signins" => &[100_000],
+        _ => &[],
     };
-    if let Some(cap) = cap {
-        return (records == cap).then(|| {
-            format!("row count equals known export cap {cap} — results likely truncated")
+    if !caps.is_empty() {
+        return caps.contains(&records).then(|| {
+            format!("row count equals known export cap {records} — results likely truncated")
         });
     }
     if artifact_id.starts_with("hawk.")
