@@ -852,6 +852,20 @@ static PORTAL_DEFS: &[PortalDef] = &[
         exact: false,
         xlsx: false,
     },
+    // Exchange admin center message trace "extended" (detail) report: one row per delivery event.
+    // The summary report has no `event_id` or `source_context`, so the two never overlap.
+    PortalDef {
+        id: "portal.message_trace_detail",
+        target: "message_trace_events",
+        columns: &[
+            "date_time_utc",
+            "network_message_id",
+            "event_id",
+            "source_context",
+        ],
+        exact: false,
+        xlsx: false,
+    },
 ];
 
 fn portal_by_headers(headers: &HashSet<String>, xlsx: bool) -> Option<Classification> {

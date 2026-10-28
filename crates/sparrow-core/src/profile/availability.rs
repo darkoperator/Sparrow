@@ -275,6 +275,7 @@ pub static EVIDENCE: &[EvidenceDef] = &[
             "inv.message_trace",
             "hawk.user.message_trace",
             "portal.message_trace",
+            "portal.message_trace_detail",
         ],
         invictus_runs: &[("MessageTrace", None)],
         hawk_log: Some(r"^Initiating collection of Message Trace Data for (\S+)"),
@@ -284,6 +285,19 @@ pub static EVIDENCE: &[EvidenceDef] = &[
         ..source!(
             "message_trace x", "x.received", "count(DISTINCT lower(x.sender))",
             "'message_trace'", "x.record_key"
+        )
+    },
+    EvidenceDef {
+        id: "message_trace_events",
+        title: "Exchange Online message trace events (detail report)",
+        kind: Kind::Event,
+        artifacts: &["portal.message_trace_detail"],
+        portal: Some(
+            "Exchange admin center > Mail flow > Message trace > Start a trace > Report type Extended",
+        ),
+        ..source!(
+            "message_trace_events x", "x.event_time", "count(DISTINCT lower(x.sender))",
+            "'message_trace_events'", "x.record_key"
         )
     },
     EvidenceDef {

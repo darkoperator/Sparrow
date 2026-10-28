@@ -30,7 +30,7 @@ pub fn message_trace_key(id: &str, recipient: Option<&str>) -> String {
     )
 }
 
-const COLS: &[&str] = &[
+pub(crate) const COLS: &[&str] = &[
     "message_trace_id",
     "received",
     "time_tz_assumed",
@@ -102,7 +102,7 @@ fn recipient_statuses(v: Option<String>) -> Vec<(Option<String>, Option<String>)
     }
 }
 
-fn received_cells(c: &mut CellRow, time: Option<String>) {
+pub(crate) fn received_cells(c: &mut CellRow, time: Option<String>) {
     c.set(
         "time_tz_assumed",
         Cell::bool(time.as_deref().map(zone_assumed)),

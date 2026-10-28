@@ -582,3 +582,187 @@ fn a_name_override_shared_by_two_tenants_resolves_to_the_smallest_key() {
         );
     }
 }
+
+/// A `message_trace_events` row of `tenant` sighted in `file_id`.
+fn trace_event(case: &Case, file_id: i64, key: &str, tenant: &str) {
+    case.conn()
+        .execute(
+            "INSERT INTO message_trace_events (record_key, collection_id, tenant_id, raw)
+             VALUES (?, 1, ?, '{}')",
+            params![key, tenant],
+        )
+        .unwrap();
+    case.conn()
+        .execute(
+            "INSERT INTO record_sources VALUES ('message_trace_events', ?, ?, 0, 1, 1, 0, 1, 'h')",
+            params![key, file_id],
+        )
+        .unwrap();
+}
+
+/// A `directory_audits` row whose raw is `raw`, sighted in `file_id`.
+fn audit(case: &Case, file_id: i64, key: &str, raw: &str) {
+    case.conn()
+        .execute(
+            "INSERT INTO directory_audits (record_key, collection_id, raw) VALUES (?, 1, CAST(? AS JSON))",
+            params![key, raw],
+        )
+        .unwrap();
+    case.conn()
+        .execute(
+            "INSERT INTO record_sources VALUES ('directory_audits', ?, ?, 0, 1, 1, 0, 1, 'h')",
+            params![key, file_id],
+        )
+        .unwrap();
+}
+
+#[test]
+fn message_trace_detail_and_portal_entra_audit_collections_resolve_to_their_tenant() {
+    let mut case = Case::in_memory().unwrap();
+    let ual_c = collection(&case, "/a", None, "2026-09-10 00:00:00+00");
+    let detail_c = collection(&case, "/b", None, "2026-09-10 00:00:00+00");
+    let audit_c = collection(&case, "/c", None, "2026-09-10 00:00:00+00");
+    let guest_c = collection(&case, "/d", None, "2026-09-10 00:00:00+00");
+    let upper = T1.to_uppercase();
+    ual(
+        &case,
+        ual_c,
+        file(&case, ual_c),
+        "00000000-0000-4000-8000-0000000000a1",
+        T1,
+        "a@contoso.example",
+    );
+    let detail_f = file(&case, detail_c);
+    trace_event(&case, detail_f, "csvrow:1", &upper);
+    trace_event(&case, detail_f, "csvrow:2", &upper);
+    trace_event(&case, detail_f, "csvrow:3", "");
+    let audit_f = file(&case, audit_c);
+    portal_audit_file(&case, audit_f);
+    // Key case differs from the CSV header's; a row without ActorType User, or without the cell, adds nothing.
+    audit(
+        &case,
+        audit_f,
+        "csvrow:a",
+        &format!("{{\"actorhometenantid\":\"{upper}\",\"ActorType\":\"User\"}}"),
+    );
+    audit(
+        &case,
+        audit_f,
+        "csvrow:b",
+        &format!("{{\"ActorHomeTenantId\":\"{T2}\",\"ActorType\":\"Application\"}}"),
+    );
+    audit(&case, audit_f, "csvrow:c", "{\"ActorType\":\"User\"}");
+    audit(&case, audit_f, "csvrow:d", "{\"Id\":\"x\"}");
+    // A collection of audit rows whose only tenant evidence is a user actor from T2.
+    let guest_f = file(&case, guest_c);
+    portal_audit_file(&case, guest_f);
+    audit(
+        &case,
+        guest_f,
+        "csvrow:g",
+        &format!("{{\"ActorHomeTenantId\":\"{T2}\",\"ActorType\":\"User\"}}"),
+    );
+    refresh(&mut case, &ProfileOptions::default()).unwrap();
+    let key = |c: i64| {
+        text(
+            &case,
+            &format!("SELECT tenant_key FROM collections WHERE collection_id = {c}"),
+        )
+    };
+    assert_eq!(key(ual_c), T1);
+    assert_eq!(key(detail_c), T1);
+    assert_eq!(key(audit_c), T1);
+    assert_eq!(key(guest_c), T2);
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM tenant WHERE tenant_key LIKE 'collection:%'"
+        ),
+        0
+    );
+    assert_eq!(
+        text(
+            &case,
+            &format!("SELECT tenant_id_source FROM tenant WHERE tenant_key = '{T1}'")
+        ),
+        "message_trace_tenant"
+    );
+    assert_eq!(
+        count(
+            &case,
+            &format!("SELECT collections FROM tenant WHERE tenant_key = '{T1}'"),
+        ),
+        3
+    );
+}
+
+/// Mark `file_id` as a portal Entra audit download (the audit fallback only counts those files).
+fn portal_audit_file(case: &Case, file_id: i64) {
+    case.conn()
+        .execute(
+            "UPDATE source_files SET artifact_type = 'portal.entra_audit' WHERE file_id = ?",
+            params![file_id],
+        )
+        .unwrap();
+}
+
+#[test]
+fn guest_actor_rows_never_outvote_other_tenant_evidence_and_only_portal_files_count() {
+    let mut case = Case::in_memory().unwrap();
+    // One UAL sighting for T1 and two portal user-actor rows from guests whose home tenant is T2: T1.
+    let mixed = collection(&case, "/a", None, "2026-09-10 00:00:00+00");
+    let mixed_ual = file(&case, mixed);
+    ual(
+        &case,
+        mixed,
+        mixed_ual,
+        "00000000-0000-4000-8000-0000000000b1",
+        T1,
+        "a@contoso.example",
+    );
+    let mixed_audit = file(&case, mixed);
+    portal_audit_file(&case, mixed_audit);
+    for k in ["g1", "g2"] {
+        audit(
+            &case,
+            mixed_audit,
+            k,
+            &format!("{{\"ActorHomeTenantId\":\"{T2}\",\"ActorType\":\"User\"}}"),
+        );
+    }
+    // A collection with only portal audit rows still resolves from them.
+    let only = collection(&case, "/b", None, "2026-09-10 00:00:00+00");
+    let only_f = file(&case, only);
+    portal_audit_file(&case, only_f);
+    audit(
+        &case,
+        only_f,
+        "o1",
+        &format!("{{\"ActorHomeTenantId\":\"{T2}\",\"ActorType\":\"User\"}}"),
+    );
+    // A Hawk JSON audit carrying the same keys adds nothing: the collection stands alone.
+    let hawk = collection(&case, "/c", None, "2026-09-10 00:00:00+00");
+    let hawk_f = file(&case, hawk);
+    case.conn()
+        .execute(
+            "UPDATE source_files SET artifact_type = 'hawk.tenant.entra_audit' WHERE file_id = ?",
+            params![hawk_f],
+        )
+        .unwrap();
+    audit(
+        &case,
+        hawk_f,
+        "h1",
+        &format!("{{\"ActorHomeTenantId\":\"{T1}\",\"ActorType\":\"User\"}}"),
+    );
+    refresh(&mut case, &ProfileOptions::default()).unwrap();
+    let key = |c: i64| {
+        text(
+            &case,
+            &format!("SELECT tenant_key FROM collections WHERE collection_id = {c}"),
+        )
+    };
+    assert_eq!(key(mixed), T1);
+    assert_eq!(key(only), T2);
+    assert_eq!(key(hawk), format!("collection:{hawk}"));
+}

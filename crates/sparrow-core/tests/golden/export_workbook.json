@@ -1598,6 +1598,18 @@
       ],
       [
         "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
+        "message_trace_events",
+        "Exchange Online message trace events (detail report)",
+        "available_not_collected",
+        "not in the case; it can still be collected",
+        "portal: Exchange admin center > Mail flow > Message trace > Start a trace > Report type Extended",
+        "0",
+        "",
+        "",
+        ""
+      ],
+      [
+        "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
         "mobile_devices",
         "Mobile devices attached to mailboxes",
         "available_not_collected",

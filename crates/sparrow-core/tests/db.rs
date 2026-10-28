@@ -72,6 +72,7 @@ fn fresh_case_has_provenance_tables() {
             "mailbox_permissions",
             "mailboxes",
             "message_trace",
+            "message_trace_events",
             "mfa_registration",
             "mobile_devices",
             "oauth_grants",
@@ -565,9 +566,9 @@ fn upgrading_a_v20_case_keeps_decisions_and_adds_imported_proposals() {
         .unwrap();
     }
     let (from, to) = Case::upgrade(&path).unwrap();
-    assert_eq!((from, to), (20, 23));
+    assert_eq!((from, to), (20, 24));
     let case = Case::open_read_only(&path).unwrap();
-    assert_eq!(case.schema_version().unwrap(), 23);
+    assert_eq!(case.schema_version().unwrap(), 24);
     let kept: (String, String, String, String) = case
         .conn()
         .query_row(
@@ -637,7 +638,7 @@ fn upgrading_a_v21_case_keeps_directory_audits_and_adds_completeness() {
         .unwrap();
     }
     let (from, to) = Case::upgrade(&path).unwrap();
-    assert_eq!((from, to), (21, 23));
+    assert_eq!((from, to), (21, 24));
     let case = Case::open_read_only(&path).unwrap();
     let kept: (String, String, String, String, Option<String>) = case
         .conn()
@@ -708,7 +709,7 @@ fn upgrading_a_v22_case_keeps_account_rollup_and_adds_the_signin_window() {
         .unwrap();
     }
     let (from, to) = Case::upgrade(&path).unwrap();
-    assert_eq!((from, to), (22, 23));
+    assert_eq!((from, to), (22, 24));
     let case = Case::open_read_only(&path).unwrap();
     let kept: (String, String, i64, String, String, i64, Option<String>, Option<String>) = case
         .conn()
@@ -759,6 +760,90 @@ fn upgrading_a_v22_case_keeps_account_rollup_and_adds_the_signin_window() {
     );
 }
 
+/// A case file at schema v23 (before migration 24), built migration by migration.
+fn v23_conn(path: &std::path::Path) -> duckdb::Connection {
+    let conn = duckdb::Connection::open(path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name VARCHAR NOT NULL,
+         applied_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp);",
+    )
+    .unwrap();
+    for m in MIGRATIONS.iter().filter(|m| m.version <= 23) {
+        conn.execute_batch(m.sql).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
+            duckdb::params![m.version as i64, m.name],
+        )
+        .unwrap();
+    }
+    conn
+}
+
+#[test]
+fn upgrading_a_v23_case_keeps_message_trace_and_adds_an_empty_events_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v23.duckdb");
+    {
+        let conn = v23_conn(&path);
+        let events: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'message_trace_events'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(events, 0, "the v23 case must not have the table yet");
+        conn.execute_batch(
+            "INSERT INTO message_trace (record_key, collection_id, message_trace_id, received, sender, recipient,
+                 status, direction, raw)
+             VALUES ('m1|bob@contoso.example', 1, 'm1', TIMESTAMPTZ '2026-08-04 17:53:09+00',
+                     'alice@contoso.example', 'bob@contoso.example', 'Delivered', 'Originating', '{\"a\":1}');",
+        )
+        .unwrap();
+    }
+    let (from, to) = Case::upgrade(&path).unwrap();
+    assert_eq!((from, to), (23, 24));
+    let case = Case::open_read_only(&path).unwrap();
+    let kept: (String, String, String, String, String) = case
+        .conn()
+        .query_row(
+            "SELECT record_key, sender, status, direction, CAST(raw AS VARCHAR) FROM message_trace",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        kept,
+        (
+            "m1|bob@contoso.example".into(),
+            "alice@contoso.example".into(),
+            "Delivered".into(),
+            "Originating".into(),
+            "{\"a\":1}".into()
+        )
+    );
+    let events: i64 = case
+        .conn()
+        .query_row("SELECT count(*) FROM message_trace_events", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(events, 0);
+    let comment: Option<String> = case
+        .conn()
+        .query_row(
+            "SELECT comment FROM duckdb_tables() WHERE table_name = 'message_trace_events'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        comment
+            .unwrap()
+            .contains("also collapsed into message_trace")
+    );
+}
+
 #[test]
 fn describe_lists_views_with_their_kind() {
     let case = Case::in_memory().unwrap();
@@ -771,7 +856,7 @@ fn describe_lists_views_with_their_kind() {
 #[test]
 fn state_table_specs_match_the_schema() {
     let case = Case::in_memory().unwrap();
-    assert_eq!(case.schema_version().unwrap(), 23);
+    assert_eq!(case.schema_version().unwrap(), 24);
     for spec in ALL {
         for common in [
             "record_key",

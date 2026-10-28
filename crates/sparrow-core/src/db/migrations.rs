@@ -125,6 +125,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "account_signin_window",
         sql: include_str!("../../migrations/0023_account_signin_window.sql"),
     },
+    Migration {
+        version: 24,
+        name: "message_trace_events",
+        sql: include_str!("../../migrations/0024_message_trace_events.sql"),
+    },
 ];
 
 /// The migration that adds the Phase 7 analyst tables and the audit trail.

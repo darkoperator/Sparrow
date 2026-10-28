@@ -40,7 +40,7 @@ pub struct TenantDomain {
 pub fn resolve_tenants(conn: &Connection) -> Result<usize> {
     conn.execute_batch(
         "CREATE OR REPLACE TEMP TABLE tenant_evidence AS
-         SELECT * FROM (
+         WITH primary_evidence AS (
              SELECT sf.collection_id, lower(CAST(u.organization_id AS VARCHAR)) AS tenant_id,
                     'ual_organization_id' AS source, 1 AS source_rank, count(*) AS n
              FROM record_sources rs
@@ -54,6 +54,37 @@ pub fn resolve_tenants(conn: &Connection) -> Result<usize> {
              JOIN source_files sf ON sf.file_id = rs.file_id
              JOIN signins s ON rs.table_name = 'signins' AND rs.record_key = s.record_key
              WHERE s.resource_tenant_id IS NOT NULL AND s.resource_tenant_id <> ''
+             GROUP BY ALL
+             UNION ALL
+             SELECT sf.collection_id, lower(m.tenant_id), 'message_trace_tenant', 3, count(*)
+             FROM record_sources rs
+             JOIN source_files sf ON sf.file_id = rs.file_id
+             JOIN message_trace_events m ON rs.table_name = 'message_trace_events' AND rs.record_key = m.record_key
+             WHERE m.tenant_id IS NOT NULL AND m.tenant_id <> ''
+             GROUP BY ALL
+         )
+         SELECT * FROM (
+             SELECT * FROM primary_evidence
+             UNION ALL
+             -- Fallback: portal Entra audit rows (Hawk/Graph JSON audits are not counted), the actor's
+             -- home tenant read from raw (case-insensitive key) when the actor is a user. A guest actor's
+             -- home tenant can differ, so it counts only for a collection with no other tenant evidence.
+             SELECT sf.collection_id, lower(a.home), 'directory_audit_actor_home_tenant', 4, count(*)
+             FROM record_sources rs
+             JOIN source_files sf ON sf.file_id = rs.file_id
+             JOIN (
+                 SELECT record_key,
+                        CASE WHEN json_type(raw) = 'OBJECT' THEN
+                            json_extract_string(raw, '$.\"' || list_filter(json_keys(raw), k -> lower(k) = 'actorhometenantid')[1] || '\"')
+                        END AS home,
+                        CASE WHEN json_type(raw) = 'OBJECT' THEN
+                            json_extract_string(raw, '$.\"' || list_filter(json_keys(raw), k -> lower(k) = 'actortype')[1] || '\"')
+                        END AS actor_type
+                 FROM directory_audits
+             ) a ON rs.table_name = 'directory_audits' AND rs.record_key = a.record_key
+             WHERE a.home IS NOT NULL AND a.home <> '' AND lower(a.actor_type) = 'user'
+                   AND sf.artifact_type = 'portal.entra_audit'
+                   AND sf.collection_id NOT IN (SELECT collection_id FROM primary_evidence)
              GROUP BY ALL
          ) e
          QUALIFY row_number() OVER (PARTITION BY collection_id ORDER BY n DESC, source_rank, tenant_id) = 1;",

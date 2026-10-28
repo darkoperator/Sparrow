@@ -40,7 +40,9 @@ principals, app registrations and user applications), `devices`, `groups` and `g
 
 Event evidence loads into `signins` (Hawk Entra sign-in logs and Entra admin center sign-in exports, CSV or
 XLSX), `directory_audits` (Hawk `EntraIDAuditLogs`), `message_trace` (Hawk 3 `Message_Trace` and Exchange admin
-center summary reports), `mailbox_audit_legacy` (Hawk 3 `Exchange_Mailbox_Audit`) and `admin_audit_events`; Azure
+center summary reports), `message_trace_events` (the Exchange admin center detail, "extended", report: one row per
+delivery event, so forwarding, drops and external sends are visible; also collapsed into `message_trace`, one row per
+message and recipient), `mailbox_audit_legacy` (Hawk 3 `Exchange_Mailbox_Audit`) and `admin_audit_events`; Azure
 activity logs load into `azure_activity`.
 The same event from several files or collections is one row: the first copy's values are kept and later copies
 only fill values it lacks (a portal export adds the session id, ASN and MFA detail to a Graph sign-in). Hawk 3
@@ -92,7 +94,8 @@ Sparrow recognises files by their path and name, so keep the folder layout the c
 | Mailbox audit log | Hawk user investigation | `<upn>/Exchange_Mailbox_Audit_....csv` or `.json` | `mailbox_audit_legacy` |
 | Message trace | Microsoft-Extractor-Suite `Get-MessageTraceLog` | `MessageTrace/<yyyyMMdd-HHmmss>/...-MessageTrace.csv` (or `-MTL.csv`) | `message_trace` |
 | Message trace | Hawk user investigation | `<upn>/Message_Trace_....csv` or `.json` | `message_trace` |
-| Message trace | Exchange admin center message trace report (CSV) | any folder; recognised by its header | `message_trace` |
+| Message trace | Exchange admin center message trace report (CSV), summary | any folder; recognised by its header | `message_trace` |
+| Message trace events | Exchange admin center message trace report (CSV), extended (`MTDetail_*.csv`, UTF-16, one row per delivery event) | any folder; recognised by its header | `message_trace_events`, and `message_trace` (one row per message and recipient) |
 | Mail items accessed | Microsoft-Extractor-Suite `Get-MailItemsAccessed` | `MailItemsAccessed/<yyyyMMdd-HHmmss>/...MessageIDs....csv` and `...Sessions....csv` | `mail_items_accessed` |
 | Mail items accessed | Hawk user investigation | `<upn>/MailItemsAccessed_....csv` or `.json` | `ual_events` |
 

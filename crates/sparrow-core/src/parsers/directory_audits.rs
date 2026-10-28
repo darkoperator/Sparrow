@@ -10,7 +10,6 @@
 
 use crate::Result;
 use crate::db::state_tables::DIRECTORY_AUDITS;
-use crate::hash::sha256_hex;
 use crate::ingest::context::ParseContext;
 use crate::ingest::parser::{ArtifactParser, ParserRegistry};
 use crate::normalize::fields::{Cell, Rec};
@@ -18,7 +17,8 @@ use crate::normalize::net::{normalize_ip, normalize_upn};
 use crate::normalize::ual_shape::get_ci;
 use crate::parsers::records::{RecordFormat, SourceRecord};
 use crate::parsers::stage::{
-    CellRow, RowDraft, TableRows, load_tables, lower, read_state_records, reject, require_any_key,
+    CellRow, RowDraft, TableRows, csv_row_key, load_tables, lower, non_empty_cells,
+    read_state_records, reject, require_any_key,
 };
 use crate::readers::time::zone_assumed;
 use serde_json::{Map, Value, json};
@@ -81,32 +81,6 @@ fn is_portal_csv(records: &[SourceRecord]) -> bool {
         let rec = Rec::new(&r.map, false);
         rec.has("Date (UTC)") && rec.has("Activity") && !rec.has("ActivityDateTime")
     })
-}
-
-/// Non-empty cells of a portal CSV row (blank cells are dropped, other values kept as they are).
-fn non_empty_cells(map: &Map<String, Value>) -> Vec<(String, String)> {
-    map.iter()
-        .filter_map(|(k, v)| match v {
-            Value::String(s) if !s.trim().is_empty() => Some((k.clone(), s.clone())),
-            _ => None,
-        })
-        .collect()
-}
-
-/// `csvrow:` + SHA-256 hex of the row's non-empty cells, sorted by lower-case header, each pair
-/// written as `<byte length of header>:<header><byte length of value>:<value>` so no value can
-/// pass for another cell. Two downloads that order or trim columns differently agree.
-fn csv_row_key(cells: &[(String, String)]) -> String {
-    let mut pairs: Vec<(String, &str)> = cells
-        .iter()
-        .map(|(k, v)| (k.to_lowercase(), v.as_str()))
-        .collect();
-    pairs.sort();
-    let mut input = String::new();
-    for (h, v) in pairs {
-        input += &format!("{}:{h}{}:{v}", h.len(), v.len());
-    }
-    format!("csvrow:{}", sha256_hex(input.as_bytes()))
 }
 
 /// A portal CSV row as a Graph `directoryAudit` object (camelCase). Empty cells are left out;

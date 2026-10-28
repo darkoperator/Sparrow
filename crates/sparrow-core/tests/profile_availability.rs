@@ -409,6 +409,7 @@ fn every_catalog_artifact_pattern_matches_a_registry_id() {
         "portal.entra_signins",
         "portal.entra_audit",
         "portal.message_trace",
+        "portal.message_trace_detail",
     ]);
     for ev in EVIDENCE {
         for pat in ev.artifacts {

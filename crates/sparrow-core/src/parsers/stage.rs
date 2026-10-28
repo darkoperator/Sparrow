@@ -2,6 +2,7 @@
 //! date order across the whole file, stage the cells and load them.
 
 use crate::db::state_tables::{LoadMode, TableSpec};
+use crate::hash::sha256_hex;
 use crate::ingest::context::ParseContext;
 use crate::ingest::state::{StagedRow, load_rows};
 use crate::normalize::fields::{Cell, Rec};
@@ -9,7 +10,7 @@ use crate::parsers::records::{RecordFormat, SourceRecord, placeholder_warning, r
 use crate::readers::text::Span;
 use crate::readers::time::{DateOrder, DateOrderDetector, parse_timestamp};
 use crate::{Error, Result};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 /// A spreadsheet row (XLSX has no text lines): sheet row number and the row's cell texts
 /// joined by tabs.
@@ -252,6 +253,32 @@ pub fn load_tables(ctx: &mut ParseContext<'_>, tables: Vec<TableRows>) -> Result
         }
     }
     Ok(())
+}
+
+/// Non-empty cells of a CSV row (blank cells are dropped, other values kept as they are).
+pub fn non_empty_cells(map: &Map<String, Value>) -> Vec<(String, String)> {
+    map.iter()
+        .filter_map(|(k, v)| match v {
+            Value::String(s) if !s.trim().is_empty() => Some((k.clone(), s.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `csvrow:` + SHA-256 hex of the row's non-empty cells, sorted by lower-case header, each pair
+/// written as `<byte length of header>:<header><byte length of value>:<value>` so no value can
+/// pass for another cell. Two downloads that order or trim columns differently agree.
+pub fn csv_row_key(cells: &[(String, String)]) -> String {
+    let mut pairs: Vec<(String, &str)> = cells
+        .iter()
+        .map(|(k, v)| (k.to_lowercase(), v.as_str()))
+        .collect();
+    pairs.sort();
+    let mut input = String::new();
+    for (h, v) in pairs {
+        input += &format!("{}:{h}{}:{v}", h.len(), v.len());
+    }
+    format!("csvrow:{}", sha256_hex(input.as_bytes()))
 }
 
 /// Record key of a collection's organization-level row (`audit_config`, one per collection).

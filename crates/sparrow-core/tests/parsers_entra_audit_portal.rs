@@ -948,3 +948,27 @@ fn portal_csv_with_a_dotted_user_agent_is_not_a_placeholder_and_warns_nothing() 
         "Microsoft.OData.Client/7.12.5"
     );
 }
+
+#[test]
+fn a_folder_holding_only_the_portal_csv_resolves_to_the_home_tenant_of_its_user_actors() {
+    const HOME: &str = "bbbbbbbb-0000-4000-8000-000000000002";
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("downloads");
+    let mut user = user_row();
+    user.push(("ActorHomeTenantId".into(), HOME.to_uppercase()));
+    // An application actor's home tenant is not evidence.
+    let mut app = app_row();
+    app.push((
+        "ActorHomeTenantId".into(),
+        "cccccccc-0000-4000-8000-000000000003".into(),
+    ));
+    fixtures::write(&folder, CSV_REL, &portal_csv(&[user, app], false));
+    let (mut case, report) = ingest(dir.path());
+    assert!(!report.has_errors(), "{report:#?}");
+    refresh(&mut case, &ProfileOptions::default()).unwrap();
+    assert_eq!(text(&case, "SELECT tenant_key FROM collections"), HOME);
+    assert_eq!(
+        text(&case, "SELECT tenant_id_source FROM tenant"),
+        "directory_audit_actor_home_tenant"
+    );
+}
