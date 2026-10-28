@@ -52,6 +52,7 @@ with the case path shell-quoted: run `command` as given) and `top_accounts` (up 
  "by_severity": {"high": 16, "medium": 7, "low": 1},
  "stages": ["suspicious_sign_in", "persistence", "mail_access", "sending", "consent", "mfa_change"],
  "first_suspicious": "2026-08-21T09:12:00.000000Z", "rules": ["SPW-ID-002", "SPW-MAIL-004"],
+ "signins_first": "2026-08-01T07:00:00.000000Z", "signins_last": "2026-08-25T18:30:00.000000Z",
  "addresses": [{"ip": "203.0.113.4", "reasons": ["finding_evidence", "acts_without_signin", "hosting"],
    "tables": ["ual_events"], "first_seen": "...", "last_seen": "...", "asn": 14061, "asn_org": "DigitalOcean",
    "is_hosting": true, "spray_source": false, "in_user_signins": false}],
@@ -64,7 +65,10 @@ with the case path shell-quoted: run `command` as given) and `top_accounts` (up 
   `takeover = true` (so that stage can appear with no rule declaring it).
 - `addresses` (at most 20, strongest reason first). Reasons:
   - `finding_evidence`: on the evidence rows of one of the account's findings.
-  - `acts_without_signin`: the account ACTS from it and no sign-in of the account (any result) ever came from it. "Acts"
+  - `acts_without_signin`: the account ACTS from it, at a time inside the account's sign-in window
+    (`signins_first` to `signins_last`, inclusive), and no sign-in of the account (any result) ever came from it. An
+    account with `signins_first` null has no sign-ins in the case (they were not collected): nothing is compared, so
+    no address gets this reason, and its absence says nothing. "Acts"
     means exactly: a `ual_events` record of the account (UserId); a parent-less `mail_items_accessed` row (a
     MailItemsAccessed record is in `ual_events` too); a `mailbox_audit_legacy` OWNER logon on the account's mailbox;
     a `message_trace` row the account SENT (sender only, not received mail). A Microsoft-service address

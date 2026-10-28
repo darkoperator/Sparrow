@@ -79,7 +79,7 @@ export function findingDetail(): FindingDetail {
 
 const ACCOUNT = [
   "tenant_key", "upn", "worst_severity", "finding_count", "by_severity", "stages", "first_suspicious", "rules",
-  "addresses", "addresses_total", "addresses_truncated",
+  "signins_first", "signins_last", "addresses", "addresses_total", "addresses_truncated",
 ];
 const ADDRESS = ["ip", "reasons", "tables", "first_seen", "last_seen", "asn", "asn_org", "is_hosting", "spray_source"];
 

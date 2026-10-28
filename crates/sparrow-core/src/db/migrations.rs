@@ -120,6 +120,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "directory_audits_completeness",
         sql: include_str!("../../migrations/0022_directory_audits_completeness.sql"),
     },
+    Migration {
+        version: 23,
+        name: "account_signin_window",
+        sql: include_str!("../../migrations/0023_account_signin_window.sql"),
+    },
 ];
 
 /// The migration that adds the Phase 7 analyst tables and the audit trail.

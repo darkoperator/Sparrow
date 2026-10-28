@@ -1313,7 +1313,7 @@ fn the_report_has_an_accounts_section_after_the_summary_and_before_the_timeline(
     let section = &md[at("## Accounts")..at("## Timeline by phase")];
     assert!(section.contains("facts, not decisions"), "{section}");
     assert!(section.contains(
-        "| Tenant | Account | Worst severity | Stages | First suspicious (UTC) | Reviewed | Addresses |"
+        "| Tenant | Account | Worst severity | Stages | First suspicious (UTC) | Sign-in coverage (UTC) | Reviewed | Addresses |"
     ));
     // One table row per account, worst first, each with its tenant, severity and stages.
     let rows: Vec<&str> = section
@@ -1393,8 +1393,8 @@ fn the_reviewed_column_counts_the_accounts_findings_with_an_accepted_review() {
             .find(|l| l.contains(&md_escaped(&a.upn)))
             .unwrap();
         let cells: Vec<&str> = row.split(" | ").collect();
-        // Tenant, Account, Worst severity, Stages, First suspicious, Reviewed, Addresses.
-        assert_eq!(cells[5].trim(), want.to_string(), "{row}");
+        // Tenant, Account, Worst severity, Stages, First suspicious, Sign-in coverage, Reviewed, Addresses.
+        assert_eq!(cells[6].trim(), want.to_string(), "{row}");
         total += want;
     }
     assert!(total >= 1, "some account has a reviewed finding");
@@ -1422,7 +1422,7 @@ fn the_same_account_in_two_tenants_gets_two_distinct_rows_in_the_report() {
         )
         .unwrap();
     c.execute(
-        "INSERT INTO account_rollup SELECT 'second-tenant', upn, 'low', 1, '{\"low\":1}', '[\"persistence\"]', first_suspicious, rules, '[]', 0, false, computed_run_id FROM account_rollup WHERE upn = ?",
+        "INSERT INTO account_rollup SELECT 'second-tenant', upn, 'low', 1, '{\"low\":1}', '[\"persistence\"]', first_suspicious, rules, '[]', 0, false, computed_run_id, signins_first, signins_last FROM account_rollup WHERE upn = ?",
         [&upn],
     )
     .unwrap();

@@ -66,7 +66,8 @@ pub struct AccountExpect {
     /// (`Stage` names, in the stage enum's order).
     pub stages: Vec<String>,
     /// Addresses the row must list with the reason `acts_without_signin`: MailItemsAccessed records of
-    /// these storylines from an address the account never signs in from. Sorted, canonical text.
+    /// these storylines from an address the account never signs in from, at a time inside the span of the
+    /// account's delivered sign-ins (an account with none has no such address). Sorted, canonical text.
     pub addresses: Vec<String>,
 }
 

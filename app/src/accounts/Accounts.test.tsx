@@ -31,6 +31,17 @@ describe("Accounts", () => {
     expect(screen.queryByLabelText("Warnings")).toBeNull();
   });
 
+  it("shows each account's sign-in coverage, or that none were collected", async () => {
+    const covered = { ...page.accounts[0], signins_first: "2026-08-01T07:00:00.000000Z", signins_last: "2026-08-25T18:30:00.000000Z" };
+    const bare = { ...page.accounts[1], signins_first: null, signins_last: null };
+    page = { ...page, accounts: [covered, bare] };
+    render(<Accounts onSelect={() => {}} />);
+    const row1 = (await screen.findByRole("button", { name: covered.upn })).closest("tr")!;
+    expect(within(row1).getByText("sign-ins 2026-08-01 07:00:00 to 2026-08-25 18:30:00")).toBeInTheDocument();
+    const row2 = screen.getByRole("button", { name: bare.upn }).closest("tr")!;
+    expect(within(row2).getByText("no sign-ins collected")).toBeInTheDocument();
+  });
+
   it("shows the warnings above an empty table, never an unexplained empty table", async () => {
     page = { accounts: [], total: 0, truncated: false, warnings: ["account roll-up unavailable: run `sparrow detect`"] };
     render(<Accounts onSelect={() => {}} />);

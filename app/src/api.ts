@@ -333,6 +333,9 @@ export interface AccountRow {
   stages: Stage[];
   first_suspicious: string | null;
   rules: string[];
+  /** First and last sign-in of the account in the case; null when the case holds none. */
+  signins_first: string | null;
+  signins_last: string | null;
   addresses: Address[];
   addresses_total: number;
   addresses_truncated: boolean;

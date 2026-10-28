@@ -26,7 +26,9 @@ sparrow summary --case case.duckdb --json
 
 2. **Accounts first.** One row per account with a finding, worst first: `stages` (what the findings show together),
    `first_suspicious`, `addresses` with their `reasons`. An address with `acts_without_signin` is one the account
-   acts from but never signs in from (for example only in mail-read records): an attacker candidate to REPORT.
+   acts from, within the span of its collected sign-ins, but never signs in from (for example only in mail-read records):
+   an attacker candidate to REPORT. An account with null `signins_first`/`signins_last` has no collected sign-ins, so the
+   absence of this reason there is not evidence.
 
 ```bash
 sparrow accounts --case case.duckdb --json

@@ -6,7 +6,9 @@
 //! - `finding_evidence`: on the evidence rows of one of the account's findings;
 //! - `acts_without_signin`: acts for the account in ual_events, mail_items_accessed (parent-less
 //!   rows), mailbox_audit_legacy (owner logons on the account's mailbox) or message_trace (mail the
-//!   account sent) but never appears in the account's sign-ins, and is neither a Microsoft address
+//!   account sent) at a time inside the account's sign-in window (first to last sign-in of the
+//!   account in the case, inclusive; an account with no sign-ins has no window, so nothing acts
+//!   without one) but never appears in the account's sign-ins, and is neither a Microsoft address
 //!   (ip_intel.is_microsoft) nor a private one (ip_intel.is_private, or RFC 1918 / RFC 4193 /
 //!   loopback / link-local by its text): service traffic and message-trace origins are often
 //!   Exchange's own addresses (architect ruling). Such an address may still qualify otherwise;
@@ -54,6 +56,12 @@ pub struct AccountRow {
     #[serde(default, with = "ts_opt")]
     pub first_suspicious: Option<DateTime<Utc>>,
     pub rules: Vec<String>,
+    /// First and last sign-in of the account in the case (any result, any type); both `None` when
+    /// the case holds none.
+    #[serde(default, with = "ts_opt")]
+    pub signins_first: Option<DateTime<Utc>>,
+    #[serde(default, with = "ts_opt")]
+    pub signins_last: Option<DateTime<Utc>>,
     pub addresses: Vec<Address>,
     pub addresses_total: u32,
     pub addresses_truncated: bool,
@@ -73,6 +81,14 @@ const TAKEOVER_RULE: &str = "SPW-ID-005";
 /// Tables where an address acting for the account without signing it in is worth a look.
 const ACTING_TABLES: &str =
     "'ual_events', 'mail_items_accessed', 'mailbox_audit_legacy', 'message_trace'";
+
+/// The sign-in window of each account (lower-case upn) of each tenant, over every `signins` row.
+const SIGNIN_WINDOWS: &str = "win AS (SELECT c.tenant_key, lower(s.user_upn) AS upn, \
+     min(s.event_time) AS first_t, max(s.event_time) AS last_t \
+     FROM signins s JOIN collections c ON c.collection_id = s.collection_id \
+     WHERE s.user_upn IS NOT NULL GROUP BY c.tenant_key, lower(s.user_upn))";
+
+type Window = (Option<DateTime<Utc>>, Option<DateTime<Utc>>);
 
 const REASONS: [&str; 5] = [
     "finding_evidence",
@@ -172,12 +188,15 @@ pub(crate) fn rebuild(conn: &Connection, set: &RuleSet, run_id: i64) -> Result<u
     }
 
     let mut addresses = addresses(conn)?;
+    let mut windows = windows(conn)?;
 
     let mut insert = conn.prepare(
         "INSERT INTO account_rollup (tenant_key, upn, worst_severity, finding_count, by_severity, \
-         stages, first_suspicious, rules, addresses, addresses_total, addresses_truncated, computed_run_id) \
+         stages, first_suspicious, rules, signins_first, signins_last, addresses, addresses_total, \
+         addresses_truncated, computed_run_id) \
          VALUES (?, ?, ?, ?, CAST(? AS JSON), CAST(? AS JSON), CAST(? AS TIMESTAMPTZ), \
-                 CAST(? AS JSON), CAST(? AS JSON), ?, ?, ?)",
+                 CAST(? AS JSON), CAST(? AS TIMESTAMPTZ), CAST(? AS TIMESTAMPTZ), CAST(? AS JSON), \
+                 ?, ?, ?)",
     )?;
     let mut n = 0u64;
     for ((tenant, upn), a) in accounts {
@@ -192,6 +211,9 @@ pub(crate) fn rebuild(conn: &Connection, set: &RuleSet, run_id: i64) -> Result<u
                 &y.ip,
             ))
         });
+        let (first_signin, last_signin) = windows
+            .remove(&(tenant.clone(), upn.clone()))
+            .unwrap_or_default();
         let total = list.len();
         list.truncate(MAX_ADDRESSES);
         let stages: Vec<Stage> = a.stages.into_iter().collect();
@@ -207,9 +229,10 @@ pub(crate) fn rebuild(conn: &Connection, set: &RuleSet, run_id: i64) -> Result<u
             a.count,
             to_json(&a.by_severity)?,
             to_json(&stages)?,
-            a.first_suspicious
-                .map(|t| t.format("%Y-%m-%d %H:%M:%S%.6f+00").to_string()),
+            a.first_suspicious.map(pg_ts),
             to_json(&rules)?,
+            first_signin.map(pg_ts),
+            last_signin.map(pg_ts),
             to_json(&list)?,
             u32::try_from(total).unwrap_or(u32::MAX),
             total > MAX_ADDRESSES,
@@ -218,6 +241,10 @@ pub(crate) fn rebuild(conn: &Connection, set: &RuleSet, run_id: i64) -> Result<u
         n += 1;
     }
     Ok(n)
+}
+
+fn pg_ts(t: DateTime<Utc>) -> String {
+    t.format("%Y-%m-%d %H:%M:%S%.6f+00").to_string()
 }
 
 /// 0 for an address on a finding's evidence, 1 for one acting without a sign-in, 2 otherwise.
@@ -242,9 +269,31 @@ fn from_json<T: for<'de> Deserialize<'de>>(text: &str) -> Result<T> {
 /// (tenant, account) -> its addresses worth a look, unordered and uncapped.
 type AddressMap = BTreeMap<(String, String), Vec<Address>>;
 
+/// (tenant, account) -> first and last sign-in of the account; accounts without sign-ins are absent.
+fn windows(conn: &Connection) -> Result<BTreeMap<(String, String), Window>> {
+    let mut st = conn.prepare(&format!(
+        "WITH {SIGNIN_WINDOWS}
+         SELECT tenant_key, upn, epoch_us(first_t), epoch_us(last_t) FROM win"
+    ))?;
+    let rows = st.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, Option<i64>>(2)?,
+            r.get::<_, Option<i64>>(3)?,
+        ))
+    })?;
+    let mut out = BTreeMap::new();
+    for row in rows {
+        let (tenant, upn, first, last) = row?;
+        out.insert((tenant, upn), (at_us(first), at_us(last)));
+    }
+    Ok(out)
+}
+
 fn addresses(conn: &Connection) -> Result<AddressMap> {
     let sql = format!(
-        "WITH {ACTOR_FINDINGS}, {EVIDENCE_IPS},
+        "WITH {ACTOR_FINDINGS}, {EVIDENCE_IPS}, {SIGNIN_WINDOWS},
          acct AS (SELECT DISTINCT tenant_key, actor AS upn FROM elig),
          act AS (
            SELECT c.tenant_key, lower(s.user_upn) AS upn, s.ip, 'signins' AS tbl, s.event_time AS t,
@@ -289,12 +338,14 @@ fn addresses(conn: &Connection) -> Result<AddressMap> {
            WHERE e.ip IS NOT NULL AND e.ip <> ''
          ),
          per AS (
-           SELECT tenant_key, upn, ip, list(DISTINCT tbl ORDER BY tbl) AS tables,
-                  min(t) AS first_seen, max(t) AS last_seen, bool_or(evidence) AS evidence,
-                  bool_or(tbl = 'signins' AND NOT evidence) AS in_signins,
-                  bool_or(NOT evidence AND tbl IN ({ACTING_TABLES})) AS acts,
-                  bool_or(risky) AS risky
-           FROM seen GROUP BY tenant_key, upn, ip
+           SELECT s.tenant_key, s.upn, s.ip, list(DISTINCT s.tbl ORDER BY s.tbl) AS tables,
+                  min(s.t) AS first_seen, max(s.t) AS last_seen, bool_or(s.evidence) AS evidence,
+                  bool_or(s.tbl = 'signins' AND NOT s.evidence) AS in_signins,
+                  coalesce(bool_or(NOT s.evidence AND s.tbl IN ({ACTING_TABLES})
+                                   AND s.t >= w.first_t AND s.t <= w.last_t), false) AS acts,
+                  bool_or(s.risky) AS risky
+           FROM seen s LEFT JOIN win w ON w.tenant_key = s.tenant_key AND w.upn = s.upn
+           GROUP BY s.tenant_key, s.upn, s.ip
          ),
          intel AS (
            SELECT ip, min(asn) AS asn, min(asn_org) AS asn_org, bool_or(is_hosting) AS is_hosting,
@@ -395,7 +446,8 @@ pub fn read_accounts(conn: &Connection) -> Result<Vec<AccountRow>> {
     let mut st = conn.prepare(&format!(
         "SELECT tenant_key, upn, worst_severity, finding_count, CAST(by_severity AS VARCHAR), \
                 CAST(stages AS VARCHAR), epoch_us(first_suspicious), CAST(rules AS VARCHAR), \
-                CAST(addresses AS VARCHAR), addresses_total, addresses_truncated \
+                CAST(addresses AS VARCHAR), addresses_total, addresses_truncated, \
+                epoch_us(signins_first), epoch_us(signins_last) \
          FROM account_rollup ORDER BY {ACCOUNT_ORDER}"
     ))?;
     let rows = st.query_map([], |r| {
@@ -411,6 +463,8 @@ pub fn read_accounts(conn: &Connection) -> Result<Vec<AccountRow>> {
             r.get::<_, String>(8)?,
             r.get::<_, i64>(9)?,
             r.get::<_, bool>(10)?,
+            r.get::<_, Option<i64>>(11)?,
+            r.get::<_, Option<i64>>(12)?,
         ))
     })?;
     let mut out = Vec::new();
@@ -427,6 +481,8 @@ pub fn read_accounts(conn: &Connection) -> Result<Vec<AccountRow>> {
             addrs,
             total,
             truncated,
+            signins_first,
+            signins_last,
         ) = row?;
         out.push(AccountRow {
             tenant_key,
@@ -437,6 +493,8 @@ pub fn read_accounts(conn: &Connection) -> Result<Vec<AccountRow>> {
             stages: from_json(&stages)?,
             first_suspicious: at_us(first),
             rules: from_json(&rules)?,
+            signins_first: at_us(signins_first),
+            signins_last: at_us(signins_last),
             addresses: from_json(&addrs)?,
             addresses_total: u32::try_from(total).unwrap_or(u32::MAX),
             addresses_truncated: truncated,

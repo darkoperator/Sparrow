@@ -75,7 +75,9 @@
         "Addresses",
         "AddressesTotal",
         "AddressesTruncated",
-        "Reviewed"
+        "Reviewed",
+        "SigninsFirst",
+        "SigninsLast"
       ],
       [
         "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
@@ -89,7 +91,9 @@
         "203.0.113.1 (finding_evidence, hosting, risky_signin); 203.0.113.2 (finding_evidence, hosting, risky_signin); 203.0.113.4 (finding_evidence, acts_without_signin, hosting)",
         "3",
         "false",
-        "1"
+        "1",
+        "2026-08-11 14:42:01",
+        "2026-09-09 18:17:59"
       ],
       [
         "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
@@ -103,7 +107,9 @@
         "203.0.113.6 (finding_evidence)",
         "1",
         "false",
-        "0"
+        "0",
+        "2026-08-11 14:38:02",
+        "2026-09-09 16:29:32"
       ],
       [
         "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
@@ -117,7 +123,9 @@
         "203.0.113.2 (finding_evidence, acts_without_signin, hosting)",
         "1",
         "false",
-        "0"
+        "0",
+        "2026-08-12 14:37:11",
+        "2026-09-09 23:49:44"
       ],
       [
         "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
@@ -131,7 +139,9 @@
         "203.0.113.1 (finding_evidence, hosting, risky_signin)",
         "1",
         "false",
-        "0"
+        "0",
+        "2026-08-12 00:37:15",
+        "2026-09-09 07:03:15"
       ],
       [
         "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
@@ -145,7 +155,9 @@
         "203.0.113.1 (finding_evidence, hosting, risky_signin)",
         "1",
         "false",
-        "0"
+        "0",
+        "2026-08-11 16:11:54",
+        "2026-09-09 12:44:47"
       ],
       [
         "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
@@ -159,7 +171,9 @@
         "203.0.113.1 (finding_evidence, hosting, risky_signin)",
         "1",
         "false",
-        "0"
+        "0",
+        "2026-08-12 00:22:04",
+        "2026-09-09 07:51:48"
       ],
       [
         "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
@@ -173,7 +187,9 @@
         "192.0.2.9 (finding_evidence)",
         "1",
         "false",
-        "0"
+        "0",
+        "2026-08-12 00:10:52",
+        "2026-09-09 04:57:21"
       ],
       [
         "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
@@ -187,7 +203,9 @@
         "192.0.2.7 (finding_evidence)",
         "1",
         "false",
-        "0"
+        "0",
+        "2026-08-12 00:26:51",
+        "2026-09-09 05:46:15"
       ],
       [
         "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
@@ -201,7 +219,9 @@
         "198.51.100.3 (finding_evidence)",
         "1",
         "false",
-        "0"
+        "0",
+        "2026-08-11 14:24:08",
+        "2026-09-09 14:01:26"
       ]
     ]
   },

@@ -113,6 +113,7 @@ fn detected() -> Case {
         json!({"upn": ALICE, "forwarding_smtp_address": "x@evil.example", "collected_at": iso(at(10, 0, 0))}),
     );
     signin(&case, T1, ALICE, "203.0.113.10", at(1, 8, 0), 0);
+    signin(&case, T1, ALICE, "203.0.113.10", at(5, 8, 0), 0);
     // Alice's mail is read from an address she never signed in from.
     insert_row(
         &case,
@@ -489,6 +490,9 @@ fn an_address_seen_only_in_the_ual_is_listed_too() {
         T1,
         json!({"upn": ALICE, "forwarding_smtp_address": "x@evil.example", "collected_at": iso(at(10, 0, 0))}),
     );
+    // Her sign-ins span the day of the read, which is what lets the read count as acting without one.
+    signin(&case, T1, ALICE, "203.0.113.10", at(1, 8, 0), 0);
+    signin(&case, T1, ALICE, "203.0.113.10", at(6, 8, 0), 0);
     insert_ual(
         &case,
         T1,

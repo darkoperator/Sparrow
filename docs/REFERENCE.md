@@ -258,14 +258,16 @@ make no row and their addresses are attributed to nobody): `tenant_key`, `upn`, 
 medium > low > info), `finding_count`, `by_severity` (JSON, only severities present), `stages` (JSON array in the fixed
 order above: the union of the `stage:` of the rules of the account's findings, plus `credential_takeover` when an
 SPW-ID-005 evidence row of the account has context `takeover = true`), `first_suspicious` (earliest `first_seen` among
-the account's findings of severity medium or higher; null when none), `rules` (distinct rule ids, sorted), `addresses`
-(at most 20), `addresses_total`, `addresses_truncated`, `computed_run_id`. Each address
+the account's findings of severity medium or higher; null when none), `rules` (distinct rule ids, sorted),
+`signins_first` / `signins_last` (the first and last sign-in of the account in the case, over every `signins` row of the
+tenant and account, any result and type; null when the case holds none, and for rows built before schema 23 until the
+next detection run), `addresses` (at most 20), `addresses_total`, `addresses_truncated`, `computed_run_id`. Each address
 `{ip, reasons, tables, first_seen, last_seen, asn, asn_org, is_hosting, spray_source, in_user_signins}`; the reasons:
 
 | Reason | The address... |
 | --- | --- |
 | `finding_evidence` | is on the evidence rows of one of the account's findings. |
-| `acts_without_signin` | is one the account ACTS from and the account's sign-ins (any result) never carry. "Acts" is exactly: a `ual_events` record whose UserId is the account; a parent-less `mail_items_accessed` row (`record_id` null); a `mailbox_audit_legacy` row with `logon_type` Owner on the account's mailbox; a `message_trace` row the account SENT (`sender`, `from_ip`). A Microsoft-service address (`ip_intel.is_microsoft`) or a private one (`ip_intel.is_private`, or RFC 1918 / RFC 4193 / loopback / link-local by its text) NEVER gets this reason (service and message-trace origins are often Exchange's own addresses); it can still be listed for another reason. |
+| `acts_without_signin` | is one the account ACTS from and the account's sign-ins (any result) never carry, judged only against the account's sign-in window: the account must have sign-ins, and at least one of the address's acts must have a time from `signins_first` to `signins_last`, inclusive. An account whose sign-ins were never collected (sign-ins are often pulled only for the investigated users) has no window, so no address gets this reason for it; an act with no time, or outside the window, does not count. "Acts" is exactly: a `ual_events` record whose UserId is the account; a parent-less `mail_items_accessed` row (`record_id` null); a `mailbox_audit_legacy` row with `logon_type` Owner on the account's mailbox; a `message_trace` row the account SENT (`sender`, `from_ip`). A Microsoft-service address (`ip_intel.is_microsoft`) or a private one (`ip_intel.is_private`, or RFC 1918 / RFC 4193 / loopback / link-local by its text) NEVER gets this reason (service and message-trace origins are often Exchange's own addresses); it can still be listed for another reason. |
 | `hosting` | has `ip_intel.is_hosting`. |
 | `spray_source` | is in the tenant's `spray_sources`. |
 | `risky_signin` | signed the account in with a sign-in or user risk of medium or high, or has a `risk_detections` row for the account and address. |
@@ -412,10 +414,13 @@ rule line and ends `not found: <ids>`; exit 2 when any id is missing.
 `sparrow accounts` prints the account roll-up that detection rebuilds after every run (`account_rollup`), ordered by
 worst severity, then the number of stages (descending), then the first suspicious time, then the UPN. `--json` is
 `{"accounts":[...],"total":N,"truncated":bool,"warnings":[...]}`: each account has `tenant_key`, `upn`,
-`worst_severity`, `finding_count`, `by_severity`, `stages`, `first_suspicious`, `rules`, `addresses` (at most 20, each
+`worst_severity`, `finding_count`, `by_severity`, `stages`, `first_suspicious`, `rules`, `signins_first` and
+`signins_last` (null when the case holds no sign-ins of the account), `addresses` (at most 20, each
 `{ip, reasons, tables, first_seen, last_seen, asn, asn_org, is_hosting, spray_source, in_user_signins}`),
 `addresses_total` and `addresses_truncated`; `total` counts the accounts before `--limit`. Plain output is one block
-per account (up to 5 addresses with their reasons, then `+N more addresses`) and ends `K of N accounts`. When the
+per account (a header with its stages and first suspicious time and its sign-in coverage, `sign-ins <first> to <last>` or
+`no sign-ins collected`; up to 5 addresses with their reasons, `(never a sign-in of this account)` noted only for an
+account with sign-ins; then `+N more addresses`) and ends `K of N accounts`. When the
 enrichment is not current (a case detected before the roll-up existed, a detection run newer than the enrichment, or
 a failed enrichment) the list is empty, exit 0, and `warnings` (stderr in plain output) names the reason and the fix,
 `sparrow detect`; stale rows are never offered.

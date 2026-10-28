@@ -487,6 +487,10 @@ impl Facts {
     /// `MailItemsAccessed` UAL records among `keys` (record keys) that never appear in the account's own
     /// delivered sign-ins (any result), and that are neither a Microsoft service address nor a private one
     /// (an Exchange front end or a LAN address says nothing about who acted: the roll-up skips them).
+    /// Only an account that has delivered sign-ins can act without one, and only at a time from its
+    /// first to its last delivered sign-in (any result, any type), inclusive: sign-ins are often
+    /// collected only for the investigated users, so an account with none, or an act outside that span,
+    /// has nothing to be compared against.
     pub fn unseen_activity_addresses(
         &self,
         keys: &BTreeSet<String>,
@@ -497,6 +501,18 @@ impl Facts {
                 continue;
             };
             if u.op != "mailitemsaccessed" || !keys.contains(&u.key) {
+                continue;
+            }
+            let own = || {
+                self.signins
+                    .iter()
+                    .filter(|s| s.upn.as_deref() == Some(upn))
+            };
+            let (Some(first), Some(last)) = (own().map(|s| s.t).min(), own().map(|s| s.t).max())
+            else {
+                continue;
+            };
+            if u.t < first || u.t > last {
                 continue;
             }
             if self
@@ -1124,6 +1140,21 @@ mod tests {
         }
     }
 
+    fn signin_at(upn: &str, addr: &str, error: i64, t: i64) -> SignInRow {
+        SignInRow {
+            key: format!("s-{upn}-{addr}-{t}"),
+            t,
+            ..signin(upn, addr, error)
+        }
+    }
+
+    fn ual_at(key: &str, upn: &str, addr: &str, t: i64) -> UalRow {
+        UalRow {
+            t,
+            ..ual(key, upn, addr, "mailitemsaccessed")
+        }
+    }
+
     fn keys(k: &[&str]) -> BTreeSet<String> {
         k.iter().map(|s| s.to_string()).collect()
     }
@@ -1177,7 +1208,7 @@ mod tests {
     #[test]
     fn only_the_storylines_own_mailitemsaccessed_records_count() {
         let f = facts(
-            Vec::new(),
+            vec![signin("alice@contoso.example", "192.0.2.1", 0)],
             vec![
                 ual(
                     "m1",
@@ -1212,7 +1243,7 @@ mod tests {
     #[test]
     fn microsoft_and_private_addresses_are_not_listed() {
         let f = facts(
-            Vec::new(),
+            vec![signin("alice@contoso.example", "192.0.2.1", 0)],
             vec![
                 ual(
                     "m1",
@@ -1280,8 +1311,8 @@ mod tests {
     }
 
     #[test]
-    fn a_collector_with_no_signin_log_lists_every_address() {
-        // Hawk 3 delivers no sign-ins: nothing is ever "seen" in them.
+    fn an_account_with_no_delivered_signins_has_nothing_to_act_without() {
+        // Hawk 3 delivers no sign-ins: there is nothing to compare an address against.
         let f = facts(
             Vec::new(),
             vec![ual(
@@ -1292,6 +1323,70 @@ mod tests {
             )],
             &[],
         );
-        assert_eq!(f.unseen_activity_addresses(&keys(&["m1"])).len(), 1);
+        assert_eq!(f.unseen_activity_addresses(&keys(&["m1"])), BTreeMap::new());
+    }
+
+    #[test]
+    fn another_accounts_signins_give_no_coverage() {
+        let f = facts(
+            vec![signin("bob@contoso.example", "192.0.2.2", 0)],
+            vec![ual(
+                "m1",
+                "alice@contoso.example",
+                "198.51.100.9",
+                "mailitemsaccessed",
+            )],
+            &[],
+        );
+        assert_eq!(f.unseen_activity_addresses(&keys(&["m1"])), BTreeMap::new());
+    }
+
+    #[test]
+    fn only_acts_inside_the_signin_window_count_and_its_ends_are_inclusive() {
+        let a = "alice@contoso.example";
+        let f = facts(
+            // A failed sign-in opens the window and a successful one closes it.
+            vec![
+                signin_at(a, "192.0.2.1", 50126, 1_000),
+                signin_at(a, "192.0.2.1", 0, 5_000),
+            ],
+            vec![
+                ual_at("before", a, "198.51.100.1", 999),
+                ual_at("first", a, "198.51.100.2", 1_000),
+                ual_at("inside", a, "198.51.100.3", 3_000),
+                ual_at("last", a, "198.51.100.4", 5_000),
+                ual_at("after", a, "198.51.100.5", 5_001),
+                // One act outside and one inside: the inside one is enough.
+                ual_at("mixed-out", a, "198.51.100.6", 0),
+                ual_at("mixed-in", a, "198.51.100.6", 2_000),
+            ],
+            &[],
+        );
+        let all = keys(&[
+            "before",
+            "first",
+            "inside",
+            "last",
+            "after",
+            "mixed-out",
+            "mixed-in",
+        ]);
+        assert_eq!(
+            f.unseen_activity_addresses(&all)[a],
+            [
+                "198.51.100.2",
+                "198.51.100.3",
+                "198.51.100.4",
+                "198.51.100.6"
+            ]
+            .into_iter()
+            .map(ip)
+            .collect()
+        );
+        // Only the storyline's records among them are judged.
+        assert_eq!(
+            f.unseen_activity_addresses(&keys(&["before", "after"])),
+            BTreeMap::new()
+        );
     }
 }

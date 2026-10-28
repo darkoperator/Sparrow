@@ -565,9 +565,9 @@ fn upgrading_a_v20_case_keeps_decisions_and_adds_imported_proposals() {
         .unwrap();
     }
     let (from, to) = Case::upgrade(&path).unwrap();
-    assert_eq!((from, to), (20, 22));
+    assert_eq!((from, to), (20, 23));
     let case = Case::open_read_only(&path).unwrap();
-    assert_eq!(case.schema_version().unwrap(), 22);
+    assert_eq!(case.schema_version().unwrap(), 23);
     let kept: (String, String, String, String) = case
         .conn()
         .query_row(
@@ -637,7 +637,7 @@ fn upgrading_a_v21_case_keeps_directory_audits_and_adds_completeness() {
         .unwrap();
     }
     let (from, to) = Case::upgrade(&path).unwrap();
-    assert_eq!((from, to), (21, 22));
+    assert_eq!((from, to), (21, 23));
     let case = Case::open_read_only(&path).unwrap();
     let kept: (String, String, String, String, Option<String>) = case
         .conn()
@@ -673,6 +673,92 @@ fn upgrading_a_v21_case_keeps_directory_audits_and_adds_completeness() {
     );
 }
 
+/// A case file at schema v22 (before migration 23), built migration by migration.
+fn v22_conn(path: &std::path::Path) -> duckdb::Connection {
+    let conn = duckdb::Connection::open(path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name VARCHAR NOT NULL,
+         applied_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp);",
+    )
+    .unwrap();
+    for m in MIGRATIONS.iter().filter(|m| m.version <= 22) {
+        conn.execute_batch(m.sql).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
+            duckdb::params![m.version as i64, m.name],
+        )
+        .unwrap();
+    }
+    conn
+}
+
+#[test]
+fn upgrading_a_v22_case_keeps_account_rollup_and_adds_the_signin_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v22.duckdb");
+    {
+        let conn = v22_conn(&path);
+        conn.execute_batch(
+            "INSERT INTO account_rollup (tenant_key, upn, worst_severity, finding_count, by_severity, stages,
+                 first_suspicious, rules, addresses, addresses_total, addresses_truncated, computed_run_id)
+             VALUES ('t1', 'alice@contoso.example', 'high', 2, '{\"high\":2}', '[\"persistence\"]',
+                     TIMESTAMPTZ '2026-03-01 08:00:00+00', '[\"SPW-T-001\"]',
+                     '[{\"ip\":\"203.0.113.10\",\"reasons\":[\"hosting\"]}]', 1, false, 7);",
+        )
+        .unwrap();
+    }
+    let (from, to) = Case::upgrade(&path).unwrap();
+    assert_eq!((from, to), (22, 23));
+    let case = Case::open_read_only(&path).unwrap();
+    let kept: (String, String, i64, String, String, i64, Option<String>, Option<String>) = case
+        .conn()
+        .query_row(
+            "SELECT tenant_key, upn, finding_count, CAST(stages AS VARCHAR), CAST(addresses AS VARCHAR),
+                    computed_run_id, CAST(signins_first AS VARCHAR), CAST(signins_last AS VARCHAR)
+             FROM account_rollup",
+            [],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        kept,
+        (
+            "t1".into(),
+            "alice@contoso.example".into(),
+            2,
+            "[\"persistence\"]".into(),
+            "[{\"ip\":\"203.0.113.10\",\"reasons\":[\"hosting\"]}]".into(),
+            7,
+            None,
+            None
+        )
+    );
+    let comment: Option<String> = case
+        .conn()
+        .query_row(
+            "SELECT comment FROM duckdb_columns() WHERE table_name = 'account_rollup' AND column_name = 'signins_first'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        comment
+            .unwrap()
+            .contains("acts_without_signin is judged only inside this window")
+    );
+}
+
 #[test]
 fn describe_lists_views_with_their_kind() {
     let case = Case::in_memory().unwrap();
@@ -685,7 +771,7 @@ fn describe_lists_views_with_their_kind() {
 #[test]
 fn state_table_specs_match_the_schema() {
     let case = Case::in_memory().unwrap();
-    assert_eq!(case.schema_version().unwrap(), 22);
+    assert_eq!(case.schema_version().unwrap(), 23);
     for spec in ALL {
         for common in [
             "record_key",

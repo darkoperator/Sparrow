@@ -76,7 +76,7 @@ pub fn accounts(a: AccountsArgs, json: bool) -> Result<ExitCode> {
         );
         let stages: Vec<&str> = acc.stages.iter().map(|s| s.as_str()).collect();
         println!(
-            "  stages {}  first suspicious {}",
+            "  stages {}  first suspicious {}  {}",
             if stages.is_empty() {
                 "-".to_string()
             } else {
@@ -85,8 +85,13 @@ pub fn accounts(a: AccountsArgs, json: bool) -> Result<ExitCode> {
             acc.first_suspicious
                 .as_ref()
                 .map(ts)
-                .unwrap_or_else(|| "-".into())
+                .unwrap_or_else(|| "-".into()),
+            match (&acc.signins_first, &acc.signins_last) {
+                (Some(first), Some(last)) => format!("sign-ins {} to {}", ts(first), ts(last)),
+                _ => "no sign-ins collected".to_string(),
+            }
         );
+        let covered = acc.signins_first.is_some();
         for x in acc.addresses.iter().take(ACCOUNT_ADDRESSES_SHOWN) {
             println!(
                 "  {}  {}{}{}",
@@ -96,7 +101,7 @@ pub fn accounts(a: AccountsArgs, json: bool) -> Result<ExitCode> {
                     .as_deref()
                     .map(|o| format!("  {}", safe(o)))
                     .unwrap_or_default(),
-                if x.in_user_signins {
+                if x.in_user_signins || !covered {
                     ""
                 } else {
                     "  (never a sign-in of this account)"

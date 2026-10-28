@@ -36,17 +36,17 @@ _Analyst to write._
 
 _Computed by Sparrow from every finding of the case, whatever its decision: facts, not decisions. "Reviewed" counts the account's findings with an accepted review._
 
-| Tenant | Account | Worst severity | Stages | First suspicious (UTC) | Reviewed | Addresses |
-| --- | --- | --- | --- | --- | ---: | --- |
-| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | marlowe.rhodes@contoso.example | high | suspicious\_sign\_in, persistence, mail\_access, sending, consent, mfa\_change | 2026-08-21 09:12:00 | 1 | 203.0.113.1 \(finding\_evidence, hosting, risky\_signin\)<br>203.0.113.2 \(finding\_evidence, hosting, risky\_signin\)<br>203.0.113.4 \(finding\_evidence, acts\_without\_signin, hosting\) |
-| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | vance.ingram@contoso.example | high | suspicious\_sign\_in, persistence | 2026-09-07 11:05:00 | 0 | 203.0.113.6 \(finding\_evidence\) |
-| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | admin@contoso.example | high | persistence | 2026-08-20 15:00:00 | 0 | 203.0.113.2 \(finding\_evidence, acts\_without\_signin, hosting\) |
-| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | ollie.carter@contoso.example | high | suspicious\_sign\_in | 2026-08-25 11:00:00 | 0 | 203.0.113.1 \(finding\_evidence, hosting, risky\_signin\) |
-| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | xander.irwin@contoso.example | high | suspicious\_sign\_in | 2026-08-25 11:00:00 | 0 | 203.0.113.1 \(finding\_evidence, hosting, risky\_signin\) |
-| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | frances.rourke@contoso.example | high | suspicious\_sign\_in | 2026-08-27 10:00:00 | 0 | 203.0.113.1 \(finding\_evidence, hosting, risky\_signin\) |
-| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | gale.yates@contoso.example | medium | consent | 2026-08-09 14:00:00 | 0 | 192.0.2.9 \(finding\_evidence\) |
-| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | ocean.vincent@contoso.example | medium | persistence | 2026-08-14 16:00:00 | 0 | 192.0.2.7 \(finding\_evidence\) |
-| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | cameron.tucker@contoso.example | medium | sending | 2026-08-15 12:34:05 | 0 | 198.51.100.3 \(finding\_evidence\) |
+| Tenant | Account | Worst severity | Stages | First suspicious (UTC) | Sign-in coverage (UTC) | Reviewed | Addresses |
+| --- | --- | --- | --- | --- | --- | ---: | --- |
+| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | marlowe.rhodes@contoso.example | high | suspicious\_sign\_in, persistence, mail\_access, sending, consent, mfa\_change | 2026-08-21 09:12:00 | sign-ins 2026-08-11 14:42:01 to 2026-09-09 18:17:59 | 1 | 203.0.113.1 \(finding\_evidence, hosting, risky\_signin\)<br>203.0.113.2 \(finding\_evidence, hosting, risky\_signin\)<br>203.0.113.4 \(finding\_evidence, acts\_without\_signin, hosting\) |
+| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | vance.ingram@contoso.example | high | suspicious\_sign\_in, persistence | 2026-09-07 11:05:00 | sign-ins 2026-08-11 14:38:02 to 2026-09-09 16:29:32 | 0 | 203.0.113.6 \(finding\_evidence\) |
+| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | admin@contoso.example | high | persistence | 2026-08-20 15:00:00 | sign-ins 2026-08-12 14:37:11 to 2026-09-09 23:49:44 | 0 | 203.0.113.2 \(finding\_evidence, acts\_without\_signin, hosting\) |
+| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | ollie.carter@contoso.example | high | suspicious\_sign\_in | 2026-08-25 11:00:00 | sign-ins 2026-08-12 00:37:15 to 2026-09-09 07:03:15 | 0 | 203.0.113.1 \(finding\_evidence, hosting, risky\_signin\) |
+| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | xander.irwin@contoso.example | high | suspicious\_sign\_in | 2026-08-25 11:00:00 | sign-ins 2026-08-11 16:11:54 to 2026-09-09 12:44:47 | 0 | 203.0.113.1 \(finding\_evidence, hosting, risky\_signin\) |
+| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | frances.rourke@contoso.example | high | suspicious\_sign\_in | 2026-08-27 10:00:00 | sign-ins 2026-08-12 00:22:04 to 2026-09-09 07:51:48 | 0 | 203.0.113.1 \(finding\_evidence, hosting, risky\_signin\) |
+| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | gale.yates@contoso.example | medium | consent | 2026-08-09 14:00:00 | sign-ins 2026-08-12 00:10:52 to 2026-09-09 04:57:21 | 0 | 192.0.2.9 \(finding\_evidence\) |
+| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | ocean.vincent@contoso.example | medium | persistence | 2026-08-14 16:00:00 | sign-ins 2026-08-12 00:26:51 to 2026-09-09 05:46:15 | 0 | 192.0.2.7 \(finding\_evidence\) |
+| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | cameron.tucker@contoso.example | medium | sending | 2026-08-15 12:34:05 | sign-ins 2026-08-11 14:24:08 to 2026-09-09 14:01:26 | 0 | 198.51.100.3 \(finding\_evidence\) |
 
 ## Timeline by phase
 

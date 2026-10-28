@@ -306,7 +306,7 @@ fn plain_top_accounts_show_the_tenant_and_neutralise_control_characters() {
         // with a newline and an escape character in its name.
         c.conn()
             .execute(
-                "INSERT INTO account_rollup SELECT 'second-tenant', upn, worst_severity, finding_count, by_severity, stages, first_suspicious, rules, addresses, addresses_total, addresses_truncated, computed_run_id FROM account_rollup WHERE upn = ?",
+                "INSERT INTO account_rollup SELECT 'second-tenant', upn, worst_severity, finding_count, by_severity, stages, first_suspicious, rules, addresses, addresses_total, addresses_truncated, computed_run_id, signins_first, signins_last FROM account_rollup WHERE upn = ?",
                 [&upn0],
             )
             .unwrap();

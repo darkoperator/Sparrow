@@ -386,6 +386,152 @@ fn the_readers_of_the_enrichment_tables_through_the_binary() {
     assert_eq!(again["warnings"], serde_json::json!([]));
 }
 
+/// The plain-text block of each account: its header line and the indented lines under it.
+fn blocks(out: &str) -> Vec<(String, Vec<String>)> {
+    let mut v: Vec<(String, Vec<String>)> = Vec::new();
+    for l in out.lines() {
+        if l.starts_with("  ") {
+            v.last_mut()
+                .expect("a block header first")
+                .1
+                .push(l.to_string());
+        } else if l.contains(" findings)") {
+            v.push((l.to_string(), Vec::new()));
+        }
+    }
+    v
+}
+
+#[test]
+fn each_account_shows_its_signin_coverage_and_the_never_a_signin_note_only_when_it_has_one() {
+    let tmp = tempfile::tempdir().unwrap();
+    let case_path = tmp.path().join("case.duckdb");
+    let case = case_path.to_str().unwrap();
+    let cache = sparrow_synth::test_cache!();
+    let scenario = sparrow_synth::scenario::load("bec-aitm").unwrap();
+    let tree = cache
+        .tree(&scenario, &GenerateOptions::new(Collector::Invictus, 17))
+        .unwrap();
+    let ingest = run(&["ingest", tree.dir.to_str().unwrap(), "--case", case]);
+    assert!(ingest.code == 0 || ingest.code == 6, "{}", ingest.err);
+
+    // Both accounts first have sign-ins; the second then loses every sign-in of its own, as if they had
+    // never been collected, and detection rebuilds the roll-up.
+    let before = json(&["accounts", "--case", case]);
+    let accounts = before["accounts"].as_array().unwrap();
+    assert!(accounts.len() >= 2, "{before}");
+    let (covered, bare) = (&accounts[0], &accounts[1]);
+    let (covered_upn, bare_upn) = (
+        covered["upn"].as_str().unwrap().to_string(),
+        bare["upn"].as_str().unwrap().to_string(),
+    );
+    for a in [covered, bare] {
+        assert!(
+            a["signins_first"].is_string() && a["signins_last"].is_string(),
+            "{a}"
+        );
+    }
+    {
+        let c = sparrow_core::Case::create_or_open(&case_path).unwrap();
+        c.conn()
+            .execute(
+                "DELETE FROM signins WHERE lower(user_upn) = ?",
+                [bare_upn.as_str()],
+            )
+            .unwrap();
+    }
+    let d = run(&["detect", "--case", case]);
+    assert_eq!(d.code, 0, "{}", d.err);
+
+    let after = json(&["accounts", "--case", case]);
+    let find = |upn: &str| {
+        after["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["upn"] == upn)
+            .unwrap_or_else(|| panic!("{upn} missing in {after}"))
+            .clone()
+    };
+    let (covered, bare) = (find(&covered_upn), find(&bare_upn));
+    assert!(bare["signins_first"].is_null() && bare["signins_last"].is_null());
+    assert!(
+        bare["addresses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|x| !x["reasons"]
+                .as_array()
+                .unwrap()
+                .contains(&"acts_without_signin".into())),
+        "an account with no sign-ins has no acts_without_signin: {bare}"
+    );
+    let shown = |t: &Value| {
+        let t = t.as_str().unwrap();
+        chrono::DateTime::parse_from_rfc3339(t)
+            .unwrap()
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string()
+    };
+    let want_covered = format!(
+        "sign-ins {} to {}",
+        shown(&covered["signins_first"]),
+        shown(&covered["signins_last"])
+    );
+
+    let plain = run(&["accounts", "--case", case]);
+    assert_eq!(plain.code, 0, "{}", plain.err);
+    let all = blocks(&plain.out);
+    let block = |upn: &str| {
+        all.iter()
+            .find(|(h, _)| h.contains(upn))
+            .unwrap_or_else(|| panic!("{upn} missing in {}", plain.out))
+    };
+    let note = "(never a sign-in of this account)";
+
+    let (head, lines) = block(&covered_upn);
+    let stages_line = &lines[0];
+    assert!(
+        stages_line.contains("first suspicious") && stages_line.ends_with(&want_covered),
+        "{stages_line} / {want_covered}"
+    );
+    assert!(!head.contains("no sign-ins collected"));
+    // The covered account has an address that never signed it in: the note is printed on exactly those.
+    assert!(
+        covered["addresses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x["in_user_signins"] == false),
+        "the covered account lists an address outside its sign-ins"
+    );
+    let noted = lines.iter().filter(|l| l.ends_with(note)).count();
+    let expected = covered["addresses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .take(5)
+        .filter(|x| x["in_user_signins"] == false)
+        .count();
+    assert_eq!(noted, expected, "{lines:#?}");
+    assert!(noted >= 1);
+
+    let (_, lines) = block(&bare_upn);
+    assert!(
+        lines[0].ends_with("no sign-ins collected") && !lines[0].contains("sign-ins 20"),
+        "{}",
+        lines[0]
+    );
+    assert!(
+        lines.len() >= 2,
+        "the uncovered account still lists an address for another reason: {lines:#?}"
+    );
+    assert!(
+        lines.iter().all(|l| !l.contains(note)),
+        "no note on an account without sign-ins: {lines:#?}"
+    );
+}
+
 /// `<dir>/**/<id>.yaml`.
 fn find_rule_file(dir: &std::path::Path, id: &str) -> std::path::PathBuf {
     for e in std::fs::read_dir(dir).unwrap() {

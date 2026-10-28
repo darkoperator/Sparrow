@@ -562,10 +562,10 @@ fn accounts_section(conn: &Connection, doc: &mut Vec<String>, reviewed_only: boo
     }
     let reviewed = reviewed_counts(conn)?;
     doc.push(
-        "| Tenant | Account | Worst severity | Stages | First suspicious (UTC) | Reviewed | Addresses |"
+        "| Tenant | Account | Worst severity | Stages | First suspicious (UTC) | Sign-in coverage (UTC) | Reviewed | Addresses |"
             .into(),
     );
-    doc.push("| --- | --- | --- | --- | --- | ---: | --- |".into());
+    doc.push("| --- | --- | --- | --- | --- | --- | ---: | --- |".into());
     for a in &page.accounts {
         let stages: Vec<&str> = a.stages.iter().map(|s| s.as_str()).collect();
         let (items, more) = facts_text::address_items(a, ADDRESSES_SHOWN);
@@ -574,12 +574,13 @@ fn accounts_section(conn: &Connection, doc: &mut Vec<String>, reviewed_only: boo
             cell.push(format!("+{more} more"));
         }
         doc.push(format!(
-            "| {} | {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {} | {} | {} | {} | {} |",
             md_cell(&a.tenant_key),
             md_cell(&a.upn),
             md_cell(&a.worst_severity),
             md_cell(&stages.join(", ")),
             a.first_suspicious.as_ref().map(when).unwrap_or_default(),
+            facts_text::signin_coverage(a),
             reviewed
                 .get(&(a.tenant_key.clone(), a.upn.to_lowercase()))
                 .copied()

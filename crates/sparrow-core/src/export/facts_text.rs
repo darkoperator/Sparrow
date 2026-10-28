@@ -148,6 +148,18 @@ pub fn facts_json(f: &FactsField, rules: &FactRules) -> String {
     }
 }
 
+/// An account's sign-in coverage in one line: `first to last` (UTC), or `no sign-ins collected`.
+pub fn signin_coverage(a: &AccountRow) -> String {
+    match (a.signins_first, a.signins_last) {
+        (Some(first), Some(last)) => format!(
+            "sign-ins {} to {}",
+            first.format("%Y-%m-%d %H:%M:%S"),
+            last.format("%Y-%m-%d %H:%M:%S")
+        ),
+        _ => "no sign-ins collected".to_string(),
+    }
+}
+
 /// An account's addresses in one line each: `ip (reasons)`, at most [`ADDRESSES_SHOWN`], then the rest counted.
 pub fn address_items(a: &AccountRow, shown: usize) -> (Vec<String>, usize) {
     let items: Vec<String> = a

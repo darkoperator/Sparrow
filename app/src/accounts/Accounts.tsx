@@ -15,6 +15,18 @@ const STAGE_LABELS: Record<string, string> = {
 
 const stageLabel = (s: string) => STAGE_LABELS[s] ?? s;
 
+/** `2026-08-01 07:00:00` in UTC, the form `sparrow accounts` prints; anything that is not a time is shown as given. */
+function utc(ts: string): string {
+  const d = new Date(ts);
+  return Number.isNaN(d.getTime()) ? ts : d.toISOString().slice(0, 19).replace("T", " ");
+}
+
+function signinCoverage(a: AccountRow): string {
+  return a.signins_first && a.signins_last
+    ? `sign-ins ${utc(a.signins_first)} to ${utc(a.signins_last)}`
+    : "no sign-ins collected";
+}
+
 function addressText(a: AccountRow["addresses"][number]): string {
   return a.reasons.length > 0 ? `${a.ip} (${a.reasons.join(", ")})` : a.ip;
 }
@@ -86,6 +98,7 @@ export default function Accounts({ onSelect }: { onSelect: (upn: string) => void
                     </button>
                   )}
                   <div className="meta">{displaySafe(a.tenant_key)}</div>
+                  <div className="meta">{displaySafe(signinCoverage(a))}</div>
                 </td>
                 <td>{displaySafe(a.worst_severity)}</td>
                 <td>{a.finding_count}</td>

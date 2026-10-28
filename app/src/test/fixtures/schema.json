@@ -47,7 +47,7 @@
       {
         "name": "addresses",
         "type": "JSON",
-        "comment": "JSON array, at most 20, of addresses worth a look for the account: {ip, reasons, tables, first_seen, last_seen, asn, asn_org, is_hosting, spray_source, in_user_signins}. Reasons: finding_evidence (on one of the account's findings' evidence rows), acts_without_signin (acts for the account in ual_events, mail_items_accessed, mailbox_audit_legacy or message_trace but never appears in the account's sign-ins), hosting (ip_intel.is_hosting), spray_source (in the tenant's spray_sources), risky_signin (a sign-in of the account from it with sign-in or user risk medium or high, or a risk_detections row for the account and address). Ordered by strongest reason (finding_evidence, then acts_without_signin, then the others), then first_seen, then ip."
+        "comment": "JSON array, at most 20, of addresses worth a look for the account: {ip, reasons, tables, first_seen, last_seen, asn, asn_org, is_hosting, spray_source, in_user_signins}. Reasons: finding_evidence (on one of the account's findings' evidence rows), acts_without_signin (acts for the account in ual_events, mail_items_accessed, mailbox_audit_legacy or message_trace at a time inside signins_first..signins_last, inclusive, but never appears in the account's sign-ins; an account with no sign-ins has no window, so no address acts without one; Microsoft and private addresses never qualify by it), hosting (ip_intel.is_hosting), spray_source (in the tenant's spray_sources), risky_signin (a sign-in of the account from it with sign-in or user risk medium or high, or a risk_detections row for the account and address). Ordered by strongest reason (finding_evidence, then acts_without_signin, then the others), then first_seen, then ip."
       },
       {
         "name": "addresses_total",
@@ -63,6 +63,16 @@
         "name": "computed_run_id",
         "type": "BIGINT",
         "comment": "detection_runs.run_id of the run whose enrichment wrote the row."
+      },
+      {
+        "name": "signins_first",
+        "type": "TIMESTAMP WITH TIME ZONE",
+        "comment": "First sign-in of the account in the case, over all signins rows of the tenant and account (any result, any sign-in type); NULL when the case holds none. acts_without_signin is judged only inside this window. NULL for rows built before schema 23 until the next detection run."
+      },
+      {
+        "name": "signins_last",
+        "type": "TIMESTAMP WITH TIME ZONE",
+        "comment": "Last sign-in of the account in the case, over all signins rows of the tenant and account; NULL when the case holds none. acts_without_signin is judged only inside this window. NULL for rows built before schema 23 until the next detection run."
       }
     ]
   },
@@ -1631,13 +1641,13 @@
   },
   {
     "name": "directory_audits",
-    "comment": "Entra ID directory audit events (Hawk EntraIDAuditLogs from Get-MgAuditLogDirectoryAudit; JSON preferred over the CSV, whose nested columns are .NET type names). One row per audit id; later copies only fill NULL columns.",
+    "comment": "Entra ID directory audit events: Hawk EntraIDAuditLogs (JSON preferred over the CSV, whose nested columns are .NET type names), Microsoft-Extractor-Suite Get-GraphEntraAuditLogs JSON, and the Entra admin center audit log download (JSON, or CSV). One row per audit id; later copies only fill NULL columns. A portal CSV row has no audit id: its record_key is csvrow: plus a hash of its cells, so the same CSV event downloaded twice is one row, while the JSON copy of that event is a separate row (the CSV carries nothing to match it on).",
     "kind": "table",
     "columns": [
       {
         "name": "record_key",
         "type": "VARCHAR",
-        "comment": "Audit id, lower-case."
+        "comment": "Audit id, lower-case. For a portal CSV row (no audit id): csvrow: followed by the SHA-256 hex of its non-empty cells sorted by lower-case header, each written as <byte length of header>:<header><byte length of value>:<value>."
       },
       {
         "name": "collection_id",
@@ -1652,7 +1662,7 @@
       {
         "name": "audit_id",
         "type": "VARCHAR",
-        "comment": "Audit event Id, lower-case."
+        "comment": "Audit event Id, lower-case. NULL for portal CSV rows, which have no Id column."
       },
       {
         "name": "event_time",
@@ -1707,7 +1717,7 @@
       {
         "name": "initiated_by_app_id",
         "type": "VARCHAR",
-        "comment": "InitiatedBy.App.AppId, lower-case."
+        "comment": "InitiatedBy.App.AppId, lower-case. NULL for portal CSV rows: the CSV gives the service principal id, not the AppId."
       },
       {
         "name": "initiated_by_app_name",
@@ -1722,7 +1732,7 @@
       {
         "name": "targets",
         "type": "JSON",
-        "comment": "TargetResources as collected."
+        "comment": "TargetResources as collected (Graph camelCase for portal CSV rows: type, displayName, id, userPrincipalName, modifiedProperties; targets whose cells are all empty are left out)."
       },
       {
         "name": "modified_properties",
@@ -1753,6 +1763,11 @@
         "name": "tz_assumed",
         "type": "JSON",
         "comment": "Object {column: true} naming each time column whose value came without a time zone and was stored as if UTC (for example Hawk WhenChanged or AutoReply StartTime, written in the collecting host's local time). Per column like column_collections: the load that writes a column sets or clears its entry. NULL for rows loaded before schema 7 or loads without a time column."
+      },
+      {
+        "name": "data_completeness",
+        "type": "ENUM('full', 'partial')",
+        "comment": "Completeness of the FIRST copy loaded, never rewritten (evidence is not overwritten): full for JSON sources (portal, Invictus, Hawk); partial for CSV (portal CSV stops at 3 targets x 5 modified properties and 6 additional details; Hawk CSV nested columns are .NET type names). Columns that first copy left NULL may have been filled later by a fuller copy of the same Id (column_collections names the collection that supplied each column), so a partial row can hold values from a full copy. NULL for rows loaded before schema 22 until their file is ingested again."
       }
     ]
   },

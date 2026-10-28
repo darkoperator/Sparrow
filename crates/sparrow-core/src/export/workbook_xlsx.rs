@@ -238,6 +238,8 @@ pub fn write(
                         .copied()
                         .unwrap_or(0),
                 )),
+                Cell::Time(a.signins_first),
+                Cell::Time(a.signins_last),
             ]
         })
         .collect();
@@ -257,6 +259,8 @@ pub fn write(
             ("AddressesTotal", 15.0),
             ("AddressesTruncated", 18.0),
             ("Reviewed", 10.0),
+            ("SigninsFirst", 20.0),
+            ("SigninsLast", 20.0),
         ],
         rows,
     )?;

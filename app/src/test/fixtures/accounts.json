@@ -44,6 +44,8 @@
         "SPW-MAIL-006",
         "SPW-MAIL-007"
       ],
+      "signins_first": "2026-08-01T07:00:00.000000Z",
+      "signins_last": "2026-08-25T18:30:00.000000Z",
       "addresses": [
         {
           "ip": "203.0.113.1",
@@ -126,6 +128,8 @@
         "SPW-ID-007",
         "SPW-MAIL-003"
       ],
+      "signins_first": null,
+      "signins_last": null,
       "addresses": [
         {
           "ip": "203.0.113.6",
@@ -166,6 +170,8 @@
         "SPW-HAWK-014",
         "SPW-MAIL-004"
       ],
+      "signins_first": "2026-08-01T07:00:00.000000Z",
+      "signins_last": "2026-08-25T18:30:00.000000Z",
       "addresses": [
         {
           "ip": "203.0.113.2",
@@ -207,6 +213,8 @@
         "SPW-ID-002",
         "SPW-ID-003"
       ],
+      "signins_first": "2026-08-01T07:00:00.000000Z",
+      "signins_last": "2026-08-25T18:30:00.000000Z",
       "addresses": [
         {
           "ip": "203.0.113.1",
@@ -249,6 +257,8 @@
         "SPW-ID-002",
         "SPW-ID-003"
       ],
+      "signins_first": "2026-08-01T07:00:00.000000Z",
+      "signins_last": "2026-08-25T18:30:00.000000Z",
       "addresses": [
         {
           "ip": "203.0.113.1",
@@ -291,6 +301,8 @@
         "SPW-ID-002",
         "SPW-ID-003"
       ],
+      "signins_first": "2026-08-01T07:00:00.000000Z",
+      "signins_last": "2026-08-25T18:30:00.000000Z",
       "addresses": [
         {
           "ip": "203.0.113.1",
@@ -330,6 +342,8 @@
       "rules": [
         "SPW-HAWK-006"
       ],
+      "signins_first": "2026-08-01T07:00:00.000000Z",
+      "signins_last": "2026-08-25T18:30:00.000000Z",
       "addresses": [
         {
           "ip": "192.0.2.9",
@@ -369,6 +383,8 @@
       "rules": [
         "SPW-HAWK-003"
       ],
+      "signins_first": "2026-08-01T07:00:00.000000Z",
+      "signins_last": "2026-08-25T18:30:00.000000Z",
       "addresses": [
         {
           "ip": "192.0.2.7",
@@ -408,6 +424,8 @@
       "rules": [
         "SPW-MAIL-006"
       ],
+      "signins_first": "2026-08-01T07:00:00.000000Z",
+      "signins_last": "2026-08-25T18:30:00.000000Z",
       "addresses": [
         {
           "ip": "198.51.100.3",

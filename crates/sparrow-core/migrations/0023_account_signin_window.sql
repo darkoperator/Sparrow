@@ -1,0 +1,10 @@
+-- Migration 23: account_rollup records each account's sign-in window, and acts_without_signin is judged only inside it.
+-- Sign-ins are often collected only for the investigated users, so an address acting for an account with no sign-ins
+-- (or at a time the case holds no sign-ins for) was never compared against anything. Existing rows keep NULL until the
+-- next detection run rebuilds the table; nothing is rewritten.
+ALTER TABLE account_rollup ADD COLUMN signins_first TIMESTAMPTZ;
+ALTER TABLE account_rollup ADD COLUMN signins_last TIMESTAMPTZ;
+
+COMMENT ON COLUMN account_rollup.signins_first IS 'First sign-in of the account in the case, over all signins rows of the tenant and account (any result, any sign-in type); NULL when the case holds none. acts_without_signin is judged only inside this window. NULL for rows built before schema 23 until the next detection run.';
+COMMENT ON COLUMN account_rollup.signins_last IS 'Last sign-in of the account in the case, over all signins rows of the tenant and account; NULL when the case holds none. acts_without_signin is judged only inside this window. NULL for rows built before schema 23 until the next detection run.';
+COMMENT ON COLUMN account_rollup.addresses IS 'JSON array, at most 20, of addresses worth a look for the account: {ip, reasons, tables, first_seen, last_seen, asn, asn_org, is_hosting, spray_source, in_user_signins}. Reasons: finding_evidence (on one of the account''s findings'' evidence rows), acts_without_signin (acts for the account in ual_events, mail_items_accessed, mailbox_audit_legacy or message_trace at a time inside signins_first..signins_last, inclusive, but never appears in the account''s sign-ins; an account with no sign-ins has no window, so no address acts without one; Microsoft and private addresses never qualify by it), hosting (ip_intel.is_hosting), spray_source (in the tenant''s spray_sources), risky_signin (a sign-in of the account from it with sign-in or user risk medium or high, or a risk_detections row for the account and address). Ordered by strongest reason (finding_evidence, then acts_without_signin, then the others), then first_seen, then ip.';

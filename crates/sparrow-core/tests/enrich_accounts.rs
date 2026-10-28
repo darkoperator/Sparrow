@@ -123,6 +123,7 @@ fn an_address_seen_only_in_mail_items_accessed_is_listed_with_its_reason() {
     // Alice signs in from A and reads mail from A; B and C act for her but never sign her in.
     let (a, b, c) = ("203.0.113.10", "198.51.100.20", "198.51.100.30");
     signin(&case, ALICE, a, at(1, 8, 0), 0);
+    signin(&case, ALICE, a, at(5, 8, 0), 0);
     mia(&case, ALICE, a, at(3, 9, 0), "mia-a");
     mia(&case, ALICE, b, at(3, 10, 0), "mia-b1");
     mia(&case, ALICE, b, at(3, 11, 0), "mia-b2");
@@ -362,7 +363,10 @@ fn rebuilding_twice_leaves_one_row_per_account() {
 fn addresses_are_capped_at_twenty_with_truncation() {
     let mut case = new_case();
     forwarding_mailbox(&case, ALICE);
-    // 25 addresses act for Alice without ever signing her in, one a minute, the last first.
+    // 25 addresses act for Alice without ever signing her in, one a minute, the last first, inside
+    // her sign-in window.
+    signin(&case, ALICE, "192.0.2.10", at(3, 9, 0), 0);
+    signin(&case, ALICE, "192.0.2.10", at(3, 11, 0), 0);
     for i in 0..25u32 {
         mia(
             &case,
@@ -402,6 +406,8 @@ fn microsoft_and_private_addresses_never_act_without_signin() {
     // MailItemsAccessed for Alice from a Microsoft front end, private addresses (one without an
     // ip_intel row: RFC 1918, RFC 4193, loopback, link-local), and one ordinary address.
     let other = "198.51.100.20";
+    signin(&case, ALICE, "192.0.2.10", at(3, 9, 0), 0);
+    signin(&case, ALICE, "192.0.2.10", at(3, 13, 0), 0);
     for (i, ip) in [
         ms,
         private_intel,
@@ -453,4 +459,194 @@ fn a_microsoft_address_is_still_listed_for_another_reason() {
     assert_eq!(al.addresses.len(), 1);
     assert_eq!(al.addresses[0].ip, ms);
     assert_eq!(al.addresses[0].reasons, vec!["hosting".to_string()]);
+}
+
+fn reasons_of(al: &AccountRow) -> Vec<(&str, Vec<&str>)> {
+    al.addresses
+        .iter()
+        .map(|x| {
+            (
+                x.ip.as_str(),
+                x.reasons.iter().map(String::as_str).collect(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn acting_inside_the_signin_window_without_a_signin_is_listed_and_the_window_is_recorded() {
+    let mut case = new_case();
+    forwarding_mailbox(&case, ALICE);
+    let (a, b) = ("203.0.113.10", "198.51.100.20");
+    signin(&case, ALICE, a, at(1, 8, 0), 0);
+    signin(&case, ALICE, a, at(5, 9, 30), 0);
+    mia(&case, ALICE, b, at(3, 10, 0), "mia-b");
+    run(&mut case, &set_of(vec![forwarding_rule()]), &opts(20)).unwrap();
+    let rows = read_accounts(case.conn()).unwrap();
+    let al = account(&rows, ALICE);
+    assert_eq!(reasons_of(al), vec![(b, vec!["acts_without_signin"])]);
+    assert_eq!(al.signins_first, Some(at(1, 8, 0)));
+    assert_eq!(al.signins_last, Some(at(5, 9, 30)));
+}
+
+#[test]
+fn an_account_with_no_signins_has_no_window_and_nothing_acts_without_one() {
+    let mut case = new_case();
+    forwarding_mailbox(&case, ALICE);
+    mia(&case, ALICE, "198.51.100.20", at(3, 10, 0), "mia-b");
+    insert_ual(
+        &case,
+        T,
+        json!({"operation": "MailItemsAccessed", "workload": "Exchange", "record_type": 50,
+               "record_type_name": "ExchangeItemAggregated", "result_status": "Succeeded",
+               "user_upn": ALICE, "client_ip": "198.51.100.30", "event_time": iso(at(4, 10, 0)),
+               "data_completeness": "full"}),
+    );
+    run(&mut case, &set_of(vec![forwarding_rule()]), &opts(20)).unwrap();
+    let rows = read_accounts(case.conn()).unwrap();
+    assert_eq!(rows.len(), 1);
+    let al = account(&rows, ALICE);
+    assert_eq!((al.signins_first, al.signins_last), (None, None));
+    assert_eq!(reasons_of(al), vec![]);
+    assert_eq!((al.addresses_total, al.addresses_truncated), (0, false));
+}
+
+#[test]
+fn an_account_with_no_signins_still_lists_a_hosting_address_for_its_other_reason() {
+    let mut case = new_case();
+    forwarding_mailbox(&case, ALICE);
+    let (host, plain) = ("198.51.100.20", "198.51.100.30");
+    insert_row(
+        &case,
+        "ip_intel",
+        T,
+        json!({"ip": host, "is_microsoft": false, "is_private": false, "is_hosting": true}),
+    );
+    mia(&case, ALICE, host, at(3, 10, 0), "mia-host");
+    mia(&case, ALICE, plain, at(3, 11, 0), "mia-plain");
+    run(&mut case, &set_of(vec![forwarding_rule()]), &opts(20)).unwrap();
+    let rows = read_accounts(case.conn()).unwrap();
+    let al = account(&rows, ALICE);
+    assert_eq!(reasons_of(al), vec![(host, vec!["hosting"])]);
+    assert_eq!((al.signins_first, al.signins_last), (None, None));
+}
+
+#[test]
+fn the_window_is_inclusive_and_one_act_inside_is_enough() {
+    let mut case = new_case();
+    forwarding_mailbox(&case, ALICE);
+    let (first, last) = (at(2, 8, 0), at(6, 8, 0));
+    signin(&case, ALICE, "203.0.113.10", first, 0);
+    signin(&case, ALICE, "203.0.113.10", last, 0);
+    let one_second = chrono::Duration::seconds(1);
+    let before = "198.51.100.1";
+    let after = "198.51.100.2";
+    let at_first = "198.51.100.3";
+    let at_last = "198.51.100.4";
+    let mixed = "198.51.100.5";
+    mia(&case, ALICE, before, first - one_second, "mia-before");
+    mia(&case, ALICE, after, last + one_second, "mia-after");
+    mia(&case, ALICE, at_first, first, "mia-first");
+    mia(&case, ALICE, at_last, last, "mia-last");
+    mia(&case, ALICE, mixed, first - one_second, "mia-mixed-out");
+    mia(&case, ALICE, mixed, at(4, 0, 0), "mia-mixed-in");
+    run(&mut case, &set_of(vec![forwarding_rule()]), &opts(20)).unwrap();
+    let rows = read_accounts(case.conn()).unwrap();
+    let al = account(&rows, ALICE);
+    assert_eq!(
+        reasons_of(al),
+        vec![
+            (mixed, vec!["acts_without_signin"]),
+            (at_first, vec!["acts_without_signin"]),
+            (at_last, vec!["acts_without_signin"]),
+        ]
+    );
+    // Addresses are ordered by first_seen. The window only decides the reason: the mixed address
+    // keeps the time of its act before the window in first_seen.
+    assert_eq!(al.addresses[0].first_seen, Some(first - one_second));
+    assert_eq!(al.addresses[0].last_seen, Some(at(4, 0, 0)));
+}
+
+#[test]
+fn another_accounts_or_another_tenants_signins_give_no_coverage() {
+    let mut case = new_case();
+    forwarding_mailbox(&case, ALICE);
+    // Bob has sign-ins in the tenant; Alice herself has them only in tenant t2.
+    signin(&case, "bob@contoso.example", "203.0.113.10", at(1, 8, 0), 0);
+    signin(&case, "bob@contoso.example", "203.0.113.10", at(6, 8, 0), 0);
+    insert_row(
+        &case,
+        "signins",
+        "t2",
+        json!({"user_upn": ALICE, "ip": "203.0.113.11", "event_time": iso(at(1, 8, 0)),
+               "error_code": 0, "event_type": "interactive", "is_interactive": true}),
+    );
+    insert_row(
+        &case,
+        "signins",
+        "t2",
+        json!({"user_upn": ALICE, "ip": "203.0.113.11", "event_time": iso(at(6, 8, 0)),
+               "error_code": 0, "event_type": "interactive", "is_interactive": true}),
+    );
+    mia(&case, ALICE, "198.51.100.20", at(3, 10, 0), "mia-b");
+    run(&mut case, &set_of(vec![forwarding_rule()]), &opts(20)).unwrap();
+    let rows = read_accounts(case.conn()).unwrap();
+    assert_eq!(rows.len(), 1);
+    let al = account(&rows, ALICE);
+    assert_eq!(al.tenant_key, T);
+    assert_eq!((al.signins_first, al.signins_last), (None, None));
+    assert_eq!(reasons_of(al), vec![]);
+}
+
+#[test]
+fn failed_and_non_interactive_signins_count_toward_the_window() {
+    let mut case = new_case();
+    forwarding_mailbox(&case, ALICE);
+    signin(&case, ALICE, "203.0.113.10", at(2, 8, 0), 50126);
+    insert_row(
+        &case,
+        "signins",
+        T,
+        json!({"user_upn": ALICE, "ip": "203.0.113.10", "event_time": iso(at(6, 8, 0)),
+               "error_code": 0, "event_type": "noninteractive", "is_interactive": false}),
+    );
+    let b = "198.51.100.20";
+    mia(&case, ALICE, b, at(4, 10, 0), "mia-b");
+    run(&mut case, &set_of(vec![forwarding_rule()]), &opts(20)).unwrap();
+    let rows = read_accounts(case.conn()).unwrap();
+    let al = account(&rows, ALICE);
+    assert_eq!(reasons_of(al), vec![(b, vec!["acts_without_signin"])]);
+    assert_eq!(al.signins_first, Some(at(2, 8, 0)));
+    assert_eq!(al.signins_last, Some(at(6, 8, 0)));
+}
+
+#[test]
+fn an_act_without_a_time_does_not_count() {
+    let mut case = new_case();
+    forwarding_mailbox(&case, ALICE);
+    signin(&case, ALICE, "203.0.113.10", at(2, 8, 0), 0);
+    signin(&case, ALICE, "203.0.113.10", at(6, 8, 0), 0);
+    let (untimed, timed) = ("198.51.100.20", "198.51.100.30");
+    insert_row(
+        &case,
+        "message_trace",
+        T,
+        json!({"sender": ALICE, "recipient": "bob@contoso.example", "from_ip": untimed,
+               "status": "Delivered"}),
+    );
+    mia(&case, ALICE, timed, at(4, 0, 0), "mia-timed");
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM message_trace WHERE received IS NULL AND from_ip = '198.51.100.20'"
+        ),
+        1,
+        "the untimed act was stored without a time"
+    );
+    run(&mut case, &set_of(vec![forwarding_rule()]), &opts(20)).unwrap();
+    let rows = read_accounts(case.conn()).unwrap();
+    assert_eq!(
+        reasons_of(account(&rows, ALICE)),
+        vec![(timed, vec!["acts_without_signin"])]
+    );
 }
