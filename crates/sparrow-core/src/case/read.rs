@@ -503,7 +503,7 @@ fn source_refs_sql(n: usize) -> String {
 /// `record_source_refs.source_refs` of each (table, record key) in `keys`; a key without sightings is absent. The
 /// keys are bound as constants, which DuckDB pushes below the view's GROUP BY, so only their sightings are
 /// aggregated (a join or a semi-join on the view aggregates every sighting of the case first).
-fn source_refs_of(
+pub(crate) fn source_refs_of(
     conn: &Connection,
     keys: &BTreeSet<(String, String)>,
 ) -> Result<HashMap<(String, String), Vec<String>>> {

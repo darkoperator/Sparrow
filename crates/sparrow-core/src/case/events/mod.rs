@@ -3,9 +3,16 @@
 //! right after `ip_intel`; nothing else writes it and evidence tables are never touched.
 
 mod build;
+mod filter;
+mod query;
+
+pub use query::{CSV_COLUMNS, detail, export_csv, histogram, page, suggest, summary};
 
 use crate::Result;
+use crate::case::notes::Note;
+use chrono::{DateTime, Utc};
 use duckdb::Connection;
+use serde::{Deserialize, Serialize};
 
 /// The `events.source` values, in grid order.
 pub const SOURCES: &[&str] = &[
@@ -30,4 +37,196 @@ pub const SOURCES: &[&str] = &[
 /// inside the caller's transaction, so a failed rebuild leaves the previous rows.
 pub fn rebuild(conn: &Connection) -> Result<u64> {
     build::rebuild(conn)
+}
+
+/// The thing an entity tab is about. Build the query's scope from it; [`Entity::normalized`] gives the stored spelling.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Entity {
+    /// Events the account performed or whose mailbox it owns (`actor_upn` or `owner_upn`).
+    Account(String),
+    Ip(String),
+    /// A device id (`device_id`) or directory object id (`device_object_id`).
+    Device(String),
+    /// An Entra session id.
+    Session(String),
+}
+
+/// A filter box of the grid. Its text is Harrier's list syntax (see [`EventQuery::fields`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Field {
+    Source,
+    Operation,
+    /// Matches the actor or the owner.
+    Account,
+    Ip,
+    Country,
+    Asn,
+    /// Matches the device id, the directory object id or the display name.
+    Device,
+    Session,
+    Tag,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlagFilter {
+    #[default]
+    All,
+    Suspicious,
+    Malicious,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiFilter {
+    #[default]
+    All,
+    Marked,
+    Unreviewed,
+}
+
+/// What the grid asks for. All fields combine with AND.
+#[derive(Debug, Clone, Default)]
+pub struct EventQuery {
+    pub entity: Option<Entity>,
+    /// Filter boxes: comma separates values (OR); `!value` excludes; `*` is a case-insensitive wildcard; without `*` a
+    /// value matches exactly (case-sensitively, except Account, Device, Session and Tag, which are compared
+    /// lower-cased); a list of only excludes means everything except those. A blank text is no filter; a lone `!` or
+    /// a text of only commas is refused with an `Error::Invalid` naming the field. The `message_trace_event` source is
+    /// left out unless the Source field names it (a wildcard that matches counts).
+    pub fields: Vec<(Field, String)>,
+    /// Case-insensitive substring of the raw record (comma: OR, `*`: wildcard).
+    pub search: Option<String>,
+    /// Inclusive.
+    pub from: Option<DateTime<Utc>>,
+    /// Inclusive.
+    pub to: Option<DateTime<Utc>>,
+    pub flag: FlagFilter,
+    pub ai: AiFilter,
+}
+
+/// A tag on an event. Placeholder until the marks tables exist (the Marks task widens it).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TagRef {
+    pub name: String,
+}
+
+/// Placeholder until the marks tables exist (the Marks task owns the type).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlagLevel {
+    Suspicious,
+    Malicious,
+}
+
+/// Times serialize as `YYYY-MM-DDTHH:MM:SS.ffffffZ` like the rest of the core.
+fn ts_opt<S: serde::Serializer>(
+    t: &Option<DateTime<Utc>>,
+    s: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    match t {
+        Some(t) => s.serialize_str(&crate::case::audit::ts_text(t)),
+        None => s.serialize_none(),
+    }
+}
+
+/// One `events` row, with the marks and counts the grid shows.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct EventRow {
+    pub source_table: String,
+    pub record_key: String,
+    pub source: String,
+    #[serde(serialize_with = "ts_opt")]
+    pub event_time: Option<DateTime<Utc>>,
+    pub time_tz_assumed: Option<bool>,
+    pub tenant_key: Option<String>,
+    pub workload: Option<String>,
+    pub category: String,
+    pub operation: Option<String>,
+    pub result: Option<String>,
+    pub actor_upn: Option<String>,
+    pub owner_upn: Option<String>,
+    pub target: Option<String>,
+    pub ip: Option<String>,
+    pub ip_prefix: Option<String>,
+    pub ip_country: Option<String>,
+    pub asn: Option<i32>,
+    pub asn_org: Option<String>,
+    pub ip_kind: Option<String>,
+    pub device_id: Option<String>,
+    pub device_name: Option<String>,
+    pub device_object_id: Option<String>,
+    pub entra_session_id: Option<String>,
+    pub user_agent: Option<String>,
+    pub app_id: Option<String>,
+    pub summary: Option<String>,
+    /// Distinct findings with this row as evidence (any status), counted from `finding_evidence` when queried.
+    pub finding_count: u32,
+    pub tags: Vec<TagRef>,
+    pub flag: Option<FlagLevel>,
+    pub latest_note: Option<String>,
+    pub note_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EventsPage {
+    pub rows: Vec<EventRow>,
+    pub offset: usize,
+    /// Matching rows, counted up to `browse::COUNT_CAP`.
+    pub total: u64,
+    pub total_capped: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EventsSummary {
+    /// Rows the query matches (the hidden `message_trace_event` rows are not in it unless the query names them).
+    pub total: u64,
+    pub suspicious: u64,
+    pub malicious: u64,
+    /// Rows per source, in `SOURCES` order, sources with none left out.
+    pub per_source: Vec<(String, u64)>,
+    /// `message_trace_event` rows the query matches but leaves out of everything else; 0 when it names them.
+    pub hidden_trace_events: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FindingMark {
+    pub finding_id: String,
+    pub severity: String,
+    /// The finding's `first_seen`, else the first matching event of its evidence.
+    #[serde(serialize_with = "ts_utc")]
+    pub first_seen: DateTime<Utc>,
+    #[serde(serialize_with = "ts_utc")]
+    pub last_seen: DateTime<Utc>,
+}
+
+/// Event counts per time bucket, stacked by source. Bucket `i` covers `[start + i * bucket_seconds, start + (i + 1) *
+/// bucket_seconds)`; an event exactly at the range end opens the last bucket.
+#[derive(Debug, Clone, Serialize)]
+pub struct Histogram {
+    #[serde(serialize_with = "ts_utc")]
+    pub start: DateTime<Utc>,
+    pub bucket_seconds: i64,
+    /// `(source, counts per bucket)`, in `SOURCES` order, sources with no event in range left out. Empty for no rows.
+    pub series: Vec<(String, Vec<u64>)>,
+    /// Open findings (not closed as `false_positive` or `benign`) with evidence among the matching events.
+    pub findings: Vec<FindingMark>,
+}
+
+fn ts_utc<S: serde::Serializer>(t: &DateTime<Utc>, s: S) -> std::result::Result<S::Ok, S::Error> {
+    s.serialize_str(&crate::case::audit::ts_text(t))
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EventDetail {
+    pub row: EventRow,
+    /// The evidence record as stored (its table row as JSON).
+    pub raw: serde_json::Value,
+    /// `<collection folder>/<rel_path>:<line>[-<line>]` per sighting.
+    pub source_refs: Vec<String>,
+    pub tags: Vec<TagRef>,
+    pub notes: Vec<Note>,
+    pub flag: Option<FlagLevel>,
 }
