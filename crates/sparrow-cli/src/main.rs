@@ -99,6 +99,9 @@ enum Command {
     /// Start triage here: the accounts with findings, worst first, with their stages, first suspicious time and
     /// the addresses worth a look (the roll-up detection builds; a case detected before it needs `sparrow detect`)
     Accounts(cmd::read::AccountsArgs),
+    /// Evidence coverage per account: rows and dates per source, which dates the evidence does not cover (sampled
+    /// exports included), and what to request next with the admin portal, Hawk and Microsoft-Extractor-Suite
+    Coverage(cmd::coverage::CoverageArgs),
     /// Evidence availability: what the case holds, what is missing and why
     Capabilities {
         /// Case database file
@@ -709,6 +712,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Some(Command::Capabilities { case }) => cmd_capabilities(&case, json),
         Some(Command::Summary { case }) => cmd_summary(&case, json),
         Some(Command::Accounts(a)) => cmd::read::accounts(a, json),
+        Some(Command::Coverage(a)) => cmd::coverage::run(a, json),
         Some(Command::Verify {
             table,
             record_key,

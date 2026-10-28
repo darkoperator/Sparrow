@@ -1,6 +1,6 @@
 //! The Markdown customer report (Addendum D.6). Sections in a fixed order: Scope, Executive summary (a placeholder
 //! for the analyst, never a conclusion), Timeline by phase (verified entries), Findings (confirmed), Indicators
-//! (malicious and suspicious), Devices to contain, Evidence gaps, Method and integrity. Pending AI decisions are included and labelled
+//! (malicious and suspicious), Devices to contain, Evidence gaps, Evidence coverage and what to request, Method and integrity. Pending AI decisions are included and labelled
 //! "AI decision — not reviewed" unless `reviewed_only` keeps accepted decisions only. Every line that states
 //! evidence cites it as a footnote: `table:record_key` and the source file and line.
 
@@ -12,6 +12,7 @@ use super::{
     indicator_rows, source_refs, when,
 };
 use crate::Result;
+use crate::case::coverage;
 use crate::case::notes::{Note, NoteTarget, notes_for};
 use crate::case::read::{self, EvidenceRow, FactsField, FindingFilter};
 use crate::case::timeline_entries::{self, Phase};
@@ -480,6 +481,16 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
         }
     }
 
+    // ---- Evidence coverage and what to request
+    doc.push(String::new());
+    doc.push("## Evidence coverage and what to request".into());
+    doc.push(String::new());
+    if opts.reviewed_only {
+        doc.push(format!("_{}_", one(COVERAGE_OMITTED)));
+    } else {
+        coverage_section(conn, &mut doc, &opts.dirs)?;
+    }
+
     // ---- Method and integrity
     doc.push(String::new());
     doc.push("## Method and integrity".into());
@@ -512,6 +523,13 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
 /// finding, so listing it would present accounts supported only by unreviewed or rejected findings.
 pub const ACCOUNTS_OMITTED: &str =
     "Account roll-up omitted: it is computed from all findings, including ones not yet reviewed.";
+
+/// Accounts (in the roll-up's order) the report's coverage section lists; the CLI and JSON list all.
+pub const COVERAGE_ACCOUNTS_SHOWN: usize = 10;
+
+/// The line that replaces the coverage tables in a `--reviewed-only` report: they list the accounts of the roll-up and
+/// start each window at the account's first finding, reviewed or not.
+pub const COVERAGE_OMITTED: &str = "Evidence coverage omitted: it covers the accounts of the roll-up and starts at their first finding, including ones not yet reviewed.";
 
 /// Per (tenant, lower-case account): how many of its findings have an accepted review.
 pub(crate) fn reviewed_counts(conn: &Connection) -> Result<BTreeMap<(String, String), u32>> {
@@ -586,6 +604,107 @@ fn accounts_section(conn: &Connection, doc: &mut Vec<String>, reviewed_only: boo
                 .copied()
                 .unwrap_or(0),
             cell.join("<br>")
+        ));
+    }
+    Ok(())
+}
+
+/// Per account with findings, what each evidence source holds and over which dates, and what to request for the
+/// dates it does not cover (`case::coverage`). Facts about the case, never a conclusion: "no event" in a source that
+/// does not cover a date proves nothing about that date.
+fn coverage_section(conn: &Connection, doc: &mut Vec<String>, dirs: &DataDirs) -> Result<()> {
+    let cov = coverage::coverage(
+        conn,
+        &coverage::CoverageOptions {
+            tenant: None,
+            users: Vec::new(),
+            dirs: dirs.clone(),
+        },
+    )?;
+    for w in &cov.warnings {
+        doc.push(format!("_{}._", one(w.trim_end_matches('.'))));
+        doc.push(String::new());
+    }
+    if cov.accounts.is_empty() {
+        doc.push(
+            if cov.warnings.is_empty() {
+                "_No accounts with findings._"
+            } else {
+                "_The account list is unavailable._"
+            }
+            .into(),
+        );
+        return Ok(());
+    }
+    doc.push(
+        "_Per account: the rows each source holds and the dates they span (UTC). The reference window runs from 30 days before the account's first finding (else its first row) to the tenant's last event. A source that is absent, starts after the window starts, ends before it ends, or came from a capped export (sampled) does not show that nothing happened on the dates in its gaps._".into(),
+    );
+    for a in cov.accounts.iter().take(COVERAGE_ACCOUNTS_SHOWN) {
+        doc.push(String::new());
+        doc.push(format!(
+            "**{}** (tenant {}): window {}",
+            md_cell(&a.upn),
+            md_cell(&a.tenant_key),
+            match &a.window {
+                Some(w) => format!("{} to {}", w.start, w.end),
+                None => "none, the tenant has no events".to_string(),
+            }
+        ));
+        doc.push(String::new());
+        doc.push("| Source | Rows | First (UTC) | Last (UTC) | Days | Sampled | Gaps |".into());
+        doc.push("| --- | ---: | --- | --- | ---: | --- | --- |".into());
+        for s in &a.sources {
+            let gaps: Vec<String> = s
+                .gaps
+                .iter()
+                .map(|g| format!("{} {} to {}", g.reason, g.from, g.to))
+                .collect();
+            doc.push(format!(
+                "| {} | {} | {} | {} | {} | {} | {} |",
+                md_cell(&s.title),
+                coverage::thousands(s.rows),
+                s.first.as_ref().map(when).unwrap_or_default(),
+                s.last.as_ref().map(when).unwrap_or_default(),
+                s.days,
+                if s.sampled { "yes" } else { "no" },
+                md_cell(&gaps.join("; "))
+            ));
+        }
+        let own: Vec<_> = cov
+            .requests
+            .iter()
+            .filter(|r| r.tenant_key == a.tenant_key && r.user == a.upn)
+            .collect();
+        if own.is_empty() {
+            doc.push(String::new());
+            doc.push("_Every source covers the window._".into());
+            continue;
+        }
+        doc.push(String::new());
+        doc.push("What to request:".into());
+        doc.push(String::new());
+        for r in own {
+            let how = |h: &Option<String>| md_cell(h.as_deref().unwrap_or("none"));
+            doc.push(format!(
+                "- {}, {} to {} ({})",
+                md_cell(&r.title),
+                r.from,
+                r.to,
+                md_cell(&r.reasons.join(", "))
+            ));
+            doc.push(format!("  - Admin portal: {}", how(&r.console)));
+            doc.push(format!("  - Hawk: {}", how(&r.hawk)));
+            doc.push(format!(
+                "  - Microsoft-Extractor-Suite: {}",
+                how(&r.invictus)
+            ));
+        }
+    }
+    if cov.accounts.len() > COVERAGE_ACCOUNTS_SHOWN {
+        doc.push(String::new());
+        doc.push(format!(
+            "+{} more accounts: run `sparrow coverage --case <file>` for all of them",
+            cov.accounts.len() - COVERAGE_ACCOUNTS_SHOWN
         ));
     }
     Ok(())

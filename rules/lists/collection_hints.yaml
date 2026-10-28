@@ -1,0 +1,41 @@
+# How to request more evidence for an account, per evidence source, in three collectors (`sparrow coverage`).
+# Placeholders: {upn} the account, {from} and {to} the first and last day to cover, inclusive (YYYY-MM-DD, UTC), and
+# {to_next} the day after {to}: Microsoft-Extractor-Suite reads -EndDate/-endDate as that day's midnight and searches up to it
+# (Microsoft-Extractor-Suite.psm1:61-75, Get-MessageTraceLog.ps1:20-35), so the last day needs {to_next}. Hawk's own window is
+# already end-exclusive (Initialize-HawkGlobalObject.ps1:432-446).
+# A collector that has no cmdlet for the source says `null`; never a guess. Every cmdlet and parameter below was
+# checked against the collector source: Microsoft-Extractor-Suite 4.1.0 (Scripts/Get-UAL.ps1,
+# Get-AzureEntraGraphLogs.ps1, Get-MessageTraceLog.ps1, Get-MailboxAuditLog.ps1) and Hawk 4.0.0
+# (functions/User/*.ps1, functions/Tenant/*.ps1). The Hawk per-user cmdlets take no date parameters: they use the
+# investigation window Hawk asked for when it started (or Start-HawkUserInvestigation -StartDate/-EndDate).
+# Extend or override with --rules DIR (lists/collection_hints.yaml, entries replace built-ins by `source`).
+version: 1
+sources:
+  - source: ual
+    console: "Purview portal > Audit > Search: Users = {upn}, date range {from} to {to}, Search, then Export (a per-user search stays under the 1,000,000-row cap)"
+    hawk: null
+    invictus: "Get-UAL -UserIds {upn} -StartDate {from} -EndDate {to_next}"
+  - source: signins_interactive
+    console: "Entra admin center > Monitoring & health > Sign-in logs > User sign-ins (interactive) tab: filter User = {upn} and Date {from} to {to}, Download > JSON"
+    hawk: "Get-HawkUserEntraIDSignInLog -UserPrincipalName {upn} (Hawk sets the window when it starts, {from} to {to}; Graph allows only the last 14 days there; its filter names no event type, so non-interactive sign-ins are not guaranteed)"
+    invictus: "Get-GraphEntraSignInLogs -UserIds {upn} -startDate {from} -endDate {to_next} -EventTypes interactiveUser"
+  - source: signins_noninteractive
+    console: "Entra admin center > Monitoring & health > Sign-in logs > User sign-ins (non-interactive) tab: filter User = {upn} and Date {from} to {to}, Download > JSON"
+    hawk: null
+    invictus: "Get-GraphEntraSignInLogs -UserIds {upn} -startDate {from} -endDate {to_next} -EventTypes nonInteractiveUser"
+  - source: mail_items_accessed
+    console: "Purview portal > Audit > Search: Users = {upn}, Activities = MailItemsAccessed, date range {from} to {to}, Search, then Export"
+    hawk: "Get-HawkUserMailItemsAccessed -UserPrincipalName {upn} (Hawk sets the window when it starts, {from} to {to})"
+    invictus: "Get-UAL -UserIds {upn} -Operations MailItemsAccessed -StartDate {from} -EndDate {to_next}"
+  - source: message_trace
+    console: "Exchange admin center > Mail flow > Message trace > Start a trace: Sender = {upn}, then again with Recipient = {upn}, dates {from} to {to}, report type Extended report, then download it"
+    hawk: "Get-HawkUserMessageTrace -UserPrincipalName {upn} (cannot serve {from} to {to}: it ignores dates and returns only the messages the account sent in roughly the last 7 days; useful only when the range falls inside that)"
+    invictus: "Get-MessageTraceLog -UserIds {upn} -StartDate {from} -EndDate {to_next}"
+  - source: entra_audit
+    console: "Entra admin center > Monitoring & health > Audit logs: Date {from} to {to}, filter Initiated by (actor) = {upn}, Download > JSON; repeat with the Target filter = {upn}"
+    hawk: "Get-HawkTenantEntraIDAuditLog (whole tenant; ignores dates and always returns the last 30 days up to now, so it serves {from} to {to} only inside that)"
+    invictus: "Get-GraphEntraAuditLogs -UserIds {upn} -startDate {from} -endDate {to_next} (rows where the account is only the target are not returned; -All adds them but ignores the dates for target matches, so filter those by date after collecting)"
+  - source: mailbox_audit
+    console: "Exchange admin center has no export for the legacy mailbox audit log; use Exchange Online PowerShell: Search-MailboxAuditLog -Identity {upn} -LogonTypes Delegate,Admin,Owner -StartDate {from} -EndDate {to_next} -ShowDetails -ResultSize 250000"
+    hawk: null
+    invictus: "Get-MailboxAuditLogLegacy -UserIds {upn} -StartDate {from} -EndDate {to_next}"

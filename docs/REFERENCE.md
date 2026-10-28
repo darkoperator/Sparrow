@@ -368,6 +368,8 @@ sparrow timeline-entry propose --time T --title X --phase P --evidence TABLE:KEY
 sparrow note add finding:ID|entry:ID|ioc:ID|TABLE:KEY --text "..." --case case.duckdb
 sparrow accounts --case case.duckdb              # [--tenant T --limit N]: the accounts with findings, worst first, with
                                                   # stages and the addresses worth a look (the roll-up detection builds)
+sparrow coverage --case case.duckdb              # [--tenant T --user UPN... --rules DIR...]: per account, the rows and dates each
+                                                  # source holds, the dates it does not cover, and what to request next
 sparrow finding list --case case.duckdb           # [--status --severity MIN --rule ID... --user UPN --tenant
                                                   #  --rule-updated --review-state --limit N]; severity first,
                                                   #  then the most recent
@@ -427,6 +429,34 @@ account with sign-ins; then `+N more addresses`) and ends `K of N accounts`. Whe
 enrichment is not current (a case detected before the roll-up existed, a detection run newer than the enrichment, or
 a failed enrichment) the list is empty, exit 0, and `warnings` (stderr in plain output) names the reason and the fix,
 `sparrow detect`; stale rows are never offered.
+
+`sparrow coverage --case C [--tenant T] [--user UPN]... [--rules DIR]... [--json]` says, per account, which evidence
+covers it and over what dates, so "no event" is not read as "did not happen", and what to request next. Read-only; it
+adds no audit entry. Accounts are those in the roll-up (accounts with findings), or only the `--user`s given (lower-cased,
+repeatable; a user the case has nothing on is still listed, every source absent), once per tenant. Sources per account:
+`ual` (`ual_events.user_upn`), `signins_interactive` and `signins_noninteractive` (`signins.user_upn` by `event_type`;
+service principal and managed identity sign-ins count in neither), `mail_items_accessed` (the `MailItemsAccessed`
+operation in `ual_events` plus the parent-less `mail_items_accessed` rows, as in `evidence_availability`), `message_trace`
+(`sender` or `recipient`, a message once), `entra_audit` (`directory_audits.initiated_by_upn` or a
+`targets[].userPrincipalName`, key matched case-insensitively) and `mailbox_audit` (`mailbox_audit_legacy.mailbox_upn`).
+Per source: `rows`, `first` and `last` (UTC), `days` (distinct UTC dates with a row) and `sampled` (any of the rows was
+sighted in a file whose warnings name a known export cap, the rule `evidence_availability` uses for `truncated`).
+The reference `window` (UTC dates) runs from the earliest `first_seen` of the account's findings (else its earliest
+row in any source; else, for a user with nothing, the tenant's earliest event) minus 30 days (nothing is subtracted
+from the tenant's earliest event) to the date of the tenant's latest event in any source; it is null when the tenant has
+no events. `gaps` per source are inclusive date ranges with a `reason`: `absent` (no rows: the whole window), `before`
+(window start to the day before the first row), `after` (the day after the last row to the window end) and `sampled`
+(first to last row of a capped export: the absence of an event there proves nothing). Quiet days between the first and
+last row are not gaps. `--json` is `{"accounts":[{"tenant_key","upn","window":{"start","end"},"sources":[{"source",
+"title","rows","first","last","days","sampled","gaps":[{"from","to","reason"}]}]}],"requests":[{"tenant_key","user",
+"source","title","from","to","reasons","console","hawk","invictus"}],"warnings":[]}`. `requests` has one entry per
+account and source with gaps, over the earliest `from` to the latest `to` of its gaps; `console`, `hawk` and `invictus`
+are the portal path, the Hawk command and the Microsoft-Extractor-Suite cmdlet with the user and dates filled in (Extractor end dates are the day after `to`, since it reads them as midnight; hints for commands that ignore dates say so), or
+`null` when that collector has no command for the source (never a guess). They come from `rules/lists/collection_hints.yaml`
+(embedded; `--rules DIR` with `lists/collection_hints.yaml` replaces entries by `source`). Plain output is, per account,
+a header `upn  tenant  window <start>..<end>`, one line per source (`ual  rows 1,234  2026-06-01..2026-10-25  48 days
+SAMPLED`, or `ual  absent`) and its `Request:` lines. The Markdown report has the same facts as the section "Evidence
+coverage and what to request". With no roll-up current, `warnings` says to run `sparrow detect`.
 
 `finding show` adds `facts` for a finding detection stored facts for (the stored `finding_facts`: `window_start`,
 `actor_ips` with `user_signin_days_before`, `other_signals`, and `targets` for forwarding findings; a null count means

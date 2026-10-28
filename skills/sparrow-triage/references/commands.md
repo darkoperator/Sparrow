@@ -26,6 +26,7 @@ truncated} ]}`.
 | What evidence is in the case, and what is missing? | `sparrow capabilities --case case.duckdb --json` |
 | Tenant, window, row counts, top actors, gaps? | `sparrow summary --case case.duckdb --json` |
 | Which accounts have findings, what stages, which addresses? | `sparrow accounts --case case.duckdb --json` |
+| Which evidence covers each account, over which dates, and what should I request next? | `sparrow coverage --case case.duckdb --json` |
 | Which tables and columns exist? | `sparrow schema --case case.duckdb --json` |
 | Columns of one table? | `sparrow schema --case case.duckdb --table signins --json` |
 
@@ -34,6 +35,8 @@ sparrow capabilities --case case.duckdb --json
 sparrow summary --case case.duckdb --json
 sparrow accounts --case case.duckdb --json
 sparrow accounts --case case.duckdb --limit 5 --json
+sparrow coverage --case case.duckdb --json
+sparrow coverage --case case.duckdb --user alice@contoso.example --json
 sparrow schema --case case.duckdb --json
 sparrow schema --case case.duckdb --table signins --json
 ```
@@ -42,6 +45,16 @@ sparrow schema --case case.duckdb --table signins --json
 with the case path shell-quoted: run `command` as given) and `top_accounts` (up to
 3 accounts: upn, tenant_key, worst_severity, stages, first_suspicious, addresses_total) or `top_accounts_unavailable:
 <reason>`; `capabilities --json` carries `next` too.
+
+## Evidence coverage
+
+`sparrow coverage` is read-only. Per account (accounts with findings, or only each `--user`) and source (`ual`,
+`signins_interactive`, `signins_noninteractive`, `mail_items_accessed`, `message_trace`, `entra_audit`, `mailbox_audit`)
+it gives `rows`, `first`, `last`, `days` and `sampled` (rows from a capped export), and `gaps`
+(`{from, to, reason}` with reason `absent`, `before`, `after` or `sampled`) against the account's `window`
+(30 days before its first finding, to the tenant's last event). No event inside a gap proves nothing. `requests`
+lists what to ask for, one per account and source with gaps, with `console` (admin portal), `hawk` and `invictus`
+(Microsoft-Extractor-Suite) commands filled in with the user and dates; `null` means that collector has no command for it.
 
 ## Accounts (the roll-up) and facts
 

@@ -135,6 +135,10 @@ fn parse_list(text: &str, origin: &str, stem: &str) -> Result<ParsedList> {
         }
         return Ok(("hosting_asns".to_string(), values, ListMeta::default()));
     }
+    if stem == "collection_hints" {
+        // Structured data for `sparrow coverage` (see `data::collection_hints`), not a value list.
+        return Ok((stem.to_string(), Vec::new(), ListMeta::default()));
+    }
     let f: ListFile = parse_yaml(text, origin)?;
     if f.description.trim().is_empty() {
         return Err(Error::Invalid(format!(

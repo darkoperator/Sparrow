@@ -38,6 +38,15 @@ sparrow accounts --case case.duckdb --json
    or failed). If it says to, run `sparrow detect --case case.duckdb` once and call `accounts` again; if the warning
    remains, report the roll-up and facts as unavailable and work from `finding list` instead.
 
+   Before you clear an account because no event was found, check what evidence covers it:
+
+```bash
+sparrow coverage --case case.duckdb --json
+```
+
+   A source with `gaps` (`absent`, `before`, `after`, or `sampled` for a capped export) proves nothing about those
+   dates; `requests` says what to collect next, per collector (`null` = that collector has no command for it).
+
 3. **Findings of the accounts you will name or clear.** `accounts` includes accounts whose findings are all low, so
    take an UNFILTERED list (the ids of every account), then read the ones you need with `finding show`, several ids
    per call, at most 50 ids per call (more than 50: batches of 50):

@@ -14,6 +14,10 @@ use regex::Regex;
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap};
 
+/// SQL `LIKE` pattern matching the `source_files.warnings` text of a file whose row count equals a known export cap
+/// (`ingest::supersede::truncation_warning`): the one rule for "this export was likely truncated".
+pub const EXPORT_CAP_WARNING_LIKE: &str = "%known export cap%";
+
 /// Event evidence has times and a retention; state evidence is a current snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {

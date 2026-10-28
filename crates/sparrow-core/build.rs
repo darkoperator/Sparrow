@@ -65,7 +65,10 @@ fn main() {
         "cargo:rustc-env=SPARROW_CORE_BUILD_CONFIG={}",
         build_config()
     );
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../rules");
+    // Run-time lookup (not `env!`): a cached build script must not keep the path of the
+    // checkout (or deleted worktree) it was first compiled in.
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by cargo");
+    let root = Path::new(&manifest).join("../../rules");
     println!("cargo:rerun-if-changed={}", root.display());
     let mut files = Vec::new();
     collect(&root, &root, &mut files);

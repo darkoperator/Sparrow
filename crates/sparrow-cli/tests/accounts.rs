@@ -234,7 +234,9 @@ fn the_readers_of_the_enrichment_tables_through_the_binary() {
     assert_eq!(r.code, 0, "{}", r.err);
     let md = std::fs::read_to_string(&report).unwrap();
     assert!(
-        md.contains("Account roll-up omitted") && !md.contains("| Tenant | Account |"),
+        md.contains("Account roll-up omitted")
+            && md.contains("Evidence coverage omitted")
+            && !md.contains("| Tenant | Account |"),
         "{md}"
     );
     let xlsx = tmp.path().join("w.xlsx");

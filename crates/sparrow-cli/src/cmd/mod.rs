@@ -2,6 +2,7 @@
 
 pub mod actor;
 pub mod audit;
+pub mod coverage;
 pub mod export;
 pub mod finding;
 pub mod note;

@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 const CAPABILITIES: &str = include_str!("../../../data/capabilities.yaml");
 const MS365_RANGES: &str = include_str!("../../../data/ms365_ip_ranges.json");
 const HOSTING_ASNS: &str = include_str!("../../../rules/lists/hosting_asns.yaml");
+const COLLECTION_HINTS: &str = include_str!("../../../rules/lists/collection_hints.yaml");
 const OPERATION_CATALOG: &str = include_str!("../../../data/operation_catalog.yaml");
 
 #[derive(Debug, Clone, Default)]
@@ -247,6 +248,58 @@ pub fn hosting_asns(dirs: &DataDirs) -> Result<Vec<HostingAsn>> {
         let name = path.display().to_string();
         let extra = hosting_asns_file(&text, &name)?;
         base = overlay_by_key(base, extra, |a| a.asn);
+    }
+    Ok(base)
+}
+
+/// How to request one evidence source with each collector (`rules/lists/collection_hints.yaml`). A collector
+/// without a cmdlet for the source is `None`, never a guess. Templates use `{upn}`, `{from}` and `{to}`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CollectionHint {
+    pub source: String,
+    #[serde(default)]
+    pub console: Option<String>,
+    #[serde(default)]
+    pub hawk: Option<String>,
+    #[serde(default)]
+    pub invictus: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CollectionHintsFile {
+    version: u32,
+    sources: Vec<CollectionHint>,
+}
+
+fn collection_hints_file(text: &str, name: &str) -> Result<Vec<CollectionHint>> {
+    let f: CollectionHintsFile = parse_yaml(text, name)?;
+    if f.version != 1 {
+        return Err(Error::Invalid(format!(
+            "{name}: unsupported version {}",
+            f.version
+        )));
+    }
+    Ok(f.sources)
+}
+
+/// Collection hints per evidence source: built-in, overlaid by `<rules>/lists/collection_hints.yaml`
+/// (entries replace built-ins by `source`; a later directory wins).
+pub fn collection_hints(dirs: &DataDirs) -> Result<Vec<CollectionHint>> {
+    let mut base = collection_hints_file(
+        COLLECTION_HINTS,
+        "built-in rules/lists/collection_hints.yaml",
+    )?;
+    for dir in &dirs.rules {
+        let path = dir.join("lists/collection_hints.yaml");
+        if !path.is_file() {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| Error::Invalid(format!("{}: {e}", path.display())))?;
+        let extra = collection_hints_file(&text, &path.display().to_string())?;
+        base = overlay_by_key(base, extra, |h| h.source.clone());
     }
     Ok(base)
 }
