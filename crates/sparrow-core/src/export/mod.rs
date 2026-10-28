@@ -22,6 +22,16 @@ pub(crate) fn when(t: &DateTime<Utc>) -> String {
     t.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
+/// `YYYY-MM-DDTHH:MM:SSZ`, the Markdown report's time format.
+pub(crate) fn iso(t: &DateTime<Utc>) -> String {
+    t.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+/// `yyyy-MM-dd HH:mm:ss UTC`, the CSV and workbook labels' time text.
+fn when_utc(t: &DateTime<Utc>) -> String {
+    format!("{} UTC", when(t))
+}
+
 pub(crate) fn at(us: i64) -> DateTime<Utc> {
     DateTime::from_timestamp_micros(us).unwrap_or_default()
 }
@@ -83,13 +93,18 @@ impl Provenance {
     /// The label an export shows next to the item (empty when there is no decision), with reviewer and time for a
     /// reviewed one. Plain text; the caller escapes it for its format.
     pub fn label(&self) -> String {
+        self.label_with(when_utc)
+    }
+
+    /// [`Self::label`] with the reviewed time written by `fmt`.
+    pub(crate) fn label_with(&self, fmt: fn(&DateTime<Utc>) -> String) -> String {
         let reviewed = |what: &str| {
             let mut s = format!(
                 "{what} by {}",
                 self.reviewed_by.as_deref().unwrap_or("an unnamed reviewer")
             );
             if let Some(t) = &self.reviewed_at {
-                s.push_str(&format!(" at {} UTC", when(t)));
+                s.push_str(&format!(" at {}", fmt(t)));
             }
             s
         };
@@ -105,6 +120,11 @@ impl Provenance {
 
     /// `decided by agent:x on behalf of analyst:y at <time> UTC` (empty without a decision).
     pub fn decided_text(&self) -> String {
+        self.decided_text_with(when_utc)
+    }
+
+    /// [`Self::decided_text`] with the decision time written by `fmt`.
+    pub(crate) fn decided_text_with(&self, fmt: fn(&DateTime<Utc>) -> String) -> String {
         let Some(by) = &self.decided_by else {
             return String::new();
         };
@@ -113,7 +133,7 @@ impl Provenance {
             s.push_str(&format!(" on behalf of {o}"));
         }
         if let Some(t) = &self.decided_at {
-            s.push_str(&format!(" at {} UTC", when(t)));
+            s.push_str(&format!(" at {}", fmt(t)));
         }
         s
     }

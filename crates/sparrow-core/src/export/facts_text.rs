@@ -148,13 +148,13 @@ pub fn facts_json(f: &FactsField, rules: &FactRules) -> String {
     }
 }
 
-/// An account's sign-in coverage in one line: `first to last` (UTC), or `no sign-ins collected`.
+/// An account's sign-in coverage in one line: `first to last` (ISO 8601 UTC), or `no sign-ins collected`.
 pub fn signin_coverage(a: &AccountRow) -> String {
     match (a.signins_first, a.signins_last) {
         (Some(first), Some(last)) => format!(
             "sign-ins {} to {}",
-            first.format("%Y-%m-%d %H:%M:%S"),
-            last.format("%Y-%m-%d %H:%M:%S")
+            first.format("%Y-%m-%dT%H:%M:%SZ"),
+            last.format("%Y-%m-%dT%H:%M:%SZ")
         ),
         _ => "no sign-ins collected".to_string(),
     }

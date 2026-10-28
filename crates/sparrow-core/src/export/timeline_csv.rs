@@ -1,4 +1,4 @@
-//! The Timeline Explorer CSV (Addendum D.6): UTF-8 with a BOM, `Timestamp` (UTC `yyyy-MM-dd HH:mm:ss`) first, then
+//! The Timeline Explorer CSV (Addendum D.6): UTF-8 with a BOM, `Timestamp` (UTC `YYYY-MM-DDTHH:MM:SSZ`) first, then
 //! `Source, Category, User, IP, Operation, Summary, Phase, Status, DecidedBy, ReviewState, FindingIds, EvidenceRef`.
 //! Cells keep the raw stored text; the csv crate quotes commas, quotes and newlines. One exception, against
 //! spreadsheet formula injection (the evidence text can be attacker-controlled: rule names, subjects, user agents,
@@ -14,7 +14,7 @@
 //! export header.
 
 use super::header;
-use super::{at, when};
+use super::{at, iso};
 use crate::Result;
 use crate::case::read::{TimelineFilter, timeline_where};
 use crate::case::timeline_entries::{self, Entry};
@@ -23,8 +23,10 @@ use duckdb::{Connection, params_from_iter};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
-pub const COLUMNS: [&str; 13] = [
+pub const COLUMNS: [&str; 15] = [
     "Timestamp",
+    "EndTime",
+    "EventCount",
     "Source",
     "Category",
     "User",
@@ -102,22 +104,22 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &CsvOpts) -> Result<u
         Scope::All => write_all(conn, &mut w, opts)?,
         Scope::Verified => write_verified(conn, &mut w, opts)?,
     };
-    let mut closing: [String; 13] = Default::default();
-    closing[0] = when(&opts.generated_at);
-    closing[1] = "sparrow-export".into();
-    closing[2] = "header".into();
-    closing[6] = head.one_line();
+    let mut closing: [String; 15] = Default::default();
+    closing[0] = iso(&opts.generated_at);
+    closing[3] = "sparrow-export".into();
+    closing[4] = "header".into();
+    closing[8] = head.one_line();
     put(&mut w, closing)?;
     w.flush().map_err(super::io_err)?;
     Ok(n)
 }
 
-/// One record: every cell but the Timestamp (0) and the FindingIds (11) goes through [`neutralise`].
-fn put<W: Write>(w: &mut csv::Writer<W>, cells: [String; 13]) -> Result<()> {
+/// One record: every cell but the times (0, 1) and the FindingIds (13) goes through [`neutralise`].
+fn put<W: Write>(w: &mut csv::Writer<W>, cells: [String; 15]) -> Result<()> {
     let cells: Vec<String> = cells
         .into_iter()
         .enumerate()
-        .map(|(i, c)| if i == 0 || i == 11 { c } else { neutralise(&c) })
+        .map(|(i, c)| if i <= 1 || i == 13 { c } else { neutralise(&c) })
         .collect();
     w.write_record(&cells).map_err(csv_err)
 }
@@ -155,7 +157,7 @@ fn write_all<W: Write>(conn: &Connection, w: &mut csv::Writer<W>, opts: &CsvOpts
     while let Some(r) = rows.next()? {
         #[cfg(any(test, feature = "test-fixtures"))]
         probe::bump();
-        let when_text = when(&at(r.get::<_, Option<i64>>(0)?.unwrap_or_default()));
+        let when_text = iso(&at(r.get::<_, Option<i64>>(0)?.unwrap_or_default()));
         let source: String = r.get(1)?;
         let phase: Option<String> = r.get(7)?;
         let finding_ids = r
@@ -170,6 +172,8 @@ fn write_all<W: Write>(conn: &Connection, w: &mut csv::Writer<W>, opts: &CsvOpts
             w,
             [
                 when_text,
+                String::new(),
+                String::new(),
                 source.clone(),
                 text(2)?,
                 text(3)?,
@@ -221,7 +225,9 @@ fn write_verified<W: Write>(
         put(
             w,
             [
-                when(&e.event_time),
+                iso(&e.event_time),
+                e.end_time.as_ref().map(super::iso).unwrap_or_default(),
+                e.event_count.map(|c| c.to_string()).unwrap_or_default(),
                 "timeline_entry".to_string(),
                 String::new(),
                 String::new(),

@@ -177,6 +177,8 @@ fn export_holds_reviewed_entries_and_removed_indicators() {
     let agent = Actor::agent("claude", None).unwrap();
     let ev = first_evidence(&a);
     let entry = |title: &str| NewEntry {
+        end_time: None,
+        event_count: None,
         tenant_key: None,
         event_time: chrono::DateTime::from_timestamp(1_785_000_000, 0).unwrap(),
         title: title.into(),
@@ -296,6 +298,8 @@ fn item_keys_are_stable() {
         entry_id: "e1".into(),
         tenant_key: None,
         event_time: "x".into(),
+        end_time: None,
+        event_count: None,
         title: "t".into(),
         narrative: None,
         phase: "recon".into(),
@@ -343,7 +347,7 @@ fn bundle_rejects_unknown_fields() {
 #[test]
 fn migration_21_creates_imported_proposals() {
     let c = Case::in_memory().unwrap();
-    assert_eq!(c.schema_version().unwrap(), 26);
+    assert_eq!(c.schema_version().unwrap(), 27);
     assert_eq!(count(&c, "SELECT count(*) FROM imported_proposals"), 0);
 }
 
@@ -498,6 +502,8 @@ fn accepting_indicators_entries_and_notes_reaches_a_state() {
         a.conn(),
         &ann.as_actor(),
         NewEntry {
+            end_time: None,
+            event_count: None,
             tenant_key: None,
             event_time: chrono::DateTime::from_timestamp(1_785_000_000, 0).unwrap(),
             title: "Sign-in from relay".into(),
@@ -881,6 +887,8 @@ fn an_accepted_entry_is_matched_in_later_bundles() {
         a.conn(),
         &ann.as_actor(),
         NewEntry {
+            end_time: None,
+            event_count: None,
             tenant_key: None,
             event_time: chrono::DateTime::from_timestamp(1_785_000_000, 0).unwrap(),
             title: "Sign-in from relay".into(),
@@ -919,6 +927,8 @@ fn an_accepted_entry_is_matched_in_later_bundles() {
         &ann.as_actor(),
         &e1,
         te::EntryEdit {
+            end_time: None,
+            event_count: None,
             title: Some("Sign-in from the relay host".into()),
             ..te::EntryEdit::default()
         },
@@ -985,6 +995,8 @@ fn an_open_entry_proposal_is_superseded_by_its_edited_successor() {
         a.conn(),
         &ann.as_actor(),
         NewEntry {
+            end_time: None,
+            event_count: None,
             tenant_key: None,
             event_time: chrono::DateTime::from_timestamp(1_785_000_000, 0).unwrap(),
             title: "First".into(),
@@ -1002,6 +1014,8 @@ fn an_open_entry_proposal_is_superseded_by_its_edited_successor() {
         &ann.as_actor(),
         &e1,
         te::EntryEdit {
+            end_time: None,
+            event_count: None,
             title: Some("Second".into()),
             ..te::EntryEdit::default()
         },
@@ -1077,6 +1091,8 @@ fn verified_entry(c: &Case, who: &Reviewer, title: &str) -> String {
         c.conn(),
         &who.as_actor(),
         NewEntry {
+            end_time: None,
+            event_count: None,
             tenant_key: None,
             event_time: chrono::DateTime::from_timestamp(1_785_000_000, 0).unwrap(),
             title: title.into(),
@@ -1156,6 +1172,8 @@ fn accepting_a_rejected_version_reconciles_the_content_then_rejects() {
         &ann.as_actor(),
         &e1,
         te::EntryEdit {
+            end_time: None,
+            event_count: None,
             title: Some("Inbox rule (not the attacker)".into()),
             ..te::EntryEdit::default()
         },
@@ -1204,6 +1222,8 @@ fn a_rejected_edit_proposal_does_not_replace_its_verified_original() {
         &ann.as_actor(),
         &e1,
         te::EntryEdit {
+            end_time: None,
+            event_count: None,
             title: Some("Changed".into()),
             ..te::EntryEdit::default()
         },
@@ -1240,6 +1260,8 @@ fn an_older_ancestor_imported_after_its_edited_successor_is_superseded() {
         &ann.as_actor(),
         &e1,
         te::EntryEdit {
+            end_time: None,
+            event_count: None,
             title: Some("Second".into()),
             ..te::EntryEdit::default()
         },
@@ -1358,4 +1380,219 @@ fn superseded_items_are_counted_by_preview_and_import() {
     let again = share::preview(b.conn(), &old).unwrap();
     assert!(again.already_imported);
     assert_eq!(again.superseded, 1);
+}
+
+// ---- grouped timeline entries (investigate tabs, task 5)
+
+fn group_entry(ev: &[String], title: &str) -> NewEntry {
+    NewEntry {
+        tenant_key: None,
+        event_time: chrono::DateTime::from_timestamp(1_785_000_000, 0).unwrap(),
+        end_time: Some(chrono::DateTime::from_timestamp(1_785_005_400, 0).unwrap()),
+        event_count: Some(42),
+        title: title.into(),
+        narrative: None,
+        phase: Phase::InitialAccess,
+        evidence: ev
+            .iter()
+            .map(|e| te::EvidenceRef::parse(e).unwrap())
+            .collect(),
+    }
+}
+
+fn report_of(c: &Case) -> String {
+    let mut out = Vec::new();
+    sparrow_core::export::report_md::write(
+        c.conn(),
+        &mut out,
+        &sparrow_core::export::report_md::ReportOpts {
+            reviewed_only: false,
+            generated_at: chrono::DateTime::from_timestamp(1_786_000_000, 0).unwrap(),
+            dirs: sparrow_core::data::DataDirs::default(),
+        },
+    )
+    .unwrap();
+    String::from_utf8(out).unwrap()
+}
+
+#[test]
+fn report_and_share_carry_group_fields() {
+    let (a, b) = two_copies();
+    let ann = Reviewer::analyst("ann").unwrap();
+    let bob = Reviewer::analyst("bob").unwrap();
+    let ev = first_evidence(&a);
+    let (grouped, _) = te::create_verified(
+        a.conn(),
+        &ann,
+        group_entry(std::slice::from_ref(&ev), "Spray from the relay"),
+    )
+    .unwrap();
+    let mut one = group_entry(std::slice::from_ref(&ev), "One-event group");
+    one.end_time = None;
+    one.event_count = Some(1);
+    let (single, _) = te::create_verified(a.conn(), &ann, one).unwrap();
+
+    // the report shows `start – end UTC (N events)` for the group, and the count alone for a one-event group
+    let report = report_of(&a);
+    assert!(
+        report.contains(
+            "- **2026-07-25T17:20:00Z–2026-07-25T18:50:00Z (42 events)** — Spray from the relay"
+        ),
+        "{report}"
+    );
+    assert!(
+        report.contains("- **2026-07-25T17:20:00Z (1 event)** — One-event group"),
+        "{report}"
+    );
+
+    // the bundle carries both fields on the group, and leaves them out of an ungrouped entry
+    let bundle = share::export(a.conn(), &ann).unwrap();
+    let find = |id: &str| {
+        bundle
+            .items
+            .iter()
+            .find(|i| matches!(i, Item::TimelineEntry { entry_id, .. } if entry_id == id))
+            .unwrap()
+            .clone()
+    };
+    let Item::TimelineEntry {
+        end_time,
+        event_count,
+        ..
+    } = find(&grouped)
+    else {
+        unreachable!()
+    };
+    assert_eq!(end_time.as_deref(), Some("2026-07-25T18:50:00.000000Z"));
+    assert_eq!(event_count, Some(42));
+    let (bytes, sha) = share::to_bytes(&bundle).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let items = json["items"].as_array().unwrap();
+    let item_of = |id: &str| items.iter().find(|i| i["entry_id"] == id).unwrap();
+    assert_eq!(item_of(&grouped)["end_time"], "2026-07-25T18:50:00.000000Z");
+    assert_eq!(item_of(&grouped)["event_count"], 42);
+    assert!(item_of(&single).get("end_time").is_none());
+    assert_eq!(item_of(&single)["event_count"], 1);
+
+    // importing and accepting rebuilds the group in B, and B's report shows it
+    let s = share::import(b.conn(), &bob, &bytes).unwrap();
+    assert_eq!((s.new, s.agrees, s.conflicts), (2, 0, 0));
+    share::accept(b.conn(), &bob, &sha, &format!("timeline_entry:{grouped}")).unwrap();
+    share::accept(b.conn(), &bob, &sha, &format!("timeline_entry:{single}")).unwrap();
+    let got = te::list(b.conn(), Some("verified"), None).unwrap();
+    assert_eq!(got.len(), 2);
+    let g = got
+        .iter()
+        .find(|e| e.title == "Spray from the relay")
+        .unwrap();
+    assert_eq!(
+        (g.end_time.map(|t| t.timestamp()), g.event_count),
+        (Some(1_785_005_400), Some(42))
+    );
+    let o = got.iter().find(|e| e.title == "One-event group").unwrap();
+    assert_eq!((o.end_time, o.event_count), (None, Some(1)));
+    assert!(report_of(&b).contains("(42 events)** — Spray from the relay"));
+    // a second bundle of the unchanged group agrees with what B took
+    let (again, _) = share::to_bytes(&share::export(a.conn(), &ann).unwrap()).unwrap();
+    let s = share::import(b.conn(), &bob, &again).unwrap();
+    assert_eq!((s.new, s.agrees, s.conflicts), (0, 2, 0));
+}
+
+#[test]
+fn a_changed_span_is_a_conflict_and_a_bad_span_is_refused() {
+    let (a, b) = two_copies();
+    let ann = Reviewer::analyst("ann").unwrap();
+    let bob = Reviewer::analyst("bob").unwrap();
+    let ev = first_evidence(&a);
+    let (id, _) = te::create_verified(
+        a.conn(),
+        &ann,
+        group_entry(std::slice::from_ref(&ev), "Spray from the relay"),
+    )
+    .unwrap();
+    let (v1, sha1) = share::to_bytes(&share::export(a.conn(), &ann).unwrap()).unwrap();
+    share::import(b.conn(), &bob, &v1).unwrap();
+    share::accept(b.conn(), &bob, &sha1, &format!("timeline_entry:{id}")).unwrap();
+    // A changes only the count and verifies the successor: B sees a conflict on the entry it already took
+    let (succ, _) = te::edit(
+        a.conn(),
+        &ann.as_actor(),
+        &id,
+        te::EntryEdit {
+            event_count: Some(Some(90)),
+            ..te::EntryEdit::default()
+        },
+    )
+    .unwrap();
+    te::verify(a.conn(), &ann.as_actor(), &succ).unwrap();
+    let (v2, sha2) = share::to_bytes(&share::export(a.conn(), &ann).unwrap()).unwrap();
+    let s = share::import(b.conn(), &bob, &v2).unwrap();
+    assert_eq!((s.new, s.agrees, s.conflicts), (0, 0, 1));
+    // accepting it brings B's entry to the new count (a successor in B) with the span kept
+    share::accept(b.conn(), &bob, &sha2, &format!("timeline_entry:{succ}")).unwrap();
+    let verified = te::list(b.conn(), Some("verified"), None).unwrap();
+    assert_eq!(verified.len(), 1);
+    assert_eq!(
+        (
+            verified[0].event_count,
+            verified[0].end_time.map(|t| t.timestamp())
+        ),
+        (Some(90), Some(1_785_005_400))
+    );
+
+    // a bundle whose span ends before it starts is refused whole
+    let mutate = |f: &dyn Fn(&mut serde_json::Value)| {
+        let mut j: serde_json::Value = serde_json::from_slice(&v1).unwrap();
+        let item = j["items"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|i| i["entry_id"] == id.as_str())
+            .unwrap();
+        f(item);
+        serde_json::to_vec(&j).unwrap()
+    };
+    let bad = mutate(&|i| i["end_time"] = "2026-07-25T16:00:00.000000Z".into());
+    let err = share::parse(&bad).expect_err("end before start is refused");
+    assert!(err.to_string().contains("before it starts"), "{err}");
+    // and so is a zero count
+    let zero = mutate(&|i| i["event_count"] = 0.into());
+    let err = share::parse(&zero).expect_err("a zero count is refused");
+    assert!(err.to_string().contains("event count"), "{err}");
+    // an end time that is not a time
+    let junk = mutate(&|i| i["end_time"] = "soon".into());
+    assert!(share::parse(&junk).is_err());
+    // the untouched bundle still parses
+    assert!(share::parse(&v1).is_ok());
+}
+
+#[test]
+fn old_bundle_without_group_fields_imports() {
+    let (a, b) = two_copies();
+    let ann = Reviewer::analyst("ann").unwrap();
+    let bob = Reviewer::analyst("bob").unwrap();
+    let ev = first_evidence(&a);
+    let mut plain = group_entry(std::slice::from_ref(&ev), "Sign-in from relay");
+    plain.end_time = None;
+    plain.event_count = None;
+    let (id, _) = te::create_verified(a.conn(), &ann, plain).unwrap();
+    let (bytes, sha) = share::to_bytes(&share::export(a.conn(), &ann).unwrap()).unwrap();
+    // This is a bundle in the shape written before grouped entries: the entry item has neither key.
+    let text = String::from_utf8(bytes.clone()).unwrap();
+    assert!(
+        !text.contains("end_time") && !text.contains("event_count"),
+        "{text}"
+    );
+    let (parsed, _) = share::parse(&bytes).unwrap();
+    assert!(parsed.items.iter().any(|i| matches!(
+        i,
+        Item::TimelineEntry { end_time: None, event_count: None, entry_id, .. } if entry_id == &id
+    )));
+    let s = share::import(b.conn(), &bob, &bytes).unwrap();
+    assert_eq!((s.new, s.agrees, s.conflicts), (1, 0, 0));
+    share::accept(b.conn(), &bob, &sha, &format!("timeline_entry:{id}")).unwrap();
+    let got = te::list(b.conn(), Some("verified"), None).unwrap();
+    assert_eq!(got.len(), 1);
+    assert_eq!((got[0].end_time, got[0].event_count), (None, None));
+    assert!(!report_of(&b).contains("events)"));
 }

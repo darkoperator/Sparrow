@@ -528,6 +528,8 @@ fn seeded_case(dir: &Path) -> Seeded {
         case.conn(),
         &agent,
         NewEntry {
+            end_time: None,
+            event_count: None,
             tenant_key: None,
             event_time: chrono::DateTime::from_timestamp_micros(event_us).unwrap(),
             title: "Sign-in through the AiTM relay".into(),
@@ -985,6 +987,8 @@ fn edit_refused_on_pending_agent_entry() {
             open.case.conn(),
             &agent,
             NewEntry {
+                end_time: None,
+                event_count: None,
                 tenant_key: None,
                 event_time: "2026-03-01T09:00:00Z".parse().unwrap(),
                 title: "Agent proposal".into(),

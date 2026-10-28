@@ -323,6 +323,8 @@ pub fn write(
     for e in &entries {
         let mut row = vec![
             Cell::Time(Some(e.event_time)),
+            Cell::Time(e.end_time),
+            e.event_count.map_or(Cell::Empty, |c| Cell::Int(c as i64)),
             t(&e.phase),
             t(&e.title),
             ot(e.narrative.as_deref()),
@@ -341,6 +343,8 @@ pub fn write(
     }
     let mut cols = vec![
         ("Timestamp", 20.0),
+        ("EndTime", 20.0),
+        ("EventCount", 12.0),
         ("Phase", 16.0),
         ("Title", 50.0),
         ("Narrative", 60.0),

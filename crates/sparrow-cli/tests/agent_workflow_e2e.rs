@@ -580,7 +580,7 @@ fn an_agent_triages_a_bec_aitm_case_and_the_exports_carry_its_decisions() {
         assert_eq!(head_row[0], "Timestamp");
         assert_eq!(
             head_row.join(","),
-            "Timestamp,Source,Category,User,IP,Operation,Summary,Phase,Status,DecidedBy,ReviewState,FindingIds,EvidenceRef"
+            "Timestamp,EndTime,EventCount,Source,Category,User,IP,Operation,Summary,Phase,Status,DecidedBy,ReviewState,FindingIds,EvidenceRef"
         );
         assert!(
             rows.len() >= if scope == "all" { 1000 } else { 3 },
@@ -590,8 +590,8 @@ fn an_agent_triages_a_bec_aitm_case_and_the_exports_carry_its_decisions() {
         for row in &rows {
             assert_eq!(row.len(), head_row.len());
             assert!(
-                chrono::NaiveDateTime::parse_from_str(&row[0], "%Y-%m-%d %H:%M:%S").is_ok(),
-                "Timestamp is UTC yyyy-MM-dd HH:mm:ss: {:?}",
+                chrono::NaiveDateTime::parse_from_str(&row[0], "%Y-%m-%dT%H:%M:%SZ").is_ok(),
+                "Timestamp is UTC YYYY-MM-DDTHH:MM:SSZ: {:?}",
                 row[0]
             );
             for cell in row {
@@ -601,7 +601,7 @@ fn an_agent_triages_a_bec_aitm_case_and_the_exports_carry_its_decisions() {
                 );
             }
         }
-        let summaries: Vec<&str> = rows.iter().map(|r| r[6].as_str()).collect();
+        let summaries: Vec<&str> = rows.iter().map(|r| r[8].as_str()).collect();
         if scope == "verified" {
             assert!(
                 summaries.iter().any(|s| s.starts_with("'=HYPERLINK(")),
@@ -609,25 +609,25 @@ fn an_agent_triages_a_bec_aitm_case_and_the_exports_carry_its_decisions() {
             );
             assert!(
                 rows.iter()
-                    .any(|r| r[9] == "agent:claude" && r[10] == "accepted")
+                    .any(|r| r[11] == "agent:claude" && r[12] == "accepted")
             );
-            assert!(rows.iter().any(|r| r[10] == "pending_review"));
+            assert!(rows.iter().any(|r| r[12] == "pending_review"));
             assert!(
                 !summaries.iter().any(|s| s.contains("Inbox rule updated")),
                 "the proposed entry is not in the verified export"
             );
             assert!(
-                rows.iter().all(|r| r[8] != "proposed"),
+                rows.iter().all(|r| r[10] != "proposed"),
                 "verified scope has no proposed entry"
             );
         } else {
             // Every event row; the ones a verified entry cites carry its phase, status and decision.
             assert!(
                 rows.iter()
-                    .any(|r| r[7] == "persistence" && r[8] == "verified" && r[10] == "accepted")
+                    .any(|r| r[9] == "persistence" && r[10] == "verified" && r[12] == "accepted")
             );
             assert!(
-                rows.iter().all(|r| r[8] != "proposed"),
+                rows.iter().all(|r| r[10] != "proposed"),
                 "a proposed entry is never exported"
             );
         }

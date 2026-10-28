@@ -116,6 +116,14 @@ impl ExportHeader {
 
     /// The header as `(label, value)` pairs, in the order every export shows them.
     pub fn pairs(&self) -> Vec<(&'static str, String)> {
+        self.pairs_with(|t| format!("{} UTC", super::when(t)))
+    }
+
+    /// [`Self::pairs`] with the generated-at time written by `fmt`.
+    pub fn pairs_with(
+        &self,
+        fmt: fn(&chrono::DateTime<chrono::Utc>) -> String,
+    ) -> Vec<(&'static str, String)> {
         vec![
             ("Sparrow version", self.sparrow_version.clone()),
             (
@@ -124,10 +132,7 @@ impl ExportHeader {
                     .clone()
                     .unwrap_or_else(|| "no detection run".into()),
             ),
-            (
-                "Generated at",
-                format!("{} UTC", super::when(&self.generated_at)),
-            ),
+            ("Generated at", fmt(&self.generated_at)),
             ("Audit chain", self.chain_text()),
             (
                 "Audit head hash",
@@ -139,7 +144,7 @@ impl ExportHeader {
 
     /// The header on one line (the CSV's closing record).
     pub fn one_line(&self) -> String {
-        self.pairs()
+        self.pairs_with(super::iso)
             .into_iter()
             .map(|(k, v)| format!("{k}: {v}"))
             .collect::<Vec<_>>()

@@ -140,6 +140,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "marks",
         sql: include_str!("../../migrations/0026_marks.sql"),
     },
+    Migration {
+        version: 27,
+        name: "timeline_group",
+        sql: include_str!("../../migrations/0027_timeline_group.sql"),
+    },
 ];
 
 /// The migration that adds the Phase 7 analyst tables and the audit trail.

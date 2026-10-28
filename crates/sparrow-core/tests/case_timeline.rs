@@ -38,6 +38,8 @@ fn ev() -> Vec<EvidenceRef> {
 
 fn new_entry(evidence: Vec<EvidenceRef>) -> NewEntry {
     NewEntry {
+        end_time: None,
+        event_count: None,
         tenant_key: Some("t1".into()),
         event_time: Utc.with_ymd_and_hms(2026, 8, 3, 9, 0, 0).unwrap(),
         title: "AiTM sign-in".into(),
@@ -836,4 +838,464 @@ fn display_escapes_format_characters_and_single_lines_escape_newlines() {
     );
     // Ordinary text, accents and emoji pass through.
     assert_eq!(display_safe_line("Ünïcødé 🔥 שלום"), "Ünïcødé 🔥 שלום");
+}
+
+// ---- grouped entries and analyst-verified entries (investigate tabs, task 5)
+
+fn at(h: u32, m: u32) -> chrono::DateTime<Utc> {
+    Utc.with_ymd_and_hms(2026, 8, 3, h, m, 0).unwrap()
+}
+
+/// `n` more evidence records, `signins:g0` .. `signins:g{n-1}`, sighted in the case's one source file.
+fn add_group_evidence(c: &Case, n: u32) -> Vec<EvidenceRef> {
+    c.conn()
+        .execute(
+            &format!(
+                "INSERT INTO record_sources (table_name, record_key, file_id, record_ordinal, line_start, line_end, \
+                                             byte_offset, byte_length, raw_sha256) \
+                 SELECT 'signins', 'g' || i, 1, 100 + i, 10 + i, 10 + i, 1000 + i, 1, 'rg' || i \
+                 FROM range({n}) t(i)"
+            ),
+            [],
+        )
+        .unwrap();
+    (0..n)
+        .map(|i| EvidenceRef::parse(&format!("signins:g{i}")).unwrap())
+        .collect()
+}
+
+fn grouped(evidence: Vec<EvidenceRef>) -> NewEntry {
+    NewEntry {
+        end_time: Some(at(11, 30)),
+        event_count: Some(evidence.len() as u64),
+        event_time: at(9, 0),
+        title: "Password spray from one relay".into(),
+        narrative: None,
+        phase: Phase::InitialAccess,
+        tenant_key: Some("t1".into()),
+        evidence,
+    }
+}
+
+#[test]
+fn grouped_entry_round_trips_end_and_count() {
+    let c = case_with_evidence();
+    let refs = add_group_evidence(&c, 5000);
+    let (id, p) = te::propose(c.conn(), &agent(), grouped(refs.clone())).unwrap();
+    assert_eq!(
+        count(
+            &c,
+            &format!("SELECT count(*) FROM timeline_entry_evidence WHERE entry_id = '{id}'")
+        ),
+        5000
+    );
+    let got = one(&c, &id);
+    assert_eq!(got.event_time, at(9, 0));
+    assert_eq!(got.end_time, Some(at(11, 30)));
+    assert_eq!(got.event_count, Some(5000));
+    assert_eq!(got.evidence.len(), 5000);
+    // the audit row's after state carries the span
+    assert_eq!(
+        p.after.as_ref().unwrap()["end_time"],
+        "2026-08-03T11:30:00.000000Z"
+    );
+    assert_eq!(p.after.as_ref().unwrap()["event_count"], 5000);
+    // an ordinary entry has neither, in the entry and in its audit state
+    let (plain, p) = te::propose(c.conn(), &agent(), new_entry(ev())).unwrap();
+    let got = one(&c, &plain);
+    assert_eq!((got.end_time, got.event_count), (None, None));
+    assert!(p.after.as_ref().unwrap().get("end_time").is_none());
+    assert!(p.after.as_ref().unwrap().get("event_count").is_none());
+    // and the JSON of an entry names them
+    let j = serde_json::to_value(one(&c, &id)).unwrap();
+    assert_eq!(j["end_time"], "2026-08-03T11:30:00.000000Z");
+    assert_eq!(j["event_count"], 5000);
+    // the analyst's one-step create takes the same 5,000 rows
+    let mut again = grouped(refs);
+    again.title = "Same spray, verified".into();
+    let (vid, rows) = te::create_verified(c.conn(), &carlos(), again).unwrap();
+    assert_eq!(rows.len(), 2);
+    let got = one(&c, &vid);
+    assert_eq!(
+        (got.status.as_str(), got.evidence.len(), got.event_count),
+        ("verified", 5000, Some(5000))
+    );
+}
+
+fn count(c: &Case, sql: &str) -> i64 {
+    c.conn().query_row(sql, [], |r| r.get(0)).unwrap()
+}
+
+#[test]
+fn a_span_must_end_after_it_starts_and_cover_an_event() {
+    let c = case_with_evidence();
+    let before = audit_len(&c);
+    let mut e = new_entry(ev());
+    e.end_time = Some(at(8, 59));
+    let err = te::propose(c.conn(), &agent(), e).unwrap_err();
+    assert!(
+        is_decision(&err) && err.to_string().contains("cannot end"),
+        "{err}"
+    );
+    let mut e = new_entry(ev());
+    e.event_count = Some(0);
+    let err = te::propose(c.conn(), &agent(), e).unwrap_err();
+    assert!(
+        is_decision(&err) && err.to_string().contains("at least one event"),
+        "{err}"
+    );
+    // an end equal to the start is a valid span
+    let mut e = new_entry(ev());
+    e.end_time = Some(at(9, 0));
+    te::propose(c.conn(), &agent(), e).unwrap();
+    assert_eq!(audit_len(&c), before + 1);
+    // an edit is held to the same rules
+    let (id, _) = te::propose(c.conn(), &agent(), new_entry(ev())).unwrap();
+    let bad = EntryEdit {
+        end_time: Some(Some(at(8, 0))),
+        ..Default::default()
+    };
+    assert!(is_decision(
+        &te::edit(c.conn(), &agent(), &id, bad).unwrap_err()
+    ));
+    let bad = EntryEdit {
+        event_count: Some(Some(0)),
+        ..Default::default()
+    };
+    assert!(is_decision(
+        &te::edit(c.conn(), &agent(), &id, bad).unwrap_err()
+    ));
+}
+
+#[test]
+fn editing_a_grouped_entry_carries_or_changes_the_span() {
+    let c = case_with_evidence();
+    let refs = add_group_evidence(&c, 3);
+    let (id, _) = te::create_verified(c.conn(), &carlos(), grouped(refs)).unwrap();
+    // a title edit of a verified entry proposes a successor that keeps the span
+    let (s1, _) = te::edit(
+        c.conn(),
+        &carlos().as_actor(),
+        &id,
+        EntryEdit {
+            title: Some("Spray, confirmed".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let got = one(&c, &s1);
+    assert_eq!(got.supersedes.as_deref(), Some(id.as_str()));
+    assert_eq!((got.end_time, got.event_count), (Some(at(11, 30)), Some(3)));
+    // a span edit changes it, and an edit of only the count counts as a change
+    te::verify(c.conn(), &carlos().as_actor(), &s1).unwrap();
+    let (s2, _) = te::edit(
+        c.conn(),
+        &carlos().as_actor(),
+        &s1,
+        EntryEdit {
+            end_time: Some(Some(at(12, 0))),
+            event_count: Some(Some(40)),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let got = one(&c, &s2);
+    assert_eq!((got.end_time, got.event_count), (Some(at(12, 0)), Some(40)));
+    assert_eq!(got.title, "Spray, confirmed");
+    // the same edit again changes nothing
+    te::verify(c.conn(), &carlos().as_actor(), &s2).unwrap();
+    let same = EntryEdit {
+        event_count: Some(Some(40)),
+        ..Default::default()
+    };
+    assert!(is_decision(
+        &te::edit(c.conn(), &carlos().as_actor(), &s2, same).unwrap_err()
+    ));
+    // the span can be cleared
+    let (s3, _) = te::edit(
+        c.conn(),
+        &carlos().as_actor(),
+        &s2,
+        EntryEdit {
+            end_time: Some(None),
+            event_count: Some(None),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let got = one(&c, &s3);
+    assert_eq!((got.end_time, got.event_count), (None, None));
+}
+
+#[test]
+fn discarding_an_edit_restores_the_span() {
+    let c = case_with_evidence();
+    let refs = add_group_evidence(&c, 3);
+    let (id, _) = te::propose(c.conn(), &agent(), grouped(refs)).unwrap();
+    let (_, e) = te::edit(
+        c.conn(),
+        &agent(),
+        &id,
+        EntryEdit {
+            end_time: Some(None),
+            event_count: Some(Some(2)),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let got = one(&c, &id);
+    assert_eq!((got.end_time, got.event_count), (None, Some(2)));
+    review::review_discard(c.conn(), &carlos(), "timeline_entry", &id, e.seq, None).unwrap();
+    let got = one(&c, &id);
+    assert_eq!((got.end_time, got.event_count), (Some(at(11, 30)), Some(3)));
+}
+
+#[test]
+fn create_verified_is_verified_with_two_audit_rows() {
+    let c = case_with_evidence();
+    let before = audit_len(&c);
+    let (id, rows) = te::create_verified(c.conn(), &carlos(), new_entry(ev())).unwrap();
+    assert_eq!(audit_len(&c), before + 2);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows.iter().map(|r| r.action.as_str()).collect::<Vec<_>>(),
+        ["propose_entry", "verify_entry"]
+    );
+    assert!(
+        rows.iter()
+            .all(|r| r.object_type == "timeline_entry" && r.object_id == id)
+    );
+    assert!(
+        rows.iter()
+            .all(|r| r.actor == "analyst:carlos" && r.on_behalf_of.is_none())
+    );
+    assert_eq!(rows[1].seq, rows[0].seq + 1);
+    assert_eq!(rows[0].after.as_ref().unwrap()["status"], "proposed");
+    assert_eq!(rows[1].after.as_ref().unwrap()["status"], "verified");
+    assert_eq!(rows[1].before.as_ref().unwrap()["status"], "proposed");
+    // the log holds exactly those two rows, in order, and the chain verifies
+    let log = audit::log(c.conn(), Some(("timeline_entry", &id))).unwrap();
+    assert_eq!(
+        log.iter().map(|r| r.seq).collect::<Vec<_>>(),
+        [rows[0].seq, rows[1].seq]
+    );
+    assert!(audit::verify(c.conn()).unwrap().ok);
+    // verified and reviewed as made: nothing for the Review queue
+    let got = one(&c, &id);
+    assert_eq!(got.status, "verified");
+    assert_eq!(got.decided_by, "analyst:carlos");
+    assert_eq!(got.review_state, "accepted");
+    assert_eq!(got.reviewed_by.as_deref(), Some("analyst:carlos"));
+    assert!(review::pending(c.conn()).unwrap().is_empty());
+    assert_eq!(got.evidence, ev());
+}
+
+#[test]
+fn create_verified_that_cannot_verify_writes_nothing() {
+    let c = case_with_evidence();
+    let before = audit_len(&c);
+    // no evidence: the verify step fails, so the propose is rolled back with it
+    let err = te::create_verified(c.conn(), &carlos(), new_entry(vec![])).unwrap_err();
+    assert!(
+        is_decision(&err) && err.to_string().contains("no evidence"),
+        "{err}"
+    );
+    assert_eq!(audit_len(&c), before);
+    assert_eq!(count(&c, "SELECT count(*) FROM timeline_entries"), 0);
+    // evidence that is not in the case fails the propose step
+    let ghost = vec![EvidenceRef::parse("signins:nope").unwrap()];
+    assert!(is_decision(
+        &te::create_verified(c.conn(), &carlos(), new_entry(ghost)).unwrap_err()
+    ));
+    assert_eq!(audit_len(&c), before);
+    assert_eq!(count(&c, "SELECT count(*) FROM timeline_entries"), 0);
+}
+
+#[test]
+fn agent_cannot_create_verified() {
+    // `create_verified` takes a `Reviewer`, and the only way to make one is `Reviewer::analyst`, which refuses an
+    // `agent:` identity; an `Actor` does not convert to a `Reviewer` (see the compile_fail doctest on the function).
+    assert!(Reviewer::analyst("agent:claude").is_err());
+    assert!(Reviewer::analyst("").is_err());
+    // an agent's own entries stay proposed and pending review
+    let c = case_with_evidence();
+    let (id, _) = te::propose(c.conn(), &agent(), new_entry(ev())).unwrap();
+    let got = one(&c, &id);
+    assert_eq!(
+        (got.status.as_str(), got.review_state.as_str()),
+        ("proposed", "pending_review")
+    );
+}
+
+#[test]
+fn default_phase_table() {
+    let p =
+        |cats: &[&str]| te::default_phase(&cats.iter().map(|c| c.to_string()).collect::<Vec<_>>());
+    // one assertion per event_category value, so a new category is a deliberate decision
+    let table = [
+        ("auth", Phase::InitialAccess),
+        ("audit_tamper", Phase::DefenseEvasion),
+        ("mail_rule", Phase::Persistence),
+        ("forwarding", Phase::Persistence),
+        ("config_change", Phase::Persistence),
+        ("app_consent", Phase::Persistence),
+        ("app_credential", Phase::Persistence),
+        ("mfa_change", Phase::Persistence),
+        ("role_change", Phase::Persistence),
+        ("permission", Phase::Persistence),
+        ("mail_read", Phase::Collection),
+        ("file_access", Phase::Collection),
+        ("file_download", Phase::Collection),
+        ("ediscovery", Phase::Collection),
+        ("mail_flow", Phase::Exfiltration),
+        ("mail_send", Phase::Exfiltration),
+        ("file_share", Phase::Exfiltration),
+        ("lure_staging", Phase::Recon),
+        ("search", Phase::Recon),
+        ("device", Phase::Recon),
+        ("other", Phase::Recon),
+    ];
+    assert_eq!(table.len(), 21, "every event_category value is listed");
+    for (c, want) in table {
+        assert_eq!(p(&[c]), want, "{c}");
+    }
+    // not categories: recon, as is nothing at all
+    for c in ["not_a_category", "AUTH", ""] {
+        assert_eq!(p(&[c]), Phase::Recon, "{c:?}");
+    }
+    assert_eq!(p(&[]), Phase::Recon);
+    // first match in order wins over any later rule, whatever the input order
+    assert_eq!(
+        p(&[
+            "file_share",
+            "mail_read",
+            "mail_rule",
+            "audit_tamper",
+            "auth"
+        ]),
+        Phase::InitialAccess
+    );
+    assert_eq!(
+        p(&["file_share", "mail_read", "mail_rule", "audit_tamper"]),
+        Phase::DefenseEvasion
+    );
+    assert_eq!(
+        p(&["file_share", "mail_read", "mail_rule"]),
+        Phase::Persistence
+    );
+    assert_eq!(p(&["file_share", "mail_read"]), Phase::Collection);
+    assert_eq!(p(&["other", "mail_send"]), Phase::Exfiltration);
+}
+
+#[test]
+fn default_phase_names_cover_the_event_category_enum() {
+    // The enum in the migration is exactly the 21 names of the phase table, and each real value maps to the phase
+    // the table gives it.
+    let expected: [(&str, Phase); 21] = [
+        ("app_consent", Phase::Persistence),
+        ("app_credential", Phase::Persistence),
+        ("audit_tamper", Phase::DefenseEvasion),
+        ("auth", Phase::InitialAccess),
+        ("config_change", Phase::Persistence),
+        ("device", Phase::Recon),
+        ("ediscovery", Phase::Collection),
+        ("file_access", Phase::Collection),
+        ("file_download", Phase::Collection),
+        ("file_share", Phase::Exfiltration),
+        ("forwarding", Phase::Persistence),
+        ("lure_staging", Phase::Recon),
+        ("mail_flow", Phase::Exfiltration),
+        ("mail_read", Phase::Collection),
+        ("mail_rule", Phase::Persistence),
+        ("mail_send", Phase::Exfiltration),
+        ("mfa_change", Phase::Persistence),
+        ("other", Phase::Recon),
+        ("permission", Phase::Persistence),
+        ("role_change", Phase::Persistence),
+        ("search", Phase::Recon),
+    ];
+    let c = Case::in_memory().unwrap();
+    let mut stmt = c
+        .conn()
+        .prepare("SELECT unnest(enum_range(NULL::event_category))::VARCHAR ORDER BY 1")
+        .unwrap();
+    let real: Vec<String> = stmt
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        real,
+        expected
+            .iter()
+            .map(|(n, _)| n.to_string())
+            .collect::<Vec<_>>(),
+        "the enum and the table list the same names"
+    );
+    for (name, want) in expected {
+        assert_eq!(te::default_phase(&[name.to_string()]), want, "{name}");
+    }
+}
+
+#[test]
+fn fifty_thousand_refs_across_three_tables_are_checked_and_stored_set_based() {
+    let c = case_with_evidence();
+    c.conn()
+        .execute(
+            "INSERT INTO record_sources (table_name, record_key, file_id, record_ordinal, line_start, line_end, \
+                                         byte_offset, byte_length, raw_sha256) \
+             SELECT ['signins', 'ual_events', 'audit_logs'][1 + i % 3], 'bulk' || i, 1, 1000 + i, 1, 1, i, 1, 'rb' || i \
+             FROM range(50000) t(i)",
+            [],
+        )
+        .unwrap();
+    let refs: Vec<EvidenceRef> = (0..50_000)
+        .map(|i| {
+            let t = ["signins", "ual_events", "audit_logs"][i % 3];
+            EvidenceRef::parse(&format!("{t}:bulk{i}")).unwrap()
+        })
+        .collect();
+    let started = std::time::Instant::now();
+    let (id, rows) = te::create_verified(c.conn(), &carlos(), grouped(refs.clone())).unwrap();
+    eprintln!("create_verified with 50,000 refs: {:?}", started.elapsed());
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        count(
+            &c,
+            &format!("SELECT count(*) FROM timeline_entry_evidence WHERE entry_id = '{id}'")
+        ),
+        50_000
+    );
+    assert_eq!(
+        count(
+            &c,
+            &format!(
+                "SELECT count(DISTINCT source_table) FROM timeline_entry_evidence WHERE entry_id = '{id}'"
+            )
+        ),
+        3
+    );
+    assert_eq!(one(&c, &id).event_count, Some(50_000));
+    // one missing ref anywhere in the set refuses the whole call and writes nothing; the first missing one in
+    // (table, key) order is named, and the staging table is gone afterwards
+    let before = audit_len(&c);
+    let mut bad = refs.clone();
+    bad[40_000] = EvidenceRef::parse("signins:zz-missing").unwrap();
+    bad[10] = EvidenceRef::parse("audit_logs:aa-missing").unwrap();
+    let mut e = grouped(bad);
+    e.title = "has ghosts".into();
+    let err = te::create_verified(c.conn(), &carlos(), e).unwrap_err();
+    assert!(
+        is_decision(&err) && err.to_string().contains("audit_logs:aa-missing"),
+        "{err}"
+    );
+    assert_eq!(audit_len(&c), before);
+    assert_eq!(count(&c, "SELECT count(*) FROM timeline_entries"), 1);
+    assert_eq!(
+        count(
+            &c,
+            "SELECT count(*) FROM duckdb_tables() WHERE table_name = '_evidence_check'"
+        ),
+        0
+    );
 }

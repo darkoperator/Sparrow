@@ -2801,7 +2801,7 @@ fn export_report_timeline_and_workbook_through_the_cli() {
         assert!(out.status.success(), "{scope}");
         let csv = String::from_utf8(out.stdout).unwrap();
         assert!(
-            csv.starts_with("\u{feff}Timestamp,Source,Category,User,IP,Operation,Summary,Phase,Status,DecidedBy,ReviewState,FindingIds,EvidenceRef"),
+            csv.starts_with("\u{feff}Timestamp,EndTime,EventCount,Source,Category,User,IP,Operation,Summary,Phase,Status,DecidedBy,ReviewState,FindingIds,EvidenceRef"),
             "{scope}: {csv}"
         );
         assert!(csv.contains("sparrow-export,header"));

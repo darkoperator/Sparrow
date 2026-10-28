@@ -143,6 +143,8 @@ pub fn run(command: TimelineEntryCommand, json: bool) -> Result<ExitCode> {
         } => {
             let actor = actor.resolve()?;
             let entry = NewEntry {
+                end_time: None,
+                event_count: None,
                 tenant_key: tenant,
                 event_time: time(&t)?,
                 title,
@@ -184,6 +186,8 @@ pub fn run(command: TimelineEntryCommand, json: bool) -> Result<ExitCode> {
         } => {
             let actor = actor.resolve()?;
             let edit = EntryEdit {
+                end_time: None,
+                event_count: None,
                 event_time: t.as_deref().map(time).transpose()?,
                 title,
                 narrative: if clear_narrative {

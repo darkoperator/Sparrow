@@ -81,6 +81,13 @@ pub enum Item {
         entry_id: String,
         tenant_key: Option<String>,
         event_time: String,
+        /// The end of the span a grouped entry covers (`event_time` is the start). Absent from the bundle for an
+        /// entry about one moment, and in bundles written before grouped entries existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end_time: Option<String>,
+        /// How many events a grouped entry covers; absent like `end_time`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        event_count: Option<u64>,
         title: String,
         narrative: Option<String>,
         phase: String,
@@ -210,6 +217,8 @@ fn entries(conn: &Connection) -> Result<Vec<Item>> {
             supersedes,
             evidence: e.evidence.iter().map(EvidenceRef::text).collect(),
             event_time: audit::ts_text(&e.event_time),
+            end_time: e.end_time.as_ref().map(audit::ts_text),
+            event_count: e.event_count,
             entry_id: e.entry_id,
             tenant_key: e.tenant_key,
             title: e.title,
@@ -397,6 +406,8 @@ fn check_item(item: &Item) -> Result<()> {
             entry_id,
             tenant_key,
             event_time,
+            end_time,
+            event_count,
             title,
             narrative,
             phase,
@@ -413,7 +424,19 @@ fn check_item(item: &Item) -> Result<()> {
             if let Some(t) = tenant_key {
                 check_text("a tenant key", t).map_err(invalid)?;
             }
-            rfc3339("an event time", event_time)?;
+            let start = rfc3339("an event time", event_time)?;
+            if let Some(end) = end_time {
+                if rfc3339("an end time", end)? < start {
+                    return Err(bad(format!(
+                        "timeline entry {entry_id} ends ({end}) before it starts ({event_time})"
+                    )));
+                }
+            }
+            if *event_count == Some(0) || event_count.is_some_and(|c| i64::try_from(c).is_err()) {
+                return Err(bad(format!(
+                    "timeline entry {entry_id} has an event count outside 1..=i64::MAX"
+                )));
+            }
             non_empty("a title", title)?;
             check_title(title).map_err(invalid)?;
             if let Some(n) = narrative {
@@ -731,6 +754,8 @@ fn current_of(
                             entry_id: entry_id.clone(),
                             tenant_key: s["tenant_key"].as_str().map(String::from),
                             event_time: text("event_time"),
+                            end_time: s["end_time"].as_str().map(String::from),
+                            event_count: s["event_count"].as_u64(),
                             title: text("title"),
                             narrative: s["narrative"].as_str().map(String::from),
                             phase: text("phase"),
@@ -1160,6 +1185,8 @@ fn apply(
             entry_id,
             tenant_key,
             event_time,
+            end_time,
+            event_count,
             title,
             narrative,
             phase,
@@ -1168,6 +1195,11 @@ fn apply(
             ..
         } => {
             let event_time = rfc3339("an event time", event_time)?;
+            let end_time = end_time
+                .as_deref()
+                .map(|t| rfc3339("an end time", t))
+                .transpose()?;
+            let event_count = *event_count;
             let phase = Phase::parse(phase)?;
             let evidence = evidence
                 .iter()
@@ -1179,6 +1211,8 @@ fn apply(
                         Item::TimelineEntry {
                             status: here,
                             event_time: t,
+                            end_time: et,
+                            event_count: ec,
                             title: ti,
                             narrative: n,
                             phase: ph,
@@ -1193,6 +1227,12 @@ fn apply(
                         )));
                     }
                     let same_fields = rfc3339("an event time", t)? == event_time
+                        && et
+                            .as_deref()
+                            .map(|t| rfc3339("an end time", t))
+                            .transpose()?
+                            == end_time
+                        && *ec == event_count
                         && ti == title
                         && n == narrative
                         && ph == phase.as_str()
@@ -1203,6 +1243,8 @@ fn apply(
                         // (superseding it) and then rejected, as the source case did.
                         let edit = EntryEdit {
                             event_time: Some(event_time),
+                            end_time: Some(end_time),
+                            event_count: Some(event_count),
                             title: Some(title.clone()),
                             narrative: Some(narrative.clone()),
                             phase: Some(phase),
@@ -1256,6 +1298,8 @@ fn apply(
                             here_id,
                             EntryEdit {
                                 event_time: Some(event_time),
+                                end_time: Some(end_time),
+                                event_count: Some(event_count),
                                 title: Some(title.clone()),
                                 narrative: Some(narrative.clone()),
                                 phase: Some(phase),
@@ -1283,6 +1327,8 @@ fn apply(
                         NewEntry {
                             tenant_key: tenant_key.clone(),
                             event_time,
+                            end_time,
+                            event_count,
                             title: title.clone(),
                             narrative: narrative.clone(),
                             phase,

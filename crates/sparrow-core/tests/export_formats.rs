@@ -181,6 +181,8 @@ fn scripted(hostile: bool) -> Script {
             c,
             &agent(),
             NewEntry {
+                end_time: None,
+                event_count: None,
                 tenant_key: None,
                 event_time: refs[i].1,
                 title: title.to_string(),
@@ -544,6 +546,8 @@ fn timeline_csv_matches_golden_and_round_trips() {
         COLUMNS.to_vec(),
         [
             "Timestamp",
+            "EndTime",
+            "EventCount",
             "Source",
             "Category",
             "User",
@@ -558,20 +562,22 @@ fn timeline_csv_matches_golden_and_round_trips() {
             "EvidenceRef"
         ]
     );
-    let stamp = regex::Regex::new(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$").unwrap();
+    let stamp = regex::Regex::new(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$").unwrap();
     // Three data rows, then the closing header record (no timestamp).
     assert_eq!(rec.len(), 1 + 3 + 1);
     for r in &rec[1..4] {
         assert_eq!(r.len(), COLUMNS.len());
         assert!(stamp.is_match(&r[0]), "{}", r[0]);
-        assert_eq!(r[8], "verified");
-        assert_eq!(r[9], "agent:claude");
-        assert_eq!(r[10], "pending_review");
-        assert!(r[12].contains(':'), "evidence ref: {}", r[12]);
+        assert_eq!(r[10], "verified");
+        assert_eq!(r[11], "agent:claude");
+        assert_eq!(r[12], "pending_review");
+        assert!(r[14].contains(':'), "evidence ref: {}", r[14]);
+        // ungrouped entries: both new cells are empty
+        assert_eq!((r[1].as_str(), r[2].as_str()), ("", ""));
     }
-    assert_eq!(rec[4][1], "sparrow-export");
+    assert_eq!(rec[4][3], "sparrow-export");
     // The closing record sorts with the data: its Timestamp is the generation time.
-    assert_eq!(rec[4][0], "2026-10-03 00:00:00");
+    assert_eq!(rec[4][0], "2026-10-03T00:00:00Z");
 }
 
 #[test]
@@ -583,7 +589,7 @@ fn timeline_csv_streams_all_rows() {
     assert!(total > 100, "the check needs a real timeline: {total}");
     let rec = csv_records(&bytes);
     assert_eq!(rec.len() as i64, 1 + total + 1);
-    let stamp = regex::Regex::new(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$").unwrap();
+    let stamp = regex::Regex::new(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$").unwrap();
     for r in &rec[1..rec.len() - 1] {
         assert!(stamp.is_match(&r[0]), "{}", r[0]);
         assert_eq!(r.len(), COLUMNS.len());
@@ -591,7 +597,7 @@ fn timeline_csv_streams_all_rows() {
     // Rows cited by a verified entry carry its phase and decision.
     assert!(
         rec.iter()
-            .any(|r| r[8] == "verified" && r[7] == "initial_access")
+            .any(|r| r[10] == "verified" && r[9] == "initial_access")
     );
     // Streaming: the first bytes of the rows reach the sink while most rows are still unread. The sink records
     // how many rows the statement has handed out when each write arrives; collecting every row first would make
@@ -759,7 +765,7 @@ fn exports_survive_hostile_text() {
     let (bytes, _) = csv_bytes(&s.case, &csv_opts(Scope::Verified));
     let rec = csv_records(&bytes);
     let want = format!("{} — {HOSTILE}", s.verified[1].0);
-    assert!(rec.iter().any(|r| r[6] == want), "{rec:?}");
+    assert!(rec.iter().any(|r| r[8] == want), "{rec:?}");
     assert_eq!(rec.len(), 1 + 3 + 1, "quoting kept the row count");
     // Markdown: pipes and newlines are escaped, so the tables keep their row count and no line is broken.
     let md = report(&s.case, false);
@@ -795,6 +801,8 @@ fn control_characters_are_escaped_in_markdown_and_kept_raw_in_csv_and_workbook()
         c,
         &agent(),
         NewEntry {
+            end_time: None,
+            event_count: None,
             tenant_key: None,
             event_time: generated_at(),
             title: "t\u{1b}[31mred\u{0}".into(),
@@ -839,7 +847,7 @@ fn control_characters_are_escaped_in_markdown_and_kept_raw_in_csv_and_workbook()
     let rec = csv_records(&bytes);
     assert!(
         rec.iter()
-            .any(|r| r[6] == "t\u{1b}[31mred\u{0} — n\u{7}ote\r\nline\u{200B}two")
+            .any(|r| r[8] == "t\u{1b}[31mred\u{0} — n\u{7}ote\r\nline\u{200B}two")
     );
 }
 
@@ -854,7 +862,7 @@ fn every_export_carries_the_header() {
     assert!(md.contains(&head) && md.contains(&counts));
     assert!(md.contains(&h.rule_pack_sha256.clone().unwrap()));
     assert!(md.contains(&format!("**Sparrow version:** {}", sparrow_core::VERSION)));
-    assert!(md.contains("**Generated at:** 2026-10-03 00:00:00 UTC"));
+    assert!(md.contains("**Generated at:** 2026-10-03T00:00:00Z"));
     let (bytes, _) = csv_bytes(&s.case, &csv_opts(Scope::Verified));
     let csv = String::from_utf8(bytes).unwrap();
     assert!(csv.contains(&head) && csv.contains(&counts));
@@ -894,6 +902,8 @@ fn entry_titled(c: &duckdb::Connection, title: &str) {
         c,
         &agent(),
         NewEntry {
+            end_time: None,
+            event_count: None,
             tenant_key: None,
             event_time: generated_at(),
             title: title.into(),
@@ -947,7 +957,7 @@ fn csv_text_cells_that_start_like_a_formula_are_prefixed() {
     }
     let (bytes, _) = csv_bytes(&s.case, &csv_opts(Scope::Verified));
     let rec = csv_records(&bytes);
-    let summaries: Vec<&str> = rec.iter().map(|r| r[6].as_str()).collect();
+    let summaries: Vec<&str> = rec.iter().map(|r| r[8].as_str()).collect();
     for t in &titles[..6] {
         assert!(
             summaries.contains(&format!("'{t}").as_str()),
@@ -963,12 +973,12 @@ fn csv_text_cells_that_start_like_a_formula_are_prefixed() {
     // starts with a quote because it began with one of the six.
     for r in &rec[1..] {
         assert!(!r[0].starts_with('\''), "{r:?}");
-        assert!(!r[11].starts_with('\''), "{r:?}");
+        assert!(!r[13].starts_with('\''), "{r:?}");
     }
     // Scope all goes through the same writer: no cell of any row starts with a formula character.
     let (bytes, _) = csv_bytes(&s.case, &csv_opts(Scope::All));
     for r in &csv_records(&bytes)[1..] {
-        for (i, cell) in r.iter().enumerate().filter(|(i, _)| *i != 0 && *i != 11) {
+        for (i, cell) in r.iter().enumerate().filter(|(i, _)| *i > 1 && *i != 13) {
             assert!(
                 !cell.starts_with(['=', '+', '-', '@', '\t', '\r']),
                 "column {i}: {cell:?}"
@@ -1094,6 +1104,8 @@ fn attacker_text_is_escaped_as_markdown_and_html_everywhere() {
         c,
         &agent(),
         NewEntry {
+            end_time: None,
+            event_count: None,
             tenant_key: None,
             event_time: generated_at(),
             title: ATTACK.into(),
@@ -1176,6 +1188,8 @@ fn a_date_outside_excels_range_is_written_as_text() {
         c,
         &agent(),
         NewEntry {
+            end_time: None,
+            event_count: None,
             tenant_key: None,
             event_time: Utc.with_ymd_and_hms(1, 1, 1, 0, 0, 0).unwrap(),
             title: "A sentinel date".into(),
@@ -1199,7 +1213,7 @@ fn a_date_outside_excels_range_is_written_as_text() {
     assert!(
         tl.iter().any(|r| r[0]
             == "0001-01-01T00:00:00Z (outside Excel's date range; written as text)"
-            && r[2] == "A sentinel date"),
+            && r[4] == "A sentinel date"),
         "{tl:?}"
     );
     let gaps = sheet_rows(&mut wb, "Evidence gaps");
@@ -1254,7 +1268,7 @@ fn exports_do_not_depend_on_the_connections_time_zone() {
     assert_eq!(utc.2, ny.2, "the full CSV");
     assert_eq!(utc.3, ny.3, "the workbook");
     // And the times in them are UTC: the first sign-in entry reads 14:24:08, not 10:24:08.
-    assert!(ny.0.contains("2026-08-11 14:24:08 UTC"));
+    assert!(ny.0.contains("2026-08-11T14:24:08Z"));
 }
 
 // ------------------------------------------------------------------ accounts and facts (agent accuracy T5)
@@ -1919,7 +1933,7 @@ fn report_lists_devices_to_contain() {
     assert!(section.contains("treat as active"), "{section}");
     // The last-active date names its file and line.
     assert!(
-        section.contains("2026-03-01 09:00:00 UTC \\(t1/signins.csv:6\\)"),
+        section.contains("2026-03-01T09:00:00Z \\(t1/signins.csv:6\\)"),
         "{section}"
     );
     // The removed device is not on the contain list.
@@ -2248,4 +2262,101 @@ fn workbook_splits_devices_by_confidence() {
         .collect();
     ids.sort();
     assert_eq!(ids, [D_REMOVED, E_UNKNOWN]);
+}
+
+#[test]
+fn a_grouped_entry_fills_end_time_and_event_count_in_the_csv_and_workbook() {
+    let s = scripted(false);
+    let c = s.case.conn();
+    let key: String = c
+        .query_row(
+            "SELECT source_table || ':' || record_key FROM timeline ORDER BY event_time, source_table, record_key LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let (id, _) = te::propose(
+        c,
+        &agent(),
+        NewEntry {
+            end_time: Some(Utc.with_ymd_and_hms(2026, 9, 1, 12, 30, 15).unwrap()),
+            event_count: Some(1234),
+            tenant_key: None,
+            event_time: Utc.with_ymd_and_hms(2026, 9, 1, 8, 0, 0).unwrap(),
+            title: "Spray window".into(),
+            narrative: None,
+            phase: Phase::InitialAccess,
+            evidence: vec![EvidenceRef::parse(&key).unwrap()],
+        },
+    )
+    .unwrap();
+    te::verify(c, &agent(), &id).unwrap();
+    let (bytes, _) = csv_bytes(&s.case, &csv_opts(Scope::Verified));
+    let rec = csv_records(&bytes);
+    let row = rec.iter().find(|r| r[8] == "Spray window").unwrap();
+    assert_eq!(
+        (row[0].as_str(), row[1].as_str(), row[2].as_str()),
+        ("2026-09-01T08:00:00Z", "2026-09-01T12:30:15Z", "1234")
+    );
+    // the three ungrouped entries still have both cells empty
+    assert_eq!(
+        rec[1..rec.len() - 1]
+            .iter()
+            .filter(|r| r[1].is_empty() && r[2].is_empty())
+            .count(),
+        3
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let mut wb = workbook(&s.case, &dir);
+    let tl = sheet_rows(&mut wb, "Timeline");
+    let t = tl[0].iter().position(|c| c == "Title").unwrap();
+    let (e, n) = (
+        tl[0].iter().position(|c| c == "EndTime").unwrap(),
+        tl[0].iter().position(|c| c == "EventCount").unwrap(),
+    );
+    assert_eq!((e, n), (1, 2));
+    let row = tl.iter().find(|r| r[t] == "Spray window").unwrap();
+    assert!(
+        row[e].starts_with("2026-09-01") && row[e].contains("12:30:15"),
+        "{}",
+        row[e]
+    );
+    assert_eq!(row[n], "1234");
+    // the workbook lists every entry, the 3 verified ones and the 1 still proposed
+    assert_eq!(
+        tl.iter()
+            .filter(|r| r[e].is_empty() && r[n].is_empty())
+            .count(),
+        4
+    );
+}
+
+#[test]
+fn no_time_in_the_report_or_the_csv_header_uses_the_old_space_separated_format() {
+    let old = regex::Regex::new(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d").unwrap();
+    let iso = regex::Regex::new(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ").unwrap();
+    for hostile in [false, true] {
+        let s = scripted(hostile);
+        for reviewed_only in [false, true] {
+            let md = report(&s.case, reviewed_only);
+            let hits: Vec<&str> = old.find_iter(&md).map(|m| m.as_str()).collect();
+            assert!(hits.is_empty(), "old-format times in the report: {hits:?}");
+            // the check is not vacuous: the report does print ISO times
+            assert!(iso.find_iter(&md).count() > 20);
+        }
+        // sign-in coverage, the accounts table's last remaining formatter
+        assert!(
+            report(&s.case, false).contains("| sign-ins 20"),
+            "the accounts table shows sign-in coverage"
+        );
+    }
+    // the CSV closing record carries the header text in ISO too
+    let s = scripted(false);
+    let rec = csv_records(&csv_bytes(&s.case, &csv_opts(Scope::Verified)).0);
+    let closing = rec.last().unwrap();
+    assert!(
+        closing[8].contains("Generated at: 2026-10-03T00:00:00Z;") && !old.is_match(&closing[8]),
+        "{}",
+        closing[8]
+    );
 }

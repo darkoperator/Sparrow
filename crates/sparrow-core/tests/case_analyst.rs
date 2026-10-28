@@ -50,6 +50,8 @@ fn evidence(c: &Case) -> EvidenceRef {
 
 fn entry(evidence: Vec<EvidenceRef>) -> NewEntry {
     NewEntry {
+        end_time: None,
+        event_count: None,
         tenant_key: None,
         event_time: Utc.with_ymd_and_hms(2026, 8, 1, 9, 0, 0).unwrap(),
         title: "Inbox rule created".into(),
@@ -171,6 +173,8 @@ fn analyst_indicator_and_entry_decisions_are_accepted_when_made() {
         &analyst(),
         &eid,
         EntryEdit {
+            end_time: None,
+            event_count: None,
             title: Some("Inbox rule created by the attacker".into()),
             ..EntryEdit::default()
         },
@@ -260,6 +264,8 @@ fn analyst_write_refused_on_pending_agent_decision() {
         &analyst(),
         &eid,
         EntryEdit {
+            end_time: None,
+            event_count: None,
             title: Some("Changed".into()),
             ..EntryEdit::default()
         },

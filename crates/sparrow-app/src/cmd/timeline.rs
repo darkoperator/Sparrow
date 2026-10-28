@@ -87,6 +87,8 @@ pub fn timeline_propose(state: &AppState, args: NewEntryArgs) -> CmdResult<Entry
     let ticket = state.ticket();
     // Arguments first: a malformed one is refused without touching the case.
     let entry = NewEntry {
+        end_time: None,
+        event_count: None,
         tenant_key: args.tenant_key,
         event_time: time(&args.event_time)?,
         title: args.title,
@@ -109,6 +111,8 @@ pub fn timeline_edit(
 ) -> CmdResult<EntryWritten> {
     let ticket = state.ticket();
     let edit = EntryEdit {
+        end_time: None,
+        event_count: None,
         event_time: args.event_time.as_deref().map(time).transpose()?,
         title: args.title,
         narrative: args.narrative,

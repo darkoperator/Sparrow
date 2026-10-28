@@ -9,7 +9,7 @@ use super::header;
 use super::text::{block, indented, md_cell, single_line as one};
 use super::{
     LABEL_ANALYST_NOTE, Provenance, entry_provenance, evidence_gaps, finding_provenance,
-    indicator_rows, source_refs, when,
+    indicator_rows, iso, source_refs,
 };
 use crate::Result;
 use crate::case::coverage;
@@ -86,23 +86,23 @@ fn note_lines(out: &mut Vec<String>, notes: &[Note], reviewed_only: bool) {
             None => n.actor.clone(),
         };
         out.push(format!(
-            "  - {label} ({} at {} UTC): {}",
+            "  - {label} ({} at {}): {}",
             one(&by),
-            when(&n.created_at),
+            iso(&n.created_at),
             block(&n.text).replace('\n', "\n    ")
         ));
     }
 }
 
 fn provenance_lines(out: &mut Vec<String>, p: &Provenance, indent: &str) {
-    let label = p.label();
+    let label = p.label_with(iso);
     if label.is_empty() {
         return;
     }
     out.push(format!(
         "{indent}- Decision: _{}_ ({})",
         one(&label),
-        one(&p.decided_text())
+        one(&p.decided_text_with(iso))
     ));
     if let Some(c) = p.review_comment.as_deref().filter(|c| !c.is_empty()) {
         out.push(format!("{indent}- Reviewer comment: {}", one(c)));
@@ -113,7 +113,7 @@ fn evidence_line(fn_: &mut Footnotes, e: &EvidenceRow) -> String {
     let mark = fn_.mark(&e.source_table, &e.record_key);
     match &e.timeline {
         Some(t) => {
-            let mut parts = vec![format!("{} UTC", when(&t.event_time)), one(&t.category)];
+            let mut parts = vec![iso(&t.event_time), one(&t.category)];
             for v in [&t.operation, &t.actor_upn, &t.ip, &t.summary] {
                 if let Some(v) = v.as_deref().filter(|v| !v.is_empty()) {
                     parts.push(one(v));
@@ -137,7 +137,7 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
 
     doc.push("# Sparrow case report".into());
     doc.push(String::new());
-    for (k, v) in head.pairs() {
+    for (k, v) in head.pairs_with(iso) {
         doc.push(format!("- **{k}:** {v}"));
     }
     if opts.reviewed_only {
@@ -233,11 +233,16 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
                 .iter()
                 .map(|r| notes_fn.mark(&r.source_table, &r.record_key))
                 .collect();
-            lines.push(format!(
-                "- **{} UTC** — {}{marks}",
-                when(&e.event_time),
-                one(&e.title)
-            ));
+            let span = match &e.end_time {
+                Some(end) => format!("{}–{}", iso(&e.event_time), iso(end)),
+                None => iso(&e.event_time),
+            };
+            let count = match e.event_count {
+                Some(1) => " (1 event)".to_string(),
+                Some(n) => format!(" ({n} events)"),
+                None => String::new(),
+            };
+            lines.push(format!("- **{span}{count}** — {}{marks}", one(&e.title)));
             if let Some(n) = e.narrative.as_deref().filter(|n| !n.is_empty()) {
                 lines.push(format!("  {}", indented(n)));
             }
@@ -295,7 +300,7 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
                 .unwrap_or_default()
         ));
         if let (Some(a), Some(b)) = (&f.first_seen, &f.last_seen) {
-            doc.push(format!("- Seen {} to {} UTC", when(a), when(b)));
+            doc.push(format!("- Seen {} to {}", iso(a), iso(b)));
         }
         if let Some(r) = f.disposition_reason.as_deref().filter(|r| !r.is_empty()) {
             doc.push(format!("- Reason: {}", one(r)));
@@ -363,7 +368,11 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
                 md_cell(&i.value),
                 md_cell(&i.verdict),
                 md_cell(i.note.as_deref().unwrap_or("")),
-                md_cell(&format!("{} ({})", i.prov.label(), i.prov.decided_text()))
+                md_cell(&format!(
+                    "{} ({})",
+                    i.prov.label_with(iso),
+                    i.prov.decided_text_with(iso)
+                ))
             ));
         }
     }
@@ -429,8 +438,8 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
                     let src = super::devices_csv::mark_source(&sources, &d.lifecycle.last_active);
                     match (&d.lifecycle.last_active, src.is_empty()) {
                         (None, _) => String::new(),
-                        (Some(m), true) => format!("{} UTC", when(&m.at)),
-                        (Some(m), false) => format!("{} UTC ({src})", when(&m.at)),
+                        (Some(m), true) => iso(&m.at),
+                        (Some(m), false) => format!("{} ({src})", iso(&m.at)),
                     }
                 }),
                 md_cell(&d.users.join("; ")),
@@ -508,7 +517,7 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
             .into(),
     );
     doc.push(String::new());
-    for (k, v) in head.pairs() {
+    for (k, v) in head.pairs_with(iso) {
         doc.push(format!("- {k}: {v}"));
     }
     write_footnotes(conn, &mut doc, &notes_fn)?;
@@ -597,7 +606,7 @@ fn accounts_section(conn: &Connection, doc: &mut Vec<String>, reviewed_only: boo
             md_cell(&a.upn),
             md_cell(&a.worst_severity),
             md_cell(&stages.join(", ")),
-            a.first_suspicious.as_ref().map(when).unwrap_or_default(),
+            a.first_suspicious.as_ref().map(iso).unwrap_or_default(),
             facts_text::signin_coverage(a),
             reviewed
                 .get(&(a.tenant_key.clone(), a.upn.to_lowercase()))
@@ -663,8 +672,8 @@ fn coverage_section(conn: &Connection, doc: &mut Vec<String>, dirs: &DataDirs) -
                 "| {} | {} | {} | {} | {} | {} | {} |",
                 md_cell(&s.title),
                 coverage::thousands(s.rows),
-                s.first.as_ref().map(when).unwrap_or_default(),
-                s.last.as_ref().map(when).unwrap_or_default(),
+                s.first.as_ref().map(iso).unwrap_or_default(),
+                s.last.as_ref().map(iso).unwrap_or_default(),
                 s.days,
                 if s.sampled { "yes" } else { "no" },
                 md_cell(&gaps.join("; "))

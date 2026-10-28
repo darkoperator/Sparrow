@@ -571,9 +571,9 @@ fn upgrading_a_v20_case_keeps_decisions_and_adds_imported_proposals() {
         .unwrap();
     }
     let (from, to) = Case::upgrade(&path).unwrap();
-    assert_eq!((from, to), (20, 26));
+    assert_eq!((from, to), (20, 27));
     let case = Case::open_read_only(&path).unwrap();
-    assert_eq!(case.schema_version().unwrap(), 26);
+    assert_eq!(case.schema_version().unwrap(), 27);
     let kept: (String, String, String, String) = case
         .conn()
         .query_row(
@@ -643,7 +643,7 @@ fn upgrading_a_v21_case_keeps_directory_audits_and_adds_completeness() {
         .unwrap();
     }
     let (from, to) = Case::upgrade(&path).unwrap();
-    assert_eq!((from, to), (21, 26));
+    assert_eq!((from, to), (21, 27));
     let case = Case::open_read_only(&path).unwrap();
     let kept: (String, String, String, String, Option<String>) = case
         .conn()
@@ -714,7 +714,7 @@ fn upgrading_a_v22_case_keeps_account_rollup_and_adds_the_signin_window() {
         .unwrap();
     }
     let (from, to) = Case::upgrade(&path).unwrap();
-    assert_eq!((from, to), (22, 26));
+    assert_eq!((from, to), (22, 27));
     let case = Case::open_read_only(&path).unwrap();
     let kept: (String, String, i64, String, String, i64, Option<String>, Option<String>) = case
         .conn()
@@ -807,7 +807,7 @@ fn upgrading_a_v23_case_keeps_message_trace_and_adds_an_empty_events_table() {
         .unwrap();
     }
     let (from, to) = Case::upgrade(&path).unwrap();
-    assert_eq!((from, to), (23, 26));
+    assert_eq!((from, to), (23, 27));
     let case = Case::open_read_only(&path).unwrap();
     let kept: (String, String, String, String, String) = case
         .conn()
@@ -861,7 +861,7 @@ fn describe_lists_views_with_their_kind() {
 #[test]
 fn state_table_specs_match_the_schema() {
     let case = Case::in_memory().unwrap();
-    assert_eq!(case.schema_version().unwrap(), 26);
+    assert_eq!(case.schema_version().unwrap(), 27);
     for spec in ALL {
         for common in [
             "record_key",

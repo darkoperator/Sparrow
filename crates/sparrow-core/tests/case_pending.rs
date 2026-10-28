@@ -43,6 +43,8 @@ fn carlos() -> Reviewer {
 
 fn entry(title: &str, evidence: &[&str]) -> NewEntry {
     NewEntry {
+        end_time: None,
+        event_count: None,
         tenant_key: Some("t1".into()),
         event_time: Utc.with_ymd_and_hms(2026, 8, 3, 9, 0, 0).unwrap(),
         title: title.into(),

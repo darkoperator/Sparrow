@@ -5,7 +5,7 @@
 //! entry is edited in place; editing a verified entry proposes a successor that `supersedes` it, and the old entry
 //! becomes `superseded` only when the successor is verified. `rejected` and `superseded` are final.
 
-use crate::case::actor::Actor;
+use crate::case::actor::{Actor, Reviewer};
 use crate::case::audit::{self, AuditEntry};
 use crate::case::text::{check_text, check_title};
 use crate::case::write::{DECISION_TAGS, in_tx, refuse_if_pending_agent, self_review};
@@ -41,23 +41,58 @@ impl EvidenceRef {
     }
 }
 
-/// Fails unless every reference has a `record_sources` row (the record exists as evidence).
+/// Fails unless every reference has a `record_sources` row (the record exists as evidence). Set-based: the refs go
+/// to a temporary staging table through an appender and one anti-join finds the first missing one, so 50,000 refs
+/// cost one query, not 50,000. The first missing reference in (table, key) order is named.
 pub(crate) fn check_evidence_exists(conn: &Connection, refs: &[EvidenceRef]) -> Result<()> {
-    for r in refs {
+    let missing: Option<(String, String)> = match refs {
+        [] => return Ok(()),
         // Not cached: DuckDB keeps a cached plan's statistics (see audit::head).
-        let exists: bool = conn.query_row(
-            "SELECT EXISTS (SELECT 1 FROM record_sources WHERE table_name = ? AND record_key = ?)",
-            params![r.source_table, r.record_key],
-            |row| row.get(0),
-        )?;
-        if !exists {
-            return Err(Error::Decision(format!(
-                "no evidence record {} (not in record_sources)",
-                r.text()
-            )));
+        [r] => conn
+            .query_row(
+                "SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM record_sources WHERE table_name = ? AND record_key = ?)",
+                params![r.source_table, r.record_key, r.source_table, r.record_key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?,
+        _ => {
+            conn.execute_batch(
+                "CREATE OR REPLACE TEMP TABLE _evidence_check (source_table VARCHAR, record_key VARCHAR)",
+            )?;
+            let found = (|| -> Result<Option<(String, String)>> {
+                {
+                    let mut app = conn.appender("_evidence_check")?;
+                    for r in refs {
+                        app.append_row(params![r.source_table, r.record_key])?;
+                    }
+                    app.flush()?;
+                }
+                Ok(conn
+                    .query_row(
+                        "SELECT c.source_table, c.record_key FROM _evidence_check c \
+                         WHERE NOT EXISTS (SELECT 1 FROM record_sources r \
+                                           WHERE r.table_name = c.source_table AND r.record_key = c.record_key) \
+                         ORDER BY 1, 2 LIMIT 1",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?)
+            })();
+            conn.execute_batch("DROP TABLE IF EXISTS _evidence_check")?;
+            found?
         }
+    };
+    match missing {
+        None => Ok(()),
+        Some((source_table, record_key)) => Err(Error::Decision(format!(
+            "no evidence record {} (not in record_sources)",
+            EvidenceRef {
+                source_table,
+                record_key
+            }
+            .text()
+        ))),
     }
-    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -114,19 +149,79 @@ impl Phase {
 const STATUSES: &[&str] = &["proposed", "verified", "rejected", "superseded"];
 const REVIEW_STATES: &[&str] = &["pending_review", "accepted", "discarded"];
 
+/// The phase an add-to-timeline dialog proposes for events of these `event_category` values (the analyst can change
+/// it). The first rule that matches any of the categories wins; a category no rule names falls to `Recon`.
+pub fn default_phase(categories: &[String]) -> Phase {
+    let any = |names: &[&str]| categories.iter().any(|c| names.contains(&c.as_str()));
+    if any(&["auth"]) {
+        Phase::InitialAccess
+    } else if any(&["audit_tamper"]) {
+        Phase::DefenseEvasion
+    } else if any(&[
+        "mail_rule",
+        "forwarding",
+        "config_change",
+        "app_consent",
+        "app_credential",
+        "mfa_change",
+        "role_change",
+        "permission",
+    ]) {
+        Phase::Persistence
+    } else if any(&["mail_read", "file_access", "file_download", "ediscovery"]) {
+        Phase::Collection
+    } else if any(&["mail_flow", "mail_send", "file_share"]) {
+        Phase::Exfiltration
+    } else {
+        Phase::Recon
+    }
+}
+
 pub struct NewEntry {
     pub tenant_key: Option<String>,
     pub event_time: DateTime<Utc>,
+    /// The end of the span a grouped entry covers (`event_time` is the start); `None` for a single moment.
+    pub end_time: Option<DateTime<Utc>>,
+    /// How many events a grouped entry covers; `None` when not grouped.
+    pub event_count: Option<u64>,
     pub title: String,
     pub narrative: Option<String>,
     pub phase: Phase,
     pub evidence: Vec<EvidenceRef>,
 }
 
+/// A span ends at or after it starts, and a group covers at least one event.
+fn check_group(
+    start: &DateTime<Utc>,
+    end: Option<&DateTime<Utc>>,
+    count: Option<u64>,
+) -> Result<()> {
+    if end.is_some_and(|e| e < start) {
+        return Err(Error::Decision(format!(
+            "a grouped entry cannot end ({}) before it starts ({})",
+            end.map(audit::ts_text).unwrap_or_default(),
+            audit::ts_text(start)
+        )));
+    }
+    if count == Some(0) {
+        return Err(Error::Decision(
+            "a grouped entry covers at least one event".into(),
+        ));
+    }
+    if count.is_some_and(|c| i64::try_from(c).is_err()) {
+        return Err(Error::Decision("the event count is too large".into()));
+    }
+    Ok(())
+}
+
 /// The fields an edit changes; `None` keeps the current value. `evidence` replaces the whole list.
 #[derive(Debug, Clone, Default)]
 pub struct EntryEdit {
     pub event_time: Option<DateTime<Utc>>,
+    /// `Some(None)` clears the end of the span.
+    pub end_time: Option<Option<DateTime<Utc>>>,
+    /// `Some(None)` clears the event count.
+    pub event_count: Option<Option<u64>>,
     pub title: Option<String>,
     /// `Some(None)` clears the narrative.
     pub narrative: Option<Option<String>>,
@@ -152,6 +247,9 @@ pub struct Entry {
     pub tenant_key: Option<String>,
     #[serde(serialize_with = "ts")]
     pub event_time: DateTime<Utc>,
+    #[serde(serialize_with = "ts_opt")]
+    pub end_time: Option<DateTime<Utc>>,
+    pub event_count: Option<u64>,
     pub title: String,
     pub narrative: Option<String>,
     pub phase: String,
@@ -201,12 +299,14 @@ fn set_evidence(conn: &Connection, id: &str, refs: &[EvidenceRef]) -> Result<()>
     let mut refs = refs.to_vec();
     refs.sort();
     refs.dedup();
-    for r in &refs {
-        conn.execute(
-            "INSERT INTO timeline_entry_evidence (entry_id, source_table, record_key) VALUES (?, ?, ?)",
-            params![id, r.source_table, r.record_key],
-        )?;
+    if refs.is_empty() {
+        return Ok(());
     }
+    let mut app = conn.appender("timeline_entry_evidence")?;
+    for r in &refs {
+        app.append_row(params![id, r.source_table, r.record_key])?;
+    }
+    app.flush()?;
     Ok(())
 }
 
@@ -216,7 +316,8 @@ pub(crate) fn entry_state(conn: &Connection, id: &str) -> Result<Option<Value>> 
     let row = conn
         .query_row(
             "SELECT CAST(status AS VARCHAR), title, narrative, CAST(phase AS VARCHAR), epoch_us(event_time), \
-                    supersedes, tenant_key, decided_by, on_behalf_of, CAST(review_state AS VARCHAR) \
+                    supersedes, tenant_key, decided_by, on_behalf_of, CAST(review_state AS VARCHAR), \
+                    epoch_us(end_time), event_count \
              FROM timeline_entries WHERE entry_id = ?",
             params![id],
             |r| {
@@ -231,6 +332,8 @@ pub(crate) fn entry_state(conn: &Connection, id: &str) -> Result<Option<Value>> 
                     r.get::<_, String>(7)?,
                     r.get::<_, Option<String>>(8)?,
                     r.get::<_, String>(9)?,
+                    r.get::<_, Option<i64>>(10)?,
+                    r.get::<_, Option<i64>>(11)?,
                 ))
             },
         )
@@ -246,6 +349,8 @@ pub(crate) fn entry_state(conn: &Connection, id: &str) -> Result<Option<Value>> 
         decided_by,
         on_behalf_of,
         review_state,
+        end_us,
+        event_count,
     )) = row
     else {
         return Ok(None);
@@ -254,7 +359,7 @@ pub(crate) fn entry_state(conn: &Connection, id: &str) -> Result<Option<Value>> 
         .iter()
         .map(EvidenceRef::text)
         .collect();
-    Ok(Some(json!({
+    let mut state = json!({
         "status": status,
         "title": title,
         "narrative": narrative,
@@ -266,7 +371,23 @@ pub(crate) fn entry_state(conn: &Connection, id: &str) -> Result<Option<Value>> 
         "decided_by": decided_by,
         "on_behalf_of": on_behalf_of,
         "review_state": review_state,
-    })))
+    });
+    // Only a grouped entry carries these, so the state (and the audit rows holding it) of an ordinary entry is
+    // unchanged.
+    if let Some(m) = state.as_object_mut() {
+        if let Some(us) = end_us {
+            m.insert(
+                "end_time".into(),
+                json!(audit::ts_text(
+                    &DateTime::from_timestamp_micros(us).unwrap_or_default()
+                )),
+            );
+        }
+        if let Some(n) = event_count {
+            m.insert("event_count".into(), json!(n));
+        }
+    }
+    Ok(Some(state))
 }
 
 fn existing(conn: &Connection, id: &str) -> Result<Value> {
@@ -309,12 +430,24 @@ fn insert_proposed(
     supersedes: Option<&str>,
     reason: Option<&str>,
 ) -> Result<(String, AuditEntry)> {
+    check_evidence_exists(tx, &e.evidence)?;
+    insert_proposed_checked(tx, actor, e, supersedes, reason)
+}
+
+/// [`insert_proposed`] for a caller that has just checked `e.evidence` in this transaction.
+fn insert_proposed_checked(
+    tx: &Connection,
+    actor: &Actor,
+    e: &NewEntry,
+    supersedes: Option<&str>,
+    reason: Option<&str>,
+) -> Result<(String, AuditEntry)> {
     non_empty("a title", &e.title)?;
     check_title(&e.title)?;
     if let Some(n) = &e.narrative {
         check_text("a narrative", n)?;
     }
-    check_evidence_exists(tx, &e.evidence)?;
+    check_group(&e.event_time, e.end_time.as_ref(), e.event_count)?;
     let ts = audit::now();
     let ts_text = audit::ts_text(&ts);
     let mut h = Sha256::new();
@@ -334,14 +467,17 @@ fn insert_proposed(
         )));
     }
     tx.execute(
-        "INSERT INTO timeline_entries (entry_id, tenant_key, event_time, title, narrative, phase, status, supersedes, \
-                                       created_at, updated_at, decided_by, decided_at, on_behalf_of) \
-         VALUES (?, ?, CAST(? AS TIMESTAMPTZ), ?, ?, CAST(? AS attack_phase), 'proposed', ?, CAST(? AS TIMESTAMPTZ), \
-                 CAST(? AS TIMESTAMPTZ), ?, CAST(? AS TIMESTAMPTZ), ?)",
+        "INSERT INTO timeline_entries (entry_id, tenant_key, event_time, end_time, event_count, title, narrative, \
+                                       phase, status, supersedes, created_at, updated_at, decided_by, decided_at, \
+                                       on_behalf_of) \
+         VALUES (?, ?, CAST(? AS TIMESTAMPTZ), CAST(? AS TIMESTAMPTZ), ?, ?, ?, CAST(? AS attack_phase), 'proposed', \
+                 ?, CAST(? AS TIMESTAMPTZ), CAST(? AS TIMESTAMPTZ), ?, CAST(? AS TIMESTAMPTZ), ?)",
         params![
             id,
             e.tenant_key,
             audit::ts_text(&e.event_time),
+            e.end_time.as_ref().map(audit::ts_text),
+            e.event_count.map(|c| c as i64),
             e.title,
             e.narrative,
             e.phase.as_str(),
@@ -399,30 +535,40 @@ fn decide(
     reason: Option<&str>,
     apply: impl FnOnce(&Connection, &Value, &str) -> Result<Option<(String, Value)>>,
 ) -> Result<AuditEntry> {
-    in_tx(conn, |tx| {
-        let before = existing(tx, id)?;
-        refuse_if_pending(tx, actor, id, &before)?;
-        let ts = audit::now();
-        let ts_text = audit::ts_text(&ts);
-        let extra = apply(tx, &before, &ts_text)?;
-        tag(tx, actor, id, &ts_text)?;
-        let mut after = existing(tx, id)?;
-        if let (Some((k, v)), Some(m)) = (extra, after.as_object_mut()) {
-            m.insert(k, v);
-        }
-        audit::append_at(
-            tx,
-            ts,
-            actor.as_str(),
-            actor.on_behalf_of(),
-            action,
-            "timeline_entry",
-            id,
-            Some(&before),
-            Some(&after),
-            reason,
-        )
-    })
+    in_tx(conn, |tx| decide_in(tx, actor, id, action, reason, apply))
+}
+
+/// [`decide`] inside a transaction the caller already opened.
+fn decide_in(
+    tx: &Connection,
+    actor: &Actor,
+    id: &str,
+    action: &str,
+    reason: Option<&str>,
+    apply: impl FnOnce(&Connection, &Value, &str) -> Result<Option<(String, Value)>>,
+) -> Result<AuditEntry> {
+    let before = existing(tx, id)?;
+    refuse_if_pending(tx, actor, id, &before)?;
+    let ts = audit::now();
+    let ts_text = audit::ts_text(&ts);
+    let extra = apply(tx, &before, &ts_text)?;
+    tag(tx, actor, id, &ts_text)?;
+    let mut after = existing(tx, id)?;
+    if let (Some((k, v)), Some(m)) = (extra, after.as_object_mut()) {
+        m.insert(k, v);
+    }
+    audit::append_at(
+        tx,
+        ts,
+        actor.as_str(),
+        actor.on_behalf_of(),
+        action,
+        "timeline_entry",
+        id,
+        Some(&before),
+        Some(&after),
+        reason,
+    )
 }
 
 /// Verify a proposed entry: it needs at least one evidence row, and every row must exist in `record_sources`. When
@@ -448,42 +594,87 @@ pub(crate) fn verify_from(
         entry_id,
         "verify_entry",
         reason,
-        |tx, before, ts| {
-            if status_of(before) != "proposed" {
-                return Err(Error::Decision(format!(
-                    "timeline entry {entry_id} is {}; only a proposed entry can be verified",
-                    status_of(before)
-                )));
-            }
-            let evidence = evidence_of(tx, entry_id)?;
-            if evidence.is_empty() {
-                return Err(Error::Decision(format!(
-                    "timeline entry {entry_id} has no evidence; a verified entry needs at least one evidence row"
-                )));
-            }
+        verify_step(entry_id, true),
+    )
+}
+
+/// The change a verification makes (see [`verify`]), for [`decide`] and [`decide_in`]. `check_evidence` is false only
+/// for [`create_verified`], which checked the same evidence a moment earlier in the same transaction.
+fn verify_step(
+    entry_id: &str,
+    check_evidence: bool,
+) -> impl FnOnce(&Connection, &Value, &str) -> Result<Option<(String, Value)>> + '_ {
+    move |tx, before, ts| {
+        if status_of(before) != "proposed" {
+            return Err(Error::Decision(format!(
+                "timeline entry {entry_id} is {}; only a proposed entry can be verified",
+                status_of(before)
+            )));
+        }
+        let evidence = evidence_of(tx, entry_id)?;
+        if evidence.is_empty() {
+            return Err(Error::Decision(format!(
+                "timeline entry {entry_id} has no evidence; a verified entry needs at least one evidence row"
+            )));
+        }
+        if check_evidence {
             check_evidence_exists(tx, &evidence)?;
-            tx.execute(
-                "UPDATE timeline_entries SET status = 'verified' WHERE entry_id = ?",
-                params![entry_id],
-            )?;
-            let Some(old) = before["supersedes"].as_str() else {
-                return Ok(None);
-            };
-            let old_state = existing(tx, old)?;
-            if status_of(&old_state) != "verified" {
-                return Err(Error::Decision(format!(
-                    "timeline entry {entry_id} can no longer supersede {old}: {old} is {}, not verified; edit the \
+        }
+        tx.execute(
+            "UPDATE timeline_entries SET status = 'verified' WHERE entry_id = ?",
+            params![entry_id],
+        )?;
+        let Some(old) = before["supersedes"].as_str() else {
+            return Ok(None);
+        };
+        let old_state = existing(tx, old)?;
+        if status_of(&old_state) != "verified" {
+            return Err(Error::Decision(format!(
+                "timeline entry {entry_id} can no longer supersede {old}: {old} is {}, not verified; edit the \
                      current verified entry instead",
-                    status_of(&old_state)
-                )));
-            }
-            tx.execute(
+                status_of(&old_state)
+            )));
+        }
+        tx.execute(
             "UPDATE timeline_entries SET status = 'superseded', updated_at = CAST(? AS TIMESTAMPTZ) WHERE entry_id = ?",
             params![ts, old],
         )?;
-            Ok(Some(("superseded_entry".into(), Value::String(old.into()))))
-        },
-    )
+        Ok(Some(("superseded_entry".into(), Value::String(old.into()))))
+    }
+}
+
+/// Propose and verify an entry in one transaction, as the analyst's own decisions (two audit rows: `propose_entry`
+/// then `verify_entry`), through the same code as [`propose`] and [`verify`]. Takes a [`Reviewer`], so an agent cannot
+/// call it; an agent's entries stay proposed and go through review. Returns the entry id and both audit rows.
+///
+/// An [`Actor`] (what an agent is) does not convert to a [`Reviewer`]:
+///
+/// ```compile_fail,E0308
+/// use sparrow_core::case::actor::Actor;
+/// use sparrow_core::case::timeline_entries::{create_verified, NewEntry};
+/// fn agent_tries(conn: &duckdb::Connection, entry: NewEntry) {
+///     let agent = Actor::agent("claude", None).unwrap();
+///     let _ = create_verified(conn, &agent, entry);
+/// }
+/// ```
+pub fn create_verified(
+    conn: &Connection,
+    reviewer: &Reviewer,
+    entry: NewEntry,
+) -> Result<(String, Vec<AuditEntry>)> {
+    let actor = reviewer.as_actor();
+    in_tx(conn, |tx| {
+        let (id, proposed) = insert_proposed(tx, &actor, &entry, None, None)?;
+        let verified = decide_in(
+            tx,
+            &actor,
+            &id,
+            "verify_entry",
+            None,
+            verify_step(&id, false),
+        )?;
+        Ok((id, vec![proposed, verified]))
+    })
 }
 
 /// Reject a proposed or verified entry; the reason is required (it is the audit reason).
@@ -562,6 +753,8 @@ pub(crate) fn edit_from(
         let next = NewEntry {
             tenant_key: current.tenant_key.clone(),
             event_time: edit.event_time.unwrap_or(current.event_time),
+            end_time: edit.end_time.unwrap_or(current.end_time),
+            event_count: edit.event_count.unwrap_or(current.event_count),
             title: edit.title.clone().unwrap_or_else(|| current.title.clone()),
             narrative: edit
                 .narrative
@@ -574,6 +767,8 @@ pub(crate) fn edit_from(
             evidence,
         };
         let unchanged = next.event_time == current.event_time
+            && next.end_time == current.end_time
+            && next.event_count == current.event_count
             && next.title == current.title
             && next.narrative == current.narrative
             && next.phase.as_str() == current.phase
@@ -583,18 +778,22 @@ pub(crate) fn edit_from(
                 "the edit changes nothing on timeline entry {entry_id}"
             )));
         }
+        check_group(&next.event_time, next.end_time.as_ref(), next.event_count)?;
         check_evidence_exists(tx, &next.evidence)?;
         match status_of(&before) {
-            "verified" => insert_proposed(tx, actor, &next, Some(entry_id), reason),
+            "verified" => insert_proposed_checked(tx, actor, &next, Some(entry_id), reason),
             "proposed" => {
                 let ts = audit::now();
                 let ts_text = audit::ts_text(&ts);
                 non_empty("a title", &next.title)?;
                 tx.execute(
-                    "UPDATE timeline_entries SET event_time = CAST(? AS TIMESTAMPTZ), title = ?, narrative = ?, \
+                    "UPDATE timeline_entries SET event_time = CAST(? AS TIMESTAMPTZ), \
+                     end_time = CAST(? AS TIMESTAMPTZ), event_count = ?, title = ?, narrative = ?, \
                      phase = CAST(? AS attack_phase) WHERE entry_id = ?",
                     params![
                         audit::ts_text(&next.event_time),
+                        next.end_time.as_ref().map(audit::ts_text),
+                        next.event_count.map(|c| c as i64),
                         next.title,
                         next.narrative,
                         next.phase.as_str(),
@@ -649,6 +848,7 @@ pub(crate) fn revert(
         ("narrative", "VARCHAR"),
         ("phase", "attack_phase"),
         ("event_time", "TIMESTAMPTZ"),
+        ("end_time", "TIMESTAMPTZ"),
     ] {
         let old = before.get(field).unwrap_or(&Value::Null);
         if after.get(field).unwrap_or(&Value::Null) == old {
@@ -659,6 +859,14 @@ pub(crate) fn revert(
             params![old.as_str(), id],
         )?;
         restored.insert(field.into(), old.clone());
+    }
+    let old_count = before.get("event_count").unwrap_or(&Value::Null);
+    if after.get("event_count").unwrap_or(&Value::Null) != old_count {
+        tx.execute(
+            "UPDATE timeline_entries SET event_count = ? WHERE entry_id = ?",
+            params![old_count.as_i64(), id],
+        )?;
+        restored.insert("event_count".into(), old_count.clone());
     }
     let old_evidence = before.get("evidence").unwrap_or(&Value::Null);
     if after.get("evidence").unwrap_or(&Value::Null) != old_evidence {
@@ -690,7 +898,7 @@ fn list_where(conn: &Connection, filter: &str, args: &[&str]) -> Result<Vec<Entr
         "SELECT entry_id, tenant_key, epoch_us(event_time), title, narrative, CAST(phase AS VARCHAR), \
                 CAST(status AS VARCHAR), supersedes, epoch_us(created_at), epoch_us(updated_at), decided_by, \
                 epoch_us(decided_at), on_behalf_of, CAST(review_state AS VARCHAR), reviewed_by, epoch_us(reviewed_at), \
-                review_comment \
+                review_comment, epoch_us(end_time), event_count \
          FROM timeline_entries WHERE {filter} ORDER BY event_time, entry_id"
     );
     let at = |us: i64| DateTime::from_timestamp_micros(us).unwrap_or_default();
@@ -714,6 +922,8 @@ fn list_where(conn: &Connection, filter: &str, args: &[&str]) -> Result<Vec<Entr
             reviewed_by: r.get(14)?,
             reviewed_at: r.get::<_, Option<i64>>(15)?.map(at),
             review_comment: r.get(16)?,
+            end_time: r.get::<_, Option<i64>>(17)?.map(at),
+            event_count: r.get::<_, Option<i64>>(18)?.map(|c| c as u64),
             evidence: Vec::new(),
         })
     })?;
