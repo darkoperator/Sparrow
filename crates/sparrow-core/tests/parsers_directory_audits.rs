@@ -163,6 +163,14 @@ fn directory_audits_load_initiator_targets_and_modified_properties() {
         ),
         "33333333-3333-4333-8333-333333333333|Invoice Viewer|-"
     );
+    // JSON sources are complete.
+    assert_eq!(
+        text(
+            &case,
+            "SELECT string_agg(CAST(data_completeness AS VARCHAR), ',') FROM directory_audits"
+        ),
+        "full,full"
+    );
 }
 
 #[test]
@@ -188,7 +196,8 @@ fn lone_csv_loads_scalar_columns_and_warns() {
         count(
             &case,
             "SELECT count(*) FROM directory_audits WHERE initiated_by_upn IS NULL AND targets IS NULL
-               AND additional_details IS NULL AND time_tz_assumed AND epoch(event_time)::BIGINT = 1789380300"
+               AND additional_details IS NULL AND time_tz_assumed AND epoch(event_time)::BIGINT = 1789380300
+               AND data_completeness = 'partial'"
         ),
         1
     );

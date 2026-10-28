@@ -158,6 +158,7 @@ pub const SPARROW_PARSED: &[&str] = &[
     "inv.ual.window",
     "inv.user_applications",
     "inv.users",
+    "portal.entra_audit",
     "portal.entra_signins",
     "portal.message_trace",
     "portal.ual",

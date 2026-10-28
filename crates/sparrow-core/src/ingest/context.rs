@@ -38,6 +38,9 @@ pub struct ParseContext<'a> {
     /// Other files of this collection proved both orders (retry pass only): an all-ambiguous
     /// file then fails saying so.
     pub collection_orders_conflict: bool,
+    /// The file is an analyst portal download (`portal.*` artifact), not a PowerShell export: its
+    /// values are never PowerShell placeholders.
+    pub portal_export: bool,
     orders_seen: Vec<DateOrder>,
     warnings: Vec<String>,
     mapper: OffsetMapper,
@@ -81,6 +84,7 @@ impl<'a> ParseContext<'a> {
             date_hint: None,
             defer_ambiguous_dates: false,
             collection_orders_conflict: false,
+            portal_export: false,
             orders_seen: Vec::new(),
             warnings: Vec::new(),
             mapper: OffsetMapper::new(text, raw.len() as u64),

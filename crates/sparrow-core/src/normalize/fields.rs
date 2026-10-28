@@ -6,13 +6,15 @@ use crate::readers::time::{DateOrder, parse_timestamp};
 use serde_json::{Map, Value};
 
 /// Text PowerShell writes for values Export-Csv / Format-List could not render:
-/// `System.Object[]`, `@{...}`, and bare .NET type names (`Microsoft.Graph....Model`).
+/// `System.Object[]`, `@{...}`, and bare .NET type names (`Microsoft.Graph....Model`: only letters,
+/// digits and `_ . ` + [ ] ,`, so a user agent such as `Microsoft.OData.Client/7.12.5` is a real value).
 pub fn is_placeholder(s: &str) -> bool {
     let s = s.trim();
     s == "System.Object[]"
         || (s.starts_with("@{") && s.ends_with('}'))
         || ((s.starts_with("System.") || s.starts_with("Microsoft."))
-            && !s.contains(char::is_whitespace)
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "_.`+[],".contains(c))
             && s.matches('.').count() >= 2)
 }
 

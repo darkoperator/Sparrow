@@ -404,7 +404,12 @@ fn not_supported_files_are_partial() {
 #[test]
 fn every_catalog_artifact_pattern_matches_a_registry_id() {
     let mut ids: Vec<&str> = Registry::builtin().defs().map(|d| d.id).collect();
-    ids.extend(["portal.ual", "portal.entra_signins", "portal.message_trace"]);
+    ids.extend([
+        "portal.ual",
+        "portal.entra_signins",
+        "portal.entra_audit",
+        "portal.message_trace",
+    ]);
     for ev in EVIDENCE {
         for pat in ev.artifacts {
             let hit = match pat.strip_suffix('*') {

@@ -1080,6 +1080,7 @@ fn ingest_file_inner(
     ctx.date_hint = job.date_hint;
     ctx.defer_ambiguous_dates = job.defer;
     ctx.collection_orders_conflict = job.orders_conflict;
+    ctx.portal_export = class.artifact_id.starts_with("portal.");
     // A parser that queued sightings and did not flush them loses none. (That covers loss, not order relative to the
     // parser's own later writes: a parser that reads `record_sources` mid-parse must flush before it reads. The
     // parsers that flush themselves, logs and Sessions, make this second flush a no-op.)

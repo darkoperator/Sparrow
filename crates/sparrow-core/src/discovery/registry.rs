@@ -826,6 +826,20 @@ static PORTAL_DEFS: &[PortalDef] = &[
         exact: false,
         xlsx: true,
     },
+    // Entra admin center > Audit logs > Download (CSV). The sign-in export also has `date (utc)`
+    // but has `request id` and no `correlationid`/`activity` columns, so the two never overlap.
+    PortalDef {
+        id: "portal.entra_audit",
+        target: "directory_audits",
+        columns: &[
+            "date (utc)",
+            "correlationid",
+            "activity",
+            "target1modifiedproperty1name",
+        ],
+        exact: false,
+        xlsx: false,
+    },
     PortalDef {
         id: "portal.message_trace",
         target: "message_trace",
@@ -871,6 +885,38 @@ pub fn sniff_portal(head: &[u8]) -> Option<Classification> {
         .map(|h| h.to_ascii_lowercase())
         .collect();
     portal_by_headers(&headers, false)
+}
+
+/// Recognize the Entra admin center audit log JSON download: a top-level array of Graph
+/// `directoryAudit` objects, saved under any name. `head` is the start of the file; its first element must be an
+/// object with the three Graph audit keys (case-insensitive).
+pub fn sniff_portal_json(head: &[u8]) -> Option<Classification> {
+    let decoded = decode(head);
+    let rest = decoded
+        .text
+        .trim_start_matches('\u{feff}')
+        .trim_start()
+        .strip_prefix('[')?;
+    // Only the first element is read; one that is cut off by the end of the head does not parse.
+    let first = serde_json::Deserializer::from_str(rest)
+        .into_iter::<serde_json::Value>()
+        .next()?
+        .ok()?;
+    let keys: HashSet<String> = first
+        .as_object()?
+        .keys()
+        .map(|k| k.to_ascii_lowercase())
+        .collect();
+    ["activitydatetime", "loggedbyservice", "targetresources"]
+        .iter()
+        .all(|k| keys.contains(*k))
+        .then_some(Classification {
+            artifact_id: "portal.entra_audit",
+            target: "directory_audits",
+            derived: false,
+            priority: 0,
+            subject: None,
+        })
 }
 
 /// Recognize a portal export saved as an Excel workbook from its first sheet's header row.
@@ -940,7 +986,8 @@ impl Registry {
 
     /// Classify a file given its head: CSV portal exports are recognized by the header in the
     /// first `SNIFF_BYTES`, XLSX ones by their first sheet's header row (`head` is then the
-    /// whole file), under any tool; then `tool`'s path patterns apply.
+    /// whole file), under any tool; then `tool`'s path patterns apply, and a JSON file they leave
+    /// unclassified is sniffed for the Entra audit log download.
     pub fn classify_with_head(
         &self,
         tool: Tool,
@@ -955,15 +1002,22 @@ impl Registry {
         if let Some(c) = sniffed {
             return Some(c);
         }
-        self.classify(tool, rel_path)
+        // JSON: path patterns win; only a file no pattern classifies is sniffed.
+        let by_path = self.classify(tool, rel_path);
+        if by_path.is_none() && format_from_path(rel_path) == FileFormat::Json {
+            return head.and_then(sniff_portal_json);
+        }
+        by_path
     }
 
-    /// `classify_with_head`, reading the head of CSV files (the whole of XLSX files) from `abs`.
+    /// `classify_with_head`, reading the head of CSV and JSON files (the whole of XLSX files) from `abs`.
     /// An XLSX larger than `ingest::DEFAULT_MAX_FILE_BYTES` is not read: it is classified by
     /// path alone (ingest then refuses it by size).
     pub fn classify_file(&self, tool: Tool, rel_path: &str, abs: &Path) -> Option<Classification> {
         let head = match format_from_path(rel_path) {
             FileFormat::Csv => read_head(abs),
+            // A path pattern owns its JSON files; only the others are sniffed.
+            FileFormat::Json if self.classify(tool, rel_path).is_none() => read_head(abs),
             FileFormat::Xlsx => std::fs::metadata(abs)
                 .is_ok_and(|m| m.len() <= crate::ingest::DEFAULT_MAX_FILE_BYTES)
                 .then(|| std::fs::read(abs).ok())

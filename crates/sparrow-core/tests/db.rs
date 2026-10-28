@@ -565,9 +565,9 @@ fn upgrading_a_v20_case_keeps_decisions_and_adds_imported_proposals() {
         .unwrap();
     }
     let (from, to) = Case::upgrade(&path).unwrap();
-    assert_eq!((from, to), (20, 21));
+    assert_eq!((from, to), (20, 22));
     let case = Case::open_read_only(&path).unwrap();
-    assert_eq!(case.schema_version().unwrap(), 21);
+    assert_eq!(case.schema_version().unwrap(), 22);
     let kept: (String, String, String, String) = case
         .conn()
         .query_row(
@@ -603,6 +603,76 @@ fn upgrading_a_v20_case_keeps_decisions_and_adds_imported_proposals() {
     assert!(comment.unwrap().contains("analyst:<name>"));
 }
 
+/// A case file at schema v21 (before migration 22), built migration by migration.
+fn v21_conn(path: &std::path::Path) -> duckdb::Connection {
+    let conn = duckdb::Connection::open(path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name VARCHAR NOT NULL,
+         applied_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp);",
+    )
+    .unwrap();
+    for m in MIGRATIONS.iter().filter(|m| m.version <= 21) {
+        conn.execute_batch(m.sql).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
+            duckdb::params![m.version as i64, m.name],
+        )
+        .unwrap();
+    }
+    conn
+}
+
+#[test]
+fn upgrading_a_v21_case_keeps_directory_audits_and_adds_completeness() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v21.duckdb");
+    {
+        let conn = v21_conn(&path);
+        conn.execute_batch(
+            "INSERT INTO directory_audits (record_key, collection_id, audit_id, event_time, activity, result,
+                 initiated_by_upn, raw)
+             VALUES ('a1', 1, 'a1', TIMESTAMPTZ '2026-10-23 18:47:17+00', 'Reset password (by admin)', 'success',
+                     'admin@contoso.example', '{\"Id\":\"a1\"}');",
+        )
+        .unwrap();
+    }
+    let (from, to) = Case::upgrade(&path).unwrap();
+    assert_eq!((from, to), (21, 22));
+    let case = Case::open_read_only(&path).unwrap();
+    let kept: (String, String, String, String, Option<String>) = case
+        .conn()
+        .query_row(
+            "SELECT record_key, activity, initiated_by_upn, CAST(raw AS VARCHAR),
+                    CAST(data_completeness AS VARCHAR) FROM directory_audits",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        kept,
+        (
+            "a1".into(),
+            "Reset password (by admin)".into(),
+            "admin@contoso.example".into(),
+            "{\"Id\":\"a1\"}".into(),
+            None
+        )
+    );
+    let comment: Option<String> = case
+        .conn()
+        .query_row(
+            "SELECT comment FROM duckdb_columns() WHERE table_name = 'directory_audits' AND column_name = 'data_completeness'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        comment
+            .unwrap()
+            .contains("NULL for rows loaded before schema 22")
+    );
+}
+
 #[test]
 fn describe_lists_views_with_their_kind() {
     let case = Case::in_memory().unwrap();
@@ -615,7 +685,7 @@ fn describe_lists_views_with_their_kind() {
 #[test]
 fn state_table_specs_match_the_schema() {
     let case = Case::in_memory().unwrap();
-    assert_eq!(case.schema_version().unwrap(), 21);
+    assert_eq!(case.schema_version().unwrap(), 22);
     for spec in ALL {
         for common in [
             "record_key",

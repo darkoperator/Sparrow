@@ -15,8 +15,10 @@ This is the detailed reference material from the original README. For the invest
   grants, service principals, app registrations, user applications, devices, groups and members, risky users,
   risk detections, security alerts and secure score.
 - **Portal exports** recognized by their header wherever they are: Purview audit log search CSV, Entra ID
-  sign-in CSV or XLSX, Exchange admin center message trace. A folder holding only such files is ingested as a
-  `portal_export` collection.
+  sign-in CSV or XLSX, Entra ID audit log CSV or JSON, Exchange admin center message trace. A folder holding only
+  such files is ingested as a `portal_export` collection. For the Entra audit log (Entra admin center > Monitoring >
+  Audit logs > Download) ask for the **JSON**: it keeps every field and the audit id. The CSV has no audit id and
+  stops at 3 targets x 5 modified properties and 6 additional details, so its rows load as `partial`.
 
 Unified audit log records from every source (raw, expanded, `Simple_*`, Purview) land in `ual_events`, one row per
 AuditData `Id`, with every sighting in `record_sources`. JSON files are preferred over their CSV twins and raw

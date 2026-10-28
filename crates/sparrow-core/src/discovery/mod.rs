@@ -12,5 +12,5 @@ pub use files::{
 };
 pub use registry::{
     Classification, FileFormat, Registry, SNIFF_BYTES, format_from_path, normalize_rel_path,
-    sniff_portal, sniff_portal_xlsx,
+    sniff_portal, sniff_portal_json, sniff_portal_xlsx,
 };

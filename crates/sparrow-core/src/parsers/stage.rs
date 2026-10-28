@@ -96,7 +96,9 @@ pub fn read_state_records(
     format: RecordFormat,
 ) -> Result<Vec<SourceRecord>> {
     let records = read_records(ctx, format)?;
-    if let Some(w) = placeholder_warning(&records, format) {
+    if !ctx.portal_export
+        && let Some(w) = placeholder_warning(&records, format)
+    {
         ctx.warn(w);
     }
     Ok(records)

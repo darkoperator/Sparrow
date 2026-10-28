@@ -106,3 +106,17 @@ fn nested_objects_are_records_with_the_same_lossiness() {
     assert!(rec.object("Flat").is_none());
     assert!(rec.object("Missing").is_none());
 }
+
+#[test]
+fn dotted_values_with_other_characters_are_not_type_names() {
+    assert!(!is_placeholder("Microsoft.OData.Client/7.12.5"));
+    assert!(!is_placeholder("System.Net.Http/1.0"));
+    assert!(!is_placeholder("Microsoft.Graph.Foo:bar=1"));
+    assert!(is_placeholder(
+        "Microsoft.Graph.PowerShell.Models.MicrosoftGraphIdentity"
+    ));
+    assert!(is_placeholder("System.Object[]"));
+    assert!(is_placeholder(
+        "System.Collections.Generic.Dictionary`2[System.String,System.Object]"
+    ));
+}

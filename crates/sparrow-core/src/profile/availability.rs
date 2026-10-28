@@ -234,7 +234,11 @@ pub static EVIDENCE: &[EvidenceDef] = &[
         id: "directory_audits",
         title: "Entra ID audit logs",
         kind: Kind::Event,
-        artifacts: &["inv.entra_audit*", "hawk.tenant.entra_audit"],
+        artifacts: &[
+            "inv.entra_audit*",
+            "hawk.tenant.entra_audit",
+            "portal.entra_audit",
+        ],
         invictus_runs: &[("EntraID", Some("AuditLogs"))],
         hawk_log: Some(r"^Initiating collection of Entra ID audit events"),
         invictus: Some("Get-GraphEntraAuditLogs -startDate {start} -endDate {end}"),

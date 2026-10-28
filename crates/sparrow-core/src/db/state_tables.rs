@@ -521,6 +521,7 @@ pub static DIRECTORY_AUDITS: TableSpec = TableSpec {
         col("modified_properties", J),
         col("additional_details", J),
         col("correlation_id", V),
+        col("data_completeness", "data_completeness"),
     ],
 };
 
