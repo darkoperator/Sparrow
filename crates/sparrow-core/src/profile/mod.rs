@@ -62,7 +62,7 @@ pub fn unprofiled_collections(conn: &duckdb::Connection) -> Result<Vec<i64>> {
 /// Re-derive the profile. Steps, in order (later tasks fill in the commented ones):
 /// 1. data tables: capabilities (Task 2), operation_catalog (Task 9);
 /// 2. tenants, collections.tenant_key, tenant_domains (Task 3);
-/// 3. ip_intel (Task 7);
+/// 3. ip_intel (Task 7), then the `events` table that joins it;
 /// 4. spray_sources (after ip_intel, before identities), identities (Task 8);
 /// 5. tenant_capabilities (Task 5);
 /// 6. evidence_availability snapshot (Task 6).
@@ -87,6 +87,7 @@ pub fn refresh(case: &mut Case, opts: &ProfileOptions) -> Result<ProfileReport> 
     let ip_intel = crate::enrich::ip::refresh_ip_intel(&tx, &opts.dirs, opts.geoip_dir.as_deref())?;
     report.warnings.extend(ip_intel.warnings.clone());
     report.ip_intel = Some(ip_intel);
+    crate::case::events::rebuild(&tx)?;
     let codes = spray::credential_failure_codes(&opts.dirs)?;
     report.spray_sources = spray::rebuild(&tx, &codes)?;
     let first_party = cloud_services::first_party_apps(&opts.dirs)?;

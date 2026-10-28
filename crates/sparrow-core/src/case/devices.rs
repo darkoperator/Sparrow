@@ -954,6 +954,102 @@ fn parse_array(text: Option<String>) -> Vec<Value> {
     }
 }
 
+/// What one `directory_audits` row says about devices, read once for every consumer: the flattened modified
+/// properties (the parser's `[{target, property, old, new}]` plus the raw targets' `ModifiedProperties`), every target
+/// id, and the `(id, display name)` of each target of type Device.
+pub(crate) struct AuditParts {
+    plist: Vec<Prop>,
+    ids: Vec<String>,
+    device_targets: Vec<(String, Option<String>)>,
+}
+
+pub(crate) fn audit_parts(props: Option<String>, targets: Option<String>) -> AuditParts {
+    // The parser's [{target, property, old, new}].
+    let mut plist: Vec<Prop> = parse_array(props)
+        .iter()
+        .filter_map(Value::as_object)
+        .filter_map(|p| {
+            prop(
+                text_of(get_ci(p, "property")),
+                text_of(get_ci(p, "new")),
+                text_of(get_ci(p, "old")),
+            )
+        })
+        .collect();
+    let mut ids = Vec::new();
+    let mut device_targets = Vec::new();
+    for t in parse_array(targets).iter().filter_map(Value::as_object) {
+        ids.extend(text_of(get_ci(t, "Id")));
+        if text_of(get_ci(t, "Type")).is_some_and(|ty| ty.eq_ignore_ascii_case("device")) {
+            if let Some(id) = text_of(get_ci(t, "Id")) {
+                device_targets.push((id, text_of(get_ci(t, "DisplayName"))));
+            }
+        }
+        // Properties kept on the raw target when the flattened list lacks them.
+        if let Some(Value::Array(ps)) = get_ci(t, "ModifiedProperties") {
+            plist.extend(ps.iter().filter_map(Value::as_object).filter_map(|p| {
+                prop(
+                    text_of(get_ci(p, "DisplayName")),
+                    text_of(get_ci(p, "NewValue")),
+                    text_of(get_ci(p, "OldValue")),
+                )
+            }));
+        }
+    }
+    AuditParts {
+        plist,
+        ids,
+        device_targets,
+    }
+}
+
+/// The device a directory audit row is about, as the `events` table records it.
+pub(crate) struct AuditDevice {
+    /// The Entra device id from a `DeviceId` / `TargetId.DeviceId` modified property.
+    pub device_id: Option<String>,
+    /// The lower-cased directory object id of the single device the row targets (`Device_<oid>` or bare).
+    pub object_id: Option<String>,
+    pub name: Option<String>,
+    /// Several different device targets: the row names no single device and all three fields are empty.
+    pub ambiguous: bool,
+}
+
+/// `Device_<oid>` or a bare `<oid>` as the lower-cased object id; any other id is only lower-cased.
+fn target_object_id(id: &str) -> String {
+    let id = id.trim().to_lowercase();
+    match id.strip_prefix("device_") {
+        Some(o) if is_guid(o) => o.to_string(),
+        _ => id,
+    }
+}
+
+pub(crate) fn audit_device(props: Option<String>, targets: Option<String>) -> AuditDevice {
+    let parts = audit_parts(props, targets);
+    let mut distinct: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for (id, name) in parts.device_targets {
+        let name = non_empty(name);
+        let slot = distinct.entry(target_object_id(&id)).or_insert(None);
+        if slot.is_none() {
+            *slot = name;
+        }
+    }
+    if distinct.len() > 1 {
+        return AuditDevice {
+            device_id: None,
+            object_id: None,
+            name: None,
+            ambiguous: true,
+        };
+    }
+    let (object_id, name) = distinct.into_iter().next().unzip();
+    AuditDevice {
+        device_id: device_id_of(&parts.plist),
+        object_id,
+        name: name.flatten(),
+        ambiguous: false,
+    }
+}
+
 fn device_events(conn: &Connection, tenant: Option<&str>) -> Result<Vec<DeviceEvent>> {
     let mut out = Vec::new();
     let ual_sql = format!(
@@ -1005,36 +1101,13 @@ fn device_events(conn: &Connection, tenant: Option<&str>) -> Result<Vec<DeviceEv
     );
     for (tenant_key, us, key, op, props, targets) in event_rows(conn, &da_sql, tenant)? {
         let Some(at) = at_us(us) else { continue };
-        // The parser's [{target, property, old, new}].
-        let mut plist: Vec<Prop> = parse_array(props)
-            .iter()
-            .filter_map(Value::as_object)
-            .filter_map(|p| {
-                prop(
-                    text_of(get_ci(p, "property")),
-                    text_of(get_ci(p, "new")),
-                    text_of(get_ci(p, "old")),
-                )
-            })
-            .collect();
-        let mut ids = Vec::new();
-        let mut device_targets: Vec<String> = Vec::new();
-        for t in parse_array(targets).iter().filter_map(Value::as_object) {
-            ids.extend(text_of(get_ci(t, "Id")));
-            if text_of(get_ci(t, "Type")).is_some_and(|ty| ty.eq_ignore_ascii_case("device")) {
-                device_targets.extend(text_of(get_ci(t, "Id")));
-            }
-            // Properties kept on the raw target when the flattened list lacks them.
-            if let Some(Value::Array(ps)) = get_ci(t, "ModifiedProperties") {
-                plist.extend(ps.iter().filter_map(Value::as_object).filter_map(|p| {
-                    prop(
-                        text_of(get_ci(p, "DisplayName")),
-                        text_of(get_ci(p, "NewValue")),
-                        text_of(get_ci(p, "OldValue")),
-                    )
-                }));
-            }
-        }
+        let AuditParts {
+            plist,
+            ids,
+            device_targets,
+        } = audit_parts(props, targets);
+        let mut device_targets: Vec<String> =
+            device_targets.into_iter().map(|(id, _)| id).collect();
         // Graph targets carry no `Device_` prefix: the single target of type Device is the verified one.
         device_targets.sort();
         device_targets.dedup();
