@@ -6,6 +6,7 @@ mod build;
 mod filter;
 mod query;
 
+pub(crate) use filter::{Where, build as scope_where};
 pub use query::{CSV_COLUMNS, detail, export_csv, histogram, page, suggest, summary};
 
 use crate::Result;
@@ -47,6 +48,8 @@ pub enum Entity {
     Account(String),
     Ip(String),
     /// A device id (`device_id`) or directory object id (`device_object_id`).
+    /// Known gap: a directory audit row that names the device only by its object id (no `devices` row links the two) has
+    /// `device_id` NULL, so opening the device by its device id does not list that row; opening it by object id does.
     Device(String),
     /// An Entra session id.
     Session(String),

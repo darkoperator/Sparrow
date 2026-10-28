@@ -13,7 +13,7 @@ pub(super) const HIDDEN_SOURCE: &str = "message_trace_event";
 
 /// WHERE clauses over `events e`, ANDed, with their bound parameters in order.
 #[derive(Default)]
-pub(super) struct Where {
+pub(crate) struct Where {
     pub clauses: Vec<String>,
     pub params: Vec<Value>,
 }
@@ -292,7 +292,7 @@ pub(super) const SEARCH_TABLES: &[(&str, &str)] = &[
 
 /// The WHERE for `q` over `events e`. `show_hidden` keeps the `message_trace_event` rows even when `q` does not
 /// name them (the summary uses it to count what the default view hides).
-pub(super) fn build(q: &EventQuery, show_hidden: bool) -> Result<Where> {
+pub(crate) fn build(q: &EventQuery, show_hidden: bool) -> Result<Where> {
     let mut w = Where::default();
     if let Some(e) = &q.entity {
         let (sql, p) = e.clone().normalized()?.clause();

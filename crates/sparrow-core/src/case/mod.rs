@@ -7,6 +7,7 @@ pub mod audit;
 pub mod browse;
 pub mod coverage;
 pub mod devices;
+pub mod entity;
 pub mod events;
 pub mod indicators;
 pub mod notes;
