@@ -2,11 +2,13 @@
 //! The filters come from [`super::filter`]; nothing here writes.
 
 use super::filter::{self, SEARCH_TABLES, Where};
+use super::marksql;
 use super::{
     EventDetail, EventQuery, EventRow, EventsPage, EventsSummary, Field, FindingMark, Histogram,
     SOURCES, TagRef,
 };
 use crate::case::browse::{COUNT_CAP, MAX_PAGE, Sort};
+use crate::case::marks::{self, FlagLevel};
 use crate::case::notes::{self, NoteTarget};
 use crate::export::timeline_csv::neutralise;
 use crate::{Error, Result};
@@ -16,23 +18,36 @@ use duckdb::{Connection, Row, params_from_iter};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// The `events` columns of an [`EventRow`], then finding count, note count and latest note, for [`ROW_FROM`].
-const ROW_COLUMNS: &str = "e.source_table, e.record_key, e.source, epoch_us(e.event_time), e.time_tz_assumed, \
-     e.tenant_key, e.workload, CAST(e.category AS VARCHAR), e.operation, e.result, e.actor_upn, e.owner_upn, \
-     e.target, e.ip, e.ip_prefix, e.ip_country, e.asn, e.asn_org, e.ip_kind, e.device_id, e.device_name, \
-     e.device_object_id, e.entra_session_id, e.user_agent, e.app_id, e.summary, \
-     coalesce(fc.n, 0), coalesce(nt.n, 0), nt.latest";
-
-/// The joins behind the last three of [`ROW_COLUMNS`]. `{rows}` is the events subselect (aliased `e`).
-fn row_from(rows: &str) -> String {
+/// The query behind [`EventRow`]s: `rows` (a select of `events` rows, with their order and limit) is taken once as the
+/// page, and everything beyond the `events` columns is computed for those rows only: finding and note counts, the
+/// effective flag (built once by `marksql::flagged` over the page) and the tags as JSON. `tail` follows the select.
+fn row_query(rows: &str, tail: &str) -> String {
+    let page = "SELECT source_table, record_key FROM page";
     format!(
-        "({rows}) e \
+        "WITH page AS MATERIALIZED ({rows}) \
+         SELECT e.source_table, e.record_key, e.source, epoch_us(e.event_time), e.time_tz_assumed, \
+         e.tenant_key, e.workload, CAST(e.category AS VARCHAR), e.operation, e.result, e.actor_upn, e.owner_upn, \
+         e.target, e.ip, e.ip_prefix, e.ip_country, e.asn, e.asn_org, e.ip_kind, e.device_id, e.device_name, \
+         e.device_object_id, e.entra_session_id, e.user_agent, e.app_id, e.summary, \
+         coalesce(fc.n, 0), coalesce(nt.n, 0), nt.latest, {flags}, tg.tags \
+         FROM page e \
          LEFT JOIN (SELECT source_table, record_key, count(DISTINCT finding_id) AS n FROM finding_evidence \
-                    GROUP BY 1, 2) fc ON fc.source_table = e.source_table AND fc.record_key = e.record_key \
+                    WHERE (source_table, record_key) IN ({page}) GROUP BY 1, 2) fc \
+                ON fc.source_table = e.source_table AND fc.record_key = e.record_key \
          LEFT JOIN (SELECT source_table, object_id, count(*) AS n, \
                            arg_max(text, struct_pack(c := created_at, i := annotation_id)) AS latest \
-                    FROM annotations WHERE CAST(object_type AS VARCHAR) = 'evidence' GROUP BY 1, 2) nt \
-                ON nt.source_table = e.source_table AND nt.object_id = e.record_key"
+                    FROM annotations WHERE CAST(object_type AS VARCHAR) = 'evidence' \
+                    AND (source_table, object_id) IN ({page}) GROUP BY 1, 2) nt \
+                ON nt.source_table = e.source_table AND nt.object_id = e.record_key \
+         LEFT JOIN (SELECT et.source_table, et.record_key, \
+                    CAST(to_json(list({{'name': t.name, 'ai': et.decided_by LIKE 'agent:%' \
+                        AND et.review_state = 'pending_review'}} ORDER BY t.name)) AS VARCHAR) AS tags \
+                    FROM event_tags et JOIN tags t ON t.tag_id = et.tag_id \
+                    WHERE (et.source_table, et.record_key) IN ({page}) GROUP BY 1, 2) tg \
+                ON tg.source_table = e.source_table AND tg.record_key = e.record_key \
+         LEFT JOIN ({flagged}) fl ON fl.source_table = e.source_table AND fl.record_key = e.record_key{tail}",
+        flags = marksql::FLAG_COLUMNS,
+        flagged = marksql::flagged("page", true),
     )
 }
 
@@ -66,11 +81,18 @@ fn row_of(r: &Row) -> Result<EventRow> {
         app_id: r.get(24)?,
         summary: r.get(25)?,
         finding_count: r.get::<_, i64>(26)? as u32,
-        // Marks arrive with the marks tables.
-        tags: Vec::new(),
-        flag: None,
         note_count: r.get::<_, i64>(27)? as u32,
         latest_note: r.get(28)?,
+        flag: r
+            .get::<_, Option<String>>(29)?
+            .map(|l| FlagLevel::parse(&l))
+            .transpose()?,
+        flag_ai: r.get::<_, Option<bool>>(30)?.unwrap_or(false),
+        tags: match r.get::<_, Option<String>>(31)? {
+            Some(json) => serde_json::from_str(&json)
+                .map_err(|e| Error::Invalid(format!("tags of an event are not JSON: {e}")))?,
+            None => Vec::new(),
+        },
     })
 }
 
@@ -171,10 +193,7 @@ pub fn page(
         "SELECT e.* FROM events e{}{order} LIMIT {limit} OFFSET {offset}",
         w.sql()
     );
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {ROW_COLUMNS} FROM {}{order}",
-        row_from(&rows_sql)
-    ))?;
+    let mut stmt = conn.prepare(&row_query(&rows_sql, &order))?;
     let mut rows = Vec::new();
     let mut result = stmt.query(params_from_iter(bound(&w)))?;
     while let Some(r) = result.next()? {
@@ -224,14 +243,41 @@ pub fn summary(conn: &Connection, q: &EventQuery) -> Result<EventsSummary> {
     } else {
         0
     };
+    let (suspicious, malicious) = flag_counts(conn, q)?;
     Ok(EventsSummary {
         total,
-        // Flags arrive with the marks tables.
-        suspicious: 0,
-        malicious: 0,
+        suspicious,
+        malicious,
         per_source,
         hidden_trace_events,
     })
+}
+
+/// The rows of `q` (ignoring its flag toggle) whose effective flag is Suspicious, and those whose is Malicious. Both are
+/// 0 without a query when the case has no flag at all.
+fn flag_counts(conn: &Connection, q: &EventQuery) -> Result<(u64, u64)> {
+    let any: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM event_flags) OR EXISTS (SELECT 1 FROM value_flags WHERE removed_at IS NULL)",
+        [],
+        |r| r.get(0),
+    )?;
+    if !any {
+        return Ok((0, 0));
+    }
+    // The flagged rows of everything else the query selects, counted by their effective flag.
+    let w = filter::build_with(q, false, false)?;
+    let counts = conn.query_row(
+        &format!(
+            "WITH base AS (SELECT {} FROM events e{}) \
+             SELECT count(*) FILTER (WHERE sus AND NOT mal), count(*) FILTER (WHERE mal) FROM ({})",
+            marksql::BASE_COLUMNS,
+            w.sql(),
+            marksql::flagged("base", !w.clauses.is_empty())
+        ),
+        params_from_iter(bound(&w)),
+        |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64)),
+    )?;
+    Ok(counts)
 }
 
 /// Bucket sizes in seconds: 1m, 5m, 15m, 1h, 3h, 6h, 12h, 1d.
@@ -350,9 +396,9 @@ pub fn detail(conn: &Connection, source_table: &str, record_key: &str) -> Result
         .iter()
         .find(|(t, _)| *t == source_table)
         .ok_or_else(|| Error::Invalid(format!("{source_table:?} is not an event table")))?;
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {ROW_COLUMNS} FROM {} ",
-        row_from("SELECT * FROM events WHERE source_table = ? AND record_key = ?")
+    let mut stmt = conn.prepare(&row_query(
+        "SELECT * FROM events WHERE source_table = ? AND record_key = ?",
+        "",
     ))?;
     let mut result = stmt.query([source_table, record_key])?;
     let row = match result.next()? {
@@ -391,6 +437,7 @@ pub fn detail(conn: &Connection, source_table: &str, record_key: &str) -> Result
     Ok(EventDetail {
         tags: row.tags.clone(),
         flag: row.flag,
+        flag_sources: marks::flag_sources(conn, source_table, record_key)?,
         row,
         raw,
         source_refs,
@@ -398,9 +445,18 @@ pub fn detail(conn: &Connection, source_table: &str, record_key: &str) -> Result
     })
 }
 
-/// Distinct case values of `field` that start with `prefix` (case-insensitively), sorted, at most `limit` (200).
-/// Tag has none until the marks tables exist.
+/// Distinct case values of `field` that start with `prefix` (case-insensitively), sorted, at most `limit` (200). Tag
+/// suggests the tag names in use.
 pub fn suggest(conn: &Connection, field: Field, prefix: &str, limit: usize) -> Result<Vec<String>> {
+    if field == Field::Tag {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT name FROM tags WHERE name ILIKE ? ESCAPE '\\' ORDER BY name LIMIT {}",
+            limit.min(200)
+        ))?;
+        let pattern = format!("{}%", filter::like_pattern(prefix.trim()));
+        let rows = stmt.query_map([pattern], |r| r.get::<_, String>(0))?;
+        return Ok(rows.collect::<std::result::Result<_, _>>()?);
+    }
     let exprs: &[&str] = match field {
         Field::Source => &["e.source"],
         Field::Operation => &["e.operation"],
@@ -410,7 +466,7 @@ pub fn suggest(conn: &Connection, field: Field, prefix: &str, limit: usize) -> R
         Field::Asn => &["CAST(e.asn AS VARCHAR)"],
         Field::Device => &["e.device_name", "e.device_id"],
         Field::Session => &["e.entra_session_id"],
-        Field::Tag => return Ok(Vec::new()),
+        Field::Tag => unreachable!("handled above"),
     };
     let pattern = format!("{}%", filter::like_pattern(prefix.trim()));
     let parts: Vec<String> = exprs
@@ -470,9 +526,9 @@ pub fn export_csv(conn: &Connection, q: &EventQuery, out: &Path) -> Result<u64> 
     let csv_err = |e: csv::Error| Error::Invalid(format!("csv: {e}"));
     csv.write_record(CSV_COLUMNS).map_err(csv_err)?;
 
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {ROW_COLUMNS} FROM {}{order}",
-        row_from(&format!("SELECT * FROM events e{}", w.sql()))
+    let mut stmt = conn.prepare(&row_query(
+        &format!("SELECT * FROM events e{}", w.sql()),
+        &order,
     ))?;
     let mut result = stmt.query(params_from_iter(bound(&w)))?;
     let mut n = 0;
@@ -496,8 +552,8 @@ pub fn export_csv(conn: &Connection, q: &EventQuery, out: &Path) -> Result<u64> 
             text(&e.result),
             text(&e.user_agent),
             match e.flag {
-                Some(super::FlagLevel::Suspicious) => "suspicious".into(),
-                Some(super::FlagLevel::Malicious) => "malicious".into(),
+                Some(FlagLevel::Suspicious) => "suspicious".into(),
+                Some(FlagLevel::Malicious) => "malicious".into(),
                 None => String::new(),
             },
             e.tags

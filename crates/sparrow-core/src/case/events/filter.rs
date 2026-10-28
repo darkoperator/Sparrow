@@ -1,7 +1,7 @@
 //! Events filters as SQL: Harrier's field syntax, the entity scope and the time range. Every value is a bound
 //! parameter; only column names and operators chosen here are ever formatted into the SQL.
 
-use super::{Entity, EventQuery, Field, FlagFilter};
+use super::{Entity, EventQuery, Field, FlagFilter, marksql};
 use crate::normalize::net::normalize_ip;
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
@@ -49,9 +49,10 @@ impl Field {
         }
     }
 
-    /// The SQL expressions a value is compared with (OR'ed). `None` for Tag, which has no column.
-    fn exprs(self) -> Option<&'static [&'static str]> {
-        Some(match self {
+    /// The SQL expressions a value is compared with (OR'ed). Tag compares `t.name` of the tags a row carries, inside
+    /// an `EXISTS` over `event_tags` (see [`tag_exists`]).
+    fn exprs(self) -> &'static [&'static str] {
+        match self {
             Field::Source => &["e.source"],
             Field::Operation => &["e.operation"],
             Field::Account => &["e.actor_upn", "e.owner_upn"],
@@ -60,8 +61,8 @@ impl Field {
             Field::Asn => &["CAST(e.asn AS VARCHAR)"],
             Field::Device => &["e.device_id", "e.device_object_id", "lower(e.device_name)"],
             Field::Session => &["e.entra_session_id"],
-            Field::Tag => return None,
-        })
+            Field::Tag => &["t.name"],
+        }
     }
 
     /// Stored lower-cased, so compared lower-cased (Harrier: everything else is exact and case-sensitive).
@@ -151,26 +152,29 @@ fn value_predicate(field: Field, exprs: &[&str], value: &str) -> (String, Vec<Va
     (format!("({})", parts.join(" OR ")), params)
 }
 
+/// `EXISTS` a tag of the row `e` that satisfies `pred` (over `t.name`).
+fn tag_exists(pred: &str) -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM event_tags et JOIN tags t ON t.tag_id = et.tag_id \
+         WHERE et.source_table = e.source_table AND et.record_key = e.record_key AND {pred})"
+    )
+}
+
 /// The clause of one filter field, or `None` for a blank field.
 fn field_clause(field: Field, text: &str) -> Result<Option<(String, Vec<Value>)>> {
     let Some(parsed) = parse_list(field, text)? else {
         return Ok(None);
     };
-    let Some(exprs) = field.exprs() else {
-        // Tag: no tag exists before marks do (analyst marks are a later migration). An include list matches nothing;
-        // a list of only excludes keeps every row, none of them carrying a tag.
-        // Task 4: with tags in place, excludes must drop the rows that carry the tag; revisit this branch.
-        return Ok(if parsed.include.is_empty() {
-            None
-        } else {
-            Some(("FALSE".into(), vec![]))
-        });
-    };
+    let exprs = field.exprs();
     let mut params = Vec::new();
     let mut inc = Vec::new();
     for v in &parsed.include {
         let (sql, p) = value_predicate(field, exprs, v);
-        inc.push(sql);
+        inc.push(if field == Field::Tag {
+            tag_exists(&sql)
+        } else {
+            sql
+        });
         params.extend(p);
     }
     let mut parts = Vec::new();
@@ -179,8 +183,13 @@ fn field_clause(field: Field, text: &str) -> Result<Option<(String, Vec<Value>)>
     }
     for v in &parsed.exclude {
         let (sql, p) = value_predicate(field, exprs, v);
-        // A NULL column is not a match, so an excluded value never hides rows that simply have none.
-        parts.push(format!("NOT coalesce({sql}, false)"));
+        if field == Field::Tag {
+            // Rows without the tag, untagged rows included: `!x` alone is "everything except x".
+            parts.push(format!("NOT {}", tag_exists(&sql)));
+        } else {
+            // A NULL column is not a match, so an excluded value never hides rows that simply have none.
+            parts.push(format!("NOT coalesce({sql}, false)"));
+        }
         params.extend(p);
     }
     Ok(Some((parts.join(" AND "), params)))
@@ -213,18 +222,55 @@ impl Entity {
         })
     }
 
-    fn clause(&self) -> (&'static str, Vec<Value>) {
-        let t = |v: &String| Value::Text(v.clone());
+    /// `account`, `ip`, `device` or `session`.
+    pub(crate) fn kind_name(&self) -> &'static str {
         match self {
-            Entity::Account(v) => ("(e.actor_upn = ? OR e.owner_upn = ?)", vec![t(v), t(v)]),
-            Entity::Ip(v) => ("e.ip = ?", vec![t(v)]),
-            // The directory object id as well: directory audit events name the device by it.
-            Entity::Device(v) => (
-                "(e.device_id = ? OR e.device_object_id = ?)",
-                vec![t(v), t(v)],
-            ),
-            Entity::Session(v) => ("e.entra_session_id = ?", vec![t(v)]),
+            Entity::Account(_) => "account",
+            Entity::Ip(_) => "ip",
+            Entity::Device(_) => "device",
+            Entity::Session(_) => "session",
         }
+    }
+
+    pub(crate) fn value(&self) -> &str {
+        match self {
+            Entity::Account(v) | Entity::Ip(v) | Entity::Device(v) | Entity::Session(v) => v,
+        }
+    }
+
+    /// The scope predicate over `events e` and its bound parameters (already normalized).
+    pub(crate) fn clause(&self) -> (String, Vec<Value>) {
+        let cols = entity_columns(self.kind_name()).len();
+        (
+            entity_predicate(self.kind_name(), "?"),
+            vec![Value::Text(self.value().to_string()); cols],
+        )
+    }
+}
+
+/// The `events` columns an entity kind is compared with: the one rule for entity scopes, for the value a standing flag
+/// matches and for the scope of a flag. An account is the actor or the mailbox owner; a device is its device id or its
+/// directory object id (directory audit events name the device by it).
+pub(crate) fn entity_columns(kind: &str) -> &'static [&'static str] {
+    match kind {
+        "account" => &["e.actor_upn", "e.owner_upn"],
+        "ip" => &["e.ip"],
+        "device" => &["e.device_id", "e.device_object_id"],
+        "session" => &["e.entra_session_id"],
+        other => unreachable!("entity kind {other:?}"),
+    }
+}
+
+/// SQL over `events e` that holds when an entity of `kind` equals `rhs` (a `?` or a column such as `vf.scope_value`).
+pub(crate) fn entity_predicate(kind: &str, rhs: &str) -> String {
+    let parts: Vec<String> = entity_columns(kind)
+        .iter()
+        .map(|c| format!("{c} = {rhs}"))
+        .collect();
+    if parts.len() == 1 {
+        parts[0].clone()
+    } else {
+        format!("({})", parts.join(" OR "))
     }
 }
 
@@ -293,10 +339,16 @@ pub(super) const SEARCH_TABLES: &[(&str, &str)] = &[
 /// The WHERE for `q` over `events e`. `show_hidden` keeps the `message_trace_event` rows even when `q` does not
 /// name them (the summary uses it to count what the default view hides).
 pub(crate) fn build(q: &EventQuery, show_hidden: bool) -> Result<Where> {
+    build_with(q, show_hidden, true)
+}
+
+/// [`build`] with the flag toggle optional: the summary counts the suspicious and malicious rows of everything else
+/// the query selects, whatever the toggle says.
+pub(crate) fn build_with(q: &EventQuery, show_hidden: bool, apply_flag: bool) -> Result<Where> {
     let mut w = Where::default();
     if let Some(e) = &q.entity {
         let (sql, p) = e.clone().normalized()?.clause();
-        w.push(sql.into(), p);
+        w.push(sql, p);
     }
     for (field, text) in &q.fields {
         if let Some((sql, p)) = field_clause(*field, text)? {
@@ -318,14 +370,42 @@ pub(crate) fn build(q: &EventQuery, show_hidden: bool) -> Result<Where> {
             vec![ts_param(to)],
         );
     }
-    // Marks arrive with the marks tables: until then nothing is flagged and nothing is agent-marked.
-    if q.flag != FlagFilter::All || q.ai != super::AiFilter::All {
-        w.push("FALSE".into(), vec![]);
-    }
     if let Some(search) = &q.search {
         if let Some((sql, p)) = search_clause(search)? {
             w.push(sql, p);
         }
+    }
+    // The flag toggle and the agent filter are semi-joins on the flagged rows of everything else the query selects,
+    // computed once (`marksql::flagged`). The toggle is the effective flag exactly: Suspicious shows the suspicious
+    // rows, so the summary's count and the grid's total agree after a click.
+    let base_where = w.sql();
+    let base_params = w.params.clone();
+    let restrict = !w.clauses.is_empty();
+    let toggle = match q.flag {
+        FlagFilter::All => None,
+        FlagFilter::Suspicious => Some("sus AND NOT mal"),
+        FlagFilter::Malicious => Some("mal"),
+    };
+    if let (true, Some(cond)) = (apply_flag, toggle) {
+        w.push(
+            marksql::flagged_clause(&base_where, restrict, cond),
+            base_params.clone(),
+        );
+    }
+    let agent = match q.ai {
+        super::AiFilter::All => None,
+        super::AiFilter::Marked => Some(("agent_any", false)),
+        super::AiFilter::Unreviewed => Some(("agent_pend", true)),
+    };
+    if let Some((cond, pending)) = agent {
+        w.push(
+            format!(
+                "({} OR {})",
+                marksql::flagged_clause(&base_where, restrict, cond),
+                marksql::agent_tag_clause(pending)
+            ),
+            base_params,
+        );
     }
     Ok(w)
 }

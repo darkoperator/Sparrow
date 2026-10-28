@@ -172,32 +172,42 @@ fn decide(
     reason: Option<&str>,
     apply: impl FnOnce(&Connection, Option<&Value>, &str) -> Result<()>,
 ) -> Result<AuditEntry> {
-    in_tx(conn, |tx| {
-        let before = indicator_state(tx, id)?;
-        let latest = crate::case::review::latest_decision_seq(tx, "indicator", id)?;
-        refuse_if_pending_agent(actor, "indicator", id, before.as_ref(), latest)?;
-        let ts = audit::now();
-        let ts_text = audit::ts_text(&ts);
-        apply(tx, before.as_ref(), &ts_text)?;
-        tx.execute(
-            &format!("UPDATE case_indicators SET {DECISION_TAGS} WHERE indicator_id = ?"),
-            params![actor.as_str(), ts_text, actor.on_behalf_of(), id],
-        )?;
-        self_review(tx, "case_indicators", "indicator_id", id, actor)?;
-        let after = indicator_state(tx, id)?;
-        audit::append_at(
-            tx,
-            ts,
-            actor.as_str(),
-            actor.on_behalf_of(),
-            action,
-            "indicator",
-            id,
-            before.as_ref(),
-            after.as_ref(),
-            reason,
-        )
-    })
+    in_tx(conn, |tx| decide_in(tx, actor, id, action, reason, apply))
+}
+
+/// [`decide`] inside the caller's transaction.
+fn decide_in(
+    tx: &Connection,
+    actor: &Actor,
+    id: &str,
+    action: &str,
+    reason: Option<&str>,
+    apply: impl FnOnce(&Connection, Option<&Value>, &str) -> Result<()>,
+) -> Result<AuditEntry> {
+    let before = indicator_state(tx, id)?;
+    let latest = crate::case::review::latest_decision_seq(tx, "indicator", id)?;
+    refuse_if_pending_agent(actor, "indicator", id, before.as_ref(), latest)?;
+    let ts = audit::now();
+    let ts_text = audit::ts_text(&ts);
+    apply(tx, before.as_ref(), &ts_text)?;
+    tx.execute(
+        &format!("UPDATE case_indicators SET {DECISION_TAGS} WHERE indicator_id = ?"),
+        params![actor.as_str(), ts_text, actor.on_behalf_of(), id],
+    )?;
+    self_review(tx, "case_indicators", "indicator_id", id, actor)?;
+    let after = indicator_state(tx, id)?;
+    audit::append_at(
+        tx,
+        ts,
+        actor.as_str(),
+        actor.on_behalf_of(),
+        action,
+        "indicator",
+        id,
+        before.as_ref(),
+        after.as_ref(),
+        reason,
+    )
 }
 
 /// Add an indicator, or update the verdict and note of the same tenant/type/value (bringing it back when it was
@@ -226,8 +236,14 @@ pub(crate) fn add_indicator_from(
     note: Option<&str>,
     reason: Option<&str>,
 ) -> Result<String> {
-    let value = value.trim();
-    if value.is_empty() {
+    check_new_indicator(value, note)?;
+    in_tx(conn, |tx| {
+        add_indicator_in(tx, actor, tenant_key, ty, value, verdict, note, reason)
+    })
+}
+
+fn check_new_indicator(value: &str, note: Option<&str>) -> Result<()> {
+    if value.trim().is_empty() {
         return Err(Error::Decision(
             "an indicator value must not be empty".into(),
         ));
@@ -235,8 +251,26 @@ pub(crate) fn add_indicator_from(
     if let Some(n) = note {
         crate::case::text::check_text("a note", n)?;
     }
+    Ok(())
+}
+
+/// [`add_indicator`] inside the caller's transaction (a standing malicious flag adds its indicator together with the
+/// flag). Returns its id.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn add_indicator_in(
+    tx: &Connection,
+    actor: &Actor,
+    tenant_key: Option<&str>,
+    ty: IndicatorType,
+    value: &str,
+    verdict: Verdict,
+    note: Option<&str>,
+    reason: Option<&str>,
+) -> Result<String> {
+    check_new_indicator(value, note)?;
+    let value = value.trim();
     let id = indicator_id(tenant_key, ty, value);
-    decide(conn, actor, &id, "add_ioc", reason, |tx, before, ts| {
+    decide_in(tx, actor, &id, "add_ioc", reason, |tx, before, ts| {
         if before.is_some() {
             tx.execute(
                 "UPDATE case_indicators SET verdict = CAST(? AS indicator_verdict), note = ?, added_by = ?, \

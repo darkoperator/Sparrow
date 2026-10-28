@@ -1,11 +1,17 @@
 //! Review of agent decisions, for a future UI or other tool (Addendum D.4). No CLI command calls these in Phase 7.
 //!
+//! Reviewable objects: findings, indicators, timeline entries and, for the events grid, marks: a `value_flag`, and the
+//! rows one agent call set as `event_flag` / `event_tag` (the object is the call; a review may name a subset of its
+//! rows, see [`accept_in`]). Marks are reviewed here but never listed by [`pending`], so the queue stays about
+//! findings, indicators and timeline proposals.
+//!
 //! A review names the decision it reviewed by its audit seq, which must still be the object's latest decision.
 //! Order: accept only from `pending_review`; discard from `pending_review` or `accepted`; `discarded` is final until
 //! a new decision. Each review is one transaction with its own audit row (actor `analyst:<name>`).
 
 use crate::case::actor::Reviewer;
 use crate::case::audit::{self, AuditEntry};
+use crate::case::marks::{self, RowRef};
 use crate::case::write::{finding_state, in_tx};
 use crate::case::{indicators, revert, timeline_entries};
 use crate::{Error, Result};
@@ -28,6 +34,9 @@ pub const DECISION_ACTIONS: &[&str] = &[
     "verify_entry",
     "reject_entry",
     "edit_entry",
+    "flag_rows",
+    "flag_value",
+    "tag_rows",
 ];
 
 /// The newest audit entry that made a decision on the object (not a review).
@@ -58,6 +67,7 @@ fn state(conn: &Connection, object_type: &str, object_id: &str) -> Result<Value>
             .ok_or_else(|| Error::Decision(format!("unknown indicator {object_id}"))),
         "timeline_entry" => timeline_entries::entry_state(conn, object_id)?
             .ok_or_else(|| Error::Decision(format!("unknown timeline entry {object_id}"))),
+        "value_flag" | "event_flag" | "event_tag" => marks::state(conn, object_type, object_id),
         other => Err(Error::Decision(format!("cannot review a {other}"))),
     }
 }
@@ -66,6 +76,7 @@ fn table(object_type: &str) -> (&'static str, &'static str) {
     match object_type {
         "finding" => ("findings", "finding_id"),
         "indicator" => ("case_indicators", "indicator_id"),
+        "value_flag" => ("value_flags", "flag_id"),
         _ => ("timeline_entries", "entry_id"),
     }
 }
@@ -137,41 +148,88 @@ pub fn review_accept(
     decision_seq: i64,
     comment: Option<&str>,
 ) -> Result<AuditEntry> {
+    in_tx(conn, |tx| {
+        accept_in(
+            tx,
+            reviewer,
+            object_type,
+            object_id,
+            decision_seq,
+            comment,
+            None,
+        )
+    })
+}
+
+/// [`review_accept`] inside the caller's transaction. `only` limits a review of an `event_flag` / `event_tag` decision
+/// to those of its rows (the grid confirms the rows a selection holds); the object's other rows stay pending. Ignored
+/// for every other object.
+pub(crate) fn accept_in(
+    tx: &Connection,
+    reviewer: &Reviewer,
+    object_type: &str,
+    object_id: &str,
+    decision_seq: i64,
+    comment: Option<&str>,
+    only: Option<&[RowRef]>,
+) -> Result<AuditEntry> {
     let comment = comment.map(str::trim).filter(|c| !c.is_empty());
     if let Some(c) = comment {
         crate::case::text::check_text("a review comment", c)?;
     }
-    in_tx(conn, |tx| {
-        check_fresh(
+    check_fresh(
+        tx,
+        object_type,
+        object_id,
+        decision_seq,
+        &["pending_review"],
+    )?;
+    let ts = audit::now();
+    let ts_text = audit::ts_text(&ts);
+    let batch = matches!(object_type, "event_flag" | "event_tag");
+    // The rows this review touches, before it touches them.
+    let rows = if batch {
+        Some(marks::reviewed_rows(tx, object_type, object_id, only)?)
+    } else {
+        None
+    };
+    if batch {
+        marks::accept_batch(
             tx,
             object_type,
             object_id,
-            decision_seq,
-            &["pending_review"],
+            reviewer,
+            &ts_text,
+            comment,
+            only,
         )?;
-        let ts = audit::now();
+    } else {
         mark(
             tx,
             object_type,
             object_id,
             "accepted",
             reviewer,
-            &audit::ts_text(&ts),
+            &ts_text,
             comment,
         )?;
-        audit::append_at(
-            tx,
-            ts,
-            reviewer.as_str(),
-            None,
-            "review_accept",
-            object_type,
-            object_id,
-            None,
-            Some(&json!({ "decision_seq": decision_seq })),
-            comment,
-        )
-    })
+    }
+    let mut after = json!({ "decision_seq": decision_seq });
+    if let Some(rows) = rows {
+        after["rows"] = rows;
+    }
+    audit::append_at(
+        tx,
+        ts,
+        reviewer.as_str(),
+        None,
+        "review_accept",
+        object_type,
+        object_id,
+        None,
+        Some(&after),
+        comment,
+    )
 }
 
 /// Discard the decision `decision_seq` (pending or accepted): restore the fields it changed to their value before
@@ -184,21 +242,61 @@ pub fn review_discard(
     decision_seq: i64,
     comment: Option<&str>,
 ) -> Result<AuditEntry> {
+    in_tx(conn, |tx| {
+        discard_in(
+            tx,
+            reviewer,
+            object_type,
+            object_id,
+            decision_seq,
+            comment,
+            None,
+        )
+    })
+}
+
+/// [`review_discard`] inside the caller's transaction, with `only` as for [`accept_in`]. A discard of an
+/// `event_flag` / `event_tag` decision removes the pending rows it set (and puts back the flags it changed); it needs
+/// at least one pending row.
+pub(crate) fn discard_in(
+    tx: &Connection,
+    reviewer: &Reviewer,
+    object_type: &str,
+    object_id: &str,
+    decision_seq: i64,
+    comment: Option<&str>,
+    only: Option<&[RowRef]>,
+) -> Result<AuditEntry> {
     let comment = comment.map(str::trim).filter(|c| !c.is_empty());
     if let Some(c) = comment {
         crate::case::text::check_text("a review comment", c)?;
     }
-    in_tx(conn, |tx| {
-        let (d, before) = check_fresh(
-            tx,
-            object_type,
-            object_id,
-            decision_seq,
-            &["pending_review", "accepted"],
-        )?;
-        let ts = audit::now();
-        let ts_text = audit::ts_text(&ts);
-        let restored = revert::apply(tx, object_type, object_id, &d, reviewer, &ts_text)?;
+    let (d, before) = check_fresh(
+        tx,
+        object_type,
+        object_id,
+        decision_seq,
+        &["pending_review", "accepted"],
+    )?;
+    let ts = audit::now();
+    let ts_text = audit::ts_text(&ts);
+    let batch = matches!(object_type, "event_flag" | "event_tag");
+    let rows = if batch {
+        Some(marks::reviewed_rows(tx, object_type, object_id, only)?)
+    } else {
+        None
+    };
+    let restored = revert::apply(
+        tx,
+        object_type,
+        object_id,
+        &d,
+        reviewer,
+        &ts_text,
+        only.filter(|_| batch),
+    )?;
+    // A reviewed batch has no row left to mark: its rows were deleted or put back as they were.
+    if !batch {
         mark(
             tx,
             object_type,
@@ -208,19 +306,25 @@ pub fn review_discard(
             &ts_text,
             comment,
         )?;
-        audit::append_at(
-            tx,
-            ts,
-            reviewer.as_str(),
-            None,
-            "review_discard",
-            object_type,
-            object_id,
-            Some(&before),
-            Some(&json!({ "decision_seq": decision_seq, "restored": restored })),
-            comment,
-        )
-    })
+    }
+    audit::append_at(
+        tx,
+        ts,
+        reviewer.as_str(),
+        None,
+        "review_discard",
+        object_type,
+        object_id,
+        Some(&before),
+        Some(&{
+            let mut after = json!({ "decision_seq": decision_seq, "restored": restored });
+            if let Some(rows) = rows {
+                after["rows"] = rows;
+            }
+            after
+        }),
+        comment,
+    )
 }
 
 /// One object waiting for review, with the agent decision to review (its latest).

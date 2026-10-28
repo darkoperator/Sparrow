@@ -98,7 +98,7 @@ fn build_audit_device_map(conn: &Connection) -> Result<()> {
 }
 
 /// `a.b.c.0/24` for an IPv4 address, the `/48` network text for an IPv6 address, `None` for anything else.
-pub(super) fn prefix_of(norm_ip: &str) -> Option<String> {
+pub(crate) fn prefix_of(norm_ip: &str) -> Option<String> {
     match norm_ip.parse::<IpAddr>().ok()? {
         IpAddr::V4(v4) => {
             let o = v4.octets();

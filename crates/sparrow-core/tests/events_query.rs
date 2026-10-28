@@ -6,9 +6,13 @@ use chrono::{DateTime, Duration, TimeZone, Utc};
 use serde_json::json;
 use sparrow_core::Case;
 use sparrow_core::Error;
+use sparrow_core::case::actor::{Actor, Reviewer};
 use sparrow_core::case::browse::Sort;
 use sparrow_core::case::events::{
     self, AiFilter, CSV_COLUMNS, Entity, EventQuery, Field, FlagFilter,
+};
+use sparrow_core::case::marks::{
+    FlagLevel, RowRef, ValueKind, flag_rows, flag_value, review_marks, tag_rows,
 };
 use sparrow_core::detect::test::insert_record;
 
@@ -1195,45 +1199,126 @@ fn search_does_not_cross_tables_on_a_shared_record_key() {
 }
 
 #[test]
-fn marks_filters_empty_until_task_4() {
+fn flag_and_tag_filters() {
     let case = six_rows();
-    // Nothing is flagged or agent-marked and no tag exists yet. Task 4 changes this test.
+    let c = case.conn();
+    let me = Actor::analyst("carlos").unwrap();
+    let ai = Actor::agent("triage", Some("carlos")).unwrap();
+    let rows = |keys: &[&str]| -> Vec<RowRef> {
+        keys.iter().map(|k| RowRef::new("ual_events", k)).collect()
+    };
+    // Before any mark: nothing is flagged, tagged or agent-marked, and excluding a tag nobody has leaves every row.
     for flag in [FlagFilter::Suspicious, FlagFilter::Malicious] {
         let q = EventQuery {
             flag,
             ..EventQuery::default()
         };
         assert_eq!(
-            events::page(case.conn(), &q, None, 0, 10).unwrap().total,
+            events::page(c, &q, None, 0, 10).unwrap().total,
             0,
             "{flag:?}"
         );
-        assert_eq!(events::summary(case.conn(), &q).unwrap().total, 0);
-    }
-    for ai in [AiFilter::Marked, AiFilter::Unreviewed] {
-        let q = EventQuery {
-            ai,
-            ..EventQuery::default()
-        };
-        assert_eq!(
-            events::page(case.conn(), &q, None, 0, 10).unwrap().total,
-            0,
-            "{ai:?}"
-        );
     }
     assert!(keys(&case, &field(Field::Tag, "phishing")).is_empty());
-    assert!(keys(&case, &field(Field::Tag, "ai:*, other")).is_empty());
-    // Excluding a tag nobody has leaves every row.
     assert_eq!(keys(&case, &field(Field::Tag, "!phishing")).len(), 6);
+
+    // k1 k2 k3 suspicious, k3 k4 malicious (k3's own flag changed to malicious), k5 suspicious by its IP.
+    flag_rows(
+        c,
+        &me,
+        &rows(&["k1", "k2", "k3"]),
+        Some(FlagLevel::Suspicious),
+    )
+    .unwrap();
+    flag_rows(c, &me, &rows(&["k3", "k4"]), Some(FlagLevel::Malicious)).unwrap();
+    flag_value(
+        c,
+        &me,
+        ValueKind::Ip,
+        "2001:DB8::1",
+        None,
+        Some(FlagLevel::Suspicious),
+    )
+    .unwrap();
+    let flagged = |f| EventQuery {
+        flag: f,
+        ..EventQuery::default()
+    };
+    assert_eq!(
+        keys(&case, &flagged(FlagFilter::Suspicious)),
+        ["k1", "k2", "k5"]
+    );
+    assert_eq!(keys(&case, &flagged(FlagFilter::Malicious)), ["k3", "k4"]);
+    assert_eq!(keys(&case, &flagged(FlagFilter::All)).len(), 6);
+    let s = events::summary(c, &EventQuery::default()).unwrap();
+    assert_eq!((s.total, s.suspicious, s.malicious), (6, 3, 2));
+    // The toggle narrows the total; the two counts describe the rest of the query, toggle aside.
+    let s = events::summary(c, &flagged(FlagFilter::Suspicious)).unwrap();
+    assert_eq!((s.total, s.suspicious, s.malicious), (3, 3, 2));
+    // Flags combine with the other filters (AND).
+    let q = EventQuery {
+        flag: FlagFilter::Suspicious,
+        fields: vec![(Field::Account, "*@contoso.example".into())],
+        ..EventQuery::default()
+    };
+    assert_eq!(keys(&case, &q), ["k1", "k2"]);
+
+    // Tags: exact and case-insensitive, wildcards, OR lists, and `!` (untagged rows count as lacking the tag).
+    tag_rows(c, &me, &rows(&["k1", "k2"]), "Phishing", true).unwrap();
+    tag_rows(c, &me, &rows(&["k2"]), "persistence", true).unwrap();
+    tag_rows(c, &ai, &rows(&["k3", "k6"]), "ai:odd-login", true).unwrap();
+    assert_eq!(keys(&case, &field(Field::Tag, "phishing")), ["k1", "k2"]);
+    assert_eq!(keys(&case, &field(Field::Tag, "PHISHING")), ["k1", "k2"]);
+    assert_eq!(
+        keys(&case, &field(Field::Tag, "ai:*, persistence")),
+        ["k2", "k3", "k6"]
+    );
+    assert_eq!(
+        keys(&case, &field(Field::Tag, "!phishing")),
+        ["k3", "k4", "k5", "k6"]
+    );
+    assert_eq!(
+        keys(&case, &field(Field::Tag, "!ai:*, !persistence")),
+        ["k1", "k4", "k5"]
+    );
+    assert_eq!(
+        keys(&case, &field(Field::Tag, "phishing, !persistence")),
+        ["k1"]
+    );
+    assert!(keys(&case, &field(Field::Tag, "nothing")).is_empty());
+    assert_eq!(keys(&case, &field(Field::Tag, "*ish*")), ["k1", "k2"]);
+
+    // The agent filter: k3 (its tag) and k6 are the agent's and unreviewed; confirming k3's tag leaves it marked.
+    let marked = |a| EventQuery {
+        ai: a,
+        ..EventQuery::default()
+    };
+    assert_eq!(keys(&case, &marked(AiFilter::Marked)), ["k3", "k6"]);
+    assert_eq!(keys(&case, &marked(AiFilter::Unreviewed)), ["k3", "k6"]);
+    review_marks(
+        c,
+        &Reviewer::analyst("carlos").unwrap(),
+        &rows(&["k3"]),
+        true,
+    )
+    .unwrap();
+    assert_eq!(keys(&case, &marked(AiFilter::Marked)), ["k3", "k6"]);
+    assert_eq!(keys(&case, &marked(AiFilter::Unreviewed)), ["k6"]);
     let all = EventQuery {
         flag: FlagFilter::All,
         ai: AiFilter::All,
         ..EventQuery::default()
     };
-    let p = events::page(case.conn(), &all, None, 0, 10).unwrap();
-    assert!(p.rows.iter().all(|r| r.flag.is_none() && r.tags.is_empty()));
-    let s = events::summary(case.conn(), &all).unwrap();
-    assert_eq!((s.total, s.suspicious, s.malicious), (6, 0, 0));
+    let p = events::page(c, &all, None, 0, 10).unwrap();
+    let k3 = p.rows.iter().find(|r| r.record_key == "k3").unwrap();
+    assert_eq!(k3.flag, Some(FlagLevel::Malicious));
+    assert_eq!(
+        k3.tags
+            .iter()
+            .map(|t| (t.name.as_str(), t.ai))
+            .collect::<Vec<_>>(),
+        [("ai:odd-login", false)]
+    );
 }
 
 #[test]

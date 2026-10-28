@@ -274,7 +274,8 @@ fn where_clause(info: &TableInfo, filters: &[Filter]) -> Result<(String, Vec<Str
 ///
 /// - Declared `PRIMARY KEY`s (migrations 0001, 0003, 0009, 0016, 0020): `ual_events(record_id)`, `collections`,
 ///   `source_files`, `collection_log`, `case_meta`, `audit_trail`, `findings`, `finding_facts`, `timeline_entries`,
-///   `annotations`, and the composite keys of `record_sources`, `timeline_entry_evidence` and `account_rollup`.
+///   `annotations`, `tags` and `value_flags`, and the composite keys of `record_sources`, `timeline_entry_evidence`,
+///   `account_rollup`, `events`, `event_flags` and `event_tags`.
 /// - Every other table with a `record_key` column is loaded by `ingest::state::load_rows`, which inserts a row
 ///   only `WHERE NOT EXISTS (... t.record_key = p.record_key)` over the whole table (not per collection) and picks
 ///   one staged row per key, so `record_key` alone is unique. `finding_evidence` has a `record_key` column that is
@@ -295,6 +296,10 @@ fn unique_key(info: &TableInfo) -> Option<Vec<&'static str>> {
         "annotations" => Some(&["annotation_id"]),
         "record_sources" => Some(&["table_name", "record_key", "file_id", "record_ordinal"]),
         "timeline_entry_evidence" => Some(&["entry_id", "source_table", "record_key"]),
+        "events" | "event_flags" => Some(&["source_table", "record_key"]),
+        "event_tags" => Some(&["tag_id", "source_table", "record_key"]),
+        "tags" => Some(&["tag_id"]),
+        "value_flags" => Some(&["flag_id"]),
         "account_rollup" => Some(&["tenant_key", "upn"]),
         "finding_evidence" => None,
         _ if info.columns.iter().any(|c| c.name == "record_key") => Some(&["record_key"]),

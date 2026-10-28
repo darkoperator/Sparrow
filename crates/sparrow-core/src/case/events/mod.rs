@@ -4,9 +4,13 @@
 
 mod build;
 mod filter;
+mod marksql;
 mod query;
 
-pub(crate) use filter::{Where, build as scope_where};
+pub use crate::case::marks::{FlagLevel, TagRef};
+pub(crate) use build::prefix_of;
+pub(crate) use filter::{Where, build as scope_where, entity_columns, entity_predicate};
+pub(crate) use marksql::{value_columns, value_flag_matches};
 pub use query::{CSV_COLUMNS, detail, export_csv, histogram, page, suggest, summary};
 
 use crate::Result;
@@ -110,20 +114,6 @@ pub struct EventQuery {
     pub ai: AiFilter,
 }
 
-/// A tag on an event. Placeholder until the marks tables exist (the Marks task widens it).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct TagRef {
-    pub name: String,
-}
-
-/// Placeholder until the marks tables exist (the Marks task owns the type).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FlagLevel {
-    Suspicious,
-    Malicious,
-}
-
 /// Times serialize as `YYYY-MM-DDTHH:MM:SS.ffffffZ` like the rest of the core.
 fn ts_opt<S: serde::Serializer>(
     t: &Option<DateTime<Utc>>,
@@ -167,8 +157,12 @@ pub struct EventRow {
     pub summary: Option<String>,
     /// Distinct findings with this row as evidence (any status), counted from `finding_evidence` when queried.
     pub finding_count: u32,
+    /// The tags the row carries, by name; `ai` for an agent's tag no analyst has confirmed.
     pub tags: Vec<TagRef>,
+    /// The effective flag: the strongest of the row's own flag and every standing value flag that matches it.
     pub flag: Option<FlagLevel>,
+    /// The effective flag comes only from an agent's flag that no analyst has confirmed.
+    pub flag_ai: bool,
     pub latest_note: Option<String>,
     pub note_count: u32,
 }
@@ -232,4 +226,7 @@ pub struct EventDetail {
     pub tags: Vec<TagRef>,
     pub notes: Vec<Note>,
     pub flag: Option<FlagLevel>,
+    /// Why the row is flagged: its own flag and each standing value flag that matches it, so the menu can say what a
+    /// clear would undo.
+    pub flag_sources: Vec<crate::case::marks::FlagSource>,
 }
