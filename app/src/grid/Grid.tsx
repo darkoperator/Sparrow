@@ -87,7 +87,7 @@ export interface GridProps {
   height?: number;
 }
 
-const ROW_HEIGHT = 33;
+export const ROW_HEIGHT = 33;
 const DEFAULT_COLUMN_WIDTH = 180;
 const MIN_COLUMN_WIDTH = 60;
 
