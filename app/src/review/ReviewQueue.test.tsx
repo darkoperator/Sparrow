@@ -169,6 +169,22 @@ describe("ReviewQueue", () => {
     expect(screen.getByTestId("history")).toHaveTextContent("set_status");
   });
 
+  it("a request to show a finding selects its item, or says it is not waiting for review", async () => {
+    m.queue.mockImplementation(async () => queue);
+    const view = render(<ReviewQueue canWrite focusFinding={{ id: FINDING_ID, nonce: 1 }} />);
+    await waitFor(() => expect(screen.getByTestId(FINDING)).toHaveAttribute("aria-selected", "true"));
+    expect(m.detail).toHaveBeenCalledWith(FINDING_ID);
+    // A finding with no pending item: nothing is selected and the queue says why.
+    view.rerender(<ReviewQueue canWrite focusFinding={{ id: "no-such-finding", nonce: 2 }} />);
+    expect(await screen.findByText(/Finding no-such-finding is not waiting for review/)).toHaveAttribute("role", "status");
+    // The same request again (same nonce) does not fire twice.
+    view.rerender(<ReviewQueue canWrite focusFinding={{ id: "no-such-finding", nonce: 2 }} />);
+    expect(screen.getAllByText(/is not waiting for review/)).toHaveLength(1);
+    // The proposal's finding is found too.
+    view.rerender(<ReviewQueue canWrite focusFinding={{ id: "20309ce49aeb83a9", nonce: 3 }} />);
+    await waitFor(() => expect(screen.getByTestId(PROP_A)).toHaveAttribute("aria-selected", "true"));
+  });
+
   it("evidence_text_is_rendered_literally", async () => {
     detail.evidence[0].context = { rule_name: "<img src=x onerror=alert(1)>‮" };
     detail.analyst_guidance = "<b>bold</b>";
@@ -346,7 +362,7 @@ describe("ReviewQueue", () => {
 });
 
 describe("ReviewQueue detail for every item", () => {
-  const nav = () => ({ openEntity: vi.fn(), openTable: vi.fn(), showInEvents: vi.fn() });
+  const nav = () => ({ openEntity: vi.fn(), openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn() });
   async function open(testId: string) {
     const n = nav();
     const user = userEvent.setup();

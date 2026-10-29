@@ -76,7 +76,7 @@ export default function FindingDetail({ findingId }: { findingId: string }) {
       )}
       <section>
         <h4>Evidence ({detail.evidence.length})</h4>
-        <Grid columns={EVIDENCE_COLUMNS} rows={rows} height={220} />
+        <Grid columns={EVIDENCE_COLUMNS} rows={rows} layoutId="finding-evidence" height={220} />
       </section>
       <section>
         <h4>Facts</h4>

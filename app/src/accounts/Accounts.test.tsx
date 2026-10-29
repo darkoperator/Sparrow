@@ -63,7 +63,7 @@ describe("Accounts", () => {
     const openEntity = vi.fn();
     const user = userEvent.setup();
     render(
-      <NavContext.Provider value={{ openEntity, openTable: vi.fn(), showInEvents: vi.fn() }}>
+      <NavContext.Provider value={{ openEntity, openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn() }}>
         <Accounts onSelect={() => {}} />
       </NavContext.Provider>,
     );

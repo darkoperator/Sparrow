@@ -3,13 +3,14 @@
 // sections, the table browser and SQL results.
 import { createColumnHelper, flexRender, getCoreRowModel, useReactTable } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { HIGHLIGHT_COLOURS, type HighlightRule, type Sort } from "../api";
 import { useHighlights } from "../highlights/useHighlights";
 import { useNav } from "../shell/nav";
 import { displaySafe } from "../text";
 import { entityKindFor, rawText } from "../value";
 import CellMenu, { type MenuItem } from "./CellMenu";
+import { useGridLayout } from "./gridLayout";
 import ValueViewer from "./ValueViewer";
 
 export type Cell = unknown;
@@ -18,6 +19,13 @@ export type Cell = unknown;
 export interface CellActions {
   onFilter?: (column: string, value: Cell) => void;
   onHighlight?: (column: string, value: Cell) => void;
+}
+
+/** A cell as the host sees it: the column, its value, and the index of its row in `rows`. */
+export interface CellRef {
+  column: string;
+  value: Cell;
+  row: number;
 }
 
 export interface GridProps {
@@ -32,6 +40,28 @@ export interface GridProps {
   /** Rows holding a cell that matches a rule get the rule's colour class (the first matching rule wins). */
   highlights?: HighlightRule[];
   onRowClick?: (row: Cell[], index: number) => void;
+  /** Header text per column, where it differs from the column name (which stays the key for sorting and rules). */
+  labels?: Record<string, string>;
+  /** Starting width in px per column; the default applies to the rest. */
+  widths?: Record<string, number>;
+  /** Which headers sort (with `onSort`); every header does by default. */
+  sortable?: (column: string) => boolean;
+  /** Content for a cell in place of its text (returned `undefined`: the text). The host passes safe nodes only. */
+  renderCell?: (cell: CellRef) => ReactNode | undefined;
+  /** An extra class for a row, by its index in `rows`. */
+  rowClass?: (row: number) => string | undefined;
+  /**
+   * The host's own menu items for a cell. When given, they replace the built-in "Filter by this value" and "Open … tab"
+   * items (the host knows the real value behind the text); Copy, Show full value and Highlight stay.
+   */
+  cellItems?: (cell: CellRef) => MenuItem[];
+  /**
+   * Names this grid's layout: the order the analyst dragged the columns into and their widths are remembered under it
+   * (localStorage, per grid). Without one the layout still works but lasts only while the grid is shown.
+   */
+  layoutId?: string;
+  /** Called after "Reset columns", for a host that keeps more column state (which are shown) to reset it too. */
+  onResetColumns?: () => void;
   /** Height of the scrolling body in px. */
   height?: number;
 }
@@ -73,17 +103,37 @@ interface MenuAt {
 const NEAR_END = 40;
 
 export default function Grid({
-  columns,
-  rows,
+  columns: srcColumns,
+  rows: srcRows,
   cellActions,
   highlights,
   sort,
   onSort,
   onNearEnd,
   onRowClick,
+  labels,
+  widths,
+  sortable,
+  renderCell,
+  rowClass: hostRowClass,
+  cellItems,
+  layoutId,
+  onResetColumns,
   height = 320,
 }: GridProps) {
   const nav = useNav();
+  // The analyst's column order: from here on `columns` and `rows` are in the order shown; `srcRows` are as given.
+  const layout = useGridLayout(layoutId, srcColumns, widths, DEFAULT_COLUMN_WIDTH);
+  const columns = useMemo(() => layout.order.map((i) => srcColumns[i]), [layout.order, srcColumns]);
+  const rows = useMemo(() => {
+    const identity = layout.order.every((src, d) => src === d);
+    return identity ? srcRows : srcRows.map((r) => layout.order.map((i) => r[i]));
+  }, [layout.order, srcRows]);
+  const [headerMenu, setHeaderMenu] = useState<{ x: number; y: number; col: number } | null>(null);
+  const dragFrom = useRef<number | null>(null);
+  const [dropAt, setDropAt] = useState<number | null>(null);
+  // A press on a resize handle must not start a column drag.
+  const onHandle = useRef(false);
   // Without a `highlights` prop the grid applies the app's shared highlights, when it is inside a provider.
   const shared = useHighlights();
   const rules = highlights ?? shared?.rules;
@@ -124,6 +174,10 @@ export default function Grid({
     const column = columns[m.col];
     const out: MenuItem[] = [{ label: "Copy", run: () => void navigator.clipboard.writeText(rawText(value)) }];
     out.push({ label: "Show full value", run: () => openViewer(opener.current ?? document.body, m.row, m.col) });
+    if (cellItems) {
+      if (onHighlight) out.push({ label: "Highlight this value", run: () => onHighlight(column, value) });
+      return [...out, ...cellItems({ column, value, row: m.row })];
+    }
     if (cellActions?.onFilter) out.push({ label: "Filter by this value", run: () => cellActions.onFilter!(column, value) });
     if (onHighlight) out.push({ label: "Highlight this value", run: () => onHighlight(column, value) });
     const kind = nav ? entityKindFor(column, value) : null;
@@ -133,9 +187,17 @@ export default function Grid({
 
   const helper = useMemo(() => createColumnHelper<Cell[]>(), []);
   const defs = useMemo(
-    () => columns.map((name, i) => helper.accessor((r) => r[i], { id: `${i}`, header: displaySafe(name), cell: (c) => cellText(c.getValue()) })),
-    [columns, helper],
+    () =>
+      columns.map((name, i) =>
+        helper.accessor((r) => r[i], {
+          id: `${i}`,
+          header: displaySafe(labels?.[name] ?? name),
+          cell: (c) => cellText(c.getValue()),
+        }),
+      ),
+    [columns, helper, labels],
   );
+  const sizing = useMemo(() => Object.fromEntries(columns.map((_, d) => [String(d), layout.widthAt(d)])), [columns, layout]);
   // TanStack Table's hook is not memoisable by the React Compiler; the grid does not rely on that.
   // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
@@ -143,6 +205,8 @@ export default function Grid({
     columns: defs,
     defaultColumn: { size: DEFAULT_COLUMN_WIDTH, minSize: MIN_COLUMN_WIDTH },
     columnResizeMode: "onChange",
+    state: { columnSizing: sizing },
+    onColumnSizingChange: (u) => layout.setWidths(typeof u === "function" ? u(sizing) : u),
     getCoreRowModel: getCoreRowModel(),
   });
   const tableRows = table.getRowModel().rows;
@@ -217,10 +281,10 @@ export default function Grid({
     const r = e.currentTarget.getBoundingClientRect();
     openMenu(e, { x: r.left, y: r.bottom }, row, col);
   };
-  const rowClass = (row: Cell[]) => {
+  const rowClass = (row: Cell[], index: number) => {
     const hit = rules?.find((r) => ruleMatches(r, columns, row));
     const cls = hit ? colourClass(hit.colour) : undefined;
-    return cls ? `grid-row ${cls}` : "grid-row";
+    return ["grid-row", cls, hostRowClass?.(index)].filter(Boolean).join(" ");
   };
   const lastVisible = virt.getVirtualItems().at(-1)?.index ?? -1;
   useEffect(() => {
@@ -230,9 +294,6 @@ export default function Grid({
   const template = columnSizes.map((w) => `${w}px`).join(" ");
   const totalWidth = columnSizes.reduce((a, b) => a + b, 0);
 
-  if (rows.length === 0) {
-    return <p className="grid-empty">No rows.</p>;
-  }
   return (
     <div className="grid grid-bounded" role="table" aria-rowcount={rows.length}>
       <div ref={scroller} className="grid-scroll" style={{ height: height + ROW_HEIGHT }}>
@@ -241,8 +302,44 @@ export default function Grid({
             {table.getHeaderGroups()[0].headers.map((h, i) => {
               const sorted = sort?.column === columns[i] ? (sort.descending ? "descending" : "ascending") : undefined;
               return (
-                <div key={h.id} role="columnheader" aria-sort={onSort ? (sorted ?? "none") : undefined} className="grid-cell grid-header">
-                  {onSort ? (
+                <div
+                  key={h.id}
+                  role="columnheader"
+                  aria-sort={onSort && (sortable?.(columns[i]) ?? true) ? (sorted ?? "none") : undefined}
+                  className={dropAt === i ? "grid-cell grid-header grid-drop" : "grid-cell grid-header"}
+                  draggable
+                  onDragStart={(e) => {
+                    if (onHandle.current) {
+                      e.preventDefault();
+                      return;
+                    }
+                    dragFrom.current = i;
+                    e.dataTransfer?.setData("text/plain", columns[i]);
+                    if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+                  }}
+                  onDragOver={(e) => {
+                    if (dragFrom.current === null) return;
+                    e.preventDefault();
+                    setDropAt(i);
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    const from = dragFrom.current;
+                    dragFrom.current = null;
+                    setDropAt(null);
+                    if (from !== null) layout.move(from, i);
+                  }}
+                  onDragEnd={() => {
+                    dragFrom.current = null;
+                    setDropAt(null);
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    opener.current = e.currentTarget;
+                    setHeaderMenu({ x: e.clientX, y: e.clientY, col: i });
+                  }}
+                >
+                  {onSort && (sortable?.(columns[i]) ?? true) ? (
                     <button className="grid-sort" onClick={() => onSort(columns[i])}>
                       {flexRender(h.column.columnDef.header, h.getContext())}
                       <span aria-hidden="true">{sorted === "ascending" ? " ▲" : sorted === "descending" ? " ▼" : ""}</span>
@@ -255,13 +352,19 @@ export default function Grid({
                     aria-orientation="vertical"
                     aria-label={`Resize ${displaySafe(columns[i])}`}
                     className="grid-resize"
-                    onMouseDown={h.getResizeHandler()}
+                    draggable={false}
+                    onMouseDown={(e) => {
+                      onHandle.current = true;
+                      window.addEventListener("mouseup", () => (onHandle.current = false), { once: true });
+                      h.getResizeHandler()(e);
+                    }}
                     onClick={(e) => e.stopPropagation()}
                   />
                 </div>
               );
             })}
           </div>
+          {rows.length === 0 && <p className="grid-empty">No rows.</p>}
           <div style={{ height: virt.getTotalSize(), position: "relative" }}>
             {virt.getVirtualItems().map((v) => {
               const row = tableRows[v.index];
@@ -270,8 +373,8 @@ export default function Grid({
                   key={row.id}
                   role="row"
                   data-row={v.index}
-                  className={rowClass(row.original)}
-                  onClick={onRowClick ? () => onRowClick(row.original, v.index) : undefined}
+                  className={rowClass(row.original, v.index)}
+                  onClick={onRowClick ? () => onRowClick(srcRows[v.index], v.index) : undefined}
                   style={{
                     position: "absolute",
                     top: 0,
@@ -297,7 +400,8 @@ export default function Grid({
                       onDoubleClick={(e) => openViewer(e.currentTarget, v.index, col)}
                       onKeyDown={(e) => onCellKey(e, v.index, col)}
                     >
-                      {flexRender(c.column.columnDef.cell, c.getContext())}
+                      {renderCell?.({ column: columns[col], value: row.original[col], row: v.index }) ??
+                        flexRender(c.column.columnDef.cell, c.getContext())}
                     </div>
                   ))}
                 </div>
@@ -306,6 +410,27 @@ export default function Grid({
           </div>
         </div>
       </div>
+      {headerMenu && (
+        <CellMenu
+          x={headerMenu.x}
+          y={headerMenu.y}
+          items={[
+            ...(headerMenu.col > 0 ? [{ label: "Move column left", run: () => layout.move(headerMenu.col, headerMenu.col - 1) }] : []),
+            ...(headerMenu.col < columns.length - 1 ? [{ label: "Move column right", run: () => layout.move(headerMenu.col, headerMenu.col + 1) }] : []),
+            {
+              label: "Reset columns",
+              run: () => {
+                layout.reset();
+                onResetColumns?.();
+              },
+            },
+          ]}
+          onClose={() => {
+            setHeaderMenu(null);
+            opener.current?.focus();
+          }}
+        />
+      )}
       {menu && <CellMenu x={menu.x} y={menu.y} items={items(menu)} onClose={closeMenu} />}
       {viewing && <ValueViewer column={columns[viewing.col]} value={rows[viewing.row]?.[viewing.col]} onClose={closeViewer} />}
     </div>

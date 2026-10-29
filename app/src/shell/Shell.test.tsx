@@ -24,13 +24,16 @@ vi.mock("../review/ReviewQueue", () => ({
     canWrite,
     accountFilter,
     onClearFilter,
+    focusFinding,
   }: {
     canWrite: boolean;
     accountFilter?: string | null;
     onClearFilter?: () => void;
+    focusFinding?: { id: string; nonce: number } | null;
   }) => (
     <div>
       queue canWrite={String(canWrite)}
+      {focusFinding && <span>{`queue focus ${focusFinding.id} #${focusFinding.nonce}`}</span>}
       {accountFilter != null && <button onClick={onClearFilter}>{`filtered to ${accountFilter}`}</button>}
     </div>
   ),
@@ -52,6 +55,17 @@ import type { EntityRef } from "./tabs";
 function Opener({ kind, value }: { kind: EntityKind; value: string }) {
   const nav = useNav();
   return <button onClick={() => nav?.openEntity({ kind, value })}>{`open ${value}`}</button>;
+}
+
+function Finder() {
+  const nav = useNav();
+  return (
+    <>
+      {["f-1", "f-2"].map((id) => (
+        <button key={id} onClick={() => nav?.openFinding(id)}>{`open finding ${id}`}</button>
+      ))}
+    </>
+  );
 }
 
 /** An entity tab with state of its own, to see that it survives the tab being hidden. */
@@ -599,6 +613,51 @@ describe("Shell", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it("the Events screen stays mounted while another tab shows, so its typed filter survives", async () => {
+    dialogOpen.mockResolvedValue("/synthetic/case-a.duckdb");
+    const user = userEvent.setup();
+    let mounts = 0;
+    function EventsBody() {
+      const [text, setText] = useState("");
+      useState(() => mounts++);
+      return (
+        <label>
+          events filter
+          <input value={text} onChange={(e) => setText(e.target.value)} />
+        </label>
+      );
+    }
+    render(<Shell screens={{ events: () => <EventsBody /> }} />);
+    await user.click(await screen.findByRole("button", { name: "Open a case" }));
+    await user.type(await screen.findByLabelText("events filter"), "wren*");
+    await user.click(screen.getByRole("tab", { name: /^Review/ }));
+    await screen.findByText(/queue canWrite=/);
+    expect(screen.getByLabelText("events filter", { selector: "input" })).not.toBeVisible();
+    await user.click(screen.getByRole("tab", { name: "Events" }));
+    expect(screen.getByLabelText("events filter")).toHaveValue("wren*");
+    expect(screen.getByLabelText("events filter")).toBeVisible();
+    expect(mounts).toBe(1);
+  });
+
+  it("openFinding switches to Review and hands it the finding, clearing an account filter", async () => {
+    dialogOpen.mockResolvedValue("/synthetic/case-a.duckdb");
+    const user = userEvent.setup();
+    render(
+      <Shell
+        screens={{
+          events: () => <Finder />,
+        }}
+      />,
+    );
+    await user.click(await screen.findByRole("button", { name: "Open a case" }));
+    await user.click(await screen.findByRole("button", { name: "open finding f-1" }));
+    expect(await screen.findByText("queue focus f-1 #1")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /^Review/ })).toHaveAttribute("aria-selected", "true");
+    await user.click(screen.getByRole("tab", { name: "Events" }));
+    await user.click(screen.getByRole("button", { name: "open finding f-2" }));
+    expect(await screen.findByText("queue focus f-2 #2")).toBeInTheDocument();
   });
 
   it("showInEvents switches to the Events tab and hands it the entity", async () => {

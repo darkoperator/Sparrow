@@ -13,7 +13,7 @@ import {
 } from "../api";
 import { useRefreshBadges } from "../shell/nav";
 import { displaySafe } from "../text";
-import QueueItemDetail from "./QueueItemDetail";
+import QueueItemDetail, { findingIdOf } from "./QueueItemDetail";
 import QueueItemRow, { identity, itemKey } from "./QueueItemRow";
 
 const OTHER = "Other";
@@ -54,9 +54,11 @@ interface Props {
   /** Show only the decisions about this account (case-insensitive); the shell owns it. */
   accountFilter?: string | null;
   onClearFilter?: () => void;
+  /** Select the queue item about this finding (a request from elsewhere, e.g. the events chart); `nonce` is new per request. */
+  focusFinding?: { id: string; nonce: number } | null;
 }
 
-export default function ReviewQueue({ canWrite, accountFilter = null, onClearFilter }: Props) {
+export default function ReviewQueue({ canWrite, accountFilter = null, onClearFilter, focusFinding = null }: Props) {
   const [all, setItems] = useState<QueueItem[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
@@ -121,6 +123,23 @@ export default function ReviewQueue({ canWrite, accountFilter = null, onClearFil
   }, [apply, fail]);
 
   const current = flat.find((q) => identity(q) === selected) ?? null;
+
+  // A request to show one finding, once the queue is loaded: select its item, or say it is not waiting for review.
+  const handled = useRef<number | null>(null);
+  useEffect(() => {
+    if (!focusFinding || !loaded || handled.current === focusFinding.nonce) return;
+    handled.current = focusFinding.nonce;
+    const hit = flat.find((q) => findingIdOf(q) === focusFinding.id);
+    // Applied just after this effect, as a reaction to the request rather than part of rendering it.
+    queueMicrotask(() => {
+      if (hit) {
+        select(identity(hit));
+        setNotice(null);
+      } else {
+        setNotice({ kind: "info", text: `Finding ${focusFinding.id} is not waiting for review: it has no pending decision or proposal.` });
+      }
+    });
+  }, [focusFinding, loaded, flat, select]);
 
   const refreshBadges = useRefreshBadges();
   const act = useCallback(

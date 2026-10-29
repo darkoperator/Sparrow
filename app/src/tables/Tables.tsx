@@ -229,6 +229,7 @@ export default function Tables({ initial }: { initial?: TableRequest }) {
         <div className="tables-layout">
           <Grid
             key={gridKey}
+            layoutId={`table:${spec.table}`}
             columns={columns}
             rows={rows}
             height={360}

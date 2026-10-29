@@ -129,7 +129,8 @@ function TimelineFields({ o }: { o: Rec }) {
   );
 }
 
-function findingIdOf(q: QueueItem): string | null {
+/** The finding a queue item is about, if it is about one. */
+export function findingIdOf(q: QueueItem): string | null {
   if (q.source === "decision") return q.object_type === "finding" ? q.object_id : null;
   return q.item.kind === "finding" ? q.item.finding_id : null;
 }

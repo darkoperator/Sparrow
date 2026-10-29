@@ -69,7 +69,7 @@ describe("Grid cell actions", () => {
     return screen.getByRole("menu");
   };
   const withNav = (ui: React.ReactElement, openEntity = vi.fn()) => (
-    <NavContext.Provider value={{ openEntity, openTable: vi.fn(), showInEvents: vi.fn() }}>{ui}</NavContext.Provider>
+    <NavContext.Provider value={{ openEntity, openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn() }}>{ui}</NavContext.Provider>
   );
 
   it("offers an IP tab only for an IP value, an account tab only for an account-shaped one", () => {
@@ -407,7 +407,7 @@ describe("Grid cell menu: entity tabs by column", () => {
     return screen.getByRole("menu");
   };
   const wrap = (openEntity = vi.fn()) => (
-    <NavContext.Provider value={{ openEntity, openTable: vi.fn(), showInEvents: vi.fn() }}>
+    <NavContext.Provider value={{ openEntity, openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn() }}>
       <Grid columns={columns} rows={rows} />
     </NavContext.Provider>
   );
@@ -438,5 +438,62 @@ describe("Grid cell menu: entity tabs by column", () => {
     render(wrap());
     fireEvent.contextMenu(screen.getByText("JDoe@Contoso.example"));
     expect(within(screen.getByRole("menu")).getByRole("menuitem", { name: "Open account tab" })).toBeInTheDocument();
+  });
+});
+
+describe("Grid host hooks (labels, widths, sortable, renderCell, rowClass, cellItems)", () => {
+  const columns = ["ip", "tags"];
+  const rows = [["192.0.2.1", "a"], ["192.0.2.2", "b"]];
+
+  it("shows a label for a column while the name stays the key, and only sortable headers sort", async () => {
+    const onSort = vi.fn();
+    render(<Grid columns={columns} rows={rows} labels={{ ip: "IP address" }} onSort={onSort} sortable={(c) => c === "ip"} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /^IP address/ }));
+    expect(onSort).toHaveBeenCalledExactlyOnceWith("ip");
+    // `tags` is plain text with no sort state.
+    expect(screen.queryByRole("button", { name: /^tags/ })).toBeNull();
+    expect(screen.getByRole("columnheader", { name: /^tags/ })).not.toHaveAttribute("aria-sort");
+    expect(screen.getByRole("columnheader", { name: /^IP address/ })).toHaveAttribute("aria-sort", "none");
+  });
+
+  it("uses the width given for a column", () => {
+    render(<Grid columns={columns} rows={rows} widths={{ ip: 333 }} />);
+    const head = screen.getByRole("columnheader", { name: /^ip/ }).parentElement!;
+    expect(head.style.gridTemplateColumns).toBe("333px 180px");
+  });
+
+  it("renderCell replaces a cell's content, and falls back to the text when it returns undefined", () => {
+    render(
+      <Grid
+        columns={columns}
+        rows={rows}
+        renderCell={({ column, value, row }) => (column === "tags" && row === 0 ? <em>{`badge ${String(value)}`}</em> : undefined)}
+      />,
+    );
+    expect(screen.getByText("badge a").tagName).toBe("EM");
+    expect(screen.getByText("b")).toBeInTheDocument();
+  });
+
+  it("rowClass adds a class to the row beside the grid's own", () => {
+    render(<Grid columns={columns} rows={rows} rowClass={(i) => (i === 1 ? "mine" : undefined)} />);
+    expect(screen.getByText("192.0.2.2").closest('[role="row"]')).toHaveClass("grid-row", "mine");
+    expect(screen.getByText("192.0.2.1").closest('[role="row"]')).not.toHaveClass("mine");
+  });
+
+  it("cellItems replace Filter and Open tab but keep Copy and Show full value", async () => {
+    const run = vi.fn();
+    const onFilter = vi.fn();
+    render(
+      <NavContext.Provider value={{ openEntity: vi.fn(), openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn() }}>
+        <Grid columns={columns} rows={rows} cellActions={{ onFilter }} cellItems={({ column, row }) => [{ label: `mine ${column} ${row}`, run }]} />
+      </NavContext.Provider>,
+    );
+    fireEvent.contextMenu(screen.getByText("192.0.2.2"));
+    const menu = screen.getByRole("menu");
+    expect(within(menu).getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Copy", "Show full value", "mine ip 1"]);
+    await userEvent.setup().click(within(menu).getByRole("menuitem", { name: "mine ip 1" }));
+    expect(run).toHaveBeenCalledOnce();
+    expect(onFilter).not.toHaveBeenCalled();
   });
 });

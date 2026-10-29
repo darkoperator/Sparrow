@@ -79,6 +79,8 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
   const [eventsEntity, setEventsEntity] = useState<(EntityRef & { nonce: number }) | null>(null);
   // The review queue's account filter lives here: the accounts screen sets it, the queue shows it.
   const [accountFilter, setAccountFilter] = useState<string | null>(null);
+  // The finding Review should select ("open this finding"); `nonce` tells the queue a new request came.
+  const [findingReq, setFindingReq] = useState<{ id: string; nonce: number } | null>(null);
   const [tableReq, setTableReq] = useState<(TableRequest & { nonce: number }) | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [upgrade, setUpgrade] = useState<UpgradePrompt | null>(null);
@@ -137,6 +139,7 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
       setInfo(opened);
       setAccountFilter(null);
       setEventsEntity(null);
+      setFindingReq(null);
       setTableReq(null);
       setToast(null);
       await refreshSettings();
@@ -159,6 +162,7 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
     setInfo(null);
     setTabs(initialTabs());
     setEventsEntity(null);
+    setFindingReq(null);
     setTableReq(null);
     setToast(null);
   };
@@ -198,6 +202,11 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
     setEventsEntity((r) => ({ ...e, nonce: (r?.nonce ?? 0) + 1 }));
     show("events");
   };
+  const openFinding = (id: string) => {
+    setAccountFilter(null);
+    setFindingReq((r) => ({ id, nonce: (r?.nonce ?? 0) + 1 }));
+    show("review");
+  };
   const openTable = (table: string, filters: Filter[]) => {
     setTableReq((r) => ({ table, filters, nonce: (r?.nonce ?? 0) + 1 }));
     show("tables");
@@ -216,12 +225,19 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
   const body = (() => {
     if (screen === "review") {
       return (
-        <ReviewQueue canWrite={canWrite} accountFilter={accountFilter} onClearFilter={() => setAccountFilter(null)} />
+        <ReviewQueue
+          canWrite={canWrite}
+          accountFilter={accountFilter}
+          onClearFilter={() => setAccountFilter(null)}
+          focusFinding={findingReq}
+        />
       );
     }
     if (screen === "tables") return <Tables key={tableReq?.nonce ?? 0} initial={tableReq ?? undefined} />;
     if (screen === "highlights") return <Highlights />;
     if (screen === null) return null;
+    // The Events screen stays mounted while hidden (below), so its filters, range and page survive a tab switch.
+    if (screen === "events" && screens.events) return null;
     const render = screens[screen];
     if (render) return render(screenProps);
     const label = FIXED_TABS.find((t) => t.id === screen)?.label ?? screen;
@@ -252,11 +268,16 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
       )}
       <div className="layout">
         <HighlightsProvider caseId={info.case_id}>
-          <NavContext.Provider value={{ openEntity, openTable, showInEvents }}>
+          <NavContext.Provider value={{ openEntity, openTable, showInEvents, openFinding }}>
             <RefreshBadgesContext.Provider value={refreshBadges}>
             <main>
               {screen !== "highlights" && <HighlightsError />}
               {body}
+              {screens.events && (
+                <section hidden={screen !== "events"} aria-label="Events">
+                  {screens.events(screenProps)}
+                </section>
+              )}
               {tabs.open.map((e) => (
                 <section key={tabKey(e)} hidden={tabKey(e) !== activeKey} aria-label={`${e.kind} ${displaySafe(e.value)}`}>
                   {entityTab ? entityTab(e, screenProps) : <p>{`${e.kind} ${displaySafe(e.value)}`}</p>}

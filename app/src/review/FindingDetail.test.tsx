@@ -25,7 +25,7 @@ describe("FindingDetail entity-tab links", () => {
     expect(upn).toBeTruthy();
     const openEntity = vi.fn();
     render(
-      <NavContext.Provider value={{ openEntity, openTable: vi.fn(), showInEvents: vi.fn() }}>
+      <NavContext.Provider value={{ openEntity, openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn() }}>
         <FindingDetail findingId={detail.finding.finding_id} />
       </NavContext.Provider>,
     );
@@ -42,7 +42,7 @@ describe("FindingDetail entity-tab links", () => {
   it("offers none for a finding without an account", async () => {
     detail.finding.actor_upn = null;
     render(
-      <NavContext.Provider value={{ openEntity: vi.fn(), openTable: vi.fn(), showInEvents: vi.fn() }}>
+      <NavContext.Provider value={{ openEntity: vi.fn(), openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn() }}>
         <FindingDetail findingId={detail.finding.finding_id} />
       </NavContext.Provider>,
     );

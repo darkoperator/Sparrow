@@ -1,5 +1,6 @@
 import Accounts from "./accounts/Accounts";
 import Devices from "./devices/Devices";
+import EventsView from "./events/EventsView";
 import Share from "./share/Share";
 import Shell from "./shell/Shell";
 import Sql from "./sql/Sql";
@@ -10,6 +11,7 @@ export default function App() {
   return (
     <Shell
       screens={{
+        events: (p) => <EventsView chip={p.eventsEntity ?? undefined} onClearChip={p.clearEventsEntity} />,
         timeline: (p) => <Timeline readOnly={!p.canWrite} />,
         accounts: (p) => <Accounts onSelect={p.showAccount} />,
         devices: () => <Devices />,

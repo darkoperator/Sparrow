@@ -10,6 +10,8 @@ export interface Nav {
   openTable: (table: string, filters: Filter[]) => void;
   /** Switch to the Events tab, limited to this entity. */
   showInEvents: (e: EntityRef) => void;
+  /** Switch to Review with this finding selected, when it is in the queue. */
+  openFinding: (findingId: string) => void;
 }
 
 export const NavContext = createContext<Nav | null>(null);
