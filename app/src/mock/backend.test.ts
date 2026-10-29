@@ -193,6 +193,7 @@ const TABLE: { cmd: string; args?: Obj; check: (r: unknown) => void }[] = [
   { cmd: "entity_summary", args: { entity: { kind: "session", value: "S" } }, check: (r) => { keys(r, ["entity", "first_seen", "last_seen", "events", "distinct", "open_findings", "roles_matched", "ip_intel", "device"]); keys((r as Obj).distinct, ["accounts", "ips", "countries", "asns", "devices", "sessions"]); } },
   { cmd: "entity_pivot", args: { entity: { kind: "account", value: "a@contoso.example" }, of: "ips", limit: 5 }, check: (r) => { keys(r, ["rows", "total"]); arrOf((r as Obj).rows, ["value", "label", "count", "first_seen", "last_seen", "is_new", "extra"]); expect(((r as Obj).rows as unknown[]).length).toBe(5); } },
   { cmd: "entity_findings", args: { entity: { kind: "account", value: "a@contoso.example" } }, check: (r) => arrOf(r, ["finding_id", "rule_id", "title", "severity", "status", "first_seen"]) },
+  { cmd: "entity_coverage", args: { entity: { kind: "account", value: "a@contoso.example" } }, check: (r) => { keys(r, ["from", "to", "tenants"]); arrOf((r as Obj).tenants, ["tenant_key", "accounts", "sources"]); } },
   { cmd: "marks_flag_rows", args: { rows: "ROWS", level: "suspicious" }, check: (r) => keys(r, AUDIT) },
   { cmd: "marks_flag_value", args: { kind: "ip", value: "192.0.2.19", scope: null, level: "malicious" }, check: (r) => { keys(r, ["audit", "indicators"]); keys((r as { audit: unknown }).audit, AUDIT); } },
   { cmd: "marks_tag_rows", args: { rows: "ROWS", tag: "relay", add: true }, check: (r) => keys(r, AUDIT) },
@@ -504,6 +505,10 @@ describe("events mock: entity tabs", () => {
     expect((await m.mockCall<{ rows: unknown[] }>("entity_pivot", { entity: e, of: "ips", to: "2001-01-01T00:00:00Z" })).rows).toEqual([]);
     expect(await m.mockCall("entity_findings", { entity: e, from: "2030-01-01T00:00:00Z" })).toEqual([]);
     expect((await m.mockCall<unknown[]>("entity_findings", { entity: e })).length).toBeGreaterThan(0);
+    // Outside the entity's events the range is still judged.
+    const far = await m.mockCall<{ from: string; to: string; tenants: unknown[] }>("entity_coverage", { entity: e, from: "2030-01-01T00:00:00Z" });
+    expect([far.from, far.tenants.length]).toEqual(["2030-01-01", 1]);
+    expect((await m.mockCall<{ tenants: unknown[] }>("entity_coverage", { entity: e })).tenants).toHaveLength(1);
   });
 });
 

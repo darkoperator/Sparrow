@@ -7,6 +7,7 @@ import type {
   AuditEntry,
   CmdErrorKind,
   EntityArg,
+  EntityCoverage,
   EntityKind,
   EntitySummary,
   EventDetail,
@@ -417,6 +418,17 @@ export function eventHandlers(deps: EventDeps): Record<string, (a: Args) => unkn
     return fx.entityFindings();
   };
 
+  const entity_coverage = (a: Args): EntityCoverage => {
+    entity(a);
+    const { from, to } = range(a);
+    const rec = fx.entityCoverage();
+    const day = (ms: number | null, dflt: string | null) => (ms === null ? dflt : new Date(ms).toISOString().slice(0, 10));
+    const lo = day(from, rec.from) ?? rec.from;
+    const hi = day(to, rec.to) ?? rec.to;
+    // Whole days, as the backend: a range that ends before it starts is its first day.
+    return { ...rec, from: lo, to: lo !== null && hi !== null && hi < lo ? lo : hi };
+  };
+
   // -------------------------------------------------------------------------------- marks
 
   const rowsArg = (a: Args, max = 100_000): RowRef[] => {
@@ -615,7 +627,7 @@ export function eventHandlers(deps: EventDeps): Record<string, (a: Args) => unkn
 
   return {
     events_page, events_summary, events_histogram, events_detail, events_suggest, events_export_csv,
-    entity_summary, entity_pivot, entity_findings,
+    entity_summary, entity_pivot, entity_findings, entity_coverage,
     marks_flag_rows, marks_flag_value, marks_tag_rows, marks_list_tags, marks_review, notes_add_rows,
     timeline_add_events,
   };

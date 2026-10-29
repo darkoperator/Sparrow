@@ -509,13 +509,76 @@ describe("EntityTab", () => {
     expect(await screen.findByText("Copied 192.0.2.19")).toBeInTheDocument();
   });
 
-  it("the_events_grid_is_scoped_to_the_entity_and_the_coverage_slot_is_empty", async () => {
+  it("the_events_grid_is_scoped_to_the_entity", async () => {
     view(SESSION);
     await waitFor(() => expect(callsOf("events_page")).toHaveLength(1));
     expect(lastQuery().entity).toEqual(SESSION);
     expect(screen.queryByRole("group", { name: "Scope" })).not.toBeInTheDocument();
-    const slot = screen.getByLabelText("Coverage");
-    expect(slot).toBeEmptyDOMElement();
+  });
+
+  it("coverage_strip_shows_under_the_tiles_and_asks_for_the_tabs_entity", async () => {
+    view(ACCOUNT);
+    const strip = await screen.findByRole("region", { name: "Coverage warning" });
+    expect(callsOf("entity_coverage")).toHaveLength(1);
+    expect(callsOf("entity_coverage")[0].args).toMatchObject({ entity: ACCOUNT });
+    expect(callsOf("entity_coverage")[0].args!.from).toBeUndefined();
+    expect(within(strip).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Unified audit log in this range is sampled (capped export)",
+      "MailItemsAccessed in this range has no data",
+      "Mailbox audit log (legacy) in this range has no data",
+    ]);
+    // Under the tiles, before the pivot tables.
+    const tiles = screen.getByLabelText("Summary tiles");
+    expect(tiles.compareDocumentPosition(strip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(strip.compareDocumentPosition(screen.getByRole("region", { name: "Findings" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("coverage_strip_is_absent_when_everything_is_covered", async () => {
+    h.override.entity_coverage = async (args) => {
+      const c = await mockCall<{ tenants: { sources: { state: string; accounts_by_state: Record<string, string[]> }[] }[] }>("entity_coverage", args);
+      for (const t of c.tenants) for (const s of t.sources) { s.state = "covered"; s.accounts_by_state = {}; }
+      return c;
+    };
+    view(ACCOUNT);
+    await waitFor(() => expect(callsOf("entity_coverage")).toHaveLength(1));
+    await waitFor(() => expect(tileTexts()).toContain("Events: 917"));
+    expect(screen.queryByRole("region", { name: "Coverage warning" })).not.toBeInTheDocument();
+  });
+
+  it("coverage_requeries_with_the_range_and_drops_a_stale_answer", async () => {
+    // The first answer comes late and says everything is absent; the narrower range answers at once with the fixture.
+    let release: (v: unknown) => void = () => undefined;
+    let n = 0;
+    h.override.entity_coverage = async (args) => {
+      n += 1;
+      if (n === 1) {
+        return new Promise((r) => {
+          release = () => r({ from: "2026-08-01", to: "2026-09-09", tenants: [{ tenant_key: "late", accounts: [], sources: [{ source: "ual", title: "STALE", state: "absent", accounts_by_state: {} }] }] });
+        });
+      }
+      return mockCall("entity_coverage", args);
+    };
+    const user = userEvent.setup();
+    view(ACCOUNT);
+    await waitFor(() => expect(callsOf("entity_coverage")).toHaveLength(1));
+    await user.type(filterBox("From (UTC)"), "2026-08-15T00:00:00Z");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    await waitFor(() => expect(callsOf("entity_coverage")).toHaveLength(2));
+    expect(callsOf("entity_coverage")[1].args).toMatchObject({ entity: ACCOUNT, from: "2026-08-15T00:00:00Z" });
+    await screen.findByText("Unified audit log in this range is sampled (capped export)");
+    release(null);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByText("STALE in this range has no data")).not.toBeInTheDocument();
+    expect(screen.getByText("Unified audit log in this range is sampled (capped export)")).toBeInTheDocument();
+    // A range with none of the entity's events: the strip is still there, for those days.
+    await user.clear(filterBox("From (UTC)"));
+    await user.type(filterBox("From (UTC)"), "2027-01-01T00:00:00Z");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    await waitFor(() => expect(callsOf("entity_coverage")).toHaveLength(3));
+    await waitFor(() => expect(tileTexts()).toContain("Events: 0"));
+    const strip = await screen.findByRole("region", { name: "Coverage warning" });
+    expect(within(strip).getByText("Evidence coverage 2027-01-01 to 2027-01-01 (UTC days)")).toBeInTheDocument();
+    expect(within(strip).getByText("Unified audit log in this range is sampled (capped export)")).toBeInTheDocument();
   });
 
   it("hostile_values_render_as_text", async () => {

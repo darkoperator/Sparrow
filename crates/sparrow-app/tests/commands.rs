@@ -3089,7 +3089,7 @@ fn a_cancel_decides_the_commit_once() {
 // ---- events grid, entity tabs, marks and add-to-timeline ----
 
 use chrono::{DateTime, SecondsFormat, Utc};
-use sparrow_app::cmd::entity::{entity_findings, entity_pivot, entity_summary};
+use sparrow_app::cmd::entity::{entity_coverage, entity_findings, entity_pivot, entity_summary};
 use sparrow_app::cmd::events::{
     EntityArg, EntityKind, EventQueryArgs, events_detail, events_export_csv, events_histogram,
     events_page, events_suggest, events_summary,
@@ -4799,6 +4799,19 @@ fn record_investigate_fixtures() {
             .unwrap(),
         ),
         (
+            "entity_coverage.json",
+            serde_json::to_value(
+                entity_coverage(
+                    &state,
+                    &entity_arg(EntityKind::Account, &p.account),
+                    None,
+                    None,
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+        ),
+        (
             "marks_tags.json",
             serde_json::to_value(marks_list_tags(&state).unwrap()).unwrap(),
         ),
@@ -4839,4 +4852,139 @@ fn timeline_add_events_each_is_all_or_nothing() {
     assert_eq!(done.entry_ids.len(), 5);
     let after = snapshot(&state);
     assert_eq!((after.0, after.1), (before.0 + 5, before.1 + 10));
+}
+
+#[test]
+fn entity_coverage_judges_the_accounts_in_the_entitys_events_per_tenant() {
+    use sparrow_core::case::coverage::{RangeState, coverage_for_range};
+    let tmp = tempfile::tempdir().unwrap();
+    let state = open_as_analyst(tmp.path());
+    let p = picked(&state);
+    // Spelled in capitals: the same account.
+    let who = entity_arg(EntityKind::Account, &p.account.to_uppercase());
+    let cov = entity_coverage(&state, &who, None, None).unwrap();
+    let day = |agg: &str| {
+        text_of(
+            &state,
+            &format!(
+                "SELECT strftime(make_timestamp({agg}(epoch_us(event_time))), '%Y-%m-%d') FROM events \
+                 WHERE actor_upn = '{0}' OR owner_upn = '{0}'",
+                p.account
+            ),
+        )
+    };
+    // No range: the entity's first to last event, as UTC days.
+    assert_eq!(cov.from.as_deref(), Some(day("min").as_str()));
+    assert_eq!(cov.to.as_deref(), Some(day("max").as_str()));
+    assert!(!cov.tenants.is_empty());
+    let (from, to) = (
+        chrono::NaiveDate::parse_from_str(cov.from.as_deref().unwrap(), "%Y-%m-%d").unwrap(),
+        chrono::NaiveDate::parse_from_str(cov.to.as_deref().unwrap(), "%Y-%m-%d").unwrap(),
+    );
+    for t in &cov.tenants {
+        // The accounts of this tenant's events (actor and owner), the account itself among them.
+        assert!(t.accounts.contains(&p.account), "{t:?}");
+        let want: i64 = rows(
+            &state,
+            &format!(
+                "SELECT count(DISTINCT a) FROM (SELECT actor_upn AS a FROM events WHERE tenant_key = '{0}' \
+                 AND (actor_upn = '{1}' OR owner_upn = '{1}') UNION ALL SELECT owner_upn FROM events \
+                 WHERE tenant_key = '{0}' AND (actor_upn = '{1}' OR owner_upn = '{1}'))",
+                t.tenant_key, p.account
+            ),
+        );
+        assert_eq!(t.accounts.len() as i64, want, "{t:?}");
+        // The same answer as core's, and all seven sources are listed.
+        let direct = with_case(&state, |open| {
+            Ok(
+                coverage_for_range(open.case.conn(), Some(&t.tenant_key), &t.accounts, from, to)
+                    .unwrap(),
+            )
+        })
+        .unwrap();
+        assert_eq!(t.sources, direct.sources);
+        assert_eq!(t.sources.len(), 7);
+    }
+    // The wire form: states are lower-case words, the days plain dates.
+    let wire = serde_json::to_value(&cov).unwrap();
+    let state_text = wire["tenants"][0]["sources"][0]["state"].as_str().unwrap();
+    assert!(
+        ["covered", "sampled", "absent"].contains(&state_text),
+        "{state_text}"
+    );
+    // A range with none of the entity's events is still judged, for the accounts and tenants of the whole case: every
+    // per-account source is absent there, and the account itself is among the accounts.
+    let far = entity_coverage(
+        &state,
+        &who,
+        Some("2030-01-01T00:00:00Z"),
+        Some("2030-01-02T00:00:00Z"),
+    )
+    .unwrap();
+    assert_eq!(
+        (far.from.as_deref(), far.to.as_deref()),
+        (Some("2030-01-01"), Some("2030-01-02"))
+    );
+    assert_eq!(far.tenants.len(), cov.tenants.len());
+    for (f, t) in far.tenants.iter().zip(&cov.tenants) {
+        assert_eq!((&f.tenant_key, &f.accounts), (&t.tenant_key, &t.accounts));
+        assert!(f.accounts.contains(&p.account), "{f:?}");
+        assert_eq!(f.sources.len(), 7);
+        assert!(
+            f.sources.iter().all(|s| s.state == RangeState::Absent),
+            "{f:?}"
+        );
+    }
+    // An account with no events anywhere has nothing to judge.
+    let nobody = entity_coverage(
+        &state,
+        &entity_arg(EntityKind::Account, "nobody@contoso.example"),
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        (nobody.from, nobody.to, nobody.tenants.len()),
+        (None, None, 0)
+    );
+    // A bad time is `invalid`.
+    let e = entity_coverage(&state, &who, Some("soon"), None).unwrap_err();
+    assert_eq!(e.kind, "invalid", "{e:?}");
+    // An asked range is the UTC days it spans.
+    let one = entity_coverage(
+        &state,
+        &who,
+        Some(&format!("{from}T00:00:00Z")),
+        Some(&format!("{from}T23:59:59Z")),
+    )
+    .unwrap();
+    assert_eq!(
+        (one.from.as_deref(), one.to.as_deref()),
+        (
+            Some(from.to_string().as_str()),
+            Some(from.to_string().as_str())
+        )
+    );
+}
+
+#[test]
+fn entity_coverage_of_an_ip_judges_the_accounts_seen_from_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = open_as_analyst(tmp.path());
+    let p = picked(&state);
+    let cov = entity_coverage(&state, &entity_arg(EntityKind::Ip, &p.ip), None, None).unwrap();
+    assert!(!cov.tenants.is_empty());
+    for t in &cov.tenants {
+        let want: i64 = rows(
+            &state,
+            &format!(
+                "SELECT count(DISTINCT a) FROM (SELECT actor_upn AS a FROM events WHERE ip = '{0}' AND tenant_key = '{1}' \
+                 UNION ALL SELECT owner_upn FROM events WHERE ip = '{0}' AND tenant_key = '{1}') WHERE a IS NOT NULL",
+                p.ip, t.tenant_key
+            ),
+        );
+        assert_eq!(t.accounts.len() as i64, want, "{t:?}");
+        // No account: only the two tenant-wide sources; otherwise all seven.
+        assert_eq!(t.sources.len(), if want == 0 { 2 } else { 7 }, "{t:?}");
+    }
 }

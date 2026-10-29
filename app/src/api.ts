@@ -818,6 +818,36 @@ export interface FindingRef {
   first_seen: string | null;
 }
 
+/** `case::coverage::RangeState`: what the case holds of one source over a range. */
+export type CoverageState = "covered" | "sampled" | "absent";
+
+/** `case::coverage::SourceState`. `accounts_by_state` is empty for a tenant-wide source (message trace, Entra audit). */
+export interface CoverageSource {
+  source: string;
+  title: string;
+  /** The worst over the accounts: absent, then sampled, then covered. */
+  state: CoverageState;
+  accounts_by_state: Partial<Record<CoverageState, string[]>>;
+}
+
+/** One tenant's section of an entity tab's coverage strip. */
+export interface TenantCoverage {
+  tenant_key: string;
+  accounts: string[];
+  sources: CoverageSource[];
+}
+
+/**
+ * `from` / `to`: the UTC days (`YYYY-MM-DD`) judged, even when none of the entity's events fall in them. Null, and no
+ * tenants, only when the entity has no events at all. A tenant's `accounts` are those in the entity's events in the range,
+ * or in the whole case when none fall in it.
+ */
+export interface EntityCoverage {
+  from: string | null;
+  to: string | null;
+  tenants: TenantCoverage[];
+}
+
 /** `case::marks::RowRef`: the key of an event row. */
 export interface RowRef {
   source_table: string;
@@ -893,6 +923,9 @@ export const entityPivot = (entity: EntityArg, of: PivotOf, from?: string, to?: 
   call<PivotPage>("entity_pivot", { entity, of, from, to, limit });
 export const entityFindings = (entity: EntityArg, from?: string, to?: string) =>
   call<FindingRef[]>("entity_findings", { entity, from, to });
+/** Each source's state over the range, per tenant, for the accounts in the entity's events in it. */
+export const entityCoverage = (entity: EntityArg, from?: string, to?: string) =>
+  call<EntityCoverage>("entity_coverage", { entity, from, to });
 
 /** Sets (`level`) or clears (`null`) the flag of event rows: one audit row. */
 export const marksFlagRows = (rows: RowRef[], level: FlagLevel | null) =>

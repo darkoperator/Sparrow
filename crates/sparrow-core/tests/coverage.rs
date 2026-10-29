@@ -17,7 +17,8 @@ use chrono::NaiveDate;
 use duckdb::params;
 use sparrow_core::Case;
 use sparrow_core::case::coverage::{
-    AccountCoverage, Coverage, CoverageOptions, Gap, SourceCoverage, coverage, fill, thousands,
+    AccountCoverage, Coverage, CoverageOptions, Gap, RangeCoverage, RangeState, SourceCoverage,
+    coverage, coverage_for_range, fill, thousands,
 };
 use sparrow_core::data::DataDirs;
 
@@ -776,4 +777,431 @@ fn the_report_keeps_the_tables_when_the_rollup_warns() {
         "{section}"
     );
     assert_eq!(section.matches("(tenant ").count(), 0);
+}
+
+// ---- coverage_for_range ----
+
+fn range(
+    case: &Case,
+    tenant: Option<&str>,
+    accounts: &[&str],
+    from: &str,
+    to: &str,
+) -> RangeCoverage {
+    let accounts: Vec<String> = accounts.iter().map(|a| a.to_string()).collect();
+    coverage_for_range(case.conn(), tenant, &accounts, d(from), d(to)).unwrap()
+}
+
+/// `(source, state)` of every listed source, in order.
+fn states(r: &RangeCoverage) -> Vec<(&str, RangeState)> {
+    r.sources
+        .iter()
+        .map(|s| (s.source.as_str(), s.state))
+        .collect()
+}
+
+fn line<'a>(r: &'a RangeCoverage, id: &str) -> &'a sparrow_core::case::coverage::SourceState {
+    r.sources
+        .iter()
+        .find(|s| s.source == id)
+        .unwrap_or_else(|| panic!("no {id} in {:?}", states(r)))
+}
+
+fn by_state(s: &sparrow_core::case::coverage::SourceState) -> Vec<(&str, Vec<&str>)> {
+    s.accounts_by_state
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.iter().map(String::as_str).collect()))
+        .collect()
+}
+
+#[test]
+fn range_coverage_worst_state_per_source() {
+    use RangeState::{Absent, Covered, Sampled};
+    let case = case();
+    // July, t1: alice's UAL is sampled, bob's is covered, carol has none; nothing else exists in July.
+    let r = range(
+        &case,
+        Some("t1"),
+        &[ALICE, BOB, CAROL],
+        "2026-07-01",
+        "2026-07-31",
+    );
+    assert_eq!(
+        states(&r),
+        vec![
+            ("ual", Absent),
+            ("signins_interactive", Absent),
+            ("signins_noninteractive", Absent),
+            ("mail_items_accessed", Absent),
+            ("message_trace", Absent),
+            ("entra_audit", Absent),
+            ("mailbox_audit", Absent),
+        ]
+    );
+    assert_eq!(
+        by_state(line(&r, "ual")),
+        vec![
+            ("absent", vec![CAROL]),
+            ("covered", vec![BOB]),
+            ("sampled", vec![ALICE])
+        ]
+    );
+    assert_eq!(
+        by_state(line(&r, "signins_interactive")),
+        vec![("absent", vec![ALICE, BOB, CAROL])]
+    );
+    // Without carol the worst is the sampled one; with bob alone it is covered.
+    let r = range(&case, Some("t1"), &[ALICE, BOB], "2026-07-01", "2026-07-31");
+    assert_eq!(line(&r, "ual").state, Sampled);
+    let r = range(&case, Some("t1"), &[BOB], "2026-07-01", "2026-07-31");
+    assert_eq!(line(&r, "ual").state, Covered);
+    assert_eq!(by_state(line(&r, "ual")), vec![("covered", vec![BOB])]);
+    // The range is whole UTC days, both ends inclusive: bob's 07-31 23:30 row is in, 07-30 alone has none.
+    assert_eq!(
+        line(
+            &range(&case, Some("t1"), &[BOB], "2026-07-31", "2026-07-31"),
+            "ual"
+        )
+        .state,
+        Covered
+    );
+    assert_eq!(
+        line(
+            &range(&case, Some("t1"), &[BOB], "2026-07-30", "2026-07-30"),
+            "ual"
+        )
+        .state,
+        Absent
+    );
+    assert_eq!(
+        line(
+            &range(&case, Some("t1"), &[BOB], "2026-07-02", "2026-07-02"),
+            "ual"
+        )
+        .state,
+        Covered
+    );
+    assert_eq!(
+        line(
+            &range(&case, Some("t1"), &[BOB], "2026-07-03", "2026-07-30"),
+            "ual"
+        )
+        .state,
+        Absent
+    );
+    // June, carol: sign-ins of both kinds, a UAL row, messages and directory audits; no MailItemsAccessed.
+    let r = range(&case, Some("t1"), &[CAROL], "2026-06-01", "2026-06-30");
+    assert_eq!(
+        states(&r),
+        vec![
+            ("ual", Covered),
+            ("signins_interactive", Covered),
+            ("signins_noninteractive", Covered),
+            ("mail_items_accessed", Absent),
+            ("message_trace", Covered),
+            ("entra_audit", Covered),
+            ("mailbox_audit", Absent),
+        ]
+    );
+    // The service-principal sign-in (06-16) is neither kind.
+    let r = range(&case, Some("t1"), &[CAROL], "2026-06-16", "2026-06-16");
+    assert_eq!(line(&r, "signins_interactive").state, Absent);
+    assert_eq!(line(&r, "signins_noninteractive").state, Absent);
+    // dave: MailItemsAccessed from the UAL (06-20) and the parent-less MessageIDs row (06-25).
+    assert_eq!(
+        line(
+            &range(&case, Some("t1"), &[DAVE], "2026-06-20", "2026-06-20"),
+            "mail_items_accessed"
+        )
+        .state,
+        Covered
+    );
+    assert_eq!(
+        line(
+            &range(&case, Some("t1"), &[DAVE], "2026-06-25", "2026-06-25"),
+            "mail_items_accessed"
+        )
+        .state,
+        Covered
+    );
+    assert_eq!(
+        line(
+            &range(&case, Some("t1"), &[DAVE], "2026-06-21", "2026-06-24"),
+            "mail_items_accessed"
+        )
+        .state,
+        Absent
+    );
+    // Accounts are matched however they are spelled, and listed once, lower-cased.
+    let r = range(
+        &case,
+        Some("t1"),
+        &["BOB@Contoso.example", BOB],
+        "2026-07-02",
+        "2026-07-02",
+    );
+    assert_eq!(by_state(line(&r, "ual")), vec![("covered", vec![BOB])]);
+}
+
+#[test]
+fn range_coverage_is_scoped_to_the_tenant() {
+    use RangeState::{Absent, Covered};
+    let case = case();
+    // carol's August UAL is in t2 only.
+    assert_eq!(
+        line(
+            &range(&case, Some("t2"), &[CAROL], "2026-08-01", "2026-08-10"),
+            "ual"
+        )
+        .state,
+        Covered
+    );
+    assert_eq!(
+        line(
+            &range(&case, Some("t1"), &[CAROL], "2026-08-01", "2026-08-10"),
+            "ual"
+        )
+        .state,
+        Absent
+    );
+    // No tenant: every tenant counts.
+    assert_eq!(
+        line(
+            &range(&case, None, &[CAROL], "2026-08-01", "2026-08-10"),
+            "ual"
+        )
+        .state,
+        Covered
+    );
+    // Tenant-wide sources are the tenant's own: t2 holds no messages or directory audits in June.
+    let r = range(&case, Some("t2"), &[CAROL], "2026-06-12", "2026-06-14");
+    assert_eq!(line(&r, "message_trace").state, Absent);
+    assert_eq!(line(&r, "entra_audit").state, Absent);
+    let r = range(&case, Some("t1"), &[CAROL], "2026-06-12", "2026-06-14");
+    assert_eq!(line(&r, "message_trace").state, Covered);
+    assert_eq!(line(&r, "entra_audit").state, Covered);
+    // A range that ends before it starts is refused.
+    let e =
+        coverage_for_range(case.conn(), None, &[], d("2026-07-02"), d("2026-07-01")).unwrap_err();
+    assert!(e.to_string().contains("ends before it starts"), "{e}");
+}
+
+#[test]
+fn no_accounts_lists_tenant_wide_only() {
+    use RangeState::{Absent, Covered};
+    let case = case();
+    let r = range(&case, Some("t1"), &[], "2026-06-12", "2026-06-14");
+    assert_eq!(
+        states(&r),
+        vec![("message_trace", Covered), ("entra_audit", Covered)]
+    );
+    assert!(r.sources.iter().all(|s| s.accounts_by_state.is_empty()));
+    let r = range(&case, Some("t1"), &[], "2026-06-15", "2026-06-15");
+    assert_eq!(
+        states(&r),
+        vec![("message_trace", Absent), ("entra_audit", Absent)]
+    );
+    // Blank account strings are not accounts.
+    let r = range(&case, Some("t1"), &["  ", ""], "2026-06-12", "2026-06-14");
+    assert_eq!(
+        states(&r),
+        vec![("message_trace", Covered), ("entra_audit", Covered)]
+    );
+    // Tenant-wide sources ignore the accounts given: alice sent no mail and did nothing in the directory.
+    let r = range(&case, Some("t1"), &[ALICE], "2026-06-12", "2026-06-14");
+    assert_eq!(line(&r, "message_trace").state, Covered);
+    assert_eq!(line(&r, "entra_audit").state, Covered);
+    assert_eq!(line(&r, "ual").state, Absent);
+    assert_eq!(r.sources.len(), 7);
+}
+
+#[test]
+fn sampled_reuses_availability_rule() {
+    use RangeState::{Covered, Sampled};
+    let case = case();
+    let c1: i64 = case
+        .conn()
+        .query_row(
+            "SELECT collection_id FROM collections WHERE tenant_key = 't1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    // A file whose warning is not an export cap does not make its rows sampled.
+    let other = file(&case, c1, "ual-other.csv", Some(r#"["column x missing"]"#));
+    ual(&case, c1, other, 20, "2026-09-02 08:00:00", "Send", DAVE);
+    assert_eq!(
+        line(
+            &range(&case, Some("t1"), &[DAVE], "2026-09-02", "2026-09-02"),
+            "ual"
+        )
+        .state,
+        Covered
+    );
+    // Capped message trace and directory audit rows make the tenant-wide sources sampled.
+    let cap = file(&case, c1, "capped-others.csv", Some(CAP));
+    trace(&case, c1, cap, "m9", "2026-09-03 10:00:00", DAVE, ALICE);
+    audit_row(&case, c1, cap, "d9", "2026-09-03 11:00:00", DAVE, "[]");
+    let r = range(&case, Some("t1"), &[], "2026-09-03", "2026-09-03");
+    assert_eq!(
+        states(&r),
+        vec![("message_trace", Sampled), ("entra_audit", Sampled)]
+    );
+    // The row sighted in both the capped and the uncapped file (alice 07-05) is sampled, as `coverage` has it.
+    assert_eq!(
+        line(
+            &range(&case, Some("t1"), &[ALICE], "2026-07-05", "2026-07-05"),
+            "ual"
+        )
+        .state,
+        Sampled
+    );
+    // The same answer as `coverage` for every account and source over each one's whole span.
+    let all = run(&case, Some("t1"), &[ALICE, BOB, CAROL, DAVE]);
+    let mut compared = 0;
+    for a in &all.accounts {
+        for s in &a.sources {
+            let (Some(first), Some(last)) = (s.first, s.last) else {
+                continue;
+            };
+            if ["message_trace", "entra_audit"].contains(&s.source.as_str()) {
+                continue;
+            }
+            let r = range(
+                &case,
+                Some("t1"),
+                &[&a.upn],
+                &first.date_naive().to_string(),
+                &last.date_naive().to_string(),
+            );
+            let want = if s.sampled { Sampled } else { Covered };
+            assert_eq!(line(&r, &s.source).state, want, "{} {}", a.upn, s.source);
+            compared += 1;
+        }
+    }
+    // alice ual; bob ual; carol ual and both sign-in kinds; dave ual and mail_items_accessed.
+    assert_eq!(compared, 7);
+}
+
+#[test]
+fn range_coverage_binds_its_values_so_quotes_are_data() {
+    use RangeState::{Absent, Covered};
+    let case = Case::in_memory().unwrap();
+    let odd_tenant = "t'1";
+    let odd_account = "o'brien@contoso.example";
+    let c = collection(&case, odd_tenant);
+    let f = file(&case, c, "ual.csv", None);
+    ual(&case, c, f, 1, "2026-07-02 08:00:00", "Send", odd_account);
+    let c2 = collection(&case, "t1");
+    let f2 = file(&case, c2, "ual2.csv", None);
+    ual(&case, c2, f2, 2, "2026-07-02 09:00:00", "Send", BOB);
+    let acct = [odd_account.to_string()];
+    let run = |tenant: Option<&str>, accounts: &[String]| {
+        coverage_for_range(
+            case.conn(),
+            tenant,
+            accounts,
+            d("2026-07-02"),
+            d("2026-07-02"),
+        )
+        .unwrap()
+    };
+    // The apostrophe in the tenant and in the account is matched as text.
+    let r = run(Some(odd_tenant), &acct);
+    assert_eq!(line(&r, "ual").state, Covered);
+    assert_eq!(
+        by_state(line(&r, "ual")),
+        vec![("covered", vec![odd_account])]
+    );
+    // Another tenant does not hold it, and a tenant made to look like SQL matches nothing.
+    assert_eq!(line(&run(Some("t1"), &acct), "ual").state, Absent);
+    assert_eq!(line(&run(Some("x' OR '1'='1"), &acct), "ual").state, Absent);
+    assert_eq!(
+        line(
+            &run(Some("t1"), &["bob@contoso.example' OR '1'='1".to_string()]),
+            "ual"
+        )
+        .state,
+        Absent
+    );
+    assert_eq!(
+        line(&run(Some("t1"), &[BOB.to_string()]), "ual").state,
+        Covered
+    );
+    // Tenant-wide sources bind the tenant too.
+    trace(&case, c, f, "m1", "2026-07-02 10:00:00", odd_account, BOB);
+    assert_eq!(
+        line(&run(Some(odd_tenant), &[]), "message_trace").state,
+        Covered
+    );
+    assert_eq!(line(&run(Some("t1"), &[]), "message_trace").state, Absent);
+}
+
+#[test]
+fn the_scope_follows_the_range_and_falls_back_to_the_whole_case() {
+    use chrono::{TimeZone, Utc};
+    use sparrow_core::case::entity::coverage_scope;
+    use sparrow_core::case::events::{Entity, rebuild};
+    let case = case();
+    let c1: i64 = case
+        .conn()
+        .query_row(
+            "SELECT collection_id FROM collections WHERE tenant_key = 't1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let ok: i64 = case
+        .conn()
+        .query_row(
+            "SELECT file_id FROM source_files WHERE rel_path = 'ual-ok.csv'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    // carol's June messages involve dave; her July message involves bob.
+    trace(&case, c1, ok, "m7", "2026-07-10 10:00:00", CAROL, BOB);
+    rebuild(case.conn()).unwrap();
+    let at = |m, day| Some(Utc.with_ymd_and_hms(2026, m, day, 0, 0, 0).unwrap());
+    let who = Entity::Account("CAROL@contoso.example".into());
+    let tenants = |from, to| {
+        coverage_scope(case.conn(), &who, from, to)
+            .unwrap()
+            .tenants
+            .into_iter()
+            .collect::<Vec<_>>()
+    };
+    let list = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    // June: dave, not bob. July: bob, not dave. Carol herself throughout.
+    assert_eq!(
+        tenants(at(6, 1), at(6, 30)),
+        vec![("t1".to_string(), list(&[CAROL, DAVE]))]
+    );
+    assert_eq!(
+        tenants(at(7, 1), at(7, 31)),
+        vec![("t1".to_string(), list(&[BOB, CAROL]))]
+    );
+    // August holds only her t2 UAL.
+    assert_eq!(
+        tenants(at(8, 1), at(8, 31)),
+        vec![("t2".to_string(), list(&[CAROL]))]
+    );
+    // No range: everything.
+    let all = tenants(None, None);
+    assert_eq!(
+        all,
+        vec![
+            ("t1".to_string(), list(&[BOB, CAROL, DAVE])),
+            ("t2".to_string(), list(&[CAROL]))
+        ]
+    );
+    // A range with none of her events falls back to the whole case, and she is among the accounts.
+    assert_eq!(tenants(at(1, 1), at(1, 31)), all);
+    // The first and last event are the whole case's whatever the range.
+    let s = coverage_scope(case.conn(), &who, at(6, 1), at(6, 30)).unwrap();
+    assert_eq!(s.first.unwrap().to_rfc3339(), "2026-06-11T09:00:00+00:00");
+    assert_eq!(s.last.unwrap().to_rfc3339(), "2026-08-10T08:00:00+00:00");
+    // A tenant whose events name no account, for an IP entity, lists none (a case with events but no IP rows).
+    let none = coverage_scope(case.conn(), &Entity::Ip("203.0.113.9".into()), None, None).unwrap();
+    assert!(none.first.is_none() && none.tenants.is_empty());
 }

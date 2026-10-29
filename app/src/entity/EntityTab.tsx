@@ -1,14 +1,16 @@
 // An entity tab: the header, the summary tiles, the pivot tables, the findings that involve the entity and the Events
 // grid scoped to it. The tiles, pivots and findings follow the range of the tab's own histogram, and nothing outside
-// the tab does. The coverage strip (Task 12) goes in the empty slot under the tiles.
+// the tab does. The coverage strip sits under the tiles and follows the same range.
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  entityCoverage,
   entityFindings,
   entityPivot,
   entitySummary,
   isCmdError,
   type EntityKind,
   type EventQuery,
+  type EntityCoverage,
   type EntitySummary,
   type FindingRef,
   type PivotOf,
@@ -20,6 +22,7 @@ import { useNav, useRefreshBadges, useWriteBlocked } from "../shell/nav";
 import type { EntityRef } from "../shell/tabs";
 import { displaySafe } from "../text";
 import AddToTimelineDialog from "../marks/AddToTimelineDialog";
+import CoverageStrip from "./CoverageStrip";
 import PivotTable, { PIVOTS } from "./PivotTable";
 import Tiles from "./Tiles";
 
@@ -37,9 +40,10 @@ interface Loaded {
   pivots: Partial<Record<PivotOf, PivotPage>>;
   pivotErrors: Partial<Record<PivotOf, string>>;
   findings: FindingRef[] | null;
+  coverage: EntityCoverage | null;
   error: string | null;
 }
-const EMPTY: Loaded = { summary: null, pivots: {}, pivotErrors: {}, findings: null, error: null };
+const EMPTY: Loaded = { summary: null, pivots: {}, pivotErrors: {}, findings: null, coverage: null, error: null };
 
 export default function EntityTab({ entity }: EntityTabProps) {
   const writeBlocked = useWriteBlocked();
@@ -80,6 +84,10 @@ export default function EntityTab({ entity }: EntityTabProps) {
     );
     entityFindings(arg, from, to).then(
       (findings) => live() && setData((d) => ({ ...d, findings })),
+      (e: unknown) => live() && setData((d) => ({ ...d, error: errorText(e) })),
+    );
+    entityCoverage(arg, from, to).then(
+      (coverage) => live() && setData((d) => ({ ...d, coverage })),
       (e: unknown) => live() && setData((d) => ({ ...d, error: errorText(e) })),
     );
     for (const of of PIVOTS[kind]) {
@@ -132,7 +140,9 @@ export default function EntityTab({ entity }: EntityTabProps) {
       )}
       {data.error && <p role="alert">{displaySafe(data.error)}</p>}
       {summary ? <Tiles kind={kind} summary={summary} /> : !data.error && <p>Loading…</p>}
-      <div className="entity-coverage" aria-label="Coverage" />
+      <div className="entity-coverage">
+        <CoverageStrip coverage={data.coverage} />
+      </div>
       <div className="entity-pivots">
         {PIVOTS[kind].map((of) => (
           <PivotTable

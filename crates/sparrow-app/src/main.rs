@@ -48,6 +48,7 @@ fn main() {
             cmd::entity::commands::entity_summary,
             cmd::entity::commands::entity_pivot,
             cmd::entity::commands::entity_findings,
+            cmd::entity::commands::entity_coverage,
             cmd::marks::commands::marks_flag_rows,
             cmd::marks::commands::marks_flag_value,
             cmd::marks::commands::marks_tag_rows,

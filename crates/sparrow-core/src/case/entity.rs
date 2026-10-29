@@ -562,3 +562,83 @@ pub fn findings(
     }
     Ok(out)
 }
+
+/// What the coverage strip needs of an entity: when its events start and end in the whole case, and for each tenant
+/// the accounts in them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoverageScope {
+    /// The entity's first and last event in the whole case (the default days of the strip).
+    pub first: Option<DateTime<Utc>>,
+    pub last: Option<DateTime<Utc>>,
+    /// Tenant key -> lower-cased accounts (actor and mailbox owner / recipient), sorted. They come from the entity's
+    /// events in `[from, to]`; when none of its events fall in the range, from its events in the whole case, since
+    /// the strip judges that range all the same. An account entity's own account is always among them. A tenant whose
+    /// events name no account (a spray IP) has an empty list. Events with no tenant are left out.
+    pub tenants: BTreeMap<String, Vec<String>>,
+}
+
+/// The tenants and accounts of the entity's events matched by `w`.
+fn tenant_accounts(conn: &Connection, w: &Where) -> Result<BTreeMap<String, Vec<String>>> {
+    let mut tenants: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut stmt = conn.prepare(&format!(
+        "WITH s AS (SELECT e.tenant_key, e.actor_upn, e.owner_upn FROM events e{} AND e.tenant_key IS NOT NULL) \
+         SELECT DISTINCT tenant_key, a FROM (SELECT tenant_key, actor_upn AS a FROM s \
+                                             UNION ALL SELECT tenant_key, owner_upn FROM s) ORDER BY 1, 2",
+        w.sql()
+    ))?;
+    let mut rows = stmt.query(params_from_iter(bound(w)))?;
+    while let Some(r) = rows.next()? {
+        let list = tenants.entry(r.get::<_, String>(0)?).or_default();
+        if let Some(a) = r
+            .get::<_, Option<String>>(1)?
+            .filter(|a| !a.trim().is_empty())
+        {
+            list.push(a);
+        }
+    }
+    Ok(tenants)
+}
+
+/// The entity's first and last event in the whole case and its tenants and accounts, from `[from, to]` or, when no
+/// event of the entity falls there, from the whole case.
+pub fn coverage_scope(
+    conn: &Connection,
+    e: &Entity,
+    from: Option<DateTime<Utc>>,
+    to: Option<DateTime<Utc>>,
+) -> Result<CoverageScope> {
+    let (e, whole) = scope(e, None, None)?;
+    let (first, last): (Option<i64>, Option<i64>) = conn.query_row(
+        &format!(
+            "SELECT epoch_us(min(e.event_time)), epoch_us(max(e.event_time)) FROM events e{}",
+            whole.sql()
+        ),
+        params_from_iter(bound(&whole)),
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let mut tenants = if from.is_some() || to.is_some() {
+        let (_, w) = scope(&e, from, to)?;
+        let in_range: i64 = conn.query_row(
+            &format!("SELECT count(*) FROM events e{}", w.sql()),
+            params_from_iter(bound(&w)),
+            |r| r.get(0),
+        )?;
+        tenant_accounts(conn, if in_range > 0 { &w } else { &whole })?
+    } else {
+        tenant_accounts(conn, &whole)?
+    };
+    if let Entity::Account(own) = &e {
+        let own = own.trim().to_lowercase();
+        for list in tenants.values_mut() {
+            if !list.contains(&own) {
+                list.push(own.clone());
+                list.sort();
+            }
+        }
+    }
+    Ok(CoverageScope {
+        first: first.map(at),
+        last: last.map(at),
+        tenants,
+    })
+}

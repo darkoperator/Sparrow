@@ -194,6 +194,14 @@ pre.prose { max-width: 100%; overflow-x: auto; }
 .entity-tile dd { margin: 0; font-size: 13px; font-weight: 600; }
 .entity-roles { margin: 2px 0 6px; font-size: 12px; opacity: 0.8; }
 .entity-coverage:empty { min-height: 0; }
+.coverage-strip { margin: 6px 0; padding: 6px 10px; border: 1px solid #b7791f; border-left-width: 4px; border-radius: 4px; background: #f6ad5522; font-size: 12px; }
+.coverage-head { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.8; }
+.coverage-tenant { margin-top: 4px; }
+.coverage-tenant-name { font-size: 11px; opacity: 0.8; word-break: break-all; }
+.coverage-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; padding: 0; list-style: none; }
+.coverage-chip { display: inline-block; padding: 1px 8px; border: 1px solid #b7791f; border-radius: 10px; cursor: help; }
+.coverage-absent { font-weight: 600; }
+.coverage-note { margin: 2px 0 0; }
 .entity-pivots { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; align-items: flex-start; }
 .entity-pivot { flex: 1 1 280px; min-width: 240px; border: 1px solid #8884; border-radius: 4px; }
 .entity-pivot h4 { margin: 0; padding: 5px 8px; border-bottom: 1px solid #8884; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; }

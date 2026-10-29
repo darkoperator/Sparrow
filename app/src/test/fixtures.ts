@@ -22,6 +22,7 @@ import eventsSuggestJson from "./fixtures/events_suggest.json";
 import entitySummariesJson from "./fixtures/entity_summaries.json";
 import entityPivotsJson from "./fixtures/entity_pivots.json";
 import entityFindingsJson from "./fixtures/entity_findings.json";
+import entityCoverageJson from "./fixtures/entity_coverage.json";
 import marksTagsJson from "./fixtures/marks_tags.json";
 import timelineAddedJson from "./fixtures/timeline_added.json";
 import type {
@@ -29,6 +30,7 @@ import type {
   ActiveIndicator,
   BrowsePage,
   CaseInfo,
+  EntityCoverage,
   EntityKind,
   EntitySummary,
   EventDetail,
@@ -408,6 +410,17 @@ export function entityFindings(): FindingRef[] {
   if (!Array.isArray(v) || v.length === 0) throw new Error("fixture entity_findings: not a non-empty array");
   v.forEach((f: unknown, i) => need(`entity_findings[${i}]`, f, ["finding_id", "rule_id", "title", "severity", "status", "first_seen"]));
   return v as unknown as FindingRef[];
+}
+
+export function entityCoverage(): EntityCoverage {
+  const v: unknown = clone(entityCoverageJson);
+  need("entity_coverage", v, ["from", "to", "tenants"]);
+  if (!Array.isArray(v.tenants) || v.tenants.length === 0) throw new Error("fixture entity_coverage: no tenants");
+  v.tenants.forEach((t: unknown, i) => {
+    need(`entity_coverage.tenants[${i}]`, t, ["tenant_key", "accounts", "sources"]);
+    (t.sources as unknown[]).forEach((x, j) => need(`entity_coverage.tenants[${i}].sources[${j}]`, x, ["source", "title", "state", "accounts_by_state"]));
+  });
+  return v as unknown as EntityCoverage;
 }
 
 export function marksTags(): TagInfo[] {

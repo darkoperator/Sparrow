@@ -1,0 +1,84 @@
+{
+  "from": "2026-08-01",
+  "to": "2026-09-09",
+  "tenants": [
+    {
+      "tenant_key": "11111111-2222-4333-8444-555555555555",
+      "accounts": [
+        "admin@contoso.example",
+        "frances.rourke@contoso.example"
+      ],
+      "sources": [
+        {
+          "source": "ual",
+          "title": "Unified audit log",
+          "state": "sampled",
+          "accounts_by_state": {
+            "covered": [
+              "admin@contoso.example"
+            ],
+            "sampled": [
+              "frances.rourke@contoso.example"
+            ]
+          }
+        },
+        {
+          "source": "signins_interactive",
+          "title": "Sign-ins (interactive)",
+          "state": "covered",
+          "accounts_by_state": {
+            "covered": [
+              "admin@contoso.example",
+              "frances.rourke@contoso.example"
+            ]
+          }
+        },
+        {
+          "source": "signins_noninteractive",
+          "title": "Sign-ins (non-interactive)",
+          "state": "covered",
+          "accounts_by_state": {
+            "covered": [
+              "admin@contoso.example",
+              "frances.rourke@contoso.example"
+            ]
+          }
+        },
+        {
+          "source": "mail_items_accessed",
+          "title": "MailItemsAccessed",
+          "state": "absent",
+          "accounts_by_state": {
+            "absent": [
+              "admin@contoso.example",
+              "frances.rourke@contoso.example"
+            ]
+          }
+        },
+        {
+          "source": "message_trace",
+          "title": "Message trace",
+          "state": "covered",
+          "accounts_by_state": {}
+        },
+        {
+          "source": "entra_audit",
+          "title": "Entra audit log",
+          "state": "covered",
+          "accounts_by_state": {}
+        },
+        {
+          "source": "mailbox_audit",
+          "title": "Mailbox audit log (legacy)",
+          "state": "absent",
+          "accounts_by_state": {
+            "absent": [
+              "admin@contoso.example",
+              "frances.rourke@contoso.example"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

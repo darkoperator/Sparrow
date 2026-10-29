@@ -78,6 +78,7 @@ describe("events, entity and marks commands", () => {
     ["entitySummary", () => api.entitySummary(entity, "2026-03-01T00:00:00Z", "2026-03-02T00:00:00Z"), "entity_summary", ["entity", "from", "to"]],
     ["entityPivot", () => api.entityPivot(entity, "ips", "2026-03-01T00:00:00Z", "2026-03-02T00:00:00Z", 25), "entity_pivot", ["entity", "from", "limit", "of", "to"]],
     ["entityFindings", () => api.entityFindings(entity, "2026-03-01T00:00:00Z", "2026-03-02T00:00:00Z"), "entity_findings", ["entity", "from", "to"]],
+    ["entityCoverage", () => api.entityCoverage(entity, "2026-03-01T00:00:00Z", "2026-03-02T00:00:00Z"), "entity_coverage", ["entity", "from", "to"]],
     ["marksFlagRows", () => api.marksFlagRows(rows, "malicious"), "marks_flag_rows", ["level", "rows"]],
     ["marksFlagValue", () => api.marksFlagValue("ip", "192.0.2.19", entity, "suspicious"), "marks_flag_value", ["kind", "level", "scope", "value"]],
     ["marksTagRows", () => api.marksTagRows(rows, "relay", true), "marks_tag_rows", ["add", "rows", "tag"]],

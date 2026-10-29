@@ -24,7 +24,8 @@ use crate::detect::enrich::{EnrichState, enrichment_state};
 use crate::profile::availability::EXPORT_CAP_WARNING_LIKE;
 use crate::{Error, Result};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
-use duckdb::Connection;
+use duckdb::types::Value as DbValue;
+use duckdb::{Connection, params_from_iter};
 use serde::{Serialize, Serializer};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -230,10 +231,59 @@ fn norm(s: &str) -> Option<String> {
 
 type StatKey = (String, String, String);
 
+/// What `load_stats_in` is narrowed to. The default is everything, as `coverage` uses it.
+#[derive(Default)]
+struct Filter<'a> {
+    /// Event times in `[from, to)`, epoch microseconds.
+    span: Option<(i64, i64)>,
+    tenant: Option<&'a str>,
+    /// Lower-cased accounts; `None` is every account.
+    accounts: Option<&'a [String]>,
+    /// Leave out the sources judged tenant-wide ([`TENANT_WIDE`]).
+    per_account_only: bool,
+}
+
+/// Judged for the whole tenant, whoever the row names, in the range coverage.
+const TENANT_WIDE: &[&str] = &["message_trace", "entra_audit"];
+
+/// The extra `AND ...` conditions of `f` over the row's time (`t`) and account (`acct`) expressions and the
+/// collection alias `c`, with the values they bind, in order. Nothing from `f` is written into the SQL text.
+fn narrow(f: &Filter, t: &str, acct: &str) -> (String, Vec<DbValue>) {
+    let mut sql = String::new();
+    let mut args: Vec<DbValue> = Vec::new();
+    if let Some((lo, hi)) = f.span {
+        sql.push_str(&format!(" AND {t} >= ? AND {t} < ?"));
+        args.push(DbValue::BigInt(lo));
+        args.push(DbValue::BigInt(hi));
+    }
+    if let Some(tenant) = f.tenant {
+        sql.push_str(" AND c.tenant_key = ?");
+        args.push(DbValue::Text(tenant.to_string()));
+    }
+    if let Some(accounts) = f.accounts {
+        if accounts.is_empty() {
+            sql.push_str(" AND false");
+        } else {
+            let marks = vec!["?"; accounts.len()].join(", ");
+            sql.push_str(&format!(" AND lower(trim({acct})) IN ({marks})"));
+            args.extend(accounts.iter().map(|a| DbValue::Text(a.clone())));
+        }
+    }
+    (sql, args)
+}
+
 fn load_stats(conn: &Connection) -> Result<HashMap<StatKey, Stats>> {
+    load_stats_in(conn, &Filter::default())
+}
+
+fn load_stats_in(conn: &Connection, f: &Filter) -> Result<HashMap<StatKey, Stats>> {
     let mut out: HashMap<StatKey, Stats> = HashMap::new();
     let capped = capped_cte();
     for (source, inner) in sql_sources() {
+        if f.per_account_only && TENANT_WIDE.contains(&source) {
+            continue;
+        }
+        let (extra, args) = narrow(f, "x.t_us", "x.acct");
         let mut st = conn.prepare(&format!(
             "WITH {capped} \
              SELECT c.tenant_key, lower(trim(x.acct)), count(*), min(x.t_us), max(x.t_us), \
@@ -241,10 +291,10 @@ fn load_stats(conn: &Connection) -> Result<HashMap<StatKey, Stats>> {
              FROM ({inner}) x(cid, acct, t_us, tn, k) \
              JOIN collections c ON c.collection_id = x.cid \
              LEFT JOIN capped cap ON cap.tn = x.tn AND cap.k = x.k \
-             WHERE c.tenant_key IS NOT NULL AND x.acct IS NOT NULL AND trim(x.acct) <> '' AND x.t_us IS NOT NULL \
+             WHERE c.tenant_key IS NOT NULL AND x.acct IS NOT NULL AND trim(x.acct) <> '' AND x.t_us IS NOT NULL{extra} \
              GROUP BY 1, 2"
         ))?;
-        let rows = st.query_map([], |r| {
+        let rows = st.query_map(params_from_iter(args.iter()), |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -262,7 +312,9 @@ fn load_stats(conn: &Connection) -> Result<HashMap<StatKey, Stats>> {
             out.insert((source.to_string(), tenant, acct), stats);
         }
     }
-    entra_audit_stats(conn, &mut out)?;
+    if !f.per_account_only {
+        entra_audit_stats(conn, &mut out)?;
+    }
     Ok(out)
 }
 
@@ -577,4 +629,171 @@ pub fn coverage(conn: &Connection, opts: &CoverageOptions) -> Result<Coverage> {
         requests,
         warnings,
     })
+}
+
+/// One source's state over a date range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RangeState {
+    /// Rows exist in the range and none came from a capped export.
+    Covered,
+    /// Some row in the range came from a capped export.
+    Sampled,
+    /// No rows in the range.
+    Absent,
+}
+
+impl RangeState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RangeState::Covered => "covered",
+            RangeState::Sampled => "sampled",
+            RangeState::Absent => "absent",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SourceState {
+    pub source: String,
+    pub title: String,
+    /// The worst state over the accounts (absent, then sampled, then covered); the tenant's own for a tenant-wide
+    /// source.
+    pub state: RangeState,
+    /// State name -> the accounts in it, sorted. Empty for a tenant-wide source.
+    pub accounts_by_state: BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RangeCoverage {
+    pub sources: Vec<SourceState>,
+}
+
+fn state_of(rows: Option<bool>) -> RangeState {
+    match rows {
+        None => RangeState::Absent,
+        Some(true) => RangeState::Sampled,
+        Some(false) => RangeState::Covered,
+    }
+}
+
+/// `(rows, sampled)` of the tenant-wide sources in the range, per source, over the tenants selected.
+fn tenant_wide_states(
+    conn: &Connection,
+    tenant: Option<&str>,
+    span: (i64, i64),
+) -> Result<HashMap<&'static str, bool>> {
+    let mut out = HashMap::new();
+    for (source, table, col) in [
+        ("message_trace", "message_trace", "received"),
+        ("entra_audit", "directory_audits", "event_time"),
+    ] {
+        let f = Filter {
+            span: Some(span),
+            tenant,
+            ..Filter::default()
+        };
+        let (extra, args) = narrow(&f, &format!("epoch_us(x.{col})"), "''");
+        let sampled: Option<bool> = conn.query_row(
+            &format!(
+                "WITH {} SELECT count(*) > 0, coalesce(bool_or(cap.k IS NOT NULL), false) \
+                 FROM {table} x JOIN collections c ON c.collection_id = x.collection_id \
+                 LEFT JOIN capped cap ON cap.tn = '{table}' AND cap.k = x.record_key \
+                 WHERE c.tenant_key IS NOT NULL AND x.{col} IS NOT NULL{extra}",
+                capped_cte()
+            ),
+            params_from_iter(args.iter()),
+            |r| {
+                let any = r.get::<_, bool>(0)?;
+                let sampled = r.get::<_, bool>(1)?;
+                Ok(any.then_some(sampled))
+            },
+        )?;
+        if let Some(sampled) = sampled {
+            out.insert(source, sampled);
+        }
+    }
+    Ok(out)
+}
+
+/// The state of every source over the UTC days `from..=to` (both inclusive) for `accounts` of `tenant` (every tenant
+/// when `None`), by the same counting and the same sampled rule as [`coverage`]. `message_trace` and `entra_audit`
+/// are judged for the whole tenant whatever `accounts` holds; with no accounts only those two are listed.
+pub fn coverage_for_range(
+    conn: &Connection,
+    tenant: Option<&str>,
+    accounts: &[String],
+    from: NaiveDate,
+    to: NaiveDate,
+) -> Result<RangeCoverage> {
+    if to < from {
+        return Err(Error::Invalid(format!(
+            "coverage range {from}..{to} ends before it starts"
+        )));
+    }
+    let day_us = |d: NaiveDate| {
+        d.and_hms_opt(0, 0, 0)
+            .unwrap_or_default()
+            .and_utc()
+            .timestamp_micros()
+    };
+    let span = (day_us(from), day_us(to + Duration::days(1)));
+    let accounts: Vec<String> = accounts
+        .iter()
+        .filter_map(|a| norm(a))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let stats = if accounts.is_empty() {
+        HashMap::new()
+    } else {
+        load_stats_in(
+            conn,
+            &Filter {
+                span: Some(span),
+                tenant,
+                accounts: Some(&accounts),
+                per_account_only: true,
+            },
+        )?
+    };
+    let wide = tenant_wide_states(conn, tenant, span)?;
+    let mut sources = Vec::new();
+    for (id, title) in SOURCES {
+        if TENANT_WIDE.contains(id) {
+            sources.push(SourceState {
+                source: (*id).to_string(),
+                title: (*title).to_string(),
+                state: state_of(wide.get(id).copied()),
+                accounts_by_state: BTreeMap::new(),
+            });
+            continue;
+        }
+        if accounts.is_empty() {
+            continue;
+        }
+        // Per account: sampled if any tenant holds it sampled in the range; rows in no tenant: absent.
+        let mut by_state: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut worst = RangeState::Covered;
+        for acct in &accounts {
+            let held: Vec<bool> = stats
+                .iter()
+                .filter(|((s, _, a), _)| s == id && a == acct)
+                .map(|(_, st)| st.sampled)
+                .collect();
+            let state = state_of((!held.is_empty()).then(|| held.contains(&true)));
+            worst = worst.max(state);
+            by_state
+                .entry(state.as_str().to_string())
+                .or_default()
+                .push(acct.clone());
+        }
+        sources.push(SourceState {
+            source: (*id).to_string(),
+            title: (*title).to_string(),
+            state: worst,
+            accounts_by_state: by_state,
+        });
+    }
+    Ok(RangeCoverage { sources })
 }
