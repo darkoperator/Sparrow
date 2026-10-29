@@ -1,9 +1,9 @@
 .meta { opacity: 0.75; font-size: 12px; }
-.tag { font-size: 11px; padding: 0 4px; border: 1px solid #8886; border-radius: 3px; }
+.tag { font-size: 11px; padding: 0 4px; border: 1px solid var(--line-strong); border-radius: 3px; }
 .prose { white-space: pre-wrap; overflow-wrap: anywhere; }
 .filter-chip { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
 /* The base scope chip under Review's and Events' own rules; Tables scopes its chips under .filter-chips. */
-.filter-chip { display: inline-flex; gap: 4px; align-items: center; padding: 1px 6px; border: 1px solid #8886; border-radius: 10px; }
+.filter-chip { display: inline-flex; gap: 4px; align-items: center; padding: 1px 6px; border: 1px solid var(--line-strong); border-radius: 10px; }
 .filter-chip button { background: none; border: 0; padding: 0 2px; color: inherit; }
 /* ui-fixes-1: wide content scrolls inside its grid, never the page. */
 .detail-fields { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 6px 0; }
