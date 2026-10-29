@@ -1,0 +1,71 @@
+/* Entity tabs: header, tiles, coverage strip, pivot cards, findings. The embedded Events view is styled in events/. */
+.entity-tab { display: flex; flex-direction: column; gap: 12px; padding: 16px 20px 20px; min-width: 0; }
+.entity-tab > * { min-width: 0; }
+
+.entity-head { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin: 0; }
+.entity-icon { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; flex: none; border-radius: 8px; background: var(--raised); color: var(--muted); }
+.entity-icon-account, .entity-icon-ip { background: var(--mal-bg); color: var(--mal); }
+.entity-icon-device { background: var(--mal-bg); color: var(--mal); }
+.entity-icon-session { background: var(--sus-bg); color: var(--sus); }
+.entity-head h3 { display: flex; flex-direction: column; flex: 1 1 280px; min-width: 0; margin: 0; font-weight: 700; }
+.entity-kind { font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); }
+.entity-value { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-family: var(--font-mono); font-size: 16px; font-weight: 700; }
+.entity-value-account, .entity-value-device { font-family: var(--font-ui); font-size: 18px; }
+.entity-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+.entity-notice { margin: 0; padding: 4px 10px; border-radius: 6px; background: var(--ok-bg); color: var(--ok); font-size: 12px; }
+.entity-error { margin: 0; }
+
+.entity-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 0; }
+.entity-tile { min-width: 0; margin: 0; padding: 10px 12px; }
+.entity-tile dt { margin: 0 0 4px; }
+.entity-tile dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 20px; font-weight: 700; }
+.entity-tile-long { grid-column: span 2; }
+.entity-tile-long dd { font-family: var(--font-mono); font-size: 13px; line-height: 28px; }
+.entity-tile-mal { border-color: var(--mal); background: var(--mal-bg); }
+.entity-tile-mal dt, .entity-tile-mal dd { color: var(--mal); }
+.entity-tile-sus { border-color: var(--sus); background: var(--sus-bg); }
+.entity-tile-sus dt, .entity-tile-sus dd { color: var(--sus); }
+.entity-roles { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+
+.entity-coverage:empty { display: none; }
+.coverage-strip { margin: 0; padding: 8px 12px; border: 1px solid var(--sus); border-radius: 8px; background: var(--sus-bg); color: var(--sus); font-size: 12px; }
+.coverage-head { font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.coverage-tenant { margin-top: 4px; }
+.coverage-tenant-name { color: var(--muted); font-size: 11px; word-break: break-all; }
+.coverage-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; padding: 0; list-style: none; }
+.coverage-chip { display: inline-block; padding: 1px 10px; border: 1px solid var(--sus); border-radius: 999px; font-weight: 600; cursor: help; }
+.coverage-absent { border-style: dashed; }
+.coverage-note { margin: 2px 0 0; color: var(--text-2); }
+
+.entity-pivots { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 12px; align-items: start; }
+.entity-pivot { min-width: 0; overflow: hidden; }
+.entity-pivot h4 { margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--line); color: var(--text); font-size: 12px; font-weight: 700; }
+.entity-pivot > p, .entity-pivot > ul { margin: 0; padding: 10px 12px; }
+.entity-pivot ul { list-style: none; }
+.entity-cut { color: var(--faint); font-weight: 400; }
+.entity-pivot-scroll { max-height: 240px; overflow: auto; }
+.entity-pivot table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.entity-pivot th, .entity-pivot td { max-width: 220px; padding: 7px 12px; overflow: hidden; text-overflow: ellipsis; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--line); }
+.entity-pivot td { color: var(--text-2); }
+.entity-pivot td.mono { font-size: 11px; }
+.entity-pivot tbody tr:last-child td { border-bottom: 0; }
+.entity-pivot th { position: sticky; top: 0; background: var(--card); color: var(--faint); font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.entity-pivot-row { cursor: pointer; }
+.entity-pivot-row:hover, .entity-pivot-row:focus-visible { background: var(--raised); }
+.entity-pivot-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.entity-new { margin-left: 6px; padding: 0 6px; font-size: 9px; font-weight: 700; text-transform: uppercase; }
+.entity-count { font-variant-numeric: tabular-nums; text-align: right; }
+.entity-bar { display: inline-block; width: 48px; height: 4px; margin-right: 8px; border-radius: 2px; background: var(--raised); vertical-align: middle; overflow: hidden; }
+.entity-bar i { display: block; height: 100%; background: var(--accent); }
+.entity-meta, .entity-empty { color: var(--faint); font-size: 11px; }
+
+.entity-findings ul { max-height: 240px; overflow: auto; padding: 0; }
+.entity-finding { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: baseline; padding: 8px 12px 8px 14px; border-left: 3px solid var(--sus); border-bottom: 1px solid var(--line); }
+.entity-finding:last-child { border-bottom: 0; }
+.entity-finding-high, .entity-finding-critical { border-left-color: var(--mal); }
+.entity-finding-info, .entity-finding-low { border-left-color: var(--accent); }
+.entity-finding button.link { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; color: var(--text); font-weight: 600; text-decoration: none; }
+.entity-finding button.link:hover { color: var(--accent-text); }
+.entity-sev { padding: 0 8px; border-radius: 999px; background: var(--sus-pill); color: var(--sus); font-size: 10px; font-weight: 700; }
+.entity-sev-high, .entity-sev-critical { background: var(--mal-pill); color: var(--mal); }
+.entity-sev-info, .entity-sev-low { background: var(--raised); color: var(--muted); }

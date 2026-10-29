@@ -17,6 +17,7 @@ import {
   type PivotPage,
 } from "../api";
 import { isoSeconds } from "../events/columns";
+import Icon, { type IconName } from "../ui/Icon";
 import EventsView from "../events/EventsView";
 import { useNav, useRefreshBadges, useWriteBlocked } from "../shell/nav";
 import type { EntityRef } from "../shell/tabs";
@@ -25,9 +26,10 @@ import AddToTimelineDialog from "../marks/AddToTimelineDialog";
 import CoverageStrip from "./CoverageStrip";
 import PivotTable, { PIVOTS } from "./PivotTable";
 import Tiles from "./Tiles";
+import "./entity.css";
 
 export const KIND_NAME: Record<EntityKind, string> = { account: "User", ip: "IP", device: "Device", session: "Entra session" };
-const ICON: Record<EntityKind, string> = { account: "👤", ip: "🌐", device: "💻", session: "🔑" };
+const ICON: Record<EntityKind, IconName> = { account: "user", ip: "globe", device: "monitor", session: "key" };
 
 export interface EntityTabProps {
   entity: EntityRef;
@@ -120,26 +122,31 @@ export default function EntityTab({ entity }: EntityTabProps) {
   return (
     <section className="entity-tab" aria-label={`${KIND_NAME[kind]} ${displaySafe(value)}`}>
       <header className="entity-head">
+        <span className={`entity-icon entity-icon-${kind}`} aria-hidden="true">
+          <Icon name={ICON[kind]} size={20} />
+        </span>
         <h3>
-          <span aria-hidden="true">{ICON[kind]}</span> {KIND_NAME[kind]} <span className="entity-value">{displaySafe(value)}</span>
+          <span className="entity-kind">{KIND_NAME[kind]}</span> <span className={`entity-value entity-value-${kind}`} title={displaySafe(value)}>{displaySafe(value)}</span>
         </h3>
-        <button type="button" onClick={() => nav?.showInEvents(entity)} disabled={!nav}>
-          Show in Events
-        </button>
-        <button type="button" onClick={() => void copy()}>
-          Copy
-        </button>
-        <button type="button" disabled={groupReason !== undefined} title={groupReason} onClick={() => current.query && setAdding({ query: current.query, count: current.count })}>
-          + Timeline (group)
-        </button>
+        <div className="entity-actions">
+          <button type="button" className="btn btn-ghost" onClick={() => nav?.showInEvents(entity)} disabled={!nav}>
+            Show in Events
+          </button>
+          <button type="button" className="btn btn-ghost" onClick={() => void copy()}>
+            Copy
+          </button>
+          <button type="button" className="btn btn-primary" disabled={groupReason !== undefined} title={groupReason} onClick={() => current.query && setAdding({ query: current.query, count: current.count })}>
+            + Timeline (group)
+          </button>
+        </div>
       </header>
       {notice && (
         <p role="status" className="entity-notice">
           {notice}
         </p>
       )}
-      {data.error && <p role="alert">{displaySafe(data.error)}</p>}
-      {summary ? <Tiles kind={kind} summary={summary} /> : !data.error && <p>Loading…</p>}
+      {data.error && <p role="alert" className="entity-error">{displaySafe(data.error)}</p>}
+      {summary ? <Tiles kind={kind} summary={summary} /> : !data.error && <p className="entity-empty">Loading…</p>}
       <div className="entity-coverage">
         <CoverageStrip coverage={data.coverage} />
       </div>
@@ -153,21 +160,21 @@ export default function EntityTab({ entity }: EntityTabProps) {
             onOpen={(e) => nav?.openEntity(e)}
           />
         ))}
-        <section className="entity-pivot entity-findings" aria-label="Findings">
+        <section className="entity-pivot entity-findings card" aria-label="Findings">
           <h4>Findings involving this {KIND_NAME[kind].toLowerCase()}</h4>
           {data.findings === null ? (
-            <p>Loading…</p>
+            <p className="entity-empty">Loading…</p>
           ) : data.findings.length === 0 ? (
             <p className="entity-empty">None in this range.</p>
           ) : (
             <ul>
               {data.findings.map((f) => (
-                <li key={f.finding_id}>
-                  <span className={`entity-sev entity-sev-${f.severity}`}>{displaySafe(f.severity)}</span>{" "}
-                  <button type="button" className="link" onClick={() => nav?.openFinding(f.finding_id)} disabled={!nav}>
+                <li key={f.finding_id} className={`entity-finding entity-finding-${f.severity}`}>
+                  <button type="button" className="link" title={displaySafe(f.title)} onClick={() => nav?.openFinding(f.finding_id)} disabled={!nav}>
                     {displaySafe(f.title)}
                   </button>{" "}
-                  <span className="entity-meta">
+                  <span className={`entity-sev entity-sev-${f.severity}`}>{displaySafe(f.severity)}</span>{" "}
+                  <span className="entity-meta mono">
                     {f.rule_id ? `${displaySafe(f.rule_id)} · ` : ""}
                     {displaySafe(f.status)}
                     {f.first_seen ? ` · ${isoSeconds(f.first_seen)}` : ""}

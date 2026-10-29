@@ -65,6 +65,9 @@ const COLS: Record<PivotOf, Col[]> = {
   ],
 };
 
+/** Columns that hold ids rather than names: they render in mono. */
+const MONO_COLS = new Set(["IP", "Session", "Id", "First IP"]);
+
 interface Props {
   of: PivotOf;
   /** Null while it loads. */
@@ -78,8 +81,9 @@ export default function PivotTable({ of, page, error, onOpen }: Props) {
   const opens = PIVOT_OPENS[of];
   const cols = COLS[of];
   const isChanges = of === "device_changes";
+  const top = page ? Math.max(1, ...page.rows.map((r) => r.count)) : 1;
   return (
-    <section className="entity-pivot" aria-label={title}>
+    <section className="entity-pivot card" aria-label={title}>
       <h4>
         {title}
         {page && page.rows.length < page.total && (
@@ -87,9 +91,9 @@ export default function PivotTable({ of, page, error, onOpen }: Props) {
         )}
       </h4>
       {error ? (
-        <p role="alert">{displaySafe(error)}</p>
+        <p role="alert" className="entity-error">{displaySafe(error)}</p>
       ) : !page ? (
-        <p>Loading…</p>
+        <p className="entity-empty">Loading…</p>
       ) : page.rows.length === 0 ? (
         <p className="entity-empty">None in this range.</p>
       ) : (
@@ -127,14 +131,21 @@ export default function PivotTable({ of, page, error, onOpen }: Props) {
                     }
                   >
                     {cols.map((c, ci) => (
-                      <td key={c.label} title={ci === 0 ? displaySafe(r.value) : undefined}>
+                      <td key={c.label} className={MONO_COLS.has(c.label) ? "mono" : undefined} title={displaySafe(c.cell(r))}>
                         {displaySafe(c.cell(r))}
-                        {ci === 0 && r.is_new && <span className="entity-new">new</span>}
+                        {ci === 0 && r.is_new && <span className="entity-new pill pill-new">new</span>}
                       </td>
                     ))}
-                    <td>{r.count.toLocaleString("en-US")}</td>
-                    <td>{isoSeconds(r.first_seen)}</td>
-                    {!isChanges && <td>{isoSeconds(r.last_seen)}</td>}
+                    <td className="entity-count">
+                      {!isChanges && (
+                        <span className="entity-bar" aria-hidden="true">
+                          <i style={{ width: `${Math.max(2, Math.round((r.count / top) * 100))}%` }} />
+                        </span>
+                      )}
+                      {r.count.toLocaleString("en-US")}
+                    </td>
+                    <td className="mono" title={isoSeconds(r.first_seen)}>{isoSeconds(r.first_seen)}</td>
+                    {!isChanges && <td className="mono" title={isoSeconds(r.last_seen)}>{isoSeconds(r.last_seen)}</td>}
                   </tr>
                 );
               })}

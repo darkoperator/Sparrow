@@ -89,15 +89,22 @@ export function tilesFor(kind: EntityKind, s: EntitySummary): Tile[] {
   }
 }
 
+/** The tiles worth a second look get a tint; the value's own text says the same, so colour is never the only cue. */
+function toneOf(t: Tile): string {
+  if (t.label === "Open findings" && t.value !== "0") return " entity-tile-mal";
+  if ((t.label === "Compliant" || t.label === "Managed") && t.value === "no") return " entity-tile-sus";
+  return "";
+}
+
 export default function Tiles({ kind, summary }: { kind: EntityKind; summary: EntitySummary }) {
   const tiles = tilesFor(kind, summary);
   return (
     <div>
       <dl className="entity-tiles" aria-label="Summary tiles">
         {tiles.map((t) => (
-          <div key={t.label} className="entity-tile" role="group" aria-label={t.label}>
-            <dt>{t.label}</dt>
-            <dd title={t.title}>{displaySafe(t.value)}</dd>
+          <div key={t.label} className={`entity-tile tile${toneOf(t)}${t.value.length > 12 ? " entity-tile-long" : ""}`} role="group" aria-label={t.label}>
+            <dt className="label">{t.label}</dt>
+            <dd title={t.title ?? (t.value.length > 12 ? displaySafe(t.value) : undefined)}>{displaySafe(t.value)}</dd>
           </div>
         ))}
       </dl>
