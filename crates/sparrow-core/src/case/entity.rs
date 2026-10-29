@@ -96,7 +96,23 @@ pub struct PivotRow {
     /// The value's first UTC day (among the entity's events in the whole case, whatever the range) is later than the
     /// entity's own first day.
     pub is_new: bool,
+    /// The standing flag on the value that the tab's events carry (see [`PivotFlag`]); `None` when it has none, and
+    /// always for `DeviceChanges`.
+    pub flag: Option<PivotFlag>,
     pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The standing flag on a pivot row's value: the strongest level among the active `value_flags` of the row's kind and
+/// value that are case-wide or scoped to this tab's entity (a flag scoped to another entity does not cover these
+/// events). The level and `pending` follow the events grid: malicious beats suspicious, and `pending` holds when every
+/// flag at that level is still an agent's unreviewed one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PivotFlag {
+    /// `suspicious` or `malicious`.
+    pub level: String,
+    pub pending: bool,
+    /// `case` when a case-wide flag has that level, else `entity` (made inside this tab).
+    pub scope: String,
 }
 
 /// A finding that cites an event of the entity.
@@ -453,10 +469,68 @@ pub fn pivot(
             first_seen: at(r.get(2)?),
             last_seen: at(r.get(3)?),
             is_new: r.get(4)?,
+            flag: None,
             extra,
         });
     }
+    attach_flags(conn, &entity, of, &mut out)?;
     Ok(PivotPage { rows: out, total })
+}
+
+/// Sets `flag` on each row from the active standing flags of its kind and value (see [`PivotFlag`]).
+fn attach_flags(conn: &Connection, e: &Entity, of: PivotOf, rows: &mut [PivotRow]) -> Result<()> {
+    let kind = match of {
+        PivotOf::Accounts => "account",
+        PivotOf::Ips => "ip",
+        PivotOf::Devices => "device",
+        PivotOf::Sessions => "session",
+        PivotOf::DeviceChanges => return Ok(()),
+    };
+    if rows.is_empty() {
+        return Ok(());
+    }
+    // One flag per (value, level, scope, review state); folded below. Only this kind and the page's values.
+    let marks = vec!["?"; rows.len()].join(", ");
+    let mut stmt = conn.prepare(&format!(
+        "SELECT vf.value, CAST(vf.level AS VARCHAR), vf.review_state = 'pending_review', vf.scope_kind IS NOT NULL \
+         FROM value_flags vf WHERE vf.removed_at IS NULL AND vf.kind = CAST(? AS flag_value_kind) \
+         AND vf.value IN ({marks}) \
+         AND (vf.scope_kind IS NULL OR (vf.scope_kind = ? AND vf.scope_value = ?))"
+    ))?;
+    let mut params = vec![Value::Text(kind.into())];
+    params.extend(rows.iter().map(|r| Value::Text(r.value.clone())));
+    params.push(Value::Text(e.kind_name().into()));
+    params.push(Value::Text(e.value().into()));
+    // value -> level -> (any pending, any confirmed, any case-wide)
+    type Seen = BTreeMap<String, BTreeMap<String, (bool, bool, bool)>>;
+    let mut seen = Seen::new();
+    let mut found = stmt.query(params_from_iter(params.iter()))?;
+    while let Some(r) = found.next()? {
+        let (value, level, pending, scoped): (String, String, bool, bool) =
+            (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
+        let at = seen.entry(value).or_default().entry(level).or_default();
+        at.0 |= pending;
+        at.1 |= !pending;
+        at.2 |= !scoped;
+    }
+    for row in rows {
+        let Some(levels) = seen.get(&row.value) else {
+            continue;
+        };
+        let Some(level) = ["malicious", "suspicious"]
+            .into_iter()
+            .find(|l| levels.contains_key(*l))
+        else {
+            continue;
+        };
+        let (pending, confirmed, case_wide) = levels[level];
+        row.flag = Some(PivotFlag {
+            level: level.into(),
+            pending: pending && !confirmed,
+            scope: if case_wide { "case" } else { "entity" }.into(),
+        });
+    }
+    Ok(())
 }
 
 /// The rows `of` is counted over, one per (event, value): `v` the value, `t` the event time in microseconds, `sk`/`rk`
@@ -523,6 +597,7 @@ fn device_changes(conn: &Connection, w: &Where, limit: usize) -> Result<PivotPag
             first_seen: time,
             last_seen: time,
             is_new: false,
+            flag: None,
             extra,
         });
     }

@@ -62,6 +62,8 @@ export interface EventsViewProps {
    * true while a newer run is loading: the query and count are then the previous ones, not what the boxes show.
    */
   onQueryChange?: (query: EventQuery | null, count: number | null, pending: boolean) => void;
+  /** Changes when the host wrote marks the grid shows (an entity tab flagging a pivot value): the grid reads again. */
+  reloadToken?: number;
   /** The most rows paging loads (the backend counts to one million); a smaller number is for tests. */
   maxLoaded?: number;
 }
@@ -162,7 +164,7 @@ type Dialog =
   | { kind: "newtag"; rows: RowRef[] }
   | { kind: "review"; accept: boolean; rows: EventRow[] };
 
-export default function EventsView({ entity, chip, onClearChip, onRangeChange, onQueryChange, maxLoaded = LOAD_MAX }: EventsViewProps) {
+export default function EventsView({ entity, chip, onClearChip, onRangeChange, onQueryChange, reloadToken, maxLoaded = LOAD_MAX }: EventsViewProps) {
   const nav = useNav();
   const refreshBadges = useRefreshBadges();
   const scope: EntityRef | undefined = entity ?? chip;
@@ -364,6 +366,14 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
     },
     [refreshBadges, loadTags, reload],
   );
+  // The host asks for a re-read (not on mount: the first run loads).
+  const seenToken = useRef(reloadToken);
+  useEffect(() => {
+    if (seenToken.current === reloadToken) return;
+    seenToken.current = reloadToken;
+    setDetailVersion((v) => v + 1);
+    void reload();
+  }, [reloadToken, reload]);
   const attempt = useCallback(
     async <T,>(job: () => Promise<T>, message: string | ((done: T) => string)) => {
       try {

@@ -2,7 +2,7 @@
 // account, ASN, device, session) opens its tab, filters, and flags every event with that value (a standing flag); any
 // other cell flags, tags, notes or adds to the timeline the event, or the ticked events when it is one of them.
 // Write items are disabled, with the reason as their title, in a read-only case.
-import type { EntityArg, EventField, EventRow, FlagLevel, RowRef, TagInfo, ValueKind } from "../api";
+import type { EntityArg, EventField, EventRow, FlagLevel, PivotOf, RowRef, TagInfo, ValueKind } from "../api";
 import type { MenuItem } from "../grid/CellMenu";
 import type { EntityRef } from "../shell/tabs";
 import { COLUMN_BY_ID, deviceKey, filterable } from "../events/columns";
@@ -102,12 +102,19 @@ function isTabEntity(spec: ValueSpec, entity: EntityRef | undefined): boolean {
   return entity !== undefined && kind[spec.kind] === entity.kind && spec.value.trim().toLowerCase() === entity.value.trim().toLowerCase();
 }
 
-/** `Flag every event from this IP in this session (incl. later imports)`, and the three choices under it. */
-function valueFlagItem(spec: ValueSpec, ctx: RowMenuContext): MenuItem {
+/** What a value-flag menu needs: the tab it is in, why writes are off, and the flag action. */
+export type ValueMenuContext = Pick<RowMenuContext, "entity" | "readOnly"> & { act: Pick<RowMenuActions, "flagValue"> };
+
+/**
+ * `Flag every event from this IP in this session (incl. later imports)`, and the three choices under it. `mode` "auto"
+ * (the events grid) limits another value to the tab's events; "case" and "entity" (a pivot row) choose the scope.
+ */
+function valueFlagItem(spec: ValueSpec, ctx: ValueMenuContext, mode: "auto" | "case" | "entity" = "auto"): MenuItem {
   // Another value in an entity tab is limited to the tab's events; the tab's own value is not (same events either way).
-  const entity = ctx.entity && !isTabEntity(spec, ctx.entity) ? ctx.entity : undefined;
+  const entity =
+    mode === "case" ? undefined : mode === "entity" ? ctx.entity : ctx.entity && !isTabEntity(spec, ctx.entity) ? ctx.entity : undefined;
   const scope: EntityArg | null = entity ? { kind: entity.kind, value: entity.value } : null;
-  const where = entity ? ` in this ${TAB_NOUN[entity.kind]}` : "";
+  const where = entity ? ` in this ${TAB_NOUN[entity.kind]}` : mode === "case" ? " in the whole case" : "";
   const word = spec.kind === "ip" || spec.kind === "ip_prefix" ? "from" : spec.kind === "asn" ? "in" : "with";
   const label = `Flag every event ${word} ${spec.noun}${where} (incl. later imports)`;
   const set = (level: FlagLevel | null) => () => ctx.act.flagValue(spec.kind, spec.value, scope, level, spec.what);
@@ -165,4 +172,41 @@ export function rowMenu(cell: RowMenuCell, ctx: RowMenuContext): MenuItem[] {
   const specs = valueSpecs(column, row);
   if (specs.length > 0) return [...out, ...specs.map((s) => valueFlagItem(s, ctx))];
   return [...out, ...rowActionItems(targetsOf(cell), ctx)];
+}
+
+/** The full value in the pivot menus and confirmations: nothing is shortened, only made safe to show. */
+const PIVOT_KIND: Partial<Record<PivotOf, { kind: ValueKind; noun: string; indicator: boolean }>> = {
+  accounts: { kind: "account", noun: "account", indicator: true },
+  ips: { kind: "ip", noun: "IP", indicator: true },
+  devices: { kind: "device", noun: "device", indicator: false },
+  sessions: { kind: "session", noun: "Entra session", indicator: false },
+};
+
+/** Whether the rows of this pivot table can be flagged (the device-changes list is events, not values). */
+export const pivotFlaggable = (of: PivotOf): boolean => PIVOT_KIND[of] !== undefined;
+
+/**
+ * The menu of a pivot table row: flag every event with the row's value, in the whole case or only in the tab's own
+ * events. Empty for the device-changes list.
+ */
+export function pivotMenu(of: PivotOf, value: string, ctx: ValueMenuContext): MenuItem[] {
+  const k = PIVOT_KIND[of];
+  if (!k || value === "") return [];
+  const shown = displaySafe(value);
+  const spec: ValueSpec = { kind: k.kind, value, noun: `${k.noun} ${shown}`, what: `${k.noun} ${shown}`, indicator: k.indicator };
+  return [valueFlagItem(spec, ctx, "case"), ...(ctx.entity ? [valueFlagItem(spec, ctx, "entity")] : [])];
+}
+
+const TAB_WORD: Record<EntityArg["kind"], string> = { account: "user", ip: "IP", device: "device", session: "session" };
+
+/** The confirmation after a value flag: what was flagged, where, and the indicator it made. */
+export function flagValueMessage(
+  what: string,
+  scope: EntityArg | null,
+  level: FlagLevel | null,
+  indicatorNote: string,
+): string {
+  const where = scope ? ` in this ${TAB_WORD[scope.kind]}` : "";
+  if (level === null) return `Cleared the flag on ${what}${where}; flags set on single events stay`;
+  return `Flagged every event with ${what}${where} ${level}, including later imports${indicatorNote}`;
 }

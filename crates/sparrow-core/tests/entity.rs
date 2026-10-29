@@ -6,6 +6,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use serde_json::json;
 use sparrow_core::Case;
 use sparrow_core::Error;
+use sparrow_core::case::actor::Actor;
 use sparrow_core::case::entity::{
     self, PIVOT_DEFAULT_LIMIT, PIVOT_MAX_LIMIT, PivotOf, PivotPage, PivotRow,
 };
@@ -1066,4 +1067,139 @@ fn entity_timing_on_kept_case() {
             )
         });
     }
+}
+
+/// (level, pending, scope) of a row's flag.
+type FlagText = (String, bool, String);
+
+fn flags_of(rows: &[PivotRow]) -> Vec<(String, Option<FlagText>)> {
+    rows.iter()
+        .map(|r| {
+            (
+                r.value.clone(),
+                r.flag
+                    .as_ref()
+                    .map(|f| (f.level.clone(), f.pending, f.scope.clone())),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn pivot_rows_carry_the_standing_flag_of_their_value() {
+    use sparrow_core::case::marks::{FlagLevel, ValueKind, flag_value};
+    let case = fixture();
+    let analyst = Actor::analyst("carlos").unwrap();
+    let agent = Actor::agent("triage", Some("carlos")).unwrap();
+    let jdoe = account(JDOE);
+    let flag = |a: &Actor, k, v: &str, scope: Option<&Entity>, l| {
+        flag_value(case.conn(), a, k, v, scope, l).unwrap();
+    };
+    let ips = |e: &Entity| {
+        flags_of(
+            &entity::pivot(case.conn(), e, PivotOf::Ips, None, None, None)
+                .unwrap()
+                .rows,
+        )
+    };
+    let none = |v: &str| (v.to_string(), None);
+
+    // No flags: every row has none.
+    assert!(ips(&jdoe).iter().all(|(_, f)| f.is_none()));
+
+    // An analyst's case-wide Suspicious, then an agent's pending Malicious scoped to this account on the same IP:
+    // malicious wins, it is pending, and it is the tab's own.
+    flag(
+        &analyst,
+        ValueKind::Ip,
+        "203.0.113.10",
+        None,
+        Some(FlagLevel::Suspicious),
+    );
+    flag(
+        &agent,
+        ValueKind::Ip,
+        "203.0.113.10",
+        Some(&jdoe),
+        Some(FlagLevel::Malicious),
+    );
+    // An agent's case-wide Suspicious: pending, case.
+    flag(
+        &agent,
+        ValueKind::Ip,
+        "198.51.100.7",
+        None,
+        Some(FlagLevel::Suspicious),
+    );
+    // A flag scoped to another account does not cover this tab's events.
+    let other = account("other@contoso.example");
+    flag(
+        &analyst,
+        ValueKind::Ip,
+        "192.0.2.99",
+        Some(&other),
+        Some(FlagLevel::Malicious),
+    );
+    assert_eq!(
+        ips(&jdoe),
+        [
+            (
+                "198.51.100.7".to_string(),
+                Some(("suspicious".into(), true, "case".into()))
+            ),
+            (
+                "203.0.113.10".to_string(),
+                Some(("malicious".into(), true, "entity".into()))
+            ),
+            none("192.0.2.99"),
+        ]
+    );
+
+    // A confirmed flag at the level beats a pending one: not pending.
+    flag(
+        &analyst,
+        ValueKind::Ip,
+        "198.51.100.7",
+        None,
+        Some(FlagLevel::Suspicious),
+    );
+    assert_eq!(
+        ips(&jdoe)[0],
+        (
+            "198.51.100.7".to_string(),
+            Some(("suspicious".into(), false, "case".into()))
+        )
+    );
+
+    // Each pivot reads its own kind; a cleared flag is gone.
+    flag(
+        &analyst,
+        ValueKind::Device,
+        "d1",
+        None,
+        Some(FlagLevel::Malicious),
+    );
+    flag(
+        &analyst,
+        ValueKind::Session,
+        "s1",
+        None,
+        Some(FlagLevel::Suspicious),
+    );
+    flag(&analyst, ValueKind::Session, "s1", None, None);
+    let of = |of| {
+        flags_of(
+            &entity::pivot(case.conn(), &jdoe, of, None, None, None)
+                .unwrap()
+                .rows,
+        )
+    };
+    assert_eq!(
+        of(PivotOf::Devices),
+        [(
+            "d1".to_string(),
+            Some(("malicious".into(), false, "case".into()))
+        )]
+    );
+    assert!(of(PivotOf::Sessions).iter().all(|(_, f)| f.is_none()));
 }

@@ -7,6 +7,7 @@ import {
   entityFindings,
   entityPivot,
   entitySummary,
+  marksFlagValue,
   isCmdError,
   type EntityKind,
   type EventQuery,
@@ -18,7 +19,8 @@ import {
 } from "../api";
 import { isoSeconds } from "../events/columns";
 import Icon, { type IconName } from "../ui/Icon";
-import EventsView from "../events/EventsView";
+import EventsView, { indicatorNote } from "../events/EventsView";
+import { flagValueMessage, pivotMenu, type ValueMenuContext } from "../marks/rowMenu";
 import { useNav, useRefreshBadges, useWriteBlocked } from "../shell/nav";
 import type { EntityRef } from "../shell/tabs";
 import { displaySafe } from "../text";
@@ -63,6 +65,8 @@ export default function EntityTab({ entity }: EntityTabProps) {
   // The query and count the dialog was opened with: what it asks to add is what it says.
   const [adding, setAdding] = useState<{ query: EventQuery; count: number | null } | null>(null);
   const token = useRef(0);
+  // Bumped after a pivot flag: the tiles, pivots and findings are read again, and the grid with its query.
+  const [reloadN, setReloadN] = useState(0);
 
   // A new range: the old tiles, pivots and findings no longer describe it, so they show as loading until each answers.
   const onRangeChange = useCallback((from?: string, to?: string) => {
@@ -98,7 +102,7 @@ export default function EntityTab({ entity }: EntityTabProps) {
         (e: unknown) => live() && setData((d) => ({ ...d, pivotErrors: { ...d.pivotErrors, [of]: errorText(e) } })),
       );
     }
-  }, [kind, value, from, to]);
+  }, [kind, value, from, to, reloadN]);
 
   const copy = async () => {
     try {
@@ -107,6 +111,23 @@ export default function EntityTab({ entity }: EntityTabProps) {
     } catch {
       setNotice("Could not copy to the clipboard");
     }
+  };
+
+  const flagContext: ValueMenuContext = {
+    entity,
+    readOnly: writeBlocked,
+    act: {
+      flagValue: (k, v, scope, level, what) => {
+        marksFlagValue(k, v, scope, level).then(
+          (done) => {
+            setNotice(flagValueMessage(what, scope, level, indicatorNote(what, done.indicators)));
+            refreshBadges();
+            setReloadN((n) => n + 1);
+          },
+          (e: unknown) => setData((d) => ({ ...d, error: errorText(e) })),
+        );
+      },
+    },
   };
 
   const noQuery = current.query === null || current.count === 0;
@@ -158,6 +179,8 @@ export default function EntityTab({ entity }: EntityTabProps) {
             page={data.pivots[of] ?? null}
             error={data.pivotErrors[of]}
             onOpen={(e) => nav?.openEntity(e)}
+            menu={(r) => pivotMenu(of, r.value, flagContext)}
+            tabNoun={KIND_NAME[kind].toLowerCase()}
           />
         ))}
         <section className="entity-pivot entity-findings card" aria-label="Findings">
@@ -185,7 +208,7 @@ export default function EntityTab({ entity }: EntityTabProps) {
           )}
         </section>
       </div>
-      <EventsView entity={entity} onRangeChange={onRangeChange} onQueryChange={onQueryChange} />
+      <EventsView entity={entity} reloadToken={reloadN} onRangeChange={onRangeChange} onQueryChange={onQueryChange} />
       {adding && (
         <AddToTimelineDialog
           query={adding.query}

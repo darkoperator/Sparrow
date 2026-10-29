@@ -799,7 +799,17 @@ export interface PivotRow {
   first_seen: string;
   last_seen: string;
   is_new: boolean;
+  /** The standing flag on the value that covers this tab's events (case-wide, or made inside this tab); null if none. */
+  flag: PivotFlag | null;
   extra: Record<string, unknown>;
+}
+
+/** `case::entity::PivotFlag`: the strongest active flag on a pivot row's value. `pending` is an agent's, unreviewed. */
+export interface PivotFlag {
+  level: FlagLevel;
+  pending: boolean;
+  /** `case` when a case-wide flag has that level, else `entity` (made inside this tab). */
+  scope: "case" | "entity";
 }
 
 /** `case::entity::PivotPage`: the first `rows` of `total`. */

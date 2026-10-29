@@ -20,6 +20,7 @@ import type {
   FlagLevel,
   Histogram,
   Note,
+  PivotFlag,
   PivotOf,
   PivotPage,
   RowRef,
@@ -447,7 +448,19 @@ export function eventHandlers(deps: EventDeps): Record<string, (a: Args) => unkn
     const { from, to } = range(a);
     if (outside(fx.entitySummary(e.kind), from, to)) return { rows: [], total: 0 };
     const page = fx.entityPivots()[of];
-    return { rows: page.rows.slice(0, Math.min(limit, 5000)), total: page.total };
+    const kind = ({ accounts: "account", ips: "ip", devices: "device", sessions: "session" } as Partial<Record<PivotOf, ValueKind>>)[of];
+    // The strongest standing flag on the row's value that is case-wide or made inside this tab (the mock's flags are all
+    // the analyst's, so none is pending).
+    const flagOf = (value: string): PivotFlag | null => {
+      const mine = valueFlags.filter(
+        (f) => f.kind === kind && lower(f.value) === lower(value) && (f.scope === null || (f.scope.kind === e.kind && lower(f.scope.value) === lower(e.value))),
+      );
+      const top = mine.reduce<FlagLevel | null>((m, f) => (rank(f.level) > rank(m) ? f.level : m), null);
+      if (top === null) return null;
+      return { level: top, pending: false, scope: mine.some((f) => f.level === top && f.scope === null) ? "case" : "entity" };
+    };
+    const rows = page.rows.slice(0, Math.min(limit, 5000)).map((r) => ({ ...r, flag: of === "device_changes" ? null : flagOf(r.value) }));
+    return { rows, total: page.total };
   };
 
   const entity_findings = (a: Args) => {

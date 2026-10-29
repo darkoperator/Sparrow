@@ -357,7 +357,8 @@ export function entitySummary(kind: EntityKind): EntitySummary {
 
 function checkPivotRow(where: string, r: unknown): PivotRow {
   need(where, r, ["value", "label", "count", "first_seen", "last_seen", "is_new", "extra"]);
-  return r as unknown as PivotRow;
+  // The recordings predate the row's `flag`; none of the synthetic case's values is flagged.
+  return { flag: null, ...(r as object) } as unknown as PivotRow;
 }
 
 /**
@@ -388,6 +389,7 @@ export function entityPivots(): Record<PivotOf, PivotPage> {
           first_seen: at,
           last_seen: at,
           is_new: false,
+          flag: null,
           extra: { source_table: "entra_audit", record_key: "mock-device-change-1", actor: "admin@contoso.example", result: "Succeeded", target: "FRANCES.ROURKE-LAPTOP" },
         },
         {
@@ -397,6 +399,7 @@ export function entityPivots(): Record<PivotOf, PivotPage> {
           first_seen: "2026-08-20T09:30:00.000000Z",
           last_seen: "2026-08-20T09:30:00.000000Z",
           is_new: false,
+          flag: null,
           extra: { source_table: "entra_audit", record_key: "mock-device-change-2", actor: "admin@contoso.example", result: "Succeeded", target: "FRANCES.ROURKE-LAPTOP" },
         },
       ],

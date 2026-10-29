@@ -1,8 +1,10 @@
 // One pivot table of an entity tab: the values the entity's events carry, with a count and when they were first and last
 // seen. A row opens that value's own tab. The device-changes table is a list of directory events, not values, so its
 // rows do not open anything.
-import type { EntityKind, PivotOf, PivotPage, PivotRow } from "../api";
+import { useState } from "react";
+import type { EntityKind, PivotFlag, PivotOf, PivotPage, PivotRow } from "../api";
 import { isoSeconds } from "../events/columns";
+import CellMenu, { type MenuItem } from "../grid/CellMenu";
 import type { EntityRef } from "../shell/tabs";
 import { shortValue } from "../shell/tabs";
 import { displaySafe } from "../text";
@@ -74,9 +76,33 @@ interface Props {
   page: PivotPage | null;
   error?: string | null;
   onOpen: (e: EntityRef) => void;
+  /** The items of a row's context menu (right-click, the menu key or Shift+F10); none: the rows have no menu. */
+  menu?: (row: PivotRow) => MenuItem[];
+  /** The noun the tab's own events are named by in a flag's hover ("IP", "user"). */
+  tabNoun?: string;
 }
 
-export default function PivotTable({ of, page, error, onOpen }: Props) {
+/** The flag pill's text and hover: what level, whether an agent's unreviewed one, and whom it covers. */
+export function flagPill(f: PivotFlag, tabNoun = "tab"): { text: string; title: string } {
+  const level = f.level === "malicious" ? "Malicious" : "Suspicious";
+  const where = f.scope === "case" ? "every event in the case" : `only the events of this ${tabNoun}`;
+  return {
+    text: f.pending ? `${level} · agent` : level,
+    title: `${level} flag on this value for ${where}${f.pending ? "; set by an agent, not yet reviewed" : ""}`,
+  };
+}
+
+/** A menu opened on one row: the items are built when it opens, so a reload under it cannot change what they act on. */
+interface Open {
+  x: number;
+  y: number;
+  items: MenuItem[];
+  /** The row that opened it: the focus goes back there when the menu closes. */
+  opener: HTMLElement;
+}
+
+export default function PivotTable({ of, page, error, onOpen, menu, tabNoun }: Props) {
+  const [open, setOpen] = useState<Open | null>(null);
   const title = PIVOT_TITLE[of];
   const opens = PIVOT_OPENS[of];
   const cols = COLS[of];
@@ -111,20 +137,34 @@ export default function PivotTable({ of, page, error, onOpen }: Props) {
             </thead>
             <tbody>
               {page.rows.map((r, i) => {
-                const open = opens ? () => onOpen({ kind: opens, value: r.value }) : undefined;
+                const go = opens ? () => onOpen({ kind: opens, value: r.value }) : undefined;
+                const items = menu ? menu(r) : [];
+                const pill = r.flag ? flagPill(r.flag, tabNoun) : null;
                 return (
                   <tr
                     key={`${r.value}#${i}`}
-                    className={open ? "entity-pivot-row" : undefined}
-                    tabIndex={open ? 0 : undefined}
-                    aria-label={open ? `Open ${opens} ${displaySafe(r.value)}` : undefined}
-                    onClick={open}
+                    className={go ? "entity-pivot-row" : undefined}
+                    tabIndex={go ? 0 : undefined}
+                    aria-label={go ? `Open ${opens} ${displaySafe(r.value)}` : undefined}
+                    onClick={go}
+                    onContextMenu={
+                      items.length > 0
+                        ? (e) => {
+                            e.preventDefault();
+                            setOpen({ x: e.clientX, y: e.clientY, items, opener: e.currentTarget });
+                          }
+                        : undefined
+                    }
                     onKeyDown={
-                      open
+                      go
                         ? (e) => {
                             if (e.key === "Enter" || e.key === " ") {
                               e.preventDefault();
-                              open();
+                              go();
+                            } else if (items.length > 0 && (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey))) {
+                              e.preventDefault();
+                              const b = e.currentTarget.getBoundingClientRect();
+                              setOpen({ x: b.left + 24, y: b.bottom, items, opener: e.currentTarget });
                             }
                           }
                         : undefined
@@ -132,8 +172,19 @@ export default function PivotTable({ of, page, error, onOpen }: Props) {
                   >
                     {cols.map((c, ci) => (
                       <td key={c.label} className={MONO_COLS.has(c.label) ? "mono" : undefined} title={displaySafe(c.cell(r))}>
-                        {displaySafe(c.cell(r))}
-                        {ci === 0 && r.is_new && <span className="entity-new pill pill-new">new</span>}
+                        {ci === 0 && (r.flag || r.is_new) ? (
+                          <span className="entity-cellwrap">
+                            <span className="entity-val">{displaySafe(c.cell(r))}</span>
+                            {r.is_new && <span className="entity-new pill pill-new">new</span>}
+                            {pill && r.flag && (
+                              <span className={`entity-flag pill ${r.flag.level === "malicious" ? "pill-mal" : "pill-sus"}`} title={pill.title}>
+                                {pill.text}
+                              </span>
+                            )}
+                          </span>
+                        ) : (
+                          displaySafe(c.cell(r))
+                        )}
                       </td>
                     ))}
                     <td className="entity-count">
@@ -152,6 +203,17 @@ export default function PivotTable({ of, page, error, onOpen }: Props) {
             </tbody>
           </table>
         </div>
+      )}
+      {open && (
+        <CellMenu
+          x={open.x}
+          y={open.y}
+          items={open.items}
+          onClose={() => {
+            open.opener.focus();
+            setOpen(null);
+          }}
+        />
       )}
     </section>
   );

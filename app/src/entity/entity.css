@@ -69,3 +69,8 @@
 .entity-sev { padding: 0 8px; border-radius: 999px; background: var(--sus-pill); color: var(--sus); font-size: 10px; font-weight: 700; }
 .entity-sev-high, .entity-sev-critical { background: var(--mal-pill); color: var(--mal); }
 .entity-sev-info, .entity-sev-low { background: var(--raised); color: var(--muted); }
+
+.entity-flag { margin-left: 6px; }
+.entity-cellwrap { display: flex; align-items: center; min-width: 0; }
+.entity-val { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.entity-cellwrap .pill { flex: none; }
