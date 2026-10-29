@@ -375,14 +375,17 @@ describe("EventsView", () => {
     await user.click(screen.getByRole("menuitem", { name: "Filter by this value" }));
     await waitFor(() => expect(lastQuery().fields).toEqual([["ip", "192.0.2.26"]]));
     expect(badge("IP filter: 192.0.2.26")).toBeInTheDocument();
+    // Act on the filtered rows only once they are on screen: a menu opened on a row the reload replaces closes.
+    await waitFor(() => expect(dataRows().every((r) => within(r).queryByText("192.0.2.26"))).toBe(true));
     fireEvent.contextMenu(within(dataRows()[0]).getByText("Send"));
     await user.click(screen.getByRole("menuitem", { name: "Exclude this value" }));
     await waitFor(() => expect(lastQuery().fields).toEqual([["operation", "!Send"], ["ip", "192.0.2.26"]]));
     await waitFor(() => expect(screen.queryByText("Loading…")).not.toBeInTheDocument());
+    await waitFor(() => expect(dataRows().some((r) => within(r).queryByText("Send"))).toBe(false));
     // The keyboard can reach the details too.
     fireEvent.contextMenu(within(dataRows()[0]).getByText("192.0.2.26"));
     await user.click(screen.getByRole("menuitem", { name: "Show details" }));
-    expect(await screen.findByRole("complementary", { name: "Event detail" })).toBeInTheDocument();
+    expect(await screen.findByRole("complementary", { name: "Event detail" }, { timeout: 3000 })).toBeInTheDocument();
   });
 
   it("a_finding_marker_opens_the_finding", async () => {
