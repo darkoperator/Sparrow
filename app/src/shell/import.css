@@ -1,0 +1,50 @@
+/* Import from the window: a modal dialog over a scrim. Tokens only. */
+.import-scrim { position: fixed; inset: 0; z-index: 40; display: flex; align-items: flex-start; justify-content: center; padding: 8vh 16px 16px; box-sizing: border-box; background: var(--scrim); overflow-y: auto; }
+.import-dialog { display: flex; flex-direction: column; gap: 12px; box-sizing: border-box; width: min(720px, 100%); max-height: 84vh; padding: 18px 20px; overflow-y: auto; border-color: var(--line-strong); box-shadow: var(--shadow-pop); }
+.import-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.import-head h3 { margin: 0; font-size: 15px; }
+.import-x { padding: 2px 6px; }
+.import-hint { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.import-pick { display: flex; gap: 12px; align-items: center; }
+
+.import-preview { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.import-dialog .import-summary { margin: 0; padding: 0; color: var(--text-2); font-size: 12px; font-weight: 600; }
+.import-empty, .import-note { margin: 0; color: var(--sus); font-size: 12px; }
+.import-collection { min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.import-collection-head { display: flex; gap: 8px; align-items: center; min-width: 0; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.import-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); font-size: 11px; }
+.import-files { max-height: 240px; overflow-y: auto; }
+.import-file { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1.2fr) 64px auto; gap: 8px; align-items: center; padding: 4px 10px; border-bottom: 1px solid var(--line); font-size: 11px; }
+.import-file:last-child { border-bottom: 0; }
+.import-file-name, .import-file-source { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.import-file-source { color: var(--muted); }
+.import-file-size { color: var(--faint); text-align: right; }
+.import-collection > .meta { margin: 0; padding: 6px 10px; }
+
+.import-options { display: flex; flex-direction: column; gap: 10px; }
+.import-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.import-field select { max-width: 360px; }
+.import-target { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.import-target .import-path { flex: 1; }
+.import-check { display: flex; gap: 6px; align-items: center; color: var(--text-2); font-size: 12px; }
+
+.import-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+.import-running { display: flex; flex-direction: column; gap: 10px; }
+.import-dialog .import-stage { margin: 0; padding: 0; color: var(--text); font-size: 13px; font-weight: 600; }
+.import-current { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
+.import-bar { height: 6px; border-radius: 999px; background: var(--raised-2); overflow: hidden; }
+.import-bar > span { display: block; height: 100%; background: var(--accent); transition: width 0.2s; }
+
+.import-result { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.import-dialog .import-verdict { margin: 0; padding: 8px 12px; border-radius: 6px; font-size: 13px; font-weight: 600; }
+.import-verdict-ok { background: var(--ok-bg); color: var(--ok); }
+.import-verdict-warn { background: var(--sus-bg); color: var(--sus); }
+.import-sources { width: 100%; font-size: 12px; }
+.import-sources caption { padding-bottom: 4px; text-align: left; }
+.import-sources td { padding: 3px 6px; }
+.import-num { text-align: right; white-space: nowrap; }
+.import-notes { display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto; font-size: 11px; overflow-wrap: anywhere; }
+.import-notes ul { margin: 2px 0 0; padding-left: 18px; color: var(--text-2); font-family: var(--font-ui); }
+.import-result h4 { margin: 0 0 4px; }
+.import-detect { margin: 0; color: var(--text-2); font-size: 12px; }

@@ -10,6 +10,7 @@ pub mod events;
 pub mod export;
 pub mod highlights;
 pub mod indicators;
+pub mod ingest;
 pub mod marks;
 pub mod review;
 pub mod share;

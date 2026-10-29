@@ -470,6 +470,7 @@ fn findings_fall_back_when_the_sibling_header_failed() {
         &IngestOptions {
             date_order: None,
             max_file_bytes: 1024,
+            ..IngestOptions::default()
         },
     )
     .unwrap();

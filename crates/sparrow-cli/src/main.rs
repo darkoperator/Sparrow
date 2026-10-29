@@ -933,6 +933,7 @@ fn cmd_ingest(
     let opts = IngestOptions {
         date_order,
         max_file_bytes: max_file_size,
+        ..IngestOptions::default()
     };
     use sparrow_core::ingest::timing;
     let t_discover = timing::span("cli: discover collections");

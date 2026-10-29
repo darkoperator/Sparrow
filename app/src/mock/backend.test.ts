@@ -182,6 +182,11 @@ const TABLE: { cmd: string; args?: Obj; check: (r: unknown) => void }[] = [
   { cmd: "sql_export_csv", args: { sql: "SELECT * FROM signins", path: "/o.csv", queryId: "e" }, check: (r) => { keys(r, ["rows", "capped"]); expect((r as Obj).rows).toBeGreaterThan(0); } },
   { cmd: "query_cancel", args: { queryId: "nothing-runs" }, check: (r) => expect(r).toBeNull() },
   { cmd: "indicators_active", check: (r) => arrOf(r, ["ioc_type", "value", "verdict"]) },
+  { cmd: "ingest_discover", args: { path: "/evidence/run" }, check: (r) => { keys(r, ["path", "collections", "recognised", "unrecognised", "too_large", "unreadable", "max_file_bytes"]); arrOf((r as Obj).collections, ["tool", "root", "tenant_hint", "started_hint", "files"]); } },
+  { cmd: "ingest_run", args: { path: "/evidence/run", target: "open", culture: null, detect: true, runId: "r-1" }, check: (r) => { keys(r, ["case_path", "cancelled", "report", "files_loaded", "error", "files_total", "rows_by_source", "file_notes", "not_loaded", "profile_error", "profile_warnings", "detect", "detect_error"]); expect((r as Obj).cancelled).toBe(false); arrOf((r as Obj).rows_by_source, ["source", "files", "rows"]); } },
+  { cmd: "ingest_cancel", args: { runId: "r-0" }, check: (r) => expect(r).toBeNull() },
+  { cmd: "ingest_unprofiled", check: (r) => expect(r).toEqual([]) },
+  { cmd: "ingest_profile", check: (r) => keys(r, ["profile_error", "profile_warnings", "detect", "detect_error"]) },
   { cmd: "share_export", args: { path: "/b.json" }, check: (r) => { keys(r, ["sha256", "items"]); expect((r as Obj).items).toBeGreaterThan(0); } },
   { cmd: "share_preview", args: { path: "/b.json" }, check: (r) => keys(r, ["sha256", "summary", "analyst", "exported_at", "items"]) },
   { cmd: "events_page", args: { query: Q, sort: null, offset: 0, limit: 10 }, check: (r) => { keys(r, ["rows", "offset", "total", "total_capped"]); const p = r as EventsPage; expect(p.rows.length).toBe(10); expect(p.total).toBe(fx.eventsList().length); arrOf(p.rows, EVENT_ROW_KEYS); } },
@@ -229,6 +234,44 @@ describe("every command, valid arguments", () => {
     }
     if (t.cmd === "share_import") args = { ...t.args, sha256: (await m.mockCall<{ sha256: string }>("share_preview", { path: "/b" })).sha256 };
     t.check(await m.mockCall(t.cmd, args));
+  });
+});
+
+describe("mock import", () => {
+  it("emits progress in order, and a cancel leaves the rest not loaded", async () => {
+    const m = await fresh();
+    await m.mockCall("case_open", { path: "/x.duckdb", allowUpgrade: false });
+    const seen: string[] = [];
+    const off = await m.mockOnIngestProgress((p) => seen.push(p.stage === "file" ? `file ${p.index}` : p.stage));
+    const run = m.mockCall<{ cancelled: boolean; files_loaded: number; not_loaded: unknown[]; detect: unknown }>("ingest_run", { path: "/evidence/run", target: "open", culture: null, detect: true, runId: "r-2" });
+    await new Promise((r) => setTimeout(r, 600));
+    await m.mockCall("ingest_cancel", { runId: "r-2" });
+    const r = await run;
+    off();
+    expect(seen.slice(0, 3)).toEqual(["discover", "collection", "file 1"]);
+    expect(seen.at(-1)).toBe("profile");
+    expect(r.cancelled).toBe(true);
+    expect(r.files_loaded).toBeLessThan(6);
+    expect(r.files_loaded + r.not_loaded.length).toBe(6);
+    expect(r.detect).toBeNull();
+  });
+
+  it("refuses a read-only case, a folder with nothing, and a second run at once", async () => {
+    const m = await fresh();
+    await m.mockCall("case_open", { path: "/readonly.duckdb", allowUpgrade: false });
+    await expect(m.mockCall("ingest_run", { path: "/evidence/run", target: "open", culture: null, detect: true, runId: "r-3" })).rejects.toMatchObject({ kind: "read_only" });
+    await expect(m.mockCall("ingest_run", { path: "/evidence/empty", target: { new_case: "/c.duckdb" }, culture: null, detect: true, runId: "r-3" })).rejects.toMatchObject({ kind: "invalid" });
+    expect((await m.mockCall<{ collections: unknown[] }>("ingest_discover", { path: "/evidence/empty" })).collections).toEqual([]);
+    const first = m.mockCall("ingest_run", { path: "/evidence/run", target: { new_case: "/c.duckdb" }, culture: null, detect: false, runId: "r-4" });
+    await new Promise((r) => setTimeout(r, 100));
+    await expect(m.mockCall("ingest_run", { path: "/evidence/run", target: { new_case: "/d.duckdb" }, culture: null, detect: false, runId: "r-5" })).rejects.toMatchObject({ message: "an import is already running" });
+    await m.mockCall("ingest_cancel", { runId: "r-4" });
+    await first;
+  });
+
+  it("the dialogs answer a folder and a save path", async () => {
+    const m = await fresh();
+    expect(m.mockOpen({ directory: true })).toBe("/mock/evidence/invictus-run");
   });
 });
 

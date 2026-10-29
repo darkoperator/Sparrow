@@ -12,12 +12,14 @@ interface Props {
   error: string | null;
   upgrade: UpgradePrompt | null;
   onOpen: (path: string) => void;
+  /** Make a new case from a collector output folder. */
+  onNewFromFolder: () => void;
   onConfirmUpgrade: () => void;
   onCancelUpgrade: () => void;
 }
 
 /** The screen with no case: pick a file, or one of the recent paths. */
-export default function OpenCase({ recent, error, upgrade, onOpen, onConfirmUpgrade, onCancelUpgrade }: Props) {
+export default function OpenCase({ recent, error, upgrade, onOpen, onNewFromFolder, onConfirmUpgrade, onCancelUpgrade }: Props) {
   const pick = async () => {
     const chosen = await open({
       multiple: false,
@@ -43,10 +45,16 @@ export default function OpenCase({ recent, error, upgrade, onOpen, onConfirmUpgr
           </div>
         ) : (
           <>
-            <button className="btn btn-primary" onClick={() => void pick()}>
-              <Icon name="plus" size={13} />
-              Open a case
-            </button>
+            <div className="open-actions">
+              <button className="btn btn-primary" onClick={() => void pick()}>
+                <Icon name="plus" size={13} />
+                Open a case
+              </button>
+              <button className="btn" onClick={onNewFromFolder}>
+                <Icon name="download" size={13} />
+                New case from a folder…
+              </button>
+            </div>
             {recent.length > 0 && (
               <>
                 <h3 className="label">Recent</h3>

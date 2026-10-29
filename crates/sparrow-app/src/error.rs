@@ -6,7 +6,7 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct CmdError {
     /// One of `not_found`, `invalid`, `decision`, `writer_busy`, `read_only`, `no_case`, `needs_upgrade`,
-    /// `needs_acknowledge`, `interrupted`, `internal`.
+    /// `needs_acknowledge`, `interrupted`, `busy`, `internal`.
     pub kind: &'static str,
     pub message: String,
 }

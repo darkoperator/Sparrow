@@ -1,6 +1,7 @@
 // The only caller of Tauri's `invoke`. Screens call the typed wrappers added here per command; the JSON shapes are
 // the Rust core's serde shapes unchanged. No logic lives in the frontend.
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 const CMD_ERROR_KINDS = [
   "not_found",
@@ -12,6 +13,7 @@ const CMD_ERROR_KINDS = [
   "needs_upgrade",
   "needs_acknowledge",
   "interrupted",
+  "busy",
   "internal",
 ] as const;
 
@@ -972,3 +974,117 @@ export const marksReview = (rows: RowRef[], accept: boolean) => call<AuditEntry[
 /** One note on each row (at most 200 rows); the audit rows come back in row order. */
 export const notesAddRows = (rows: RowRef[], text: string) => call<AuditEntry[]>("notes_add_rows", { rows, text });
 export const timelineAddEvents = (args: AddEventsArgs) => call<EventsAdded>("timeline_add_events", { args });
+
+// ---------------------------------------------------------------- import (ingest from the window)
+
+/** `cmd::ingest::PreviewFile.status`. */
+export type PreviewFileStatus = "recognised" | "unrecognised" | "too_large" | "unreadable";
+
+export interface PreviewFile {
+  rel_path: string;
+  artifact_id: string | null;
+  derived: boolean;
+  size: number;
+  status: PreviewFileStatus;
+  error: string | null;
+}
+
+export interface PreviewCollection {
+  tool: "hawk" | "invictus" | "portal_export";
+  root: string;
+  tenant_hint: string | null;
+  started_hint: string | null;
+  files: PreviewFile[];
+}
+
+/** What discovery finds under a folder; nothing is written. */
+export interface DiscoveryPreview {
+  path: string;
+  collections: PreviewCollection[];
+  recognised: number;
+  unrecognised: number;
+  too_large: number;
+  unreadable: number;
+  max_file_bytes: number;
+}
+
+/** Into the open case, or a new case file at this path (which must not exist). */
+export type IngestTarget = "open" | { new_case: string };
+
+/** The `ingest-progress` event (serde tag `stage`). */
+export type IngestProgress =
+  | { stage: "discover" }
+  | { stage: "collection"; index: number; count: number; root: string }
+  | { stage: "file"; collection: number; collections: number; index: number; files: number; rel_path: string }
+  | { stage: "profile" }
+  | { stage: "detect" };
+
+/** `ingest::FileReport` (the fields the result card reads). */
+export interface IngestFileReport {
+  rel_path: string;
+  artifact_id: string | null;
+  status: string;
+  records_read: number;
+  records_loaded: number;
+  records_duplicate: number;
+  records_error: number;
+  records_collector_lost: number;
+  warnings: string[];
+}
+
+export interface IngestResult {
+  case_path: string;
+  /** Cancel (or closing the window) was asked for: detection did not run, and `not_loaded` lists any file left. */
+  cancelled: boolean;
+  /** A hard error stopped the import after the files in `report` had committed (they stay loaded and were profiled). */
+  error: string | null;
+  report: { collections: { collection_id: number; tool: string; root: string; files: IngestFileReport[] }[] };
+  files_loaded: number;
+  files_total: number;
+  rows_by_source: { source: string; files: number; rows: number }[];
+  /** Files that failed, had records rejected, or carry warnings. */
+  file_notes: { root: string; rel_path: string; status: string; notes: string[] }[];
+  not_loaded: { root: string; rel_path: string }[];
+  /** The profile step failed after the evidence loaded. */
+  profile_error: string | null;
+  profile_warnings: string[];
+  /** `null` when detection was skipped (asked, or cancelled) or failed (`detect_error`). */
+  detect: { findings_new: number; findings_updated: number; warnings: string[] } | null;
+  detect_error: string | null;
+}
+
+export const ingestDiscover = (path: string) => call<DiscoveryPreview>("ingest_discover", { path });
+/**
+ * Imports the folder as `sparrow ingest` does (profile, then detection unless `detect` is false), emitting
+ * `ingest-progress` (see `onIngestProgress`). `culture` is the CLI's `--culture`. While it runs the open case is held,
+ * so every other command waits. Refused (`read_only`) on a read-only case; `invalid` when a case file already exists
+ * at the new path or an import already runs.
+ */
+export const ingestRun = (path: string, target: IngestTarget, culture: string | null, detect: boolean, runId: string) =>
+  call<IngestResult>("ingest_run", { path, target, culture, detect, runId });
+/**
+ * Stops the import `runId` (the id `ingestRun` was given) after the file it is loading; the result says what was left.
+ * Safe before the run has started: the run then stops at its first check.
+ */
+export const ingestCancel = (runId: string) => call<null>("ingest_cancel", { runId });
+/** Collections an import loaded but never profiled (the process was killed mid-import): their ids. */
+export const ingestUnprofiled = () => call<number[]>("ingest_unprofiled");
+/** What `ingestProfile` did (the profile step and detection, as `sparrow profile`). */
+export interface ProfileRun {
+  profile_error: string | null;
+  profile_warnings: string[];
+  detect: { findings_new: number; findings_updated: number; warnings: string[] } | null;
+  detect_error: string | null;
+}
+/** "Run profile now": analyst-started; `read_only` on a read-only case. */
+export const ingestProfile = (runId: string) => call<ProfileRun>("ingest_profile", { runId });
+/** The window asked to close during an import: the backend finishes the current file and the profile, then closes. */
+export async function onIngestClosing(handler: () => void): Promise<() => void> {
+  if (__SPARROW_MOCK__) return (await import("./mock/backend")).mockOnIngestClosing(handler);
+  return listen("ingest-closing", () => handler());
+}
+/** Calls `handler` with each progress event until the returned function is called. */
+export async function onIngestProgress(handler: (p: IngestProgress) => void): Promise<() => void> {
+  if (__SPARROW_MOCK__) return (await import("./mock/backend")).mockOnIngestProgress(handler);
+  return listen<IngestProgress>("ingest-progress", (e) => handler(e.payload));
+}

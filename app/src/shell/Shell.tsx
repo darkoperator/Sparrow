@@ -5,6 +5,8 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
   caseClose,
   caseOpen,
+  ingestProfile,
+  ingestUnprofiled,
   isCmdError,
   reviewQueue,
   settingsGet,
@@ -18,10 +20,11 @@ import { HighlightsError, HighlightsProvider } from "../highlights/useHighlights
 import Tables, { type TableRequest } from "../tables/Tables";
 import ReviewQueue from "../review/ReviewQueue";
 import { displaySafe } from "../text";
-import { BrandMark } from "../ui/Icon";
+import Icon, { BrandMark } from "../ui/Icon";
 import AnalystPrompt from "./AnalystPrompt";
 import ExportMenu from "./ExportMenu";
 import { NavContext, RefreshBadgesContext, WriteBlockedContext, writeBlockedReason } from "./nav";
+import ImportDialog, { type ImportMode } from "./ImportDialog";
 import OpenCase, { type UpgradePrompt } from "./OpenCase";
 import ReadOnlyBanner from "./ReadOnlyBanner";
 import "./shell.css";
@@ -69,6 +72,9 @@ interface ShellProps {
 
 const TOAST_MS = 6000;
 
+/** The `inert` attribute (React 18's types do not know it): the subtree takes no focus and no clicks. */
+const inertWhen = (on: boolean): Record<string, string> => (on ? { inert: "" } : {});
+
 /** Up to two capitals for the analyst chip: the first letters of the first two words, or the first two letters. */
 function initials(name: string): string {
   const words = displaySafe(name).split(/[\s._-]+/).filter(Boolean);
@@ -93,6 +99,12 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
   const [tableReq, setTableReq] = useState<(TableRequest & { nonce: number }) | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [upgrade, setUpgrade] = useState<UpgradePrompt | null>(null);
+  // The import dialog, when open; `dataEpoch` remounts the screens after an import so each one loads the new data.
+  const [importMode, setImportMode] = useState<ImportMode | null>(null);
+  const [dataEpoch, setDataEpoch] = useState(0);
+  // Collections an import loaded but never profiled (it was killed): the banner offers to run the profile.
+  const [unprofiled, setUnprofiled] = useState(0);
+  const [profiling, setProfiling] = useState(false);
 
   const refreshSettings = useCallback(async () => {
     try {
@@ -139,6 +151,34 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
     };
   }, [caseId, activeKey, badgeTick]);
 
+  const readOnly = info?.read_only_reason !== null && info !== null;
+  useEffect(() => {
+    if (caseId === undefined || readOnly) return;
+    let live = true;
+    ingestUnprofiled().then(
+      (ids) => live && setUnprofiled(ids.length),
+      () => live && setUnprofiled(0),
+    );
+    return () => {
+      live = false;
+    };
+  }, [caseId, readOnly, dataEpoch]);
+
+  const profileNow = async () => {
+    setProfiling(true);
+    try {
+      const id = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `profile-${Date.now()}`;
+      const r = await ingestProfile(id);
+      setToast(r.profile_error !== null ? `The profile step failed: ${r.profile_error}` : "Profile finished");
+      setDataEpoch((n) => n + 1);
+      refreshBadges();
+    } catch (e) {
+      setError(isCmdError(e) ? e.message : String(e));
+    } finally {
+      setProfiling(false);
+    }
+  };
+
   const openCase = async (path: string, allowUpgrade = false) => {
     setError(null);
     setUpgrade(null);
@@ -176,23 +216,51 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
     setToast(null);
   };
 
+  const closeImport = async (changed: boolean) => {
+    const mode = importMode;
+    setImportMode(null);
+    // Into the open case: read it again (tenants, tabs) and remount every screen.
+    if (changed && mode === "open" && info) {
+      await openCase(info.path);
+      setDataEpoch((n) => n + 1);
+      refreshBadges();
+    }
+  };
+
   if (!info) {
     return (
+      <>
+      <div {...inertWhen(importMode !== null)}>
       <OpenCase
         recent={settings.recent}
         error={error}
         upgrade={upgrade}
         onOpen={(p) => void openCase(p)}
+        onNewFromFolder={() => setImportMode("new")}
         onConfirmUpgrade={() => upgrade && void openCase(upgrade.path, true)}
         onCancelUpgrade={() => {
           setUpgrade(null);
           setError(null);
         }}
       />
+      </div>
+      {importMode === "new" && (
+        <ImportDialog
+          mode="new"
+          onClose={() => setImportMode(null)}
+          onOpenCase={(p) => {
+            setImportMode(null);
+            void openCase(p);
+          }}
+        />
+      )}
+      </>
     );
   }
 
   const canWrite = info.read_only_reason === null && settings.analyst !== null;
+  // Importing needs a writable case; it does not need an analyst name (`sparrow ingest` has none).
+  const importBlocked = info.read_only_reason !== null ? `Read-only case: ${info.read_only_reason}` : null;
   const show = (t: FixedTab | EntityRef) => setTabs(showTab(tabs, t));
   const showAccount = (upn: string) => {
     setAccountFilter(upn);
@@ -255,6 +323,7 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
 
   return (
     <div className="shell">
+      <div {...inertWhen(importMode !== null || profiling)}>
       <header className="titlebar">
         <span className="brand">
           <BrandMark />
@@ -276,6 +345,15 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
             <span className="analyst-role"> · analyst</span>
           </span>
         )}
+        <button
+          className="btn btn-ghost"
+          disabled={importBlocked !== null}
+          title={importBlocked ?? "Add a collector output folder to this case"}
+          onClick={() => setImportMode("open")}
+        >
+          <Icon name="download" size={13} />
+          Import data…
+        </button>
         <ExportMenu />
         <button className="btn btn-ghost" onClick={() => void closeCase()}>
           Close case
@@ -289,6 +367,15 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
           ))}
         </ul>
       )}
+      {unprofiled > 0 && !readOnly && (
+        <div role="status" className="warnings profile-banner">
+          Some imported data was not profiled ({unprofiled === 1 ? "1 collection" : `${unprofiled} collections`}), so
+          derived views may be incomplete.{" "}
+          <button className="btn" disabled={profiling} onClick={() => void profileNow()}>
+            {profiling ? "Profiling…" : "Run profile now"}
+          </button>
+        </div>
+      )}
       {settings.analyst === null && <AnalystPrompt onSaved={setSettings} />}
       <TabStrip state={tabs} badges={badges} onShow={show} onClose={(key) => setTabs(closeTab(tabs, key))} />
       {toast && (
@@ -301,7 +388,7 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
           <NavContext.Provider value={{ openEntity, openTable, showInEvents, openFinding }}>
             <RefreshBadgesContext.Provider value={refreshBadges}>
             <WriteBlockedContext.Provider value={writeBlockedReason(info.read_only_reason, settings.analyst)}>
-            <main>
+            <main key={dataEpoch}>
               {screen !== "highlights" && <HighlightsError />}
               {body}
               {screens.events && (
@@ -320,6 +407,8 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
           </NavContext.Provider>
         </HighlightsProvider>
       </div>
+      </div>
+      {importMode === "open" && <ImportDialog mode="open" onClose={(changed) => void closeImport(changed)} />}
     </div>
   );
 }

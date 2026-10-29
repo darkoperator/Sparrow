@@ -29,6 +29,17 @@ pub struct AppState {
     pub cancelled: Mutex<VecDeque<(u64, String)>>,
     /// Bumped on every open and close; an [`ActiveQuery`] of another generation is never interrupted.
     pub generation: AtomicU64,
+    /// True while an import or a profile run holds the case (see `cmd::ingest`). Writes, reads that queued meanwhile
+    /// and case switches are refused `busy` instead of running after it.
+    pub importing: AtomicBool,
+}
+
+/// The refusal while an import runs.
+pub fn busy() -> CmdError {
+    CmdError::new(
+        "busy",
+        "an import is running; wait for it to finish (or cancel it) first",
+    )
 }
 
 pub struct ActiveQuery {
@@ -94,6 +105,9 @@ fn lock(state: &AppState) -> MutexGuard<'_, Option<OpenCase>> {
 /// The whole transition, recording the recent path included, holds the open-case lock, so overlapping opens and
 /// closes apply in one order and each response describes the case that was open when it returned.
 pub fn case_open(state: &AppState, path: &Path, allow_upgrade: bool) -> CmdResult<CaseInfo> {
+    if state.importing.load(Ordering::SeqCst) {
+        return Err(busy());
+    }
     // Requests already queued for the current case are void from now on, whichever gets the lock first.
     new_generation(state);
     let mut slot = lock(state);
@@ -381,6 +395,9 @@ pub fn query_cancel(state: &AppState, id: &str) -> CmdResult<()> {
 }
 
 pub fn case_close(state: &AppState) -> CmdResult<()> {
+    if state.importing.load(Ordering::SeqCst) {
+        return Err(busy());
+    }
     new_generation(state);
     let mut slot = lock(state);
     *slot = None;
@@ -406,7 +423,14 @@ fn locked_case<T>(
     f: impl FnOnce(&OpenCase, u64) -> CmdResult<T>,
 ) -> CmdResult<T> {
     let generation = ticket.0;
+    // Refused before waiting for a lock the import holds, so a request made during it fails at once.
+    if state.importing.load(Ordering::SeqCst) {
+        return Err(busy());
+    }
     let slot = lock(state);
+    if state.importing.load(Ordering::SeqCst) {
+        return Err(busy());
+    }
     if state.generation.load(Ordering::SeqCst) != generation {
         return Err(CmdError::new(
             "no_case",

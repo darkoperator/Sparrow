@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { caseInfo } from "../test/fixtures";
@@ -15,9 +15,20 @@ vi.mock("../api", async (orig) => ({
   indicatorsActive: vi.fn(async () => []),
   reviewQueue: vi.fn(async () => []),
   timelineList: vi.fn(async () => []),
+  ingestDiscover: vi.fn(),
+  ingestRun: vi.fn(),
+  ingestCancel: vi.fn(),
+  onIngestProgress: vi.fn(async () => () => {}),
+  onIngestClosing: vi.fn(async () => () => {}),
+  ingestUnprofiled: vi.fn(async () => []),
+  ingestProfile: vi.fn(),
 }));
 const dialogOpen = vi.fn();
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open: (...a: unknown[]) => dialogOpen(...a) }));
+const dialogSave = vi.fn();
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: (...a: unknown[]) => dialogOpen(...a),
+  save: (...a: unknown[]) => dialogSave(...a),
+}));
 // The review screen has its own tests; here it only has to know whether writes are enabled.
 vi.mock("../review/ReviewQueue", () => ({
   default: ({
@@ -101,6 +112,11 @@ beforeEach(() => {
   }
   for (const f of Object.values(m)) f.mockReset();
   dialogOpen.mockReset();
+  dialogSave.mockReset();
+  vi.mocked(api.ingestDiscover).mockReset();
+  vi.mocked(api.ingestRun).mockReset();
+  vi.mocked(api.ingestProfile).mockReset();
+  vi.mocked(api.ingestUnprofiled).mockReset().mockResolvedValue([]);
   m.settings.mockResolvedValue(withAnalyst);
   m.open.mockResolvedValue(info);
   m.close.mockResolvedValue(null);
@@ -747,5 +763,174 @@ describe("Shell", () => {
     expect(writeBlockedReason("old schema", null)).toBe("Read-only case: old schema");
     expect(writeBlockedReason(null, null)).toBe("The analyst name is not set: enter it to make changes");
     expect(writeBlockedReason(null, "dana")).toBeNull();
+  });
+});
+
+describe("Shell import", () => {
+  const preview: api.DiscoveryPreview = {
+    path: "/evidence/run-1",
+    collections: [
+      {
+        tool: "invictus",
+        root: "/evidence/run-1",
+        tenant_hint: null,
+        started_hint: null,
+        files: [{ rel_path: "SignInLogs.csv", artifact_id: "invictus.signins", derived: false, size: 10, status: "recognised", error: null }],
+      },
+    ],
+    recognised: 1,
+    unrecognised: 0,
+    too_large: 0,
+    unreadable: 0,
+    max_file_bytes: 1_073_741_824,
+  };
+  const result = (case_path: string): api.IngestResult => ({
+    case_path,
+    cancelled: false,
+    error: null,
+    report: { collections: [] },
+    files_loaded: 1,
+    files_total: 1,
+    rows_by_source: [{ source: "invictus.signins", files: 1, rows: 10 }],
+    file_notes: [],
+    not_loaded: [],
+    profile_error: null,
+    profile_warnings: [],
+    detect: { findings_new: 0, findings_updated: 0, warnings: [] },
+    detect_error: null,
+  });
+
+  it("a new case from a folder opens the case it made", async () => {
+    vi.mocked(api.ingestDiscover).mockResolvedValue(preview);
+    vi.mocked(api.ingestRun).mockResolvedValue(result("/cases/made.duckdb"));
+    dialogOpen.mockResolvedValue("/evidence/run-1");
+    dialogSave.mockResolvedValue("/cases/made.duckdb");
+    const user = userEvent.setup();
+    render(<Shell />);
+    await user.click(await screen.findByRole("button", { name: "New case from a folder…" }));
+    const dialog = await screen.findByRole("dialog", { name: "New case from a folder" });
+    await user.click(within(dialog).getByRole("button", { name: /^Choose a folder/ }));
+    await within(dialog).findByRole("region", { name: "Discovery" });
+    await user.click(within(dialog).getByRole("button", { name: "Choose where to save…" }));
+    await user.click(within(dialog).getByRole("button", { name: "Create the case and import" }));
+    expect(api.ingestRun).toHaveBeenCalledWith("/evidence/run-1", { new_case: "/cases/made.duckdb" }, null, true, expect.any(String));
+    expect(m.open).not.toHaveBeenCalled();
+    await user.click(await within(dialog).findByRole("button", { name: "Open the new case" }));
+    expect(m.open).toHaveBeenCalledWith("/cases/made.duckdb", false);
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(await screen.findByRole("button", { name: "Import data…" })).toBeInTheDocument();
+  });
+
+  it("closing the new-case dialog without importing opens nothing", async () => {
+    const user = userEvent.setup();
+    render(<Shell />);
+    await user.click(await screen.findByRole("button", { name: "New case from a folder…" }));
+    await user.click(await screen.findByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(m.open).not.toHaveBeenCalled();
+  });
+
+  it("importing into the open case reloads the case and every screen when the dialog closes", async () => {
+    vi.mocked(api.ingestDiscover).mockResolvedValue(preview);
+    vi.mocked(api.ingestRun).mockResolvedValue(result("/synthetic/case-a.duckdb"));
+    const mounts = vi.fn();
+    function Probe() {
+      useEffect(() => mounts(), []);
+      return <p>events probe</p>;
+    }
+    dialogOpen.mockResolvedValue("/synthetic/case-a.duckdb");
+    const user = userEvent.setup();
+    render(<Shell screens={{ events: () => <Probe /> }} />);
+    await user.click(await screen.findByRole("button", { name: "Open a case" }));
+    await screen.findByText("events probe");
+    expect(m.open).toHaveBeenCalledTimes(1);
+    expect(mounts).toHaveBeenCalledTimes(1);
+    const queueCalls = vi.mocked(api.reviewQueue).mock.calls.length;
+    dialogOpen.mockResolvedValue("/evidence/run-1");
+    await user.click(screen.getByRole("button", { name: "Import data…" }));
+    const dialog = await screen.findByRole("dialog", { name: "Import data into this case" });
+    await user.click(within(dialog).getByRole("button", { name: /^Choose a folder/ }));
+    await within(dialog).findByRole("region", { name: "Discovery" });
+    await user.click(within(dialog).getByRole("button", { name: "Import" }));
+    expect(api.ingestRun).toHaveBeenCalledWith("/evidence/run-1", "open", null, true, expect.any(String));
+    // Nothing reloads while the result is on screen.
+    await within(dialog).findByRole("region", { name: "Import result" });
+    expect(m.open).toHaveBeenCalledTimes(1);
+    await user.click(within(dialog).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(m.open).toHaveBeenCalledTimes(2));
+    expect(m.open).toHaveBeenLastCalledWith(info.path, false);
+    // The screens were remounted (each loads the new data) and the tab badges were counted again.
+    await waitFor(() => expect(mounts).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(vi.mocked(api.reviewQueue).mock.calls.length).toBeGreaterThan(queueCalls));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("closing the dialog without importing reloads nothing", async () => {
+    const user = await openViaDialog();
+    await user.click(screen.getByRole("button", { name: "Import data…" }));
+    await user.click(await screen.findByRole("button", { name: "Cancel" }));
+    expect(m.open).toHaveBeenCalledTimes(1);
+  });
+
+  it("a read-only case cannot import and the button says why", async () => {
+    const reason = "the audit chain is broken at seq 3: hash mismatch";
+    m.open.mockResolvedValue({ ...info, audit_ok: false, read_only_reason: reason });
+    await openViaDialog();
+    const button = screen.getByRole("button", { name: "Import data…" });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("title", `Read-only case: ${reason}`);
+  });
+
+  it("importing does not need the analyst name", async () => {
+    m.settings.mockResolvedValue({ analyst: null, recent: [] });
+    await openViaDialog();
+    expect(screen.getByRole("button", { name: "Import data…" })).toBeEnabled();
+  });
+
+  it("the shell behind an open import dialog is inert", async () => {
+    const user = await openViaDialog();
+    const titlebar = screen.getByRole("button", { name: "Import data…" }).closest("[inert]");
+    expect(titlebar).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Import data…" }));
+    const dialog = await screen.findByRole("dialog");
+    const background = screen.getByRole("button", { name: "Import data…", hidden: true }).closest("[inert]");
+    expect(background).not.toBeNull();
+    expect(background).toHaveAttribute("inert");
+    expect(background).not.toContainElement(dialog);
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "Import data…" }).closest("[inert]")).toBeNull();
+  });
+
+  it("the Open case screen is inert behind the new-case dialog", async () => {
+    const user = userEvent.setup();
+    render(<Shell />);
+    await user.click(await screen.findByRole("button", { name: "New case from a folder…" }));
+    const dialog = await screen.findByRole("dialog");
+    const open = screen.getByRole("button", { name: "Open a case", hidden: true });
+    expect(open.closest("[inert]")).not.toBeNull();
+    expect(open.closest("[inert]")).not.toContainElement(dialog);
+  });
+
+  it("offers to profile an import that was killed before its profile, and reloads after it", async () => {
+    vi.mocked(api.ingestUnprofiled).mockResolvedValueOnce([4]).mockResolvedValue([]);
+    vi.mocked(api.ingestProfile).mockResolvedValue({ profile_error: null, profile_warnings: [], detect: null, detect_error: null });
+    await openViaDialog();
+    const banner = await screen.findByText(/Some imported data was not profiled \(1 collection\)/);
+    expect(banner).toBeInTheDocument();
+    // Nothing is written on open by itself.
+    expect(api.ingestProfile).not.toHaveBeenCalled();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Run profile now" }));
+    expect(api.ingestProfile).toHaveBeenCalledWith(expect.any(String));
+    await waitFor(() => expect(screen.queryByText(/was not profiled/)).not.toBeInTheDocument());
+    expect(await screen.findByText("Profile finished")).toBeInTheDocument();
+  });
+
+  it("no profile banner on a read-only case, and it does not even ask", async () => {
+    vi.mocked(api.ingestUnprofiled).mockResolvedValue([4]);
+    m.open.mockResolvedValue({ ...info, audit_ok: false, read_only_reason: "broken chain" });
+    await openViaDialog();
+    expect(screen.queryByText(/was not profiled/)).not.toBeInTheDocument();
+    expect(api.ingestUnprofiled).not.toHaveBeenCalled();
   });
 });

@@ -23,6 +23,7 @@ use crate::{Case, Error, Result, VERSION};
 use duckdb::{Connection, OptionalExt, params};
 use serde::Serialize;
 use std::path::Path;
+use std::sync::Arc;
 
 pub const DEFAULT_MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 
@@ -71,10 +72,55 @@ fn record_collector_runs(case: &mut Case, collection_id: i64, root: &Path) -> Re
     Ok(())
 }
 
-#[derive(Debug, Clone)]
+/// What an ingest is about to do, for a caller that shows progress ([`IngestOptions::progress`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "stage", rename_all = "snake_case")]
+pub enum IngestProgress {
+    /// A collection is starting; `index` counts from 1 in ingest order (oldest first).
+    Collection {
+        index: usize,
+        count: usize,
+        root: String,
+    },
+    /// A file is about to be handled. `index` is the number of files of the collection finished so far plus one;
+    /// `files` is the number the collection lists.
+    File {
+        collection: usize,
+        collections: usize,
+        index: usize,
+        files: usize,
+        rel_path: String,
+    },
+}
+
+/// Called with each [`IngestProgress`], on the ingesting thread, so it must be quick.
+pub type ProgressFn = Arc<dyn Fn(&IngestProgress) + Send + Sync>;
+
+/// Asked before each collection and each file: true stops the ingest there. A file is never stopped midway (each
+/// commits on its own), so what was loaded stays loaded and the rest is not touched.
+pub type CancelFn = Arc<dyn Fn() -> bool + Send + Sync>;
+
+#[derive(Clone)]
 pub struct IngestOptions {
     pub date_order: Option<DateOrder>,
     pub max_file_bytes: u64,
+    pub progress: Option<ProgressFn>,
+    pub cancel: Option<CancelFn>,
+    /// When the writer was locked down (the review app's), leave it unlocked after the ingest for the caller's
+    /// profile and detection steps, which cannot run locked; the caller then calls [`restore_lock_down`].
+    pub keep_unlocked: bool,
+}
+
+impl std::fmt::Debug for IngestOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IngestOptions")
+            .field("date_order", &self.date_order)
+            .field("max_file_bytes", &self.max_file_bytes)
+            .field("progress", &self.progress.as_ref().map(|_| "<fn>"))
+            .field("cancel", &self.cancel.as_ref().map(|_| "<fn>"))
+            .field("keep_unlocked", &self.keep_unlocked)
+            .finish()
+    }
 }
 
 impl Default for IngestOptions {
@@ -82,7 +128,27 @@ impl Default for IngestOptions {
         IngestOptions {
             date_order: None,
             max_file_bytes: DEFAULT_MAX_FILE_BYTES,
+            progress: None,
+            cancel: None,
+            keep_unlocked: false,
         }
+    }
+}
+
+impl IngestOptions {
+    fn report(&self, p: impl FnOnce() -> IngestProgress) {
+        if let Some(f) = &self.progress {
+            f(&p());
+        }
+    }
+
+    /// Asks the cancel check now (for a caller that decides what to do after the ingest).
+    pub fn cancelled_now(&self) -> bool {
+        self.cancelled()
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancel.as_ref().is_some_and(|f| f())
     }
 }
 
@@ -214,10 +280,124 @@ pub fn ingest_collections(
     parsers: &ParserRegistry,
     opts: &IngestOptions,
 ) -> Result<IngestReport> {
+    let run = ingest_collections_partial(case, collections, parsers, opts)?;
+    match run.error {
+        Some(e) => Err(e),
+        None => Ok(run.report),
+    }
+}
+
+/// What an ingest did, including when it stopped early.
+#[derive(Debug)]
+pub struct IngestRun {
+    /// Every file handled before it stopped; each of them is committed.
+    pub report: IngestReport,
+    /// True when [`IngestOptions::cancel`] asked it to stop and some work was left.
+    pub stopped: bool,
+    /// The hard error that ended it (a database error, not a file that failed to parse), after the files in `report`
+    /// had committed.
+    pub error: Option<Error>,
+}
+
+/// [`ingest_collections`] that keeps what loaded when a hard error stops it: the files committed before the error are
+/// in the report and the error comes back beside them. `Err` only when nothing could start (the case is unusable, the
+/// writer could not be released, or the lock-down could not be put back).
+pub fn ingest_collections_partial(
+    case: &mut Case,
+    collections: &[DiscoveredCollection],
+    parsers: &ParserRegistry,
+    opts: &IngestOptions,
+) -> Result<IngestRun> {
     case.ensure_usable()?;
-    with_ingest_checkpointing(case, |case| {
-        ingest_collections_in_order(case, collections, parsers, opts)
-    })
+    // The review app locks its writer's configuration, which refuses the ingest's checkpoint setting: reopen the
+    // writer unlocked (the file is released and reopened by this very `Case`, never a second open) and lock it
+    // again afterwards, whatever the outcome.
+    let was_locked = case.is_locked_down()?;
+    if was_locked {
+        case.with_file_released(|_| Ok(()))?;
+    }
+    let out = with_ingest_checkpointing(case, |case| {
+        Ok(ingest_collections_in_order(
+            case,
+            collections,
+            parsers,
+            opts,
+        ))
+    });
+    if was_locked && !opts.keep_unlocked {
+        // The caller must not keep using a writer it cannot verify as locked: the error says so.
+        restore_lock_down(case)?;
+    }
+    out
+}
+
+/// Unlock a locked-down writer for a profile or detection run (the review app's "profile now"): the file is released
+/// and reopened by this very `Case`. Call [`restore_lock_down`] afterwards.
+pub fn release_lock_down(case: &mut Case) -> Result<()> {
+    if case.is_locked_down()? {
+        case.with_file_released(|_| Ok(()))?;
+    }
+    Ok(())
+}
+
+/// Lock the case's writer down again after an ingest, profile or detection run left it unlocked (see
+/// [`IngestOptions::keep_unlocked`]).
+pub fn restore_lock_down(case: &Case) -> Result<()> {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    if let Some(e) = fault::relock_fails(case) {
+        return Err(e);
+    }
+    case.lock_down()
+}
+
+/// Failure injection for tests: a file whose ingest fails hard, and a lock-down that cannot be put back, each keyed
+/// by the case file so parallel tests do not see each other's.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod fault {
+    use super::{Case, Error};
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    static FAIL_FILE: Mutex<Vec<(PathBuf, String)>> = Mutex::new(Vec::new());
+    static FAIL_RELOCK: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+    /// The ingest of `rel_path` into the case at `case_path` fails hard (once), after earlier files committed.
+    pub fn fail_file(case_path: PathBuf, rel_path: &str) {
+        FAIL_FILE
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push((case_path, rel_path.to_string()));
+    }
+
+    /// Putting the lock-down back after an ingest of the case at `case_path` fails (once).
+    pub fn fail_relock(case_path: PathBuf) {
+        FAIL_RELOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(case_path);
+    }
+
+    pub(super) fn file_fails(case: &Case, rel: &str) -> bool {
+        let Some(path) = case.path() else {
+            return false;
+        };
+        let mut v = FAIL_FILE.lock().unwrap_or_else(|p| p.into_inner());
+        match v.iter().position(|(p, r)| p == path && r == rel) {
+            Some(i) => {
+                v.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub(super) fn relock_fails(case: &Case) -> Option<Error> {
+        let path = case.path()?;
+        let mut v = FAIL_RELOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let i = v.iter().position(|p| p == path)?;
+        v.remove(i);
+        Some(Error::Invalid("injected: the lock-down failed".into()))
+    }
 }
 
 /// The highest `checkpoint_threshold` an ingest uses. DuckDB checkpoints automatically inside a COMMIT once the WAL
@@ -344,19 +524,61 @@ fn ingest_collections_in_order(
     collections: &[DiscoveredCollection],
     parsers: &ParserRegistry,
     opts: &IngestOptions,
-) -> Result<IngestReport> {
+) -> IngestRun {
     let mut order: Vec<usize> = (0..collections.len()).collect();
     order.sort_by_cached_key(|&i| {
         let dc = &collections[i];
         (started_at(dc).map(|t| t.utc), dc.root.clone())
     });
     let mut done: Vec<Option<CollectionReport>> = vec![None; collections.len()];
-    for i in order {
-        done[i] = Some(ingest_collection(case, &collections[i], parsers, opts)?);
+    let count = collections.len();
+    let (mut stopped, mut error) = (false, None);
+    for (n, i) in order.into_iter().enumerate() {
+        if opts.cancelled() {
+            stopped = true;
+            break;
+        }
+        match ingest_collection(
+            case,
+            &collections[i],
+            parsers,
+            opts,
+            (n + 1, count),
+            &mut stopped,
+        ) {
+            Ok(report) => done[i] = Some(report),
+            Err(halt) => {
+                done[i] = halt.report;
+                error = Some(halt.error);
+                break;
+            }
+        }
+        if stopped {
+            break;
+        }
     }
-    Ok(IngestReport {
-        collections: done.into_iter().flatten().collect(),
-    })
+    IngestRun {
+        report: IngestReport {
+            collections: done.into_iter().flatten().collect(),
+        },
+        stopped,
+        error,
+    }
+}
+
+/// An ingest of one collection that ended on a hard error: what committed before it, and the error.
+struct Halt {
+    report: Option<CollectionReport>,
+    error: Error,
+}
+
+impl From<Error> for Box<Halt> {
+    fn from(error: Error) -> Self {
+        Box::new(Halt {
+            report: None,
+            error,
+        })
+    }
 }
 
 /// Collection time from the collection's folder name, when it has one.
@@ -401,8 +623,15 @@ fn ingest_collection(
     dc: &DiscoveredCollection,
     parsers: &ParserRegistry,
     opts: &IngestOptions,
-) -> Result<CollectionReport> {
+    (position, collections): (usize, usize),
+    stopped: &mut bool,
+) -> std::result::Result<CollectionReport, Box<Halt>> {
     let root = canonical_root_string(&dc.root);
+    opts.report(|| IngestProgress::Collection {
+        index: position,
+        count: collections,
+        root: root.clone(),
+    });
     let collection_id = upsert_collection(case.conn(), dc, &root)?;
     if dc.tool == Tool::Invictus {
         let _t = timing::span("collection: collector_runs");
@@ -433,6 +662,7 @@ fn ingest_collection(
         (*flag, processing_key(&f.rel, *derived, *priority))
     });
     drop(_classify);
+    let total_files = keyed.len();
     let mut handled = Handled::default();
     // Note every listed file's artifact up front: the supersede rules need to know which files
     // are QuickUAL per-operation exports even before any of them is handled.
@@ -458,6 +688,24 @@ fn ingest_collection(
         let last = i == 1;
         let mut deferred: Vec<(&CollectionFile, bool, Option<&'static str>)> = Vec::new();
         for (f, derived, _, artifact, _) in stage {
+            if opts.cancelled() {
+                *stopped = true;
+                // Entries discovery could not read are still recorded as errors, never lost in a cancel.
+                record_listing_errors(case, collection_id, &listing, &mut files)?;
+                return Ok(CollectionReport {
+                    collection_id,
+                    tool: dc.tool,
+                    root,
+                    files,
+                });
+            }
+            opts.report(|| IngestProgress::File {
+                collection: position,
+                collections,
+                index: files.len() + 1,
+                files: total_files,
+                rel_path: f.rel.clone(),
+            });
             let job = FileJob {
                 collection_id,
                 tool: dc.tool,
@@ -469,7 +717,21 @@ fn ingest_collection(
                 defer: true,
                 orders_conflict: false,
             };
-            match ingest_file(case, &job, parsers, opts)? {
+            let outcome = match ingest_file(case, &job, parsers, opts) {
+                Ok(o) => o,
+                Err(error) => {
+                    return Err(Box::new(Halt {
+                        report: Some(CollectionReport {
+                            collection_id,
+                            tool: dc.tool,
+                            root,
+                            files,
+                        }),
+                        error,
+                    }));
+                }
+            };
+            match outcome {
                 Outcome::Deferred => {
                     handled.insert_failed(&f.rel);
                     deferred.push((f, derived, artifact));
@@ -504,6 +766,24 @@ fn ingest_collection(
             deferred
         };
         for (f, derived, _) in retry {
+            if opts.cancelled() {
+                *stopped = true;
+                // Entries discovery could not read are still recorded as errors, never lost in a cancel.
+                record_listing_errors(case, collection_id, &listing, &mut files)?;
+                return Ok(CollectionReport {
+                    collection_id,
+                    tool: dc.tool,
+                    root,
+                    files,
+                });
+            }
+            opts.report(|| IngestProgress::File {
+                collection: position,
+                collections,
+                index: files.len() + 1,
+                files: total_files,
+                rel_path: f.rel.clone(),
+            });
             let job = FileJob {
                 collection_id,
                 tool: dc.tool,
@@ -515,7 +795,21 @@ fn ingest_collection(
                 defer: false,
                 orders_conflict: proved.len() > 1,
             };
-            match ingest_file(case, &job, parsers, opts)? {
+            let outcome = match ingest_file(case, &job, parsers, opts) {
+                Ok(o) => o,
+                Err(error) => {
+                    return Err(Box::new(Halt {
+                        report: Some(CollectionReport {
+                            collection_id,
+                            tool: dc.tool,
+                            root,
+                            files,
+                        }),
+                        error,
+                    }));
+                }
+            };
+            match outcome {
                 Outcome::Done(report, _) => {
                     mark_handled(&mut handled, &f.rel, &report);
                     files.push(report);
@@ -524,11 +818,28 @@ fn ingest_collection(
                     return Err(Error::Invalid(format!(
                         "{} was deferred again on the retry pass",
                         f.rel
-                    )));
+                    ))
+                    .into());
                 }
             }
         }
     }
+    record_listing_errors(case, collection_id, &listing, &mut files)?;
+    Ok(CollectionReport {
+        collection_id,
+        tool: dc.tool,
+        root,
+        files,
+    })
+}
+
+/// Record each entry discovery could not read as an error file.
+fn record_listing_errors(
+    case: &mut Case,
+    collection_id: i64,
+    listing: &crate::discovery::CollectionListing,
+    files: &mut Vec<FileReport>,
+) -> Result<()> {
     for err in &listing.errors {
         let nf = NewFile {
             collection_id,
@@ -547,12 +858,7 @@ fn ingest_collection(
             vec![err.message.clone()],
         )?);
     }
-    Ok(CollectionReport {
-        collection_id,
-        tool: dc.tool,
-        root,
-        files,
-    })
+    Ok(())
 }
 
 fn date_order_str(o: DateOrder) -> &'static str {
@@ -826,6 +1132,10 @@ fn ingest_file(
     parsers: &ParserRegistry,
     opts: &IngestOptions,
 ) -> Result<Outcome> {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    if fault::file_fails(case, job.rel) {
+        return Err(Error::Invalid(format!("injected: {} failed", job.rel)));
+    }
     if !timing::enabled() {
         return ingest_file_inner(case, job, parsers, opts);
     }

@@ -5,11 +5,16 @@ import type {
   CaseInfo,
   CmdError,
   CmdErrorKind,
+  DiscoveryPreview,
   EntryEditArgs,
   EntryWritten,
   Filter,
   HighlightSet,
+  IngestProgress,
+  IngestResult,
+  IngestTarget,
   NewEntryArgs,
+  PreviewFile,
   QueryResult,
   QueueItem,
   Settings,
@@ -196,6 +201,107 @@ function removeFromQueue(match: (q: QueueItem) => boolean, what: string): void {
   if (queue.length === before) fail("not_found", `${what} is not in the queue`);
 }
 
+// ------------------------------------------------------------------------------------------------ import
+
+const ingestListeners = new Set<(p: IngestProgress) => void>();
+let ingestRunning = false;
+const cancelledRuns = new Set<string>();
+let profiledNow = false;
+const closingListeners = new Set<() => void>();
+export const mockOnIngestClosing = (f: () => void): (() => void) => {
+  closingListeners.add(f);
+  return () => void closingListeners.delete(f);
+};
+const emitIngest = (p: IngestProgress) => ingestListeners.forEach((f) => f(p));
+export const mockOnIngestProgress = (f: (p: IngestProgress) => void): (() => void) => {
+  ingestListeners.add(f);
+  return () => void ingestListeners.delete(f);
+};
+
+const MOCK_SOURCES: [string, string][] = [
+  ["invictus.signins", "UnifiedAuditLog/SignInLogs.csv"],
+  ["invictus.ual", "UnifiedAuditLog/UAL-2026-08.csv"],
+  ["invictus.mailbox_audit", "Exchange/MailboxAudit.csv"],
+  ["invictus.inbox_rules", "Exchange/InboxRules.csv"],
+  ["invictus.message_trace", "Exchange/MessageTrace.csv"],
+  ["invictus.users", "Users/Users.csv"],
+];
+
+/** A fake discovery: `empty` in the path finds nothing, `big` adds a file over the limit. */
+function mockDiscovery(path: string): DiscoveryPreview {
+  if (/empty/i.test(path)) {
+    return { path, collections: [], recognised: 0, unrecognised: 0, too_large: 0, unreadable: 0, max_file_bytes: 1_073_741_824 };
+  }
+  const files: PreviewFile[] = MOCK_SOURCES.map(([artifact_id, rel_path], i) => ({
+    rel_path, artifact_id, derived: false, size: 40_000 * (i + 1), status: "recognised", error: null,
+  }));
+  files.push({ rel_path: "README.txt", artifact_id: null, derived: false, size: 312, status: "unrecognised", error: null });
+  if (/big/i.test(path)) files.push({ rel_path: "UnifiedAuditLog/UAL-huge.csv", artifact_id: "invictus.ual", derived: false, size: 2_400_000_000, status: "too_large", error: null });
+  return {
+    path,
+    collections: [{ tool: "invictus", root: path, tenant_hint: "contoso.example", started_hint: "2026-08-14T09:00:00Z", files }],
+    recognised: MOCK_SOURCES.length,
+    unrecognised: 1,
+    too_large: /big/i.test(path) ? 1 : 0,
+    unreadable: 0,
+    max_file_bytes: 1_073_741_824,
+  };
+}
+
+async function mockIngestRun(a: Record<string, unknown> | undefined): Promise<IngestResult> {
+  const path = str(a, "path");
+  const target = a?.target as IngestTarget;
+  const detect = a?.detect !== false;
+  if (ingestRunning) fail("invalid", "an import is already running");
+  if (target === "open" && info?.read_only_reason) fail("read_only", info.read_only_reason);
+  const preview = mockDiscovery(path);
+  if (preview.collections.length === 0) fail("invalid", `no Hawk, Microsoft-Extractor-Suite or portal export output found under ${path}`);
+  ingestRunning = true;
+  const runId = str(a, "runId");
+  try {
+    emitIngest({ stage: "discover" });
+    await nap(80);
+    emitIngest({ stage: "collection", index: 1, count: 1, root: path });
+    const files = preview.collections[0].files.filter((f) => f.status === "recognised");
+    const loaded: typeof files = [];
+    for (const [i, f] of files.entries()) {
+      if (cancelledRuns.has(runId)) break;
+      emitIngest({ stage: "file", collection: 1, collections: 1, index: i + 1, files: preview.collections[0].files.length, rel_path: f.rel_path });
+      await nap(250);
+      loaded.push(f);
+    }
+    const cancelled = cancelledRuns.has(runId);
+    emitIngest({ stage: "profile" });
+    await nap(150);
+    if (detect && !cancelled) {
+      emitIngest({ stage: "detect" });
+      await nap(150);
+    }
+    const reports = loaded.map((f, i) => ({
+      rel_path: f.rel_path, artifact_id: f.artifact_id, status: "parsed", records_read: 1000 * (i + 1) + 3, records_loaded: 1000 * (i + 1),
+      records_duplicate: 0, records_error: i === 1 ? 3 : 0, records_collector_lost: 0, warnings: i === 1 ? ["3 records could not be parsed"] : [],
+    }));
+    const left = files.slice(loaded.length).map((f) => ({ root: path, rel_path: f.rel_path }));
+    return {
+      case_path: target === "open" ? (info?.path ?? "") : target.new_case,
+      cancelled,
+      error: null,
+      report: { collections: [{ collection_id: 1, tool: "invictus", root: path, files: reports }] },
+      files_loaded: loaded.length,
+      files_total: preview.collections[0].files.length,
+      rows_by_source: reports.map((r) => ({ source: r.artifact_id ?? "unknown", files: 1, rows: r.records_loaded })),
+      file_notes: reports.filter((r) => r.warnings.length).map((r) => ({ root: path, rel_path: r.rel_path, status: r.status, notes: ["3 records rejected", ...r.warnings] })),
+      not_loaded: left,
+      profile_error: null,
+      profile_warnings: [],
+      detect: detect && !cancelled ? { findings_new: 4, findings_updated: 0, warnings: [] } : null,
+      detect_error: null,
+    };
+  } finally {
+    ingestRunning = false;
+  }
+}
+
 // ------------------------------------------------------------------------------------------------ commands
 
 type Args = Record<string, unknown> | undefined;
@@ -323,6 +429,20 @@ const handlers: Record<string, (a: Args) => unknown> = {
   },
   indicators_active: () => fx.indicators(),
 
+  ingest_discover: (a) => mockDiscovery(str(a, "path")),
+  ingest_run: (a) => mockIngestRun(a),
+  ingest_cancel: (a) => {
+    cancelledRuns.add(str(a, "runId"));
+    return null;
+  },
+  ingest_unprofiled: () => (/unprofiled/i.test(info?.path ?? "") && !profiledNow ? [1] : []),
+  ingest_profile: async () => {
+    if (info?.read_only_reason) fail("read_only", info.read_only_reason);
+    await nap(300);
+    profiledNow = true;
+    return { profile_error: null, profile_warnings: [], detect: { findings_new: 2, findings_updated: 0, warnings: [] }, detect_error: null };
+  },
+
   share_export: () => ({ sha256: hex(0xabc), items: 3 }),
   share_preview: () => fx.sharePreview(),
   share_import: (a) => {
@@ -354,7 +474,8 @@ export async function mockCall<T>(cmd: string, args?: Record<string, unknown>): 
 }
 
 const MOCK_CASE_PATH = "/cases/synthetic-bec-aitm.duckdb";
-export function mockOpen(options?: { filters?: { name: string; extensions: string[] }[] }): string {
+export function mockOpen(options?: { directory?: boolean; filters?: { name: string; extensions: string[] }[] }): string {
+  if (options?.directory) return "/mock/evidence/invictus-run";
   return options?.filters?.some((f) => f.extensions.includes("json")) ? "/mock/bundle.sparrow-share.json" : MOCK_CASE_PATH;
 }
 export function mockSave(options?: { defaultPath?: string }): string {
