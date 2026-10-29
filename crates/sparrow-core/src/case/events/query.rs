@@ -29,7 +29,8 @@ fn row_query(rows: &str, tail: &str) -> String {
          e.tenant_key, e.workload, CAST(e.category AS VARCHAR), e.operation, e.result, e.actor_upn, e.owner_upn, \
          e.target, e.ip, e.ip_prefix, e.ip_country, e.asn, e.asn_org, e.ip_kind, e.device_id, e.device_name, \
          e.device_object_id, e.entra_session_id, e.user_agent, e.app_id, e.summary, \
-         coalesce(fc.n, 0), coalesce(nt.n, 0), nt.latest, {flags}, tg.tags \
+         coalesce(fc.n, 0), coalesce(nt.n, 0), nt.latest, {flags}, tg.tags, \
+         (coalesce(fl.agent_pend, false) OR coalesce(tg.pend, false)) \
          FROM page e \
          LEFT JOIN (SELECT source_table, record_key, count(DISTINCT finding_id) AS n FROM finding_evidence \
                     WHERE (source_table, record_key) IN ({page}) GROUP BY 1, 2) fc \
@@ -41,7 +42,8 @@ fn row_query(rows: &str, tail: &str) -> String {
                 ON nt.source_table = e.source_table AND nt.object_id = e.record_key \
          LEFT JOIN (SELECT et.source_table, et.record_key, \
                     CAST(to_json(list({{'name': t.name, 'ai': et.decided_by LIKE 'agent:%' \
-                        AND et.review_state = 'pending_review'}} ORDER BY t.name)) AS VARCHAR) AS tags \
+                        AND et.review_state = 'pending_review'}} ORDER BY t.name)) AS VARCHAR) AS tags, \
+                    bool_or(et.decided_by LIKE 'agent:%' AND et.review_state = 'pending_review') AS pend \
                     FROM event_tags et JOIN tags t ON t.tag_id = et.tag_id \
                     WHERE (et.source_table, et.record_key) IN ({page}) GROUP BY 1, 2) tg \
                 ON tg.source_table = e.source_table AND tg.record_key = e.record_key \
@@ -93,6 +95,7 @@ fn row_of(r: &Row) -> Result<EventRow> {
                 .map_err(|e| Error::Invalid(format!("tags of an event are not JSON: {e}")))?,
             None => Vec::new(),
         },
+        ai_pending: r.get::<_, Option<bool>>(32)?.unwrap_or(false),
     })
 }
 

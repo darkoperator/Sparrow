@@ -25,3 +25,17 @@ export const useNav = () => useContext(NavContext);
 export const RefreshBadgesContext = createContext<() => void>(() => {});
 
 export const useRefreshBadges = () => useContext(RefreshBadgesContext);
+
+/**
+ * Why the analyst cannot write now, or null when they can: "This case is open read-only: …" for a read-only case, or the
+ * analyst name not being set. Every screen that disables a write shows this as the reason.
+ */
+export const WriteBlockedContext = createContext<string | null>(null);
+
+export const useWriteBlocked = () => useContext(WriteBlockedContext);
+
+/** The reason for the shell: a read-only case first, else a missing analyst name. */
+export function writeBlockedReason(readOnlyReason: string | null, analyst: string | null): string | null {
+  if (readOnlyReason !== null) return `Read-only case: ${readOnlyReason}`;
+  return analyst === null ? "The analyst name is not set: enter it to make changes" : null;
+}

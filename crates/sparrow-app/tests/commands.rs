@@ -3927,9 +3927,12 @@ fn marks_flag_value_covers_every_event_with_the_value_and_a_scope_narrows_it() {
     )
     .unwrap();
     assert_eq!(
-        (a.action.as_str(), a.object_type.as_str()),
+        (a.audit.action.as_str(), a.audit.object_type.as_str()),
         ("flag_value", "value_flag")
     );
+    // The indicator it made is reported, new.
+    assert_eq!(a.indicators.len(), 1);
+    assert!(a.indicators[0].created);
     // The flag, and the indicator that a malicious IP also records.
     assert_eq!(audit_rows(&state), before + 2);
     let actions = text_of(

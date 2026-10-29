@@ -166,6 +166,10 @@ pub struct EventRow {
     pub flag: Option<FlagLevel>,
     /// The effective flag comes only from an agent's flag that no analyst has confirmed.
     pub flag_ai: bool,
+    /// An agent's mark that no analyst has confirmed covers the row: its own flag, a standing flag on a value it carries,
+    /// or a tag. Unlike `flag_ai` this holds even when a stronger confirmed flag hides the pending one, so it says
+    /// whether Confirm / Remove has anything to review here.
+    pub ai_pending: bool,
     pub latest_note: Option<String>,
     pub note_count: u32,
 }

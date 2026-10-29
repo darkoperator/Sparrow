@@ -30,6 +30,7 @@
     "tags": [],
     "flag": null,
     "flag_ai": false,
+    "ai_pending": false,
     "latest_note": "Token replayed from the relay; see the session tab.",
     "note_count": 1
   },
@@ -156,14 +157,14 @@
   "tags": [],
   "notes": [
     {
-      "annotation_id": "088b6f4b41fc8adb",
+      "annotation_id": "feacb1c16de4997f",
       "object_type": "evidence",
       "object_id": "a40548f3c429d88082e0f4091abb4a9c24b6dd1e74d7de9c83770091e266b1fe",
       "source_table": "mailbox_audit_legacy",
       "text": "Token replayed from the relay; see the session tab.",
       "actor": "analyst:carlos",
       "on_behalf_of": null,
-      "created_at": "2026-10-29T01:06:19.242551Z"
+      "created_at": "2026-10-29T03:13:46.156844Z"
     }
   ],
   "flag": null,

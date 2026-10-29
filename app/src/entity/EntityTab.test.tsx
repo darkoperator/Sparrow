@@ -18,19 +18,21 @@ vi.mock("../dialog", () => ({ save: vi.fn(), open: vi.fn() }));
 
 import type { EventQuery } from "../api";
 import { mockCall } from "../mock/backend";
-import { NavContext, RefreshBadgesContext, type Nav } from "../shell/nav";
+import { NavContext, RefreshBadgesContext, WriteBlockedContext, type Nav } from "../shell/nav";
 import type { EntityRef } from "../shell/tabs";
 import EntityTab from "./EntityTab";
 
 const nav = (): Nav => ({ openEntity: vi.fn(), openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn() });
 
-function view(entity: EntityRef, opts: { canWrite?: boolean; n?: Nav; refresh?: () => void } = {}) {
+function view(entity: EntityRef, opts: { writeBlocked?: string; n?: Nav; refresh?: () => void } = {}) {
   const n = opts.n ?? nav();
   const refresh = opts.refresh ?? vi.fn();
   const out = render(
     <NavContext.Provider value={n}>
       <RefreshBadgesContext.Provider value={refresh}>
-        <EntityTab entity={entity} canWrite={opts.canWrite} />
+        <WriteBlockedContext.Provider value={opts.writeBlocked ?? null}>
+          <EntityTab entity={entity} />
+        </WriteBlockedContext.Provider>
       </RefreshBadgesContext.Provider>
     </NavContext.Provider>,
   );
@@ -375,11 +377,11 @@ describe("EntityTab", () => {
   });
 
   it("group_to_timeline_disabled_with_a_reason_when_read_only_or_nothing_matches", async () => {
-    const a = view(ADMIN, { canWrite: false });
+    const a = view(ADMIN, { writeBlocked: "Read-only case: the case file is older than this version" });
     await waitFor(() => expect(callsOf("events_summary")).toHaveLength(1));
     const button = screen.getByRole("button", { name: "+ Timeline (group)" });
     expect(button).toBeDisabled();
-    expect(button).toHaveAttribute("title", "Read-only case, or the analyst name is not set");
+    expect(button).toHaveAttribute("title", "Read-only case: the case file is older than this version");
     a.unmount();
 
     h.override.events_summary = async (args) => {

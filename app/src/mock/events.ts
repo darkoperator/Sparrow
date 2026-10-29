@@ -25,6 +25,7 @@ import type {
   Sort,
   TagInfo,
   TimelineEntry,
+  ValueFlagged,
   ValueKind,
 } from "../api";
 import * as fx from "../test/fixtures";
@@ -429,7 +430,12 @@ export function eventHandlers(deps: EventDeps): Record<string, (a: Args) => unkn
   };
   const update = (rows: RowRef[], f: (r: EventRow) => EventRow) => {
     const set = new Set(rows.map(key));
-    events = events.map((r) => (set.has(key(r)) ? f(r) : r));
+    // `ai_pending` follows the row's own pending marks (the mock's standing flags are all the analyst's).
+    events = events.map((r) => {
+      if (!set.has(key(r))) return r;
+      const next = f(r);
+      return { ...next, ai_pending: next.flag_ai || next.tags.some((t) => t.ai) };
+    });
   };
   const level = (a: Args): FlagLevel | null => {
     const l = a?.level;
@@ -446,7 +452,9 @@ export function eventHandlers(deps: EventDeps): Record<string, (a: Args) => unkn
     return deps.audit("flag_rows", "event_flag", `mock-batch-${rows.length}`);
   };
 
-  const marks_flag_value = (a: Args): AuditEntry => {
+  // The indicators Malicious value flags made (core: one per tenant of the matching events, IP and account only).
+  const indicatorIds = new Set<string>();
+  const marks_flag_value = (a: Args): ValueFlagged => {
     deps.writable();
     const kind = str(a, "kind") as ValueKind;
     if (!["ip", "ip_prefix", "account", "asn", "device", "session"].includes(kind)) fail("invalid", `unknown flag value kind ${JSON.stringify(kind)}`);
@@ -457,7 +465,17 @@ export function eventHandlers(deps: EventDeps): Record<string, (a: Args) => unkn
     const same = (f: ValueFlag) => f.kind === kind && lower(f.value) === lower(value) && JSON.stringify(f.scope) === JSON.stringify(scope);
     valueFlags = valueFlags.filter((f) => !same(f));
     if (l) valueFlags = [...valueFlags, { kind, value, scope, level: l }];
-    return deps.audit("flag_value", "value_flag", `${kind}:${value}`);
+    const indicators: ValueFlagged["indicators"] = [];
+    if (l === "malicious" && (kind === "ip" || kind === "account")) {
+      const flag: ValueFlag = { kind, value, scope, level: l };
+      const tenants = [...new Set(events.filter((r) => valueMatches(flag, r)).map((r) => r.tenant_key))];
+      for (const tenant_key of tenants) {
+        const indicator_id = `mock-indicator:${tenant_key ?? "case"}:${kind}:${lower(value)}`;
+        indicators.push({ tenant_key, indicator_id, created: !indicatorIds.has(indicator_id) });
+        indicatorIds.add(indicator_id);
+      }
+    }
+    return { audit: deps.audit("flag_value", "value_flag", `${kind}:${value}`), indicators };
   };
 
   const marks_tag_rows = (a: Args): AuditEntry => {

@@ -20,7 +20,7 @@ import ReviewQueue from "../review/ReviewQueue";
 import { displaySafe } from "../text";
 import AnalystPrompt from "./AnalystPrompt";
 import ExportMenu from "./ExportMenu";
-import { NavContext, RefreshBadgesContext } from "./nav";
+import { NavContext, RefreshBadgesContext, WriteBlockedContext, writeBlockedReason } from "./nav";
 import OpenCase, { type UpgradePrompt } from "./OpenCase";
 import ReadOnlyBanner from "./ReadOnlyBanner";
 import TabStrip, { type TabBadges } from "./TabStrip";
@@ -270,6 +270,7 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
         <HighlightsProvider caseId={info.case_id}>
           <NavContext.Provider value={{ openEntity, openTable, showInEvents, openFinding }}>
             <RefreshBadgesContext.Provider value={refreshBadges}>
+            <WriteBlockedContext.Provider value={writeBlockedReason(info.read_only_reason, settings.analyst)}>
             <main>
               {screen !== "highlights" && <HighlightsError />}
               {body}
@@ -284,6 +285,7 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
                 </section>
               ))}
             </main>
+            </WriteBlockedContext.Provider>
             </RefreshBadgesContext.Provider>
           </NavContext.Provider>
         </HighlightsProvider>

@@ -194,7 +194,7 @@ const TABLE: { cmd: string; args?: Obj; check: (r: unknown) => void }[] = [
   { cmd: "entity_pivot", args: { entity: { kind: "account", value: "a@contoso.example" }, of: "ips", limit: 5 }, check: (r) => { keys(r, ["rows", "total"]); arrOf((r as Obj).rows, ["value", "label", "count", "first_seen", "last_seen", "is_new", "extra"]); expect(((r as Obj).rows as unknown[]).length).toBe(5); } },
   { cmd: "entity_findings", args: { entity: { kind: "account", value: "a@contoso.example" } }, check: (r) => arrOf(r, ["finding_id", "rule_id", "title", "severity", "status", "first_seen"]) },
   { cmd: "marks_flag_rows", args: { rows: "ROWS", level: "suspicious" }, check: (r) => keys(r, AUDIT) },
-  { cmd: "marks_flag_value", args: { kind: "ip", value: "192.0.2.19", scope: null, level: "malicious" }, check: (r) => keys(r, AUDIT) },
+  { cmd: "marks_flag_value", args: { kind: "ip", value: "192.0.2.19", scope: null, level: "malicious" }, check: (r) => { keys(r, ["audit", "indicators"]); keys((r as { audit: unknown }).audit, AUDIT); } },
   { cmd: "marks_tag_rows", args: { rows: "ROWS", tag: "relay", add: true }, check: (r) => keys(r, AUDIT) },
   { cmd: "marks_list_tags", check: (r) => arrOf(r, ["name", "count", "agent_unreviewed"]) },
   { cmd: "marks_review", args: { rows: "AI_ROWS", accept: true }, check: (r) => arrOf(r, AUDIT) },
@@ -528,6 +528,29 @@ describe("events mock: marks and add to timeline", () => {
     await expect(m.mockCall("marks_flag_rows", { rows: [ref(a)], level: "bad" })).rejects.toMatchObject({ kind: "invalid" });
   });
   const summary = (m: typeof import("./backend")) => m.mockCall<EventsSummary>("events_summary", { query: Q });
+
+  it("malicious_on_an_ip_or_account_reports_the_indicators_added_or_updated", async () => {
+    const m = await fresh();
+    const flag = (kind: string, value: string, level: string | null, scope: unknown = null) =>
+      m.mockCall<{ indicators: { tenant_key: string | null; indicator_id: string; created: boolean }[] }>("marks_flag_value", { kind, value, scope, level });
+    const ip = plain.find((r) => r.ip !== null)!.ip!;
+    const tenants = [...new Set(list.filter((r) => r.ip === ip).map((r) => r.tenant_key))];
+    // Suspicious, and kinds core makes no indicator for: none reported.
+    expect((await flag("ip", ip, "suspicious")).indicators).toEqual([]);
+    expect((await flag("asn", "64496", "malicious")).indicators).toEqual([]);
+    expect((await flag("ip", ip, null)).indicators).toEqual([]);
+    // New: one per tenant of the matching events.
+    const first = (await flag("ip", ip, "malicious")).indicators;
+    expect(first.map((i) => i.tenant_key).sort()).toEqual([...tenants].sort());
+    expect(first.every((i) => i.created)).toBe(true);
+    // Flagged again, the indicators exist: updated, same ids.
+    await flag("ip", ip, null);
+    const again = (await flag("ip", ip, "malicious")).indicators;
+    expect(again.map((i) => [i.indicator_id, i.created])).toEqual(first.map((i) => [i.indicator_id, false]));
+    // No event matches: a flag, but no tenant to attach an indicator to.
+    expect((await flag("ip", "198.51.100.200", "malicious")).indicators).toEqual([]);
+    expect((await flag("account", "ghost@contoso.example", "malicious")).indicators).toEqual([]);
+  });
 
   it("a standing value flag covers every event with the value, and a scope narrows it", async () => {
     const m = await fresh();

@@ -727,6 +727,28 @@ pub fn flag_value(
     scope: Option<&Entity>,
     level: Option<FlagLevel>,
 ) -> Result<AuditEntry> {
+    flag_value_with_indicators(conn, actor, kind, value, scope, level).map(|(entry, _)| entry)
+}
+
+/// An indicator [`flag_value_with_indicators`] added or updated (one per tenant of the matching events).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct IndicatorChange {
+    pub tenant_key: Option<String>,
+    pub indicator_id: String,
+    /// The indicator did not exist before this flag.
+    pub created: bool,
+}
+
+/// [`flag_value`], also returning the indicators a Malicious flag on an IP or account added or updated. Empty when the
+/// flag makes none: another level or kind, or no event matches the value so there is no tenant to attach one to.
+pub fn flag_value_with_indicators(
+    conn: &Connection,
+    actor: &Actor,
+    kind: ValueKind,
+    value: &str,
+    scope: Option<&Entity>,
+    level: Option<FlagLevel>,
+) -> Result<(AuditEntry, Vec<IndicatorChange>)> {
     let value = kind.normalize(value)?;
     let scope = scope.cloned().map(Entity::normalized).transpose()?;
     let id = flag_id(kind, &value, scope.as_ref());
@@ -797,6 +819,7 @@ pub fn flag_value(
         )?;
         self_review(tx, "value_flags", "flag_id", &id, actor)?;
         let after = value_flag_state(tx, &id)?;
+        let mut changed = Vec::new();
         if level == Some(FlagLevel::Malicious) {
             let ty = match kind {
                 ValueKind::Ip => Some(IndicatorType::Ip),
@@ -807,7 +830,9 @@ pub fn flag_value(
                 for tenant in tenants_of(tx, kind, &value, scope.as_ref())? {
                     // An indicator that exists keeps its note.
                     let iid = indicators::indicator_id(tenant.as_deref(), ty, &value);
-                    let note = indicators::indicator_state(tx, &iid)?
+                    let existing = indicators::indicator_state(tx, &iid)?;
+                    let created = existing.is_none();
+                    let note = existing
                         .and_then(|s| s["note"].as_str().map(str::to_string))
                         .unwrap_or_else(|| "flagged malicious in the events grid".into());
                     indicators::add_indicator_in(
@@ -820,10 +845,15 @@ pub fn flag_value(
                         Some(&note),
                         None,
                     )?;
+                    changed.push(IndicatorChange {
+                        tenant_key: tenant,
+                        indicator_id: iid,
+                        created,
+                    });
                 }
             }
         }
-        audit::append_at(
+        let entry = audit::append_at(
             tx,
             ts,
             actor.as_str(),
@@ -834,7 +864,8 @@ pub fn flag_value(
             before.as_ref(),
             after.as_ref(),
             None,
-        )
+        )?;
+        Ok((entry, changed))
     })
 }
 

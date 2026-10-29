@@ -9,6 +9,10 @@ import {
   eventsPage,
   eventsSummary,
   isCmdError,
+  marksFlagRows,
+  marksFlagValue,
+  marksListTags,
+  marksTagRows,
   newQueryId,
   queryCancel,
   type EntityKind,
@@ -16,17 +20,25 @@ import {
   type EventQuery,
   type EventRow,
   type EventsSummary,
+  type FlagLevel,
+  type IndicatorChange,
   type Histogram as HistogramData,
   type RowRef,
   type Sort,
+  type TagInfo,
 } from "../api";
 import { save } from "../dialog";
 import Grid, { cellText } from "../grid/Grid";
 import { loadJson, removeJson, saveJson } from "../grid/gridLayout";
-import { useNav } from "../shell/nav";
+import AddToTimelineDialog from "../marks/AddToTimelineDialog";
+import NoteDialog from "../marks/NoteDialog";
+import ReviewMarksDialog from "../marks/ReviewMarksDialog";
+import { rowMenu, type RowMenuActions } from "../marks/rowMenu";
+import { NewTagDialog } from "../marks/TagMenu";
+import { useNav, useRefreshBadges, useWriteBlocked } from "../shell/nav";
 import type { EntityRef } from "../shell/tabs";
 import { displaySafe } from "../text";
-import { COLUMN_BY_ID, COLUMNS, DEFAULT_VISIBLE, filterable } from "./columns";
+import { COLUMN_BY_ID, COLUMNS, DEFAULT_VISIBLE } from "./columns";
 import EventDetail, { TagBadge } from "./EventDetail";
 import Filters, { emptyDraft, FIELD_LABEL, FIELDS, type FilterDraft, type FilterErrors } from "./Filters";
 import Histogram from "./Histogram";
@@ -120,8 +132,32 @@ interface Shown {
   sort: Sort | null;
 }
 
+/**
+ * What the backend says it did to indicators for a flag, worded from its answer: "; IP x added as an indicator",
+ * "; indicator updated", both for a value in several tenants, or nothing when it made none.
+ */
+export function indicatorNote(what: string, changes: IndicatorChange[]): string {
+  const made = changes.filter((c) => c.created).length;
+  const updated = changes.length - made;
+  if (made > 0 && updated > 0) return `; ${what} added as an indicator in ${made === 1 ? "1 tenant" : `${made} tenants`} and updated in ${updated}`;
+  if (made > 0) return `; ${what} added as an indicator${made > 1 ? ` in ${made} tenants` : ""}`;
+  if (updated > 0) return `; indicator for ${what} updated${updated > 1 ? ` in ${updated} tenants` : ""}`;
+  return "";
+}
+
+const rowKey = (r: RowRef) => `${r.source_table}\u0000${r.record_key}`;
+const TICK = "_tick";
+const plural = (n: number, one: string) => (n === 1 ? `1 ${one}` : `${n.toLocaleString("en-US")} ${one}s`);
+
+type Dialog =
+  | { kind: "note"; rows: RowRef[] }
+  | { kind: "timeline"; rows: RowRef[] }
+  | { kind: "newtag"; rows: RowRef[] }
+  | { kind: "review"; accept: boolean; rows: EventRow[] };
+
 export default function EventsView({ entity, chip, onClearChip, onRangeChange, onQueryChange, maxLoaded = LOAD_MAX }: EventsViewProps) {
   const nav = useNav();
+  const refreshBadges = useRefreshBadges();
   const scope: EntityRef | undefined = entity ?? chip;
   const scopeKind = scope?.kind;
   const scopeValue = scope?.value;
@@ -140,6 +176,14 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
   const [exporting, setExporting] = useState(false);
   const [selected, setSelected] = useState<RowRef | null>(null);
   const [visibleCols, setVisibleCols] = useState<string[]>(loadVisible);
+  const [ticked, setTicked] = useState<ReadonlySet<string>>(new Set());
+  const [tags, setTags] = useState<TagInfo[]>([]);
+  // What an open cell menu acts on besides its own row: the ticks at the moment it opened.
+  const [menuTicks, setMenuTicks] = useState<ReadonlySet<string>>(new Set());
+  const [dialog, setDialog] = useState<Dialog | null>(null);
+  const [dialogBusy, setDialogBusy] = useState(false);
+  const [dialogError, setDialogError] = useState<string | null>(null);
+  const [detailVersion, setDetailVersion] = useState(0);
 
   // What the run functions read, kept current after each render (an effect, so no ref is written during render).
   const latest = useRef({ draft, shown, onRangeChange, rows, total, maxLoaded });
@@ -201,6 +245,8 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
         if (sum) setSummary(sum);
         if (h) setHist(h);
         setShown({ draft: next, query, sort });
+        // A new query shows other events: ticks on the old ones would act on rows nobody can see. A sort keeps them.
+        if (!pageOnly) setTicked(new Set());
         if (before?.from !== query.from || before?.to !== query.to) latest.current.onRangeChange?.(query.from, query.to);
       } catch (e) {
         if (mine === token.current) fail(e);
@@ -249,6 +295,129 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
     setNotice({ kind: "info", text: "Cancelled. The previous results are still shown." });
   };
 
+  /**
+   * Read the shown query again after a write, as many rows as were loaded (the page the analyst scrolled to stays), with
+   * the summary and the chart. The ticks stay on the rows that are still there.
+   */
+  const reload = useCallback(async () => {
+    const cur = latest.current;
+    if (!cur.shown) return;
+    const { query, sort } = cur.shown;
+    const want = Math.min(Math.max(cur.rows.length, PAGE), cur.maxLoaded);
+    const mine = ++token.current;
+    cancelInflight();
+    moreBusy.current = false;
+    setRunning({ cancellable: query.search !== undefined });
+    try {
+      const [first, sum, h] = await Promise.all([
+        eventsPage(query, sort, 0, PAGE, idFor(query)),
+        eventsSummary(query, idFor(query)),
+        eventsHistogram(query, MAX_BUCKETS, idFor(query)),
+      ]);
+      let all = first.rows;
+      while (all.length < want && all.length < first.total) {
+        const page = await eventsPage(query, sort, all.length, PAGE, idFor(query));
+        if (mine !== token.current) return;
+        if (page.rows.length === 0) break;
+        all = [...all, ...page.rows];
+      }
+      if (mine !== token.current) return;
+      setRows(all);
+      setTotal(first.total);
+      setCapped(first.total_capped);
+      setSummary(sum);
+      setHist(h);
+      const here = new Set(all.map(rowKey));
+      setTicked((t) => new Set([...t].filter((k) => here.has(k))));
+    } catch (e) {
+      if (mine === token.current) fail(e);
+    } finally {
+      if (mine === token.current) {
+        inflight.current = [];
+        setRunning(null);
+      }
+    }
+  }, [cancelInflight, idFor, fail]);
+
+  const loadTags = useCallback(() => {
+    marksListTags().then(setTags, () => undefined);
+  }, []);
+  useEffect(() => {
+    loadTags();
+  }, [loadTags]);
+
+  /** After a successful write: say what happened, then read everything the write may have changed again. */
+  const wrote = useCallback(
+    (message: string) => {
+      setNotice({ kind: "info", text: message });
+      refreshBadges();
+      setDetailVersion((v) => v + 1);
+      loadTags();
+      void reload();
+    },
+    [refreshBadges, loadTags, reload],
+  );
+  const attempt = useCallback(
+    async <T,>(job: () => Promise<T>, message: string | ((done: T) => string)) => {
+      try {
+        const done = await job();
+        wrote(typeof message === "function" ? message(done) : message);
+      } catch (e) {
+        setNotice({ kind: "error", text: isCmdError(e) ? e.message : String(e) });
+      }
+    },
+    [wrote],
+  );
+
+  // Why writes are off (read-only case, or no analyst name), shown on every disabled write item.
+  const readOnly = useWriteBlocked();
+  const tickedRows = useMemo(() => rows.filter((r) => ticked.has(rowKey(r))), [rows, ticked]);
+  // Events with an agent mark waiting for review, whether or not it is the flag shown (a stronger confirmed flag hides it).
+  const aiRows = useMemo(() => tickedRows.filter((r) => r.ai_pending), [tickedRows]);
+  const toggleTick = (r: EventRow) =>
+    setTicked((t) => {
+      const next = new Set(t);
+      if (!next.delete(rowKey(r))) next.add(rowKey(r));
+      return next;
+    });
+  const closeDialog = () => {
+    setDialog(null);
+    setDialogBusy(false);
+    setDialogError(null);
+  };
+  const dialogDone = (message: string) => {
+    closeDialog();
+    wrote(message);
+  };
+
+  const act: RowMenuActions = {
+    showDetails: (r) => setSelected(r),
+    filter: (field, value, exclude) => apply({ fields: { ...draft.fields, [field]: exclude ? `!${value}` : value } }),
+    openEntity: (e) => nav?.openEntity(e),
+    flagRows: (refs, level: FlagLevel | null) =>
+      void attempt(
+        () => marksFlagRows(refs, level),
+        level === null ? `Cleared the flag on ${plural(refs.length, "event")}` : `Flagged ${plural(refs.length, "event")} ${level}`,
+      ),
+    flagValue: (kind, value, scope, level, what) =>
+      void attempt(
+        () => marksFlagValue(kind, value, scope, level),
+        (done) => {
+          const where = scope ? ` in this ${scope.kind === "account" ? "user" : scope.kind === "ip" ? "IP" : scope.kind}` : "";
+          if (level === null) return `Cleared the flag on ${what}${where}; flags set on single events stay`;
+          return `Flagged every event with ${what}${where} ${level}, including later imports${indicatorNote(what, done.indicators)}`;
+        },
+      ),
+    tagRows: (refs, tag, add) =>
+      void attempt(
+        () => marksTagRows(refs, tag, add),
+        add ? `Tagged ${plural(refs.length, "event")} “${tag}”` : `Removed tag “${tag}” from ${plural(refs.length, "event")}`,
+      ),
+    newTag: (refs) => setDialog({ kind: "newtag", rows: refs }),
+    addNote: (refs) => setDialog({ kind: "note", rows: refs }),
+    addToTimeline: (refs) => setDialog({ kind: "timeline", rows: refs }),
+  };
+
   const sortBy = (column: string) => {
     if (!shown) return;
     const cur = shown.sort;
@@ -294,10 +463,10 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
   // ------------------------------------------------------------------------------------------------ the grid
 
   const cols = useMemo(() => COLUMNS.filter((c) => visibleCols.includes(c.id)), [visibleCols]);
-  const columnIds = useMemo(() => cols.map((c) => c.id), [cols]);
-  const labels = useMemo(() => Object.fromEntries(COLUMNS.map((c) => [c.id, c.label])), []);
-  const widths = useMemo(() => Object.fromEntries(COLUMNS.map((c) => [c.id, c.width])), []);
-  const gridRows = useMemo(() => rows.map((r) => cols.map((c) => c.text(r))), [rows, cols]);
+  const columnIds = useMemo(() => [TICK, ...cols.map((c) => c.id)], [cols]);
+  const labels = useMemo(() => ({ [TICK]: "✓", ...Object.fromEntries(COLUMNS.map((c) => [c.id, c.label])) }), []);
+  const widths = useMemo(() => ({ [TICK]: 34, ...Object.fromEntries(COLUMNS.map((c) => [c.id, c.width])) }), []);
+  const gridRows = useMemo(() => rows.map((r) => ["", ...cols.map((c) => c.text(r))]), [rows, cols]);
 
   const flagClass = (r: EventRow) => {
     const level = r.flag === "malicious" ? "ev-flag-malicious" : r.flag === "suspicious" ? "ev-flag-suspicious" : null;
@@ -306,22 +475,10 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
 
   const cellItems = ({ column, row }: { column: string; value: unknown; row: number }) => {
     const ev = rows[row];
-    const col = COLUMN_BY_ID.get(column);
-    if (!ev || !col) return [];
-    const out: { label: string; run: () => void }[] = [
-      { label: "Show details", run: () => setSelected({ source_table: ev.source_table, record_key: ev.record_key }) },
-    ];
-    const fv = col.filter?.value(ev) ?? null;
-    if (col.filter && fv !== null && filterable(fv)) {
-      const field = col.filter.field;
-      out.push({ label: "Filter by this value", run: () => apply({ fields: { ...draft.fields, [field]: fv } }) });
-      out.push({ label: "Exclude this value", run: () => apply({ fields: { ...draft.fields, [field]: `!${fv}` } }) });
-    }
-    const target = col.entity?.(ev) ?? null;
-    if (nav && target) {
-      out.push({ label: `Open ${target.kind === "ip" ? "IP" : target.kind} tab`, run: () => nav.openEntity(target) });
-    }
-    return out;
+    if (!ev) return [];
+    // The ticked rows as they were when the menu opened, read from the rows as they are now (a tag toggle updates them).
+    const targets = rows.filter((r) => menuTicks.has(rowKey(r)));
+    return rowMenu({ column, row: ev, ticked: targets }, { entity, readOnly, tags, canOpen: nav !== null, act });
   };
 
   const trace = () => {
@@ -430,6 +587,9 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
             columns={columnIds}
             rows={gridRows}
             layoutId={LAYOUT_ID}
+            pinnedFirst={TICK}
+            rowId={(i) => (rows[i] ? rowKey(rows[i]) : undefined)}
+            onMenuOpen={() => setMenuTicks(ticked)}
             onResetColumns={resetColumns}
             labels={labels}
             widths={widths}
@@ -448,6 +608,19 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
             renderCell={({ column, value, row }) => {
               const r = rows[row];
               if (!r) return undefined;
+              if (column === TICK) {
+                return (
+                  <span className="ev-tickcell">
+                    <input
+                      type="checkbox"
+                      aria-label="Select event"
+                      checked={ticked.has(rowKey(r))}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={() => toggleTick(r)}
+                    />
+                  </span>
+                );
+              }
               if (column === "tags" && r.tags.length > 0) return r.tags.map((t) => <TagBadge key={t.name} tag={t} />);
               if (column === "flag" && r.flag !== null) {
                 return <span className={r.flag === "malicious" ? "ev-flagtext ev-flagtext-malicious" : "ev-flagtext ev-flagtext-suspicious"}>{cellText(value)}</span>;
@@ -457,8 +630,72 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
             cellItems={cellItems}
           />
         </div>
-        {selected && <EventDetail key={`${selected.source_table}:${selected.record_key}`} event={selected} onClose={() => setSelected(null)} />}
+        {selected && (
+          <EventDetail
+            key={`${selected.source_table}:${selected.record_key}`}
+            event={selected}
+            onClose={() => setSelected(null)}
+            readOnly={readOnly}
+            tagNames={tags.map((t) => t.name)}
+            version={detailVersion}
+            onChanged={wrote}
+          />
+        )}
       </div>
+      {tickedRows.length > 0 && (
+        <div className="ev-selbar" role="group" aria-label="Selection">
+          <span className="meta" aria-live="polite">
+            {plural(tickedRows.length, "event")} selected — right-click to act
+            {aiRows.length > 0 && ` · ${aiRows.length.toLocaleString("en-US")} with AI marks`}
+          </span>
+          <button type="button" onClick={() => setTicked(new Set(rows.map(rowKey)))}>
+            Select all shown
+          </button>
+          <button type="button" onClick={() => setTicked(new Set())}>
+            Clear selection
+          </button>
+          <button
+            type="button"
+            disabled={readOnly !== null || aiRows.length === 0}
+            title={readOnly ?? (aiRows.length === 0 ? "None of the selected events has an AI mark waiting for review" : "Make the agent's flags and tags on the selected events yours")}
+            onClick={() => setDialog({ kind: "review", accept: true, rows: aiRows })}
+          >
+            Confirm AI marks
+          </button>
+          <button
+            type="button"
+            disabled={readOnly !== null || aiRows.length === 0}
+            title={readOnly ?? (aiRows.length === 0 ? "None of the selected events has an AI mark waiting for review" : "Take the agent's flags and tags off the selected events")}
+            onClick={() => setDialog({ kind: "review", accept: false, rows: aiRows })}
+          >
+            Remove AI marks
+          </button>
+        </div>
+      )}
+      {dialog?.kind === "note" && <NoteDialog rows={dialog.rows} onClose={closeDialog} onDone={dialogDone} />}
+      {dialog?.kind === "timeline" && <AddToTimelineDialog rows={dialog.rows} onClose={closeDialog} onDone={dialogDone} />}
+      {dialog?.kind === "review" && <ReviewMarksDialog accept={dialog.accept} rows={dialog.rows} onClose={closeDialog} onDone={dialogDone} />}
+      {dialog?.kind === "newtag" && (
+        <NewTagDialog
+          count={dialog.rows.length}
+          existing={tags.map((t) => t.name)}
+          busy={dialogBusy}
+          error={dialogError}
+          onClose={closeDialog}
+          onAdd={(name) => {
+            const refs = dialog.rows;
+            setDialogBusy(true);
+            setDialogError(null);
+            marksTagRows(refs, name, true).then(
+              () => dialogDone(`Tagged ${plural(refs.length, "event")} “${name}”`),
+              (e: unknown) => {
+                setDialogError(isCmdError(e) ? e.message : String(e));
+                setDialogBusy(false);
+              },
+            );
+          }}
+        />
+      )}
     </section>
   );
 }

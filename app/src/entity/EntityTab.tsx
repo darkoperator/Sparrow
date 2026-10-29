@@ -7,7 +7,6 @@ import {
   entityPivot,
   entitySummary,
   isCmdError,
-  timelineAddEvents,
   type EntityKind,
   type EventQuery,
   type EntitySummary,
@@ -17,10 +16,10 @@ import {
 } from "../api";
 import { isoSeconds } from "../events/columns";
 import EventsView from "../events/EventsView";
-import { useNav, useRefreshBadges } from "../shell/nav";
+import { useNav, useRefreshBadges, useWriteBlocked } from "../shell/nav";
 import type { EntityRef } from "../shell/tabs";
 import { displaySafe } from "../text";
-import { PHASES, phaseLabel } from "../timeline/EntryEditor";
+import AddToTimelineDialog from "../marks/AddToTimelineDialog";
 import PivotTable, { PIVOTS } from "./PivotTable";
 import Tiles from "./Tiles";
 
@@ -29,8 +28,6 @@ const ICON: Record<EntityKind, string> = { account: "👤", ip: "🌐", device: 
 
 export interface EntityTabProps {
   entity: EntityRef;
-  /** False for a read-only case, or before the analyst name is set: "+ Timeline (group)" is then disabled. */
-  canWrite?: boolean;
 }
 
 const errorText = (e: unknown) => (isCmdError(e) ? e.message : String(e));
@@ -44,7 +41,8 @@ interface Loaded {
 }
 const EMPTY: Loaded = { summary: null, pivots: {}, pivotErrors: {}, findings: null, error: null };
 
-export default function EntityTab({ entity, canWrite = true }: EntityTabProps) {
+export default function EntityTab({ entity }: EntityTabProps) {
+  const writeBlocked = useWriteBlocked();
   const nav = useNav();
   const refreshBadges = useRefreshBadges();
   const { kind, value } = entity;
@@ -102,8 +100,8 @@ export default function EntityTab({ entity, canWrite = true }: EntityTabProps) {
   };
 
   const noQuery = current.query === null || current.count === 0;
-  const groupReason = !canWrite
-    ? "Read-only case, or the analyst name is not set"
+  const groupReason = writeBlocked !== null
+    ? writeBlocked
     : current.pending
       ? "Wait for the events to finish loading"
       : noQuery
@@ -172,10 +170,10 @@ export default function EntityTab({ entity, canWrite = true }: EntityTabProps) {
       </div>
       <EventsView entity={entity} onRangeChange={onRangeChange} onQueryChange={onQueryChange} />
       {adding && (
-        <AddToTimeline
-          entity={entity}
+        <AddToTimelineDialog
           query={adding.query}
           count={adding.count}
+          defaultTitle={`${entity.kind} ${entity.value}: ${adding.count ?? 0} events`}
           onClose={() => setAdding(null)}
           onDone={(outcome) => {
             setAdding(null);
@@ -185,77 +183,5 @@ export default function EntityTab({ entity, canWrite = true }: EntityTabProps) {
         />
       )}
     </section>
-  );
-}
-
-function AddToTimeline({
-  entity,
-  query,
-  count,
-  onClose,
-  onDone,
-}: {
-  entity: EntityRef;
-  query: EventQuery;
-  count: number | null;
-  onClose: () => void;
-  onDone: (outcome: string) => void;
-}) {
-  const [title, setTitle] = useState(`${entity.kind} ${entity.value}: ${count ?? 0} events`);
-  const [phase, setPhase] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const submit = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const args: Parameters<typeof timelineAddEvents>[0] = { query, mode: "group" };
-      if (title.trim() !== "") args.title = title.trim();
-      if (phase !== "") args.phase = phase;
-      const out = await timelineAddEvents(args);
-      onDone(out.outcome);
-    } catch (e) {
-      setError(errorText(e));
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="Add to timeline"
-      className="entity-dialog"
-      onKeyDown={(e) => {
-        if (e.key === "Escape") onClose();
-      }}
-    >
-      <h4>Add {count === null ? "these events" : `${count} events`} to the timeline as one entry</h4>
-      <label>
-        Title
-        <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} />
-      </label>
-      <label>
-        Phase
-        <select value={phase} onChange={(e) => setPhase(e.target.value)}>
-          <option value="">Choose from the events</option>
-          {PHASES.map((p) => (
-            <option key={p} value={p}>
-              {phaseLabel(p)}
-            </option>
-          ))}
-        </select>
-      </label>
-      {error && <p role="alert">{displaySafe(error)}</p>}
-      <div className="entity-dialog-buttons">
-        <button type="button" onClick={() => void submit()} disabled={busy}>
-          Add to timeline
-        </button>
-        <button type="button" onClick={onClose}>
-          Cancel
-        </button>
-      </div>
-    </div>
   );
 }

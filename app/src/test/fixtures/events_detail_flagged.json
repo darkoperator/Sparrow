@@ -30,6 +30,7 @@
     "tags": [],
     "flag": "malicious",
     "flag_ai": false,
+    "ai_pending": false,
     "latest_note": null,
     "note_count": 0
   },

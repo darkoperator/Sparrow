@@ -228,4 +228,45 @@ describe("Grid column layout", () => {
   it("readLayout gives the defaults with no id", () => {
     expect(readLayout(undefined)).toEqual({ order: [], widths: {} });
   });
+
+  it("a_pinned_first_column_is_not_draggable_not_resizable_and_not_saved_or_reset", async () => {
+    const user = userEvent.setup();
+    const onResetColumns = vi.fn();
+    const cols = ["sel", "a", "b", "c"];
+    const rows = [["", "a1", "b1", "c1"]];
+    render(<Grid columns={cols} rows={rows} layoutId="test" pinnedFirst="sel" widths={{ sel: 34, a: 100, b: 100, c: 100 }} onResetColumns={onResetColumns} />);
+    const sel = () => screen.getByRole("columnheader", { name: /^sel/ });
+    expect(sel()).toHaveAttribute("draggable", "false");
+    expect(sel().querySelector('[role="separator"]')).toBeNull();
+    expect(template()).toBe("34px 100px 100px 100px");
+    // Other columns still drag, and the pinned one stays first whatever is dropped on it.
+    drag("c", "a");
+    expect(headers()).toEqual(["sel", "c", "a", "b"]);
+    expect(firstRow()).toEqual(["", "c1", "a1", "b1"]);
+    drag("b", "sel");
+    expect(headers()).toEqual(["sel", "c", "a", "b"]);
+    drag("sel", "a");
+    expect(headers()).toEqual(["sel", "c", "a", "b"]);
+    // The saved layout knows only the movable columns, and widths only theirs.
+    await waitFor(() => expect(stored()).toEqual({ order: ["c", "a", "b"], widths: {} }));
+    // The header menu: no menu on the pinned header; the first movable column cannot move left.
+    fireEvent.contextMenu(sel());
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    fireEvent.contextMenu(header("c"));
+    expect(screen.queryByRole("menuitem", { name: "Move column left" })).not.toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Move column right" })).toBeInTheDocument();
+    await user.click(screen.getByRole("menuitem", { name: "Move column right" }));
+    expect(headers()).toEqual(["sel", "a", "c", "b"]);
+    // Reset puts the rest back and leaves the pinned column where it is.
+    fireEvent.contextMenu(header("a"));
+    await user.click(screen.getByRole("menuitem", { name: "Reset columns" }));
+    expect(headers()).toEqual(["sel", "a", "b", "c"]);
+    expect(onResetColumns).toHaveBeenCalledTimes(1);
+    expect(template()).toBe("34px 100px 100px 100px");
+  });
+
+  it("a_pinned_name_that_is_not_the_first_column_is_ignored", () => {
+    render(<Grid columns={["a", "sel", "b"]} rows={[["1", "2", "3"]]} layoutId="test" pinnedFirst="sel" />);
+    expect(screen.getByRole("columnheader", { name: /^sel/ })).toHaveAttribute("draggable", "true");
+  });
 });

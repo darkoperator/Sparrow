@@ -702,6 +702,12 @@ export interface EventRow {
   flag: FlagLevel | null;
   /** The flag comes only from an agent's flag that no analyst has confirmed. */
   flag_ai: boolean;
+  /**
+   * An agent's mark that no analyst has confirmed covers the event: its own flag, a standing flag on a value it carries,
+   * or a tag. True even when a stronger confirmed flag hides the pending one (`flag_ai` is then false); Confirm and
+   * Remove AI marks act on these events.
+   */
+  ai_pending: boolean;
   latest_note: string | null;
   note_count: number;
 }
@@ -821,6 +827,19 @@ export interface RowRef {
 /** `case::marks::ValueKind`: what a standing flag on a value matches. */
 export type ValueKind = "ip" | "ip_prefix" | "account" | "asn" | "device" | "session";
 
+/** `case::marks::IndicatorChange`: an indicator a Malicious flag added (`created`) or updated. */
+export interface IndicatorChange {
+  tenant_key: string | null;
+  indicator_id: string;
+  created: boolean;
+}
+
+/** `cmd::marks::ValueFlagged`: the flag's audit row, and the indicators it added or updated (none for most flags). */
+export interface ValueFlagged {
+  audit: AuditEntry;
+  indicators: IndicatorChange[];
+}
+
 /** `case::marks::TagInfo`. */
 export interface TagInfo {
   name: string;
@@ -880,7 +899,7 @@ export const marksFlagRows = (rows: RowRef[], level: FlagLevel | null) =>
   call<AuditEntry>("marks_flag_rows", { rows, level });
 /** Sets or clears a standing flag on a value; `scope` limits it to one entity's events. */
 export const marksFlagValue = (kind: ValueKind, value: string, scope: EntityArg | null, level: FlagLevel | null) =>
-  call<AuditEntry>("marks_flag_value", { kind, value, scope, level });
+  call<ValueFlagged>("marks_flag_value", { kind, value, scope, level });
 export const marksTagRows = (rows: RowRef[], tag: string, add: boolean) =>
   call<AuditEntry>("marks_tag_rows", { rows, tag, add });
 export const marksListTags = () => call<TagInfo[]>("marks_list_tags");

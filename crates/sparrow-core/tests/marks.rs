@@ -12,8 +12,8 @@ use sparrow_core::case::audit::{self, AuditEntry};
 use sparrow_core::case::events::{self, AiFilter, Entity, EventQuery, EventRow, Field, FlagFilter};
 use sparrow_core::case::indicators;
 use sparrow_core::case::marks::{
-    self, FlagLevel, MAX_AGENT_ROWS, RowRef, ValueKind, flag_rows, flag_value, list_tags,
-    review_marks, tag_rows,
+    self, FlagLevel, MAX_AGENT_ROWS, RowRef, ValueKind, flag_rows, flag_value,
+    flag_value_with_indicators, list_tags, review_marks, tag_rows,
 };
 use sparrow_core::case::notes::{self, NoteTarget};
 use sparrow_core::case::review;
@@ -2126,6 +2126,112 @@ fn no_matching_events_means_no_indicator_and_a_null_tenant_means_a_case_wide_one
             "malicious".to_string(),
             Some("accepted".to_string())
         )]
+    );
+}
+
+#[test]
+fn ai_pending_sees_a_pending_agent_mark_that_a_stronger_confirmed_flag_hides() {
+    let case = events_case();
+    let c = case.conn();
+    let rev = reviewer();
+    // Nothing marked: nothing to review.
+    assert!(!row(&case, "u1").ai_pending);
+    // The analyst's accepted Malicious flag on u1; an agent's pending Suspicious flag on the IP u1 and u2 share.
+    flag_rows(
+        c,
+        &analyst(),
+        &[r("ual_events", "u1")],
+        Some(FlagLevel::Malicious),
+    )
+    .unwrap();
+    assert!(!row(&case, "u1").ai_pending);
+    flag_value(
+        c,
+        &agent(),
+        ValueKind::Ip,
+        IP,
+        None,
+        Some(FlagLevel::Suspicious),
+    )
+    .unwrap();
+    // u1: the effective flag is the confirmed Malicious one, so `flag_ai` is false, but a pending mark covers it.
+    let u1 = row(&case, "u1");
+    assert_eq!(
+        (u1.flag, u1.flag_ai, u1.ai_pending),
+        (Some(FlagLevel::Malicious), false, true)
+    );
+    // u2: only the pending flag shows, and it is pending.
+    let u2 = row(&case, "u2");
+    assert_eq!(
+        (u2.flag, u2.flag_ai, u2.ai_pending),
+        (Some(FlagLevel::Suspicious), true, true)
+    );
+    // u3 has another IP: untouched.
+    assert!(!row(&case, "u3").ai_pending);
+    // An agent's tag counts too, with no flag at all.
+    tag_rows(c, &agent(), &[r("ual_events", "u3")], "ai:relay", true).unwrap();
+    let u3 = row(&case, "u3");
+    assert_eq!((u3.flag, u3.flag_ai, u3.ai_pending), (None, false, true));
+    // Reviewing the one selection that the grid can now send (u1) confirms the value flag for every row it covers.
+    let done = review_marks(c, &rev, &[r("ual_events", "u1")], true).unwrap();
+    assert!(!done.is_empty());
+    assert!(!row(&case, "u1").ai_pending);
+    assert!(!row(&case, "u2").ai_pending);
+    assert!(!row(&case, "u2").flag_ai);
+    // The tag on u3 is still waiting.
+    assert!(row(&case, "u3").ai_pending);
+}
+
+#[test]
+fn flag_value_reports_the_indicators_it_added_or_updated() {
+    let case = events_case();
+    let c = case.conn();
+    let go = |kind, value: &str, level| {
+        flag_value_with_indicators(c, &analyst(), kind, value, None, level).unwrap()
+    };
+    // Suspicious, a kind that makes none, and a clear: nothing reported.
+    assert!(
+        go(ValueKind::Ip, IP, Some(FlagLevel::Suspicious))
+            .1
+            .is_empty()
+    );
+    assert!(
+        go(ValueKind::Asn, "64496", Some(FlagLevel::Malicious))
+            .1
+            .is_empty()
+    );
+    // New: Malicious on the IP adds its indicator, one per tenant of the events, and says so.
+    let (entry, made) = go(ValueKind::Ip, IP, Some(FlagLevel::Malicious));
+    assert_eq!(entry.action, "flag_value");
+    assert_eq!(made.len(), 1);
+    assert!(made[0].created);
+    assert!(made[0].tenant_key.is_some());
+    let rows = indicator_rows(&case);
+    assert_eq!(rows.len(), 1);
+    // Updated: clear it, flag it again; the indicator exists now, so it is reported as updated, same id.
+    assert!(go(ValueKind::Ip, IP, None).1.is_empty());
+    let (_, again) = go(ValueKind::Ip, IP, Some(FlagLevel::Malicious));
+    assert_eq!(again.len(), 1);
+    assert!(!again[0].created);
+    assert_eq!(again[0].indicator_id, made[0].indicator_id);
+    assert_eq!(indicator_rows(&case).len(), 1);
+    // None because no event matches: the flag is made, no indicator, nothing reported.
+    let (_, none) = go(ValueKind::Ip, "198.51.100.200", Some(FlagLevel::Malicious));
+    assert!(none.is_empty());
+    assert_eq!(indicator_rows(&case).len(), 1);
+    // `flag_value` keeps returning just the audit row.
+    let plain = flag_value(
+        c,
+        &analyst(),
+        ValueKind::Account,
+        "jdoe@contoso.example",
+        None,
+        Some(FlagLevel::Malicious),
+    )
+    .unwrap();
+    assert_eq!(
+        (plain.action.as_str(), plain.object_type.as_str()),
+        ("flag_value", "value_flag")
     );
 }
 

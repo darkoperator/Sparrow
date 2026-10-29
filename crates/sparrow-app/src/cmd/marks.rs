@@ -6,8 +6,9 @@ use crate::cmd::events::EntityArg;
 use crate::error::{CmdError, CmdResult};
 use crate::state::{AppState, analyst, with_case, with_writable};
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use sparrow_core::case::audit::AuditEntry;
-use sparrow_core::case::marks::{self, FlagLevel, RowRef, TagInfo, ValueKind};
+use sparrow_core::case::marks::{self, FlagLevel, IndicatorChange, RowRef, TagInfo, ValueKind};
 use sparrow_core::case::notes::{self, NoteTarget};
 use std::collections::BTreeSet;
 
@@ -107,6 +108,14 @@ pub fn marks_flag_rows(
     })
 }
 
+/// What `marks_flag_value` did: the audit row of the flag, and the indicators a Malicious flag on an IP or account added
+/// or updated (empty when it made none).
+#[derive(Debug, Clone, Serialize)]
+pub struct ValueFlagged {
+    pub audit: AuditEntry,
+    pub indicators: Vec<IndicatorChange>,
+}
+
 /// Set or clear a standing flag on a value (every event with it, including ones ingested later), case-wide or limited
 /// to one entity. Malicious on an IP or an account also records an indicator.
 pub fn marks_flag_value(
@@ -115,19 +124,20 @@ pub fn marks_flag_value(
     value: &str,
     scope: Option<&EntityArg>,
     level: Option<FlagLevel>,
-) -> CmdResult<AuditEntry> {
+) -> CmdResult<ValueFlagged> {
     let ticket = state.ticket();
     with_writable(state, ticket, |open| {
         let actor = analyst(state)?.as_actor();
         let scope = scope.map(EntityArg::entity);
-        Ok(marks::flag_value(
+        let (audit, indicators) = marks::flag_value_with_indicators(
             open.case.conn(),
             &actor,
             kind,
             value,
             scope.as_ref(),
             level,
-        )?)
+        )?;
+        Ok(ValueFlagged { audit, indicators })
     })
 }
 
@@ -216,7 +226,7 @@ pub mod commands {
         value: String,
         scope: Option<EntityArg>,
         level: Option<FlagLevel>,
-    ) -> CmdResult<AuditEntry> {
+    ) -> CmdResult<ValueFlagged> {
         super::marks_flag_value(&state, kind, &value, scope.as_ref(), level)
     }
 

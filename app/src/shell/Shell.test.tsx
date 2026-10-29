@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -48,7 +48,7 @@ vi.mock("./ExportMenu", () => ({ default: () => <button>Export</button> }));
 
 import * as api from "../api";
 import Grid from "../grid/Grid";
-import { useNav, useRefreshBadges } from "./nav";
+import { useNav, useRefreshBadges, useWriteBlocked, writeBlockedReason } from "./nav";
 import Shell from "./Shell";
 import type { EntityRef } from "./tabs";
 
@@ -718,5 +718,34 @@ describe("Shell", () => {
     expect(screen.getByText("tables empty")).toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "Highlights" }));
     expect(screen.getByText("highlights panel")).toBeInTheDocument();
+  });
+
+  it("the_shell_tells_every_screen_why_writes_are_off", async () => {
+    const Probe = () => <p>{`blocked: ${String(useWriteBlocked())}`}</p>;
+    const screens = { events: () => <Probe /> };
+    const open = async () => {
+      dialogOpen.mockResolvedValue("/synthetic/case-a.duckdb");
+      render(<Shell screens={screens} />);
+      await userEvent.setup().click(await screen.findByRole("button", { name: "Open a case" }));
+    };
+    // Writable.
+    await open();
+    expect(await screen.findByText("blocked: null")).toBeInTheDocument();
+    cleanup();
+    // A read-only case: the case's own reason.
+    m.open.mockResolvedValue({ ...info, audit_ok: false, read_only_reason: "the audit chain is broken at seq 3" });
+    await open();
+    expect(await screen.findByText("blocked: Read-only case: the audit chain is broken at seq 3")).toBeInTheDocument();
+    cleanup();
+    // No analyst name: that, and nothing about a read-only case.
+    m.open.mockResolvedValue(info);
+    m.settings.mockResolvedValue({ analyst: null, recent: [] });
+    await open();
+    expect(await screen.findByText("blocked: The analyst name is not set: enter it to make changes")).toBeInTheDocument();
+    cleanup();
+    // Both: the case's reason wins, since entering a name would not help.
+    expect(writeBlockedReason("old schema", null)).toBe("Read-only case: old schema");
+    expect(writeBlockedReason(null, null)).toBe("The analyst name is not set: enter it to make changes");
+    expect(writeBlockedReason(null, "dana")).toBeNull();
   });
 });

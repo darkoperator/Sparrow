@@ -60,6 +60,19 @@ export interface GridProps {
    * (localStorage, per grid). Without one the layout still works but lasts only while the grid is shown.
    */
   layoutId?: string;
+  /**
+   * The identity of the row at an index (the host's key for its event). A cell menu remembers the identity of the row it
+   * was opened on and closes itself when that index later holds another row (a sort, a filter, a reload), so an item can
+   * never act on a row the analyst did not right-click.
+   */
+  rowId?: (row: number) => string | undefined;
+  /** A cell menu was opened on this cell (before its items are asked for): the host snapshots what it acts on here. */
+  onMenuOpen?: (cell: { column: string; row: number }) => void;
+  /**
+   * The name of a first column that stays put: not draggable, not resizable (its width is `widths[name]`), left out of
+   * the saved layout and untouched by "Reset columns". Ignored when it is not the first column.
+   */
+  pinnedFirst?: string;
   /** Called after "Reset columns", for a host that keeps more column state (which are shown) to reset it too. */
   onResetColumns?: () => void;
   /** Height of the scrolling body in px. */
@@ -98,6 +111,8 @@ interface MenuAt {
   y: number;
   row: number;
   col: number;
+  /** The identity of the row when the menu opened (`rowId`). */
+  id: string | undefined;
 }
 
 const NEAR_END = 40;
@@ -118,17 +133,24 @@ export default function Grid({
   rowClass: hostRowClass,
   cellItems,
   layoutId,
+  pinnedFirst,
+  rowId,
+  onMenuOpen,
   onResetColumns,
   height = 320,
 }: GridProps) {
   const nav = useNav();
   // The analyst's column order: from here on `columns` and `rows` are in the order shown; `srcRows` are as given.
-  const layout = useGridLayout(layoutId, srcColumns, widths, DEFAULT_COLUMN_WIDTH);
-  const columns = useMemo(() => layout.order.map((i) => srcColumns[i]), [layout.order, srcColumns]);
+  // A pinned first column is kept out of the layout: `off` is how many leading columns the layout does not know.
+  const off = pinnedFirst !== undefined && srcColumns[0] === pinnedFirst ? 1 : 0;
+  const movable = useMemo(() => (off ? srcColumns.slice(1) : srcColumns), [off, srcColumns]);
+  const layout = useGridLayout(layoutId, movable, widths, DEFAULT_COLUMN_WIDTH);
+  const columns = useMemo(() => [...srcColumns.slice(0, off), ...layout.order.map((i) => movable[i])], [off, srcColumns, movable, layout.order]);
   const rows = useMemo(() => {
     const identity = layout.order.every((src, d) => src === d);
-    return identity ? srcRows : srcRows.map((r) => layout.order.map((i) => r[i]));
-  }, [layout.order, srcRows]);
+    if (identity) return srcRows;
+    return srcRows.map((r) => [...r.slice(0, off), ...layout.order.map((i) => r[i + off])]);
+  }, [off, layout.order, srcRows]);
   const [headerMenu, setHeaderMenu] = useState<{ x: number; y: number; col: number } | null>(null);
   const dragFrom = useRef<number | null>(null);
   const [dropAt, setDropAt] = useState<number | null>(null);
@@ -149,8 +171,11 @@ export default function Grid({
     e.preventDefault();
     e.stopPropagation();
     opener.current = e.currentTarget as HTMLElement;
-    setMenu({ ...rect, row, col });
+    onMenuOpen?.({ column: columns[col], row });
+    setMenu({ ...rect, row, col, id: rowId?.(row) });
   };
+  // The row under an open menu changed (another event now sits at its index): close it rather than retarget it.
+  if (menu && rowId && rowId(menu.row) !== menu.id) setMenu(null);
   const [viewing, setViewing] = useState<{ row: number; col: number } | null>(null);
   const viewerOpener = useRef<HTMLElement | null>(null);
   const openViewer = (el: HTMLElement, row: number, col: number) => {
@@ -191,13 +216,18 @@ export default function Grid({
       columns.map((name, i) =>
         helper.accessor((r) => r[i], {
           id: `${i}`,
+          minSize: i < off ? 1 : MIN_COLUMN_WIDTH,
           header: displaySafe(labels?.[name] ?? name),
           cell: (c) => cellText(c.getValue()),
         }),
       ),
-    [columns, helper, labels],
+    [columns, helper, labels, off],
   );
-  const sizing = useMemo(() => Object.fromEntries(columns.map((_, d) => [String(d), layout.widthAt(d)])), [columns, layout]);
+  const pinnedWidth = off ? (widths?.[columns[0]] ?? DEFAULT_COLUMN_WIDTH) : 0;
+  const sizing = useMemo(
+    () => Object.fromEntries(columns.map((_, d) => [String(d), d < off ? pinnedWidth : layout.widthAt(d - off)])),
+    [columns, layout, off, pinnedWidth],
+  );
   // TanStack Table's hook is not memoisable by the React Compiler; the grid does not rely on that.
   // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
@@ -206,7 +236,10 @@ export default function Grid({
     defaultColumn: { size: DEFAULT_COLUMN_WIDTH, minSize: MIN_COLUMN_WIDTH },
     columnResizeMode: "onChange",
     state: { columnSizing: sizing },
-    onColumnSizingChange: (u) => layout.setWidths(typeof u === "function" ? u(sizing) : u),
+    onColumnSizingChange: (u) => {
+      const next = typeof u === "function" ? u(sizing) : u;
+      layout.setWidths(Object.fromEntries(Object.entries(next).filter(([d]) => Number(d) >= off).map(([d, w]) => [String(Number(d) - off), w])));
+    },
     getCoreRowModel: getCoreRowModel(),
   });
   const tableRows = table.getRowModel().rows;
@@ -307,9 +340,9 @@ export default function Grid({
                   role="columnheader"
                   aria-sort={onSort && (sortable?.(columns[i]) ?? true) ? (sorted ?? "none") : undefined}
                   className={dropAt === i ? "grid-cell grid-header grid-drop" : "grid-cell grid-header"}
-                  draggable
+                  draggable={i >= off}
                   onDragStart={(e) => {
-                    if (onHandle.current) {
+                    if (onHandle.current || i < off) {
                       e.preventDefault();
                       return;
                     }
@@ -318,7 +351,7 @@ export default function Grid({
                     if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
                   }}
                   onDragOver={(e) => {
-                    if (dragFrom.current === null) return;
+                    if (dragFrom.current === null || i < off) return;
                     e.preventDefault();
                     setDropAt(i);
                   }}
@@ -327,7 +360,7 @@ export default function Grid({
                     const from = dragFrom.current;
                     dragFrom.current = null;
                     setDropAt(null);
-                    if (from !== null) layout.move(from, i);
+                    if (from !== null && i >= off) layout.move(from - off, i - off);
                   }}
                   onDragEnd={() => {
                     dragFrom.current = null;
@@ -335,6 +368,7 @@ export default function Grid({
                   }}
                   onContextMenu={(e) => {
                     e.preventDefault();
+                    if (i < off) return;
                     opener.current = e.currentTarget;
                     setHeaderMenu({ x: e.clientX, y: e.clientY, col: i });
                   }}
@@ -347,19 +381,21 @@ export default function Grid({
                   ) : (
                     flexRender(h.column.columnDef.header, h.getContext())
                   )}
-                  <div
-                    role="separator"
-                    aria-orientation="vertical"
-                    aria-label={`Resize ${displaySafe(columns[i])}`}
-                    className="grid-resize"
-                    draggable={false}
-                    onMouseDown={(e) => {
-                      onHandle.current = true;
-                      window.addEventListener("mouseup", () => (onHandle.current = false), { once: true });
-                      h.getResizeHandler()(e);
-                    }}
-                    onClick={(e) => e.stopPropagation()}
-                  />
+                  {i >= off && (
+                    <div
+                      role="separator"
+                      aria-orientation="vertical"
+                      aria-label={`Resize ${displaySafe(columns[i])}`}
+                      className="grid-resize"
+                      draggable={false}
+                      onMouseDown={(e) => {
+                        onHandle.current = true;
+                        window.addEventListener("mouseup", () => (onHandle.current = false), { once: true });
+                        h.getResizeHandler()(e);
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  )}
                 </div>
               );
             })}
@@ -415,8 +451,8 @@ export default function Grid({
           x={headerMenu.x}
           y={headerMenu.y}
           items={[
-            ...(headerMenu.col > 0 ? [{ label: "Move column left", run: () => layout.move(headerMenu.col, headerMenu.col - 1) }] : []),
-            ...(headerMenu.col < columns.length - 1 ? [{ label: "Move column right", run: () => layout.move(headerMenu.col, headerMenu.col + 1) }] : []),
+            ...(headerMenu.col > off ? [{ label: "Move column left", run: () => layout.move(headerMenu.col - off, headerMenu.col - off - 1) }] : []),
+            ...(headerMenu.col < columns.length - 1 ? [{ label: "Move column right", run: () => layout.move(headerMenu.col - off, headerMenu.col - off + 1) }] : []),
             {
               label: "Reset columns",
               run: () => {

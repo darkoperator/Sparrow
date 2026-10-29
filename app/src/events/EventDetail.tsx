@@ -2,7 +2,23 @@
 // source file and line, and the raw record (collapsed). Account, IP, device and session values open entity tabs.
 // Everything is rendered as text.
 import { useEffect, useState, type ReactNode } from "react";
-import { eventsDetail, isCmdError, type EntityArg, type EventDetail as Detail, type RowRef, type TagRef } from "../api";
+import {
+  eventsDetail,
+  isCmdError,
+  marksFlagRows,
+  marksFlagValue,
+  marksTagRows,
+  type EntityArg,
+  type EntityKind,
+  type EventDetail as Detail,
+  type FlagLevel,
+  type FlagSource,
+  type RowRef,
+  type TagRef,
+  type ValueKind,
+} from "../api";
+import AddToTimelineDialog from "../marks/AddToTimelineDialog";
+import NoteDialog from "../marks/NoteDialog";
 import { useNav } from "../shell/nav";
 import { displaySafe, displaySafeMultiline } from "../text";
 import { deviceKey, isoSeconds } from "./columns";
@@ -41,12 +57,31 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 interface Props {
   event: RowRef;
   onClose: () => void;
+  /** Why the analyst cannot write (a read-only case, or no analyst name), or null. */
+  readOnly?: string | null;
+  /** The case's tag names, offered when adding one. */
+  tagNames?: string[];
+  /** Changes when something was written elsewhere: the panel reads the event again, keeping what it shows meanwhile. */
+  version?: number;
+  /** Something was written here: the host reloads its grid and says `message`. */
+  onChanged?: (message: string) => void;
 }
 
-export default function EventDetail({ event, onClose }: Props) {
+const KINDS: readonly string[] = ["ip", "ip_prefix", "account", "asn", "device", "session"];
+const ENTITY_KINDS: readonly string[] = ["account", "ip", "device", "session"];
+
+/** Where a standing flag stops, when it was made inside an entity tab. */
+function scopeOf(f: FlagSource): { kind: EntityKind; value: string } | null {
+  return f.scope_kind && f.scope_value && ENTITY_KINDS.includes(f.scope_kind) ? { kind: f.scope_kind as EntityKind, value: f.scope_value } : null;
+}
+
+export default function EventDetail({ event, onClose, readOnly = null, tagNames = [], version = 0, onChanged }: Props) {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [width, setWidth] = useState(420);
+  const [dialog, setDialog] = useState<"note" | "timeline" | null>(null);
+  const [writeError, setWriteError] = useState<string | null>(null);
+  const [newTag, setNewTag] = useState("");
 
   useEffect(() => {
     // One panel per event (the parent keys it), so it starts empty; nothing to reset here.
@@ -58,7 +93,24 @@ export default function EventDetail({ event, onClose }: Props) {
     return () => {
       live = false;
     };
-  }, [event.source_table, event.record_key]);
+  }, [event.source_table, event.record_key, version]);
+
+  const write = async (job: () => Promise<unknown>, message: string) => {
+    setWriteError(null);
+    try {
+      await job();
+      onChanged?.(message);
+    } catch (e) {
+      setWriteError(isCmdError(e) ? e.message : String(e));
+    }
+  };
+  const setFlag = (level: FlagLevel | null) =>
+    write(() => marksFlagRows([event], level), level === null ? "Flag cleared" : `Flagged ${level}`);
+  const clearSource = (f: FlagSource) =>
+    f.origin === "row" || !f.kind || !f.value || !KINDS.includes(f.kind)
+      ? setFlag(null)
+      : write(() => marksFlagValue(f.kind as ValueKind, f.value!, scopeOf(f), null), `Cleared the flag on ${f.kind} ${f.value}`);
+  const off = readOnly ?? undefined;
 
   // The panel is resized by dragging its left edge; the width is clamped, and the keyboard can do the same.
   const startResize = (e: React.MouseEvent) => {
@@ -75,6 +127,7 @@ export default function EventDetail({ event, onClose }: Props) {
   };
 
   const r = detail?.row;
+  const eventTitle = r ? [r.operation ?? r.source, r.actor_upn ? `by ${r.actor_upn}` : null, r.ip ? `from ${r.ip}` : null].filter(Boolean).join(" ") : "";
   return (
     <aside className="ev-detail" aria-label="Event detail" style={{ width }}>
       <div
@@ -152,6 +205,7 @@ export default function EventDetail({ event, onClose }: Props) {
               {r.summary && <Field label="Summary">{displaySafe(r.summary)}</Field>}
               <Field label="Record">{displaySafe(`${r.source_table}:${r.record_key}`)}</Field>
             </dl>
+            {writeError && <div role="alert">{displaySafe(writeError)}</div>}
             <h4>Flag</h4>
             {detail.flag === null ? (
               <p className="meta">Not flagged.</p>
@@ -161,28 +215,85 @@ export default function EventDetail({ event, onClose }: Props) {
                   <strong>{detail.flag === "malicious" ? "Malicious" : "Suspicious"}</strong>
                 </li>
                 {detail.flag_sources.map((f, i) => (
-                  <li key={i} className="meta">
-                    {displaySafe(
-                      `${f.level} · ${
-                        f.origin === "row"
-                          ? "set on this event"
-                          : `every event with ${f.kind ?? "value"} ${f.value ?? ""}${f.scope_kind ? ` in ${f.scope_kind} ${f.scope_value ?? ""}` : ""}`
-                      } · ${f.decided_by} · ${f.review_state}`,
-                    )}
+                  <li key={i} className="ev-detail-flag">
+                    <span className="meta">
+                      {displaySafe(
+                        `${f.level} · ${
+                          f.origin === "row"
+                            ? "set on this event"
+                            : `every event with ${f.kind ?? "value"} ${f.value ?? ""}${f.scope_kind ? ` in ${f.scope_kind} ${f.scope_value ?? ""}` : ""}, incl. later imports`
+                        } · ${f.decided_by} · ${f.review_state}`,
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={readOnly !== null}
+                      title={off ?? (f.origin === "row" ? "Clear the flag set on this event" : "Clear this flag from every event it covers; flags set on single events stay")}
+                      onClick={() => void clearSource(f)}
+                    >
+                      {f.origin === "row" ? "Clear" : "Clear for all"}
+                    </button>
                   </li>
                 ))}
               </ul>
             )}
+            <div className="ev-detail-actions" role="group" aria-label="Flag this event">
+              <button type="button" disabled={readOnly !== null} title={off} onClick={() => void setFlag("suspicious")}>
+                Flag suspicious
+              </button>
+              <button type="button" disabled={readOnly !== null} title={off} onClick={() => void setFlag("malicious")}>
+                Flag malicious
+              </button>
+            </div>
             <h4>Tags</h4>
             {detail.tags.length === 0 ? (
               <p className="meta">No tags.</p>
             ) : (
               <p>
                 {detail.tags.map((t) => (
-                  <TagBadge key={t.name} tag={t} />
+                  <span key={t.name}>
+                    <TagBadge tag={t} />
+                    <button
+                      type="button"
+                      className="link"
+                      aria-label={`Remove tag ${displaySafe(t.name)}`}
+                      disabled={readOnly !== null}
+                      title={off ?? "Remove this tag from the event"}
+                      onClick={() => void write(() => marksTagRows([event], t.name, false), `Removed tag ${t.name}`)}
+                    >
+                      ×
+                    </button>
+                  </span>
                 ))}
               </p>
             )}
+            <form
+              className="ev-detail-actions"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const name = newTag.trim();
+                if (name === "") return;
+                setNewTag("");
+                void write(() => marksTagRows([event], name, true), `Tagged ${name}`);
+              }}
+            >
+              <input
+                aria-label="New tag"
+                list="detail-tag-names"
+                value={newTag}
+                disabled={readOnly !== null}
+                title={off}
+                onChange={(e) => setNewTag(e.target.value)}
+              />
+              <datalist id="detail-tag-names">
+                {tagNames.map((t) => (
+                  <option key={t} value={t} />
+                ))}
+              </datalist>
+              <button type="submit" disabled={readOnly !== null || newTag.trim() === ""} title={off}>
+                Add tag
+              </button>
+            </form>
             <h4>Notes</h4>
             {detail.notes.length === 0 ? (
               <p className="meta">No notes.</p>
@@ -198,6 +309,14 @@ export default function EventDetail({ event, onClose }: Props) {
                 ))}
               </ul>
             )}
+            <div className="ev-detail-actions">
+              <button type="button" disabled={readOnly !== null} title={off} onClick={() => setDialog("note")}>
+                Add note…
+              </button>
+              <button type="button" disabled={readOnly !== null} title={off} onClick={() => setDialog("timeline")}>
+                Add to timeline…
+              </button>
+            </div>
             <h4>Source</h4>
             {detail.source_refs.length === 0 ? (
               <p className="meta">No source reference.</p>
@@ -215,6 +334,27 @@ export default function EventDetail({ event, onClose }: Props) {
           </>
         )}
       </div>
+      {dialog === "note" && (
+        <NoteDialog
+          rows={[event]}
+          onClose={() => setDialog(null)}
+          onDone={(m) => {
+            setDialog(null);
+            onChanged?.(m);
+          }}
+        />
+      )}
+      {dialog === "timeline" && (
+        <AddToTimelineDialog
+          rows={[event]}
+          defaultTitle={eventTitle}
+          onClose={() => setDialog(null)}
+          onDone={(m) => {
+            setDialog(null);
+            onChanged?.(m);
+          }}
+        />
+      )}
     </aside>
   );
 }

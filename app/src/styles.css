@@ -217,3 +217,21 @@ pre.prose { max-width: 100%; overflow-x: auto; }
 .entity-dialog label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
 .entity-dialog-buttons { display: flex; gap: 8px; justify-content: flex-end; }
 .entity-findings ul { max-height: 220px; overflow: auto; }
+.cell-menu-root { z-index: 10; }
+.cell-menu-row { position: relative; display: flex; flex-direction: column; }
+.cell-menu button { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.cell-menu button[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
+.cell-menu button[aria-disabled="true"]:hover, .cell-menu button[aria-disabled="true"]:focus { background: none; color: inherit; }
+.cell-menu-arrow { margin-left: auto; padding-left: 12px; }
+.cell-menu-check { display: inline-block; width: 1em; }
+.cell-submenu { position: absolute; left: 100%; top: -5px; }
+.cell-submenu.cell-menu-flip { left: auto; right: 100%; }
+.cell-menu-filter { margin: 2px 0 4px; min-width: 160px; }
+.ev-selbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; padding: 4px 8px; border: 1px solid #8884; border-radius: 4px; }
+.ev-selbar .meta { flex: 1; }
+.ev-tickcell { display: flex; align-items: center; justify-content: center; }
+.mark-dialog { max-height: 70vh; overflow: auto; }
+.mark-dialog textarea { min-height: 80px; font: inherit; }
+.mark-dialog fieldset { border: 1px solid #8886; border-radius: 4px; }
+.ev-detail-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }
+.ev-detail-flag { display: flex; gap: 6px; align-items: baseline; }
