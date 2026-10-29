@@ -2,6 +2,10 @@
    Flag colours are never alone: a pending AI mark keeps its dashed row edge (grid.css) and its "AI" badge. */
 .ev-view { display: flex; align-items: stretch; min-width: 0; background: var(--surface); }
 .ev-left { flex: 1; min-width: 0; padding: 14px 16px 16px; }
+/* The Events screen fits its area: the left column scrolls inside itself, the detail panel keeps the full height. */
+.layout > main > section > .ev-view { height: 100%; }
+.layout > main > section > .ev-view > .ev-left { overflow: auto; }
+.layout > main > section > .ev-view > .ev-detail { height: 100%; }
 
 /* Counts */
 .ev-summary { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 12px; min-height: 36px; }

@@ -1,5 +1,5 @@
 /* Tables: the table picker, a filter card (builder + chips), the grid and the full row beside it. */
-.tables { padding: 16px 16px 20px; }
+.tables { box-sizing: border-box; min-height: 100%; padding: 16px 16px 20px; }
 .tbl-head { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-bottom: 12px; }
 .tbl-head h2 { margin: 0; font-size: 18px; }
 .tbl-pick { display: inline-flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12px; }
@@ -35,14 +35,17 @@
 .filter-chips .filter-chip button { display: inline-flex; align-items: center; padding: 2px; border: 0; background: none; color: var(--faint); }
 .filter-chips .filter-chip button:hover:not(:disabled) { background: var(--raised-2); color: var(--text); }
 
-.tables-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 30%); gap: 12px; align-items: start; }
+/* The grid takes the whole width; a selected row adds the detail column beside it, which stays in view while the grid
+   scrolls sideways inside its card. */
+.tables-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-items: start; }
+.tables-layout-detail { grid-template-columns: minmax(0, 1fr) minmax(240px, 30%); }
 .tables-layout > * { min-width: 0; }
 
 .row-detail {
   box-sizing: border-box;
   min-width: 0;
   max-width: 100%;
-  max-height: 420px;
+  max-height: 420px; /* overridden inline with the grid's height */
   overflow: auto;
   padding: 12px 14px;
   border: 1px solid var(--line);

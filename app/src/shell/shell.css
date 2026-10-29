@@ -1,5 +1,11 @@
 /* The window shell: header, tab strip, banners and toasts, the Open case screen and the analyst prompt. */
-.shell { min-height: 100vh; background: var(--surface); }
+/* The case window fits the viewport: header, banners and tab strip keep their height, the screen below fills the rest
+   and scrolls inside itself (only a window smaller than a screen's minimum makes that area scroll). */
+.shell { height: 100vh; overflow: hidden; background: var(--surface); }
+/* Elements a library appends to <body> (the SQL editor's tooltip layer) must not make the window scroll. */
+body:has(.shell) { overflow: hidden; }
+.shell-body { display: flex; flex-direction: column; height: 100%; }
+.shell-body > * { flex: none; }
 
 .titlebar {
   display: flex;
@@ -124,7 +130,10 @@
 }
 .tab-close:hover:not(:disabled) { background: none; color: var(--text); }
 
-.layout { display: block; min-height: calc(100vh - 86px); background: var(--surface); }
+.shell-body > .layout { display: flex; flex: 1 1 0; flex-direction: column; min-height: 0; background: var(--surface); }
+/* The screen area: one scrolling box. A screen that sizes itself to it (Review, Events) uses height: 100%. */
+.layout > main { flex: 1 1 0; min-height: 0; overflow: auto; }
+.layout > main > section[aria-label="Events"] { height: 100%; }
 
 /* Export. */
 .export-menu { position: relative; display: inline-flex; gap: 8px; align-items: center; }

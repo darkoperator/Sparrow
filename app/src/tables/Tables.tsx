@@ -10,7 +10,8 @@ import {
   type Filter,
   type Sort,
 } from "../api";
-import Grid, { type Cell } from "../grid/Grid";
+import Grid, { ROW_HEIGHT, type Cell } from "../grid/Grid";
+import { useFillHeight } from "../grid/useFillHeight";
 import { displaySafe } from "../text";
 import FilterBuilder, { FilterChips } from "./FilterBuilder";
 import RowDetail from "./RowDetail";
@@ -22,6 +23,8 @@ export interface TableRequest {
 }
 
 const PAGE = 500;
+/** Space kept under the grid: the screen's bottom padding. */
+const TABLES_BOTTOM_PAD = 20;
 
 interface Spec {
   table: string;
@@ -193,6 +196,10 @@ export default function Tables({ initial }: { initial?: TableRequest }) {
     else addFilter({ op: "eq", column, value });
   };
 
+  const gridBox = useRef<HTMLDivElement>(null);
+  const gridHeight = useFillHeight(gridBox, TABLES_BOTTOM_PAD);
+  const detailRow = selected === null ? undefined : rows[selected];
+
   return (
     <section className="tables">
       <header className="tbl-head">
@@ -231,20 +238,20 @@ export default function Tables({ initial }: { initial?: TableRequest }) {
       )}
       {(error || cancelled) && rows.length > 0 && more && <button className="tbl-more" onClick={retry}>Load more</button>}
       {spec && rows.length > 0 && (
-        <div className="tables-layout">
+        <div ref={gridBox} className={detailRow ? "tables-layout tables-layout-detail" : "tables-layout"}>
           <Grid
             key={gridKey}
             layoutId={`table:${spec.table}`}
             columns={columns}
             rows={rows}
-            height={360}
+            height={gridHeight}
             sort={spec.sort}
             onSort={onSort}
             onNearEnd={more ? loadMore : undefined}
             onRowClick={(_, i) => setSelected(i)}
             cellActions={{ onFilter: onFilterCell }}
           />
-          {selected !== null && rows[selected] && <RowDetail columns={columns} row={rows[selected]} />}
+          {detailRow && <RowDetail columns={columns} row={detailRow} maxHeight={gridHeight + ROW_HEIGHT} />}
         </div>
       )}
       {spec && !loading && !error && !cancelled && rows.length === 0 && <p className="tbl-empty">No rows match.</p>}

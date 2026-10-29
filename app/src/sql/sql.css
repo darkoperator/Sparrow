@@ -1,5 +1,5 @@
 /* SQL: the schema sidebar on the left, the editor, its run bar and the results grid on the right. */
-.sql-screen { display: grid; grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); min-height: calc(100vh - 86px); }
+.sql-screen { display: grid; grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); min-height: 100%; }
 .sql-screen > * { min-width: 0; }
 
 .sql-side { box-sizing: border-box; padding: 14px 10px 14px 14px; border-right: 1px solid var(--line); background: var(--bg); }

@@ -2,7 +2,7 @@
 // boxes hold what the analyst types; Search (or Enter, a summary count, a chart drag, a cell menu) runs it. Results
 // are replaced only when a run succeeds, so a cancelled or refused search leaves the previous ones on screen, and
 // Export CSV, paging and sorting always act on the query that produced what is shown.
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   eventsExportCsv,
   eventsHistogram,
@@ -28,8 +28,9 @@ import {
   type TagInfo,
 } from "../api";
 import { save } from "../dialog";
-import Grid, { cellText, ROW_HEIGHT } from "../grid/Grid";
+import Grid, { cellText } from "../grid/Grid";
 import { loadJson, removeJson, saveJson } from "../grid/gridLayout";
+import { useFillHeight } from "../grid/useFillHeight";
 import AddToTimelineDialog from "../marks/AddToTimelineDialog";
 import NoteDialog from "../marks/NoteDialog";
 import ReviewMarksDialog from "../marks/ReviewMarksDialog";
@@ -70,45 +71,10 @@ export interface EventsViewProps {
 
 const PAGE = 200;
 const MAX_BUCKETS = 120;
-/** The grid's smallest body height; it grows to fill the window below it. */
-const GRID_HEIGHT = 380;
 /** Space kept under the grid: the page's bottom padding, plus the selection bar while rows are ticked. */
 const BELOW_GRID = 16;
 const SELBAR_HEIGHT = 46;
 
-/** The nearest ancestor that scrolls vertically, or null for the window. */
-function scrollParent(el: HTMLElement): HTMLElement | null {
-  for (let p = el.parentElement; p; p = p.parentElement) {
-    const y = getComputedStyle(p).overflowY;
-    if (y === "auto" || y === "scroll") return p;
-  }
-  return null;
-}
-
-/**
- * The body height that makes the grid reach the bottom of the window, never below `GRID_HEIGHT`. Measured after
- * every render (filters, the timeline and the summary above it change height) and on resize; an element with no
- * layout (jsdom, a hidden tab) keeps the minimum.
- */
-function useFillHeight(box: RefObject<HTMLDivElement | null>, below: number): number {
-  const [height, setHeight] = useState(GRID_HEIGHT);
-  useLayoutEffect(() => {
-    const el = box.current;
-    if (!el) return;
-    const fit = () => {
-      const r = el.getBoundingClientRect();
-      if (r.width === 0 && r.height === 0) return;
-      const sp = scrollParent(el);
-      const top = r.top + (sp ? sp.scrollTop - sp.getBoundingClientRect().top : window.scrollY);
-      const want = Math.max(GRID_HEIGHT, Math.floor(window.innerHeight - top - below - ROW_HEIGHT));
-      setHeight((h) => (Math.abs(h - want) > 1 ? want : h));
-    };
-    fit();
-    window.addEventListener("resize", fit);
-    return () => window.removeEventListener("resize", fit);
-  });
-  return height;
-}
 /** The name-like columns read in the UI font (events.png); times, IPs, ids and ASNs stay mono. */
 const NAME_COLUMNS: ReadonlySet<string> = new Set(["source", "operation", "actor_upn", "target"]);
 /** The page total is counted up to this; past it paging stops and the analyst is told to narrow the filter. */

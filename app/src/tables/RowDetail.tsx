@@ -19,9 +19,9 @@ function pretty(v: unknown): string {
 }
 
 /** Every column of one row, in full: the grid shows a cell on one line, this pane shows all of it. */
-export default function RowDetail({ columns, row }: { columns: string[]; row: unknown[] }) {
+export default function RowDetail({ columns, row, maxHeight }: { columns: string[]; row: unknown[]; maxHeight?: number }) {
   return (
-    <aside className="row-detail" aria-label="Row detail">
+    <aside className="row-detail" aria-label="Row detail" style={maxHeight === undefined ? undefined : { maxHeight }}>
       <h3 className="label">Row</h3>
       <dl>
         {columns.map((c, i) => (

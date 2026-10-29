@@ -2,6 +2,12 @@
 .grid { box-sizing: border-box; border: 1px solid var(--line); border-radius: 8px; background: var(--card); font-size: 12px; overflow: hidden; }
 .grid-bounded { max-width: 100%; min-width: 0; }
 .grid-scroll { overflow: auto; position: relative; max-width: 100%; }
+/* Always-visible scrollbars: a wide grid's sideways scroll must be findable, not an overlay that appears only on a gesture. */
+.grid-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+.grid-scroll::-webkit-scrollbar-track { background: var(--raised); }
+.grid-scroll::-webkit-scrollbar-thumb { border: 2px solid var(--raised); border-radius: 6px; background: var(--line-strong); }
+.grid-scroll::-webkit-scrollbar-thumb:hover { background: var(--faint); }
+.grid-scroll::-webkit-scrollbar-corner { background: var(--raised); }
 .grid-head-sticky { position: sticky; top: 0; z-index: 2; background: var(--raised); box-shadow: 0 1px 0 var(--line-strong); }
 .grid-header { position: relative; color: var(--muted); font-size: 11px; font-weight: 600; background: var(--raised); }
 .grid-header[draggable="true"] { cursor: grab; }

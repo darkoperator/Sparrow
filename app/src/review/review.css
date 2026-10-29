@@ -3,8 +3,8 @@
 .review-queue {
   display: grid;
   grid-template-columns: minmax(300px, 520px) minmax(0, 1fr);
-  height: calc(100vh - 86px);
-  min-height: 0;
+  height: 100%;
+  min-height: 420px;
 }
 .review-queue > * { min-width: 0; min-height: 0; }
 

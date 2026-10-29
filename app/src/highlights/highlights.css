@@ -1,5 +1,5 @@
 /* Highlights: the sets with their switches on the left; each set's rules, the rule form and Clear on the right. */
-.highlights { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); min-height: calc(100vh - 86px); }
+.highlights { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); min-height: 100%; }
 .highlights > * { min-width: 0; }
 .hl-empty { padding: 24px; border: 1px dashed var(--line-strong); border-radius: 8px; background: var(--card); color: var(--muted); text-align: center; }
 

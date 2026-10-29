@@ -323,7 +323,7 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
 
   return (
     <div className="shell">
-      <div {...inertWhen(importMode !== null || profiling)}>
+      <div className="shell-body" {...inertWhen(importMode !== null || profiling)}>
       <header className="titlebar">
         <span className="brand">
           <BrandMark />
