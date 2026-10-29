@@ -59,7 +59,7 @@ vi.mock("./ExportMenu", () => ({ default: () => <button>Export</button> }));
 
 import * as api from "../api";
 import Grid from "../grid/Grid";
-import { useNav, useRefreshBadges, useWriteBlocked, writeBlockedReason } from "./nav";
+import { useFocusAnalyst, useNav, useRefreshBadges, useWriteBlocked, writeBlockedReason } from "./nav";
 import Shell from "./Shell";
 import type { EntityRef } from "./tabs";
 
@@ -734,6 +734,32 @@ describe("Shell", () => {
     expect(screen.getByText("tables empty")).toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "Highlights" }));
     expect(screen.getByText("highlights panel")).toBeInTheDocument();
+  });
+
+  it("a_blocked_menu_item_sends_the_analyst_to_the_name_prompt_only_when_the_name_is_the_reason", async () => {
+    const Probe = () => {
+      const focus = useFocusAnalyst();
+      return <button onClick={() => focus?.()}>{`focus: ${focus ? "yes" : "none"}`}</button>;
+    };
+    const screens = { events: () => <Probe /> };
+    const open = async () => {
+      dialogOpen.mockResolvedValue("/synthetic/case-a.duckdb");
+      render(<Shell screens={screens} />);
+      await userEvent.setup().click(await screen.findByRole("button", { name: "Open a case" }));
+    };
+    // No analyst: the callback moves the focus to the prompt's input and flashes it.
+    m.settings.mockResolvedValue({ analyst: null, recent: [] });
+    await open();
+    await userEvent.setup().click(await screen.findByRole("button", { name: "focus: yes" }));
+    const input = screen.getByLabelText("Analyst name");
+    expect(input).toHaveFocus();
+    expect(input).toHaveClass("analyst-flash");
+    cleanup();
+    // A read-only case: typing a name would not help, so there is no callback.
+    m.settings.mockResolvedValue(withAnalyst);
+    m.open.mockResolvedValue({ ...info, audit_ok: false, read_only_reason: "the audit chain is broken at seq 3" });
+    await open();
+    expect(await screen.findByRole("button", { name: "focus: none" })).toBeInTheDocument();
   });
 
   it("the_shell_tells_every_screen_why_writes_are_off", async () => {

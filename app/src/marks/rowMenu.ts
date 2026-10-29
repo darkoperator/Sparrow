@@ -38,6 +38,8 @@ export interface RowMenuContext {
   entity?: EntityRef;
   /** Why writes are not possible (a read-only case, or no analyst name), or null. */
   readOnly: string | null;
+  /** Present when the missing analyst name is why: choosing a blocked item then takes the analyst to the name prompt. */
+  focusAnalyst?: (() => void) | null;
   tags: TagInfo[];
   /** False outside the shell: "Open … tab" is then not offered. */
   canOpen: boolean;
@@ -103,7 +105,7 @@ function isTabEntity(spec: ValueSpec, entity: EntityRef | undefined): boolean {
 }
 
 /** What a value-flag menu needs: the tab it is in, why writes are off, and the flag action. */
-export type ValueMenuContext = Pick<RowMenuContext, "entity" | "readOnly"> & { act: Pick<RowMenuActions, "flagValue"> };
+export type ValueMenuContext = Pick<RowMenuContext, "entity" | "readOnly" | "focusAnalyst"> & { act: Pick<RowMenuActions, "flagValue"> };
 
 /**
  * `Flag every event from this IP in this session (incl. later imports)`, and the three choices under it. `mode` "auto"
@@ -126,7 +128,9 @@ function valueFlagItem(spec: ValueSpec, ctx: ValueMenuContext, mode: "auto" | "c
     },
     { label: `Clear this flag (flags set on single events stay)`, run: set(null) },
   ];
-  return ctx.readOnly !== null ? { label, items, disabled: ctx.readOnly } : { label, items };
+  return ctx.readOnly !== null
+    ? { label, items, disabled: ctx.readOnly, ...(ctx.focusAnalyst ? { blocked: ctx.focusAnalyst } : {}) }
+    : { label, items };
 }
 
 /** Flag, Tag, note and timeline items for `targets`. */
@@ -136,7 +140,8 @@ function rowActionItems(targets: EventRow[], ctx: RowMenuContext): MenuItem[] {
   const what = n === 1 ? "this event" : `${n} ticked events`;
   const off = ctx.readOnly ?? undefined;
   const noteOff = off ?? (n > NOTE_MAX ? `Notes go on at most ${NOTE_MAX} events at once; ${n} are ticked` : undefined);
-  const w = (item: MenuItem, why: string | undefined): MenuItem => (why === undefined ? item : { ...item, disabled: why });
+  const w = (item: MenuItem, why: string | undefined): MenuItem =>
+    why === undefined ? item : { ...item, disabled: why, ...(why === off && ctx.focusAnalyst ? { blocked: ctx.focusAnalyst } : {}) };
   return [
     w(
       {

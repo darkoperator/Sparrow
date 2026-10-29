@@ -22,7 +22,7 @@ import { isoSeconds } from "../events/columns";
 import Icon, { type IconName } from "../ui/Icon";
 import EventsView, { indicatorNote } from "../events/EventsView";
 import { flagValueMessage, pivotMenu, type ValueMenuContext } from "../marks/rowMenu";
-import { useNav, useRefreshBadges, useWriteBlocked } from "../shell/nav";
+import { useFocusAnalyst, useNav, useRefreshBadges, useWriteBlocked } from "../shell/nav";
 import type { EntityRef } from "../shell/tabs";
 import { displaySafe } from "../text";
 import AddToTimelineDialog from "../marks/AddToTimelineDialog";
@@ -54,6 +54,7 @@ const EMPTY: Loaded = { summary: null, pivots: {}, pivotErrors: {}, findings: nu
 
 export default function EntityTab({ entity }: EntityTabProps) {
   const writeBlocked = useWriteBlocked();
+  const focusAnalyst = useFocusAnalyst();
   const nav = useNav();
   const refreshBadges = useRefreshBadges();
   const { kind, value } = entity;
@@ -122,6 +123,7 @@ export default function EntityTab({ entity }: EntityTabProps) {
   const flagContext: ValueMenuContext = {
     entity,
     readOnly: writeBlocked,
+    focusAnalyst,
     act: {
       flagValue: (k, v, scope, level, what) => {
         marksFlagValue(k, v, scope, level).then(

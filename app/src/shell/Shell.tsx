@@ -23,7 +23,7 @@ import { displaySafe } from "../text";
 import Icon, { BrandMark } from "../ui/Icon";
 import AnalystPrompt from "./AnalystPrompt";
 import ExportMenu from "./ExportMenu";
-import { NavContext, RefreshBadgesContext, WriteBlockedContext, writeBlockedReason } from "./nav";
+import { FocusAnalystContext, NavContext, RefreshBadgesContext, WriteBlockedContext, writeBlockedReason } from "./nav";
 import ImportDialog, { type ImportMode } from "./ImportDialog";
 import OpenCase, { type UpgradePrompt } from "./OpenCase";
 import ReadOnlyBanner from "./ReadOnlyBanner";
@@ -259,6 +259,17 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
   }
 
   const canWrite = info.read_only_reason === null && settings.analyst !== null;
+  // A menu item blocked by the missing analyst name sends the analyst to the prompt.
+  const focusAnalyst =
+    info.read_only_reason === null && settings.analyst === null
+      ? () => {
+          const input = document.querySelector<HTMLInputElement>(".analyst-prompt input");
+          if (!input) return;
+          input.focus();
+          input.classList.add("analyst-flash");
+          window.setTimeout(() => input.classList.remove("analyst-flash"), 1500);
+        }
+      : null;
   // Importing needs a writable case; it does not need an analyst name (`sparrow ingest` has none).
   const importBlocked = info.read_only_reason !== null ? `Read-only case: ${info.read_only_reason}` : null;
   const show = (t: FixedTab | EntityRef) => setTabs(showTab(tabs, t));
@@ -388,6 +399,7 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
           <NavContext.Provider value={{ openEntity, openTable, showInEvents, openFinding }}>
             <RefreshBadgesContext.Provider value={refreshBadges}>
             <WriteBlockedContext.Provider value={writeBlockedReason(info.read_only_reason, settings.analyst)}>
+            <FocusAnalystContext.Provider value={focusAnalyst}>
             <main key={dataEpoch}>
               {screen !== "highlights" && <HighlightsError />}
               {body}
@@ -402,6 +414,7 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
                 </section>
               ))}
             </main>
+            </FocusAnalystContext.Provider>
             </WriteBlockedContext.Provider>
             </RefreshBadgesContext.Provider>
           </NavContext.Provider>

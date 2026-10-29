@@ -37,7 +37,7 @@ import NoteDialog from "../marks/NoteDialog";
 import ReviewMarksDialog from "../marks/ReviewMarksDialog";
 import { rowMenu, type RowMenuActions } from "../marks/rowMenu";
 import { NewTagDialog } from "../marks/TagMenu";
-import { useNav, useRefreshBadges, useWriteBlocked } from "../shell/nav";
+import { useFocusAnalyst, useNav, useRefreshBadges, useWriteBlocked } from "../shell/nav";
 import type { EntityRef } from "../shell/tabs";
 import { displaySafe } from "../text";
 import Icon from "../ui/Icon";
@@ -449,6 +449,7 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
 
   // Why writes are off (read-only case, or no analyst name), shown on every disabled write item.
   const readOnly = useWriteBlocked();
+  const focusAnalyst = useFocusAnalyst();
   const tickedRows = useMemo(() => rows.filter((r) => ticked.has(rowKey(r))), [rows, ticked]);
   const gridBox = useRef<HTMLDivElement>(null);
   const gridHeight = useFillHeight(gridBox, BELOW_GRID + (tickedRows.length > 0 ? SELBAR_HEIGHT : 0));
@@ -558,7 +559,7 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
     if (!ev) return [];
     // The ticked rows as they were when the menu opened, read from the rows as they are now (a tag toggle updates them).
     const targets = rows.filter((r) => menuTicks.has(rowKey(r)));
-    return rowMenu({ column, row: ev, ticked: targets }, { entity, readOnly, tags, canOpen: nav !== null, act });
+    return rowMenu({ column, row: ev, ticked: targets }, { entity, readOnly, focusAnalyst, tags, canOpen: nav !== null, act });
   };
 
   const trace = () => {

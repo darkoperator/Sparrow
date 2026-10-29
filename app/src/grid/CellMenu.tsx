@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import Icon from "../ui/Icon";
 
 export interface MenuItem {
@@ -9,6 +9,8 @@ export interface MenuItem {
   items?: MenuItem[];
   /** Why the item cannot be used now. It is shown as the item's title and the item does nothing. */
   disabled?: string;
+  /** On a disabled item: choosing it (click, Enter, ArrowRight) closes the menu and then runs this (a way to fix the reason). */
+  blocked?: () => void;
   /** A tick box item: checked, unchecked, or `"mixed"` (some of the selection). */
   checked?: boolean | "mixed";
   /** On a submenu: a filter box above its items once there are more than `FILTER_MIN` of them. */
@@ -27,39 +29,80 @@ export const FILTER_MIN = 12;
 
 const ITEM = '[role^="menuitem"]';
 
+/** The gap kept between a menu and the window's edge. */
+const MARGIN = 8;
+
+/** Where a menu goes: a point (the pointer) for the top menu, the item that opened it for a submenu. */
+type At = { x: number; y: number } | { item: HTMLElement };
+
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(v, hi));
+
+/**
+ * The top-left of a menu of `w`x`h` inside a `vw`x`vh` window. The top menu opens at the pointer, and upward from it
+ * when there is no room below; a submenu opens beside its item, on the left of it when there is no room on the right,
+ * and shifted up when it would run off the bottom. A menu taller than the window is capped by its max-height, so it
+ * always fits.
+ */
+export function placeMenu(at: { x: number; y: number } | { item: DOMRect }, w: number, h: number, vw: number, vh: number) {
+  const maxTop = vh - MARGIN - h;
+  if ("item" in at) {
+    const r = at.item;
+    const left = r.right + w + MARGIN <= vw ? r.right : r.left - w >= MARGIN ? r.left - w : clamp(vw - w - MARGIN, MARGIN, vw);
+    return { left, top: clamp(r.top - 5, MARGIN, Math.max(MARGIN, maxTop)) };
+  }
+  const left = clamp(at.x, MARGIN, Math.max(MARGIN, vw - w - MARGIN));
+  const top = at.y <= maxTop ? at.y : at.y - h >= MARGIN ? at.y - h : Math.max(MARGIN, maxTop);
+  return { left, top };
+}
+
 function MenuList({
   items,
   filter,
   onRun,
+  onBlocked,
   onBack,
-  flip,
+  at,
   className,
   focusTick,
 }: {
   items: MenuItem[];
   filter: boolean;
   onRun: (item: MenuItem) => void;
+  /** A disabled item with `blocked` was chosen. */
+  onBlocked: (item: MenuItem) => void;
   /** Present in a submenu: closes it and gives the focus back to the item that opened it. */
   onBack?: () => void;
-  flip: boolean;
+  /** Where it opens; it is a fixed box, so a scrolling or clipping parent cannot hide it. */
+  at: At;
   className: string;
   /** Changes when the menu is asked to take the focus again (a click on the item that opened it). */
   focusTick: number;
 }) {
+  const uid = useId();
   const ref = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
   const buttons = useRef<(HTMLButtonElement | null)[]>([]);
   const [open, setOpen] = useState<number | null>(null);
+  /** The item whose submenu is open: the submenu is placed from it. */
+  const [opener, setOpener] = useState<HTMLElement | null>(null);
   const [query, setQuery] = useState("");
   const [tick, setTick] = useState(0);
-  // A submenu that would run off the right edge of the window opens to the left of its item instead.
-  const [spill, setSpill] = useState(false);
-  useLayoutEffect(() => {
-    if (onBack && ref.current && ref.current.getBoundingClientRect().right > window.innerWidth) setSpill(true);
-  }, [onBack]);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  const maxHeight = window.innerHeight - 2 * MARGIN;
   const showFilter = filter && items.filter((i) => !i.pinned).length > FILTER_MIN;
   const needle = query.trim().toLowerCase();
   const shown = showFilter && needle !== "" ? items.filter((i) => i.pinned || i.label.toLowerCase().includes(needle)) : items;
+
+  // Measured after layout and before paint, again when the filter changes how tall it is.
+  const anchor = "item" in at ? at.item : null;
+  const ax = "item" in at ? 0 : at.x;
+  const ay = "item" in at ? 0 : at.y;
+  useLayoutEffect(() => {
+    const box = ref.current?.getBoundingClientRect();
+    if (!box) return;
+    const place = anchor ? { item: anchor.getBoundingClientRect() } : { x: ax, y: ay };
+    setPos(placeMenu(place, box.width, box.height, window.innerWidth, window.innerHeight));
+  }, [anchor, ax, ay, shown.length]);
 
   useEffect(() => {
     if (input.current) input.current.focus();
@@ -70,8 +113,13 @@ function MenuList({
   const focusAt = (i: number) => live()[i]?.focus();
   const openAt = (i: number) => {
     const it = shown[i];
+    if (it?.disabled !== undefined) {
+      if (it.blocked) onBlocked(it);
+      return;
+    }
     if (it?.items && it.disabled === undefined) {
       setOpen(i);
+      setOpener(buttons.current[i]);
       setTick((t) => t + 1);
     }
   };
@@ -100,7 +148,7 @@ function MenuList({
     }
     if (typing || at < 0) return;
     if (e.key === "ArrowRight" || e.key === "Enter" || e.key === " ") {
-      if (shown[at]?.items) {
+      if (shown[at]?.items || (shown[at]?.disabled !== undefined && shown[at]?.blocked)) {
         e.preventDefault();
         e.stopPropagation();
         openAt(at);
@@ -109,7 +157,22 @@ function MenuList({
   };
 
   return (
-    <div ref={ref} role="menu" className={`${className}${flip || spill ? " cell-menu-flip" : ""}`} onKeyDown={onKeyDown}>
+    <div
+      ref={ref}
+      role="menu"
+      className={className}
+      style={{
+        position: "fixed",
+        left: pos?.left ?? ax,
+        top: pos?.top ?? ay,
+        maxHeight,
+        overflowY: "auto",
+        visibility: pos ? undefined : "hidden",
+      }}
+      onKeyDown={onKeyDown}
+      // A submenu stays where it opened: a menu scrolled under it closes it.
+      onScroll={() => setOpen(null)}
+    >
       {showFilter && (
         <input
           ref={input}
@@ -139,9 +202,13 @@ function MenuList({
               aria-expanded={it.items ? open === i : undefined}
               aria-disabled={it.disabled !== undefined ? true : undefined}
               title={it.disabled}
-              onMouseEnter={() => setOpen(it.items && it.disabled === undefined ? i : null)}
+              aria-describedby={it.disabled !== undefined ? `${uid}-${i}` : undefined}
+              onMouseEnter={(e) => {
+                setOpen(it.items && it.disabled === undefined ? i : null);
+                setOpener(e.currentTarget);
+              }}
               onClick={() => {
-                if (it.disabled !== undefined) return;
+                if (it.disabled !== undefined) return openAt(i);
                 if (it.items) openAt(i);
                 else onRun(it);
               }}
@@ -151,19 +218,29 @@ function MenuList({
                   {it.checked === "mixed" ? "–" : it.checked ? "✓" : ""}
                 </span>
               )}
-              {it.label}
+              {it.disabled !== undefined ? (
+                <span className="cell-menu-text">
+                  <span className="cell-menu-label">{it.label}</span>
+                  <small id={`${uid}-${i}`} className="cell-menu-reason" aria-hidden="true">
+                    {it.disabled}
+                  </small>
+                </span>
+              ) : (
+                it.label
+              )}
               {it.items && (
                 <span aria-hidden="true" className="cell-menu-arrow">
                   <Icon name="chevron-right" size={14} />
                 </span>
               )}
             </button>
-            {open === i && it.items && it.disabled === undefined && (
+            {open === i && opener && it.items && it.disabled === undefined && (
               <MenuList
                 items={it.items}
                 filter={it.filter === true}
                 onRun={onRun}
-                flip={flip}
+                onBlocked={onBlocked}
+                at={{ item: opener }}
                 focusTick={tick}
                 className="cell-menu cell-submenu"
                 onBack={() => {
@@ -209,7 +286,6 @@ export default function CellMenu({
     <div
       ref={ref}
       className="cell-menu-root"
-      style={{ position: "fixed", left: x, top: y }}
       onKeyDown={(e) => {
         if (e.key !== "Escape") return;
         e.stopPropagation();
@@ -220,11 +296,16 @@ export default function CellMenu({
         items={items}
         filter={false}
         className="cell-menu"
-        flip={false}
+        at={{ x, y }}
         focusTick={0}
         onRun={(it) => {
           it.run?.();
           if (!it.keepOpen) onClose();
+        }}
+        onBlocked={(it) => {
+          onClose();
+          // After the close: the host gives the focus back to what opened the menu, and that must not win.
+          window.setTimeout(() => it.blocked?.(), 0);
         }}
         onBack={undefined}
       />

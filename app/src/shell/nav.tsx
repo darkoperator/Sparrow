@@ -39,3 +39,11 @@ export function writeBlockedReason(readOnlyReason: string | null, analyst: strin
   if (readOnlyReason !== null) return `Read-only case: ${readOnlyReason}`;
   return analyst === null ? "The analyst name is not set: enter it to make changes" : null;
 }
+
+/**
+ * Moves the focus to the analyst-name prompt and highlights it briefly. Provided only while the missing analyst name is
+ * what blocks writes (null otherwise: a read-only case cannot be fixed by typing a name).
+ */
+export const FocusAnalystContext = createContext<(() => void) | null>(null);
+
+export const useFocusAnalyst = () => useContext(FocusAnalystContext);
