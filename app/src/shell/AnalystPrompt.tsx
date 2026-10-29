@@ -22,7 +22,7 @@ export default function AnalystPrompt({ onSaved }: { onSaved: (s: Settings) => v
 
   return (
     <form
-      className="banner analyst-prompt"
+      className="banner analyst-prompt card"
       onSubmit={(ev) => {
         ev.preventDefault();
         void save();
@@ -31,10 +31,10 @@ export default function AnalystPrompt({ onSaved }: { onSaved: (s: Settings) => v
       <label>
         Analyst name <input value={name} onChange={(e) => setName(e.target.value)} autoComplete="off" />
       </label>{" "}
-      <button type="submit" disabled={busy || name.trim() === ""}>
+      <button type="submit" className="btn btn-primary" disabled={busy || name.trim() === ""}>
         Save name
       </button>
-      <span> Decisions you make are recorded under this name; set it before you accept or discard anything.</span>
+      <span className="analyst-note"> Decisions you make are recorded under this name; set it before you accept or discard anything.</span>
       {error && <div role="alert">{displaySafe(error)}</div>}
     </form>
   );

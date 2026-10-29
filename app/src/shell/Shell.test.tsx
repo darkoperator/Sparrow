@@ -156,7 +156,7 @@ describe("Shell", () => {
     await user.click(screen.getByRole("button", { name: "Save name" }));
     expect(m.setAnalyst).toHaveBeenCalledWith("dana");
     expect(await screen.findByText("queue canWrite=true")).toBeInTheDocument();
-    expect(screen.getByText("Analyst: dana")).toBeInTheDocument();
+    expect(screen.getByTitle("dana")).toBeInTheDocument();
   });
 
   it("shows a rejected analyst name", async () => {

@@ -1,0 +1,173 @@
+/* The window shell: header, tab strip, banners and toasts, the Open case screen and the analyst prompt. */
+.shell { min-height: 100vh; background: var(--surface); }
+
+.titlebar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  box-sizing: border-box;
+  height: 45px;
+  padding: 0 16px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+.brand { display: inline-flex; gap: 8px; align-items: center; color: var(--accent); font-size: 14px; }
+.brand strong { color: var(--text); font-weight: 700; }
+.titlebar-sep { color: var(--line-faint); font-size: 14px; }
+.case-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 13px; font-weight: 600; }
+.titlebar-spacer { flex: 1; }
+.analyst-chip {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  flex: none;
+  max-width: 220px;
+  height: 24px;
+  padding: 0 10px 0 4px;
+  border-radius: 999px;
+  background: var(--raised);
+  color: var(--text);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.analyst-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.analyst-role { flex: none; white-space: pre; }
+.analyst-initials {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.banner { padding: 6px 16px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.banner-readonly { background: var(--sus-bg); color: var(--text-2); border-bottom-color: var(--sus-pill); }
+.banner-readonly strong { color: var(--sus); }
+.warnings { margin: 0; padding: 6px 16px 6px 32px; background: var(--sus-bg); color: var(--text-2); font-size: 12px; border-bottom: 1px solid var(--sus-pill); }
+.toast { padding: 6px 16px; background: var(--sus-bg); color: var(--sus); font-size: 12px; border-bottom: 1px solid var(--sus-pill); }
+[role="status"] { padding: 6px 16px; }
+
+.tabstrip {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  height: 40px;
+  padding: 0 12px;
+  background: var(--bg);
+  box-shadow: inset 0 -1px 0 var(--line);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.tabstrip::-webkit-scrollbar { display: none; }
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  height: 40px;
+  padding: 2px 12px 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.tab:hover:not(:disabled) { background: none; color: var(--text); }
+.tab[aria-selected="true"] { color: var(--text); font-weight: 600; border-bottom-color: var(--accent); }
+.tab:focus-visible { outline-offset: -3px; border-radius: 4px; }
+.tab-badge {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+}
+
+/* Entity tabs: bordered chips with a kind icon, the value in mono (cut at ~24ch, the full value is in the title) and a close x. */
+.tab-entity {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  height: 26px;
+  margin-left: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  color: var(--muted);
+}
+.tab-entity:first-of-type { margin-left: 12px; }
+.tab-entity:hover { background: var(--raised); }
+.tab-entity-active { border-color: var(--accent); background: var(--raised-2); color: var(--text); }
+.tab-entity .tab { height: 24px; padding: 0 2px 0 8px; border: 0; color: inherit; font-size: 12px; }
+.tab-entity .tab[aria-selected="true"] { font-weight: 600; }
+.tab-entity .tab:hover:not(:disabled) { background: none; }
+.tab-value { max-width: 24ch; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono); font-size: 12px; }
+.tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  height: 24px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--faint);
+}
+.tab-close:hover:not(:disabled) { background: none; color: var(--text); }
+
+.layout { display: block; min-height: calc(100vh - 86px); background: var(--surface); }
+
+/* Export. */
+.export-menu { position: relative; display: inline-flex; gap: 8px; align-items: center; }
+.export-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 160px;
+  padding: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: var(--shadow-pop);
+}
+.export-pop label { display: flex; gap: 6px; align-items: center; padding: 2px 2px 4px; color: var(--muted); font-size: 12px; }
+.export-pop button { text-align: left; }
+.export-notice { position: absolute; top: calc(100% + 6px); right: 0; z-index: 14; max-width: 420px; overflow-wrap: anywhere; font-size: 12px; background: var(--card); border-radius: 6px; }
+.export-pop ~ .export-notice { top: calc(100% + 120px); }
+
+/* Open case. */
+.open-case { display: flex; justify-content: center; padding: 12vh 16px 16px; min-height: 100vh; box-sizing: border-box; background: var(--surface); }
+.open-card { align-self: flex-start; box-sizing: border-box; width: min(480px, 100%); padding: 24px; }
+.open-card h2 { margin: 0 0 16px; font-size: 16px; }
+.open-card h3 { margin: 20px 0 6px; }
+.recent li { padding: 4px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+.recent li:last-child { border-bottom: 0; }
+.recent button { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; text-decoration: none; }
+.open-path { overflow-wrap: anywhere; color: var(--muted); }
+.recent button { font-family: var(--font-mono); font-size: 12px; }
+.open-actions { display: flex; gap: 8px; }
+ul.plain { list-style: none; margin: 0; padding: 0; }
+
+/* The analyst prompt: a card under the header until the name is set. */
+.analyst-prompt { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 16px; padding: 10px 14px; }
+.analyst-prompt label { display: flex; gap: 8px; align-items: center; color: var(--text-2); }
+.analyst-note { color: var(--muted); font-size: 12px; }
+.analyst-prompt [role="alert"] { flex-basis: 100%; margin: 0; }
+
+/* Wide content scrolls inside its own panel, never the page. */
+.layout > * { min-width: 0; }
+.layout, body { overflow-x: hidden; }
+.brand, .titlebar-sep, .export-menu, .titlebar > button { flex: none; }

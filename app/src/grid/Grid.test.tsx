@@ -282,7 +282,7 @@ describe("Grid keyboard navigation", () => {
     const proto = HTMLElement.prototype as unknown as { scrollTo?: unknown };
     const saved = proto.scrollTo;
     const heights = Object.defineProperties(HTMLElement.prototype, {
-      scrollHeight: { configurable: true, get: () => 26 * 301 },
+      scrollHeight: { configurable: true, get: () => 33 * 301 },
       clientHeight: { configurable: true, get: () => 226 },
     });
     void heights;
@@ -313,12 +313,12 @@ describe("Grid keyboard navigation", () => {
     const restore = withScrollTo();
     try {
       render(<Grid columns={["a", "b"]} rows={many} height={200} />);
-      expect(screen.queryByText("r132-a")).toBeNull();
+      expect(screen.queryByText("r135-a")).toBeNull();
       screen.getByText("r0-a").focus();
       const user = userEvent.setup();
-      // PageDown steps (6 rows each at this height) until the target row is far beyond the initial window.
-      for (let i = 0; i < 22; i++) await user.keyboard("{PageDown}");
-      const cell = await screen.findByText("r132-a");
+      // PageDown steps (5 rows each at this height) until the target row is far beyond the initial window.
+      for (let i = 0; i < 27; i++) await user.keyboard("{PageDown}");
+      const cell = await screen.findByText("r135-a");
       await vi.waitFor(() => expect(cell).toHaveFocus());
     } finally {
       restore();
@@ -335,7 +335,7 @@ describe("Grid keyboard navigation", () => {
       );
       const scroller = document.querySelector(".grid-scroll") as HTMLElement;
       expect(screen.getByText("r0-a")).toHaveAttribute("tabindex", "0");
-      scroller.scrollTo({ top: 26 * 200 });
+      scroller.scrollTo({ top: 33 * 200 });
       await vi.waitFor(() => expect(screen.queryByText("r0-a")).toBeNull());
       const stops = screen.getAllByRole("cell").filter((c) => c.tabIndex === 0);
       expect(stops).toHaveLength(1);

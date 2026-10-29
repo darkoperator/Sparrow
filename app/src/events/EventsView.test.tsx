@@ -567,7 +567,7 @@ describe("EventsView", () => {
     const scrollEnd = () =>
       act(() => {
         const scroller = document.querySelector(".grid-scroll")!;
-        scroller.scrollTop = 26 * 190;
+        scroller.scrollTop = 33 * 190;
         fireEvent.scroll(scroller);
       });
     scrollEnd();
@@ -619,7 +619,7 @@ describe("EventsView", () => {
     await shown(200, 450);
     act(() => {
       const scroller = document.querySelector(".grid-scroll")!;
-      scroller.scrollTop = 26 * 190;
+      scroller.scrollTop = 33 * 190;
       fireEvent.scroll(scroller);
     });
     await waitFor(() => expect(callsOf("events_page").some((c) => c.args!.offset === 200)).toBe(true));

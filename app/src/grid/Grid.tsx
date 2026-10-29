@@ -11,6 +11,7 @@ import { displaySafe } from "../text";
 import { entityKindFor, rawText } from "../value";
 import CellMenu, { type MenuItem } from "./CellMenu";
 import { useGridLayout } from "./gridLayout";
+import "./grid.css";
 import ValueViewer from "./ValueViewer";
 
 export type Cell = unknown;
@@ -79,7 +80,7 @@ export interface GridProps {
   height?: number;
 }
 
-const ROW_HEIGHT = 26;
+const ROW_HEIGHT = 33;
 const DEFAULT_COLUMN_WIDTH = 180;
 const MIN_COLUMN_WIDTH = 60;
 

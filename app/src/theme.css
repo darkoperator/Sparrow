@@ -1,0 +1,152 @@
+/* The console theme: design tokens, base element styles and the small shared classes (.btn, .input, .card, .label,
+   .pill, .chip, .mono, .tile). Dark only. Colours live here and nowhere else; component CSS uses the variables. */
+:root {
+  color-scheme: dark;
+
+  --bg: #0b0e12;
+  --surface: #0e1116;
+  --card: #151a21;
+  --raised: #1b212a;
+  --raised-2: #232b36;
+  --line: #1f2630;
+  --line-strong: #2a3340;
+  --line-faint: #3a4452;
+  --text: #e6eaf0;
+  --text-2: #c9d1dc;
+  --muted: #9aa5b4;
+  --faint: #6b7685;
+  --accent: #5b8def;
+  --accent-soft: rgba(91, 141, 239, 0.16);
+  --accent-text: #93b4f5;
+  --on-accent: #0b0e12;
+  --bar-idle: #2b3a55;
+
+  --mal: #f0565b;
+  --mal-bg: rgba(240, 86, 91, 0.1);
+  --mal-pill: #3a1a1e;
+  --sus: #f5a524;
+  --sus-bg: rgba(245, 165, 36, 0.1);
+  --sus-pill: #3a2a12;
+  --ai: #a78bfa;
+  --ai-bg: #2a2240;
+  --new: #38bdf8;
+  --new-bg: #0f2f3d;
+  --ok: #7dd3a8;
+  --ok-bg: #14332a;
+
+  --syn-key: #82aaff;
+  --syn-str: #c3e88d;
+  --syn-num: #f78c6c;
+  --syn-kw: #c792ea;
+
+  --font-ui: "Inter Variable", Inter, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.5);
+
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--text);
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+::selection { background: var(--accent-soft); }
+
+/* Base elements: screens that are not restyled yet read correctly on the dark background. */
+a, button.link { color: var(--accent-text); }
+a:hover, button.link:hover { color: var(--text); }
+button.link { background: none; border: 0; padding: 0; text-decoration: underline; font: inherit; }
+
+button, input, select, textarea { font: inherit; font-size: 12px; color: var(--text-2); }
+button {
+  padding: 4px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--raised);
+  cursor: pointer;
+}
+button:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--raised-2); color: var(--text); }
+button:disabled, button[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
+
+input, select, textarea {
+  box-sizing: border-box;
+  padding: 4px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+}
+input::placeholder, textarea::placeholder { color: var(--faint); }
+input:disabled, select:disabled, textarea:disabled { opacity: 0.5; cursor: not-allowed; }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
+select { color-scheme: dark; }
+
+table { border-collapse: collapse; }
+th { font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); }
+td, th { border-bottom: 1px solid var(--line); }
+
+h1, h2, h3, h4 { color: var(--text); font-weight: 600; }
+hr { border: 0; border-top: 1px solid var(--line); }
+code, pre, kbd, samp { font-family: var(--font-mono); font-size: 11px; }
+dt { color: var(--muted); }
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+[role="alert"] {
+  padding: 6px 10px;
+  margin: 6px 0;
+  border: 1px solid var(--mal);
+  border-radius: 6px;
+  background: var(--mal-bg);
+  color: var(--text);
+}
+
+/* Shared classes. */
+.btn { display: inline-flex; align-items: center; gap: 6px; }
+.btn-primary { border-color: var(--accent); background: var(--accent); color: var(--on-accent); font-weight: 700; }
+.btn-primary:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--accent-text); border-color: var(--accent-text); color: var(--on-accent); }
+.btn-ghost { background: transparent; color: var(--text-2); }
+.btn-ghost:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--raised); }
+
+.input { padding: 5px 8px; }
+.card { border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+.label { font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); }
+.mono { font-family: var(--font-mono); }
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--raised);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.pill-mal { background: var(--mal-pill); color: var(--mal); }
+.pill-sus { background: var(--sus-pill); color: var(--sus); }
+.pill-ai { background: var(--ai-bg); color: var(--ai); }
+.pill-new { background: var(--new-bg); color: var(--new); }
+.pill-ok { background: var(--ok-bg); color: var(--ok); }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 2px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--raised-2);
+  color: var(--text);
+  font-size: 10px;
+}
+
+.tile { padding: 6px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }

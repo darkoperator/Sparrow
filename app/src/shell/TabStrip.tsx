@@ -2,9 +2,10 @@
 // keyboard are handled here; what the tabs mean is in tabs.ts.
 import { useRef } from "react";
 import { displaySafe } from "../text";
+import Icon, { type IconName } from "../ui/Icon";
 import { FIXED_TABS, shortValue, tabKey, type EntityKind, type EntityRef, type FixedTab, type TabsState } from "./tabs";
 
-const ICON: Record<EntityKind, string> = { account: "👤", ip: "🌐", device: "💻", session: "🔑" };
+const ICON: Record<EntityKind, IconName> = { account: "user", ip: "globe", device: "monitor", session: "key" };
 const KIND_LABEL: Record<EntityKind, string> = { account: "account", ip: "IP", device: "device", session: "session" };
 
 export interface TabBadges {
@@ -68,7 +69,7 @@ export default function TabStrip({
         const key = tabKey(e);
         const full = displaySafe(e.value);
         return (
-          <span key={key} className="tab-entity">
+          <span key={key} className={activeKey === key ? "tab-entity tab-entity-active" : "tab-entity"}>
             <button
               role="tab"
               className="tab"
@@ -87,10 +88,11 @@ export default function TabStrip({
               }}
               onKeyDown={(ev) => onKeyDown(ev, key)}
             >
-              <span aria-hidden="true">{ICON[e.kind]}</span> {displaySafe(shortValue(e.value))}
+              <Icon name={ICON[e.kind]} size={13} />
+              <span className="tab-value">{displaySafe(shortValue(e.value))}</span>
             </button>
             <button className="tab-close" aria-label={`Close ${KIND_LABEL[e.kind]} ${full}`} onClick={() => onClose(key)}>
-              ×
+              <Icon name="x" size={12} />
             </button>
           </span>
         );

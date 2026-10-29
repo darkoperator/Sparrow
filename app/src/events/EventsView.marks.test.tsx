@@ -113,7 +113,7 @@ describe("EventsView marking", () => {
     await waitFor(() => expect(screen.queryByText("Loading…")).not.toBeInTheDocument());
     await shown(200, total);
     const scroller = document.querySelector<HTMLElement>(".grid-scroll")!;
-    scroller.scrollTop = 26 * 190;
+    scroller.scrollTop = 33 * 190;
     fireEvent.scroll(scroller);
     await shown(400, total);
     h.calls.length = 0;

@@ -2,6 +2,7 @@ import { save } from "../dialog";
 import { useState } from "react";
 import { exportReport, exportTimelineCsv, exportWorkbook, isCmdError } from "../api";
 import { displaySafe } from "../text";
+import Icon from "../ui/Icon";
 
 type Notice = { kind: "error" | "info"; text: string };
 
@@ -39,11 +40,12 @@ export default function ExportMenu() {
 
   return (
     <span className="export-menu">
-      <button aria-expanded={open} onClick={() => setOpen(!open)}>
+      <button className="btn btn-ghost" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <Icon name="upload" size={13} />
         Export
       </button>
       {open && (
-        <span role="group" aria-label="Export">
+        <span role="group" aria-label="Export" className="export-pop">
           <label>
             <input type="checkbox" checked={reviewedOnly} onChange={(e) => setReviewedOnly(e.target.checked)} />
             Reviewed only
@@ -62,7 +64,11 @@ export default function ExportMenu() {
           </button>
         </span>
       )}
-      {notice && <span role={notice.kind === "error" ? "alert" : "status"}>{displaySafe(notice.text)}</span>}
+      {notice && (
+        <span role={notice.kind === "error" ? "alert" : "status"} className="export-notice">
+          {displaySafe(notice.text)}
+        </span>
+      )}
     </span>
   );
 }

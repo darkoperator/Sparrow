@@ -125,7 +125,7 @@ describe("Tables", () => {
     await screen.findByText("row-0");
     expect(m.page).toHaveBeenCalledTimes(1);
     const body = scrollBody();
-    Object.defineProperty(body, "scrollTop", { value: 26 * 480, configurable: true, writable: true });
+    Object.defineProperty(body, "scrollTop", { value: 33 * 480, configurable: true, writable: true });
     fireEvent.scroll(body);
     await waitFor(() => expect(m.page).toHaveBeenCalledTimes(2));
     expect(lastArgs().slice(3, 5)).toEqual([500, 500]);
@@ -140,7 +140,7 @@ describe("Tables", () => {
     m.page.mockImplementationOnce(() => new Promise<BrowsePage>((r) => (release = r)));
     const body = scrollBody();
     const scrollTo = (rows: number) => {
-      Object.defineProperty(body, "scrollTop", { value: 26 * rows, configurable: true, writable: true });
+      Object.defineProperty(body, "scrollTop", { value: 33 * rows, configurable: true, writable: true });
       fireEvent.scroll(body);
     };
     scrollTo(470);
@@ -216,7 +216,7 @@ describe("Tables", () => {
     await screen.findByText("row-0");
     const body = scrollBody();
     const scrollTo = (rows: number) => {
-      Object.defineProperty(body, "scrollTop", { value: 26 * rows, configurable: true, writable: true });
+      Object.defineProperty(body, "scrollTop", { value: 33 * rows, configurable: true, writable: true });
       fireEvent.scroll(body);
     };
     scrollTo(480);
@@ -233,11 +233,11 @@ describe("Tables", () => {
     await pickSignins();
     await screen.findByText("row-0");
     const body = scrollBody();
-    Object.defineProperty(body, "scrollTop", { value: 26 * 480, configurable: true, writable: true });
+    Object.defineProperty(body, "scrollTop", { value: 33 * 480, configurable: true, writable: true });
     fireEvent.scroll(body);
     await waitFor(() => expect(m.page).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.getByTestId("total")).toHaveTextContent("≥ 500 rows · 500 loaded"));
-    Object.defineProperty(body, "scrollTop", { value: 26 * 495, configurable: true, writable: true });
+    Object.defineProperty(body, "scrollTop", { value: 33 * 495, configurable: true, writable: true });
     fireEvent.scroll(body);
     expect(m.page).toHaveBeenCalledTimes(2);
   });

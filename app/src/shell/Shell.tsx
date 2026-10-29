@@ -18,11 +18,13 @@ import { HighlightsError, HighlightsProvider } from "../highlights/useHighlights
 import Tables, { type TableRequest } from "../tables/Tables";
 import ReviewQueue from "../review/ReviewQueue";
 import { displaySafe } from "../text";
+import { BrandMark } from "../ui/Icon";
 import AnalystPrompt from "./AnalystPrompt";
 import ExportMenu from "./ExportMenu";
 import { NavContext, RefreshBadgesContext, WriteBlockedContext, writeBlockedReason } from "./nav";
 import OpenCase, { type UpgradePrompt } from "./OpenCase";
 import ReadOnlyBanner from "./ReadOnlyBanner";
+import "./shell.css";
 import TabStrip, { type TabBadges } from "./TabStrip";
 import {
   closeTab,
@@ -66,6 +68,13 @@ interface ShellProps {
 }
 
 const TOAST_MS = 6000;
+
+/** Up to two capitals for the analyst chip: the first letters of the first two words, or the first two letters. */
+function initials(name: string): string {
+  const words = displaySafe(name).split(/[\s._-]+/).filter(Boolean);
+  const letters = words.length > 1 ? words[0][0] + words[1][0] : (words[0] ?? "?").slice(0, 2);
+  return letters.toUpperCase();
+}
 
 export default function Shell({ screens = {}, entityTab }: ShellProps) {
   const [settings, setSettings] = useState<Settings>({ analyst: null, recent: [] });
@@ -247,9 +256,30 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
   return (
     <div className="shell">
       <header className="titlebar">
-        <strong>Sparrow</strong> <span title={info.path}>{displaySafe(info.case_id)}</span>{" "}
-        {settings.analyst && <span>Analyst: {displaySafe(settings.analyst)}</span>}{" "}
-        <ExportMenu /> <button onClick={() => void closeCase()}>Close case</button>
+        <span className="brand">
+          <BrandMark />
+          <strong>Sparrow</strong>
+        </span>
+        <span className="titlebar-sep" aria-hidden="true">
+          /
+        </span>
+        <span className="case-name" title={info.path}>
+          {displaySafe(info.case_id)}
+        </span>
+        <span className="titlebar-spacer" />
+        {settings.analyst && (
+          <span className="analyst-chip" title={displaySafe(settings.analyst)}>
+            <span className="analyst-initials" aria-hidden="true">
+              {initials(settings.analyst)}
+            </span>
+            <span className="analyst-name">{displaySafe(settings.analyst)}</span>
+            <span className="analyst-role"> · analyst</span>
+          </span>
+        )}
+        <ExportMenu />
+        <button className="btn btn-ghost" onClick={() => void closeCase()}>
+          Close case
+        </button>
       </header>
       {info.read_only_reason !== null && <ReadOnlyBanner reason={info.read_only_reason} />}
       {info.warnings.length > 0 && (
