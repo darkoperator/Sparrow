@@ -36,15 +36,16 @@ export function EvidencePicker({ existing, onAdd }: { existing: string[]; onAdd:
         <>
           <p>{displaySafe(title)}</p>
           {rows.length === 0 && <p>This finding has no evidence rows.</p>}
-          <ul>
+          <ul className="tl-refs">
             {rows.map((r) => {
               const ref = `${r.source_table}:${r.record_key}`;
               return (
                 <li key={ref}>
-                  <code>{displaySafe(ref)}</code> {displaySafe(r.role)}
+                  <code title={displaySafe(ref)}>{displaySafe(ref)}</code> {displaySafe(r.role)}
                   {r.event_time ? ` ${displaySafe(r.event_time)}` : ""}{" "}
                   <button
                     type="button"
+                    className="btn btn-ghost"
                     aria-label={`Add ${displaySafe(ref)}`}
                     disabled={existing.includes(ref)}
                     onClick={() => onAdd(ref)}

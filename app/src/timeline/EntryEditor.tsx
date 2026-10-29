@@ -91,10 +91,10 @@ export function EntryEditor(props: Props) {
   }
 
   return (
-    <form onSubmit={(e) => void submit(e)} aria-label={entry ? "Edit entry" : "Add entry"}>
+    <form className="tl-editor card" onSubmit={(e) => void submit(e)} aria-label={entry ? "Edit entry" : "Add entry"}>
       <h3>{entry ? "Edit entry" : "Add entry"}</h3>
       {entry?.status === "verified" && (
-        <p>This entry is verified. Saving creates a proposed successor that replaces it once it is verified.</p>
+        <p className="tl-editor-note">This entry is verified. Saving creates a proposed successor that replaces it once it is verified.</p>
       )}
       <label>
         Time (UTC, RFC 3339)
@@ -147,12 +147,13 @@ export function EntryEditor(props: Props) {
       <fieldset>
         <legend>Evidence</legend>
         {evidence.length === 0 && <p>No evidence yet; a verified entry needs at least one row.</p>}
-        <ul>
+        <ul className="tl-refs">
           {evidence.map((r) => (
             <li key={r}>
-              <code>{displaySafe(r)}</code>{" "}
+              <code title={displaySafe(r)}>{displaySafe(r)}</code>{" "}
               <button
                 type="button"
+                className="btn btn-ghost"
                 aria-label={`Remove ${displaySafe(r)}`}
                 onClick={() => setEvidence((cur) => cur.filter((x) => x !== r))}
               >
@@ -177,12 +178,14 @@ export function EntryEditor(props: Props) {
         </button>
         <EvidencePicker existing={evidence} onAdd={addRef} />
       </fieldset>
-      <button type="submit" disabled={readOnly || busy}>
-        Save
-      </button>
-      <button type="button" onClick={onCancel}>
-        Cancel
-      </button>
+      <div className="tl-editor-buttons">
+        <button type="submit" className="btn btn-primary" disabled={readOnly || busy}>
+          Save
+        </button>
+        <button type="button" className="btn" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
     </form>
   );
 }

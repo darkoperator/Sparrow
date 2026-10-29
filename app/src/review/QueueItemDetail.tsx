@@ -63,7 +63,7 @@ function EvidenceRefs({ refs }: { refs: string[] }) {
   return (
     <>
       {error && <div role="alert">{displaySafe(error)}</div>}
-      <ul className="plain">
+      <ul className="plain card rq-card rq-refs">
         {refs.map((r) => {
           const at = r.indexOf(":");
           return (
@@ -155,7 +155,9 @@ export default function QueueItemDetail({ item }: { item: QueueItem }) {
         {item.object_type === "indicator" && <IndicatorFields o={o} />}
         {item.object_type === "timeline_entry" && <TimelineFields o={o} />}
         <h4>Change</h4>
-        <Diff before={item.before} after={item.after} />
+        <div className="card rq-card">
+          <Diff before={item.before} after={item.after} />
+        </div>
         {findingId !== null && <FindingDetail findingId={findingId} />}
       </div>
     );
@@ -177,14 +179,16 @@ export default function QueueItemDetail({ item }: { item: QueueItem }) {
         <>
           <h4>Current value</h4>
           {item.current === null || item.current === undefined ? (
-            <p>None: this item is new to the case.</p>
+            <p className="card rq-card">None: this item is new to the case.</p>
           ) : (
-            <pre className="prose">{displaySafeMultiline(JSON.stringify(item.current, null, 2))}</pre>
+            <pre className="prose card rq-card">{displaySafeMultiline(JSON.stringify(item.current, null, 2))}</pre>
           )}
         </>
       )}
       <h4>Change</h4>
-      <Diff before={item.current} after={item.item} />
+      <div className="card rq-card">
+        <Diff before={item.current} after={item.item} />
+      </div>
       {findingId !== null && <FindingDetail findingId={findingId} />}
     </div>
   );

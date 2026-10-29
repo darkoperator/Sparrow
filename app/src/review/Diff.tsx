@@ -17,7 +17,7 @@ export default function Diff({ before, after }: { before: unknown; after: unknow
   if (!(b ?? a) || (before != null && !b) || (after != null && !a)) {
     if (JSON.stringify(before ?? null) === JSON.stringify(after ?? null)) return <span>no change</span>;
     return (
-      <span className="diff">
+      <span className="diff" title={`${show(before)} → ${show(after)}`}>
         {show(before)} → {show(after)}
       </span>
     );
@@ -30,7 +30,7 @@ export default function Diff({ before, after }: { before: unknown; after: unknow
       {changed.map((k) => (
         <div key={k} className="diff-line">
           <dt>{displaySafe(k)}</dt>
-          <dd>
+          <dd title={`${show((b ?? {})[k])} → ${show((a ?? {})[k])}`}>
             {show((b ?? {})[k])} → {show((a ?? {})[k])}
           </dd>
         </div>

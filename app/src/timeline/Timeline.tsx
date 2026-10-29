@@ -12,7 +12,18 @@ import {
 } from "../api";
 import { useRefreshBadges } from "../shell/nav";
 import { displaySafe } from "../text";
+import Icon from "../ui/Icon";
 import { EntryEditor, PHASES, phaseLabel } from "./EntryEditor";
+import "./timeline.css";
+
+/** The status pill's colour; the status text is always shown in it. An agent's pending decision is AI-violet. */
+function statusTone(e: TimelineEntry): string {
+  if (e.review_state === "pending_review") return "ai";
+  const tones: Record<string, string> = { verified: "ok", proposed: "proposed", rejected: "mal" };
+  return tones[e.status] ?? "muted";
+}
+
+const count = new Intl.NumberFormat("en-US");
 
 type Editing = TimelineEntry | "new" | null;
 
@@ -110,27 +121,60 @@ export function Timeline({ readOnly = false }: { readOnly?: boolean }) {
     entries: visible.filter((e) => e.phase === p).sort(byTime),
   })).filter((g) => g.entries.length > 0);
 
+  // The header's summary and the phase rail describe the entries on screen (after the view toggles).
+  const verified = visible.filter((e) => e.status === "verified").length;
+  const proposed = visible.filter((e) => e.status === "proposed").length;
+  const agent = visible.filter((e) => e.review_state === "pending_review").length;
+  const starts = visible.map((e) => e.event_time).sort();
+  const ends = visible.map((e) => e.end_time ?? e.event_time).sort();
+
   return (
-    <section aria-label="Timeline">
-      <h2>Timeline</h2>
-      <div>
-        <label>
-          <input type="checkbox" checked={clientView} onChange={(e) => setClientView(e.target.checked)} />
-          Client view (verified only)
-        </label>{" "}
-        <label>
-          <input
-            type="checkbox"
-            checked={showSuperseded}
-            disabled={clientView}
-            onChange={(e) => setShowSuperseded(e.target.checked)}
-          />
-          Show superseded
-        </label>{" "}
-        <button type="button" disabled={readOnly} onClick={() => setEditing("new")}>
-          Add entry
-        </button>
+    <section aria-label="Timeline" className="timeline">
+      <div className="tl-head">
+        <div className="tl-heading">
+          <h2>Timeline</h2>
+          {entries !== null && (
+            <p className="tl-summary">
+              {`${visible.length} ${visible.length === 1 ? "entry" : "entries"} · ${verified} verified · ${proposed} proposed`}
+              {agent > 0 && ` · ${agent} pending agent review`}
+              {starts.length > 0 && (
+                <>
+                  {" · "}
+                  <span className="mono">{displaySafe(`${starts[0]} → ${ends[ends.length - 1]}`)}</span>
+                </>
+              )}
+            </p>
+          )}
+        </div>
+        <div className="tl-controls">
+          <label className="tl-toggle">
+            <input type="checkbox" checked={clientView} onChange={(e) => setClientView(e.target.checked)} />
+            Client view (verified only)
+          </label>
+          <label className="tl-toggle">
+            <input
+              type="checkbox"
+              checked={showSuperseded}
+              disabled={clientView}
+              onChange={(e) => setShowSuperseded(e.target.checked)}
+            />
+            Show superseded
+          </label>
+          <button type="button" className="btn btn-primary" disabled={readOnly} onClick={() => setEditing("new")}>
+            <Icon name="plus" size={13} />
+            Add entry
+          </button>
+        </div>
       </div>
+      {groups.length > 0 && (
+        <ol className="tl-rail" aria-label="Phases">
+          {groups.map((g) => (
+            <li key={g.phase} className={`tl-phase-${g.phase}`} style={{ flexGrow: g.entries.length }}>
+              {`${phaseLabel(g.phase)} · ${g.entries.length}`}
+            </li>
+          ))}
+        </ol>
+      )}
       {error && <p role="alert">{displaySafe(error)}</p>}
       {notice && <p role="status">{displaySafe(notice)}</p>}
       {editing && (
@@ -143,13 +187,15 @@ export function Timeline({ readOnly = false }: { readOnly?: boolean }) {
           onCancel={() => setEditing(null)}
         />
       )}
-      {entries === null && !error && <p>Loading…</p>}
-      {entries !== null && groups.length === 0 && <p>No timeline entries to show.</p>}
+      {entries === null && !error && <p className="tl-empty">Loading…</p>}
+      {entries !== null && groups.length === 0 && <p className="tl-empty">No timeline entries to show.</p>}
       {groups.map((g) => (
-        <section key={g.phase} aria-label={phaseLabel(g.phase)}>
-          <h3>{phaseLabel(g.phase)}</h3>
+        <section key={g.phase} aria-label={phaseLabel(g.phase)} className="tl-group">
+          <h3>
+            <span className={`tl-phase tl-phase-${g.phase}`}>{phaseLabel(g.phase)}</span>
+          </h3>
           <div className="table-scroll">
-          <table>
+          <table className="tl-table">
             <thead>
               <tr>
                 <th>Time (UTC)</th>
@@ -162,31 +208,52 @@ export function Timeline({ readOnly = false }: { readOnly?: boolean }) {
             </thead>
             <tbody>
               {g.entries.map((e) => (
-                <tr key={e.entry_id} data-entry={e.entry_id}>
-                  <td>{displaySafe(e.event_time)}</td>
-                  <td>
+                <tr
+                  key={e.entry_id}
+                  data-entry={e.entry_id}
+                  className={e.review_state === "pending_review" ? "tl-row-agent" : undefined}
+                >
+                  <td className="tl-time">
+                    <div>{displaySafe(e.event_time)}</div>
+                    {e.end_time && <div className="tl-end">{displaySafe(`→ ${e.end_time}`)}</div>}
+                  </td>
+                  <td className="tl-title">
                     <div>{displaySafe(e.title)}</div>
-                    {e.narrative && <div>{displaySafe(e.narrative)}</div>}
+                    {e.narrative && (
+                      <div className="tl-sub" title={displaySafe(e.narrative)}>
+                        {displaySafe(e.narrative)}
+                      </div>
+                    )}
                   </td>
                   <td>
-                    <span data-status={e.status}>{e.status}</span>
-                    {e.review_state === "pending_review" && " (agent decision, pending review)"}
+                    <span data-status={e.status} className={`pill tl-status tl-status-${statusTone(e)}`}>
+                      {e.status}
+                    </span>
+                    {e.review_state === "pending_review" && (
+                      <span className="tl-agent">{" (agent decision, pending review)"}</span>
+                    )}
                   </td>
-                  <td>
+                  <td className="tl-evidence">
+                    {e.event_count !== null && (
+                      <div className="tl-count">{`${count.format(e.event_count)} ${e.event_count === 1 ? "event" : "events"}`}</div>
+                    )}
                     <ul>
                       {e.evidence.map((r) => (
-                        <li key={`${r.source_table}:${r.record_key}`}>
+                        <li key={`${r.source_table}:${r.record_key}`} title={displaySafe(`${r.source_table}:${r.record_key}`)}>
                           <code>{displaySafe(`${r.source_table}:${r.record_key}`)}</code>
                         </li>
                       ))}
                     </ul>
                   </td>
-                  <td>{displaySafe(e.decided_by)}</td>
-                  <td>
+                  <td className="tl-by" title={displaySafe(e.decided_by)}>
+                    {displaySafe(e.decided_by)}
+                  </td>
+                  <td className="tl-actions">
                     {(e.status === "proposed" || e.status === "verified") && (
                       <>
                         <button
                           type="button"
+                          className="btn btn-ghost"
                           disabled={readOnly}
                           aria-label={`Edit ${displaySafe(e.title)}`}
                           onClick={() => setEditing(e)}
@@ -195,6 +262,7 @@ export function Timeline({ readOnly = false }: { readOnly?: boolean }) {
                         </button>{" "}
                         <button
                           type="button"
+                          className="btn btn-ghost tl-reject"
                           disabled={readOnly}
                           aria-label={`Reject ${displaySafe(e.title)}`}
                           onClick={() => {
@@ -202,6 +270,7 @@ export function Timeline({ readOnly = false }: { readOnly?: boolean }) {
                             setReason("");
                           }}
                         >
+                          <Icon name="x" size={12} />
                           Reject
                         </button>{" "}
                       </>
@@ -209,15 +278,18 @@ export function Timeline({ readOnly = false }: { readOnly?: boolean }) {
                     {e.status === "proposed" && (
                       <button
                         type="button"
+                        className="btn btn-ghost tl-verify"
                         disabled={readOnly}
                         aria-label={`Verify ${displaySafe(e.title)}`}
                         onClick={() => void write(async () => void (await timelineVerify(e.entry_id)))}
                       >
+                        <Icon name="check" size={12} />
                         Verify
                       </button>
                     )}
                     {rejecting === e.entry_id && (
                       <form
+                        className="tl-reject-form"
                         onSubmit={(ev) => {
                           ev.preventDefault();
                           if (!readOnly) void reject(e.entry_id);
@@ -227,7 +299,7 @@ export function Timeline({ readOnly = false }: { readOnly?: boolean }) {
                           Reason for rejecting
                           <input value={reason} onChange={(ev) => setReason(ev.target.value)} />
                         </label>
-                        <button type="submit" disabled={readOnly || reason.trim() === ""}>
+                        <button type="submit" className="btn btn-primary" disabled={readOnly || reason.trim() === ""}>
                           Confirm reject
                         </button>
                         <button type="button" onClick={() => setRejecting(null)}>

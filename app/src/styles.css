@@ -1,14 +1,6 @@
-.queue-layout { display: grid; grid-template-columns: minmax(280px, 40%) 1fr; gap: 16px; }
-.queue-list ul { list-style: none; margin: 0; padding: 0; }
-.queue-item { padding: 6px 8px; border: 1px solid #8884; border-radius: 4px; margin-bottom: 4px; cursor: pointer; }
-.queue-item.selected { outline: 2px solid Highlight; }
-.meta, .reason { opacity: 0.75; font-size: 12px; }
+.meta { opacity: 0.75; font-size: 12px; }
 .tag { font-size: 11px; padding: 0 4px; border: 1px solid #8886; border-radius: 3px; }
 .prose { white-space: pre-wrap; overflow-wrap: anywhere; }
-.diff { margin: 2px 0; }
-.diff-line { display: flex; gap: 8px; }
-.diff dt { font-weight: 600; }
-.diff dd { margin: 0; overflow-wrap: anywhere; }
 .accounts { padding: 12px 16px; }
 .accounts table { border-collapse: collapse; }
 .accounts th, .accounts td { text-align: left; vertical-align: top; padding: 4px 10px; border-bottom: 1px solid #8884; }
@@ -43,13 +35,12 @@ code.sha { overflow-wrap: anywhere; }
 .swatch.hl-blue { background: #1976d2; }
 .swatch.hl-purple { background: #7b1fa2; }
 /* ui-fixes-1: wide content scrolls inside its grid, never the page. */
-.queue-layout > * { min-width: 0; }
 .detail-fields { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 6px 0; }
 .detail-fields dt { font-weight: 600; }
 .detail-fields dd { margin: 0; overflow-wrap: anywhere; }
 /* ui-fixes-1 fix: plain wide wrappers scroll locally instead of being clipped at the page. */
 .table-scroll { overflow-x: auto; max-width: 100%; }
-.queue-detail, .finding-detail, .share-card, .row-detail { min-width: 0; max-width: 100%; overflow-x: auto; }
+.share-card, .row-detail { min-width: 0; max-width: 100%; overflow-x: auto; }
 .share-card code { overflow-wrap: anywhere; }
 pre.prose { max-width: 100%; overflow-x: auto; }
 .devices { padding: 12px 16px; }

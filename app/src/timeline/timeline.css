@@ -1,0 +1,125 @@
+/* The Timeline screen: header with the view toggles, the phase rail (entries per phase on screen), one card per phase.
+   Phase and status colours always sit beside their text; an agent's pending entry also says so in words. */
+.timeline { padding: 24px 24px 32px; }
+
+.tl-head { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: flex-start; justify-content: space-between; margin-bottom: 16px; }
+.tl-heading { min-width: 0; }
+.tl-heading h2 { margin: 0; font-size: 20px; font-weight: 700; }
+.tl-summary { margin: 6px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.tl-summary .mono { font-size: 11px; }
+.tl-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.tl-toggle {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  height: 30px;
+  box-sizing: border-box;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.tl-toggle:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.tl-toggle:has(input:disabled) { opacity: 0.5; cursor: not-allowed; }
+.tl-toggle input { margin: 0; }
+.tl-controls .btn-primary { height: 30px; padding: 0 14px; }
+
+/* Phase colours: the rail segment and each section's phase tag. */
+.tl-rail { display: flex; gap: 4px; margin: 0 0 16px; padding: 0; list-style: none; }
+.tl-rail li {
+  flex-basis: 0;
+  min-width: 0;
+  padding: 7px 10px;
+  overflow: hidden;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tl-rail li::first-letter, .tl-phase::first-letter, .tl-status::first-letter { text-transform: uppercase; }
+.tl-phase-initial_access { background: var(--ai-bg); color: var(--ai); }
+.tl-phase-persistence { background: var(--accent-soft); color: var(--accent-text); }
+.tl-phase-defense_evasion { background: var(--raised-2); color: var(--text-2); }
+.tl-phase-recon { background: var(--new-bg); color: var(--new); }
+.tl-phase-collection { background: var(--sus-pill); color: var(--sus); }
+.tl-phase-exfiltration { background: var(--mal-pill); color: var(--mal); }
+.tl-phase-impact { background: var(--mal-pill); color: var(--mal); }
+.tl-phase-remediation { background: var(--ok-bg); color: var(--ok); }
+
+.tl-group { margin-bottom: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); overflow: hidden; }
+.tl-group h3 { margin: 0; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+.tl-phase { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; }
+.tl-group .table-scroll { margin: 0; }
+
+/* Fixed column widths, so the phase cards line up as one table. */
+.tl-table { width: 100%; min-width: 900px; table-layout: fixed; font-size: 12px; }
+.tl-table th {
+  height: 34px;
+  padding: 0 12px;
+  background: var(--raised);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-align: left;
+  text-transform: none;
+}
+.tl-table th:first-child, .tl-table td:first-child { padding-left: 16px; }
+.tl-table th:nth-child(1) { width: 210px; }
+.tl-table th:nth-child(3) { width: 150px; }
+.tl-table th:nth-child(4) { width: 180px; }
+.tl-table th:nth-child(5) { width: 120px; }
+.tl-table th:nth-child(6) { width: 190px; }
+.tl-table td { padding: 10px 12px; vertical-align: top; color: var(--text-2); }
+.tl-table tbody tr:last-child td { border-bottom: 0; }
+.tl-table tbody tr:hover { background: var(--raised); }
+.tl-row-agent td:first-child { box-shadow: inset 3px 0 0 var(--ai); }
+
+.tl-time { font-family: var(--font-mono); font-size: 11px; color: var(--text); white-space: nowrap; }
+.tl-time > div { overflow: hidden; text-overflow: ellipsis; }
+.tl-end { margin-top: 3px; color: var(--faint); font-size: 10px; }
+.tl-title > div:first-child { color: var(--text); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+/* Two lines in the table; the full narrative is in the title and in the edit form. */
+.tl-sub { display: -webkit-box; margin-top: 3px; overflow: hidden; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
+.tl-status { display: inline-block; font-size: 10px; }
+.tl-status-ok { background: var(--ok-bg); color: var(--ok); }
+.tl-status-ai { background: var(--ai-bg); color: var(--ai); }
+.tl-status-proposed { background: var(--accent-soft); color: var(--accent-text); }
+.tl-status-mal { background: var(--mal-pill); color: var(--mal); }
+.tl-status-muted { background: var(--raised-2); color: var(--muted); }
+.tl-agent { display: block; margin-top: 4px; color: var(--ai); font-size: 11px; }
+.tl-count { margin-bottom: 3px; color: var(--text-2); }
+.tl-evidence ul { max-height: 66px; margin: 0; padding: 0; overflow: auto; list-style: none; }
+.tl-evidence li, .tl-refs li code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-evidence code { color: var(--faint); font-size: 10px; }
+.tl-by { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-actions { white-space: normal; }
+.tl-actions .btn { height: 26px; padding: 0 8px; margin: 0 2px 4px 0; font-size: 11px; }
+.tl-verify:not(:disabled) { color: var(--ok); }
+.tl-reject:not(:disabled) { color: var(--mal); }
+.tl-reject-form { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; padding: 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--raised); }
+.tl-reject-form label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 11px; }
+.tl-reject-form button { align-self: flex-start; }
+
+.tl-empty { padding: 18px 16px; border: 1px dashed var(--line-strong); border-radius: 8px; background: var(--card); color: var(--muted); font-size: 12px; }
+
+/* Add / edit form. */
+.tl-editor { display: flex; flex-direction: column; gap: 10px; max-width: 720px; margin: 0 0 16px; padding: 16px; }
+.tl-editor h3 { margin: 0; font-size: 14px; }
+.tl-editor label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 11px; font-weight: 600; }
+.tl-editor input:not([type="checkbox"]), .tl-editor select, .tl-editor textarea { width: 100%; height: 30px; }
+.tl-editor textarea { height: auto; min-height: 72px; resize: vertical; }
+.tl-editor-note, .tl-editor [role="note"] { margin: 0; padding: 6px 10px; border-radius: 6px; background: var(--sus-bg); color: var(--text-2); font-size: 12px; }
+.tl-editor fieldset { display: flex; flex-direction: column; gap: 8px; min-width: 0; margin: 0; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 8px; }
+.tl-editor legend { padding: 0 4px; color: var(--faint); font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.tl-editor fieldset > p { margin: 0; color: var(--muted); font-size: 12px; }
+.tl-editor fieldset > button { align-self: flex-start; }
+.tl-refs { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.tl-refs li { display: flex; gap: 8px; align-items: center; min-width: 0; color: var(--muted); font-size: 11px; }
+.tl-refs code { min-width: 0; color: var(--text); }
+.tl-refs .btn { flex: none; height: 24px; padding: 0 8px; font-size: 11px; }
+.tl-editor-buttons { display: flex; gap: 8px; }

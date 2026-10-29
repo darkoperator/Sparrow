@@ -1,0 +1,175 @@
+/* The Review screen: the queue on the left (its own scroll), the selected item's detail on the right (its own scroll).
+   A row's colour bar always sits beside its text tag (action or classification), so colour is never the only cue. */
+.review-queue {
+  display: grid;
+  grid-template-columns: minmax(300px, 520px) minmax(0, 1fr);
+  height: calc(100vh - 86px);
+  min-height: 0;
+}
+.review-queue > * { min-width: 0; min-height: 0; }
+
+/* Left pane. */
+.rq-pane { display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--bg); }
+.rq-head { display: flex; gap: 12px; align-items: baseline; justify-content: space-between; padding: 20px 16px 8px; }
+.rq-head h2 { margin: 0; font-size: 18px; font-weight: 700; }
+.rq-count { flex: none; color: var(--muted); font-size: 12px; }
+.rq-pane > .filter-chip,
+.rq-pane > .bundles,
+.rq-pane > [role="alert"],
+.rq-pane > [role="status"] { margin: 0 16px 8px; }
+.rq-pane > [role="status"] { padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--card); font-size: 12px; overflow-wrap: anywhere; }
+.rq-pane > [role="alert"] { font-size: 12px; overflow-wrap: anywhere; }
+.rq-pane > .filter-chip {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  padding: 3px 4px 3px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--text);
+  font-size: 11px;
+}
+.rq-pane > .filter-chip span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rq-pane > .filter-chip button { flex: none; padding: 1px 8px; border-radius: 999px; font-size: 11px; }
+.bundles { display: flex; flex-wrap: wrap; gap: 6px; }
+.bundles button { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.queue-list { flex: 1; min-height: 0; overflow: auto; border-top: 1px solid var(--line); }
+.rq-group h3 {
+  margin: 0;
+  padding: 10px 16px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+.queue-list ul { list-style: none; margin: 0; padding: 0; }
+
+.queue-item {
+  position: relative;
+  display: flex;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+.queue-item:hover { background: var(--card); }
+.queue-item.selected { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+.rq-bar { flex: none; width: 4px; align-self: stretch; min-height: 36px; border-radius: 2px; background: var(--muted); }
+.rq-tone-ai .rq-bar { background: var(--ai); }
+.rq-tone-accent .rq-bar { background: var(--accent); }
+.rq-tone-new .rq-bar { background: var(--new); }
+.rq-tone-ok .rq-bar { background: var(--ok); }
+.rq-tone-sus .rq-bar { background: var(--sus); }
+.rq-tone-mal .rq-bar { background: var(--mal); }
+.rq-body { flex: 1; min-width: 0; }
+.rq-row-head { display: flex; gap: 8px; align-items: baseline; justify-content: space-between; }
+.rq-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 13px; font-weight: 600; }
+.rq-tag {
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.rq-tone-ai .rq-tag { color: var(--ai); }
+.rq-tone-accent .rq-tag { color: var(--accent-text); }
+.rq-tone-new .rq-tag { color: var(--new); }
+.rq-tone-ok .rq-tag { color: var(--ok); }
+.rq-tone-sus .rq-tag { color: var(--sus); }
+.rq-tone-mal .rq-tag { color: var(--mal); }
+.queue-item .meta { margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font-family: var(--font-mono); font-size: 11px; opacity: 1; }
+.queue-item .reason { margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
+/* In a row the change is a one-line preview per key; the detail pane shows it whole. */
+.queue-item .diff { max-height: 42px; margin: 3px 0 0; overflow: hidden; color: var(--text-2); font-family: var(--font-mono); font-size: 11px; line-height: 14px; }
+.queue-item .diff-line { min-width: 0; }
+.queue-item .diff dt { flex: none; color: var(--muted); font-weight: 500; }
+.queue-item .diff dd { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.rq-empty { margin: 16px; padding: 14px 16px; border: 1px dashed var(--line-strong); border-radius: 8px; background: var(--card); color: var(--muted); font-size: 12px; }
+
+.rq-keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  padding: 9px 16px;
+  border-top: 1px solid var(--line);
+  color: var(--faint);
+  font-size: 11px;
+}
+.rq-keys kbd { color: var(--text-2); font-size: 11px; }
+
+/* Right pane. */
+.queue-detail { overflow: auto; padding: 20px 24px 24px; }
+.rq-detail-head { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; justify-content: space-between; margin-bottom: 12px; }
+.rq-detail-title { flex: 1 1 360px; min-width: 0; overflow-wrap: anywhere; color: var(--text); font-size: 22px; font-weight: 700; line-height: 30px; }
+.rq-detail-head .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.rq-detail-head .actions label { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); font-size: 12px; }
+.rq-detail-head .actions input { width: 200px; height: 30px; }
+.rq-detail-head .actions .btn { height: 30px; padding: 0 14px; }
+
+.queue-item-detail h4,
+.finding-detail h4 { margin: 18px 0 8px; color: var(--text); font-size: 12px; font-weight: 700; }
+.queue-item-detail > .detail-fields {
+  margin: 0;
+  padding: 0;
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  grid-template-columns: minmax(120px, max-content) minmax(0, 1fr);
+}
+.queue-item-detail > .detail-fields dt,
+.queue-item-detail > .detail-fields dd { padding: 8px 12px; border-top: 1px solid var(--line); font-size: 12px; }
+.queue-item-detail > .detail-fields > div:first-child dt,
+.queue-item-detail > .detail-fields > div:first-child dd { border-top: 0; }
+.queue-item-detail > .detail-fields dt { color: var(--muted); font-weight: 400; }
+.queue-item-detail > .detail-fields dd { color: var(--text); font-family: var(--font-mono); }
+.queue-item-detail > .detail-fields + .detail-fields { margin-top: 8px; }
+
+.rq-card { margin: 0; padding: 10px 12px; min-width: 0; overflow-x: auto; color: var(--text-2); font-size: 12px; }
+.rq-card .diff { margin: 0; font-family: var(--font-mono); font-size: 12px; }
+.rq-card .diff-line { padding: 3px 0; }
+.rq-card .diff dt { flex: none; min-width: 140px; color: var(--muted); font-weight: 400; }
+.rq-card .diff dd { color: var(--text); }
+pre.rq-card { font-size: 11px; }
+.rq-refs { list-style: none; }
+.rq-refs li { padding: 3px 0; font-family: var(--font-mono); font-size: 11px; overflow-wrap: anywhere; }
+.diff { margin: 2px 0; }
+.diff-line { display: flex; gap: 8px; }
+.diff dt { font-weight: 600; }
+.diff dd { margin: 0; overflow-wrap: anywhere; }
+
+/* Finding detail (inside the queue detail, or alone when a decided finding is shown read-only). */
+.finding-detail { min-width: 0; max-width: 100%; }
+.queue-detail > .finding-detail > .fd-meta:first-child { margin-top: 0; }
+.fd-meta { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; margin: 18px 0 0; color: var(--muted); font-size: 11px; opacity: 1; }
+.fd-meta .mono { min-width: 0; overflow-wrap: anywhere; }
+.fd-sev { border-radius: 4px; padding: 2px 8px; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+.fd-sev-mal { background: var(--mal-pill); color: var(--mal); }
+.fd-sev-sus { background: var(--sus-pill); color: var(--sus); }
+.fd-sev-low { background: var(--accent-soft); color: var(--accent-text); }
+.fd-sev-info { background: var(--raised); color: var(--muted); }
+.fd-card { padding: 12px; min-width: 0; overflow-x: auto; color: var(--text-2); font-size: 12px; line-height: 1.5; }
+.fd-card > p { margin: 0; }
+.fd-card pre.prose { margin: 0; color: var(--text); font-size: 11px; }
+.fd-empty { color: var(--muted); }
+.fd-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 0 12px; }
+.fd-pair > section { min-width: 0; }
+.fd-notes, .fd-history { margin: 0; padding: 0; list-style: none; }
+.fd-notes li + li, .fd-history li + li { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.fd-notes .meta { color: var(--faint); font-size: 11px; opacity: 1; }
+.fd-notes .prose { margin: 4px 0 0; color: var(--text-2); }
+.fd-notes .pill-ai { padding: 1px 8px; border: 1px dashed var(--ai); border-radius: 999px; font-size: 10px; }
+.fd-history li { color: var(--faint); font-family: var(--font-mono); font-size: 11px; overflow-wrap: anywhere; }
+.fd-history .reason { margin-top: 2px; color: var(--muted); font-family: var(--font-ui); }

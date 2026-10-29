@@ -15,7 +15,8 @@ import { useRefreshBadges } from "../shell/nav";
 import { displaySafe } from "../text";
 import FindingDetail from "./FindingDetail";
 import QueueItemDetail, { findingIdOf } from "./QueueItemDetail";
-import QueueItemRow, { identity, itemKey } from "./QueueItemRow";
+import QueueItemRow, { identity, itemKey, itemTitle } from "./QueueItemRow";
+import "./review.css";
 
 const OTHER = "Other";
 
@@ -239,33 +240,36 @@ export default function ReviewQueue({ canWrite, accountFilter = null, onClearFil
 
   return (
     <section className="review-queue">
-      <h2>Review queue</h2>
-      {accountFilter !== null && (
-        <div className="filter-chip">
-          <span>
-            Account: {displaySafe(accountFilter)} ({items.length} of {all.length})
-          </span>
-          <button onClick={onClearFilter}>Show all</button>
+      <div className="rq-pane">
+        <div className="rq-head">
+          <h2>Review queue</h2>
+          {loaded && <span className="rq-count">{`${items.length} pending`}</span>}
         </div>
-      )}
-      {notice && <div role={notice.kind === "error" ? "alert" : "status"}>{displaySafe(notice.text)}</div>}
-      {bundleAnalysts.length > 0 && (
-        <div className="bundles">
-          {bundleAnalysts.map((a) => (
-            <button key={a} disabled={!canWrite || working} onClick={() => void acceptAll(a)}>
-              {`Accept all from ${displaySafe(a)}`}
-            </button>
-          ))}
-        </div>
-      )}
-      <div className="queue-layout">
+        {accountFilter !== null && (
+          <div className="filter-chip">
+            <span title={`Account: ${displaySafe(accountFilter)} (${items.length} of ${all.length})`}>
+              Account: {displaySafe(accountFilter)} ({items.length} of {all.length})
+            </span>
+            <button onClick={onClearFilter}>Show all</button>
+          </div>
+        )}
+        {notice && <div role={notice.kind === "error" ? "alert" : "status"}>{displaySafe(notice.text)}</div>}
+        {bundleAnalysts.length > 0 && (
+          <div className="bundles">
+            {bundleAnalysts.map((a) => (
+              <button key={a} disabled={!canWrite || working} onClick={() => void acceptAll(a)}>
+                {`Accept all from ${displaySafe(a)}`}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="queue-list">
           {loaded && items.length === 0 && (
-            <p>{accountFilter === null ? "Nothing to review." : "Nothing to review for this account."}</p>
+            <p className="rq-empty">{accountFilter === null ? "Nothing to review." : "Nothing to review for this account."}</p>
           )}
           {groups.map((g) => (
-            <div key={g.name}>
-              <h3>{displaySafe(g.name)}</h3>
+            <div key={g.name} className="rq-group">
+              <h3 title={displaySafe(g.name)}>{displaySafe(g.name)}</h3>
               <ul role="listbox" aria-label={displaySafe(g.name)}>
                 {g.items.map((q) => (
                   <QueueItemRow
@@ -279,28 +283,43 @@ export default function ReviewQueue({ canWrite, accountFilter = null, onClearFil
             </div>
           ))}
         </div>
-        <div className="queue-detail">
-          {current ? (
-            <>
+        {/* Only the keys the queue handles (see the keydown handler above). */}
+        <div className="rq-keys">
+          <span><kbd>j</kbd> <kbd>k</kbd> move</span>
+          <span><kbd>a</kbd> accept</span>
+          <span><kbd>d</kbd> discard</span>
+        </div>
+      </div>
+      <div className="queue-detail">
+        {current ? (
+          <>
+            <div className="rq-detail-head">
+              <div className="rq-detail-title" title={displaySafe(itemTitle(current))}>
+                {displaySafe(itemTitle(current))}
+              </div>
               <div className="actions">
                 <label>
                   Comment <input value={comment} onChange={(e) => setComment(e.target.value)} />
                 </label>{" "}
-                <button disabled={!canWrite || working || cannotAccept(current) !== null} onClick={() => void act(current, "accept", comment)}>
+                <button
+                  className="btn btn-primary"
+                  disabled={!canWrite || working || cannotAccept(current) !== null}
+                  onClick={() => void act(current, "accept", comment)}
+                >
                   Accept
                 </button>{" "}
-                <button disabled={!canWrite || working} onClick={() => void act(current, "discard", comment)}>
+                <button className="btn" disabled={!canWrite || working} onClick={() => void act(current, "discard", comment)}>
                   Discard
                 </button>
               </div>
-              <QueueItemDetail item={current} />
-            </>
-          ) : standalone !== null ? (
-            <FindingDetail findingId={standalone} />
-          ) : (
-            <p>Select an item (j/k), then a to accept or d to discard.</p>
-          )}
-        </div>
+            </div>
+            <QueueItemDetail item={current} />
+          </>
+        ) : standalone !== null ? (
+          <FindingDetail findingId={standalone} />
+        ) : (
+          <p className="rq-empty">Select an item (j/k), then a to accept or d to discard.</p>
+        )}
       </div>
     </section>
   );
