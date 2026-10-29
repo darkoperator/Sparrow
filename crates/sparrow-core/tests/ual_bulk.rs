@@ -301,3 +301,111 @@ fn empty_batch_is_a_no_op() {
         LoadOutcome::default()
     );
 }
+
+#[test]
+fn a_files_own_full_copy_in_a_later_batch_is_a_duplicate_not_an_upgrade() {
+    // One batch keeps the file's full copy over its partial one (stage_chosen); split over two batches of the same
+    // file, the full copy upgrades the partial row: same rows, and the counts must say the same.
+    let snapshot = |case: &Case| -> Vec<String> {
+        let mut stmt = case
+            .conn()
+            .prepare(
+                "SELECT 'e|' || record_id || '|' || data_completeness || '|' || audit_data::VARCHAR FROM ual_events
+                 UNION ALL SELECT 'm|' || record_id || '|' || internet_message_id FROM mail_items_accessed
+                 UNION ALL SELECT 's|' || record_key || '|' || file_id || '|' || record_ordinal FROM record_sources
+                 ORDER BY 1",
+            )
+            .unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    let one = Case::in_memory().unwrap();
+    let whole = load_ual_batch(
+        one.conn(),
+        7,
+        1,
+        &[staged(0, mia_partial()), staged(1, mia_full())],
+    )
+    .unwrap();
+    assert_eq!(
+        whole,
+        LoadOutcome {
+            staged: 2,
+            inserted: 1,
+            upgraded: 0
+        }
+    );
+    let two = Case::in_memory().unwrap();
+    let first = load_ual_batch(two.conn(), 7, 1, &[staged(0, mia_partial())]).unwrap();
+    let second = load_ual_batch(two.conn(), 7, 1, &[staged(1, mia_full())]).unwrap();
+    assert_eq!((first.inserted, first.upgraded), (1, 0));
+    assert_eq!(
+        second,
+        LoadOutcome {
+            staged: 1,
+            inserted: 0,
+            upgraded: 0
+        }
+    );
+    assert_eq!(second.duplicate(), 1);
+    assert_eq!(snapshot(&one), snapshot(&two));
+    assert!(snapshot(&two).iter().any(|r| r.contains("|full|")));
+}
+
+#[test]
+fn a_row_stored_before_the_file_is_still_upgraded_across_its_batches() {
+    // An earlier file stored the partial row. This file has a partial copy (batch 1, only a sighting) and a full
+    // one (batch 2): that is a real upgrade, as one batch of both copies reports it.
+    let prior = |case: &Case| {
+        load_ual_batch(case.conn(), 7, 1, &[staged(0, mia_partial())]).unwrap();
+    };
+    let one = Case::in_memory().unwrap();
+    prior(&one);
+    let whole = load_ual_batch(one.conn(), 7, 2, &[staged(0, mia_partial()), staged(1, mia_full())]).unwrap();
+    assert_eq!((whole.inserted, whole.upgraded, whole.duplicate()), (0, 1, 1));
+    let two = Case::in_memory().unwrap();
+    prior(&two);
+    let a = load_ual_batch(two.conn(), 7, 2, &[staged(0, mia_partial())]).unwrap();
+    let b = load_ual_batch(two.conn(), 7, 2, &[staged(1, mia_full())]).unwrap();
+    assert_eq!(
+        (a.inserted + b.inserted, a.upgraded + b.upgraded, a.duplicate() + b.duplicate()),
+        (0, 1, 1)
+    );
+}
+
+#[test]
+fn split_batches_count_like_one_for_every_completeness_order() {
+    let snapshot = |case: &Case| -> Vec<String> {
+        let mut stmt = case
+            .conn()
+            .prepare(
+                "SELECT 'e|' || record_id || '|' || data_completeness || '|' || audit_data::VARCHAR FROM ual_events
+                 UNION ALL SELECT 'm|' || record_id || '|' || coalesce(internet_message_id, '') FROM mail_items_accessed
+                 UNION ALL SELECT 's|' || record_key || '|' || file_id || '|' || record_ordinal FROM record_sources
+                 ORDER BY 1",
+            )
+            .unwrap();
+        stmt.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+    };
+    let orders: [(&str, fn() -> UalRecord, fn() -> UalRecord); 4] = [
+        ("partial,full", mia_partial, mia_full),
+        ("full,partial", mia_full, mia_partial),
+        ("full,full", mia_full, mia_full),
+        ("partial,partial", mia_partial, mia_partial),
+    ];
+    for (name, x, y) in orders {
+        let one = Case::in_memory().unwrap();
+        let w = load_ual_batch(one.conn(), 7, 1, &[staged(0, x()), staged(1, y())]).unwrap();
+        let two = Case::in_memory().unwrap();
+        let a = load_ual_batch(two.conn(), 7, 1, &[staged(0, x())]).unwrap();
+        let b = load_ual_batch(two.conn(), 7, 1, &[staged(1, y())]).unwrap();
+        assert_eq!(
+            (w.inserted, w.upgraded, w.duplicate()),
+            (a.inserted + b.inserted, a.upgraded + b.upgraded, a.duplicate() + b.duplicate()),
+            "{name}"
+        );
+        assert_eq!(snapshot(&one), snapshot(&two), "{name}");
+    }
+}

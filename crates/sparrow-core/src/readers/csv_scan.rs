@@ -45,11 +45,32 @@ pub fn normalize_headers<'a>(fields: impl IntoIterator<Item = &'a str>) -> Vec<S
 }
 
 pub fn read_csv(text: &str) -> CsvTable {
+    let mut table = CsvTable::default();
+    table.headers = read_csv_each(text, |_, event| {
+        match event {
+            CsvEvent::Row(row) => table.rows.push(row),
+            CsvEvent::Error(e) => table.errors.push(e),
+        }
+        true
+    });
+    table
+}
+
+/// One row or row error of [`read_csv_each`], in file order.
+#[derive(Debug, Clone)]
+pub enum CsvEvent {
+    Row(CsvRow),
+    Error(CsvRowError),
+}
+
+/// [`read_csv`] without collecting: each row or row error goes to `sink` with the normalized headers, in file order,
+/// so a caller can hold one row at a time. `sink` returns false to stop. Returns the headers.
+pub fn read_csv_each(text: &str, mut sink: impl FnMut(&[String], CsvEvent) -> bool) -> Vec<String> {
     let mut rdr = ::csv::ReaderBuilder::new()
         .has_headers(false)
         .flexible(true)
         .from_reader(text.as_bytes());
-    let mut table = CsvTable::default();
+    let mut headers: Vec<String> = Vec::new();
     let mut record = ::csv::StringRecord::new();
     let mut ordinal = 0u64;
     let mut have_header = false;
@@ -68,32 +89,38 @@ pub fn read_csv(text: &str) -> CsvTable {
                     if is_type_line {
                         continue;
                     }
-                    table.headers = normalize_headers(record.iter());
+                    headers = normalize_headers(record.iter());
                     have_header = true;
                     continue;
                 }
-                table.rows.push(CsvRow {
+                let row = CsvRow {
                     ordinal,
                     span: Span { start, end },
                     fields: record.iter().map(str::to_string).collect(),
-                });
+                };
                 ordinal += 1;
+                if !sink(&headers, CsvEvent::Row(row)) {
+                    break;
+                }
             }
             Err(e) => {
                 let end = trim_line_end(text, rdr.position().byte() as usize).max(before);
-                table.errors.push(CsvRowError {
+                let error = CsvRowError {
                     ordinal,
                     span: Span { start: before, end },
                     message: e.to_string(),
-                });
+                };
                 ordinal += 1;
+                if !sink(&headers, CsvEvent::Error(error)) {
+                    break;
+                }
                 if rdr.position().byte() as usize <= before {
                     break;
                 }
             }
         }
     }
-    table
+    headers
 }
 
 fn trim_line_end(text: &str, end: usize) -> usize {

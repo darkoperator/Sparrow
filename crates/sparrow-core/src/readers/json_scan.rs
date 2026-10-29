@@ -34,29 +34,44 @@ pub struct JsonScan {
     pub errors: Vec<JsonRecordError>,
 }
 
-struct Scanner<'t> {
-    text: &'t str,
-    ordinal: u64,
-    records: Vec<JsonRecord>,
-    errors: Vec<JsonRecordError>,
+/// One record or record error of [`scan_json_each`], in file order.
+#[derive(Debug, Clone)]
+pub enum JsonEvent {
+    Record(JsonRecord),
+    Error(JsonRecordError),
 }
 
-impl Scanner<'_> {
+struct Scanner<'t, F> {
+    text: &'t str,
+    ordinal: u64,
+    sink: F,
+    /// The sink asked to stop.
+    stopped: bool,
+}
+
+impl<F: FnMut(JsonEvent) -> bool> Scanner<'_, F> {
+    fn emit(&mut self, event: JsonEvent) {
+        if !(self.sink)(event) {
+            self.stopped = true;
+        }
+    }
+
     fn push(&mut self, start: usize, end: usize) {
         let span = Span { start, end };
-        match serde_json::from_str::<Value>(&self.text[start..end]) {
-            Ok(value) => self.records.push(JsonRecord {
+        let event = match serde_json::from_str::<Value>(&self.text[start..end]) {
+            Ok(value) => JsonEvent::Record(JsonRecord {
                 ordinal: self.ordinal,
                 span,
                 value,
             }),
-            Err(e) => self.errors.push(JsonRecordError {
+            Err(e) => JsonEvent::Error(JsonRecordError {
                 ordinal: self.ordinal,
                 span,
                 message: e.to_string(),
             }),
-        }
+        };
         self.ordinal += 1;
+        self.emit(event);
     }
 
     fn fail(&mut self, start: usize, message: String) {
@@ -64,22 +79,42 @@ impl Scanner<'_> {
             start,
             end: self.text.len(),
         };
-        self.errors.push(JsonRecordError {
+        let event = JsonEvent::Error(JsonRecordError {
             ordinal: self.ordinal,
             span,
             message,
         });
         self.ordinal += 1;
+        self.emit(event);
     }
 }
 
 pub fn scan_json(text: &str) -> JsonScan {
+    let mut records = Vec::new();
+    let mut errors = Vec::new();
+    let shape = scan_json_each(text, |event| {
+        match event {
+            JsonEvent::Record(r) => records.push(r),
+            JsonEvent::Error(e) => errors.push(e),
+        }
+        true
+    });
+    JsonScan {
+        shape,
+        records,
+        errors,
+    }
+}
+
+/// [`scan_json`] without collecting: each record (parsed) or record error goes to `sink` in file order, so a caller
+/// can hold one record at a time. `sink` returns false to stop the scan; the shape is then that of the part read.
+pub fn scan_json_each(text: &str, sink: impl FnMut(JsonEvent) -> bool) -> JsonShape {
     let b = text.as_bytes();
     let mut sc = Scanner {
         text,
         ordinal: 0,
-        records: Vec::new(),
-        errors: Vec::new(),
+        sink,
+        stopped: false,
     };
     let mut pos = 0usize;
     let mut docs = 0usize;
@@ -87,7 +122,7 @@ pub fn scan_json(text: &str) -> JsonScan {
 
     'docs: loop {
         pos = skip(b, pos, true);
-        if pos >= b.len() {
+        if pos >= b.len() || sc.stopped {
             break;
         }
         docs += 1;
@@ -97,6 +132,9 @@ pub fn scan_json(text: &str) -> JsonScan {
             }
             pos += 1;
             loop {
+                if sc.stopped {
+                    break 'docs;
+                }
                 pos = skip(b, pos, false);
                 if pos >= b.len() {
                     sc.fail(
@@ -118,6 +156,9 @@ pub fn scan_json(text: &str) -> JsonScan {
                         sc.fail(pos, msg);
                         break 'docs;
                     }
+                }
+                if sc.stopped {
+                    break 'docs;
                 }
                 pos = skip(b, pos, false);
                 match b.get(pos) {
@@ -153,16 +194,11 @@ pub fn scan_json(text: &str) -> JsonScan {
         }
     }
 
-    let shape = match docs {
+    match docs {
         0 => JsonShape::Empty,
         1 if first_is_array => JsonShape::Array,
         1 => JsonShape::SingleObject,
         _ => JsonShape::Concatenated,
-    };
-    JsonScan {
-        shape,
-        records: sc.records,
-        errors: sc.errors,
     }
 }
 

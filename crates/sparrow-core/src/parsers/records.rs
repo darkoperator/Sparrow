@@ -5,9 +5,9 @@ use crate::Result;
 use crate::discovery::{FileFormat, format_from_path};
 use crate::ingest::context::ParseContext;
 use crate::normalize::fields::is_placeholder;
-use crate::readers::csv_scan::{fields_map, read_csv};
+use crate::readers::csv_scan::{CsvEvent, fields_map, read_csv, read_csv_each};
 use crate::readers::format_list::{FlBlock, parse_format_list, parse_format_list_object};
-use crate::readers::json_scan::scan_json;
+use crate::readers::json_scan::{JsonEvent, scan_json, scan_json_each};
 use crate::readers::text::Span;
 use serde_json::{Map, Value};
 
@@ -131,6 +131,79 @@ pub fn read_records(ctx: &mut ParseContext<'_>, format: RecordFormat) -> Result<
         }
     }
     Ok(out)
+}
+
+/// One readable record, or an unreadable one, of [`for_each_record`].
+pub enum RecordEvent {
+    Record(SourceRecord),
+    Error {
+        ordinal: u64,
+        span: Span,
+        message: String,
+    },
+}
+
+/// The records of `text` one at a time, in file order, without collecting them: what [`read_records`] reads, as
+/// events. Each call scans the text again, so a parser can make several passes holding one record at a time.
+/// `f` returns `Ok(false)` to stop; its error ends the scan and is returned. CSV and JSON only.
+pub fn for_each_record(
+    text: &str,
+    format: RecordFormat,
+    mut f: impl FnMut(RecordEvent) -> Result<bool>,
+) -> Result<()> {
+    let mut failed = None;
+    let mut step = |event: RecordEvent| match f(event) {
+        Ok(go) => go,
+        Err(e) => {
+            failed = Some(e);
+            false
+        }
+    };
+    match format {
+        RecordFormat::Csv => {
+            read_csv_each(text, |headers, event| match event {
+                CsvEvent::Row(row) => step(RecordEvent::Record(SourceRecord {
+                    ordinal: row.ordinal,
+                    span: row.span,
+                    map: fields_map(headers, row.fields),
+                    field_spans: Vec::new(),
+                })),
+                CsvEvent::Error(e) => step(RecordEvent::Error {
+                    ordinal: e.ordinal,
+                    span: e.span,
+                    message: e.message,
+                }),
+            });
+        }
+        RecordFormat::Json => {
+            scan_json_each(text, |event| match event {
+                JsonEvent::Record(r) => match r.value {
+                    Value::Object(map) => step(RecordEvent::Record(SourceRecord {
+                        ordinal: r.ordinal,
+                        span: r.span,
+                        map,
+                        field_spans: Vec::new(),
+                    })),
+                    _ => step(RecordEvent::Error {
+                        ordinal: r.ordinal,
+                        span: r.span,
+                        message: "record is not a JSON object".into(),
+                    }),
+                },
+                JsonEvent::Error(e) => step(RecordEvent::Error {
+                    ordinal: e.ordinal,
+                    span: e.span,
+                    message: e.message,
+                }),
+            });
+        }
+        RecordFormat::FormatList | RecordFormat::FormatListObject => {
+            return Err(crate::Error::Invalid(
+                "for_each_record reads CSV and JSON only".into(),
+            ));
+        }
+    }
+    failed.map_or(Ok(()), Err)
 }
 
 /// Warning for CSV records that hold PowerShell placeholders: nested and multi-valued

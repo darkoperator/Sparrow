@@ -109,7 +109,13 @@ pub struct IngestOptions {
     /// When the writer was locked down (the review app's), leave it unlocked after the ingest for the caller's
     /// profile and detection steps, which cannot run locked; the caller then calls [`restore_lock_down`].
     pub keep_unlocked: bool,
+    /// Records the UAL parser normalizes and stages per load inside a file's transaction ([`DEFAULT_UAL_BATCH_ROWS`]);
+    /// a file is never held whole as records. Tests set small values to cross batch boundaries.
+    pub ual_batch_rows: usize,
 }
+
+/// Default [`IngestOptions::ual_batch_rows`].
+pub const DEFAULT_UAL_BATCH_ROWS: usize = 50_000;
 
 impl std::fmt::Debug for IngestOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -119,6 +125,7 @@ impl std::fmt::Debug for IngestOptions {
             .field("progress", &self.progress.as_ref().map(|_| "<fn>"))
             .field("cancel", &self.cancel.as_ref().map(|_| "<fn>"))
             .field("keep_unlocked", &self.keep_unlocked)
+            .field("ual_batch_rows", &self.ual_batch_rows)
             .finish()
     }
 }
@@ -131,6 +138,7 @@ impl Default for IngestOptions {
             progress: None,
             cancel: None,
             keep_unlocked: false,
+            ual_batch_rows: DEFAULT_UAL_BATCH_ROWS,
         }
     }
 }

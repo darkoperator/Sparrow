@@ -22,7 +22,8 @@ pub struct LoadOutcome {
     pub staged: u64,
     /// New `ual_events` rows.
     pub inserted: u64,
-    /// Existing `partial` rows replaced by a `full` copy from this batch.
+    /// Existing `partial` rows replaced by a `full` copy from this batch, not counting rows an earlier batch of the
+    /// same file inserted (one batch would have stored the full copy directly: those count as duplicates).
     pub upgraded: u64,
 }
 
@@ -278,10 +279,22 @@ pub fn load_ual_batch(
     }
     let t = super::timing::span("ual load: merge setup (chosen/upgrade/fresh)");
     conn.execute_batch(MERGE_SETUP)?;
+    // An upgrade of a row an earlier batch of this file inserted is the file's own full copy winning over its partial
+    // one, which a single batch decides in `stage_chosen`: not an upgrade. `file_inserted` holds the rows this file's
+    // batches inserted (a row that existed before the file and was only sighted by it is still upgraded); it keeps
+    // one file's ids at a time.
+    conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS file_inserted (file_id BIGINT, record_id VARCHAR)")?;
+    conn.execute("DELETE FROM file_inserted WHERE file_id <> ?", params![file_id])?;
     let (inserted, upgraded): (i64, i64) = conn.query_row(
-        "SELECT (SELECT count(*) FROM stage_fresh), (SELECT count(*) FROM stage_upgrade)",
-        [],
+        "SELECT (SELECT count(*) FROM stage_fresh),
+                (SELECT count(*) FROM stage_upgrade u WHERE NOT EXISTS (
+                    SELECT 1 FROM file_inserted f WHERE f.file_id = ? AND f.record_id = u.record_id))",
+        params![file_id],
         |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    conn.execute(
+        "INSERT INTO file_inserted SELECT ?, record_id FROM stage_fresh",
+        params![file_id],
     )?;
     drop(t);
     let t = super::timing::span("ual load: upgrade + delete children");

@@ -3,14 +3,14 @@
 //! keys, never from the file name (Addendum A.3).
 
 use crate::discovery::{FileFormat, format_from_path};
-use crate::ingest::bulk::{StagedUal, load_ual_batch};
+use crate::ingest::bulk::{LoadOutcome, StagedUal, load_ual_batch};
 use crate::ingest::context::ParseContext;
 use crate::ingest::parser::{ArtifactParser, ParserRegistry};
 use crate::normalize::fields::Rec;
 use crate::normalize::ual::{event_time_text, normalize_audit};
 use crate::normalize::ual_shape::{AuditInput, Completeness, UalShape, detect_shape, to_audit};
 use crate::parsers::admin_audit::load_admin_audit;
-use crate::parsers::records::{RecordFormat, SourceRecord, read_records};
+use crate::parsers::records::{RecordEvent, RecordFormat, SourceRecord, for_each_record, read_records};
 use crate::readers::time::DateOrderDetector;
 use crate::{Error, Result};
 use serde_json::{Map, Value};
@@ -179,6 +179,30 @@ fn quickual_csv_input(record: &Map<String, Value>) -> Result<AuditInput> {
     })
 }
 
+/// The batches of one file loaded so far.
+#[derive(Default)]
+struct Loads {
+    outcome: LoadOutcome,
+    /// Loaded records whose id was derived from their content.
+    synthetic: u64,
+}
+
+impl Loads {
+    /// Load `staged` (one batch) inside the file's transaction and empty it.
+    fn load(&mut self, ctx: &ParseContext<'_>, staged: &mut Vec<StagedUal>) -> Result<()> {
+        if staged.is_empty() {
+            return Ok(());
+        }
+        let out = load_ual_batch(ctx.conn, ctx.collection_id, ctx.file_id, staged)?;
+        self.outcome.staged += out.staged;
+        self.outcome.inserted += out.inserted;
+        self.outcome.upgraded += out.upgraded;
+        self.synthetic += staged.iter().filter(|s| s.rec.synthetic_id).count() as u64;
+        staged.clear();
+        Ok(())
+    }
+}
+
 impl ArtifactParser for UalParser {
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
         let is_csv = format_from_path(ctx.rel_path) == FileFormat::Csv;
@@ -191,8 +215,21 @@ impl ArtifactParser for UalParser {
             ctx.warn("Get-UALGraph found no results (the file holds only \"[\")");
             return Ok(());
         }
-        let records = read_records(ctx, format)?;
-        let Some(first) = records.first() else {
+        // The records are streamed, never collected (a 1.76 GB Purview export collected peaked at 21.5 GB): the first
+        // readable record decides the shape, a first pass reads the times for the day/month order, and a second
+        // normalizes and loads them in batches of `ual_batch_rows` inside the file's transaction.
+        let text = ctx.text;
+        let mut first = None;
+        for_each_record(&text.text, format, |event| match event {
+            RecordEvent::Record(r) => {
+                first = Some(r);
+                Ok(false)
+            }
+            RecordEvent::Error { .. } => Ok(true),
+        })?;
+        let Some(first) = first else {
+            // No readable record: recording the unreadable ones is all there is to do.
+            read_records(ctx, format)?;
             return Ok(());
         };
         let shape = if self.source == UalSource::Quickual {
@@ -214,6 +251,7 @@ impl ArtifactParser for UalParser {
             // Hawk 3 writes Search-AdminAuditLog records under UAL-looking names
             // (RBAC_Changes, User_Changes, Simple_*): they belong in admin_audit_events.
             UalShape::AdminAudit | UalShape::AdminAuditSimple => {
+                let records = read_records(ctx, format)?;
                 return load_admin_audit(
                     ctx,
                     &records,
@@ -229,7 +267,6 @@ impl ArtifactParser for UalParser {
             }
             _ => {}
         }
-        ctx.stats.read += records.len() as u64;
         let lossy = is_csv || self.derived;
         let ediscovery = is_hawk3_ediscovery(ctx.rel_path);
         let input_of = |r: &SourceRecord| -> std::result::Result<AuditInput, String> {
@@ -249,25 +286,38 @@ impl ArtifactParser for UalParser {
                 })
             }
         };
-        // Two passes so the file's parsed records are never all held at once (a 1.76 GB Purview export held every
-        // AuditData tree next to its row and peaked at 21.5 GB): the first reads each record's time for the
-        // day/month order and drops the record's tree, the second parses again and normalizes one record at a time.
         let mut detector = DateOrderDetector::default();
         let mut any_timed = false;
-        for r in &records {
-            if let Some(t) = input_of(r).ok().as_ref().and_then(event_time_text) {
-                any_timed = true;
-                detector.observe(&t);
+        for_each_record(&text.text, format, |event| {
+            ctx.stats.read += 1;
+            match event {
+                RecordEvent::Record(r) => {
+                    if let Some(t) = input_of(&r).ok().as_ref().and_then(event_time_text) {
+                        any_timed = true;
+                        detector.observe(&t);
+                    }
+                }
+                RecordEvent::Error {
+                    ordinal,
+                    span,
+                    message,
+                } => ctx.parse_error(ordinal, span, &message)?,
             }
-        }
+            Ok(true)
+        })?;
         if shape == UalShape::AppAudit && !any_timed {
             return Err(Error::UnsupportedShape(
                 "Hawk application audit export has no timestamps (env_time is null); the same events are in the raw UAL and directory audit logs".into(),
             ));
         }
         let order = ctx.resolve_date_order(&detector)?;
-        let mut staged = Vec::with_capacity(records.len());
-        for r in records {
+        let batch = ctx.options.ual_batch_rows.max(1);
+        let mut staged = Vec::new();
+        let mut loads = Loads::default();
+        for_each_record(&text.text, format, |event| {
+            let RecordEvent::Record(r) = event else {
+                return Ok(true);
+            };
             match input_of(&r).and_then(|i| normalize_audit(&i, order)) {
                 Ok(rec) => {
                     let (pos, raw_sha256) = ctx.sighting(r.span);
@@ -277,11 +327,16 @@ impl ArtifactParser for UalParser {
                         raw_sha256,
                         rec,
                     });
+                    if staged.len() >= batch {
+                        loads.load(ctx, &mut staged)?;
+                    }
                 }
                 Err(msg) => ctx.parse_error(r.ordinal, r.span, &msg)?,
             }
-        }
-        let out = load_ual_batch(ctx.conn, ctx.collection_id, ctx.file_id, &staged)?;
+            Ok(true)
+        })?;
+        loads.load(ctx, &mut staged)?;
+        let out = loads.outcome;
         ctx.stats.loaded += out.inserted + out.upgraded;
         ctx.stats.duplicate += out.duplicate();
         if out.upgraded > 0 {
@@ -290,10 +345,10 @@ impl ArtifactParser for UalParser {
                 out.upgraded
             ));
         }
-        let synthetic = staged.iter().filter(|s| s.rec.synthetic_id).count();
-        if synthetic > 0 {
+        if loads.synthetic > 0 {
             ctx.warn(format!(
-                "{synthetic} records have no valid AuditData Id; a content-derived id was used"
+                "{} records have no valid AuditData Id; a content-derived id was used",
+                loads.synthetic
             ));
         }
         Ok(())

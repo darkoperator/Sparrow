@@ -91,3 +91,26 @@ fn normalize_headers_strips_bom_and_numbers_duplicates() {
         vec!["RecordId", "A B", "x", "x_2", "x_3"]
     );
 }
+
+#[test]
+fn read_csv_each_streams_rows_in_order_and_stops() {
+    use sparrow_core::readers::csv_scan::{CsvEvent, read_csv, read_csv_each};
+    let text = "A,B\r\n1,2\r\n3,4\r\n5,6\r\n";
+    let whole = read_csv(text);
+    let mut rows = Vec::new();
+    let headers = read_csv_each(text, |h, e| {
+        assert_eq!(h, ["A", "B"]);
+        if let CsvEvent::Row(r) = e {
+            rows.push((r.ordinal, r.span, r.fields));
+        }
+        rows.len() < 2
+    });
+    assert_eq!(headers, whole.headers);
+    assert_eq!(
+        rows,
+        whole.rows[..2]
+            .iter()
+            .map(|r| (r.ordinal, r.span, r.fields.clone()))
+            .collect::<Vec<_>>()
+    );
+}

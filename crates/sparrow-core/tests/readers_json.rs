@@ -107,3 +107,37 @@ fn stray_closing_bracket_does_not_loop_forever() {
     assert_eq!(scan.records.len(), 2);
     assert_eq!(scan.errors.len(), 1);
 }
+
+#[test]
+fn scan_json_each_stops_where_the_sink_says() {
+    // A stop right after a record must not read the bad separator that follows it.
+    let text = "[{\"a\":1} x]";
+    let mut seen = Vec::new();
+    scan_json_each(text, |e| {
+        seen.push(e);
+        false
+    });
+    assert_eq!(seen.len(), 1);
+    assert!(matches!(&seen[0], JsonEvent::Record(r) if r.ordinal == 0 && r.span.end == 8));
+    // A stop on an error ends the scan too; without a stop the same text yields both events in order.
+    let text = "{\"a\":1}\n{bad}\n{\"a\":3}";
+    let mut all = Vec::new();
+    scan_json_each(text, |e| {
+        all.push(e);
+        true
+    });
+    let kinds: Vec<(bool, u64)> = all
+        .iter()
+        .map(|e| match e {
+            JsonEvent::Record(r) => (true, r.ordinal),
+            JsonEvent::Error(e) => (false, e.ordinal),
+        })
+        .collect();
+    assert_eq!(kinds, vec![(true, 0), (false, 1), (true, 2)]);
+    let mut calls = 0;
+    scan_json_each(text, |e| {
+        calls += 1;
+        !matches!(e, JsonEvent::Error(_))
+    });
+    assert_eq!(calls, 2);
+}
