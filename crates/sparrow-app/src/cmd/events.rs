@@ -10,8 +10,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sparrow_core::case::browse::Sort;
 use sparrow_core::case::events::{
-    self, AiFilter, Entity, EventDetail, EventQuery, EventsPage, EventsSummary, Field, FlagFilter,
-    Histogram,
+    self, AiFilter, Entity, EventDetail, EventQuery, EventsPage, EventsSummary, Field, FieldValues,
+    FlagFilter, Histogram,
 };
 use std::path::Path;
 
@@ -208,6 +208,29 @@ pub fn events_suggest(state: &AppState, field: Field, prefix: &str) -> CmdResult
     })
 }
 
+/// The values of `field` with their event counts among the events the query matches, the field's own filter left out
+/// (the column filter's list): most events first, at most `limit` (core caps it at 200), `prefix` a case-insensitive
+/// start (`*` wildcard). A `limit` of 0 is refused. Cancellable like [`events_page`] when the query has a `search`.
+pub fn events_values(
+    state: &AppState,
+    query: &EventQueryArgs,
+    field: Field,
+    prefix: &str,
+    limit: usize,
+    query_id: Option<&str>,
+) -> CmdResult<FieldValues> {
+    if limit < 1 {
+        return Err(CmdError::new(
+            "invalid",
+            "a values list needs a limit of at least 1",
+        ));
+    }
+    let q = query.to_query()?;
+    read(state, &q, query_id, |open| {
+        Ok(events::values(open.case.conn(), &q, field, prefix, limit)?)
+    })
+}
+
 /// Every event the query matches, newest first, as CSV at `path`; returns the rows written. Written through the export
 /// menu's private work folder and renamed into place when complete, so a failed or cancelled export leaves no file; the
 /// open case and its WAL are refused. With a `search`, cancellable like [`events_page`].
@@ -303,6 +326,18 @@ pub mod commands {
         prefix: String,
     ) -> CmdResult<Vec<String>> {
         super::events_suggest(&state, field, &prefix)
+    }
+
+    #[tauri::command(async)]
+    pub fn events_values(
+        state: State<'_, AppState>,
+        query: EventQueryArgs,
+        field: Field,
+        prefix: String,
+        limit: usize,
+        query_id: Option<String>,
+    ) -> CmdResult<FieldValues> {
+        super::events_values(&state, &query, field, &prefix, limit, query_id.as_deref())
     }
 
     #[tauri::command(async)]

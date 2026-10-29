@@ -35,6 +35,25 @@ const callsOf = (cmd: string) => h.calls.filter((c) => c.cmd === cmd);
 const lastQuery = (cmd = "events_page") => callsOf(cmd).at(-1)!.args!.query as EventQuery;
 /** A filter box by its label (the Columns menu has checkboxes with the same names). */
 const box = (name: string) => within(screen.getByRole("form", { name: "Event filters" })).getByLabelText(name);
+const header = (label: string) => screen.getByRole("columnheader", { name: new RegExp(`^${label}`) });
+/** Open a column's filter popover with a right-click on its title. */
+async function openFilter(label: string) {
+  fireEvent.contextMenu(header(label));
+  return screen.findByRole("dialog", { name: `${label} column` });
+}
+/** Set a column filter to `text` through its pattern box (no value ticked) and apply it, with `{Enter}` if asked. */
+async function filterColumn(user: ReturnType<typeof userEvent.setup>, label: string, text: string, enter = false) {
+  const pop = await openFilter(label);
+  for (const c of within(pop).queryAllByRole("checkbox", { checked: true })) {
+    if (c.getAttribute("role") !== "switch") await user.click(c);
+  }
+  const pattern = within(pop).getByLabelText("Pattern");
+  await user.clear(pattern);
+  await user.type(pattern, enter ? `${text}{Enter}` : text);
+  if (!enter) await user.click(within(pop).getByRole("button", { name: "Apply" }));
+}
+/** The filter icon on a column's title, by its hover text. */
+const badge = (name: string | RegExp) => screen.getByRole("img", { name });
 const summary = () => within(screen.getByRole("group", { name: "Summary" }));
 const dataRows = () => screen.getAllByRole("row").slice(1);
 
@@ -51,15 +70,18 @@ describe("EventsView", () => {
     const user = userEvent.setup();
     view();
     await shown(81, 81);
-    await user.type(box("Account"), " !wren*, skyler sanders ");
-    await user.type(box("Country"), "US");
+    await filterColumn(user, "Account", " !wren*, skyler sanders ");
+    // A value ticked in the list.
+    const country = await openFilter("Country");
+    await user.click(await within(country).findByRole("checkbox", { name: "US" }));
+    await user.click(within(country).getByRole("button", { name: "Apply" }));
     await user.type(box("Search text"), "Send");
     await user.click(screen.getByRole("button", { name: "Search" }));
     await waitFor(() => expect(lastQuery().fields).toHaveLength(2));
-    // As typed, blanks left out; the same query goes to the page, the summary and the chart.
+    // As written (the pattern trimmed), blanks left out; the same query goes to the page, the summary and the chart.
     const expected: EventQuery = {
       fields: [
-        ["account", " !wren*, skyler sanders "],
+        ["account", "!wren*, skyler sanders"],
         ["country", "US"],
       ],
       search: "Send",
@@ -75,26 +97,26 @@ describe("EventsView", () => {
     expect(ids.every((i) => typeof i === "string" && i !== "")).toBe(true);
   });
 
-  it("backend_filter_error_shown_under_field", async () => {
+  it("backend_filter_error_shown_on_its_column", async () => {
     const user = userEvent.setup();
     view();
     await shown(81, 81);
-    await user.type(box("IP"), "!");
-    await user.click(screen.getByRole("button", { name: "Search" }));
-    const ipBox = box("IP");
-    const msg = await screen.findByText(/IP filter: "!" needs a value/);
-    expect(msg).toHaveAttribute("role", "alert");
-    expect(ipBox.parentElement).toContainElement(msg);
-    expect(ipBox).toHaveAttribute("aria-invalid", "true");
+    await filterColumn(user, "IP", "!");
+    // A red icon on the column, its hover the backend's message; the popover shows it as an alert.
+    const icon = await screen.findByRole("img", { name: /^IP filter refused: IP filter: a '!' needs a value/ });
+    expect(icon).toHaveClass("colf-badge-error");
+    expect(header("IP")).toContainElement(icon);
+    const pop = await openFilter("IP");
+    expect(within(pop).getByRole("alert")).toHaveTextContent(/^IP filter: a '!' needs a value/);
+    expect(within(pop).getByLabelText("Pattern")).toHaveValue("!");
     // Nothing else changed: the earlier results stay.
     expect(screen.getByText("81 of 81 shown")).toBeInTheDocument();
-    // A different box's message goes under its own box only.
-    await user.clear(ipBox);
-    await user.type(box("Tag"), ",,");
-    await user.click(screen.getByRole("button", { name: "Search" }));
-    const tagMsg = await screen.findByText(/^Tag filter: /);
-    expect(box("Tag").parentElement).toContainElement(tagMsg);
-    expect(screen.queryByText(/IP filter/)).not.toBeInTheDocument();
+    // A different field's message goes to its own column only.
+    await user.click(within(pop).getByRole("button", { name: "Clear filter" }));
+    await shown(81, 81);
+    await filterColumn(user, "Tags", ",,");
+    expect(await screen.findByRole("img", { name: /^Tags filter refused: Tag filter: / })).toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: /^IP filter/ })).not.toBeInTheDocument();
   });
 
   it("histogram_drag_sets_from_to_and_reset_clears", async () => {
@@ -153,13 +175,13 @@ describe("EventsView", () => {
     await shown(81, 81);
     await user.click(await within(await screen.findByRole("group", { name: "Summary" })).findByRole("button", { name: /^ual 12$/ }));
     await shown(12, 12);
-    expect(box("Source")).toHaveValue("ual");
+    expect(badge("Source filter: ual")).toBeInTheDocument();
     expect(lastQuery().fields).toEqual([["source", "ual"]]);
     expect(lastQuery("events_summary").fields).toEqual([["source", "ual"]]);
     // Again: back off.
     await user.click(summary().getByRole("button", { name: /^ual 12$/ }));
     await shown(81, 81);
-    expect(box("Source")).toHaveValue("");
+    expect(screen.queryByRole("img", { name: /^Source filter/ })).not.toBeInTheDocument();
     // A flag count sets the flag filter; the total clears everything.
     await user.click(screen.getByRole("button", { name: /3 suspicious/ }));
     await shown(3, 3);
@@ -181,15 +203,11 @@ describe("EventsView", () => {
     await user.click(hidden);
     await waitFor(() => expect(lastQuery().fields).toEqual([["source", "*"]]));
     // With a source already named, the trace events are added to the list.
-    await user.clear(box("Source"));
-    await user.type(box("Source"), "ual");
-    await user.click(screen.getByRole("button", { name: "Search" }));
+    await filterColumn(user, "Source", "ual");
     await user.click(await screen.findByRole("button", { name: /message trace events hidden/ }));
     await waitFor(() => expect(lastQuery().fields).toEqual([["source", "ual,message_trace_event"]]));
     // A list of only exclusions means "everything but": a name would narrow it, so a wildcard is added.
-    await user.clear(box("Source"));
-    await user.type(box("Source"), "!ual");
-    await user.click(screen.getByRole("button", { name: "Search" }));
+    await filterColumn(user, "Source", "!ual");
     await user.click(await screen.findByRole("button", { name: /message trace events hidden/ }));
     await waitFor(() => expect(lastQuery().fields).toEqual([["source", "!ual,*"]]));
   });
@@ -218,11 +236,12 @@ describe("EventsView", () => {
     save.mockResolvedValue("/out/events.csv");
     view();
     await shown(81, 81);
-    await user.type(box("Account"), "skyler*");
-    await user.click(screen.getByRole("button", { name: "Search" }));
+    await filterColumn(user, "Account", "skyler*");
     await waitFor(() => expect(lastQuery().fields).toEqual([["account", "skyler*"]]));
-    // Typed but not applied: it is not part of what is shown, so not part of the export.
-    await user.type(box("Operation"), "Send");
+    // Typed but not applied (the popover closed with Escape): not part of what is shown, so not part of the export.
+    const op = await openFilter("Operation");
+    await user.type(within(op).getByLabelText("Pattern"), "Send{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Operation column" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Export CSV" }));
     await screen.findByText(/Exported \d+ events to \/out\/events\.csv/);
     expect(save).toHaveBeenCalledWith({ defaultPath: "events.csv", filters: [{ name: "CSV", extensions: ["csv"] }] });
@@ -265,9 +284,11 @@ describe("EventsView", () => {
     expect(tagged).not.toHaveClass("ev-flag-ai");
     // An analyst tag is plain: no dashed style, no badge.
     await user.selectOptions(box("Agent marks"), "all");
-    await user.type(box("Tag"), "phish-lure");
-    await user.click(screen.getByRole("button", { name: "Search" }));
+    const tags = await openFilter("Tags");
+    await user.click(await within(tags).findByRole("checkbox", { name: "phish-lure" }));
+    await user.click(within(tags).getByRole("button", { name: "Apply" }));
     await screen.findByText(/2 of 2 shown/);
+    expect(lastQuery().fields).toEqual([["tag", "phish-lure"]]);
     const plain = dataRows()[0].querySelector(".ev-tag")!;
     expect(plain).toHaveTextContent("phish-lure");
     expect(plain).not.toHaveClass("ev-tag-ai");
@@ -328,12 +349,13 @@ describe("EventsView", () => {
     const user = userEvent.setup();
     view();
     await shown(81, 81);
-    await user.type(box("Account"), "typed but not applied");
+    await user.type(box("Search text"), "typed but not applied");
     const sums = callsOf("events_summary").length;
     await user.click(screen.getByRole("button", { name: /^Time/ }));
     await waitFor(() => expect(callsOf("events_page").at(-1)!.args!.sort).toEqual({ column: "event_time", descending: false }));
     expect(callsOf("events_summary")).toHaveLength(sums);
     expect(lastQuery().fields).toEqual([]);
+    expect(lastQuery().search).toBeUndefined();
     await waitFor(() => expect(screen.getByRole("columnheader", { name: /^Time/ })).toHaveAttribute("aria-sort", "ascending"));
     await user.click(screen.getByRole("button", { name: /^Time/ }));
     await waitFor(() => expect(callsOf("events_page").at(-1)!.args!.sort).toEqual({ column: "event_time", descending: true }));
@@ -352,10 +374,11 @@ describe("EventsView", () => {
     fireEvent.contextMenu(within(dataRows()[0]).getByText("192.0.2.26"));
     await user.click(screen.getByRole("menuitem", { name: "Filter by this value" }));
     await waitFor(() => expect(lastQuery().fields).toEqual([["ip", "192.0.2.26"]]));
-    expect(box("IP")).toHaveValue("192.0.2.26");
+    expect(badge("IP filter: 192.0.2.26")).toBeInTheDocument();
     fireEvent.contextMenu(within(dataRows()[0]).getByText("Send"));
     await user.click(screen.getByRole("menuitem", { name: "Exclude this value" }));
     await waitFor(() => expect(lastQuery().fields).toEqual([["operation", "!Send"], ["ip", "192.0.2.26"]]));
+    await waitFor(() => expect(screen.queryByText("Loading…")).not.toBeInTheDocument());
     // The keyboard can reach the details too.
     fireEvent.contextMenu(within(dataRows()[0]).getByText("192.0.2.26"));
     await user.click(screen.getByRole("menuitem", { name: "Show details" }));
@@ -509,13 +532,11 @@ describe("EventsView", () => {
       }
       return mockCall("events_page", a);
     };
-    await user.type(box("Account"), "slow-first{Enter}");
+    await filterColumn(user, "Account", "slow-first", true);
     await waitFor(() => expect(callsOf("events_page").some((c) => JSON.stringify(c.args).includes("slow-first"))).toBe(true));
-    await user.clear(box("Account"));
     // Search stays available while a run is going: the newer query takes over from the older.
     expect(screen.getByRole("button", { name: "Search" })).toBeEnabled();
-    await user.clear(box("Account"));
-    await user.type(box("Account"), "skyler*{Enter}");
+    await filterColumn(user, "Account", "skyler*", true);
     await screen.findByText(/^\d+ of \d+ shown$/);
     const want = await mockCall<{ total: number }>("events_page", { query: lastQuery(), sort: null, offset: 0, limit: 1 });
     await shown(want.total, want.total);
@@ -597,7 +618,8 @@ describe("EventsView", () => {
       const counts = () => ["events_page", "events_summary", "events_histogram"].map((c) => callsOf(c).length);
       const before = counts();
       const cancels = callsOf("query_cancel").length;
-      await user.type(box(label), `${text}{Enter}`);
+      if (label === "Account") await filterColumn(user, label, text, true);
+      else await user.type(box(label), `${text}{Enter}`);
       await waitFor(() => expect(counts()).toEqual(before.map((n) => n + 1)));
       await act(async () => {
         await new Promise((r) => setTimeout(r, 30));

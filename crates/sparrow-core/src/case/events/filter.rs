@@ -74,40 +74,113 @@ impl Field {
     }
 }
 
-/// One parsed field: the values to include (OR'ed) and to exclude (AND NOT'ed), without their `!`.
+/// One value of a field: its text (without the `!` and the quotes) and whether its `*`s are wildcards. A quoted value
+/// is always literal.
 #[derive(Debug, PartialEq)]
-pub(super) struct Parsed {
-    pub include: Vec<String>,
-    pub exclude: Vec<String>,
+pub(super) struct Term {
+    pub text: String,
+    pub wild: bool,
 }
 
-/// Harrier's list syntax. `Ok(None)` for a blank field (no filter). Refused with a message naming the field: a field
-/// of only commas, a lone `!` (also `!,`, `! `): they would otherwise match everything or nothing silently.
+/// One parsed field: the values to include (OR'ed) and to exclude (AND NOT'ed).
+#[derive(Debug, PartialEq)]
+pub(super) struct Parsed {
+    pub include: Vec<Term>,
+    pub exclude: Vec<Term>,
+}
+
+/// Harrier's list syntax, plus quoting: a value in double quotes (`"a,b"`, `!"*x"`) is taken literally, commas, `*`, a
+/// leading `!` and outer spaces included, and `""` inside it is one quote. A quote anywhere but at the start of a value
+/// is an ordinary character. `Ok(None)` for a blank field (no filter). Refused with a message naming the field: a field
+/// of only commas, a lone `!` (also `!,`, `! `), a quote that is not closed, and text after a closing quote: they would
+/// otherwise match everything, nothing, or something else silently.
 pub(super) fn parse_list(field: Field, text: &str) -> Result<Option<Parsed>> {
     if text.trim().is_empty() {
         return Ok(None);
     }
+    let refuse = |why: &str| Err(Error::Invalid(format!("{} filter: {why}", field.name())));
     let mut p = Parsed {
         include: vec![],
         exclude: vec![],
     };
-    for part in text.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-        match part.strip_prefix('!') {
-            Some(rest) if rest.trim().is_empty() => {
-                return Err(Error::Invalid(format!(
-                    "{} filter: a '!' needs a value after it (like !value)",
-                    field.name()
-                )));
-            }
-            Some(rest) => p.exclude.push(rest.trim().to_string()),
-            None => p.include.push(part.to_string()),
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    let skip_space = |i: &mut usize| {
+        while *i < chars.len() && chars[*i].is_whitespace() {
+            *i += 1;
         }
+    };
+    while i <= chars.len() {
+        skip_space(&mut i);
+        let bang = i < chars.len() && chars[i] == '!';
+        if bang {
+            i += 1;
+            skip_space(&mut i);
+        }
+        let term = if i < chars.len() && chars[i] == '"' {
+            let mut value = String::new();
+            i += 1;
+            loop {
+                match chars.get(i) {
+                    None => return refuse("a quote is not closed (a quoted value ends with \")"),
+                    Some('"') if chars.get(i + 1) == Some(&'"') => {
+                        value.push('"');
+                        i += 2;
+                    }
+                    Some('"') => {
+                        i += 1;
+                        break;
+                    }
+                    Some(c) => {
+                        value.push(*c);
+                        i += 1;
+                    }
+                }
+            }
+            skip_space(&mut i);
+            if i < chars.len() && chars[i] != ',' {
+                return refuse(
+                    "a quoted value must end at its closing quote (put a comma after it)",
+                );
+            }
+            Some(Term {
+                text: value,
+                wild: false,
+            })
+        } else {
+            let start = i;
+            while i < chars.len() && chars[i] != ',' {
+                i += 1;
+            }
+            let value: String = chars[start..i]
+                .iter()
+                .collect::<String>()
+                .trim()
+                .to_string();
+            if value.is_empty() {
+                if bang {
+                    return refuse("a '!' needs a value after it (like !value)");
+                }
+                None
+            } else {
+                Some(Term {
+                    wild: value.contains('*'),
+                    text: value,
+                })
+            }
+        };
+        if let Some(t) = term {
+            if bang {
+                p.exclude.push(t);
+            } else {
+                p.include.push(t);
+            }
+        }
+        // Past the comma that ends this value (or the end of the text).
+        i += 1;
     }
     if p.include.is_empty() && p.exclude.is_empty() {
-        return Err(Error::Invalid(format!(
-            "{} filter: only commas, no value",
-            field.name()
-        )));
+        return refuse("only commas, no value");
     }
     Ok(Some(p))
 }
@@ -134,8 +207,8 @@ fn contains_pattern(term: &str) -> String {
 }
 
 /// The predicate for one value of `field` and its parameters (one per expression).
-fn value_predicate(field: Field, exprs: &[&str], value: &str) -> (String, Vec<Value>) {
-    let wild = value.contains('*');
+fn value_predicate(field: Field, exprs: &[&str], term: &Term) -> (String, Vec<Value>) {
+    let (value, wild) = (term.text.as_str(), term.wild);
     let (op, bound) = if wild {
         (" ILIKE ", like_pattern(value))
     } else if field.case_insensitive() {
@@ -313,7 +386,14 @@ pub(super) fn hides_trace_events(q: &EventQuery) -> Result<bool> {
             continue;
         }
         if let Some(p) = parse_list(*f, text)? {
-            if p.include.iter().any(|v| names_source(v, HIDDEN_SOURCE)) {
+            let names = |t: &Term| {
+                if t.wild {
+                    names_source(&t.text, HIDDEN_SOURCE)
+                } else {
+                    t.text == HIDDEN_SOURCE
+                }
+            };
+            if p.include.iter().any(names) {
                 return Ok(false);
             }
         }
@@ -449,11 +529,47 @@ mod tests {
         let p = parse_list(Field::Account, "  a , !b,, c ")
             .unwrap()
             .unwrap();
-        assert_eq!(p.include, ["a", "c"]);
-        assert_eq!(p.exclude, ["b"]);
+        let texts = |v: &[Term]| v.iter().map(|t| t.text.clone()).collect::<Vec<_>>();
+        assert_eq!(texts(&p.include), ["a", "c"]);
+        assert_eq!(texts(&p.exclude), ["b"]);
         assert!(parse_list(Field::Account, "   ").unwrap().is_none());
         for bad in ["!", ",,", "!,", "a, !", " ! "] {
             assert!(parse_list(Field::Ip, bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn quoted_values_are_literal() {
+        let lit = |s: &str| Term {
+            text: s.into(),
+            wild: false,
+        };
+        let p = parse_list(
+            Field::Operation,
+            r#""a,b" , !"*x", "say ""hi""", "!bang",  " pad " ,c*,!"","#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            p.include,
+            [
+                lit("a,b"),
+                lit("say \"hi\""),
+                lit("!bang"),
+                lit(" pad "),
+                Term {
+                    text: "c*".into(),
+                    wild: true
+                }
+            ]
+        );
+        assert_eq!(p.exclude, [lit("*x"), lit("")]);
+        // A quote inside an unquoted value is a character.
+        let p = parse_list(Field::Operation, r#"O"Brien"#).unwrap().unwrap();
+        assert_eq!(p.include, [lit("O\"Brien")]);
+        for bad in [r#""open"#, r#""a"b"#, r#"!"x"y, z"#] {
+            let e = parse_list(Field::Operation, bad).unwrap_err();
+            assert!(e.to_string().contains("Operation filter"), "{bad:?}: {e}");
         }
     }
 

@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -333,9 +333,12 @@ describe("EntityTab", () => {
     const user = userEvent.setup();
     const { refresh } = view(ADMIN);
     await waitFor(() => expect(callsOf("events_summary")).toHaveLength(1));
-    await user.type(filterBox("Operation"), "MailItemsAccessed");
+    // The Operation filter is in its column's popover; its Apply runs the From typed before it too.
     await user.type(filterBox("From (UTC)"), "2026-08-01");
-    await user.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.contextMenu(screen.getByRole("columnheader", { name: /^Operation/ }));
+    const pop = await screen.findByRole("dialog", { name: "Operation column" });
+    await user.type(within(pop).getByLabelText("Pattern"), "MailItemsAccessed");
+    await user.click(within(pop).getByRole("button", { name: "Apply" }));
     await waitFor(() => expect(callsOf("events_summary")).toHaveLength(2));
     const q = lastQuery("events_summary");
     expect(q.fields).toEqual([["operation", "MailItemsAccessed"]]);

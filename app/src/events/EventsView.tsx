@@ -41,8 +41,10 @@ import { displaySafe } from "../text";
 import Icon from "../ui/Icon";
 import "./events.css";
 import "../marks/marks.css";
-import { COLUMN_BY_ID, COLUMNS, DEFAULT_VISIBLE } from "./columns";
+import ColumnFilter, { FilterBadge } from "./ColumnFilter";
+import { COLUMN_BY_ID, COLUMN_FIELD, COLUMNS, DEFAULT_VISIBLE } from "./columns";
 import EventDetail, { TagBadge } from "./EventDetail";
+import { parseField, quoteValue } from "./fieldSyntax";
 import Filters, { emptyDraft, FIELD_LABEL, FIELDS, type FilterDraft, type FilterErrors } from "./Filters";
 import Histogram from "./Histogram";
 import SummaryBar from "./SummaryBar";
@@ -121,7 +123,7 @@ function buildQuery(d: FilterDraft, entity: EntityRef | undefined): EventQuery {
   return q;
 }
 
-/** A refusal of one filter box comes back as "<Field> filter: …"; show it under that box. */
+/** A refusal of one field filter comes back as "<Field> filter: …"; it is shown on that column. */
 function errorsFor(message: string): FilterErrors | null {
   const m = /^(\w+) filter:/.exec(message);
   const field = m && FIELDS.find((f) => FIELD_LABEL[f].toLowerCase() === m[1].toLowerCase());
@@ -397,7 +399,7 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
 
   const act: RowMenuActions = {
     showDetails: (r) => setSelected(r),
-    filter: (field, value, exclude) => apply({ fields: { ...draft.fields, [field]: exclude ? `!${value}` : value } }),
+    filter: (field, value, exclude) => apply({ fields: { ...draft.fields, [field]: `${exclude ? "!" : ""}${quoteValue(value)}` } }),
     openEntity: (e) => nav?.openEntity(e),
     flagRows: (refs, level: FlagLevel | null) =>
       void attempt(
@@ -488,10 +490,10 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
 
   const trace = () => {
     const text = draft.fields.source.trim();
-    const parts = text.split(",").map((p) => p.trim()).filter((p) => p !== "");
+    const parsed = parseField(text);
     // A list of only exclusions means "everything but these": adding a name would narrow it to that name alone.
-    const next = parts.every((p) => p.startsWith("!")) ? [...parts, "*"] : [...parts, "message_trace_event"];
-    apply({ fields: { ...draft.fields, source: next.join(",") } });
+    const add = !parsed.ok || parsed.terms.every((t) => t.exclude) ? "*" : "message_trace_event";
+    apply({ fields: { ...draft.fields, source: text === "" ? add : `${text},${add}` } });
   };
 
   const toggleColumn = (id: string) => {
@@ -508,6 +510,31 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
   const atLimit = shown !== null && rows.length >= maxLoaded && (capped || total > rows.length);
   const hasRange = (shown?.query.from ?? shown?.query.to) !== undefined;
   const sourceText = shown?.draft.fields.source ?? "";
+  // A field filter in effect whose column is hidden still narrows the grid: say so, with a way out.
+  const hiddenFiltered = FIELDS.filter((f) => draft.fields[f].trim() !== "" && !cols.some((c) => COLUMN_FIELD[c.id] === f));
+
+  const headerPanel = (column: string, close: () => void) => {
+    const field = COLUMN_FIELD[column];
+    if (!field) return null;
+    const query = shown?.query ?? buildQuery(draft, scopeKind && scopeValue ? { kind: scopeKind, value: scopeValue } : undefined);
+    return (
+      <ColumnFilter
+        key={column}
+        field={field}
+        label={COLUMN_BY_ID.get(column)?.label ?? FIELD_LABEL[field]}
+        text={draft.fields[field]}
+        error={errors[field]}
+        query={query}
+        onApply={(text) => apply({ fields: { ...draft.fields, [field]: text } })}
+        onClose={close}
+      />
+    );
+  };
+  const headerBadge = (column: string) => {
+    const field = COLUMN_FIELD[column];
+    if (!field || (draft.fields[field].trim() === "" && !errors[field])) return null;
+    return <FilterBadge label={COLUMN_BY_ID.get(column)?.label ?? FIELD_LABEL[field]} text={draft.fields[field]} error={errors[field]} />;
+  };
 
   return (
     <section className="ev-view" aria-label="Events">
@@ -566,6 +593,18 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
           {shown ? `${rows.length.toLocaleString("en-US")} of ${total.toLocaleString("en-US")}${capped ? "+" : ""} shown` : ""}
           {atLimit && ` — paging stops here; narrow the filter to see the rest`}
         </span>
+        {hiddenFiltered.length > 0 && (
+          <span className="ev-hiddenfilter" role="status">
+            Filtered on hidden {hiddenFiltered.length === 1 ? "column" : "columns"}: {hiddenFiltered.map((f) => FIELD_LABEL[f]).join(", ")}
+            <button
+              type="button"
+              className="link"
+              onClick={() => apply({ fields: { ...draft.fields, ...Object.fromEntries(hiddenFiltered.map((f) => [f, ""])) } })}
+            >
+              Clear
+            </button>
+          </span>
+        )}
         <details className="ev-columns">
           <summary className="btn">Columns</summary>
           <ul className="plain">
@@ -636,6 +675,8 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
               return undefined;
             }}
             cellItems={cellItems}
+            headerPanel={headerPanel}
+            headerBadge={headerBadge}
           />
         </div>
       </div>

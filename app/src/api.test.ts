@@ -75,6 +75,7 @@ describe("events, entity and marks commands", () => {
     ["eventsDetail", () => api.eventsDetail("ual_rows", "k1"), "events_detail", ["recordKey", "sourceTable"]],
     ["eventsSuggest", () => api.eventsSuggest("account", "jd"), "events_suggest", ["field", "prefix"]],
     ["eventsExportCsv", () => api.eventsExportCsv(query, "/o.csv", "q1"), "events_export_csv", ["path", "query", "queryId"]],
+    ["eventsValues", () => api.eventsValues(query, "ip", "19", 200, "q1"), "events_values", ["field", "limit", "prefix", "query", "queryId"]],
     ["entitySummary", () => api.entitySummary(entity, "2026-03-01T00:00:00Z", "2026-03-02T00:00:00Z"), "entity_summary", ["entity", "from", "to"]],
     ["entityPivot", () => api.entityPivot(entity, "ips", "2026-03-01T00:00:00Z", "2026-03-02T00:00:00Z", 25), "entity_pivot", ["entity", "from", "limit", "of", "to"]],
     ["entityFindings", () => api.entityFindings(entity, "2026-03-01T00:00:00Z", "2026-03-02T00:00:00Z"), "entity_findings", ["entity", "from", "to"]],

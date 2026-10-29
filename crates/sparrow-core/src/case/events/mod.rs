@@ -12,8 +12,8 @@ pub(crate) use build::prefix_of;
 pub(crate) use filter::{Where, build as scope_where, entity_columns, entity_predicate};
 pub(crate) use marksql::{value_columns, value_flag_matches};
 pub use query::{
-    CSV_COLUMNS, MAX_HISTOGRAM_BUCKETS, detail, export_csv, histogram, matching_rows, page,
-    suggest, summary,
+    CSV_COLUMNS, MAX_HISTOGRAM_BUCKETS, MAX_VALUES, detail, export_csv, histogram, matching_rows,
+    page, suggest, summary, values,
 };
 
 use crate::Result;
@@ -103,8 +103,10 @@ pub struct EventQuery {
     pub entity: Option<Entity>,
     /// Filter boxes: comma separates values (OR); `!value` excludes; `*` is a case-insensitive wildcard; without `*` a
     /// value matches exactly (case-sensitively, except Account, Device, Session and Tag, which are compared
-    /// lower-cased); a list of only excludes means everything except those. A blank text is no filter; a lone `!` or
-    /// a text of only commas is refused with an `Error::Invalid` naming the field. The `message_trace_event` source is
+    /// lower-cased); a list of only excludes means everything except those. A value in double quotes is literal
+    /// (commas, `*`, a leading `!` and outer spaces included; `""` is one quote). A blank text is no filter; a lone
+    /// `!`, a text of only commas, an unclosed quote or text after a closing quote is refused with an `Error::Invalid`
+    /// naming the field. The `message_trace_event` source is
     /// left out unless the Source field names it (a wildcard that matches counts).
     pub fields: Vec<(Field, String)>,
     /// Case-insensitive substring of the raw record (comma: OR, `*`: wildcard).
@@ -193,6 +195,20 @@ pub struct EventsSummary {
     pub per_source: Vec<(String, u64)>,
     /// `message_trace_event` rows the query matches but leaves out of everything else; 0 when it names them.
     pub hidden_trace_events: u64,
+}
+
+/// One value of a field and the events that carry it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ValueCount {
+    pub value: String,
+    pub count: u64,
+}
+
+/// The values of one field under the other filters (see [`values`]): the first ones, and how many there are in all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FieldValues {
+    pub values: Vec<ValueCount>,
+    pub total: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

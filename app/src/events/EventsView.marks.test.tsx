@@ -32,6 +32,13 @@ const cell = (row: number, col: string) => within(dataRows()[row]).getAllByRole(
 const tick = async (user: ReturnType<typeof userEvent.setup>, row: number) =>
   user.click(within(dataRows()[row]).getByRole("checkbox", { name: "Select event" }));
 const menu = (name: string) => screen.getByRole("menuitem", { name });
+/** Set a column filter through its popover's pattern box and apply it. */
+async function filterColumn(user: ReturnType<typeof userEvent.setup>, label: string, text: string) {
+  fireEvent.contextMenu(screen.getByRole("columnheader", { name: new RegExp(`^${label}`) }));
+  const pop = await screen.findByRole("dialog", { name: `${label} column` });
+  await user.type(within(pop).getByLabelText("Pattern"), text);
+  await user.click(within(pop).getByRole("button", { name: "Apply" }));
+}
 
 let all: EventRow[];
 const badges = vi.fn();
@@ -107,8 +114,7 @@ describe("EventsView marking", () => {
     };
     view();
     await shown(200, total);
-    await user.type(within(screen.getByRole("form", { name: "Event filters" })).getByLabelText("Account"), "wren*");
-    await user.click(screen.getByRole("button", { name: "Search" }));
+    await filterColumn(user, "Account", "wren*");
     await waitFor(() => expect(callsOf("events_page").at(-1)!.args!.query).toMatchObject({ fields: [["account", "wren*"]] }));
     await waitFor(() => expect(screen.queryByText("Loading…")).not.toBeInTheDocument());
     await shown(200, total);
@@ -310,8 +316,7 @@ describe("EventsView marking", () => {
     await user.click(screen.getByRole("button", { name: /^Source/ }));
     await waitFor(() => expect(callsOf("events_page").length).toBeGreaterThan(1));
     expect(screen.getByText("1 event selected — right-click to act")).toBeInTheDocument();
-    await user.type(within(screen.getByRole("form", { name: "Event filters" })).getByLabelText("Country"), "US");
-    await user.click(screen.getByRole("button", { name: "Search" }));
+    await filterColumn(user, "Country", "US");
     await waitFor(() => expect(screen.queryByText(/selected — right-click/)).not.toBeInTheDocument());
   });
 

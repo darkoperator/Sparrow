@@ -3092,7 +3092,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use sparrow_app::cmd::entity::{entity_coverage, entity_findings, entity_pivot, entity_summary};
 use sparrow_app::cmd::events::{
     EntityArg, EntityKind, EventQueryArgs, events_detail, events_export_csv, events_histogram,
-    events_page, events_suggest, events_summary,
+    events_page, events_suggest, events_summary, events_values,
 };
 use sparrow_app::cmd::marks::{
     marks_flag_rows, marks_flag_value, marks_list_tags, marks_review, marks_tag_rows,
@@ -3533,6 +3533,72 @@ fn a_raw_search_needs_a_query_id_and_runs_through_the_cancellable_path() {
         "invalid"
     );
     let _ = std::fs::remove_file(std::env::temp_dir().join("never-written.csv"));
+}
+
+#[test]
+fn events_values_lists_a_fields_values_under_the_other_filters_and_cancels_with_a_search() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = open_as_analyst(tmp.path());
+    let p = picked(&state);
+    // The field's own filter is left out; the others apply, as in core.
+    let q = EventQueryArgs {
+        fields: vec![
+            (Field::Ip, p.ip.clone()),
+            (Field::Source, "signin_interactive".into()),
+        ],
+        ..EventQueryArgs::default()
+    };
+    let got = events_values(&state, &q, Field::Ip, "", 50, None).unwrap();
+    let core = with_case(&state, |open| {
+        let only_source = EventQueryArgs {
+            fields: vec![(Field::Source, "signin_interactive".into())],
+            ..EventQueryArgs::default()
+        };
+        Ok(events::values(
+            open.case.conn(),
+            &only_source.to_query().unwrap(),
+            Field::Ip,
+            "",
+            50,
+        )
+        .unwrap())
+    })
+    .unwrap();
+    assert_eq!(got, core);
+    assert!(got.total > 1, "{got:?}");
+    let sum: u64 = got.values.iter().map(|v| v.count).sum();
+    let signins = events_page(&state, &by_source("signin_interactive"), None, 0, 1, None)
+        .unwrap()
+        .total;
+    assert!(sum <= signins && got.values[0].count >= got.values.last().unwrap().count);
+    // A raw search needs an id, and a cancel recorded for it ends the call as interrupted.
+    let searched = EventQueryArgs {
+        search: Some(p.ip.clone()),
+        ..EventQueryArgs::default()
+    };
+    let e = events_values(&state, &searched, Field::Account, "", 10, None).unwrap_err();
+    assert_eq!(e.kind, "invalid", "{e:?}");
+    assert!(e.message.contains("query id"), "{}", e.message);
+    query_cancel(&state, "v-1").unwrap();
+    let e = events_values(&state, &searched, Field::Account, "", 10, Some("v-1")).unwrap_err();
+    assert_eq!(e.kind, "interrupted", "{e:?}");
+    let ok = events_values(&state, &searched, Field::Account, "", 10, Some("v-1")).unwrap();
+    assert!(ok.total > 0);
+    assert!(state.active.lock().unwrap().is_none());
+    // A limit of 0 is refused before anything runs, even with a search and no id.
+    for q in [&q, &searched] {
+        let e = events_values(&state, q, Field::Ip, "", 0, None).unwrap_err();
+        assert_eq!(e.kind, "invalid", "{e:?}");
+        assert!(e.message.contains("limit of at least 1"), "{}", e.message);
+    }
+    // A refused filter of another field comes back as `invalid`, naming it.
+    let bad = EventQueryArgs {
+        fields: vec![(Field::Operation, "\"open".into())],
+        ..EventQueryArgs::default()
+    };
+    let e = events_values(&state, &bad, Field::Ip, "", 10, None).unwrap_err();
+    assert_eq!(e.kind, "invalid", "{e:?}");
+    assert!(e.message.starts_with("Operation filter:"), "{}", e.message);
 }
 
 #[test]

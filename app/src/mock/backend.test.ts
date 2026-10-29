@@ -190,6 +190,7 @@ const TABLE: { cmd: string; args?: Obj; check: (r: unknown) => void }[] = [
   { cmd: "events_detail", args: { sourceTable: "ROW", recordKey: "ROW" }, check: (r) => { keys(r, ["row", "raw", "source_refs", "tags", "notes", "flag", "flag_sources"]); keys((r as Obj).row, EVENT_ROW_KEYS); } },
   { cmd: "events_suggest", args: { field: "source", prefix: "sign" }, check: (r) => expect(r).toEqual(["signin_interactive", "signin_noninteractive"]) },
   { cmd: "events_export_csv", args: { query: Q, path: "/o.csv" }, check: (r) => expect(r).toBe(fx.eventsList().length) },
+  { cmd: "events_values", args: { query: Q, field: "source", prefix: "", limit: 200 }, check: (r) => { keys(r, ["values", "total"]); arrOf((r as Obj).values, ["value", "count"]); } },
   { cmd: "entity_summary", args: { entity: { kind: "session", value: "S" } }, check: (r) => { keys(r, ["entity", "first_seen", "last_seen", "events", "distinct", "open_findings", "roles_matched", "ip_intel", "device"]); keys((r as Obj).distinct, ["accounts", "ips", "countries", "asns", "devices", "sessions"]); } },
   { cmd: "entity_pivot", args: { entity: { kind: "account", value: "a@contoso.example" }, of: "ips", limit: 5 }, check: (r) => { keys(r, ["rows", "total"]); arrOf((r as Obj).rows, ["value", "label", "count", "first_seen", "last_seen", "is_new", "extra"]); expect(((r as Obj).rows as unknown[]).length).toBe(5); } },
   { cmd: "entity_findings", args: { entity: { kind: "account", value: "a@contoso.example" } }, check: (r) => arrOf(r, ["finding_id", "rule_id", "title", "severity", "status", "first_seen"]) },
@@ -445,6 +446,32 @@ describe("events mock: queries", () => {
     const q = { ...Q, fields: [["source", "ual"]] };
     expect(await m.mockCall("events_export_csv", { query: q, path: "/o.csv" })).toBe(bySource("ual").length);
     await expect(m.mockCall("events_export_csv", { query: q, path: "" })).rejects.toMatchObject({ kind: "invalid" });
+  });
+
+  it("lists a field's values with counts under the other filters, ignoring its own", async () => {
+    const m = await fresh();
+    type V = { values: { value: string; count: number }[]; total: number };
+    const values = (q: unknown, field: string, prefix = "", limit = 200) => m.mockCall<V>("events_values", { query: q, field, prefix, limit });
+    const all = await values(Q, "source");
+    // Most events first, then by value; every source counted (the hidden trace rows too: they can be ticked).
+    const want = new Map<string, number>();
+    for (const r of list) want.set(r.source, (want.get(r.source) ?? 0) + 1);
+    expect(all.values).toEqual([...want].map(([value, count]) => ({ value, count })).sort((a, b) => b.count - a.count || (a.value < b.value ? -1 : 1)));
+    expect(all.total).toBe(want.size);
+    // Its own filter is left out; another field's applies.
+    expect(await values({ ...Q, fields: [["source", "ual"]] }, "source")).toEqual(all);
+    const ual = await values({ ...Q, fields: [["source", "ual"]] }, "operation");
+    expect(ual.values.reduce((n, v) => n + v.count, 0)).toBe(bySource("ual").filter((r) => r.operation).length);
+    // A prefix (case-insensitive, `*` wildcard) and a limit, the total uncut.
+    expect((await values(Q, "source", "SIGN")).values.map((v) => v.value).sort()).toEqual(["signin_interactive", "signin_noninteractive"]);
+    expect((await values(Q, "source", "*active")).values.map((v) => v.value).sort()).toEqual(["signin_interactive", "signin_noninteractive"]);
+    const cut = await values(Q, "source", "", 2);
+    expect([cut.values.length, cut.total]).toEqual([2, want.size]);
+    // A quoted value is literal: `"*"` names no source (unquoted it is every source).
+    expect((await m.mockCall<{ total: number }>("events_page", { query: { ...Q, fields: [["source", '"*"']] }, sort: null, offset: 0, limit: 1 })).total).toBe(0);
+    await expect(values({ ...Q, fields: [["ip", "!"]] }, "source")).rejects.toMatchObject({ kind: "invalid", message: expect.stringMatching(/^IP filter: /) });
+    await expect(values({ ...Q, search: "x" }, "source")).rejects.toMatchObject({ kind: "invalid" });
+    await expect(values(Q, "source", "", 0)).rejects.toMatchObject({ kind: "invalid", message: "a values list needs a limit of at least 1" });
   });
 
   it("needs a query id for a raw search, and a slow search is cancellable", async () => {

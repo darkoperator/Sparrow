@@ -79,3 +79,21 @@
 .value-viewer-head { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
 .value-viewer-head strong { flex: 1; color: var(--text); font-family: var(--font-mono); font-size: 12px; }
 .value-viewer-body { flex: 1; margin: 0; padding: 10px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 6px; background: var(--surface); color: var(--text-2); font-size: 12px; }
+
+/* Header popover: a host panel (the Events column filter) above the column items. */
+.grid-header-pop {
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  width: 300px;
+  max-height: calc(100vh - 8px);
+  overflow: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: var(--shadow-pop);
+}
+.grid-header-pop-items { display: flex; flex-direction: column; padding: 4px 6px 6px; border-top: 1px solid var(--line); }
+.grid-header-pop-items button { text-align: left; background: none; border: 0; padding: 6px 8px; border-radius: 6px; color: var(--text-2); font-size: 12px; }
+.grid-header-pop-items button:hover, .grid-header-pop-items button:focus { background: var(--raised); color: var(--text); }
+.grid-header .grid-badge { display: inline-flex; align-items: center; margin-left: 4px; vertical-align: middle; }

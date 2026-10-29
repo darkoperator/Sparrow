@@ -45,6 +45,7 @@ fn main() {
             cmd::events::commands::events_detail,
             cmd::events::commands::events_suggest,
             cmd::events::commands::events_export_csv,
+            cmd::events::commands::events_values,
             cmd::entity::commands::entity_summary,
             cmd::entity::commands::entity_pivot,
             cmd::entity::commands::entity_findings,

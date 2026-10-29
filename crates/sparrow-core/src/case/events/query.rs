@@ -4,8 +4,8 @@
 use super::filter::{self, SEARCH_TABLES, Where};
 use super::marksql;
 use super::{
-    EventDetail, EventQuery, EventRow, EventsPage, EventsSummary, Field, FindingMark, Histogram,
-    SOURCES, TagRef,
+    EventDetail, EventQuery, EventRow, EventsPage, EventsSummary, Field, FieldValues, FindingMark,
+    Histogram, SOURCES, TagRef, ValueCount,
 };
 use crate::case::browse::{COUNT_CAP, MAX_PAGE, Sort};
 use crate::case::marks::{self, FlagLevel};
@@ -529,6 +529,93 @@ pub fn suggest(conn: &Connection, field: Field, prefix: &str, limit: usize) -> R
     let params: Vec<Value> = exprs.iter().map(|_| Value::Text(pattern.clone())).collect();
     let rows = stmt.query_map(params_from_iter(params.iter()), |r| r.get::<_, String>(0))?;
     Ok(rows.collect::<std::result::Result<_, _>>()?)
+}
+
+/// The most values one [`values`] call returns.
+pub const MAX_VALUES: usize = 200;
+
+/// The values of `field` among the events `q` matches with `field`'s own filter left out, each with its event count,
+/// most events first (then by value), at most `limit` (capped at [`MAX_VALUES`]) of them; `total` counts every distinct
+/// value. `prefix` keeps the values that start with it, case-insensitively (`*` is a wildcard, so `*x` finds any value
+/// holding `x`). Blank values are left out. A value is what the field's filter compares: an event with an actor and
+/// another mailbox owner counts for both accounts; Account, Device, Session and Tag values that differ only in case
+/// are one value (shown in one of their spellings), as their filter compares them lower-cased. A device is its display
+/// name, else its device id, else its object id. For Source the `message_trace_event` rows are counted even though the
+/// grid hides them until the Source filter names them, so they can be ticked. A `limit` below 1 is refused.
+pub fn values(
+    conn: &Connection,
+    q: &EventQuery,
+    field: Field,
+    prefix: &str,
+    limit: usize,
+) -> Result<FieldValues> {
+    if limit == 0 {
+        return Err(Error::Invalid(
+            "a values list needs a limit of at least 1".into(),
+        ));
+    }
+    let mut rest = q.clone();
+    rest.fields.retain(|(f, _)| *f != field);
+    let w = filter::build(&rest, field == Field::Source)?;
+    // One row per (event, value): `v` the value as stored.
+    let per_event = match field {
+        Field::Tag => format!(
+            "SELECT t.name AS v FROM events e JOIN event_tags et \
+             ON et.source_table = e.source_table AND et.record_key = e.record_key \
+             JOIN tags t ON t.tag_id = et.tag_id{}",
+            w.sql()
+        ),
+        Field::Account => format!(
+            "SELECT unnest(list_distinct([e.actor_upn, e.owner_upn])) AS v FROM events e{}",
+            w.sql()
+        ),
+        _ => {
+            let expr = match field {
+                Field::Source => "e.source",
+                Field::Operation => "e.operation",
+                Field::Ip => "e.ip",
+                Field::Country => "e.ip_country",
+                Field::Asn => "CAST(e.asn AS VARCHAR)",
+                Field::Device => "coalesce(e.device_name, e.device_id, e.device_object_id)",
+                Field::Session => "e.entra_session_id",
+                Field::Account | Field::Tag => unreachable!("handled above"),
+            };
+            format!("SELECT {expr} AS v FROM events e{}", w.sql())
+        }
+    };
+    let group = if matches!(
+        field,
+        Field::Account | Field::Device | Field::Session | Field::Tag
+    ) {
+        "lower(v)"
+    } else {
+        "v"
+    };
+    let pattern = format!("{}%", filter::like_pattern(prefix.trim()));
+    let sql = format!(
+        "SELECT min(v), count(*) AS n, count(*) OVER () FROM ({per_event}) \
+         WHERE v IS NOT NULL AND trim(v) <> '' AND v ILIKE ? ESCAPE '\\' \
+         GROUP BY {group} ORDER BY n DESC, min(v) LIMIT {}",
+        limit.min(MAX_VALUES)
+    );
+    let mut params = w.params.clone();
+    params.push(Value::Text(pattern));
+    let mut stmt = conn.prepare(&sql)?;
+    let mut result = stmt
+        .query(params_from_iter(params.iter()))
+        .map_err(bad_query)?;
+    let mut out = FieldValues {
+        values: Vec::new(),
+        total: 0,
+    };
+    while let Some(r) = result.next()? {
+        out.values.push(ValueCount {
+            value: r.get(0)?,
+            count: r.get::<_, i64>(1)? as u64,
+        });
+        out.total = r.get::<_, i64>(2)? as u64;
+    }
+    Ok(out)
 }
 
 /// The CSV columns, in order.

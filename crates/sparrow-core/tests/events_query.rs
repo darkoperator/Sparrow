@@ -1726,3 +1726,295 @@ fn matching_rows_breaks_equal_times_by_table_then_key() {
         .collect();
     assert_eq!((cut, capped), (want[..3].to_vec(), true));
 }
+
+fn vals(
+    case: &Case,
+    q: &EventQuery,
+    f: Field,
+    prefix: &str,
+    limit: usize,
+) -> (Vec<(String, u64)>, u64) {
+    let v = events::values(case.conn(), q, f, prefix, limit).unwrap();
+    (
+        v.values.into_iter().map(|c| (c.value, c.count)).collect(),
+        v.total,
+    )
+}
+
+fn owned(v: &[(&str, u64)]) -> Vec<(String, u64)> {
+    v.iter().map(|(s, n)| (s.to_string(), *n)).collect()
+}
+
+#[test]
+fn values_count_under_the_other_filters_and_ignore_their_own() {
+    let case = six_rows();
+    let all = EventQuery::default();
+    // Most events first, then by value; NULLs left out.
+    assert_eq!(
+        vals(&case, &all, Field::Country, "", 10),
+        (owned(&[("US", 2), ("GB", 1)]), 2)
+    );
+    // The field's own filter is left out: the other values stay on offer, with their counts.
+    let us = field(Field::Country, "US");
+    assert_eq!(
+        vals(&case, &us, Field::Country, "", 10),
+        (owned(&[("US", 2), ("GB", 1)]), 2)
+    );
+    // Another field's filter applies.
+    let q = field(Field::Account, "*@contoso.example");
+    assert_eq!(
+        vals(&case, &q, Field::Country, "", 10),
+        (owned(&[("US", 2), ("GB", 1)]), 2)
+    );
+    let q = field(Field::Operation, "login, AdminAdd");
+    assert_eq!(
+        vals(&case, &q, Field::Country, "", 10),
+        (owned(&[("GB", 1), ("US", 1)]), 2)
+    );
+    // An account is the actor or the mailbox owner: k6 is d@'s mailbox.
+    let (accounts, total) = vals(&case, &all, Field::Account, "", 10);
+    assert_eq!(total, 6);
+    assert!(accounts.contains(&("d@contoso.example".to_string(), 1)));
+    // A prefix, case-insensitively; `*` is a wildcard; `%` and `_` are characters.
+    assert_eq!(
+        vals(&case, &all, Field::Account, "A@", 10),
+        (
+            owned(&[("a@contoso.example", 1), ("a@fabrikam.example", 1)]),
+            2
+        )
+    );
+    assert_eq!(vals(&case, &all, Field::Account, "*fabrikam*", 10).1, 2);
+    assert_eq!(vals(&case, &all, Field::Operation, "%", 10).1, 0);
+    assert_eq!(vals(&case, &all, Field::Operation, "_", 10).1, 0);
+    // The limit cuts the list, the total does not move.
+    let (cut, total) = vals(&case, &all, Field::Ip, "", 2);
+    assert_eq!((cut.len(), total), (2, 5));
+    assert_eq!(
+        events::values(case.conn(), &all, Field::Ip, "", 10_000)
+            .unwrap()
+            .values
+            .len(),
+        5
+    );
+    // A limit of 0 is refused, not answered with an empty list and a total of 0.
+    match events::values(case.conn(), &all, Field::Ip, "", 0) {
+        Err(Error::Invalid(m)) => assert!(m.contains("limit of at least 1"), "{m}"),
+        other => panic!("expected Invalid, got {other:?}"),
+    }
+    // A refused filter of another field is refused here too, naming that field.
+    let bad = field(Field::Ip, "!");
+    match events::values(case.conn(), &bad, Field::Country, "", 10) {
+        Err(Error::Invalid(m)) => assert!(m.contains("IP"), "{m}"),
+        other => panic!("expected Invalid, got {other:?}"),
+    }
+    // ... but its own field's text is not even read.
+    assert_eq!(vals(&case, &bad, Field::Ip, "", 10).1, 5);
+}
+
+#[test]
+fn values_follow_the_scope_the_search_the_flag_and_tags() {
+    let case = six_rows();
+    let c = case.conn();
+    let me = Actor::analyst("carlos").unwrap();
+    // An entity scope.
+    let q = scoped(Entity::Account("A@CONTOSO.EXAMPLE".into()));
+    assert_eq!(
+        vals(&case, &q, Field::Operation, "", 10),
+        (owned(&[("login", 1)]), 1)
+    );
+    // The flag toggle.
+    flag_rows(
+        c,
+        &me,
+        &[
+            RowRef::new("ual_events", "k3"),
+            RowRef::new("ual_events", "k4"),
+        ],
+        Some(FlagLevel::Malicious),
+    )
+    .unwrap();
+    let q = EventQuery {
+        flag: FlagFilter::Malicious,
+        ..EventQuery::default()
+    };
+    assert_eq!(
+        vals(&case, &q, Field::Operation, "", 10),
+        (owned(&[("AdminAdd", 1), ("admin-delete", 1)]), 2)
+    );
+    // Tags: names in use among the matching events, case folded into one value.
+    tag_rows(
+        c,
+        &me,
+        &[
+            RowRef::new("ual_events", "k1"),
+            RowRef::new("ual_events", "k2"),
+        ],
+        "phishing",
+        true,
+    )
+    .unwrap();
+    tag_rows(
+        c,
+        &me,
+        &[RowRef::new("ual_events", "k2")],
+        "persistence",
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        vals(&case, &EventQuery::default(), Field::Tag, "", 10),
+        (owned(&[("phishing", 2), ("persistence", 1)]), 2)
+    );
+    let q = field(Field::Tag, "persistence");
+    assert_eq!(
+        vals(&case, &q, Field::Tag, "", 10),
+        (owned(&[("phishing", 2), ("persistence", 1)]), 2)
+    );
+    let q = field(Field::Operation, "login");
+    assert_eq!(
+        vals(&case, &q, Field::Tag, "p", 10),
+        (owned(&[("phishing", 1)]), 1)
+    );
+}
+
+#[test]
+fn values_under_a_raw_search() {
+    let case = Case::in_memory().unwrap();
+    for (i, (upn, needle)) in [
+        ("alice@contoso.example", "Needle"),
+        ("bob@contoso.example", "hay"),
+        ("alice@contoso.example", "needle again"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        insert_record(
+            &case,
+            T,
+            "ual_events",
+            &json!({"record_id": format!("a000000{i}-0000-4000-8000-000000000001"),
+                    "event_time": format!("2026-09-01T10:0{i}:00Z"), "workload": "Exchange", "operation": "Send",
+                    "user_upn": upn, "audit_data": {"Operation": "Send", "Note": needle}}),
+            "search",
+        )
+        .unwrap();
+    }
+    events::rebuild(case.conn()).unwrap();
+    let q = EventQuery {
+        search: Some("needle".into()),
+        ..EventQuery::default()
+    };
+    assert_eq!(
+        vals(&case, &q, Field::Account, "", 10),
+        (owned(&[("alice@contoso.example", 2)]), 1)
+    );
+}
+
+#[test]
+fn values_of_source_offer_the_hidden_trace_events() {
+    let case = Case::in_memory().unwrap();
+    put(&case, &ev("t1", "message_trace_event", t0()));
+    put(
+        &case,
+        &ev("t2", "message_trace_event", t0() + Duration::seconds(1)),
+    );
+    put(&case, &ev("u1", "ual", t0() + Duration::seconds(2)));
+    let q = field(Field::Source, "ual");
+    assert_eq!(
+        vals(&case, &q, Field::Source, "", 10),
+        (owned(&[("message_trace_event", 2), ("ual", 1)]), 2)
+    );
+    // A quoted name is literal: it names the trace events only when it is their exact name.
+    assert!(keys(&case, &field(Field::Source, r#""message_trace*""#)).is_empty());
+    assert_eq!(
+        keys(&case, &field(Field::Source, r#""message_trace_event""#)),
+        ["t1", "t2"]
+    );
+    // Any other field still sees only what the grid shows.
+    assert_eq!(
+        vals(&case, &EventQuery::default(), Field::Operation, "", 10),
+        (vec![], 0)
+    );
+}
+
+#[test]
+fn values_with_syntax_characters_filter_exactly_when_quoted() {
+    let case = Case::in_memory().unwrap();
+    let ops = [
+        "a,b",
+        "a",
+        "b",
+        "*",
+        "x*y",
+        "xzy",
+        "!bang",
+        "bang",
+        "say \"hi\"",
+        "\"quoted\"",
+        " pad ",
+    ];
+    for (i, op) in ops.into_iter().enumerate() {
+        put(
+            &case,
+            &Ev {
+                op: Some(op),
+                ..ev(&format!("q{i}"), "ual", t0() + Duration::seconds(i as i64))
+            },
+        );
+    }
+    // The text the popover writes for a ticked value (see app/src/events/fieldSyntax.ts, `quoteValue`).
+    let table: &[(&str, &[&str])] = &[
+        (r#""a,b""#, &["q0"]),
+        (r#""*""#, &["q3"]),
+        (r#""x*y""#, &["q4"]),
+        (r#""!bang""#, &["q6"]),
+        (r#"say "hi""#, &["q8"]),
+        (r#""""quoted""""#, &["q9"]),
+        (r#"" pad ""#, &["q10"]),
+        (r#""a,b", a"#, &["q0", "q1"]),
+        (
+            r#"!"a,b", !a, !b"#,
+            &["q10", "q3", "q4", "q5", "q6", "q7", "q8", "q9"],
+        ),
+        (
+            r#"!"*""#,
+            &["q0", "q1", "q10", "q2", "q4", "q5", "q6", "q7", "q8", "q9"],
+        ),
+        // Unquoted, the same characters keep their meaning.
+        ("a,b", &["q1", "q2"]),
+        ("x*y", &["q4", "q5"]),
+    ];
+    for (text, want) in table {
+        assert_eq!(keys(&case, &field(Field::Operation, text)), *want, "{text}");
+    }
+    // Every listed value, quoted that way, finds exactly its own events.
+    let listed = events::values(
+        case.conn(),
+        &EventQuery::default(),
+        Field::Operation,
+        "",
+        50,
+    )
+    .unwrap();
+    assert_eq!(listed.total as usize, ops.len());
+    for v in listed.values {
+        let quoted = format!("\"{}\"", v.value.replace('"', "\"\""));
+        let page =
+            events::page(case.conn(), &field(Field::Operation, &quoted), None, 0, 50).unwrap();
+        assert_eq!(page.total, v.count, "{quoted}");
+        assert!(
+            page.rows
+                .iter()
+                .all(|r| r.operation.as_deref() == Some(v.value.as_str())),
+            "{quoted}"
+        );
+    }
+    // A quote that is not closed, or text after one, is refused under the field.
+    for bad in [r#""a"#, r#""a"b"#] {
+        match events::page(case.conn(), &field(Field::Operation, bad), None, 0, 10) {
+            Err(Error::Invalid(m)) => assert!(m.starts_with("Operation filter:"), "{m}"),
+            other => panic!("{bad}: expected Invalid, got {other:?}"),
+        }
+    }
+    assert!(keys(&case, &field(Field::Operation, r#""a*""#)).is_empty());
+}

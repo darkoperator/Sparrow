@@ -34,7 +34,8 @@ pub struct EventsArgs {
     #[arg(long, group = "entity")]
     pub session: Option<String>,
     /// FIELD=TEXT filter (repeatable). FIELD: source, operation, account, ip, country, asn, device, session or tag.
-    /// TEXT: comma separates values, !value excludes, * is a wildcard
+    /// TEXT: comma separates values, !value excludes, * is a wildcard; a value in double quotes is literal
+    /// (commas, *, a leading ! and spaces included; "" inside is one quote), like operation="a,b"
     #[arg(long = "where", value_name = "FIELD=TEXT")]
     pub filters: Vec<String>,
     /// Case-insensitive text in the raw record (comma: any of, * wildcard)

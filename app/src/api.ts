@@ -648,8 +648,8 @@ export type FlagFilter = "all" | FlagLevel;
 export type AiFilter = "all" | "marked" | "unreviewed";
 
 /**
- * What the grid asks for (`cmd::events::EventQueryArgs`). `fields` holds Harrier's filter text per box (comma: OR;
- * `!value` excludes; `*` wildcard); `search` is a raw-text search of every record (it needs a `queryId` on the
+ * What the grid asks for (`cmd::events::EventQueryArgs`). `fields` holds Harrier's filter text per field (comma: OR;
+ * `!value` excludes; `*` wildcard; a double-quoted value is literal, `""` one quote: `events/fieldSyntax.ts`); `search` is a raw-text search of every record (it needs a `queryId` on the
  * command); `from` / `to` are inclusive ISO 8601 UTC times.
  */
 export interface EventQuery {
@@ -914,6 +914,24 @@ export const eventsSuggest = (field: EventField, prefix: string) => call<string[
 /** Writes every event the query matches (not a page) as CSV at `path`; resolves to the rows written. */
 export const eventsExportCsv = (query: EventQuery, path: string, queryId?: string) =>
   call<number>("events_export_csv", { query, path, queryId });
+
+/** `case::events::ValueCount` / `FieldValues`: a column filter's list, most events first; `total` counts every value. */
+export interface ValueCount {
+  value: string;
+  count: number;
+}
+export interface FieldValues {
+  values: ValueCount[];
+  total: number;
+}
+/** The most values one `eventsValues` call returns. */
+export const VALUES_MAX = 200;
+/**
+ * The values of `field` with their event counts among the events `query` matches, the field's own filter left out.
+ * `prefix` is a case-insensitive start (`*` wildcard); at most `limit` (1 to 200; 0 is refused). `queryId` as for `eventsPage`.
+ */
+export const eventsValues = (query: EventQuery, field: EventField, prefix: string, limit: number, queryId?: string) =>
+  call<FieldValues>("events_values", { query, field, prefix, limit, queryId });
 
 /** `from` / `to`: inclusive ISO 8601 UTC times; either may be omitted. */
 export const entitySummary = (entity: EntityArg, from?: string, to?: string) =>

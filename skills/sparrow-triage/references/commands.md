@@ -78,7 +78,9 @@ sparrow entity --case case.duckdb --ip 203.0.113.7 --from 2026-08-21T00:00:00Z -
   200. `source_table` and `record_key` are what `mark` and `note add` take as `TABLE:KEY`.
 - `--where FIELD=TEXT` (repeatable). FIELD is `source`, `operation`, `account`, `ip`, `country`, `asn`, `device`,
   `session` or `tag`. TEXT: comma separates values (any of), `!value` excludes, `*` is a wildcard; a list of only
-  excludes means everything except those. A lone `!` or `,,` is refused (exit 1), never read as "everything".
+  excludes means everything except those. A value in double quotes is literal (commas, `*`, a leading `!` included;
+  `""` is one quote): `--where 'operation="a,b"'`. A lone `!`, `,,` or an unclosed quote is refused (exit 1), never
+  read as "everything".
   Without `*` a value matches exactly. `message_trace_event` rows are left out unless `source` names them.
 - `--csv PATH` writes every matching row (not a page) and prints the row count.
 - `entity --json` returns `{"summary": {entity, first_seen, last_seen, events, distinct, open_findings, roles_matched,

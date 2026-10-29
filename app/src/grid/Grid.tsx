@@ -3,7 +3,7 @@
 // sections, the table browser and SQL results.
 import { createColumnHelper, flexRender, getCoreRowModel, useReactTable } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { HIGHLIGHT_COLOURS, type HighlightRule, type Sort } from "../api";
 import { useHighlights } from "../highlights/useHighlights";
 import { useNav } from "../shell/nav";
@@ -76,6 +76,13 @@ export interface GridProps {
   pinnedFirst?: string;
   /** Called after "Reset columns", for a host that keeps more column state (which are shown) to reset it too. */
   onResetColumns?: () => void;
+  /**
+   * A panel for a column's header popover (a column filter). When it gives one, a right-click (or the context-menu key)
+   * on the header opens it above the column items (move, reset); `close` closes the popover. `null`: the plain menu.
+   */
+  headerPanel?: (column: string, close: () => void) => ReactNode | null;
+  /** Shown in a column's header after its title (a filter icon); the host passes safe nodes only. */
+  headerBadge?: (column: string) => ReactNode | null;
   /** Height of the scrolling body in px. */
   height?: number;
 }
@@ -105,6 +112,84 @@ function ruleMatches(rule: HighlightRule, columns: string[], row: Cell[]): boole
   if (rule.column === null) return row.some(test);
   const at = columns.indexOf(rule.column);
   return at >= 0 && test(row[at]);
+}
+
+/**
+ * A header's popover: the host's panel above the column items, at a fixed position kept inside the window. Escape or a
+ * click elsewhere closes it; the panel takes the focus itself.
+ */
+function HeaderPopover({
+  x,
+  y,
+  label,
+  panel,
+  items,
+  onClose,
+}: {
+  x: number;
+  y: number;
+  label: string;
+  panel: ReactNode;
+  items: MenuItem[];
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [at, setAt] = useState({ x, y });
+  useEffect(() => {
+    const away = (e: Event) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    document.addEventListener("mousedown", away);
+    return () => document.removeEventListener("mousedown", away);
+  }, [onClose]);
+  // Kept inside the window, again whenever the panel changes size (its list loads after it opens).
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const fit = () => {
+      const r = el.getBoundingClientRect();
+      if (r.width === 0) return;
+      const nx = Math.max(4, Math.min(x, window.innerWidth - r.width - 4));
+      const ny = Math.max(4, Math.min(y, window.innerHeight - r.height - 4));
+      setAt((at) => (at.x === nx && at.y === ny ? at : { x: nx, y: ny }));
+    };
+    fit();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [x, y]);
+  return (
+    <div
+      ref={ref}
+      role="dialog"
+      aria-label={label}
+      className="grid-header-pop"
+      style={{ position: "fixed", left: at.x, top: at.y }}
+      onKeyDown={(e) => {
+        if (e.key !== "Escape") return;
+        e.stopPropagation();
+        onClose();
+      }}
+    >
+      {panel}
+      <div role="menu" aria-label="Column" className="grid-header-pop-items">
+        {items.map((it) => (
+          <button
+            key={it.label}
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              it.run?.();
+              onClose();
+            }}
+          >
+            {it.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 interface MenuAt {
@@ -138,6 +223,8 @@ export default function Grid({
   rowId,
   onMenuOpen,
   onResetColumns,
+  headerPanel,
+  headerBadge,
   height = 320,
 }: GridProps) {
   const nav = useNav();
@@ -164,6 +251,10 @@ export default function Grid({
     cellActions?.onHighlight ?? (shared ? (column: string, value: Cell) => void shared.highlightValue(column, value) : undefined);
   const [menu, setMenu] = useState<MenuAt | null>(null);
   const opener = useRef<HTMLElement | null>(null);
+  const closeHeaderMenu = useCallback(() => {
+    setHeaderMenu(null);
+    opener.current?.focus();
+  }, []);
   const closeMenu = useCallback(() => {
     setMenu(null);
     opener.current?.focus();
@@ -382,6 +473,7 @@ export default function Grid({
                   ) : (
                     flexRender(h.column.columnDef.header, h.getContext())
                   )}
+                  {headerBadge?.(columns[i])}
                   {i >= off && (
                     <div
                       role="separator"
@@ -447,11 +539,10 @@ export default function Grid({
           </div>
         </div>
       </div>
-      {headerMenu && (
-        <CellMenu
-          x={headerMenu.x}
-          y={headerMenu.y}
-          items={[
+      {headerMenu &&
+        (() => {
+          const name = columns[headerMenu.col];
+          const columnItems: MenuItem[] = [
             ...(headerMenu.col > off ? [{ label: "Move column left", run: () => layout.move(headerMenu.col - off, headerMenu.col - off - 1) }] : []),
             ...(headerMenu.col < columns.length - 1 ? [{ label: "Move column right", run: () => layout.move(headerMenu.col - off, headerMenu.col - off + 1) }] : []),
             {
@@ -461,13 +552,21 @@ export default function Grid({
                 onResetColumns?.();
               },
             },
-          ]}
-          onClose={() => {
-            setHeaderMenu(null);
-            opener.current?.focus();
-          }}
-        />
-      )}
+          ];
+          const panel = headerPanel?.(name, closeHeaderMenu) ?? null;
+          return panel !== null ? (
+            <HeaderPopover
+              x={headerMenu.x}
+              y={headerMenu.y}
+              label={`${displaySafe(labels?.[name] ?? name)} column`}
+              panel={panel}
+              items={columnItems}
+              onClose={closeHeaderMenu}
+            />
+          ) : (
+            <CellMenu x={headerMenu.x} y={headerMenu.y} items={columnItems} onClose={closeHeaderMenu} />
+          );
+        })()}
       {menu && <CellMenu x={menu.x} y={menu.y} items={items(menu)} onClose={closeMenu} />}
       {viewing && <ValueViewer column={columns[viewing.col]} value={rows[viewing.row]?.[viewing.col]} onClose={closeViewer} />}
     </div>

@@ -24,14 +24,17 @@
 /* Filter card */
 .ev-filters { display: flex; flex-direction: column; gap: 10px; margin: 0 0 12px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
 .ev-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
-.ev-searchrow { flex-wrap: nowrap; align-items: flex-start; }
-.ev-fields, .ev-filters > .ev-row:last-child { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 10px; }
-.ev-field[role="group"] { grid-column: span 2; }
+.ev-searchrow { align-items: flex-start; }
+.ev-time { flex: 0 1 190px; }
+.ev-inline { flex: none; }
+.ev-inline select { width: auto; padding: 6px 8px; }
+.ev-inline .ev-toggle button { padding: 6px 10px; }
+.ev-time input { padding: 7px 8px; }
 .ev-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .ev-field input, .ev-field select { width: 100%; min-width: 0; padding: 5px 8px; background: var(--bg); font-size: 11px; }
 .ev-field input.mono, .ev-searchbox input { font-family: var(--font-mono); }
 .ev-field input[aria-invalid="true"] { border-color: var(--mal); outline: 2px solid var(--mal); outline-offset: 0; }
-.ev-search { flex: 1 1 320px; }
+.ev-search { flex: 1 1 260px; }
 .ev-searchbox { display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg); color: var(--faint); }
 .ev-searchbox:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
 .ev-searchbox input { flex: 1; width: auto; padding: 7px 0; border: 0; background: none; font-size: 12px; outline: none; }
@@ -91,6 +94,31 @@
 .ev-tag { margin-right: 4px; padding: 1px 6px; border: 0; border-radius: 4px; background: var(--raised-2); color: var(--text-2); font-family: var(--font-mono); font-size: 10px; }
 .ev-tag-ai { border: 1px dashed var(--ai); background: var(--ai-bg); color: var(--ai); }
 .ev-ai-badge { margin-left: 4px; padding: 0 4px; border-radius: 3px; background: var(--ai); color: var(--on-accent); font-size: 9px; font-weight: 700; }
+
+.ev-hiddenfilter { display: inline-flex; gap: 6px; align-items: center; color: var(--sus); font-size: 11px; }
+
+/* Column filter (the grid's header popover) */
+.colf { display: flex; flex-direction: column; gap: 6px; padding: 10px 10px 8px; }
+.colf-head { display: flex; align-items: center; gap: 6px; color: var(--faint); }
+.colf-head .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.colf-error { margin: 0; font-size: 11px; overflow-wrap: anywhere; }
+.colf-find { display: flex; align-items: center; gap: 6px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg); color: var(--faint); }
+.colf-find:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+.colf-find input { flex: 1; min-width: 0; padding: 6px 0; border: 0; background: none; font-size: 12px; outline: none; }
+.colf-values { max-height: 240px; margin: 0; padding: 2px 0; overflow: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); list-style: none; }
+.colf-values label { display: flex; align-items: center; gap: 8px; padding: 4px 8px; cursor: pointer; }
+.colf-values label:hover { background: var(--raised); }
+.colf-value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 12px; }
+.colf-value.mono { font-size: 11px; }
+.colf-count { flex: none; color: var(--faint); font-family: var(--font-mono); font-size: 10px; }
+.colf-meta { margin: 0; color: var(--faint); font-size: 11px; }
+.colf-problem { color: var(--mal); overflow-wrap: anywhere; }
+.colf-switch { display: flex; align-items: center; gap: 6px; color: var(--text-2); font-size: 12px; }
+.colf-pattern { width: 100%; padding: 6px 8px; background: var(--bg); font-size: 11px; }
+.colf-actions { display: flex; gap: 6px; }
+.colf-actions .btn { padding: 6px 12px; }
+.colf-badge { color: var(--accent-text); }
+.colf-badge-error { color: var(--mal); }
 
 /* Selection bar */
 .ev-selbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 0; padding: 6px 10px; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent-soft); color: var(--text); }

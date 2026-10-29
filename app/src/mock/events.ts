@@ -28,7 +28,9 @@ import type {
   TimelineEntry,
   ValueFlagged,
   ValueKind,
+  FieldValues,
 } from "../api";
+import { parseField, type Term } from "../events/fieldSyntax";
 import * as fx from "../test/fixtures";
 
 export interface EventDeps {
@@ -62,6 +64,9 @@ const CORE_MAX_BUCKETS = 2_000;
 /** Core writes times with six fractional digits (`ts_text`). */
 const micros = (ms: number) => new Date(ms).toISOString().replace(/\.(\d{3})Z$/, ".$1000Z");
 const SUGGEST_MAX = 200;
+const VALUES_MAX = 200;
+/** A case-insensitive "starts with", `*` a wildcard. */
+const wildcardPrefix = (p: string) => new RegExp(`^${p.split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}`, "i");
 
 const key = (r: RowRef) => `${r.source_table}:${r.record_key}`;
 const lower = (s: string | null | undefined) => (s ?? "").toLowerCase();
@@ -101,21 +106,20 @@ export function eventHandlers(deps: EventDeps): Record<string, (a: Args) => unkn
   const caseFolded = (f: EventField) => f === "account" || f === "device" || f === "session" || f === "tag" || f === "ip";
   const wildcard = (p: string) => new RegExp(`^${p.split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`, "i");
 
-  /** Harrier's list syntax; a lone `!` or a list of only commas is refused, never read as "everything". */
+  /** Harrier's list syntax with quoting (`../events/fieldSyntax`, core's rules); refusals name the field, never match all. */
   function parseList(field: EventField, text: string) {
-    const t = text.trim();
-    if (t === "") return null;
-    const parts = t.split(",").map((p) => p.trim()).filter((p) => p !== "");
-    if (parts.length === 0) fail("invalid", `${LABEL[field]} filter: nothing to match in ${JSON.stringify(text)}`);
-    if (parts.some((p) => p === "!")) fail("invalid", `${LABEL[field]} filter: "!" needs a value after it`);
-    const make = (p: string) => {
-      const q = caseFolded(field) ? p.toLowerCase() : p;
-      return p.includes("*") ? (v: string) => wildcard(q).test(v) : (v: string) => v === q;
+    if (text.trim() === "") return null;
+    const parsed = parseField(text);
+    if (!parsed.ok) return fail("invalid", `${LABEL[field]} filter: ${parsed.message}`);
+    const make = (t: Term) => {
+      const q = caseFolded(field) ? t.text.toLowerCase() : t.text;
+      return t.wild ? (v: string) => wildcard(q).test(v) : (v: string) => v === q;
     };
+    const inc = parsed.terms.filter((t) => !t.exclude);
     return {
-      inc: parts.filter((p) => !p.startsWith("!")).map(make),
-      exc: parts.filter((p) => p.startsWith("!")).map((p) => make(p.slice(1).trim())),
-      names: (n: string) => parts.some((p) => !p.startsWith("!") && make(p)(n)),
+      inc: inc.map(make),
+      exc: parsed.terms.filter((t) => t.exclude).map(make),
+      names: (n: string) => inc.some((t) => make(t)(n)),
     };
   }
 
@@ -159,7 +163,8 @@ export function eventHandlers(deps: EventDeps): Record<string, (a: Args) => unkn
 
   interface Matched { rows: EventRow[]; hiddenTrace: number }
 
-  function match(q: EventQuery): Matched {
+  /** `showHidden`: keep the `message_trace_event` rows even when the Source filter does not name them. */
+  function match(q: EventQuery, showHidden = false): Matched {
     if (q === null || typeof q !== "object") fail("invalid", "the query is missing");
     const lists = (q.fields ?? []).map(([f, text]) => {
       if (!FIELDS.includes(f)) fail("invalid", `${String(f)} is not a filter field`);
@@ -194,7 +199,7 @@ export function eventHandlers(deps: EventDeps): Record<string, (a: Args) => unkn
       if (q.flag !== "all" && r.flag !== q.flag) continue;
       if (q.ai !== "all" && !hasAiMark(r)) continue;
       if (needles && !needles.some((n) => JSON.stringify(r).toLowerCase().includes(n))) continue;
-      if (r.source === "message_trace_event" && !traceNamed) { hiddenTrace++; continue; }
+      if (r.source === "message_trace_event" && !traceNamed && !showHidden) { hiddenTrace++; continue; }
       rows.push(r);
     }
     return { rows, hiddenTrace };
@@ -354,6 +359,40 @@ export function eventHandlers(deps: EventDeps): Record<string, (a: Args) => unkn
       for (const v of vals) if (v && v.toLowerCase().startsWith(p)) found.add(field === "account" || field === "session" ? v.toLowerCase() : v);
     }
     return [...found].sort().slice(0, SUGGEST_MAX);
+  };
+
+  /** Core's `events::values`: the field's own filter left out, Source counting the hidden trace rows, case folded. */
+  const events_values = (a: Args): Promise<FieldValues> => {
+    const q = query(a);
+    const field = str(a, "field") as EventField;
+    if (!FIELDS.includes(field)) fail("invalid", `${field} is not a filter field`);
+    const asked = typeof a?.limit === "number" ? a.limit : 0;
+    if (asked < 1) fail("invalid", "a values list needs a limit of at least 1");
+    const limit = Math.min(asked, VALUES_MAX);
+    const prefix = wildcardPrefix(str(a, "prefix").trim());
+    const rest: EventQuery = { ...q, fields: (q?.fields ?? []).filter(([f]) => f !== field) };
+    const folded = field === "account" || field === "device" || field === "session" || field === "tag";
+    return run(a, q, () => {
+      const groups = new Map<string, { value: string; count: number }>();
+      for (const r of match(rest, field === "source").rows) {
+        const own = field === "account" ? [...new Set([r.actor_upn, r.owner_upn])]
+          : field === "device" ? [r.device_name ?? r.device_id ?? r.device_object_id]
+          : field === "tag" ? r.tags.map((t) => t.name)
+          : field === "ip" ? [r.ip]
+          : valuesOf(field, r);
+        for (const v of own) {
+          if (!v || v.trim() === "" || !prefix.test(v)) continue;
+          const k = folded ? v.toLowerCase() : v;
+          const g = groups.get(k);
+          if (g) {
+            g.count++;
+            if (v < g.value) g.value = v;
+          } else groups.set(k, { value: v, count: 1 });
+        }
+      }
+      const all = [...groups.values()].sort((x, y) => y.count - x.count || (x.value < y.value ? -1 : x.value > y.value ? 1 : 0));
+      return { values: all.slice(0, limit), total: all.length };
+    });
   };
 
   const events_export_csv = (a: Args): Promise<number> => {
@@ -626,7 +665,7 @@ export function eventHandlers(deps: EventDeps): Record<string, (a: Args) => unkn
   };
 
   return {
-    events_page, events_summary, events_histogram, events_detail, events_suggest, events_export_csv,
+    events_page, events_summary, events_histogram, events_detail, events_suggest, events_export_csv, events_values,
     entity_summary, entity_pivot, entity_findings, entity_coverage,
     marks_flag_rows, marks_flag_value, marks_tag_rows, marks_list_tags, marks_review, notes_add_rows,
     timeline_add_events,

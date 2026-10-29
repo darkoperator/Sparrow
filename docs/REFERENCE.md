@@ -523,8 +523,11 @@ by `profile`); they open the case read-only. `mark` writes. Times are ISO 8601 U
 (repeatable; FIELD `source`, `operation`, `account`, `ip`, `country`, `asn`, `device`, `session` or `tag`), `--search`,
 `--from`/`--to` (RFC 3339, inclusive) and `--flag`. A device name goes in `--where device=NAME`: that field matches the
 device id, the object id or the name. TEXT is Harrier's list syntax: comma separates values (any of),
-`!value` excludes, `*` is a case-insensitive wildcard, a list of only excludes means everything except those. A lone
-`!`, or only commas, is refused (exit 1). Rows come newest first; `--offset` and `--limit` (default 200) page them.
+`!value` excludes, `*` is a case-insensitive wildcard, a list of only excludes means everything except those. A value
+in double quotes is literal: commas, `*`, a leading `!` and outer spaces are part of it, and `""` inside it is one
+quote (`--where 'operation="a,b"'`, `--where 'operation=!"*"'`); a quote anywhere but at the start of a value is an
+ordinary character. A lone `!`, only commas, a quote that is not closed or text after a closing quote is refused
+(exit 1). Rows come newest first; `--offset` and `--limit` (default 200) page them.
 Plain output is a header line, then one line per row, columns two spaces apart with `-` for none:
 
 ```
