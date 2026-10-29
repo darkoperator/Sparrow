@@ -126,6 +126,15 @@ pub struct DiscoveryPreview {
 
 /// What discovery finds under `path`: collections and each file's classification. Nothing is written.
 pub fn ingest_discover(path: &Path) -> CmdResult<DiscoveryPreview> {
+    ingest_discover_with(path, &|p| std::fs::metadata(p))
+}
+
+/// [`ingest_discover`] reading each file's metadata through `meta` (a test seam for a size that cannot be read).
+#[doc(hidden)]
+pub fn ingest_discover_with(
+    path: &Path,
+    meta: &dyn Fn(&Path) -> std::io::Result<std::fs::Metadata>,
+) -> CmdResult<DiscoveryPreview> {
     if !path.is_dir() {
         return Err(CmdError::new(
             "invalid",
@@ -147,7 +156,7 @@ pub fn ingest_discover(path: &Path) -> CmdResult<DiscoveryPreview> {
         let mut files = Vec::new();
         for f in listing.files {
             let class = reg.classify_file(dc.tool, &f.rel, &f.abs);
-            let (size, meta_error) = match std::fs::metadata(&f.abs) {
+            let (size, meta_error) = match meta(&f.abs) {
                 Ok(m) => (m.len(), None),
                 Err(e) => (0, Some(format!("cannot read the file's size: {e}"))),
             };
@@ -577,6 +586,27 @@ fn ensure_locked(state: &AppState, slot: &mut Option<crate::state::OpenCase>) ->
     }
 }
 
+/// Run `f` on the open case, then lock its writer down again or close the case, whatever `f` did: return a value, an
+/// error, or panic (the panic goes on after the writer is safe, and before the caller's `importing` flag clears).
+fn with_relock<T>(
+    state: &AppState,
+    slot: &mut Option<crate::state::OpenCase>,
+    f: impl FnOnce(&mut crate::state::OpenCase) -> CmdResult<T>,
+) -> CmdResult<T> {
+    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match slot.as_mut() {
+        Some(open) => f(open),
+        None => Err(CmdError::new("no_case", "no case is open")),
+    }));
+    let locked = ensure_locked(state, slot);
+    match out {
+        Ok(result) => {
+            locked?;
+            result
+        }
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
 /// Import the collections under `path` into `target`. `run_id` names this run for [`ingest_cancel`] (a cancel for it
 /// that arrived before the run started still stops it). `culture` is the CLI's `--culture`; `detect` false is
 /// `--no-detect`. `emit` gets each stage.
@@ -649,11 +679,12 @@ pub fn ingest_run(
             }
             open.case.ensure_usable()?;
             refuse_inside_evidence(&open.path, &collections)?;
-            let out = run_pipeline(&mut open.case, &collections, &opts, detect, emit);
             let case_path = open.path.display().to_string();
-            // Detection reopens the writer unlocked: lock it again, or close the case.
-            ensure_locked(state, &mut slot)?;
-            Ok(summarise(case_path, &snapshot, out?))
+            // Detection reopens the writer unlocked: it is locked again, or the case closed, however this ends.
+            let piped = with_relock(state, &mut slot, |open| {
+                run_pipeline(&mut open.case, &collections, &opts, detect, emit)
+            })?;
+            Ok(summarise(case_path, &snapshot, piped))
         }
         Target::NewCase(new_path) => {
             if new_path.exists() {
@@ -763,9 +794,10 @@ pub fn ingest_profile(
     let shared = ing.shared.clone();
     let id = run_id.to_string();
     let stop = move || shared.stop_requested(&id);
-    release_lock_down(&mut open.case)?;
-    let (profile, detected) = profile_and_detect(&mut open.case, true, false, &stop, emit);
-    ensure_locked(state, &mut slot)?;
+    let (profile, detected) = with_relock(state, &mut slot, |open| {
+        release_lock_down(&mut open.case)?;
+        Ok(profile_and_detect(&mut open.case, true, false, &stop, emit))
+    })?;
     let (profile_error, profile_warnings) = match profile {
         ProfileOutcome::Failed(e) => (Some(e), Vec::new()),
         ProfileOutcome::Done(w) => (None, w),

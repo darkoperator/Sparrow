@@ -966,25 +966,187 @@ fn discovery_marks_a_file_whose_size_cannot_be_read_and_one_over_the_limit() {
         .find(|e| e.file_type().unwrap().is_dir())
         .unwrap()
         .path();
-    // A dangling symlink: listed, but its size cannot be read.
-    std::os::unix::fs::symlink(dir.path().join("nowhere.csv"), victim.join("dangling.csv"))
-        .unwrap();
     // A sparse file over the limit costs no disk.
     let big = victim.join("huge.csv");
     std::fs::File::create(&big)
         .unwrap()
         .set_len(sparrow_core::ingest::DEFAULT_MAX_FILE_BYTES + 1)
         .unwrap();
-    let p = ingest_discover(&copy).unwrap();
-    let files: Vec<_> = p.collections.iter().flat_map(|c| &c.files).collect();
-    let find = |name: &str| files.iter().find(|f| f.rel_path.ends_with(name)).copied();
-    let huge = find("huge.csv").expect("huge.csv listed");
+    let whole = ingest_discover(&copy).unwrap();
+    let all: Vec<_> = whole.collections.iter().flat_map(|c| &c.files).collect();
+    let huge = all
+        .iter()
+        .find(|f| f.rel_path.ends_with("huge.csv"))
+        .expect("huge.csv listed");
     assert_eq!(huge.status, "too_large");
     assert_eq!(huge.size, sparrow_core::ingest::DEFAULT_MAX_FILE_BYTES + 1);
-    assert_eq!(p.too_large, 1);
-    if let Some(d) = find("dangling.csv") {
-        assert_eq!(d.status, "unreadable");
-        assert!(d.error.as_deref().unwrap().contains("size"), "{d:?}");
-        assert!(p.unreadable >= 1);
+    assert_eq!((whole.too_large, whole.unreadable), (1, 0));
+    // A listed file whose metadata cannot be read (the seam fails it): unreadable, with the reason, never recognised.
+    let target = all
+        .iter()
+        .find(|f| f.status == "recognised")
+        .unwrap()
+        .rel_path
+        .clone();
+    let p = sparrow_app::cmd::ingest::ingest_discover_with(&copy, &|path| {
+        if path.to_string_lossy().ends_with(&target) {
+            Err(std::io::Error::other("injected metadata failure"))
+        } else {
+            std::fs::metadata(path)
+        }
+    })
+    .unwrap();
+    let files: Vec<_> = p.collections.iter().flat_map(|c| &c.files).collect();
+    let bad = files.iter().find(|f| f.rel_path == target).expect("listed");
+    assert_eq!((bad.status, bad.size), ("unreadable", 0));
+    assert!(
+        bad.error
+            .as_deref()
+            .unwrap()
+            .contains("injected metadata failure"),
+        "{bad:?}"
+    );
+    assert_eq!(p.unreadable, 1);
+    assert_eq!(p.recognised, whole.recognised - 1);
+}
+
+#[test]
+fn a_failed_profile_spares_the_detection_and_is_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = dir.path().join("pf.duckdb");
+    fault::fail_profile(case.clone());
+    let (emit, log) = collect();
+    let r = run(
+        &AppState::default(),
+        &IngestState::default(),
+        &Target::NewCase(case),
+        true,
+        &emit,
+    )
+    .unwrap();
+    assert!(
+        r.profile_error.as_deref().unwrap().contains("injected"),
+        "{:?}",
+        r.profile_error
+    );
+    assert!(r.detect.is_none() && r.detect_error.is_none());
+    assert!(r.files_loaded > 0);
+    let log = log.lock().unwrap();
+    assert!(log.contains(&ProgressEvent::Profile));
+    assert!(!log.contains(&ProgressEvent::Detect));
+}
+
+/// Run `f` expecting it to panic, and return with the panic caught.
+fn panics(f: impl FnOnce()) {
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    assert!(r.is_err(), "the run did not panic");
+}
+
+/// After a panic: the case is open and locked down (or closed), and no command reaches an unlocked writer.
+fn assert_safe_after_panic(state: &AppState) {
+    assert!(!state.importing.load(Ordering::SeqCst), "still busy");
+    let locked = {
+        let slot = state.open.lock().unwrap_or_else(|p| p.into_inner());
+        slot.as_ref().map(|o| o.case.is_locked_down().unwrap())
+    };
+    assert_ne!(locked, Some(false), "the writer was left unlocked");
+    // Commands that read the case directly either see the locked case or `no_case`.
+    match sparrow_app::cmd::browse::browse_tables(state) {
+        Ok(_) => assert_eq!(locked, Some(true)),
+        Err(e) => assert_eq!(e.kind, "no_case"),
     }
+}
+
+#[test]
+fn a_panic_from_the_progress_callback_leaves_the_open_writer_locked() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::default();
+    open_blank(dir.path(), &state);
+    let emit: Emit = Arc::new(|e: &ProgressEvent| {
+        if matches!(e, ProgressEvent::File { index: 2, .. }) {
+            panic!("injected panic in the progress callback");
+        }
+    });
+    panics(|| {
+        let _ = run(&state, &IngestState::default(), &Target::Open, true, &emit);
+    });
+    assert_safe_after_panic(&state);
+    // The case is still usable: a later import works.
+    let r = run(
+        &state,
+        &IngestState::default(),
+        &Target::Open,
+        false,
+        &quiet(),
+    )
+    .unwrap();
+    assert!(r.files_loaded > 0);
+}
+
+#[test]
+fn a_panic_in_the_profile_stage_leaves_the_open_writer_locked() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::default();
+    open_blank(dir.path(), &state);
+    let emit: Emit = Arc::new(|e: &ProgressEvent| {
+        if *e == ProgressEvent::Profile {
+            panic!("injected panic at the profile stage");
+        }
+    });
+    panics(|| {
+        let _ = run(&state, &IngestState::default(), &Target::Open, true, &emit);
+    });
+    assert_safe_after_panic(&state);
+}
+
+#[test]
+fn a_panic_during_profile_now_leaves_the_open_writer_locked() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::default();
+    let path = dir.path().join("pn.duckdb");
+    {
+        let mut case = Case::create_or_open(&path).unwrap();
+        ingest_path(
+            &mut case,
+            &tree(),
+            &ParserRegistry::builtin(),
+            &IngestOptions::default(),
+        )
+        .unwrap();
+    }
+    case_open(&state, &path, false).unwrap();
+    let emit: Emit = Arc::new(|e: &ProgressEvent| {
+        if *e == ProgressEvent::Profile {
+            panic!("injected panic at the profile stage");
+        }
+    });
+    panics(|| {
+        let _ = ingest_profile(&state, &IngestState::default(), "pn-1", &emit);
+    });
+    assert_safe_after_panic(&state);
+}
+
+#[test]
+fn a_panic_when_the_lock_down_cannot_be_restored_closes_the_case() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::default();
+    let path = open_blank(dir.path(), &state);
+    fault::fail_relock(path);
+    let emit: Emit = Arc::new(|e: &ProgressEvent| {
+        if *e == ProgressEvent::Profile {
+            panic!("injected panic at the profile stage");
+        }
+    });
+    panics(|| {
+        let _ = run(&state, &IngestState::default(), &Target::Open, true, &emit);
+    });
+    assert!(
+        state
+            .open
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_none(),
+        "the case stayed open unlocked"
+    );
+    assert_safe_after_panic(&state);
 }

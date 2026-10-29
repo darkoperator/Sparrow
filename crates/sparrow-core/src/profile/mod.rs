@@ -68,6 +68,10 @@ pub fn unprofiled_collections(conn: &duckdb::Connection) -> Result<Vec<i64>> {
 /// 6. evidence_availability snapshot (Task 6).
 pub fn refresh(case: &mut Case, opts: &ProfileOptions) -> Result<ProfileReport> {
     case.ensure_usable()?;
+    #[cfg(any(test, feature = "test-fixtures"))]
+    if crate::ingest::fault::profile_fails(case) {
+        return Err(crate::Error::Invalid("injected: the profile failed".into()));
+    }
     let mut report = ProfileReport::default();
     let defs = crate::data::capabilities(&opts.dirs)?;
     let ops = crate::data::operation_catalog(&opts.dirs)?;

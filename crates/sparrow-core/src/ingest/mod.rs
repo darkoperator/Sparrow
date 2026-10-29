@@ -360,6 +360,29 @@ pub mod fault {
 
     static FAIL_FILE: Mutex<Vec<(PathBuf, String)>> = Mutex::new(Vec::new());
     static FAIL_RELOCK: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+    static FAIL_PROFILE: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+    /// The profile step of the case at `case_path` fails (once).
+    pub fn fail_profile(case_path: PathBuf) {
+        FAIL_PROFILE
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(case_path);
+    }
+
+    pub(crate) fn profile_fails(case: &Case) -> bool {
+        let Some(path) = case.path() else {
+            return false;
+        };
+        let mut v = FAIL_PROFILE.lock().unwrap_or_else(|p| p.into_inner());
+        match v.iter().position(|p| p == path) {
+            Some(i) => {
+                v.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
 
     /// The ingest of `rel_path` into the case at `case_path` fails hard (once), after earlier files committed.
     pub fn fail_file(case_path: PathBuf, rel_path: &str) {
