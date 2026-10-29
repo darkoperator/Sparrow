@@ -191,7 +191,7 @@ const TABLE: { cmd: string; args?: Obj; check: (r: unknown) => void }[] = [
   { cmd: "share_preview", args: { path: "/b.json" }, check: (r) => keys(r, ["sha256", "summary", "analyst", "exported_at", "items"]) },
   { cmd: "events_page", args: { query: Q, sort: null, offset: 0, limit: 10 }, check: (r) => { keys(r, ["rows", "offset", "total", "total_capped"]); const p = r as EventsPage; expect(p.rows.length).toBe(10); expect(p.total).toBe(fx.eventsList().length); arrOf(p.rows, EVENT_ROW_KEYS); } },
   { cmd: "events_summary", args: { query: Q }, check: (r) => { keys(r, ["total", "suspicious", "malicious", "per_source", "hidden_trace_events"]); expect((r as EventsSummary).total).toBe(fx.eventsList().length); } },
-  { cmd: "events_histogram", args: { query: Q, maxBuckets: 24 }, check: (r) => { keys(r, ["start", "bucket_seconds", "series", "findings"]); expect((r as Histogram).series.length).toBeGreaterThan(0); } },
+  { cmd: "events_histogram", args: { query: Q, maxBuckets: 24, group: "source" }, check: (r) => { keys(r, ["start", "bucket_seconds", "group", "series", "other", "findings"]); expect((r as Histogram).series.length).toBeGreaterThan(0); } },
   { cmd: "events_detail", args: { sourceTable: "ROW", recordKey: "ROW" }, check: (r) => { keys(r, ["row", "raw", "source_refs", "tags", "notes", "flag", "flag_sources"]); keys((r as Obj).row, EVENT_ROW_KEYS); } },
   { cmd: "events_suggest", args: { field: "source", prefix: "sign" }, check: (r) => expect(r).toEqual(["signin_interactive", "signin_noninteractive"]) },
   { cmd: "events_export_csv", args: { query: Q, path: "/o.csv" }, check: (r) => expect(r).toBe(fx.eventsList().length) },
@@ -423,9 +423,33 @@ describe("events mock: queries", () => {
     expect(ai.rows.length).toBeGreaterThan(0);
   });
 
+  it("colours the histogram by operation like core: the ten most frequent, ties by name, the rest as other", async () => {
+    const m = await fresh();
+    const hist = (q: Partial<EventQuery>, group: unknown) => m.mockCall<Histogram>("events_histogram", { query: { ...Q, ...q }, maxBuckets: 24, group });
+    const h = await hist({}, "operation");
+    expect(h.group).toBe("operation");
+    const totals = h.series.map(([op, c]) => [op, c.reduce((a, b) => a + b, 0)]);
+    // 24 operations in the 81 events: the 3s and the 2s are cut by name (byte order: capitals first).
+    expect(totals).toEqual([
+      ["SignInSucceeded", 22], ["MessageTrace", 12], ["Send", 11], ["MoveToDeletedItems", 6], ["Add member to group", 3],
+      ["Update", 3], ["Add member to role", 2], ["Change user license", 2], ["MailItemsAccessed", 2], ["SignInFailed", 2],
+    ]);
+    expect(h.other!.reduce((a, b) => a + b, 0)).toBe(81 - 65);
+    // The same buckets as by source, which has no other.
+    const bySource = await hist({}, "source");
+    expect([h.start, h.bucket_seconds, h.other!.length]).toEqual([bySource.start, bySource.bucket_seconds, bySource.series[0][1].length]);
+    expect(bySource.other).toBeNull();
+    // Ten or fewer operations: no other.
+    const two = await hist({ fields: [["operation", "Send,Update"]] }, "operation");
+    expect([two.series.map(([op]) => op), two.other]).toEqual([["Send", "Update"], null]);
+    // A missing or unknown grouping is refused, as Tauri refuses it.
+    await expect(hist({}, undefined)).rejects.toMatchObject({ kind: "invalid" });
+    await expect(hist({}, "account")).rejects.toMatchObject({ kind: "invalid" });
+  });
+
   it("builds a histogram whose buckets add up to the matching events, with the core's bucket sizes", async () => {
     const m = await fresh();
-    const hist = (q: Partial<EventQuery>, max: number) => m.mockCall<Histogram>("events_histogram", { query: { ...Q, ...q }, maxBuckets: max });
+    const hist = (q: Partial<EventQuery>, max: number) => m.mockCall<Histogram>("events_histogram", { query: { ...Q, ...q }, maxBuckets: max, group: "source" });
     const h = await hist({}, 12);
     const days = h.series[0][1].length;
     expect(days).toBeLessThanOrEqual(41);
@@ -521,7 +545,7 @@ describe("events mock: queries", () => {
     const m = await fresh();
     const q = { ...Q, search: "192.0.2" };
     for (const cmd of ["events_page", "events_summary", "events_histogram", "events_export_csv"]) {
-      await expect(m.mockCall(cmd, { query: q, sort: null, offset: 0, limit: 5, maxBuckets: 5, path: "/o" }), cmd).rejects.toMatchObject({ kind: "invalid", message: expect.stringContaining("query id") });
+      await expect(m.mockCall(cmd, { query: q, sort: null, offset: 0, limit: 5, maxBuckets: 5, group: "source", path: "/o" }), cmd).rejects.toMatchObject({ kind: "invalid", message: expect.stringContaining("query id") });
     }
     const hits = await m.mockCall<EventsSummary>("events_summary", { query: q, queryId: "s-1" });
     expect(hits.total).toBe(list.filter((r) => JSON.stringify(r).toLowerCase().includes("192.0.2")).length);

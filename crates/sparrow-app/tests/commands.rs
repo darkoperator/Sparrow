@@ -3100,6 +3100,7 @@ use sparrow_app::cmd::marks::{
 };
 use sparrow_app::cmd::timeline::{AddEventsArgs, AddMode, EACH_MAX, timeline_add_events};
 use sparrow_core::case::entity::PivotOf;
+use sparrow_core::case::events::HistogramGroup;
 use sparrow_core::case::events::{self, AiFilter, Entity, Field, FlagFilter};
 use sparrow_core::case::marks::{self, FlagLevel, RowRef, TagRef, ValueKind};
 
@@ -3230,11 +3231,11 @@ fn events_page_summary_histogram_detail_and_suggest_read_the_events_table() {
         total
     );
     assert_eq!(summary.hidden_trace_events, 0);
-    let h = events_histogram(&state, &all, 12, None).unwrap();
+    let h = events_histogram(&state, &all, 12, HistogramGroup::Source, None).unwrap();
     // The case spans 41 days, so even a day is more than 12 buckets: the largest bucket size is used.
     assert_eq!((h.bucket_seconds, h.series[0].1.len()), (86_400, 41));
     let per_bucket = h.series[0].1.len();
-    let finer = events_histogram(&state, &all, 100, None).unwrap();
+    let finer = events_histogram(&state, &all, 100, HistogramGroup::Source, None).unwrap();
     assert_eq!(finer.bucket_seconds, 43_200);
     assert!(finer.series[0].1.len() <= 100);
     assert!(h.series.iter().all(|(_, c)| c.len() == per_bucket));
@@ -3244,18 +3245,20 @@ fn events_page_summary_histogram_detail_and_suggest_read_the_events_table() {
         "every event is in exactly one bucket"
     );
     assert_eq!(
-        events_histogram(&state, &all, 0, None).unwrap_err().kind,
+        events_histogram(&state, &all, 0, HistogramGroup::Source, None)
+            .unwrap_err()
+            .kind,
         "invalid"
     );
     // The bucket count asked for is bounded: 0 is refused, and anything over 500 is 500 (a case-wide range here would
     // otherwise allow minute buckets). 500, 501 and usize::MAX give the identical histogram: 3-hour buckets (321).
-    let at_cap = events_histogram(&state, &all, 500, None).unwrap();
+    let at_cap = events_histogram(&state, &all, 500, HistogramGroup::Source, None).unwrap();
     assert_eq!(
         (at_cap.bucket_seconds, at_cap.series[0].1.len()),
         (10_800, 321)
     );
     for over in [501, 100_000, usize::MAX] {
-        let h = events_histogram(&state, &all, over, None).unwrap();
+        let h = events_histogram(&state, &all, over, HistogramGroup::Source, None).unwrap();
         assert_eq!(
             (h.bucket_seconds, &h.series),
             (at_cap.bucket_seconds, &at_cap.series),
@@ -3264,19 +3267,19 @@ fn events_page_summary_histogram_detail_and_suggest_read_the_events_table() {
     }
     // The boundary below it still works as asked: 1 bucket falls back to a day; 321 is the smallest fit for 3 hours.
     assert_eq!(
-        events_histogram(&state, &all, 1, None)
+        events_histogram(&state, &all, 1, HistogramGroup::Source, None)
             .unwrap()
             .bucket_seconds,
         86_400
     );
     assert_eq!(
-        events_histogram(&state, &all, 321, None)
+        events_histogram(&state, &all, 321, HistogramGroup::Source, None)
             .unwrap()
             .bucket_seconds,
         10_800
     );
     assert_eq!(
-        events_histogram(&state, &all, 320, None)
+        events_histogram(&state, &all, 320, HistogramGroup::Source, None)
             .unwrap()
             .bucket_seconds,
         21_600
@@ -3287,9 +3290,61 @@ fn events_page_summary_histogram_detail_and_suggest_read_the_events_table() {
         to: Some("2100-01-01T00:00:00Z".into()),
         ..EventQueryArgs::default()
     };
-    let h = events_histogram(&state, &wide, usize::MAX, None).unwrap();
+    let h = events_histogram(&state, &wide, usize::MAX, HistogramGroup::Source, None).unwrap();
     assert!(h.series[0].1.len() <= events::MAX_HISTOGRAM_BUCKETS);
     assert_eq!(h.bucket_seconds % 86_400, 0);
+
+    // By operation (the IPC sends "operation"): the ten most frequent operations, most first, the rest as `other`,
+    // in the same buckets as by source, and every event still in exactly one bucket.
+    let group: HistogramGroup = serde_json::from_value(serde_json::json!("operation")).unwrap();
+    let ops = events_histogram(&state, &all, 12, group, None).unwrap();
+    assert_eq!(ops.group, HistogramGroup::Operation);
+    let by_source = events_histogram(&state, &all, 12, HistogramGroup::Source, None).unwrap();
+    assert_eq!(
+        (ops.start, ops.bucket_seconds),
+        (by_source.start, by_source.bucket_seconds)
+    );
+    let want: Vec<(String, u64)> = with_case(&state, |open| {
+        let mut stmt = open
+            .case
+            .conn()
+            .prepare(
+                "SELECT operation, count(*) FROM events WHERE operation IS NOT NULL GROUP BY 1 \
+                 ORDER BY 2 DESC, 1 LIMIT 10",
+            )
+            .unwrap();
+        let got = stmt
+            .query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        Ok(got)
+    })
+    .unwrap();
+    assert_eq!(
+        want.len(),
+        10,
+        "the synthetic case has more than ten operations"
+    );
+    let got: Vec<(String, u64)> = ops
+        .series
+        .iter()
+        .map(|(op, c)| (op.clone(), c.iter().sum()))
+        .collect();
+    assert_eq!(got, want);
+    let other: u64 = ops
+        .other
+        .as_ref()
+        .expect("more than ten operations")
+        .iter()
+        .sum();
+    assert_eq!(other, total - want.iter().map(|(_, n)| n).sum::<u64>());
+    assert!(ops.series.iter().all(|(_, c)| c.len() == 41));
+    assert_eq!(ops.other.as_ref().unwrap().len(), 41);
+    // By source there is never an `other`.
+    assert_eq!(by_source.other, None);
 
     // One row's detail is the page row plus the stored record.
     let first = &page.rows[0];
@@ -3425,7 +3480,7 @@ fn events_query_args_carry_entity_fields_flags_and_iso_times() {
         for e in [
             events_page(&state, &q, None, 0, 5, None).unwrap_err(),
             events_summary(&state, &q, None).unwrap_err(),
-            events_histogram(&state, &q, 10, None).unwrap_err(),
+            events_histogram(&state, &q, 10, HistogramGroup::Source, None).unwrap_err(),
         ] {
             assert_eq!(e.kind, "invalid", "{what}: {e:?}");
         }
@@ -3472,7 +3527,7 @@ fn a_raw_search_needs_a_query_id_and_runs_through_the_cancellable_path() {
     for e in [
         events_page(&state, &q, None, 0, 5, None).unwrap_err(),
         events_summary(&state, &q, None).unwrap_err(),
-        events_histogram(&state, &q, 10, None).unwrap_err(),
+        events_histogram(&state, &q, 10, HistogramGroup::Source, None).unwrap_err(),
         events_export_csv(&state, &q, &out, None).unwrap_err(),
     ] {
         assert_eq!(e.kind, "invalid", "{e:?}");
@@ -3494,7 +3549,7 @@ fn a_raw_search_needs_a_query_id_and_runs_through_the_cancellable_path() {
             .total,
         core.total
     );
-    assert!(events_histogram(&state, &q, 10, Some("s-1")).is_ok());
+    assert!(events_histogram(&state, &q, 10, HistogramGroup::Source, Some("s-1")).is_ok());
     assert!(state.active.lock().unwrap().is_none());
     // A cancel for the id (recorded before the query registers) makes each reader return `interrupted` without
     // running: proof that a search goes through `with_cancellable`. A query without a search ignores the id.
@@ -3503,7 +3558,7 @@ fn a_raw_search_needs_a_query_id_and_runs_through_the_cancellable_path() {
             events_page(s, q, None, 0, 5, Some(id)).map(|_| ())
         }) as fn(&AppState, &EventQueryArgs, &str) -> sparrow_app::CmdResult<()>,
         |s, q, id| events_summary(s, q, Some(id)).map(|_| ()),
-        |s, q, id| events_histogram(s, q, 10, Some(id)).map(|_| ()),
+        |s, q, id| events_histogram(s, q, 10, HistogramGroup::Source, Some(id)).map(|_| ()),
         |s, q, id| {
             events_export_csv(
                 s,
@@ -4840,7 +4895,14 @@ fn record_investigate_fixtures() {
         (
             "events_histogram.json",
             serde_json::to_value(
-                events_histogram(&state, &EventQueryArgs::default(), 24, None).unwrap(),
+                events_histogram(
+                    &state,
+                    &EventQueryArgs::default(),
+                    24,
+                    HistogramGroup::Source,
+                    None,
+                )
+                .unwrap(),
             )
             .unwrap(),
         ),

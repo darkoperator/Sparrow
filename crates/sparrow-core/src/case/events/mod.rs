@@ -12,8 +12,8 @@ pub(crate) use build::prefix_of;
 pub(crate) use filter::{Where, build as scope_where, entity_columns, entity_predicate};
 pub(crate) use marksql::{value_columns, value_flag_matches};
 pub use query::{
-    CSV_COLUMNS, MAX_HISTOGRAM_BUCKETS, MAX_VALUES, detail, export_csv, histogram, matching_rows,
-    page, suggest, summary, values,
+    CSV_COLUMNS, HISTOGRAM_TOP_OPERATIONS, MAX_HISTOGRAM_BUCKETS, MAX_VALUES, detail, export_csv,
+    histogram, histogram_by, matching_rows, page, suggest, summary, values,
 };
 
 use crate::Result;
@@ -222,15 +222,30 @@ pub struct FindingMark {
     pub last_seen: DateTime<Utc>,
 }
 
-/// Event counts per time bucket, stacked by source. Bucket `i` covers `[start + i * bucket_seconds, start + (i + 1) *
-/// bucket_seconds)`; an event exactly at the range end opens the last bucket.
+/// What the histogram stacks its bars by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistogramGroup {
+    #[default]
+    Source,
+    Operation,
+}
+
+/// Event counts per time bucket, stacked by source or by operation. Bucket `i` covers `[start + i * bucket_seconds,
+/// start + (i + 1) * bucket_seconds)`; an event exactly at the range end opens the last bucket.
 #[derive(Debug, Clone, Serialize)]
 pub struct Histogram {
     #[serde(serialize_with = "ts_utc")]
     pub start: DateTime<Utc>,
     pub bucket_seconds: i64,
-    /// `(source, counts per bucket)`, in `SOURCES` order, sources with no event in range left out. Empty for no rows.
+    pub group: HistogramGroup,
+    /// `(name, counts per bucket)`, empty for no rows. By source: in `SOURCES` order, sources with no event in range
+    /// left out. By operation: the [`HISTOGRAM_TOP_OPERATIONS`] most frequent operations in range, most frequent first
+    /// (ties by name).
     pub series: Vec<(String, Vec<u64>)>,
+    /// By operation only: the counts of every other event in range (the rest of the operations, and events with no
+    /// operation), `None` when there are none. Kept apart from `series` so an operation named "Other" stays distinct.
+    pub other: Option<Vec<u64>>,
     /// Open findings (not closed as `false_positive` or `benign`) with evidence among the matching events.
     pub findings: Vec<FindingMark>,
 }

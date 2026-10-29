@@ -1,6 +1,7 @@
 {
   "start": "2026-08-01T00:00:00.000000Z",
   "bucket_seconds": 86400,
+  "group": "source",
   "series": [
     [
       "ual",
@@ -417,6 +418,7 @@
       ]
     ]
   ],
+  "other": null,
   "findings": [
     {
       "finding_id": "908236f30e0c45c3",

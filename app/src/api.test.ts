@@ -71,7 +71,7 @@ describe("events, entity and marks commands", () => {
   const CASES: [string, () => Promise<unknown>, string, string[]][] = [
     ["eventsPage", () => api.eventsPage(query, null, 0, 50, "q1"), "events_page", ["limit", "offset", "query", "queryId", "sort"]],
     ["eventsSummary", () => api.eventsSummary(query, "q1"), "events_summary", ["query", "queryId"]],
-    ["eventsHistogram", () => api.eventsHistogram(query, 24, "q1"), "events_histogram", ["maxBuckets", "query", "queryId"]],
+    ["eventsHistogram", () => api.eventsHistogram(query, 24, "operation", "q1"), "events_histogram", ["group", "maxBuckets", "query", "queryId"]],
     ["eventsDetail", () => api.eventsDetail("ual_rows", "k1"), "events_detail", ["recordKey", "sourceTable"]],
     ["eventsSuggest", () => api.eventsSuggest("account", "jd"), "events_suggest", ["field", "prefix"]],
     ["eventsExportCsv", () => api.eventsExportCsv(query, "/o.csv", "q1"), "events_export_csv", ["path", "query", "queryId"]],

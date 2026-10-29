@@ -301,7 +301,7 @@ export function eventsSummary(): EventsSummary {
 
 export function eventsHistogram(): Histogram {
   const v: unknown = clone(eventsHistogramJson);
-  need("events_histogram", v, ["start", "bucket_seconds", "series", "findings"]);
+  need("events_histogram", v, ["start", "bucket_seconds", "group", "series", "other", "findings"]);
   if (!Array.isArray(v.series) || v.series.length === 0) throw new Error("fixture events_histogram: no series");
   const widths = new Set<number>();
   v.series.forEach((s: unknown, i) => {

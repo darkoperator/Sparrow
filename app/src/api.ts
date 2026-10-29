@@ -740,14 +740,21 @@ export interface FindingMark {
   last_seen: string;
 }
 
+/** `case::events::HistogramGroup`: what the histogram stacks its bars by. */
+export type HistogramGroup = "source" | "operation";
+
 /**
  * `case::events::Histogram`. Bucket `i` covers `[start + i * bucket_seconds, start + (i + 1) * bucket_seconds)`; an event
- * exactly at the range end is in the last bucket. `series` is `[source, counts per bucket]`, empty for no rows.
+ * exactly at the range end is in the last bucket. `series` is `[name, counts per bucket]`, empty for no rows: by source in
+ * grid order; by operation the ten most frequent operations, most first, with every other event (other operations and
+ * events with no operation) in `other` (null when there are none, and always null by source).
  */
 export interface Histogram {
   start: string;
   bucket_seconds: number;
+  group: HistogramGroup;
   series: [string, number[]][];
+  other: number[] | null;
   findings: FindingMark[];
 }
 
@@ -917,8 +924,8 @@ export const eventsPage = (query: EventQuery, sort: Sort | null, offset: number,
   call<EventsPage>("events_page", { query, sort, offset, limit, queryId });
 export const eventsSummary = (query: EventQuery, queryId?: string) =>
   call<EventsSummary>("events_summary", { query, queryId });
-export const eventsHistogram = (query: EventQuery, maxBuckets: number, queryId?: string) =>
-  call<Histogram>("events_histogram", { query, maxBuckets, queryId });
+export const eventsHistogram = (query: EventQuery, maxBuckets: number, group: HistogramGroup, queryId?: string) =>
+  call<Histogram>("events_histogram", { query, maxBuckets, group, queryId });
 export const eventsDetail = (sourceTable: string, recordKey: string) =>
   call<EventDetail>("events_detail", { sourceTable, recordKey });
 /** Distinct case values of `field` that start with `prefix`, sorted, at most 200. */

@@ -125,7 +125,7 @@ describe("EventsView", () => {
     await shown(81, 81);
     // jsdom has no layout: the chart falls back to 800px wide and its left edge is 0.
     const geometry = async (q: EventQuery) => {
-      const hist = await mockCall<Hist>("events_histogram", { query: q, maxBuckets: 120 });
+      const hist = await mockCall<Hist>("events_histogram", { query: q, maxBuckets: 120, group: "operation" });
       const band = (800 - 44 - 12) / hist.series[0][1].length;
       return { t0: Date.parse(hist.start), ms: hist.bucket_seconds * 1000, x: (i: number) => 44 + band * i + band / 2 };
     };
@@ -401,11 +401,143 @@ describe("EventsView", () => {
     expect(n.openFinding).toHaveBeenLastCalledWith(fx.eventsHistogram().findings[1].finding_id);
   });
 
+  it("histogram_colours_by_operation_and_the_toggle_refetches_the_chart_alone", async () => {
+    const user = userEvent.setup();
+    const { container, unmount } = view();
+    await shown(81, 81);
+    // Operation is the default: the call asks for it and the legend names ten operations and Other.
+    expect(callsOf("events_histogram").map((c) => c.args!.group)).toEqual(["operation"]);
+    const legend = () => screen.getByRole("group", { name: /in the chart$/ });
+    expect(legend()).toHaveAccessibleName("Operations in the chart");
+    const entries = within(legend()).getAllByRole("button");
+    expect(entries.map((b) => b.textContent)).toEqual([
+      "SignInSucceeded 22", "MessageTrace 12", "Send 11", "MoveToDeletedItems 6", "Add member to group 3", "Update 3",
+      "Add member to role 2", "Change user license 2", "MailItemsAccessed 2", "SignInFailed 2", "Other 16",
+    ]);
+    expect(entries.at(-1)).toHaveAttribute("title", "Other operations");
+    expect(screen.getByRole("button", { name: "Colour by operation" })).toHaveAttribute("aria-pressed", "true");
+    // Hiding Other takes its bars out.
+    const before = container.querySelectorAll("svg.ev-chart rect").length;
+    await user.click(entries.at(-1)!);
+    expect(entries.at(-1)).toHaveAttribute("aria-pressed", "false");
+    expect(container.querySelectorAll("svg.ev-chart rect").length).toBeLessThan(before);
+    // Source: one histogram call for the query shown; the page and the summary are not run again.
+    const counts = () => ["events_page", "events_summary", "events_histogram"].map((c) => callsOf(c).length);
+    const [pages, sums] = counts();
+    await user.click(screen.getByRole("button", { name: "Colour by source" }));
+    await waitFor(() => expect(legend()).toHaveAccessibleName("Sources in the chart"));
+    expect(counts()).toEqual([pages, sums, 2]);
+    expect(callsOf("events_histogram")[1].args).toEqual({ ...callsOf("events_histogram")[0].args, group: "source" });
+    expect(screen.getByRole("button", { name: "Colour by source" })).toHaveAttribute("aria-pressed", "true");
+    // Every legend entry starts shown again, and the choice is remembered on this computer.
+    expect(within(legend()).getAllByRole("button").every((b) => b.getAttribute("aria-pressed") === "true")).toBe(true);
+    expect(localStorage.getItem("sparrow.events.histogram.group")).toBe("source");
+    unmount();
+    h.calls.length = 0;
+    view();
+    await shown(81, 81);
+    expect(callsOf("events_histogram").map((c) => c.args!.group)).toEqual(["source"]);
+  });
+
+  it("histogram_toggle_during_a_run_charts_the_new_query_in_the_new_colouring", async () => {
+    const user = userEvent.setup();
+    // Storage refuses everything: the toggle still works for this session.
+    const get = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("denied");
+    });
+    const set = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("denied");
+    });
+    try {
+      view();
+      await shown(81, 81);
+      const first = callsOf("events_histogram")[0].args!;
+      expect(first.group).toBe("operation");
+      // Query B (a raw search) is run; its chart answers only when released, one gate per colouring.
+      const gates: Record<string, () => void> = {};
+      const held = (g: string) => new Promise<void>((r) => (gates[g] = r));
+      const waits = { operation: held("operation"), source: held("source") };
+      h.override.events_histogram = async (a) => {
+        if ((a!.query as EventQuery).search === "Send") await waits[a!.group as "operation" | "source"];
+        return (await import("../mock/backend")).mockCall("events_histogram", a);
+      };
+      await user.type(box("Search text"), "Send");
+      await user.click(screen.getByRole("button", { name: "Search" }));
+      await waitFor(() => expect(callsOf("events_histogram")).toHaveLength(2));
+      // The toggle while B is pending only records the choice: no chart of the shown query A is asked for.
+      await user.click(screen.getByRole("button", { name: "Colour by source" }));
+      expect(screen.getByRole("button", { name: "Colour by source" })).toHaveAttribute("aria-pressed", "true");
+      expect(callsOf("events_histogram")).toHaveLength(2);
+      // The chart A in operations no longer matches the choice: it keeps its place but shows as loading.
+      expect(screen.getByText("Loading…")).toBeInTheDocument();
+      expect(screen.queryByRole("group", { name: /in the chart$/ })).toBeNull();
+      // B lands with its by-operation chart: the grid shows B, and B is fetched again by source; still loading.
+      gates.operation();
+      const queryB = { ...(first.query as EventQuery), search: "Send" };
+      await waitFor(() => expect(callsOf("events_histogram")).toHaveLength(3));
+      expect(callsOf("events_histogram")[2].args).toMatchObject({ query: queryB, group: "source" });
+      expect(callsOf("events_histogram").every((c) => c.args!.group === "operation" || (c.args!.query as EventQuery).search === "Send")).toBe(true);
+      const totalB = (await mockCall<EventsSummary>("events_summary", { query: queryB, queryId: "t-1" })).total;
+      await shown(totalB, totalB);
+      expect(screen.getByText("Loading…")).toBeInTheDocument();
+      // Its source chart: B's events, by source.
+      gates.source();
+      const legend = await screen.findByRole("group", { name: "Sources in the chart" });
+      const sum = within(legend)
+        .getAllByRole("button")
+        .reduce((a, b) => a + Number(b.textContent!.split(" ").at(-1)), 0);
+      expect(sum).toBe(totalB);
+      expect(totalB).toBeLessThan(81);
+      expect(screen.queryByText("Loading…")).toBeNull();
+    } finally {
+      get.mockRestore();
+      set.mockRestore();
+    }
+  });
+
+  it("histogram_by_operation_with_only_unnamed_operations_draws_the_other_series", async () => {
+    const hist = fx.eventsHistogram();
+    const counts = hist.series[0][1];
+    const total = counts.reduce((x, y) => x + y, 0);
+    h.override.events_histogram = (a) => ({ ...hist, group: a!.group, series: [], other: counts });
+    const { container } = view();
+    await shown(81, 81);
+    const legend = await screen.findByRole("group", { name: "Operations in the chart" });
+    expect(within(legend).getAllByRole("button").map((b) => b.textContent)).toEqual([`Other ${total}`]);
+    expect(screen.queryByText("No events in this range.")).toBeNull();
+    expect(screen.getByRole("img", { name: `Events over time, ${counts.length} bars of 1 day` })).toBeInTheDocument();
+    expect(container.querySelectorAll(`svg.ev-chart rect[fill="hsl(0 0% 55%)"]`)).toHaveLength(counts.filter((c) => c > 0).length);
+  });
+
+  it("an_operation_named_other_is_not_the_other_series", async () => {
+    const hist = fx.eventsHistogram();
+    const counts = hist.series[0][1];
+    h.override.events_histogram = (a) => ({
+      ...hist,
+      group: a!.group,
+      series: [["Other", counts]],
+      other: counts.map((n) => n * 2),
+    });
+    view();
+    await shown(81, 81);
+    const total = counts.reduce((x, y) => x + y, 0);
+    const entries = within(await screen.findByRole("group", { name: "Operations in the chart" })).getAllByRole("button");
+    expect(entries.map((b) => [b.textContent, b.getAttribute("title")])).toEqual([
+      [`Other ${total}`, "Other"],
+      [`Other ${total * 2}`, "Other operations"],
+    ]);
+    // Hiding one leaves the other shown.
+    await userEvent.setup().click(entries[1]);
+    expect(entries.map((b) => b.getAttribute("aria-pressed"))).toEqual(["true", "false"]);
+  });
+
   it("legend_toggles_and_collapse_remember", async () => {
     const user = userEvent.setup();
     const { container, unmount } = view();
     await shown(81, 81);
-    const ual = screen.getByRole("button", { name: /^ual 12$/, pressed: true, hidden: false });
+    // The chart opens coloured by operation; the source legend is one click away.
+    await user.click(screen.getByRole("button", { name: "Colour by source" }));
+    const ual = await screen.findByRole("button", { name: /^ual 12$/, pressed: true, hidden: false });
     const before = container.querySelectorAll("svg.ev-chart rect").length;
     await user.click(ual);
     expect(ual).toHaveAttribute("aria-pressed", "false");
@@ -478,8 +610,9 @@ describe("EventsView", () => {
   it("hostile_source_names_and_findings_are_text_in_the_chart", async () => {
     const evil = "<img src=x onerror=alert(1)>\u202e";
     const hist = fx.eventsHistogram();
-    h.override.events_histogram = () => ({
+    h.override.events_histogram = (a) => ({
       ...hist,
+      group: a!.group,
       series: [[evil, hist.series[0][1]]],
       findings: [{ ...hist.findings[0], finding_id: evil, severity: evil }],
     });

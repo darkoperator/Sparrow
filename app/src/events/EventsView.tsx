@@ -23,6 +23,7 @@ import {
   type FlagLevel,
   type IndicatorChange,
   type Histogram as HistogramData,
+  type HistogramGroup,
   type RowRef,
   type Sort,
   type TagInfo,
@@ -47,7 +48,7 @@ import { COLUMN_BY_ID, COLUMN_FIELD, COLUMNS, DEFAULT_VISIBLE } from "./columns"
 import EventDetail, { TagBadge } from "./EventDetail";
 import { parseField, quoteValue } from "./fieldSyntax";
 import Filters, { emptyDraft, FIELD_LABEL, FIELDS, type FilterDraft, type FilterErrors } from "./Filters";
-import Histogram from "./Histogram";
+import Histogram, { useHistogramGroup } from "./Histogram";
 import SummaryBar from "./SummaryBar";
 
 export interface EventsViewProps {
@@ -184,6 +185,14 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
   const [capped, setCapped] = useState(false);
   const [summary, setSummary] = useState<EventsSummary | null>(null);
   const [hist, setHist] = useState<HistogramData | null>(null);
+  // The chart's colouring. Runs read it through the ref. A toggle with no run pending refetches the chart of the query
+  // shown; during a run it only records the choice, and the run, when it lands, fetches its own query's chart again
+  // if what it got (or what is shown) is in the other colouring.
+  const [histGroup, setHistGroup] = useHistogramGroup();
+  const histGroupRef = useRef(histGroup);
+  const shownGroup = useRef<HistogramGroup | null>(null);
+  /** The token of the run (or reload) still pending, else null. */
+  const pendingRun = useRef<number | null>(null);
   const [shown, setShown] = useState<Shown | null>(null);
   const [running, setRunning] = useState<{ cancellable: boolean } | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -234,11 +243,44 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
     else setNotice({ kind: "error", text });
   }, []);
 
+  const showChart = useCallback((h: HistogramData) => {
+    shownGroup.current = h.group;
+    setHist(h);
+  }, []);
+  /** The chart of `query` in the colouring chosen now; dropped if a run started since (`mine`) or the colouring moved. */
+  const fetchChart = useCallback(
+    (query: EventQuery, mine: number) => {
+      const g = histGroupRef.current;
+      eventsHistogram(query, MAX_BUCKETS, g, idFor(query)).then(
+        (h) => {
+          if (mine === token.current && h.group === histGroupRef.current) showChart(h);
+        },
+        (e) => {
+          if (mine === token.current && histGroupRef.current === g) fail(e);
+        },
+      );
+    },
+    [idFor, fail, showChart],
+  );
+  /**
+   * A run's chart, as the run lands: shown if it is in the colouring chosen now. Otherwise (the colouring changed while
+   * the run was pending, or a page-only run fetched no chart while the one shown is in the other colouring) the run's
+   * own query is fetched again in the colouring chosen now.
+   */
+  const landChart = useCallback(
+    (query: EventQuery, h: HistogramData | null, mine: number) => {
+      if (h && h.group === histGroupRef.current) showChart(h);
+      else if (h || (shownGroup.current !== null && shownGroup.current !== histGroupRef.current)) fetchChart(query, mine);
+    },
+    [showChart, fetchChart],
+  );
+
   /** Run a query: the page, and (unless `pageOnly`) the summary and the chart. Replaces the results only on success. */
   const run = useCallback(
     async (next: FilterDraft, sort: Sort | null, pageOnly: boolean) => {
       const query = buildQuery(next, scopeKind && scopeValue ? { kind: scopeKind, value: scopeValue } : undefined);
       const mine = ++token.current;
+      pendingRun.current = mine;
       cancelInflight();
       moreBusy.current = false;
       setRunning({ cancellable: query.search !== undefined });
@@ -248,7 +290,7 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
         const [page, sum, h] = await Promise.all([
           eventsPage(query, sort, 0, PAGE, idFor(query)),
           pageOnly ? Promise.resolve(null) : eventsSummary(query, idFor(query)),
-          pageOnly ? Promise.resolve(null) : eventsHistogram(query, MAX_BUCKETS, idFor(query)),
+          pageOnly ? Promise.resolve(null) : eventsHistogram(query, MAX_BUCKETS, histGroupRef.current, idFor(query)),
         ]);
         if (mine !== token.current) return;
         const before = latest.current.shown?.query;
@@ -256,7 +298,7 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
         setTotal(page.total);
         setCapped(page.total_capped);
         if (sum) setSummary(sum);
-        if (h) setHist(h);
+        landChart(query, h, mine);
         setShown({ draft: next, query, sort });
         // A new query shows other events: ticks on the old ones would act on rows nobody can see. A sort keeps them.
         if (!pageOnly) setTicked(new Set());
@@ -264,13 +306,14 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
       } catch (e) {
         if (mine === token.current) fail(e);
       } finally {
+        if (pendingRun.current === mine) pendingRun.current = null;
         if (mine === token.current) {
           inflight.current = [];
           setRunning(null);
         }
       }
     },
-    [scopeKind, scopeValue, cancelInflight, idFor, fail],
+    [scopeKind, scopeValue, cancelInflight, idFor, fail, landChart],
   );
 
   // First load, and again whenever the scope changes ("Show in Events", or the chip removed): the filters in effect
@@ -302,6 +345,7 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
   // spinner stops, and the earlier results stay. The backend is asked to stop too.
   const cancel = () => {
     token.current++;
+    pendingRun.current = null;
     cancelInflight();
     moreBusy.current = false;
     setRunning(null);
@@ -318,6 +362,7 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
     const { query, sort } = cur.shown;
     const want = Math.min(Math.max(cur.rows.length, PAGE), cur.maxLoaded);
     const mine = ++token.current;
+    pendingRun.current = mine;
     cancelInflight();
     moreBusy.current = false;
     setRunning({ cancellable: query.search !== undefined });
@@ -325,7 +370,7 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
       const [first, sum, h] = await Promise.all([
         eventsPage(query, sort, 0, PAGE, idFor(query)),
         eventsSummary(query, idFor(query)),
-        eventsHistogram(query, MAX_BUCKETS, idFor(query)),
+        eventsHistogram(query, MAX_BUCKETS, histGroupRef.current, idFor(query)),
       ]);
       let all = first.rows;
       while (all.length < want && all.length < first.total) {
@@ -339,18 +384,30 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
       setTotal(first.total);
       setCapped(first.total_capped);
       setSummary(sum);
-      setHist(h);
+      landChart(query, h, mine);
       const here = new Set(all.map(rowKey));
       setTicked((t) => new Set([...t].filter((k) => here.has(k))));
     } catch (e) {
       if (mine === token.current) fail(e);
     } finally {
+      if (pendingRun.current === mine) pendingRun.current = null;
       if (mine === token.current) {
         inflight.current = [];
         setRunning(null);
       }
     }
-  }, [cancelInflight, idFor, fail]);
+  }, [cancelInflight, idFor, fail, landChart]);
+
+  /** A new colouring. No run pending: the chart of the query shown, refetched alone. A run pending: see `landChart`. */
+  const chooseHistGroup = useCallback(
+    (g: HistogramGroup) => {
+      histGroupRef.current = g;
+      setHistGroup(g);
+      const query = latest.current.shown?.query;
+      if (query && pendingRun.current === null) fetchChart(query, token.current);
+    },
+    [setHistGroup, fetchChart],
+  );
 
   const loadTags = useCallback(() => {
     marksListTags().then(setTags, () => undefined);
@@ -599,6 +656,8 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
       )}
       <Histogram
         data={hist}
+        group={histGroup}
+        onGroup={chooseHistGroup}
         hasRange={hasRange}
         onRange={(from, to) => apply({ from, to })}
         onReset={() => apply({ from: "", to: "" })}

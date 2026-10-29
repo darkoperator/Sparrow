@@ -9,7 +9,8 @@ use sparrow_core::Error;
 use sparrow_core::case::actor::{Actor, Reviewer};
 use sparrow_core::case::browse::Sort;
 use sparrow_core::case::events::{
-    self, AiFilter, CSV_COLUMNS, Entity, EventQuery, Field, FlagFilter,
+    self, AiFilter, CSV_COLUMNS, Entity, EventQuery, Field, FlagFilter, HISTOGRAM_TOP_OPERATIONS,
+    HistogramGroup,
 };
 use sparrow_core::case::marks::{
     FlagLevel, RowRef, ValueKind, flag_rows, flag_value, review_marks, tag_rows,
@@ -690,6 +691,129 @@ fn histogram_buckets_and_series() {
     );
     let all: u64 = h.series.iter().flat_map(|s| s.1.iter()).sum();
     assert_eq!(all, 3); // s1 (10:30), u2 (10:59:59), u3 (11:00)
+}
+
+#[test]
+fn histogram_by_operation_keeps_the_top_ten_and_stacks_the_rest() {
+    let case = Case::in_memory().unwrap();
+    // Twelve operations: "op01" has 12 events ... "op12" has 1, except that "op10" and "op09" tie on 3 each (so the
+    // tie is broken by name) and a real operation named "Other" has 5. The last hour also holds 2 events with no
+    // operation. Events go in hour `n % 2` (0 or 1), from source `ual` or `signin_interactive` by parity.
+    let ops: [(&str, usize); 12] = [
+        ("op01", 12),
+        ("op02", 11),
+        ("op03", 10),
+        ("op04", 9),
+        ("op05", 8),
+        ("op06", 7),
+        ("Other", 5),
+        ("op07", 4),
+        ("op10", 3),
+        ("op09", 3),
+        ("op11", 2),
+        ("op12", 1),
+    ];
+    let mut k = 0;
+    for (op, n) in &ops {
+        for i in 0..*n {
+            k += 1;
+            let mut e = ev(
+                &format!("k{k}"),
+                if i % 2 == 0 {
+                    "ual"
+                } else {
+                    "signin_interactive"
+                },
+                t0() + Duration::hours((i % 2) as i64),
+            );
+            e.op = Some(op);
+            put(&case, &e);
+        }
+    }
+    for i in 0..2 {
+        put(
+            &case,
+            &ev(&format!("none{i}"), "ual", t0() + Duration::hours(1)),
+        );
+    }
+
+    let by = |q: &EventQuery, g| events::histogram_by(case.conn(), q, 2, g).unwrap();
+    let h = by(&EventQuery::default(), HistogramGroup::Operation);
+    assert_eq!(h.group, HistogramGroup::Operation);
+    assert_eq!((h.start, h.bucket_seconds), (t0(), 3600));
+    // A budget of 2 buckets gives 1-hour buckets over this hour. Hour 0 takes the even-numbered events of each operation, hour 1 the odd ones: ceil(n/2) and floor(n/2).
+    let split = |n: usize| vec![n.div_ceil(2) as u64, (n / 2) as u64];
+    assert_eq!(
+        h.series,
+        [
+            ("op01", 12),
+            ("op02", 11),
+            ("op03", 10),
+            ("op04", 9),
+            ("op05", 8),
+            ("op06", 7),
+            ("Other", 5),
+            ("op07", 4),
+            ("op09", 3),
+            ("op10", 3),
+        ]
+        .iter()
+        .map(|(op, n)| (op.to_string(), split(*n)))
+        .collect::<Vec<_>>()
+    );
+    assert_eq!(h.series.len(), HISTOGRAM_TOP_OPERATIONS);
+    // The rest: op11 (2: one per hour), op12 (1: hour 0) and the two events with no operation (hour 1).
+    assert_eq!(h.other, Some(vec![2, 3]));
+
+    // The cut follows the query: source `signin_interactive` holds the odd-numbered events only, floor(n/2) each.
+    // op12 has none, leaving 11 operations; op09, op10 and op11 tie at 1 and op11 loses on name.
+    let q = field(Field::Source, "signin_interactive");
+    let h = by(&q, HistogramGroup::Operation);
+    let names: Vec<(&str, u64)> = h
+        .series
+        .iter()
+        .map(|(op, c)| (op.as_str(), c.iter().sum()))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("op01", 6),
+            ("op02", 5),
+            ("op03", 5),
+            ("op04", 4),
+            ("op05", 4),
+            ("op06", 3),
+            ("Other", 2),
+            ("op07", 2),
+            ("op09", 1),
+            ("op10", 1),
+        ]
+    );
+    assert_eq!(h.other.as_ref().map(|v| v.iter().sum::<u64>()), Some(1));
+
+    // Ten operations or fewer: no `other`. By source: never an `other`, whatever the operations.
+    let q = field(Field::Operation, "op01,op02");
+    let h = by(&q, HistogramGroup::Operation);
+    assert_eq!(h.series.len(), 2);
+    assert_eq!(h.other, None);
+    let h = by(&EventQuery::default(), HistogramGroup::Source);
+    assert_eq!(h.group, HistogramGroup::Source);
+    assert_eq!(h.other, None);
+    assert_eq!(
+        h.series.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>(),
+        ["ual", "signin_interactive"]
+    );
+    // `histogram` is the by-source histogram.
+    assert_eq!(
+        events::histogram(case.conn(), &EventQuery::default(), 2)
+            .unwrap()
+            .series,
+        h.series
+    );
+    // No matching event: no series and no `other`, in either grouping.
+    let none = field(Field::Operation, "no_such_operation");
+    let h = by(&none, HistogramGroup::Operation);
+    assert_eq!((h.series.len(), h.other), (0, None));
 }
 
 #[test]

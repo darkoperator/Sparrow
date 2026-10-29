@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use sparrow_core::case::browse::Sort;
 use sparrow_core::case::events::{
     self, AiFilter, Entity, EventDetail, EventQuery, EventsPage, EventsSummary, Field, FieldValues,
-    FlagFilter, Histogram,
+    FlagFilter, Histogram, HistogramGroup,
 };
 use std::path::Path;
 
@@ -164,12 +164,13 @@ pub fn events_summary(
     })
 }
 
-/// The histogram of the query in at most `max_buckets` buckets: 0 is refused, and more than [`MAX_BUCKETS`] is
-/// clamped to it (core also never returns more than its own hard cap, whatever the range).
+/// The histogram of the query in at most `max_buckets` buckets, stacked by `group`: 0 is refused, and more than
+/// [`MAX_BUCKETS`] is clamped to it (core also never returns more than its own hard cap, whatever the range).
 pub fn events_histogram(
     state: &AppState,
     query: &EventQueryArgs,
     max_buckets: usize,
+    group: HistogramGroup,
     query_id: Option<&str>,
 ) -> CmdResult<Histogram> {
     if max_buckets == 0 {
@@ -181,7 +182,12 @@ pub fn events_histogram(
     let max_buckets = max_buckets.min(MAX_BUCKETS);
     let q = query.to_query()?;
     read(state, &q, query_id, |open| {
-        Ok(events::histogram(open.case.conn(), &q, max_buckets)?)
+        Ok(events::histogram_by(
+            open.case.conn(),
+            &q,
+            max_buckets,
+            group,
+        )?)
     })
 }
 
@@ -305,9 +311,10 @@ pub mod commands {
         state: State<'_, AppState>,
         query: EventQueryArgs,
         max_buckets: usize,
+        group: HistogramGroup,
         query_id: Option<String>,
     ) -> CmdResult<Histogram> {
-        super::events_histogram(&state, &query, max_buckets, query_id.as_deref())
+        super::events_histogram(&state, &query, max_buckets, group, query_id.as_deref())
     }
 
     #[tauri::command(async)]

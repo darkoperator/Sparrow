@@ -1,9 +1,10 @@
-// The events-over-time chart: plain SVG, one stacked bar per bucket, one colour per source. Drag across bars (or
-// click one) to set From/To to those buckets; double-click or "Reset range" clears it. A legend entry hides a source.
+// The events-over-time chart: plain SVG, one stacked bar per bucket, coloured by source or by operation (the ten most
+// frequent operations, the rest stacked as "Other"). Drag across bars (or click one) to set From/To to those buckets;
+// double-click or "Reset range" clears it. A legend entry hides its series.
 // Under the bars a lane marks the open findings; a marker opens the finding in Review. All text drawn comes from
 // `displaySafe`; nothing from the data is ever a class, a style or markup.
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { FindingMark, Histogram as HistogramData } from "../api";
+import type { FindingMark, Histogram as HistogramData, HistogramGroup } from "../api";
 import { displaySafe } from "../text";
 
 /** Known sources in grid order; a source gets the colour of its place, so it keeps it when others are hidden. */
@@ -16,6 +17,12 @@ export function sourceColour(source: string): string {
   // Unknown sources share a neutral grey; known ones are spread round the hue wheel.
   return at < 0 ? "hsl(0 0% 55%)" : `hsl(${Math.round((at * 360) / SOURCE_ORDER.length + 210) % 360} 55% 52%)`;
 }
+
+/** Operation colours by rank (most frequent first), spread so that neighbours in the legend differ most. */
+const OPERATION_HUES = [210, 30, 140, 330, 50, 260, 180, 0, 90, 290];
+export const operationColour = (rank: number) => `hsl(${OPERATION_HUES[rank % OPERATION_HUES.length]} 60% 55%)`;
+/** "Other" is the unknown-source grey: it is never one operation. */
+export const OTHER_COLOUR = "hsl(0 0% 55%)";
 
 const SEVERITY: Record<string, { glyph: string; colour: string }> = {
   critical: { glyph: "◆", colour: "var(--mal)" },
@@ -36,6 +43,7 @@ const MAX_BAR = 24;
 const GAP = 1;
 const HIT_MIN = 20;
 const STORAGE_KEY = "sparrow.events.histogram.collapsed";
+const GROUP_KEY = "sparrow.events.histogram.group";
 
 /** `2026-09-10T01:55:00Z` for a time in ms (whole seconds). */
 export const isoZ = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -74,8 +82,61 @@ function writeCollapsed(v: boolean) {
   }
 }
 
+/** The remembered colouring (this computer only); Operation unless Source was chosen. */
+export function readGroup(): HistogramGroup {
+  try {
+    return localStorage.getItem(GROUP_KEY) === "source" ? "source" : "operation";
+  } catch {
+    return "operation";
+  }
+}
+function writeGroup(g: HistogramGroup) {
+  try {
+    localStorage.setItem(GROUP_KEY, g);
+  } catch {
+    /* storage unavailable: the choice lasts until the app closes */
+  }
+}
+
+/** The chart's colouring, remembered across runs. */
+export function useHistogramGroup(): [HistogramGroup, (g: HistogramGroup) => void] {
+  const [group, setGroup] = useState<HistogramGroup>(readGroup);
+  const choose = useCallback((g: HistogramGroup) => {
+    writeGroup(g);
+    setGroup(g);
+  }, []);
+  return [group, choose];
+}
+
+/** One stacked series: `key` is unique across groupings (an operation named "Other" is not the Other series). */
+interface Series {
+  key: string;
+  label: string;
+  other: boolean;
+  colour: string;
+  counts: number[];
+}
+
+function seriesOf(data: HistogramData | null): Series[] {
+  if (!data) return [];
+  if (data.group === "source") {
+    return data.series.map(([name, counts]) => ({ key: `source:${name}`, label: name, other: false, colour: sourceColour(name), counts }));
+  }
+  const named = data.series.map(([name, counts], rank) => ({
+    key: `operation:${name}`,
+    label: name,
+    other: false,
+    colour: operationColour(rank),
+    counts,
+  }));
+  return data.other ? [...named, { key: "other", label: "Other", other: true, colour: OTHER_COLOUR, counts: data.other }] : named;
+}
+
 interface Props {
   data: HistogramData | null;
+  /** What the bars are coloured by, and a change of it (the parent refetches). */
+  group: HistogramGroup;
+  onGroup: (g: HistogramGroup) => void;
   /** A From or To is applied (shows "Reset range"). */
   hasRange: boolean;
   onRange: (from: string, to: string) => void;
@@ -84,7 +145,7 @@ interface Props {
   onFinding: (findingId: string) => void;
 }
 
-export default function Histogram({ data, hasRange, onRange, onReset, onFinding }: Props) {
+export default function Histogram({ data, group, onGroup, hasRange, onRange, onReset, onFinding }: Props) {
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
   const [drag, setDragState] = useState<{ a: number; b: number } | null>(null);
@@ -112,12 +173,14 @@ export default function Histogram({ data, hasRange, onRange, onReset, onFinding 
     return () => ro.disconnect();
   }, [collapsed]);
 
-  const series = data?.series ?? [];
-  const n = series[0]?.[1].length ?? 0;
+  // The data is in another colouring than the one chosen: a refetch is on its way.
+  const pending = data !== null && data.group !== group;
+  const series = seriesOf(data);
+  const n = series[0]?.counts.length ?? 0;
   const t0 = data ? Date.parse(data.start) : 0;
   const bucketMs = (data?.bucket_seconds ?? 60) * 1000;
-  const visible = series.filter(([s]) => !hidden.has(s));
-  const totals = Array.from({ length: n }, (_, i) => visible.reduce((a, [, counts]) => a + counts[i], 0));
+  const visible = series.filter((s) => !hidden.has(s.key));
+  const totals = Array.from({ length: n }, (_, i) => visible.reduce((a, s) => a + s.counts[i], 0));
   const yMax = niceMax(Math.max(0, ...totals));
   const plotW = Math.max(40, w - M.left - M.right);
   const band = n > 0 ? plotW / n : plotW;
@@ -156,11 +219,11 @@ export default function Histogram({ data, hasRange, onRange, onReset, onFinding 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dragging, band, n, t0, bucketMs, onRange]);
 
-  const toggle = (source: string) =>
+  const toggle = (key: string) =>
     setHidden((h) => {
       const next = new Set(h);
-      if (next.has(source)) next.delete(source);
-      else next.add(source);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
 
@@ -184,6 +247,25 @@ export default function Histogram({ data, hasRange, onRange, onReset, onFinding 
           {collapsed ? "▸ Show timeline" : "▾ Hide timeline"}
         </button>
         {!collapsed && data && n > 0 && <span className="meta">{`${width(data.bucket_seconds)} per bar`}</span>}
+        {!collapsed && (
+          <div className="ev-toggle ev-histogram-group" role="group" aria-label="Colour bars by">
+            {(["operation", "source"] as const).map((g) => (
+              <button
+                key={g}
+                type="button"
+                aria-pressed={group === g}
+                aria-label={`Colour by ${g}`}
+                onClick={() => {
+                  if (g === group) return;
+                  setHidden(new Set());
+                  onGroup(g);
+                }}
+              >
+                {g === "operation" ? "Operation" : "Source"}
+              </button>
+            ))}
+          </div>
+        )}
         {hasRange && (
           <button type="button" onClick={onReset}>
             Reset range
@@ -194,10 +276,17 @@ export default function Histogram({ data, hasRange, onRange, onReset, onFinding 
         <div ref={measure}>
           {data === null ? (
             <p className="meta">Loading…</p>
-          ) : n === 0 ? (
+          ) : n === 0 && !pending ? (
             <p className="meta">No events in this range.</p>
           ) : (
-            <>
+            // While the chart of a new colouring is on its way, the old one keeps the space but is not shown.
+            <div className="ev-histogram-body" aria-busy={pending}>
+              {pending && (
+                <p className="meta ev-histogram-pending" role="status">
+                  Loading…
+                </p>
+              )}
+              <div style={pending ? { visibility: "hidden" } : undefined} aria-hidden={pending || undefined}>
               <svg
                 ref={svg}
                 width={w}
@@ -221,11 +310,11 @@ export default function Histogram({ data, hasRange, onRange, onReset, onFinding 
                   return (
                     <g key={i} data-bucket={i}>
                       <title>{`${at} · ${total} event${total === 1 ? "" : "s"}`}</title>
-                      {visible.map(([source, counts]) => {
-                        const h = (counts[i] / yMax) * PLOT_H;
-                        if (counts[i] === 0) return null;
+                      {visible.map((s) => {
+                        const h = (s.counts[i] / yMax) * PLOT_H;
+                        if (s.counts[i] === 0) return null;
                         y -= h;
-                        return <rect key={source} x={x} y={y} width={barW} height={h} fill={sourceColour(source)} />;
+                        return <rect key={s.key} x={x} y={y} width={barW} height={h} fill={s.colour} />;
                       })}
                       {i % labelEvery === 0 && (
                         <text x={x + barW / 2} y={base + 12} textAnchor="middle" className="ev-axis">
@@ -291,15 +380,32 @@ export default function Histogram({ data, hasRange, onRange, onReset, onFinding 
                   })}
                 </g>
               </svg>
-              <div className="ev-legend" role="group" aria-label="Sources in the chart">
-                {series.map(([source, counts]) => (
-                  <button key={source} type="button" aria-pressed={!hidden.has(source)} onClick={() => toggle(source)}>
-                    <span className="ev-swatch" style={{ background: sourceColour(source) }} aria-hidden="true" />
-                    {displaySafe(source)} {counts.reduce((a, b) => a + b, 0)}
-                  </button>
-                ))}
+              <div
+                className="ev-legend"
+                role="group"
+                aria-label={data.group === "source" ? "Sources in the chart" : "Operations in the chart"}
+              >
+                {series.map((s) => {
+                  const label = s.other ? "Other operations" : displaySafe(s.label);
+                  return (
+                    <button
+                      key={s.key}
+                      type="button"
+                      aria-pressed={!hidden.has(s.key)}
+                      title={label}
+                      onClick={() => toggle(s.key)}
+                    >
+                      <span className="ev-swatch" style={{ background: s.colour }} aria-hidden="true" />
+                      <span className={s.other ? "ev-legend-name ev-legend-other" : "ev-legend-name"}>
+                        {s.other ? "Other" : displaySafe(s.label)}
+                      </span>{" "}
+                      {s.counts.reduce((a, b) => a + b, 0)}
+                    </button>
+                  );
+                })}
               </div>
-            </>
+              </div>
+            </div>
           )}
         </div>
       )}

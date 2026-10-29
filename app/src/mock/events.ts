@@ -62,6 +62,8 @@ const EACH_MAX = 200;
 /** What the app layer allows a histogram call to ask for, and what core never exceeds whatever the range. */
 const APP_MAX_BUCKETS = 500;
 const CORE_MAX_BUCKETS = 2_000;
+/** Core's `HISTOGRAM_TOP_OPERATIONS`. */
+const TOP_OPERATIONS = 10;
 /** Core writes times with six fractional digits (`ts_text`). */
 const micros = (ms: number) => new Date(ms).toISOString().replace(/\.(\d{3})Z$/, ".$1000Z");
 const SUGGEST_MAX = 200;
@@ -279,13 +281,16 @@ export function eventHandlers(deps: EventDeps): Record<string, (a: Args) => unkn
     const q = query(a);
     const asked = typeof a?.maxBuckets === "number" ? a.maxBuckets : 0;
     if (asked < 1) fail("invalid", "a histogram needs at least 1 bucket");
+    // Tauri refuses a missing or unknown grouping before the command runs.
+    const group = a?.group;
+    if (group !== "source" && group !== "operation") fail("invalid", `unknown histogram grouping ${JSON.stringify(group)}`);
     const max = Math.min(asked, APP_MAX_BUCKETS, CORE_MAX_BUCKETS);
     return run(a, q, () => {
       const timed = match(q).rows.filter((r) => r.event_time !== null);
       // No timed event: core's rule, not the clock: the query's `from`, else its `to`, else the epoch.
       if (timed.length === 0) {
         const at = q.from ?? q.to;
-        return { start: at === undefined ? micros(0) : micros(parseTime(at)), bucket_seconds: 60, series: [], findings: [] };
+        return { start: at === undefined ? micros(0) : micros(parseTime(at)), bucket_seconds: 60, group, series: [], other: null, findings: [] };
       }
       const times = timed.map((r) => Date.parse(r.event_time!));
       const lo = q.from !== undefined ? parseTime(q.from) : Math.min(...times);
@@ -304,16 +309,36 @@ export function eventHandlers(deps: EventDeps): Record<string, (a: Args) => unkn
       }
       const { start, n } = layout(size);
       const counts = new Map<string, number[]>();
+      const unnamed = new Array<number>(n).fill(0);
       for (const r of timed) {
         const i = Math.floor((Date.parse(r.event_time!) - start) / (size * 1000));
         if (i < 0 || i >= n) continue;
-        if (!counts.has(r.source)) counts.set(r.source, new Array<number>(n).fill(0));
-        counts.get(r.source)![i]++;
+        const name = group === "source" ? r.source : r.operation;
+        if (name === null) {
+          unnamed[i]++;
+          continue;
+        }
+        if (!counts.has(name)) counts.set(name, new Array<number>(n).fill(0));
+        counts.get(name)![i]++;
+      }
+      let series: [string, number[]][];
+      let other: number[] | null = null;
+      if (group === "source") {
+        series = SOURCES.filter((s) => counts.has(s)).map((s) => [s, counts.get(s)!]);
+      } else {
+        // Core's cut: the ten largest totals, ties by name; the rest and the unnamed are `other`.
+        const sum = (c: number[]) => c.reduce((x, y) => x + y, 0);
+        const ranked = [...counts].sort(([an, ac], [bn, bc]) => sum(bc) - sum(ac) || (an < bn ? -1 : an > bn ? 1 : 0));
+        series = ranked.slice(0, TOP_OPERATIONS);
+        for (const [, c] of ranked.slice(TOP_OPERATIONS)) c.forEach((v, i) => (unnamed[i] += v));
+        if (unnamed.some((v) => v > 0)) other = unnamed;
       }
       return {
         start: micros(start),
         bucket_seconds: size,
-        series: SOURCES.filter((s) => counts.has(s)).map((s) => [s, counts.get(s)!] as [string, number[]]),
+        group,
+        series,
+        other,
         findings: fx.eventsHistogram().findings.filter((f) => Date.parse(f.last_seen) >= lo && Date.parse(f.first_seen) <= hi),
       };
     });

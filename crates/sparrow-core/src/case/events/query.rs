@@ -5,7 +5,7 @@ use super::filter::{self, SEARCH_TABLES, Where};
 use super::marksql;
 use super::{
     EventDetail, EventQuery, EventRow, EventsPage, EventsSummary, Field, FieldValues, FindingMark,
-    Histogram, SOURCES, TagRef, ValueCount,
+    Histogram, HistogramGroup, SOURCES, TagRef, ValueCount,
 };
 use crate::case::browse::{COUNT_CAP, MAX_PAGE, Sort};
 use crate::case::marks::{self, FlagLevel};
@@ -317,7 +317,15 @@ const BUCKET_SECONDS: [i64; 8] = [60, 300, 900, 3_600, 10_800, 21_600, 43_200, 8
 /// The most buckets a histogram ever has, whatever `max_buckets` asks for and however wide the range is.
 pub const MAX_HISTOGRAM_BUCKETS: usize = 2_000;
 
-/// Event counts per time bucket, stacked by source, over the range `q` selects (its own `from` and `to`, else the
+/// How many operations a by-operation histogram names; the rest stack as its `other` series.
+pub const HISTOGRAM_TOP_OPERATIONS: usize = 10;
+
+/// [`histogram_by`] stacked by source.
+pub fn histogram(conn: &Connection, q: &EventQuery, max_buckets: usize) -> Result<Histogram> {
+    histogram_by(conn, q, max_buckets, HistogramGroup::Source)
+}
+
+/// Event counts per time bucket, stacked by `group`, over the range `q` selects (its own `from` and `to`, else the
 /// first and last matching event). The bucket is the smallest of 1m ... 1d that gives at most `max_buckets` buckets
 /// (1d when even that gives more). Never more than [`MAX_HISTOGRAM_BUCKETS`] buckets: when a day is still too small
 /// for that, the bucket is widened to the fewest whole days that fit. A range with no event gives no series. An event exactly at the range end is
@@ -327,7 +335,16 @@ pub const MAX_HISTOGRAM_BUCKETS: usize = 2_000;
 /// the bucket size (so `start` can precede the first event); a `from` is used as is. With a `to` after the last
 /// event, the range runs to `to`, so the tail buckets are empty. The findings lane holds findings with evidence among
 /// the matching events, minus those closed as `false_positive` or `benign`.
-pub fn histogram(conn: &Connection, q: &EventQuery, max_buckets: usize) -> Result<Histogram> {
+///
+/// By operation, one grouped pass counts every (operation, bucket); the top [`HISTOGRAM_TOP_OPERATIONS`] are ranked
+/// on their totals in range, so the cut is over exactly the events drawn. Operations compare as stored (no case
+/// folding); an event with no operation always counts as `other`.
+pub fn histogram_by(
+    conn: &Connection,
+    q: &EventQuery,
+    max_buckets: usize,
+    group: HistogramGroup,
+) -> Result<Histogram> {
     if max_buckets == 0 {
         return Err(Error::Invalid("a histogram needs at least 1 bucket".into()));
     }
@@ -351,7 +368,9 @@ pub fn histogram(conn: &Connection, q: &EventQuery, max_buckets: usize) -> Resul
         return Ok(Histogram {
             start: q.from.or(q.to).unwrap_or_default(),
             bucket_seconds: BUCKET_SECONDS[0],
+            group,
             series: Vec::new(),
+            other: None,
             findings: Vec::new(),
         });
     };
@@ -387,25 +406,57 @@ pub fn histogram(conn: &Connection, q: &EventQuery, max_buckets: usize) -> Resul
 
     let mut params = vec![Value::BigInt(start_us), Value::BigInt(size * 1_000_000)];
     params.extend(w.params.iter().cloned());
+    // The grouping column is one of two fixed names, never caller text.
+    let column = match group {
+        HistogramGroup::Source => "e.source",
+        HistogramGroup::Operation => "e.operation",
+    };
     let mut stmt = conn.prepare(&format!(
-        "SELECT e.source, CAST((epoch_us(e.event_time) - ?) // ? AS BIGINT), count(*) FROM events e{timed} \
+        "SELECT {column}, CAST((epoch_us(e.event_time) - ?) // ? AS BIGINT), count(*) FROM events e{timed} \
          GROUP BY 1, 2"
     ))?;
-    let mut per_source: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    let mut per_name: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    let mut unnamed = vec![0; buckets];
     let mut result = stmt.query(params_from_iter(params.iter()))?;
     while let Some(r) = result.next()? {
-        let (source, b, n): (String, i64, i64) = (r.get(0)?, r.get(1)?, r.get(2)?);
-        if (0..buckets as i64).contains(&b) {
-            per_source.entry(source).or_insert_with(|| vec![0; buckets])[b as usize] += n as u64;
+        let (name, b, n): (Option<String>, i64, i64) = (r.get(0)?, r.get(1)?, r.get(2)?);
+        if !(0..buckets as i64).contains(&b) {
+            continue;
+        }
+        match name {
+            Some(name) => {
+                per_name.entry(name).or_insert_with(|| vec![0; buckets])[b as usize] += n as u64
+            }
+            None => unnamed[b as usize] += n as u64,
         }
     }
     let mut series = Vec::new();
-    for s in SOURCES {
-        if let Some(v) = per_source.remove(*s) {
-            series.push((s.to_string(), v));
+    let mut other = None;
+    match group {
+        HistogramGroup::Source => {
+            for s in SOURCES {
+                if let Some(v) = per_name.remove(*s) {
+                    series.push((s.to_string(), v));
+                }
+            }
+            series.extend(per_name);
+        }
+        HistogramGroup::Operation => {
+            let mut ranked: Vec<(String, Vec<u64>)> = per_name.into_iter().collect();
+            // Most events first; the map's name order breaks ties (the sort is stable).
+            ranked.sort_by_key(|(_, v)| std::cmp::Reverse(v.iter().sum::<u64>()));
+            let rest = ranked.split_off(ranked.len().min(HISTOGRAM_TOP_OPERATIONS));
+            series = ranked;
+            for (_, v) in rest {
+                for (o, n) in unnamed.iter_mut().zip(v) {
+                    *o += n;
+                }
+            }
+            if unnamed.iter().any(|n| *n > 0) {
+                other = Some(unnamed);
+            }
         }
     }
-    series.extend(per_source);
 
     let mut stmt = conn.prepare(&format!(
         "SELECT f.finding_id, f.severity, epoch_us(coalesce(f.first_seen, m.mn)), epoch_us(coalesce(f.last_seen, m.mx)) \
@@ -433,7 +484,9 @@ pub fn histogram(conn: &Connection, q: &EventQuery, max_buckets: usize) -> Resul
     Ok(Histogram {
         start: at(start_us),
         bucket_seconds: size,
+        group,
         series,
+        other,
         findings,
     })
 }

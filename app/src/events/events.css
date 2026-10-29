@@ -76,10 +76,22 @@
 .ev-finding { cursor: pointer; }
 .ev-finding:focus-visible { outline: 2px solid var(--accent); }
 .ev-finding-glyph { font-size: 13px; }
+.ev-histogram-body { position: relative; }
+.ev-histogram-pending { position: absolute; top: 40px; left: 0; right: 0; margin: 0; text-align: center; }
 .ev-legend { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .ev-legend button { padding: 1px 8px; border: 1px solid var(--line-strong); border-radius: 999px; background: none; color: var(--text-2); font-size: 11px; }
 .ev-legend button[aria-pressed="false"] { opacity: 0.5; text-decoration: line-through; }
-.ev-swatch { display: inline-block; width: 10px; height: 10px; margin-right: 4px; border-radius: 2px; }
+/* A flex button drops the space text between its parts: the gap stands in for it. */
+.ev-legend button { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; }
+.ev-legend .ev-swatch { margin-right: 0; }
+.ev-legend-name { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ev-legend-other { font-style: italic; }
+.ev-histogram-group { flex: none; }
+.ev-histogram-head .ev-histogram-group button { padding: 2px 10px; border: 1px solid var(--line-strong); background: none; color: var(--text-2); font-size: 11px; font-weight: 400; }
+/* Not the head's trailing "Reset range" rule: the toggle's last button stays joined to the first. */
+.ev-histogram-head .ev-histogram-group button:last-child:not(:first-child) { margin-left: -1px; color: var(--text-2); font-weight: 400; }
+.ev-histogram-head .ev-toggle.ev-histogram-group button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.ev-swatch { display: inline-block; flex: none; width: 10px; height: 10px; margin-right: 4px; border-radius: 2px; }
 
 /* Grid card */
 .ev-toolbar { display: flex; gap: 8px; align-items: center; margin: 0 0 8px; }
