@@ -9,6 +9,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use serde::Serialize;
 use sparrow_core::case::audit::ts_text;
 use sparrow_core::case::coverage::{SourceState, coverage_for_range};
+use sparrow_core::case::device_status::DeviceDecision;
 use sparrow_core::case::entity::{self, EntitySummary, FindingRef, PivotOf, PivotPage};
 use std::collections::BTreeMap;
 
@@ -26,6 +27,10 @@ pub struct EntitySummaryView {
     pub roles_matched: Vec<String>,
     pub ip_intel: Option<serde_json::Value>,
     pub device: Option<serde_json::Value>,
+    /// Device tab: the analyst's status of the device, or `None`.
+    pub analyst_status: Option<DeviceDecision>,
+    /// Device tab: Removed or Disabled by the analyst and active later than that.
+    pub active_after_analyst_removal: bool,
 }
 
 impl From<EntitySummary> for EntitySummaryView {
@@ -40,6 +45,8 @@ impl From<EntitySummary> for EntitySummaryView {
             roles_matched: s.roles_matched,
             ip_intel: s.ip_intel,
             device: s.device,
+            analyst_status: s.analyst_status,
+            active_after_analyst_removal: s.active_after_analyst_removal,
         }
     }
 }

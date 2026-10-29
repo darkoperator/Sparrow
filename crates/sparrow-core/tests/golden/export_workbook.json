@@ -1484,7 +1484,12 @@
         "malicious_ips",
         "other_ips",
         "reasons",
-        "note"
+        "note",
+        "analyst_status",
+        "analyst_note",
+        "analyst_by",
+        "analyst_decided_utc",
+        "analyst_warning"
       ],
       [
         "not_in_latest_inventory",
@@ -1509,7 +1514,12 @@
         "203.0.113.6",
         "192.0.2.17 (Documentation ISP 3, DE); 192.0.2.18 (Documentation ISP 3, DE); 203.0.113.5 (Documentation ISP 7, CA)",
         "finding 87fdec19fe5e7a1c (SPW-ID-007) on 203.0.113.6",
-        "treat as active — collect Get-Devices to confirm"
+        "treat as active — collect Get-Devices to confirm",
+        "",
+        "",
+        "",
+        "",
+        ""
       ]
     ]
   },
@@ -1539,7 +1549,12 @@
         "malicious_ips",
         "other_ips",
         "reasons",
-        "note"
+        "note",
+        "analyst_status",
+        "analyst_note",
+        "analyst_by",
+        "analyst_decided_utc",
+        "analyst_warning"
       ]
     ]
   },

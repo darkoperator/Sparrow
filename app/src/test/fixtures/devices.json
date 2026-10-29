@@ -91,7 +91,15 @@
         "record_key": "si-0003"
       },
       "latest_inventory_at": null
-    }
+    },
+    "analyst": {
+      "device_id": "aaaaaaaa-0000-0000-0000-00000000000a",
+      "status": "removed",
+      "note": "Wiped by IT; ticket INC-0042",
+      "decided_by": "analyst:carlos",
+      "decided_at": "2026-03-02T10:00:00.000000Z"
+    },
+    "active_after_analyst_removal": true
   },
   {
     "tenant_key": "t-contoso",
@@ -144,7 +152,15 @@
         "record_key": "si-0005"
       },
       "latest_inventory_at": null
-    }
+    },
+    "analyst": {
+      "device_id": "bbbbbbbb-0000-0000-0000-00000000000b",
+      "status": "confirmed_attacker",
+      "note": null,
+      "decided_by": "analyst:carlos",
+      "decided_at": "2026-03-04T08:00:00.000000Z"
+    },
+    "active_after_analyst_removal": false
   },
   {
     "tenant_key": "t-contoso",
@@ -196,7 +212,9 @@
         "record_key": "si-0006"
       },
       "latest_inventory_at": "2026-03-10T00:00:00.000000Z"
-    }
+    },
+    "analyst": null,
+    "active_after_analyst_removal": false
   },
   {
     "tenant_key": "t-contoso",
@@ -252,6 +270,8 @@
         "record_key": "si-0007"
       },
       "latest_inventory_at": null
-    }
+    },
+    "analyst": null,
+    "active_after_analyst_removal": false
   }
 ]

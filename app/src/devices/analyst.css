@@ -1,0 +1,6 @@
+/* The analyst's status of a device, next to the computed one: a pill (the note on hover), and the warning when a
+   sighting is later than the analyst's removal (bold, a red border and the warning sign, like active_after_removal). */
+.analyst { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.analyst-pill { font-size: 10px; font-weight: 600; cursor: help; }
+.analyst-warn { font-size: 10px; font-weight: 700; box-shadow: inset 0 0 0 1px var(--mal); }
+.analyst-none { color: var(--faint); }

@@ -4,7 +4,7 @@
 
 mod build;
 mod filter;
-mod marksql;
+pub(crate) mod marksql;
 mod query;
 
 pub use crate::case::marks::{FlagLevel, TagRef};

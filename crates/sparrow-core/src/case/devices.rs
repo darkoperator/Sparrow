@@ -5,6 +5,7 @@
 
 use crate::Result;
 use crate::case::audit;
+use crate::case::device_status::{self, DeviceDecision};
 use crate::detect::enrich::at_us;
 use chrono::{DateTime, Utc};
 use duckdb::Connection;
@@ -436,6 +437,11 @@ pub struct SuspectDevice {
     /// Time order.
     pub sightings: Vec<DeviceSighting>,
     pub lifecycle: Lifecycle,
+    /// The analyst's status of the device (`case::device_status`), by its device id, else its object id; shown next to
+    /// `lifecycle.status`, never replacing it.
+    pub analyst: Option<DeviceDecision>,
+    /// The analyst said Removed or Disabled and the device was active later than that (`lifecycle.last_active`).
+    pub active_after_analyst_removal: bool,
 }
 
 /// A row of the `devices` inventory (Invictus `Get-Devices`), keyed by tenant and lower-cased device id.
@@ -737,9 +743,20 @@ pub fn suspect_devices(conn: &Connection, tenant: Option<&str>) -> Result<Vec<Su
             other_ips: others,
             sightings: ss,
             lifecycle: Lifecycle::default(),
+            analyst: None,
+            active_after_analyst_removal: false,
         });
     }
     apply_lifecycle(conn, tenant, &inventory, &mut out)?;
+    let decisions = device_status::all_current(conn)?;
+    for d in &mut out {
+        d.analyst = decisions
+            .get(&d.device_id)
+            .or_else(|| d.object_id.as_ref().and_then(|o| decisions.get(o)))
+            .cloned();
+        let last = d.lifecycle.last_active.as_ref().map(|m| m.at);
+        d.active_after_analyst_removal = d.analyst.as_ref().is_some_and(|a| a.active_after(last));
+    }
     sort_devices(&mut out);
     Ok(out)
 }

@@ -51,6 +51,7 @@ fn fresh_case_has_provenance_tables() {
             "collector_flags",
             "collector_runs",
             "detection_runs",
+            "device_analyst_status",
             "devices",
             "directory_audits",
             "email_artifacts",
@@ -571,9 +572,9 @@ fn upgrading_a_v20_case_keeps_decisions_and_adds_imported_proposals() {
         .unwrap();
     }
     let (from, to) = Case::upgrade(&path).unwrap();
-    assert_eq!((from, to), (20, 27));
+    assert_eq!((from, to), (20, 28));
     let case = Case::open_read_only(&path).unwrap();
-    assert_eq!(case.schema_version().unwrap(), 27);
+    assert_eq!(case.schema_version().unwrap(), 28);
     let kept: (String, String, String, String) = case
         .conn()
         .query_row(
@@ -643,7 +644,7 @@ fn upgrading_a_v21_case_keeps_directory_audits_and_adds_completeness() {
         .unwrap();
     }
     let (from, to) = Case::upgrade(&path).unwrap();
-    assert_eq!((from, to), (21, 27));
+    assert_eq!((from, to), (21, 28));
     let case = Case::open_read_only(&path).unwrap();
     let kept: (String, String, String, String, Option<String>) = case
         .conn()
@@ -714,7 +715,7 @@ fn upgrading_a_v22_case_keeps_account_rollup_and_adds_the_signin_window() {
         .unwrap();
     }
     let (from, to) = Case::upgrade(&path).unwrap();
-    assert_eq!((from, to), (22, 27));
+    assert_eq!((from, to), (22, 28));
     let case = Case::open_read_only(&path).unwrap();
     let kept: (String, String, i64, String, String, i64, Option<String>, Option<String>) = case
         .conn()
@@ -807,7 +808,7 @@ fn upgrading_a_v23_case_keeps_message_trace_and_adds_an_empty_events_table() {
         .unwrap();
     }
     let (from, to) = Case::upgrade(&path).unwrap();
-    assert_eq!((from, to), (23, 27));
+    assert_eq!((from, to), (23, 28));
     let case = Case::open_read_only(&path).unwrap();
     let kept: (String, String, String, String, String) = case
         .conn()
@@ -861,7 +862,7 @@ fn describe_lists_views_with_their_kind() {
 #[test]
 fn state_table_specs_match_the_schema() {
     let case = Case::in_memory().unwrap();
-    assert_eq!(case.schema_version().unwrap(), 27);
+    assert_eq!(case.schema_version().unwrap(), 28);
     for spec in ALL {
         for common in [
             "record_key",
@@ -1151,4 +1152,98 @@ fn admin_audit_key_follows_the_documented_text() {
     let key = sparrow_core::parsers::admin_audit::admin_audit_key(&rec, None).unwrap();
     let text = "admin_audit\n2026-09-04T11:05:09Z\nnew-inboxrule\nsync\nadmin@contoso.example";
     assert_eq!(key, hex::encode(Sha256::digest(text.as_bytes())));
+}
+
+/// A case file at schema v27 (before migration 28), built migration by migration.
+fn v27_conn(path: &std::path::Path) -> duckdb::Connection {
+    let conn = duckdb::Connection::open(path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name VARCHAR NOT NULL,
+         applied_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp);",
+    )
+    .unwrap();
+    for m in MIGRATIONS.iter().filter(|m| m.version <= 27) {
+        conn.execute_batch(m.sql).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
+            duckdb::params![m.version as i64, m.name],
+        )
+        .unwrap();
+    }
+    conn
+}
+
+#[test]
+fn upgrading_a_v27_case_keeps_value_flags_and_adds_the_device_analyst_status_table() {
+    use sparrow_core::case::actor::Actor;
+    use sparrow_core::case::device_status::{AnalystStatus, current, set_status};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v27.duckdb");
+    {
+        let conn = v27_conn(&path);
+        let n: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'device_analyst_status'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0, "the v27 case must not have the table yet");
+        conn.execute_batch(
+            "INSERT INTO value_flags (flag_id, kind, value, level, decided_by, decided_at, review_state)
+             VALUES ('f1', 'device', 'd1', 'malicious', 'analyst:carlos', TIMESTAMPTZ '2026-10-01 10:00:00+00', 'accepted');",
+        )
+        .unwrap();
+    }
+    let (from, to) = Case::upgrade(&path).unwrap();
+    assert_eq!((from, to), (27, 28));
+    {
+        let case = Case::open_read_only(&path).unwrap();
+        let kept: (String, String) = case
+            .conn()
+            .query_row(
+                "SELECT value, CAST(level AS VARCHAR) FROM value_flags",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kept, ("d1".into(), "malicious".into()));
+        let rows: i64 = case
+            .conn()
+            .query_row("SELECT count(*) FROM device_analyst_status", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(rows, 0);
+        let comment: Option<String> = case
+            .conn()
+            .query_row(
+                "SELECT comment FROM duckdb_tables() WHERE table_name = 'device_analyst_status'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(comment.unwrap().contains("never replacing it"));
+        assert!(current(case.conn(), "d1").unwrap().is_none());
+    }
+    // The upgraded case takes a decision, audited on an intact chain.
+    let case = Case::create_or_open(&path).unwrap();
+    let analyst = Actor::analyst("carlos").unwrap();
+    let e = set_status(
+        case.conn(),
+        &analyst,
+        "D1",
+        Some(AnalystStatus::Removed),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        (e.object_type.as_str(), e.object_id.as_str()),
+        ("device_status", "d1")
+    );
+    assert_eq!(
+        current(case.conn(), "d1").unwrap().unwrap().status,
+        AnalystStatus::Removed
+    );
+    assert!(sparrow_core::case::audit::verify(case.conn()).unwrap().ok);
 }

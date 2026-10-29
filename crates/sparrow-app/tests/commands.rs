@@ -1251,6 +1251,57 @@ fn devices_list_matches_core() {
 }
 
 #[test]
+fn devices_set_analyst_status_shows_in_the_list_and_clears() {
+    use sparrow_app::cmd::devices::devices_set_analyst_status;
+    let tmp = tempfile::tempdir().unwrap();
+    let state = open_as_analyst(tmp.path());
+    let id = devices_list(&state, None).unwrap()[0].device_id.clone();
+    let before = audit_rows(&state);
+    let e = devices_set_analyst_status(&state, &id.to_uppercase(), Some("disabled"), Some("by IT"))
+        .unwrap();
+    assert_eq!(
+        (
+            e.action.as_str(),
+            e.object_type.as_str(),
+            e.object_id.as_str(),
+            e.actor.as_str()
+        ),
+        (
+            "set_device_status",
+            "device_status",
+            id.as_str(),
+            "analyst:carlos"
+        )
+    );
+    assert_eq!(audit_rows(&state), before + 1);
+    let list = devices_list(&state, None).unwrap();
+    let d = list.iter().find(|d| d.device_id == id).unwrap();
+    let a = d.analyst.as_ref().unwrap();
+    assert_eq!(
+        (a.status.as_str(), a.note.as_deref()),
+        ("disabled", Some("by IT"))
+    );
+    // The computed status is unchanged by it, and the serde shape is what the app reads.
+    let v = serde_json::to_value(d).unwrap();
+    assert_eq!(v["analyst"]["status"], "disabled");
+    assert_eq!(v["active_after_analyst_removal"], false);
+    assert!(v["lifecycle"]["status"].is_string());
+    // An unknown status is refused before anything is written; a clear removes it.
+    let bad = devices_set_analyst_status(&state, &id, Some("gone"), None).unwrap_err();
+    assert_eq!(bad.kind, "invalid", "{bad:?}");
+    assert_eq!(audit_rows(&state), before + 1);
+    devices_set_analyst_status(&state, &id, None, None).unwrap();
+    assert!(
+        devices_list(&state, None)
+            .unwrap()
+            .iter()
+            .all(|d| d.analyst.is_none())
+    );
+    let again = devices_set_analyst_status(&state, &id, None, None).unwrap_err();
+    assert_eq!(again.kind, "decision", "{again:?}");
+}
+
+#[test]
 fn devices_need_an_open_case() {
     let e = devices_list(&AppState::default(), None).unwrap_err();
     assert_eq!(e.kind, "no_case");
@@ -4231,7 +4282,7 @@ fn every_write_command_refuses_read_only_and_writes_no_audit() {
     let tables = "SELECT (SELECT count(*) FROM audit_trail) || '/' || (SELECT count(*) FROM event_flags) || '/' \
                   || (SELECT count(*) FROM event_tags) || '/' || (SELECT count(*) FROM value_flags) || '/' \
                   || (SELECT count(*) FROM annotations) || '/' || (SELECT count(*) FROM timeline_entries) \
-                  || '/' || (SELECT count(*) FROM tags)";
+                  || '/' || (SELECT count(*) FROM tags) || '/' || (SELECT count(*) FROM device_analyst_status)";
     let snapshot = text_of(&state, tables);
     let add = |mode, rows: Option<Vec<RowRef>>, query: Option<EventQueryArgs>| AddEventsArgs {
         rows,
@@ -4316,6 +4367,18 @@ fn every_write_command_refuses_read_only_and_writes_no_audit() {
                 timeline_add_events(&state, add(AddMode::Group, None, Some(q.clone()))).map(|_| ())
             }),
         ),
+        (
+            "devices_set_analyst_status",
+            Box::new(|| {
+                sparrow_app::cmd::devices::devices_set_analyst_status(
+                    &state,
+                    "d-1",
+                    Some("removed"),
+                    Some("a note"),
+                )
+                .map(|_| ())
+            }),
+        ),
     ];
     let n = writes.len();
     let mut ran = 0;
@@ -4361,6 +4424,8 @@ fn marking_needs_an_analyst_name() {
             },
         )
         .unwrap_err(),
+        sparrow_app::cmd::devices::devices_set_analyst_status(&state, "d-1", Some("benign"), None)
+            .unwrap_err(),
     ] {
         assert_eq!(e.kind, "invalid", "{e:?}");
     }

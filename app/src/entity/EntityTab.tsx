@@ -9,6 +9,7 @@ import {
   entitySummary,
   marksFlagValue,
   isCmdError,
+  type AnalystDeviceStatus,
   type EntityKind,
   type EventQuery,
   type EntityCoverage,
@@ -25,6 +26,8 @@ import { useNav, useRefreshBadges, useWriteBlocked } from "../shell/nav";
 import type { EntityRef } from "../shell/tabs";
 import { displaySafe } from "../text";
 import AddToTimelineDialog from "../marks/AddToTimelineDialog";
+import CellMenu, { type MenuItem } from "../grid/CellMenu";
+import { AnalystPill, AnalystStatusDialog, analystStatusItem, clearAnalystStatus } from "../devices/analystStatus";
 import CoverageStrip from "./CoverageStrip";
 import PivotTable, { PIVOTS } from "./PivotTable";
 import Tiles from "./Tiles";
@@ -67,6 +70,9 @@ export default function EntityTab({ entity }: EntityTabProps) {
   const token = useRef(0);
   // Bumped after a pivot flag: the tiles, pivots and findings are read again, and the grid with its query.
   const [reloadN, setReloadN] = useState(0);
+  // Device tab: the header's menu (right-click, the menu key, Shift+F10 or the button) and the status dialog it opens.
+  const [headMenu, setHeadMenu] = useState<{ x: number; y: number; items: MenuItem[]; opener: HTMLElement } | null>(null);
+  const [settingStatus, setSettingStatus] = useState<AnalystDeviceStatus | null>(null);
 
   // A new range: the old tiles, pivots and findings no longer describe it, so they show as loading until each answers.
   const onRangeChange = useCallback((from?: string, to?: string) => {
@@ -130,6 +136,22 @@ export default function EntityTab({ entity }: EntityTabProps) {
     },
   };
 
+  const statusDone = (message: string) => {
+    setSettingStatus(null);
+    setNotice(message);
+    setReloadN((n) => n + 1);
+  };
+  const headItems = (): MenuItem[] => [
+    analystStatusItem(
+      data.summary?.analyst_status ?? null,
+      writeBlocked,
+      (s) => setSettingStatus(s),
+      () => clearAnalystStatus(value).then(statusDone, (e: unknown) => setData((d) => ({ ...d, error: errorText(e) }))),
+    ),
+  ];
+  const openHeadMenu = (x: number, y: number, opener: HTMLElement) => setHeadMenu({ x, y, items: headItems(), opener });
+  const isDevice = kind === "device";
+
   const noQuery = current.query === null || current.count === 0;
   const groupReason = writeBlocked !== null
     ? writeBlocked
@@ -142,14 +164,54 @@ export default function EntityTab({ entity }: EntityTabProps) {
 
   return (
     <section className="entity-tab" aria-label={`${KIND_NAME[kind]} ${displaySafe(value)}`}>
-      <header className="entity-head">
+      <header
+        className="entity-head"
+        onContextMenu={
+          isDevice
+            ? (e) => {
+                e.preventDefault();
+                openHeadMenu(e.clientX, e.clientY, e.target instanceof HTMLElement ? e.target : e.currentTarget);
+              }
+            : undefined
+        }
+        onKeyDown={
+          isDevice
+            ? (e) => {
+                if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
+                  e.preventDefault();
+                  const b = (e.target as HTMLElement).getBoundingClientRect();
+                  openHeadMenu(b.left, b.bottom, e.target as HTMLElement);
+                }
+              }
+            : undefined
+        }
+      >
         <span className={`entity-icon entity-icon-${kind}`} aria-hidden="true">
           <Icon name={ICON[kind]} size={20} />
         </span>
         <h3>
           <span className="entity-kind">{KIND_NAME[kind]}</span> <span className={`entity-value entity-value-${kind}`} title={displaySafe(value)}>{displaySafe(value)}</span>
         </h3>
+        {isDevice && summary && (
+          <div className="entity-analyst" aria-label="Analyst status">
+            <span className="entity-kind">Analyst</span>
+            <AnalystPill decision={summary.analyst_status} activeAfter={summary.active_after_analyst_removal} />
+          </div>
+        )}
         <div className="entity-actions">
+          {isDevice && (
+            <button
+              type="button"
+              className="btn btn-ghost"
+              aria-haspopup="menu"
+              onClick={(e) => {
+                const b = e.currentTarget.getBoundingClientRect();
+                openHeadMenu(b.left, b.bottom, e.currentTarget);
+              }}
+            >
+              Analyst status ▾
+            </button>
+          )}
           <button type="button" className="btn btn-ghost" onClick={() => nav?.showInEvents(entity)} disabled={!nav}>
             Show in Events
           </button>
@@ -209,6 +271,26 @@ export default function EntityTab({ entity }: EntityTabProps) {
         </section>
       </div>
       <EventsView entity={entity} reloadToken={reloadN} onRangeChange={onRangeChange} onQueryChange={onQueryChange} />
+      {headMenu && (
+        <CellMenu
+          x={headMenu.x}
+          y={headMenu.y}
+          items={headMenu.items}
+          onClose={() => {
+            headMenu.opener.focus();
+            setHeadMenu(null);
+          }}
+        />
+      )}
+      {settingStatus && (
+        <AnalystStatusDialog
+          deviceId={value}
+          status={settingStatus}
+          current={summary?.analyst_status ?? null}
+          onDone={statusDone}
+          onClose={() => setSettingStatus(null)}
+        />
+      )}
       {adding && (
         <AddToTimelineDialog
           query={adding.query}

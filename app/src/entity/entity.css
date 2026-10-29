@@ -74,3 +74,13 @@
 .entity-cellwrap { display: flex; align-items: center; min-width: 0; }
 .entity-val { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .entity-cellwrap .pill { flex: none; }
+
+/* Device tab: the analyst's status next to the device's name (the pill is styled in devices/analyst.css). */
+.entity-analyst { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+
+/* A pivot row's events flagged by any flag ("312 malicious · 4 suspicious"): a small second line under the count. */
+.entity-flagged { display: block; font-size: 10px; font-weight: 600; line-height: 1.3; cursor: help; }
+.entity-flagged-mal { color: var(--mal); }
+.entity-flagged-sus { color: var(--sus); }
+/* The IPs card's ASN / kind: capped so the Count column is in view in a 380px card (the full text is the title). */
+.entity-pivot th.entity-col-narrow, .entity-pivot td.entity-col-narrow { max-width: 110px; }

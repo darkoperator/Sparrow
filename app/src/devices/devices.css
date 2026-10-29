@@ -91,3 +91,9 @@
 .dev-sightings .dev-time { color: var(--muted); }
 .malicious { font-weight: 700; }
 .dev-evidence { font-family: var(--font-mono); font-size: 11px; }
+
+/* The analyst's status column and line (the pill itself is styled in analyst.css). */
+.dev-analyst { white-space: nowrap; }
+.dev-notice { margin: 0 0 10px; padding: 4px 10px; border-radius: 6px; background: var(--ok-bg); color: var(--ok); font-size: 12px; }
+.dev-analyst-line { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 8px; font-size: 12px; }
+.dev-analyst-note { color: var(--text-2); overflow-wrap: anywhere; }

@@ -33,6 +33,7 @@ import type {
 } from "../api";
 import { parseField, type Term } from "../events/fieldSyntax";
 import * as fx from "../test/fixtures";
+import { summaryWithDecision } from "./deviceStatus";
 
 export interface EventDeps {
   fail: (kind: CmdErrorKind, message: string) => never;
@@ -454,7 +455,7 @@ export function eventHandlers(deps: EventDeps): Record<string, (a: Args) => unkn
         distinct: Object.fromEntries(Object.keys(rec.distinct).map((k) => [k, 0])),
       };
     }
-    return { ...rec, entity: stored };
+    return summaryWithDecision({ ...rec, entity: stored });
   };
 
   const ALLOWED: Record<EntityKind, PivotOf[]> = {
@@ -484,7 +485,22 @@ export function eventHandlers(deps: EventDeps): Record<string, (a: Args) => unkn
       if (top === null) return null;
       return { level: top, pending: false, scope: mine.some((f) => f.level === top && f.scope === null) ? "case" : "entity" };
     };
-    const rows = page.rows.slice(0, Math.min(limit, 5000)).map((r) => ({ ...r, flag: of === "device_changes" ? null : flagOf(r.value) }));
+    // The tab's events with the row's value, by their effective flag (any flag), as core counts them.
+    const field = ({ accounts: "account", ips: "ip", devices: "device", sessions: "session" } as Partial<Record<PivotOf, EventField>>)[of];
+    const flaggedOf = (value: string) => {
+      const out = { malicious: 0, suspicious: 0 };
+      if (!field) return out;
+      for (const r of events) {
+        if (!entityMatches(e, r) || !valuesOf(field, r).includes(lower(value))) continue;
+        const f = seen(r).flag;
+        if (f === "malicious") out.malicious++;
+        else if (f === "suspicious") out.suspicious++;
+      }
+      return out;
+    };
+    const rows = page.rows
+      .slice(0, Math.min(limit, 5000))
+      .map((r) => ({ ...r, flag: of === "device_changes" ? null : flagOf(r.value), flagged: flaggedOf(r.value) }));
     return { rows, total: page.total };
   };
 

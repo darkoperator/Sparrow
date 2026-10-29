@@ -3,13 +3,17 @@ import {
   devicesList,
   evidenceFilter,
   isCmdError,
+  type AnalystDeviceStatus,
   type DeviceStatus,
   type LifecycleMark,
   type SuspectDevice,
 } from "../api";
-import { useNav } from "../shell/nav";
+import CellMenu, { type MenuItem } from "../grid/CellMenu";
+import { useNav, useWriteBlocked } from "../shell/nav";
 import { displaySafe } from "../text";
 import Icon from "../ui/Icon";
+import { AnalystPill, AnalystStatusDialog, analystStatusItem, clearAnalystStatus } from "./analystStatus";
+import "../marks/marks.css";
 import "./devices.css";
 
 const STATUS_LABELS: Record<DeviceStatus, string> = {
@@ -82,6 +86,12 @@ function Detail({ device }: { device: SuspectDevice }) {
   return (
     <section className="card dev-detail" aria-label={`Sightings of ${device.device_id}`}>
       <h3>{displaySafe(device.display_name ?? device.device_id)}</h3>
+      {device.analyst && (
+        <p className="meta dev-analyst-line">
+          Analyst: <AnalystPill decision={device.analyst} activeAfter={device.active_after_analyst_removal} />
+          {device.analyst.note && <span className="dev-analyst-note"> {displaySafe(device.analyst.note)}</span>}
+        </p>
+      )}
       {marks.length > 0 && (
         <ul className="plain dev-lifecycle" aria-label="Lifecycle">
           {marks.map((m) => (
@@ -133,9 +143,16 @@ function Detail({ device }: { device: SuspectDevice }) {
  * (status, confidence, last active). Selecting a device shows every sighting, each opening its evidence row.
  */
 export default function Devices() {
+  const writeBlocked = useWriteBlocked();
   const [list, setList] = useState<SuspectDevice[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  // A row's menu (right-click, the menu key or Shift+F10), and the status dialog it opens.
+  const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[]; opener: HTMLElement } | null>(null);
+  const [setting, setSetting] = useState<{ device: SuspectDevice; status: AnalystDeviceStatus } | null>(null);
+  // Bumped after the analyst changes a status: the list is read again.
+  const [reloadN, setReloadN] = useState(0);
   // Per viewer, in component state only: low-confidence devices (reached only through impossible-travel legs) are hidden
   // until asked for.
   const [showLow, setShowLow] = useState(false);
@@ -149,7 +166,22 @@ export default function Devices() {
     return () => {
       live = false;
     };
-  }, []);
+  }, [reloadN]);
+
+  const done = (message: string) => {
+    setSetting(null);
+    setNotice(message);
+    setReloadN((n) => n + 1);
+  };
+  const itemsFor = (d: SuspectDevice): MenuItem[] => [
+    analystStatusItem(
+      d.analyst,
+      writeBlocked,
+      (status) => setSetting({ device: d, status }),
+      () =>
+        clearAnalystStatus(d.device_id).then(done, (e: unknown) => setError(isCmdError(e) ? e.message : String(e))),
+    ),
+  ];
 
   const lowCount = list?.filter((d) => d.confidence === "low").length ?? 0;
   const shown = list?.filter((d) => showLow || d.confidence !== "low") ?? [];
@@ -171,6 +203,11 @@ export default function Devices() {
         )}
       </header>
       {error && <div role="alert">{displaySafe(error)}</div>}
+      {notice && (
+        <p role="status" className="dev-notice">
+          {notice}
+        </p>
+      )}
       {list && list.length === 0 && (
         <p className="dev-empty">No device was seen on a malicious IP. Mark IPs malicious with an indicator, or run detection.</p>
       )}
@@ -183,6 +220,7 @@ export default function Devices() {
             <thead>
               <tr>
                 <th>Status</th>
+                <th title="What you recorded about the device (right-click a row to set it); Status is what the logs show">Analyst</th>
                 <th>Device</th>
                 <th>Last active</th>
                 <th>Users</th>
@@ -197,7 +235,18 @@ export default function Devices() {
                   <tr
                     key={keyOf(d)}
                     aria-selected={keyOf(d) === selected}
-                    className={status === "active_after_removal" ? "dev-row dev-row-alert" : "dev-row"}
+                    className={status === "active_after_removal" || d.active_after_analyst_removal ? "dev-row dev-row-alert" : "dev-row"}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setMenu({ x: e.clientX, y: e.clientY, items: itemsFor(d), opener: e.currentTarget });
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
+                        e.preventDefault();
+                        const b = e.currentTarget.getBoundingClientRect();
+                        setMenu({ x: b.left + 24, y: b.bottom, items: itemsFor(d), opener: e.target as HTMLElement });
+                      }
+                    }}
                   >
                     <td>
                       <span
@@ -214,6 +263,9 @@ export default function Devices() {
                         {STATUS_LABELS[status]}
                       </span>
                       {note && <div className="meta dev-note">{note}</div>}
+                    </td>
+                    <td className="dev-analyst">
+                      <AnalystPill decision={d.analyst} activeAfter={d.active_after_analyst_removal} />
                     </td>
                     <td>
                       <div className="dev-device">
@@ -250,6 +302,26 @@ export default function Devices() {
         </div>
       )}
       {current && <Detail device={current} />}
+      {menu && (
+        <CellMenu
+          x={menu.x}
+          y={menu.y}
+          items={menu.items}
+          onClose={() => {
+            menu.opener.focus();
+            setMenu(null);
+          }}
+        />
+      )}
+      {setting && (
+        <AnalystStatusDialog
+          deviceId={setting.device.device_id}
+          status={setting.status}
+          current={setting.device.analyst}
+          onDone={done}
+          onClose={() => setSetting(null)}
+        />
+      )}
     </section>
   );
 }

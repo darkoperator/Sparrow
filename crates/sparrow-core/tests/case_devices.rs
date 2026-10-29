@@ -1654,3 +1654,299 @@ fn real_event_target_shape_resolves_through_the_object_id() {
     assert_eq!(d.lifecycle.removed.as_ref().unwrap().record_key, del);
     assert_eq!(d.object_id.as_deref(), Some(OID));
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// the analyst's device status (`case::device_status`)
+
+use sparrow_core::Error;
+use sparrow_core::case::audit;
+use sparrow_core::case::device_status::{self, AnalystStatus};
+
+/// (device_id, status, note, live) of every `device_analyst_status` row, in decision order.
+fn status_rows(case: &Case) -> Vec<(String, String, Option<String>, bool)> {
+    let mut st = case
+        .conn()
+        .prepare(
+            "SELECT device_id, CAST(status AS VARCHAR), note, removed_at IS NULL FROM device_analyst_status \
+             ORDER BY decision_id",
+        )
+        .unwrap();
+    st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+fn audit_count(case: &Case) -> i64 {
+    case.conn()
+        .query_row("SELECT count(*) FROM audit_trail", [], |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
+fn analyst_status_set_replace_and_clear_are_audited_and_soft_deleted() {
+    let case = t1_case();
+    let a = analyst();
+    // Any spelling of the id is stored lower case.
+    let e1 = device_status::set_status(
+        case.conn(),
+        &a,
+        &format!("  {}  ", DEV_A_UPPER),
+        Some(AnalystStatus::Removed),
+        Some("  wiped by IT on the 4th  "),
+    )
+    .unwrap();
+    assert_eq!(
+        (
+            e1.action.as_str(),
+            e1.object_type.as_str(),
+            e1.object_id.as_str()
+        ),
+        ("set_device_status", "device_status", DEV_A)
+    );
+    assert_eq!(e1.actor, "analyst:tester");
+    assert!(e1.before.is_none());
+    let after = e1.after.as_ref().unwrap();
+    assert_eq!(after["status"], "removed");
+    assert_eq!(after["note"], "wiped by IT on the 4th");
+    assert_eq!(after["decided_by"], "analyst:tester");
+    let cur = device_status::current(case.conn(), DEV_A).unwrap().unwrap();
+    assert_eq!(cur.status, AnalystStatus::Removed);
+    assert_eq!(cur.note.as_deref(), Some("wiped by IT on the 4th"));
+    assert_eq!(
+        audit::ts_text(&cur.decided_at),
+        e1.after.as_ref().unwrap()["decided_at"]
+    );
+    assert_eq!(audit::ts_text(&cur.decided_at), audit::ts_text(&e1.ts));
+
+    // The same status and note again changes nothing and is refused.
+    let same = device_status::set_status(
+        case.conn(),
+        &a,
+        DEV_A,
+        Some(AnalystStatus::Removed),
+        Some("wiped by IT on the 4th"),
+    )
+    .unwrap_err();
+    assert!(matches!(same, Error::Decision(_)), "{same}");
+
+    // A new status closes the live row and adds one; the audit entry holds both.
+    let e2 = device_status::set_status(case.conn(), &a, DEV_A, Some(AnalystStatus::Benign), None)
+        .unwrap();
+    assert_eq!(e2.before.as_ref().unwrap()["status"], "removed");
+    assert_eq!(e2.after.as_ref().unwrap()["status"], "benign");
+    assert!(e2.after.as_ref().unwrap()["note"].is_null());
+    assert_eq!(
+        status_rows(&case),
+        [
+            (
+                DEV_A.into(),
+                "removed".into(),
+                Some("wiped by IT on the 4th".into()),
+                false
+            ),
+            (DEV_A.into(), "benign".into(), None, true),
+        ]
+    );
+
+    // Clear: no live row, the history stays; the audit entry's after is null.
+    let e3 = device_status::set_status(case.conn(), &a, DEV_A, None, None).unwrap();
+    assert_eq!(e3.action, "clear_device_status");
+    assert_eq!(e3.before.as_ref().unwrap()["status"], "benign");
+    assert!(e3.after.is_none());
+    assert!(
+        device_status::current(case.conn(), DEV_A)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(status_rows(&case).iter().filter(|r| r.3).count(), 0);
+    assert_eq!(status_rows(&case).len(), 2);
+    let removed_by: Vec<Option<String>> = case
+        .conn()
+        .prepare("SELECT removed_by FROM device_analyst_status ORDER BY decision_id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        removed_by,
+        [
+            Some("analyst:tester".to_string()),
+            Some("analyst:tester".to_string())
+        ]
+    );
+
+    // Nothing left to clear; a note on a clear is refused.
+    let before = audit_count(&case);
+    let e = device_status::set_status(case.conn(), &a, DEV_A, None, None).unwrap_err();
+    assert!(matches!(e, Error::Decision(_)), "{e}");
+    let e = device_status::set_status(case.conn(), &a, DEV_A, None, Some("why")).unwrap_err();
+    assert!(matches!(e, Error::Invalid(_)), "{e}");
+    assert_eq!(audit_count(&case), before);
+    assert!(audit::verify(case.conn()).unwrap().ok);
+    let log = audit::log(case.conn(), Some(("device_status", DEV_A))).unwrap();
+    assert_eq!(
+        log.iter().map(|e| e.action.as_str()).collect::<Vec<_>>(),
+        [
+            "set_device_status",
+            "set_device_status",
+            "clear_device_status"
+        ]
+    );
+}
+
+#[test]
+fn analyst_status_refuses_agents_and_bad_input_and_writes_nothing() {
+    let case = t1_case();
+    let agent = Actor::agent("triage", Some("tester")).unwrap();
+    let e = device_status::set_status(
+        case.conn(),
+        &agent,
+        DEV_A,
+        Some(AnalystStatus::ConfirmedAttacker),
+        None,
+    )
+    .unwrap_err();
+    assert!(matches!(e, Error::Decision(_)), "{e}");
+    for id in ["", "   ", "dev\u{7}ice"] {
+        let e = device_status::set_status(
+            case.conn(),
+            &analyst(),
+            id,
+            Some(AnalystStatus::Benign),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(e, Error::Invalid(_)), "{id:?}: {e}");
+    }
+    let long = "x".repeat(16 * 1024 + 1);
+    let e = device_status::set_status(
+        case.conn(),
+        &analyst(),
+        DEV_A,
+        Some(AnalystStatus::Benign),
+        Some(&long),
+    )
+    .unwrap_err();
+    assert!(matches!(e, Error::Decision(_)), "{e}");
+    assert!(status_rows(&case).is_empty());
+    assert_eq!(audit_count(&case), 0);
+    assert!(AnalystStatus::parse("gone").is_err());
+    assert_eq!(
+        AnalystStatus::ALL.map(AnalystStatus::as_str),
+        ["removed", "disabled", "confirmed_attacker", "benign"]
+    );
+}
+
+#[test]
+fn analyst_status_sits_next_to_the_computed_status_and_warns_on_a_later_sighting() {
+    let mut case = t1_case();
+    flagged_d(&case);
+    flagged_signin(&case, T1, BOB, DEV_F, at(1, 9, 0));
+    let list = suspects(&mut case);
+    assert_eq!(sorted_ids(&list), [DEV_D, DEV_F]);
+    assert!(
+        list.iter()
+            .all(|d| d.analyst.is_none() && !d.active_after_analyst_removal)
+    );
+
+    // Decided on 10 Mar, after every sighting so far.
+    audit::test_clock::set(Some(at(10, 12, 0)));
+    let a = analyst();
+    device_status::set_status(
+        case.conn(),
+        &a,
+        DEV_D,
+        Some(AnalystStatus::Removed),
+        Some("gone"),
+    )
+    .unwrap();
+    device_status::set_status(case.conn(), &a, DEV_F, Some(AnalystStatus::Benign), None).unwrap();
+    audit::test_clock::set(None);
+    let list = suspects(&mut case);
+    let d = list.iter().find(|d| d.device_id == DEV_D).unwrap();
+    let f = list.iter().find(|d| d.device_id == DEV_F).unwrap();
+    // The computed status is untouched: no removal event, no inventory.
+    assert_eq!(d.lifecycle.status, DeviceStatus::Unknown);
+    let da = d.analyst.as_ref().unwrap();
+    assert_eq!(
+        (da.status, da.note.as_deref()),
+        (AnalystStatus::Removed, Some("gone"))
+    );
+    assert_eq!(da.decided_at, at(10, 12, 0));
+    assert!(!d.active_after_analyst_removal);
+    assert_eq!(f.analyst.as_ref().unwrap().status, AnalystStatus::Benign);
+
+    // Both devices are seen again on 11 Mar: D (removed) warns, F (benign) does not.
+    signin(
+        &case,
+        T1,
+        ALICE,
+        IP_CLEAN,
+        at(11, 8, 0),
+        "Office 365",
+        device_struct(Some(DEV_D), None),
+    );
+    signin(
+        &case,
+        T1,
+        BOB,
+        IP_CLEAN,
+        at(11, 8, 0),
+        "Office 365",
+        device_struct(Some(DEV_F), None),
+    );
+    let list = suspects(&mut case);
+    let d = list.iter().find(|d| d.device_id == DEV_D).unwrap();
+    let f = list.iter().find(|d| d.device_id == DEV_F).unwrap();
+    assert_eq!(d.lifecycle.status, DeviceStatus::Unknown);
+    assert!(d.active_after_analyst_removal);
+    assert!(!f.active_after_analyst_removal);
+
+    // Disabled warns the same way; a sighting exactly at the decision time does not.
+    let dis = device_status::DeviceDecision {
+        device_id: DEV_D.into(),
+        status: AnalystStatus::Disabled,
+        note: None,
+        decided_by: "analyst:tester".into(),
+        decided_at: at(11, 8, 0),
+    };
+    assert!(!dis.active_after(Some(at(11, 8, 0))));
+    assert!(dis.active_after(Some(at(11, 8, 1))));
+    assert!(!dis.active_after(None));
+    let ca = device_status::DeviceDecision {
+        status: AnalystStatus::ConfirmedAttacker,
+        ..dis.clone()
+    };
+    assert!(!ca.active_after(Some(at(12, 0, 0))));
+}
+
+#[test]
+fn analyst_status_matches_a_device_by_its_object_id() {
+    let mut case = t1_case();
+    flagged_d(&case);
+    device_event(
+        &case,
+        "Update device.",
+        at(1, 7, 0),
+        &[("TargetId.DeviceId", &quoted(DEV_D))],
+        &[&format!("Device_{OID}"), OID, "Device", "Workstation"],
+    );
+    device_status::set_status(
+        case.conn(),
+        &analyst(),
+        OID,
+        Some(AnalystStatus::ConfirmedAttacker),
+        None,
+    )
+    .unwrap();
+    let list = suspects(&mut case);
+    let d = only(&list);
+    assert_eq!(d.object_id.as_deref(), Some(OID));
+    assert_eq!(
+        d.analyst.as_ref().unwrap().status,
+        AnalystStatus::ConfirmedAttacker
+    );
+    assert_eq!(d.analyst.as_ref().unwrap().device_id, OID);
+}

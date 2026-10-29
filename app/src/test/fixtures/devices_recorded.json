@@ -1229,6 +1229,8 @@
         "record_key": "205b217e-d12c-4c06-b53f-ca999e93d5fb"
       },
       "latest_inventory_at": "2026-09-10T16:15:00.000000Z"
-    }
+    },
+    "analyst": null,
+    "active_after_analyst_removal": false
   }
 ]

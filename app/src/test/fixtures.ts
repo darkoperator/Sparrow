@@ -188,8 +188,9 @@ export function sharePreview(): SharePreview {
 
 const DEVICE = [
   "tenant_key", "device_id", "object_id", "display_name", "os", "trust_type", "is_compliant", "is_managed", "confidence",
-  "reasons", "users", "malicious_ips", "other_ips", "sightings", "lifecycle",
+  "reasons", "users", "malicious_ips", "other_ips", "sightings", "lifecycle", "analyst", "active_after_analyst_removal",
 ];
+const DEVICE_DECISION = ["device_id", "status", "note", "decided_by", "decided_at"];
 const SIGHTING = [
   "tenant_key", "device_id", "display_name", "os", "trust_type", "user_upn", "ip", "event_time", "activity",
   "source_table", "record_key",
@@ -234,6 +235,8 @@ function checkDevices(name: string, json: unknown): SuspectDevice[] {
       if (lc[k] !== null) need(`${at}.lifecycle.${k}`, lc[k], MARK);
     }
     if (!isStringOrNull(lc.latest_inventory_at)) throw new Error(`fixture ${at}: latest_inventory_at`);
+    if (d.analyst !== null) need(`${at}.analyst`, d.analyst, DEVICE_DECISION);
+    if (typeof d.active_after_analyst_removal !== "boolean") throw new Error(`fixture ${at}: active_after_analyst_removal`);
     if (!Array.isArray(d.sightings) || d.sightings.length === 0) throw new Error(`fixture ${at}: no sightings`);
     d.sightings.forEach((s: unknown, j) => {
       need(`${at}.sightings[${j}]`, s, SIGHTING);
@@ -352,13 +355,14 @@ export function entitySummary(kind: EntityKind): EntitySummary {
   need(`entity_summaries.${kind}.distinct`, v.distinct, DISTINCT);
   need(`entity_summaries.${kind}.entity`, v.entity, ["kind", "value"]);
   if (v.entity.kind !== kind) throw new Error(`fixture entity_summaries.${kind}: entity is a ${String(v.entity.kind)}`);
-  return v as unknown as EntitySummary;
+  // The recordings predate the device tab's analyst status; the synthetic case has none.
+  return { analyst_status: null, active_after_analyst_removal: false, ...v } as unknown as EntitySummary;
 }
 
 function checkPivotRow(where: string, r: unknown): PivotRow {
   need(where, r, ["value", "label", "count", "first_seen", "last_seen", "is_new", "extra"]);
-  // The recordings predate the row's `flag`; none of the synthetic case's values is flagged.
-  return { flag: null, ...(r as object) } as unknown as PivotRow;
+  // The recordings predate the row's `flag` and `flagged`; none of the synthetic case's values is flagged.
+  return { flag: null, flagged: { malicious: 0, suspicious: 0 }, ...(r as object) } as unknown as PivotRow;
 }
 
 /**
@@ -374,7 +378,7 @@ export function entityPivots(): Record<PivotOf, PivotPage> {
     const p = all[of];
     need(`entity_pivots.${of}`, p, ["rows", "total"]);
     if (!Array.isArray(p.rows) || typeof p.total !== "number") throw new Error(`fixture entity_pivots.${of}: bad page`);
-    p.rows.forEach((r: unknown, i) => checkPivotRow(`entity_pivots.${of}.rows[${i}]`, r));
+    p.rows = p.rows.map((r: unknown, i) => checkPivotRow(`entity_pivots.${of}.rows[${i}]`, r));
     out[of] = p as unknown as PivotPage;
   }
   if (out.device_changes.rows.length === 0) {
@@ -390,6 +394,7 @@ export function entityPivots(): Record<PivotOf, PivotPage> {
           last_seen: at,
           is_new: false,
           flag: null,
+          flagged: { malicious: 0, suspicious: 0 },
           extra: { source_table: "entra_audit", record_key: "mock-device-change-1", actor: "admin@contoso.example", result: "Succeeded", target: "FRANCES.ROURKE-LAPTOP" },
         },
         {
@@ -400,6 +405,7 @@ export function entityPivots(): Record<PivotOf, PivotPage> {
           last_seen: "2026-08-20T09:30:00.000000Z",
           is_new: false,
           flag: null,
+          flagged: { malicious: 0, suspicious: 0 },
           extra: { source_table: "entra_audit", record_key: "mock-device-change-2", actor: "admin@contoso.example", result: "Succeeded", target: "FRANCES.ROURKE-LAPTOP" },
         },
       ],

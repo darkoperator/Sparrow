@@ -1203,3 +1203,286 @@ fn pivot_rows_carry_the_standing_flag_of_their_value() {
     );
     assert!(of(PivotOf::Sessions).iter().all(|(_, f)| f.is_none()));
 }
+
+/// (value, malicious, suspicious) of each row's flagged events.
+fn flagged_of(rows: &[PivotRow]) -> Vec<(String, u64, u64)> {
+    rows.iter()
+        .map(|r| (r.value.clone(), r.flagged.malicious, r.flagged.suspicious))
+        .collect()
+}
+
+#[test]
+fn pivot_rows_count_their_events_flagged_by_any_flag() {
+    use sparrow_core::case::marks::{FlagLevel, RowRef, ValueKind, flag_rows, flag_value};
+    let case = fixture();
+    let analyst = Actor::analyst("carlos").unwrap();
+    let jdoe = account(JDOE);
+    let pivot = |e: &Entity, of, from, to| {
+        entity::pivot(case.conn(), e, of, from, to, None)
+            .unwrap()
+            .rows
+    };
+    // No flag in the case: every count is zero.
+    assert!(
+        flagged_of(&pivot(&jdoe, PivotOf::Ips, None, None))
+            .iter()
+            .all(|(_, m, s)| *m == 0 && *s == 0)
+    );
+
+    // A device flag scoped to session s2 covers jdoe's u2 (198.51.100.7) and u3 (192.0.2.99), not u1/s1 (session s1).
+    flag_value(
+        case.conn(),
+        &analyst,
+        ValueKind::Device,
+        "d1",
+        Some(&Entity::Session("s2".into())),
+        Some(FlagLevel::Malicious),
+    )
+    .unwrap();
+    // Row flags: u1 suspicious, u2 suspicious too (malicious wins, counted once), u4 suspicious, and u9 (other@, not
+    // one of jdoe's events) malicious.
+    let rows = |keys: &[&str]| -> Vec<RowRef> {
+        keys.iter().map(|k| RowRef::new("ual_events", k)).collect()
+    };
+    flag_rows(
+        case.conn(),
+        &analyst,
+        &rows(&["u1", "u2", "u4"]),
+        Some(FlagLevel::Suspicious),
+    )
+    .unwrap();
+    flag_rows(
+        case.conn(),
+        &analyst,
+        &rows(&["u9"]),
+        Some(FlagLevel::Malicious),
+    )
+    .unwrap();
+
+    let ips = pivot(&jdoe, PivotOf::Ips, None, None);
+    assert_eq!(
+        flagged_of(&ips),
+        [
+            ("198.51.100.7".to_string(), 1, 1),
+            ("203.0.113.10".to_string(), 0, 1),
+            ("192.0.2.99".to_string(), 1, 0),
+        ]
+    );
+    // No IP carries a flag of its own: the pill stays empty while the counts show the flagged events.
+    assert!(ips.iter().all(|r| r.flag.is_none()));
+    // The counts are of the tab's events: 203.0.113.10's u9 belongs to other@, and is counted on the IP tab instead.
+    let ip_tab = pivot(
+        &Entity::Ip("203.0.113.10".into()),
+        PivotOf::Accounts,
+        None,
+        None,
+    );
+    assert_eq!(
+        flagged_of(&ip_tab),
+        [
+            (JDOE.to_string(), 0, 1),
+            ("other@contoso.example".to_string(), 1, 0),
+        ]
+    );
+    // An account counts an event as actor and as owner: u4 (attacker@ reading jdoe's mailbox) is jdoe's as owner.
+    let ip2 = pivot(
+        &Entity::Ip("198.51.100.7".into()),
+        PivotOf::Accounts,
+        None,
+        None,
+    );
+    let by_value: std::collections::BTreeMap<_, _> = flagged_of(&ip2)
+        .into_iter()
+        .map(|(v, m, s)| (v, (m, s)))
+        .collect();
+    assert_eq!(by_value[JDOE], (1, 1));
+    assert_eq!(by_value["attacker@contoso.example"], (0, 1));
+    // The range narrows them: day 2 only leaves u3.
+    let day2 = pivot(&jdoe, PivotOf::Ips, Some(at(2, 0, 0)), Some(at(2, 23, 59)));
+    assert_eq!(flagged_of(&day2), [("192.0.2.99".to_string(), 1, 0)]);
+    // Sessions: s2 holds u2 and u3 (both malicious through the device flag); s1 holds u1 and s1 (u1 suspicious).
+    let sessions = pivot(&jdoe, PivotOf::Sessions, None, None);
+    let by_value: std::collections::BTreeMap<_, _> = flagged_of(&sessions)
+        .into_iter()
+        .map(|(v, m, s)| (v, (m, s)))
+        .collect();
+    assert_eq!(by_value["s2"], (2, 0));
+    assert_eq!(by_value["s1"], (0, 1));
+    // Device changes never carry counts.
+    let changes = pivot(
+        &Entity::Device("d1".into()),
+        PivotOf::DeviceChanges,
+        None,
+        None,
+    );
+    assert!(!changes.is_empty());
+    assert!(changes.iter().all(|r| r.flagged == Default::default()));
+}
+
+#[test]
+fn device_tab_summary_carries_the_analyst_status() {
+    use sparrow_core::case::audit::test_clock;
+    use sparrow_core::case::device_status::{AnalystStatus, set_status};
+    let case = fixture();
+    let analyst = Actor::analyst("carlos").unwrap();
+    let d1 = Entity::Device("D1".into());
+    let s = entity::summary(case.conn(), &d1, None, None).unwrap();
+    assert!(s.analyst_status.is_none() && !s.active_after_analyst_removal);
+    // Removed on 1 Sep 12:00: d1's events run to u3 (2 Sep 09:00), so it was active after the removal.
+    test_clock::set(Some(at(1, 12, 0)));
+    set_status(
+        case.conn(),
+        &analyst,
+        "d1",
+        Some(AnalystStatus::Removed),
+        Some("by IT"),
+    )
+    .unwrap();
+    test_clock::set(None);
+    let s = entity::summary(case.conn(), &d1, None, None).unwrap();
+    let a = s.analyst_status.as_ref().unwrap();
+    assert_eq!(
+        (a.status, a.note.as_deref(), a.device_id.as_str()),
+        (AnalystStatus::Removed, Some("by IT"), "d1")
+    );
+    assert!(s.active_after_analyst_removal);
+    // A range before the decision does not hide it: the warning is over the whole case.
+    let s = entity::summary(case.conn(), &d1, Some(at(1, 0, 0)), Some(at(1, 11, 0))).unwrap();
+    assert!(s.analyst_status.is_some() && s.active_after_analyst_removal);
+    // A directory change later than the decision (the delete itself, say) is not a sighting: no warning.
+    put(
+        &case,
+        &Ev {
+            table: "directory_audits",
+            key: "a9",
+            source: "entra_audit",
+            time: Some(at(3, 9, 0)),
+            op: Some("Delete device"),
+            actor: Some("admin@contoso.example"),
+            device_id: Some("d1"),
+            device_object_id: Some("o1"),
+            ..Ev::default()
+        },
+    );
+    test_clock::set(Some(at(2, 10, 0)));
+    set_status(
+        case.conn(),
+        &analyst,
+        "d1",
+        Some(AnalystStatus::Disabled),
+        None,
+    )
+    .unwrap();
+    test_clock::set(None);
+    let s = entity::summary(case.conn(), &d1, None, None).unwrap();
+    assert_eq!(
+        s.analyst_status.as_ref().unwrap().status,
+        AnalystStatus::Disabled
+    );
+    assert!(!s.active_after_analyst_removal);
+    // Other kinds carry none.
+    let s = entity::summary(case.conn(), &account(JDOE), None, None).unwrap();
+    assert!(s.analyst_status.is_none());
+}
+
+#[test]
+fn flagged_counts_cost_one_query_per_page_over_the_page_events_only() {
+    use sparrow_core::case::marks::{FlagLevel, RowRef, ValueKind, flag_rows, flag_value};
+    let case = many_ips();
+    let x = account("x@contoso.example");
+    let analyst = Actor::analyst("carlos").unwrap();
+    let queries = |f: &dyn Fn()| {
+        let before = entity::flagged_queries();
+        f();
+        entity::flagged_queries() - before
+    };
+    let page = |limit| {
+        entity::pivot(case.conn(), &x, PivotOf::Ips, None, None, Some(limit))
+            .unwrap()
+            .rows
+    };
+    // No flag in the case: still exactly one statement for the page (no separate probe).
+    assert_eq!(queries(&|| assert_eq!(page(2).len(), 2)), 1);
+    // Flags on page and off-page events: one statement, and the counts are right.
+    flag_rows(
+        case.conn(),
+        &analyst,
+        &[
+            RowRef::new("ual_events", "k0-0"),
+            RowRef::new("ual_events", "k5-0"),
+        ],
+        Some(FlagLevel::Suspicious),
+    )
+    .unwrap();
+    flag_value(
+        case.conn(),
+        &analyst,
+        ValueKind::Ip,
+        "203.0.113.100",
+        None,
+        Some(FlagLevel::Malicious),
+    )
+    .unwrap();
+    let rows = std::cell::RefCell::new(Vec::new());
+    assert_eq!(queries(&|| *rows.borrow_mut() = page(2)), 1);
+    let rows = rows.into_inner();
+    // 203.0.113.100 has 3 events (all malicious through the IP flag), then 203.0.113.101 has 1, unflagged.
+    assert_eq!(
+        flagged_of(&rows),
+        [
+            ("203.0.113.100".to_string(), 3, 0),
+            ("203.0.113.101".to_string(), 0, 0)
+        ]
+    );
+    // The flag relation only sees the page's events: 3 + 1 of the scope's 14, so k5-0 (203.0.113.105, off the page)
+    // is never evaluated. The old shape evaluated all 14.
+    let values: Vec<String> = rows.iter().map(|r| r.value.clone()).collect();
+    assert_eq!(
+        entity::flagged_base_rows(case.conn(), &x, PivotOf::Ips, None, None, &values).unwrap(),
+        4
+    );
+    assert_eq!(
+        entity::flagged_base_rows(
+            case.conn(),
+            &x,
+            PivotOf::Ips,
+            None,
+            None,
+            &["203.0.113.105".to_string()]
+        )
+        .unwrap(),
+        1
+    );
+    let scope: i64 = case
+        .conn()
+        .query_row("SELECT count(*) FROM events", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(scope, 14);
+    // An account page counts the actor and the owner from the same restricted events.
+    let ip_tab = Entity::Ip("203.0.113.105".into());
+    let accounts = entity::pivot(case.conn(), &ip_tab, PivotOf::Accounts, None, None, None)
+        .unwrap()
+        .rows;
+    assert_eq!(
+        flagged_of(&accounts),
+        [("x@contoso.example".to_string(), 0, 1)]
+    );
+    // An empty page and the device-changes list run none.
+    let nobody = account("nobody@contoso.example");
+    assert_eq!(
+        queries(&|| assert!(
+            entity::pivot(case.conn(), &nobody, PivotOf::Ips, None, None, None)
+                .unwrap()
+                .rows
+                .is_empty()
+        )),
+        0
+    );
+    let d = Entity::Device("d-none".into());
+    assert_eq!(
+        queries(&|| {
+            entity::pivot(case.conn(), &d, PivotOf::DeviceChanges, None, None, None).unwrap();
+        }),
+        0
+    );
+}

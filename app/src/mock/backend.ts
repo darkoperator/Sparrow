@@ -26,6 +26,7 @@ import type {
 import * as fx from "../test/fixtures";
 import { GEN_COLUMNS, GEN_ROWS, selectRows } from "./generated";
 import { eventHandlers } from "./events";
+import { deviceStatusHandlers, withDecision } from "./deviceStatus";
 
 export const MOCK_MARKER = "sparrow-mock-backend-9f3c1e";
 
@@ -398,7 +399,16 @@ const handlers: Record<string, (a: Args) => unknown> = {
   timeline_reject: (a) => setStatus(str(a, "entryId"), "rejected", str(a, "reason") || null),
 
   accounts_list: () => fx.accounts(),
-  devices_list: () => fx.devices(),
+  devices_list: () => fx.devices().map(withDecision),
+  ...deviceStatusHandlers({
+    fail,
+    audit: auditEntry,
+    writable: () => {
+      if (info?.read_only_reason) fail("read_only", info.read_only_reason);
+      if (!settings.analyst) fail("invalid", "set the analyst name (settings) before making a decision");
+    },
+    analyst: () => settings.analyst ?? "unknown",
+  }),
   export_report: () => null,
   export_timeline_csv: () => null,
   export_workbook: () => null,

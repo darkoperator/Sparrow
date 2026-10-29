@@ -417,10 +417,10 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
             }
         } else {
             doc.push(
-                "| Status | Device | Name | Last active | Users | Malicious IPs | Other IPs |"
+                "| Status | Analyst | Device | Name | Last active | Users | Malicious IPs | Other IPs |"
                     .into(),
             );
-            doc.push("| --- | --- | --- | --- | --- | --- | --- |".into());
+            doc.push("| --- | --- | --- | --- | --- | --- | --- | --- |".into());
         }
         for d in &devices {
             let mut status = d.lifecycle.status.as_str().to_string();
@@ -429,9 +429,28 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
                 status.push_str(&format!(" — {note}"));
             }
             let device = d.device_id.clone();
+            let analyst = match &d.analyst {
+                None => String::new(),
+                Some(a) => {
+                    let mut text = format!(
+                        "{} ({}, {})",
+                        a.status.as_str(),
+                        a.decided_by,
+                        iso(&a.decided_at)
+                    );
+                    if let Some(n) = &a.note {
+                        text.push_str(&format!(": {n}"));
+                    }
+                    if d.active_after_analyst_removal {
+                        text.push_str(&format!(" — {}", super::devices_csv::ANALYST_WARNING));
+                    }
+                    text
+                }
+            };
             doc.push(format!(
-                "| {} | {} | {} | {} | {} | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} | {} | {} |",
                 md_cell(&status),
+                md_cell(&analyst),
                 md_cell(&device),
                 md_cell(d.display_name.as_deref().unwrap_or("")),
                 md_cell(&{

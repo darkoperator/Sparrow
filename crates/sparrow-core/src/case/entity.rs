@@ -5,6 +5,8 @@
 //! and the `message_trace_event` rows the grid hides by default are left out here too. The only other tables read are
 //! `findings` / `finding_evidence`, `ip_intel` (IP tab) and the `signins` device struct (device tab).
 
+use crate::case::device_status::{self, DeviceDecision};
+use crate::case::events::marksql;
 use crate::case::events::{Entity, EventQuery, Where, scope_where};
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
@@ -61,6 +63,12 @@ pub struct EntitySummary {
     /// Device tab: the `device` struct of the latest sign-in in range (`device_id`, `display_name`, `os`, `browser`,
     /// `is_compliant`, `is_managed`, `trust_type`). `None` for the other kinds and when no sign-in names the device.
     pub device: Option<serde_json::Value>,
+    /// Device tab: the analyst's status of the device (`case::device_status`, by the tab's value). `None` for the other
+    /// kinds and when the analyst set none. Not narrowed by the range.
+    pub analyst_status: Option<DeviceDecision>,
+    /// Device tab: the analyst said Removed or Disabled and one of the device's events in the whole case, other than a
+    /// directory change (`entra_audit`), is later than that decision.
+    pub active_after_analyst_removal: bool,
 }
 
 /// What a pivot table lists. `DeviceChanges` is for the device tab only.
@@ -99,6 +107,10 @@ pub struct PivotRow {
     /// The standing flag on the value that the tab's events carry (see [`PivotFlag`]); `None` when it has none, and
     /// always for `DeviceChanges`.
     pub flag: Option<PivotFlag>,
+    /// How many of the row's events (the ones `count` counts) carry an effective flag, by any flag: their own, or a
+    /// standing flag on any of their values in its scope, as the Events grid shows it. Unlike `flag`, which is a flag
+    /// on this value. Zero for `DeviceChanges`.
+    pub flagged: FlaggedCounts,
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -113,6 +125,13 @@ pub struct PivotFlag {
     pub pending: bool,
     /// `case` when a case-wide flag has that level, else `entity` (made inside this tab).
     pub scope: String,
+}
+
+/// Events by their effective flag: `malicious`, else `suspicious` (an event counts once, at its strongest level).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub struct FlaggedCounts {
+    pub malicious: u64,
+    pub suspicious: u64,
 }
 
 /// A finding that cites an event of the entity.
@@ -241,6 +260,25 @@ pub fn summary(
         Entity::Device(_) => latest_signin_device(conn, &w)?,
         _ => None,
     };
+    let analyst_status = match &entity {
+        Entity::Device(v) => device_status::current(conn, v)?,
+        _ => None,
+    };
+    let active_after_analyst_removal = match &analyst_status {
+        Some(a) if a.status.takes_device_out() => {
+            let (_, whole) = scope(&entity, None, None)?;
+            let last: Option<i64> = conn.query_row(
+                &format!(
+                    "SELECT epoch_us(max(e.event_time)) FROM events e{}",
+                    and(&whole, "e.source <> 'entra_audit'")
+                ),
+                params_from_iter(bound(&whole)),
+                |r| r.get(0),
+            )?;
+            a.active_after(last.map(at))
+        }
+        _ => false,
+    };
     Ok(EntitySummary {
         entity,
         first_seen: first.map(at),
@@ -251,6 +289,8 @@ pub fn summary(
         roles_matched,
         ip_intel,
         device,
+        analyst_status,
+        active_after_analyst_removal,
     })
 }
 
@@ -470,10 +510,12 @@ pub fn pivot(
             last_seen: at(r.get(3)?),
             is_new: r.get(4)?,
             flag: None,
+            flagged: FlaggedCounts::default(),
             extra,
         });
     }
     attach_flags(conn, &entity, of, &mut out)?;
+    attach_flagged(conn, of, &w, &mut out)?;
     Ok(PivotPage { rows: out, total })
 }
 
@@ -529,6 +571,125 @@ fn attach_flags(conn: &Connection, e: &Entity, of: PivotOf, rows: &mut [PivotRow
             pending: pending && !confirmed,
             scope: if case_wide { "case" } else { "entity" }.into(),
         });
+    }
+    Ok(())
+}
+
+std::thread_local! {
+    /// Statements `attach_flagged` has run on this thread (a test seam: a page costs exactly one).
+    static FLAGGED_QUERIES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many statements the flagged counts of pivot pages have run on this thread. Test seam only.
+#[doc(hidden)]
+pub fn flagged_queries() -> u64 {
+    FLAGGED_QUERIES.with(|c| c.get())
+}
+
+/// The flagged-counts statement of one page: `WITH base AS (...), fl AS (...), r AS (...)` and the SELECT over them,
+/// with its parameters. `base` is the tab's events in `w` that carry one of the page's `values`, so the flag relation
+/// (`marksql::flagged`, its row flags restricted to `base` and its value-flag joins over `base`) only evaluates the
+/// page's events, never the rest of the scope. `r` is one row per (event, value) as [`value_rows`] counts them; an
+/// account counts as actor and as owner (once when the same). `select` follows the WITH.
+fn flagged_sql(of: PivotOf, w: &Where, values: &[String], select: &str) -> (String, Vec<Value>) {
+    let marks = vec!["?"; values.len()].join(", ");
+    let vals = || values.iter().map(|v| Value::Text(v.clone()));
+    let mut params = w.params.clone();
+    let (page, r) = match of {
+        PivotOf::Accounts => {
+            params.extend(vals());
+            params.extend(vals());
+            (
+                format!("(e.actor_upn IN ({marks}) OR e.owner_upn IN ({marks}))"),
+                "SELECT actor_upn AS v, source_table AS sk, record_key AS rk FROM base \
+                 UNION ALL SELECT owner_upn, source_table, record_key FROM base \
+                 WHERE owner_upn IS DISTINCT FROM actor_upn"
+                    .to_string(),
+            )
+        }
+        _ => {
+            // The value over `events e` (the page filter) and over `base` (the counted rows).
+            let (on_events, on_base) = match of {
+                PivotOf::Ips => ("e.ip", "ip"),
+                PivotOf::Devices => (
+                    "coalesce(e.device_id, e.device_object_id)",
+                    "coalesce(device_id, device_object_id)",
+                ),
+                _ => ("e.entra_session_id", "entra_session_id"),
+            };
+            params.extend(vals());
+            (
+                format!("{on_events} IN ({marks})"),
+                format!("SELECT {on_base} AS v, source_table AS sk, record_key AS rk FROM base"),
+            )
+        }
+    };
+    params.extend(vals());
+    (
+        format!(
+            "WITH base AS (SELECT {} FROM events e{}), fl AS ({}), r AS ({r}) {select} AND r.v IN ({marks})",
+            marksql::BASE_COLUMNS,
+            and(w, &page),
+            marksql::flagged("base", true),
+        ),
+        params,
+    )
+}
+
+/// The page's events the flagged counts evaluate (the `base` of [`flagged_sql`]), for the regression test that the
+/// page filter sits below the flag joins. Test seam only.
+#[doc(hidden)]
+pub fn flagged_base_rows(
+    conn: &Connection,
+    e: &Entity,
+    of: PivotOf,
+    from: Option<DateTime<Utc>>,
+    to: Option<DateTime<Utc>>,
+    values: &[String],
+) -> Result<u64> {
+    let (_, w) = scope(e, from, to)?;
+    let (sql, params) = flagged_sql(
+        of,
+        &w,
+        values,
+        "SELECT count(DISTINCT (sk, rk)) FROM r WHERE true",
+    );
+    let n: i64 = conn.query_row(&sql, params_from_iter(params.iter()), |r| r.get(0))?;
+    Ok(n as u64)
+}
+
+/// Sets `flagged` on each row: its events in `w` (the tab's events in range, the rows `count` counts) by effective
+/// flag, with the Events grid's flag relation. One statement per page, evaluated over the page's events only
+/// ([`flagged_sql`]); none for an empty page.
+fn attach_flagged(conn: &Connection, of: PivotOf, w: &Where, rows: &mut [PivotRow]) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let values: Vec<String> = rows.iter().map(|r| r.value.clone()).collect();
+    let (sql, params) = flagged_sql(
+        of,
+        w,
+        &values,
+        "SELECT r.v, count(*) FILTER (WHERE fl.mal), count(*) FILTER (WHERE fl.sus AND NOT fl.mal) \
+         FROM r JOIN fl ON fl.source_table = r.sk AND fl.record_key = r.rk WHERE true",
+    );
+    FLAGGED_QUERIES.with(|c| c.set(c.get() + 1));
+    let mut stmt = conn.prepare(&format!("{sql} GROUP BY 1"))?;
+    let mut counts = BTreeMap::new();
+    let mut found = stmt.query(params_from_iter(params.iter()))?;
+    while let Some(r) = found.next()? {
+        counts.insert(
+            r.get::<_, String>(0)?,
+            FlaggedCounts {
+                malicious: r.get::<_, i64>(1)? as u64,
+                suspicious: r.get::<_, i64>(2)? as u64,
+            },
+        );
+    }
+    for row in rows {
+        if let Some(c) = counts.get(&row.value) {
+            row.flagged = *c;
+        }
     }
     Ok(())
 }
@@ -598,6 +759,7 @@ fn device_changes(conn: &Connection, w: &Where, limit: usize) -> Result<PivotPag
             last_seen: time,
             is_new: false,
             flag: None,
+            flagged: FlaggedCounts::default(),
             extra,
         });
     }

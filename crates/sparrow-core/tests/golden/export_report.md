@@ -101,9 +101,9 @@ _Computed by Sparrow from every finding of the case, whatever its decision: fact
 
 ## Devices to contain
 
-| Status | Device | Name | Last active | Users | Malicious IPs | Other IPs |
-| --- | --- | --- | --- | --- | --- | --- |
-| not\_in\_latest\_inventory — treat as active — collect Get-Devices to confirm | 76f8b195-1701-47c6-b6fe-f4065afcc88e | VANCE.INGRAM-LAPTOP | 2026-09-09T16:29:32Z \(Output/Contoso\_Example/Sign-In logs/EntraID/20260910-161751-SignInLogs/interactiveUser &amp; nonInteractiveUser/20260910161754-interactiveUser-nonInteractiveUser-SignInLogs.json:608-674\) | vance.ingram@contoso.example | 203.0.113.6 | 192.0.2.17 \(Documentation ISP 3, DE\); 192.0.2.18 \(Documentation ISP 3, DE\); 203.0.113.5 \(Documentation ISP 7, CA\) |
+| Status | Analyst | Device | Name | Last active | Users | Malicious IPs | Other IPs |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| not\_in\_latest\_inventory — treat as active — collect Get-Devices to confirm |  | 76f8b195-1701-47c6-b6fe-f4065afcc88e | VANCE.INGRAM-LAPTOP | 2026-09-09T16:29:32Z \(Output/Contoso\_Example/Sign-In logs/EntraID/20260910-161751-SignInLogs/interactiveUser &amp; nonInteractiveUser/20260910161754-interactiveUser-nonInteractiveUser-SignInLogs.json:608-674\) | vance.ingram@contoso.example | 203.0.113.6 | 192.0.2.17 \(Documentation ISP 3, DE\); 192.0.2.18 \(Documentation ISP 3, DE\); 203.0.113.5 \(Documentation ISP 7, CA\) |
 
 ## Evidence gaps
 

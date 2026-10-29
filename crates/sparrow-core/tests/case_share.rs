@@ -347,7 +347,7 @@ fn bundle_rejects_unknown_fields() {
 #[test]
 fn migration_21_creates_imported_proposals() {
     let c = Case::in_memory().unwrap();
-    assert_eq!(c.schema_version().unwrap(), 27);
+    assert_eq!(c.schema_version().unwrap(), 28);
     assert_eq!(count(&c, "SELECT count(*) FROM imported_proposals"), 0);
 }
 
@@ -1595,4 +1595,52 @@ fn old_bundle_without_group_fields_imports() {
     assert_eq!(got.len(), 1);
     assert_eq!((got[0].end_time, got[0].event_count), (None, None));
     assert!(!report_of(&b).contains("events)"));
+}
+
+#[test]
+fn a_device_analyst_status_is_not_shared_and_the_bundle_stays_format_1() {
+    use sparrow_core::case::device_status::{AnalystStatus, set_status};
+    let (a, b) = two_copies();
+    let ann = Reviewer::analyst("ann").unwrap();
+    let bob = Reviewer::analyst("bob").unwrap();
+    let fid = first_finding(&a);
+    set_finding_status(a.conn(), &ann.as_actor(), &fid, S::Confirmed, Some("relay")).unwrap();
+    const DEV: &str = "dddddddd-0000-4000-8000-0000000000dd";
+    set_status(
+        a.conn(),
+        &ann.as_actor(),
+        DEV,
+        Some(AnalystStatus::Removed),
+        Some("wiped by IT"),
+    )
+    .unwrap();
+    assert_eq!(
+        count(
+            &a,
+            "SELECT count(*) FROM device_analyst_status WHERE removed_at IS NULL"
+        ),
+        1
+    );
+    let bundle = share::export(a.conn(), &ann).unwrap();
+    // Format 1 has no device item: a format-1 reader would refuse a bundle carrying one.
+    assert_eq!(share::FORMAT, 1);
+    assert_eq!(bundle.format, 1);
+    assert_eq!(
+        bundle.items,
+        [Item::Finding {
+            finding_id: fid.clone(),
+            status: "confirmed".into(),
+            disposition_reason: Some("relay".into())
+        }]
+    );
+    let (bytes, _) = share::to_bytes(&bundle).unwrap();
+    let json = String::from_utf8(bytes.clone()).unwrap();
+    assert!(
+        !json.contains(DEV) && !json.contains("wiped by IT") && !json.contains("device_status"),
+        "{json}"
+    );
+    // The bundle reads back under format 1 and imports into the other copy without any device status.
+    let s = share::import(b.conn(), &bob, &bytes).unwrap();
+    assert_eq!((s.new, s.agrees, s.conflicts, s.missing), (1, 0, 0, 0));
+    assert_eq!(count(&b, "SELECT count(*) FROM device_analyst_status"), 0);
 }

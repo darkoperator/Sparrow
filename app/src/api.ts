@@ -622,9 +622,35 @@ export interface SuspectDevice {
   other_ips: OtherIp[];
   sightings: DeviceSighting[];
   lifecycle: Lifecycle;
+  /** The analyst's status of the device (by its id, else its object id), shown next to `lifecycle.status`. */
+  analyst: DeviceDecision | null;
+  /** The analyst said removed or disabled and the device was active later than that. */
+  active_after_analyst_removal: boolean;
 }
 
 export const devicesList = (tenant?: string) => call<SuspectDevice[]>("devices_list", { tenant });
+
+/** `case::device_status::AnalystStatus`: what the analyst says of a device. */
+export type AnalystDeviceStatus = "removed" | "disabled" | "confirmed_attacker" | "benign";
+
+/** `case::device_status::DeviceDecision`: the live analyst status of one device. */
+export interface DeviceDecision {
+  device_id: string;
+  status: AnalystDeviceStatus;
+  note: string | null;
+  decided_by: string;
+  decided_at: string;
+}
+
+/** Set (`status`) or clear (`null`) the analyst's status of a device, with an optional note. Analyst only. */
+export const devicesSetAnalystStatus = (deviceId: string, status: AnalystDeviceStatus | null, note: string | null) =>
+  call<AuditEntry>("devices_set_analyst_status", { deviceId, status, note });
+
+/** `case::entity::FlaggedCounts`: a pivot row's events by effective flag, by any flag. */
+export interface FlaggedCounts {
+  malicious: number;
+  suspicious: number;
+}
 
 // ---------------------------------------------------------------- events grid, entity tabs, marks (core serde shapes)
 
@@ -795,6 +821,9 @@ export interface EntitySummary {
   roles_matched: string[];
   ip_intel: Record<string, unknown> | null;
   device: Record<string, unknown> | null;
+  /** Device tab: the analyst's status of the device; null for other kinds and when none. */
+  analyst_status: DeviceDecision | null;
+  active_after_analyst_removal: boolean;
 }
 
 /** `case::entity::PivotOf`. `device_changes` is for the device tab only. */
@@ -810,6 +839,8 @@ export interface PivotRow {
   is_new: boolean;
   /** The standing flag on the value that covers this tab's events (case-wide, or made inside this tab); null if none. */
   flag: PivotFlag | null;
+  /** The row's events flagged by any flag (their own, or a standing flag on any of their values); zeros if none. */
+  flagged: FlaggedCounts;
   extra: Record<string, unknown>;
 }
 

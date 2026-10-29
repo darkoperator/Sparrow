@@ -1847,7 +1847,8 @@ fn devices_csv_has_status_and_provenance() {
         devices_csv::DEVICE_COLUMNS.join(","),
         "status,confidence,tenant_key,device_id,object_id,display_name,os,trust_type,is_compliant,is_managed,\
          registered_utc,registered_source,removed_utc,removed_source,disabled_utc,disabled_source,last_active_utc,\
-         last_active_source,users,malicious_ips,other_ips,reasons,note"
+         last_active_source,users,malicious_ips,other_ips,reasons,note,analyst_status,analyst_note,analyst_by,\
+         analyst_decided_utc,analyst_warning"
     );
     let col = |name: &str| rows[0].iter().position(|c| c == name).unwrap();
     // Unknown devices list before removed ones.
@@ -1877,6 +1878,144 @@ fn devices_csv_has_status_and_provenance() {
     assert_eq!(e[col("display_name")], format!("'{BAD_NAME}"));
     assert_eq!(e[col("removed_utc")], "");
     assert_eq!(e[col("removed_source")], "");
+}
+
+#[test]
+fn device_exports_list_the_analyst_status_next_to_the_computed_one() {
+    use sparrow_core::case::actor::Actor;
+    use sparrow_core::case::audit::test_clock;
+    use sparrow_core::case::device_status::{AnalystStatus, set_status};
+    let case = devices_case();
+    let analyst = Actor::analyst("carlos").unwrap();
+    // D is removed by the evidence, the analyst confirms it; E (unknown, last active 1 Mar 09:00) was removed by the
+    // responders on 1 Mar 08:30 by the analyst's account, so it was active after that.
+    test_clock::set(Some(
+        chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 3, 1, 8, 30, 0).unwrap(),
+    ));
+    set_status(
+        case.conn(),
+        &analyst,
+        E_UNKNOWN,
+        Some(AnalystStatus::Removed),
+        Some("=wiped by IT"),
+    )
+    .unwrap();
+    set_status(
+        case.conn(),
+        &analyst,
+        D_REMOVED,
+        Some(AnalystStatus::ConfirmedAttacker),
+        None,
+    )
+    .unwrap();
+    test_clock::set(None);
+    let (rows, _) = devices_csv_records(&case);
+    let col = |name: &str| rows[0].iter().position(|c| c == name).unwrap();
+    let e = rows[1..]
+        .iter()
+        .find(|r| r[col("device_id")] == E_UNKNOWN)
+        .unwrap();
+    let d = rows[1..]
+        .iter()
+        .find(|r| r[col("device_id")] == D_REMOVED)
+        .unwrap();
+    // The computed status is still there, untouched.
+    assert_eq!(
+        (e[col("status")].as_str(), d[col("status")].as_str()),
+        ("unknown", "removed")
+    );
+    assert_eq!(e[col("analyst_status")], "removed");
+    // The note is analyst text: neutralised like every other cell.
+    assert_eq!(e[col("analyst_note")], "'=wiped by IT");
+    assert_eq!(e[col("analyst_by")], "analyst:carlos");
+    assert_eq!(e[col("analyst_decided_utc")], "2026-03-01 08:30:00");
+    assert_eq!(e[col("analyst_warning")], devices_csv::ANALYST_WARNING);
+    assert_eq!(d[col("analyst_status")], "confirmed_attacker");
+    assert_eq!(d[col("analyst_note")], "");
+    assert_eq!(d[col("analyst_warning")], "");
+    // The report's contain list shows both on E (D, removed, is not on it).
+    let md = report(&case, false);
+    let section = devices_section(&md);
+    assert!(
+        section.contains("| Status | Analyst | Device |"),
+        "{section}"
+    );
+    let line = section.lines().find(|l| l.contains(E_UNKNOWN)).unwrap();
+    assert!(line.starts_with("| unknown — treat as active"), "{line}");
+    assert!(
+        line.contains("removed \\(analyst:carlos, 2026-03-01T08:30:00Z\\)"),
+        "{line}"
+    );
+    assert!(
+        line.contains("active after the analyst's removal"),
+        "{line}"
+    );
+
+    // The workbook's Devices sheet: the five cells, the `=` note as a string (never a formula), the UTC time.
+    let dir = tempfile::tempdir().unwrap();
+    let mut wb = workbook(&case, &dir);
+    let rows = sheet_rows(&mut wb, "Devices");
+    assert_eq!(rows[0], devices_csv::DEVICE_COLUMNS);
+    let col = |name: &str| rows[0].iter().position(|c| c == name).unwrap();
+    let e = rows[1..]
+        .iter()
+        .find(|r| r[col("device_id")] == E_UNKNOWN)
+        .unwrap();
+    let d = rows[1..]
+        .iter()
+        .find(|r| r[col("device_id")] == D_REMOVED)
+        .unwrap();
+    assert_eq!(
+        [
+            e[col("status")].as_str(),
+            e[col("analyst_status")].as_str(),
+            e[col("analyst_note")].as_str(),
+            e[col("analyst_by")].as_str(),
+            e[col("analyst_decided_utc")].as_str(),
+            e[col("analyst_warning")].as_str(),
+        ],
+        [
+            "unknown",
+            "removed",
+            "=wiped by IT",
+            "analyst:carlos",
+            "2026-03-01 08:30:00",
+            devices_csv::ANALYST_WARNING
+        ]
+    );
+    assert_eq!(
+        (
+            d[col("analyst_status")].as_str(),
+            d[col("analyst_note")].as_str(),
+            d[col("analyst_warning")].as_str()
+        ),
+        ("confirmed_attacker", "", "")
+    );
+    let range = wb.worksheet_range("Devices").unwrap();
+    let e_row = range
+        .rows()
+        .find(|r| {
+            r.iter()
+                .any(|c| matches!(c, Data::String(t) if t == E_UNKNOWN))
+        })
+        .unwrap();
+    assert_eq!(
+        e_row[col("analyst_note")],
+        Data::String("=wiped by IT".into())
+    );
+    assert!(matches!(
+        e_row[col("analyst_decided_utc")],
+        Data::DateTime(_)
+    ));
+    let formulas = wb.worksheet_formula("Devices").unwrap();
+    assert_eq!(
+        formulas
+            .rows()
+            .flat_map(|r| r.iter())
+            .filter(|f| !f.is_empty())
+            .count(),
+        0
+    );
 }
 
 #[test]

@@ -14,7 +14,7 @@ use duckdb::Connection;
 use std::collections::{BTreeSet, HashMap};
 use std::io::Write;
 
-pub const DEVICE_COLUMNS: [&str; 23] = [
+pub const DEVICE_COLUMNS: [&str; 28] = [
     "status",
     "confidence",
     "tenant_key",
@@ -38,6 +38,11 @@ pub const DEVICE_COLUMNS: [&str; 23] = [
     "other_ips",
     "reasons",
     "note",
+    "analyst_status",
+    "analyst_note",
+    "analyst_by",
+    "analyst_decided_utc",
+    "analyst_warning",
 ];
 
 pub const SIGHTING_COLUMNS: [&str; 15] = [
@@ -66,6 +71,27 @@ pub fn note(status: DeviceStatus) -> &'static str {
         }
         DeviceStatus::ActiveAfterRemoval => "seen after removal — containment did not hold",
         _ => "",
+    }
+}
+
+/// The analyst's warning on a device they said was removed or disabled and that was active later.
+pub const ANALYST_WARNING: &str = "active after the analyst's removal — containment did not hold";
+
+/// The analyst's status of `d` as the last five columns: status, note, by, decided (UTC), warning; empty when none.
+pub fn analyst_cells(d: &SuspectDevice) -> [String; 5] {
+    match &d.analyst {
+        None => Default::default(),
+        Some(a) => [
+            a.status.as_str().into(),
+            a.note.clone().unwrap_or_default(),
+            a.decided_by.clone(),
+            when(&a.decided_at),
+            if d.active_after_analyst_removal {
+                ANALYST_WARNING.into()
+            } else {
+                String::new()
+            },
+        ],
     }
 }
 
@@ -246,7 +272,10 @@ pub fn write_devices(conn: &Connection, out: &mut dyn Write) -> Result<u64> {
                     .collect::<Vec<_>>()
                     .join("; "),
                 note(lc.status).into(),
-            ],
+            ]
+            .into_iter()
+            .chain(analyst_cells(d))
+            .collect(),
         )?;
     }
     w.flush().map_err(super::io_err)?;

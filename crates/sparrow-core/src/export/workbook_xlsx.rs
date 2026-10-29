@@ -440,6 +440,16 @@ pub fn write(
                 .join("; ")),
             t(devices_csv::note(lc.status)),
         ];
+        let [status, note, by, _, warning] = devices_csv::analyst_cells(&d);
+        let text = |s: String| if s.is_empty() { Cell::Empty } else { t(s) };
+        let mut row = row;
+        row.extend([
+            text(status),
+            text(note),
+            text(by),
+            Cell::Time(d.analyst.as_ref().map(|a| a.decided_at)),
+            text(warning),
+        ]);
         if d.confidence == crate::case::devices::Confidence::Low {
             low_rows.push(row);
         } else {
@@ -448,7 +458,7 @@ pub fn write(
     }
     let widths = [
         18.0, 10.0, 14.0, 38.0, 38.0, 24.0, 14.0, 12.0, 12.0, 12.0, 20.0, 40.0, 20.0, 40.0, 20.0,
-        40.0, 20.0, 40.0, 30.0, 30.0, 50.0, 60.0, 50.0,
+        40.0, 20.0, 40.0, 30.0, 30.0, 50.0, 60.0, 50.0, 18.0, 40.0, 20.0, 20.0, 50.0,
     ];
     let cols: Vec<(&str, f64)> = DEVICE_COLUMNS.iter().copied().zip(widths).collect();
     sheet(&mut wb, "Devices", &cols, rows)?;
