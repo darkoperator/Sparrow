@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { ColumnInfo, Filter } from "../api";
 import { displaySafe } from "../text";
+import Icon from "../ui/Icon";
 import { rawText } from "../value";
 import { columnKind, typedValue, type ColumnKind } from "./columnKind";
 
@@ -45,9 +46,11 @@ export function FilterChips({ filters, onRemove }: { filters: Filter[]; onRemove
     <ul className="plain filter-chips" aria-label="Filters">
       {filters.map((f, i) => (
         <li key={i} className="filter-chip">
-          <span>{displaySafe(describeFilter(f))}</span>
+          <span className="mono" title={displaySafe(describeFilter(f))}>
+            {displaySafe(describeFilter(f))}
+          </span>
           <button aria-label={`Remove filter ${displaySafe(describeFilter(f))}`} onClick={() => onRemove(i)}>
-            ×
+            <Icon name="x" size={12} />
           </button>
         </li>
       ))}
@@ -102,7 +105,7 @@ export default function FilterBuilder({ columns, onAdd }: { columns: ColumnInfo[
     <form className="filter-builder" onSubmit={add}>
       <label>
         Column{" "}
-        <select value={info?.name ?? ""} onChange={(e) => setColumn(e.target.value)}>
+        <select className="mono" value={info?.name ?? ""} onChange={(e) => setColumn(e.target.value)}>
           {columns.map((c) => (
             <option key={c.name} value={c.name}>
               {displaySafe(c.name)}
@@ -145,7 +148,8 @@ export default function FilterBuilder({ columns, onAdd }: { columns: ColumnInfo[
           />
         </label>
       )}{" "}
-      <button type="submit" disabled={filter === null}>
+      <button type="submit" className="btn" disabled={filter === null}>
+        <Icon name="plus" size={12} />
         Add filter
       </button>
     </form>

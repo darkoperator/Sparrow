@@ -1,9 +1,11 @@
 import { autocompletion, closeCompletion } from "@codemirror/autocomplete";
 import { PostgreSQL, sql } from "@codemirror/lang-sql";
+import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { linter, lintGutter, type Action, type Diagnostic } from "@codemirror/lint";
 import { Compartment, EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap, placeholder, tooltips } from "@codemirror/view";
 import { basicSetup } from "codemirror";
+import { tags as t } from "@lezer/highlight";
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import type { SqlCheck, TableInfo } from "../api";
 import { keywordCompletions, schemaCompletions } from "./completion";
@@ -32,15 +34,53 @@ interface Props {
 
 const LINT_DELAY_MS = 500;
 
-// Colours inherit from the page, which follows the OS light/dark scheme (`color-scheme: light dark`).
-const theme = EditorView.theme({
-  "&": { color: "inherit", backgroundColor: "Canvas", border: "1px solid #8886", borderRadius: "4px", fontSize: "13px" },
-  "&.cm-focused": { outline: "2px solid Highlight" },
-  ".cm-scroller": { fontFamily: "ui-monospace, monospace", minHeight: "10em", maxHeight: "24em" },
-  ".cm-content": { caretColor: "currentcolor" },
-  ".cm-gutters": { backgroundColor: "transparent", color: "inherit", border: "0" },
-  ".cm-tooltip": { backgroundColor: "Canvas", color: "CanvasText", border: "1px solid #8886" },
-});
+// The console theme: every colour is a theme.css token, so the editor matches the rest of the app.
+const theme = EditorView.theme(
+  {
+    "&": {
+      color: "var(--text)",
+      backgroundColor: "var(--bg)",
+      border: "1px solid var(--line-strong)",
+      borderRadius: "8px",
+      fontSize: "13px",
+    },
+    "&.cm-focused": { outline: "2px solid var(--accent)", outlineOffset: "1px" },
+    ".cm-scroller": { fontFamily: "var(--font-mono)", lineHeight: "20px", minHeight: "10em", maxHeight: "24em" },
+    ".cm-content": { caretColor: "var(--accent)", padding: "10px 0" },
+    ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--accent)" },
+    "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection": {
+      backgroundColor: "var(--accent-soft)",
+    },
+    ".cm-activeLine": { backgroundColor: "transparent" },
+    ".cm-gutters": { backgroundColor: "transparent", color: "var(--faint)", border: "0" },
+    ".cm-activeLineGutter": { backgroundColor: "transparent", color: "var(--muted)" },
+    ".cm-placeholder": { color: "var(--faint)" },
+    ".cm-matchingBracket, &.cm-focused .cm-matchingBracket": { backgroundColor: "var(--raised-2)", outline: "0" },
+    ".cm-tooltip": {
+      backgroundColor: "var(--card)",
+      color: "var(--text)",
+      border: "1px solid var(--line-strong)",
+      borderRadius: "6px",
+      boxShadow: "var(--shadow-pop)",
+    },
+    ".cm-tooltip-autocomplete > ul": { fontFamily: "var(--font-mono)", fontSize: "12px" },
+    ".cm-tooltip-autocomplete > ul > li[aria-selected]": { backgroundColor: "var(--accent-soft)", color: "var(--text)" },
+    ".cm-completionDetail": { color: "var(--faint)" },
+    ".cm-diagnostic-error": { borderLeftColor: "var(--mal)" },
+    ".cm-lintRange-error": { backgroundImage: "none", textDecoration: "underline wavy var(--mal)" },
+  },
+  { dark: true },
+);
+
+// Syntax colours from the design's syntax tokens.
+const highlight = HighlightStyle.define([
+  { tag: [t.keyword, t.operatorKeyword, t.bool, t.null], color: "var(--syn-kw)" },
+  { tag: [t.string, t.special(t.string)], color: "var(--syn-str)" },
+  { tag: [t.number, t.atom], color: "var(--syn-num)" },
+  { tag: [t.standard(t.name), t.typeName, t.function(t.variableName)], color: "var(--syn-key)" },
+  { tag: [t.comment, t.lineComment, t.blockComment], color: "var(--faint)", fontStyle: "italic" },
+  { tag: [t.name, t.propertyName, t.operator, t.punctuation], color: "var(--text)" },
+]);
 
 /** CodeMirror 6 SQL editor: keywords, schema completion, and `sql_check` error marks with quick-fixes. */
 const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(props, ref) {
@@ -121,6 +161,7 @@ const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(props, r
         // flips below when there is no room above.
         tooltips({ parent: document.body, position: "fixed" }),
         theme,
+        syntaxHighlighting(highlight),
         placeholder("SELECT … (one read-only statement; Cmd/Ctrl+Enter runs it)"),
         Prec.highest(keymap.of([
             { key: "Ctrl-Enter", run: runKey, preventDefault: true },

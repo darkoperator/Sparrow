@@ -1,0 +1,69 @@
+/* Share: two cards side by side, Export my work and Import a bundle, centred like a settings page. */
+.share { box-sizing: border-box; max-width: 1012px; margin: 0 auto; padding: 32px 16px; }
+.share-head { margin-bottom: 20px; }
+.share-head h2 { margin: 0; font-size: 22px; }
+.share-head p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+
+.share-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; align-items: start; }
+.share-panel { display: flex; flex-direction: column; gap: 14px; min-width: 0; padding: 20px; }
+.share-panel-head { display: flex; gap: 12px; align-items: flex-start; }
+.share-panel-head h2 { margin: 0; font-size: 15px; }
+.share-panel-head .meta { margin: 3px 0 0; color: var(--muted); font-size: 12px; opacity: 1; }
+.share-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.share-icon-import { background: var(--ok-bg); color: var(--ok); }
+
+.share-main-btn { justify-content: center; padding: 9px 12px; font-size: 13px; }
+.share-drop {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 16px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: 13px;
+}
+.share-drop:hover:not(:disabled) { border-color: var(--accent); background: var(--raised); }
+.share-drop .icon { color: var(--muted); }
+
+.share-card {
+  min-width: 0;
+  max-width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: 12px;
+}
+.share-card p, .share-card dl, .share-card .warnings { margin: 0 0 8px; overflow-wrap: anywhere; }
+.share-card code { overflow-wrap: anywhere; color: var(--text); }
+.share-card strong { color: var(--text); }
+.share-sha { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+.share-sha .sha { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; font-size: 11px; }
+.share-sha button { padding: 2px 8px; color: var(--accent-text); }
+.share-hint { color: var(--muted); font-size: 11px; opacity: 1; }
+
+.share-counts { display: flex; flex-direction: column; margin: 0; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.share-counts > div { display: flex; justify-content: space-between; gap: 12px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+.share-counts > div:last-child { border-bottom: 0; }
+.share-counts dt { color: var(--text-2); font-size: 12px; }
+.share-counts dd { margin: 0; color: var(--text); font-weight: 600; }
+.share-warnings { padding: 8px 10px; border-radius: 6px; }
+.share-warnings p { margin: 2px 0; }
+
+.share-done { display: block; padding: 8px 10px; border: 1px solid var(--ok-bg); border-radius: 6px; background: var(--ok-bg); color: var(--text); font-size: 12px; }
+.share > [role="alert"] { margin-top: 16px; }

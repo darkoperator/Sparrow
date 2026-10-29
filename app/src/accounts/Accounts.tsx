@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { accountsList, isCmdError, type AccountPage, type AccountRow } from "../api";
 import { useNav } from "../shell/nav";
 import { displaySafe } from "../text";
+import Icon from "../ui/Icon";
+import "./accounts.css";
 
 const STAGE_LABELS: Record<string, string> = {
   suspicious_sign_in: "Suspicious sign-in",
@@ -25,6 +27,21 @@ function signinCoverage(a: AccountRow): string {
   return a.signins_first && a.signins_last
     ? `sign-ins ${utc(a.signins_first)} to ${utc(a.signins_last)}`
     : "no sign-ins collected";
+}
+
+/** Two letters for the avatar, from the UPN's local part ("a.rivera@…" → "AR"). Decoration only. */
+function initials(upn: string): string {
+  const parts = upn.split("@")[0].split(/[._-]+/).filter((p) => p !== "");
+  const letters = parts.length > 1 ? parts[0][0] + parts[1][0] : (parts[0] ?? "").slice(0, 2);
+  return letters.toUpperCase();
+}
+
+/** The severity's colour class; the severity is always written next to it. */
+function sevClass(s: string): string {
+  const k = s.toLowerCase();
+  if (k === "high" || k === "critical") return "acc-sev-high";
+  if (k === "medium") return "acc-sev-medium";
+  return "acc-sev-low";
 }
 
 function addressText(a: AccountRow["addresses"][number]): string {
@@ -53,7 +70,10 @@ export default function Accounts({ onSelect }: { onSelect: (upn: string) => void
 
   return (
     <section className="accounts">
-      <h2>Accounts</h2>
+      <header className="acc-head">
+        <h2>Accounts</h2>
+        <p className="acc-sub">Accounts with findings. Click one to see its items in the review queue.</p>
+      </header>
       {error && <div role="alert">{displaySafe(error)}</div>}
       {page && page.warnings.length > 0 && (
         <ul className="warnings" aria-label="Warnings">
@@ -62,16 +82,18 @@ export default function Accounts({ onSelect }: { onSelect: (upn: string) => void
           ))}
         </ul>
       )}
-      {page && page.truncated && <p>Showing {page.accounts.length} of {page.total} accounts.</p>}
-      {page && page.accounts.length === 0 && page.warnings.length === 0 && <p>No accounts have findings.</p>}
+      {page && page.truncated && <p className="acc-note">Showing {page.accounts.length} of {page.total} accounts.</p>}
+      {page && page.accounts.length === 0 && page.warnings.length === 0 && (
+        <p className="acc-empty">No accounts have findings.</p>
+      )}
       {page && page.accounts.length > 0 && (
-        <div className="table-scroll">
-        <table>
+        <div className="table-scroll card acc-card">
+        <table className="acc-table">
           <thead>
             <tr>
               <th>Account</th>
               <th>Worst severity</th>
-              <th>Findings</th>
+              <th className="acc-num">Findings</th>
               <th>Stages</th>
               <th>First suspicious</th>
               <th>Addresses</th>
@@ -79,45 +101,72 @@ export default function Accounts({ onSelect }: { onSelect: (upn: string) => void
           </thead>
           <tbody>
             {page.accounts.map((a) => (
-              <tr key={`${a.tenant_key}/${a.upn}`}>
+              <tr key={`${a.tenant_key}/${a.upn}`} className={`acc-row ${sevClass(a.worst_severity)}`}>
                 <td>
-                  <button
-                    className="link"
-                    title="Show this account's items in the review queue"
-                    onClick={() => onSelect(a.upn)}
-                  >
-                    {displaySafe(a.upn)}
-                  </button>
-                  {nav && (
-                    <button
-                      className="link"
-                      aria-label={`Open account tab ${displaySafe(a.upn)}`}
-                      onClick={() => nav.openEntity({ kind: "account", value: a.upn })}
-                    >
-                      Open tab
-                    </button>
-                  )}
-                  <div className="meta">{displaySafe(a.tenant_key)}</div>
-                  <div className="meta">{displaySafe(signinCoverage(a))}</div>
+                  <div className="acc-account">
+                    <span className="acc-avatar" aria-hidden="true">
+                      {initials(displaySafe(a.upn))}
+                    </span>
+                    <div className="acc-who">
+                      <div className="acc-upn-line">
+                        <button
+                          className="link acc-upn"
+                          title={`${displaySafe(a.upn)} — show this account's items in the review queue`}
+                          onClick={() => onSelect(a.upn)}
+                        >
+                          {displaySafe(a.upn)}
+                        </button>
+                        {nav && (
+                          <button
+                            className="acc-open"
+                            aria-label={`Open account tab ${displaySafe(a.upn)}`}
+                            title="Open tab"
+                            onClick={() => nav.openEntity({ kind: "account", value: a.upn })}
+                          >
+                            <Icon name="external" size={12} />
+                          </button>
+                        )}
+                      </div>
+                      <div className="meta mono" title={displaySafe(a.tenant_key)}>
+                        {displaySafe(a.tenant_key)}
+                      </div>
+                      <div className="meta" title={displaySafe(signinCoverage(a))}>
+                        {displaySafe(signinCoverage(a))}
+                      </div>
+                    </div>
+                  </div>
                 </td>
-                <td>{displaySafe(a.worst_severity)}</td>
-                <td>{a.finding_count}</td>
-                <td>{a.stages.map(stageLabel).join(", ")}</td>
-                <td>{a.first_suspicious ? displaySafe(a.first_suspicious) : ""}</td>
                 <td>
-                  <ul className="plain">
+                  <span className="pill acc-sev">{displaySafe(a.worst_severity)}</span>
+                </td>
+                <td className="acc-num">{a.finding_count}</td>
+                <td>
+                  {a.stages.length > 0 && (
+                    <span className="acc-stages">
+                      {a.stages.map((s) => (
+                        <span key={s} className="acc-stage">
+                          {stageLabel(s)}
+                        </span>
+                      ))}
+                    </span>
+                  )}
+                </td>
+                <td className="mono acc-time">{a.first_suspicious ? displaySafe(a.first_suspicious) : ""}</td>
+                <td>
+                  <ul className="plain acc-addresses">
                     {a.addresses.map((x) => (
-                      <li key={x.ip}>
-                        {displaySafe(addressText(x))}
+                      <li key={x.ip} title={displaySafe(addressText(x))}>
+                        <span className="mono">{displaySafe(addressText(x))}</span>
                         {nav && (
                           <>
                             {" "}
                             <button
-                              className="link"
+                              className="acc-open"
                               aria-label={`Open IP tab ${displaySafe(x.ip)}`}
+                              title="Open tab"
                               onClick={() => nav.openEntity({ kind: "ip", value: x.ip })}
                             >
-                              Open tab
+                              <Icon name="external" size={12} />
                             </button>
                           </>
                         )}

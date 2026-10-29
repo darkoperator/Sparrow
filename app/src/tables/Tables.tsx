@@ -14,6 +14,7 @@ import Grid, { type Cell } from "../grid/Grid";
 import { displaySafe } from "../text";
 import FilterBuilder, { FilterChips } from "./FilterBuilder";
 import RowDetail from "./RowDetail";
+import "./tables.css";
 
 export interface TableRequest {
   table: string;
@@ -194,21 +195,25 @@ export default function Tables({ initial }: { initial?: TableRequest }) {
 
   return (
     <section className="tables">
-      <h2>Tables</h2>
-      <label>
-        Table{" "}
-        <select value={spec?.table ?? ""} onChange={(e) => pickTable(e.target.value)}>
-          <option value="">Choose a table…</option>
-          {tables.map((t) => (
-            <option key={t} value={t}>
-              {displaySafe(t)}
-            </option>
-          ))}
-        </select>
-      </label>
-      {spec && columnInfo.length > 0 && <FilterBuilder key={spec.table} columns={columnInfo} onAdd={addFilter} />}
-      {spec && spec.filters.length > 0 && (
-        <FilterChips filters={spec.filters} onRemove={removeFilter} />
+      <header className="tbl-head">
+        <h2>Tables</h2>
+        <label className="tbl-pick">
+          Table{" "}
+          <select className="mono" value={spec?.table ?? ""} onChange={(e) => pickTable(e.target.value)}>
+            <option value="">Choose a table…</option>
+            {tables.map((t) => (
+              <option key={t} value={t}>
+                {displaySafe(t)}
+              </option>
+            ))}
+          </select>
+        </label>
+      </header>
+      {spec && (columnInfo.length > 0 || spec.filters.length > 0) && (
+        <div className="card tbl-filters">
+          {columnInfo.length > 0 && <FilterBuilder key={spec.table} columns={columnInfo} onAdd={addFilter} />}
+          {spec.filters.length > 0 && <FilterChips filters={spec.filters} onRemove={removeFilter} />}
+        </div>
       )}
       {error && <div role="alert">{displaySafe(error)}</div>}
       {cancelled && <p role="status">Query cancelled.</p>}
@@ -218,13 +223,13 @@ export default function Tables({ initial }: { initial?: TableRequest }) {
         </p>
       )}
       {spec && (!loading || rows.length > 0) && !error && !cancelled && (
-        <p className="meta" data-testid="total">
+        <p className="meta tbl-total" data-testid="total">
           {capped ? "≥ " : ""}
           {total.toLocaleString("en-US")} {total === 1 ? "row" : "rows"}
           {(rows.length < total || capped) && ` · ${rows.length.toLocaleString("en-US")} loaded`}
         </p>
       )}
-      {(error || cancelled) && rows.length > 0 && more && <button onClick={retry}>Load more</button>}
+      {(error || cancelled) && rows.length > 0 && more && <button className="tbl-more" onClick={retry}>Load more</button>}
       {spec && rows.length > 0 && (
         <div className="tables-layout">
           <Grid
@@ -242,7 +247,7 @@ export default function Tables({ initial }: { initial?: TableRequest }) {
           {selected !== null && rows[selected] && <RowDetail columns={columns} row={rows[selected]} />}
         </div>
       )}
-      {spec && !loading && !error && !cancelled && rows.length === 0 && <p>No rows match.</p>}
+      {spec && !loading && !error && !cancelled && rows.length === 0 && <p className="tbl-empty">No rows match.</p>}
     </section>
   );
 }

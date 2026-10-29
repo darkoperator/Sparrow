@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { TableInfo } from "../api";
 import { displaySafe } from "../text";
+import Icon from "../ui/Icon";
 
 interface Props {
   tables: TableInfo[];
@@ -20,36 +21,38 @@ export default function SchemaSidebar({ tables, onInsert }: Props) {
 
   return (
     <aside className="schema-sidebar" aria-label="Schema">
-      <ul className="plain">
+      <ul className="plain schema-tables">
         {tables.map((t) => {
           const shown = open.has(t.name);
           return (
-            <li key={t.name}>
+            <li key={t.name} className="schema-table">
+              <div className="schema-table-row">
               <button
-                className="link"
+                className="schema-toggle"
                 aria-expanded={shown}
                 aria-label={`${shown ? "Hide" : "Show"} columns of ${t.name}`}
                 onClick={() => toggle(t.name)}
               >
-                {shown ? "▾" : "▸"}
+                <Icon name={shown ? "chevron-down" : "chevron-right"} size={12} />
               </button>{" "}
               <button
-                className="link"
-                title={t.comment === null ? undefined : displaySafe(t.comment)}
+                className="schema-name mono"
+                title={displaySafe(t.comment === null ? t.name : `${t.name} — ${t.comment}`)}
                 onClick={() => onInsert(t.name)}
               >
                 {displaySafe(t.name)}
               </button>{" "}
-              <span className="tag">{displaySafe(t.kind)}</span>
+              <span className="schema-kind">{displaySafe(t.kind)}</span>
+              </div>
               {shown && (
                 <ul className="plain schema-columns" aria-label={`Columns of ${t.name}`}>
                   {t.columns.map((c) => (
-                    <li key={c.name}>
-                      <button className="link" onClick={() => onInsert(c.name)}>
+                    <li key={c.name} className="schema-column">
+                      <button className="schema-name mono" title={displaySafe(c.name)} onClick={() => onInsert(c.name)}>
                         {displaySafe(c.name)}
                       </button>{" "}
-                      <span className="meta">{displaySafe(c.type)}</span>
-                      {c.comment !== null && <div className="meta">{displaySafe(c.comment)}</div>}
+                      <span className="schema-type mono">{displaySafe(c.type)}</span>
+                      {c.comment !== null && <div className="schema-comment">{displaySafe(c.comment)}</div>}
                     </li>
                   ))}
                 </ul>

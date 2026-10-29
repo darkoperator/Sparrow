@@ -1,0 +1,93 @@
+/* Highlights: the sets with their switches on the left; each set's rules, the rule form and Clear on the right. */
+.highlights { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); min-height: calc(100vh - 86px); }
+.highlights > * { min-width: 0; }
+.hl-empty { padding: 24px; border: 1px dashed var(--line-strong); border-radius: 8px; background: var(--card); color: var(--muted); text-align: center; }
+
+.hl-side { box-sizing: border-box; padding: 20px 16px; border-right: 1px solid var(--line); background: var(--bg); }
+.hl-side h2 { margin: 0; font-size: 18px; }
+.hl-intro { margin: 6px 0 18px; color: var(--muted); font-size: 12px; line-height: 1.5; opacity: 1; }
+.hl-side h3.label { margin: 0 0 8px; }
+.hl-sets { display: flex; flex-direction: column; gap: 8px; }
+.hl-set { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); min-width: 0; }
+.hl-set .meta { padding-left: 38px; color: var(--muted); font-size: 11px; opacity: 1; }
+.hl-set-off { opacity: 0.7; }
+.hl-set-label { display: flex; gap: 8px; align-items: center; min-width: 0; color: var(--text); font-size: 13px; cursor: pointer; }
+.hl-set-label strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+
+/* The set switches: a checkbox drawn as a switch, so the role and label stay a checkbox's. */
+.hl-switch {
+  appearance: none;
+  flex: none;
+  position: relative;
+  width: 28px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--raised-2);
+  cursor: pointer;
+}
+.hl-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--muted);
+  transition: left 0.12s;
+}
+.hl-switch:checked { border-color: var(--accent); background: var(--accent); }
+.hl-switch:checked::after { left: 14px; background: var(--on-accent); }
+@media (prefers-reduced-motion: reduce) { .hl-switch::after { transition: none; } }
+
+.hl-main { box-sizing: border-box; padding: 20px 24px; display: flex; flex-direction: column; gap: 16px; }
+.hl-rules-head { display: flex; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.hl-rules-head h3 { min-width: 0; margin: 0; overflow: hidden; font-size: 16px; text-overflow: ellipsis; white-space: nowrap; }
+.hl-rules ul { display: flex; flex-direction: column; gap: 6px; }
+.hl-rule {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+}
+.hl-rule-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  padding: 4px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hl-rule .meta { flex: none; color: var(--muted); font-size: 11px; opacity: 1; }
+.hl-remove { flex: none; display: inline-flex; align-items: center; padding: 4px; border: 0; background: none; color: var(--faint); }
+.hl-remove:hover:not(:disabled) { background: var(--raised); color: var(--mal); }
+
+.swatch { flex: none; display: inline-block; width: 14px; height: 14px; border-radius: 4px; vertical-align: middle; }
+.swatch.hl-red { background: var(--mal); }
+.swatch.hl-amber { background: var(--sus); }
+.swatch.hl-green { background: var(--ok); }
+.swatch.hl-blue { background: var(--accent); }
+.swatch.hl-purple { background: var(--ai); }
+
+.hl-add { padding: 14px 16px; }
+.hl-add h3 { margin: 0 0 10px; font-size: 13px; }
+.hl-add form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+.hl-add label { display: flex; flex-direction: column; gap: 3px; min-width: 0; color: var(--faint); font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.hl-add input, .hl-add select { min-width: 0; letter-spacing: 0; text-transform: none; }
+.hl-add .hl-value { flex: 1 1 200px; }
+.hl-add .hl-value input { width: 100%; }
+
+.hl-clear h3.label { margin: 0 0 6px; }
+.hl-clear p { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0; color: var(--text-2); }

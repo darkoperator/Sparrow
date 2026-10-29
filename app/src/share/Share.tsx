@@ -10,6 +10,8 @@ import {
   type SharePreview,
 } from "../api";
 import { displaySafe } from "../text";
+import Icon from "../ui/Icon";
+import "./share.css";
 
 interface Props {
   /** Importing stores proposals: it needs a writable case and an analyst name. */
@@ -74,12 +76,24 @@ export default function Share({ canImport, onShowQueue }: Props) {
 
   return (
     <div className="share">
-      <section aria-labelledby="share-export">
-        <h2 id="share-export">Export my work</h2>
-        <p className="meta">
-          Your accepted and analyst decisions, as one file another analyst with the same evidence can import.
-        </p>
-        <button disabled={busy} onClick={() => void doExport()}>
+      <header className="share-head">
+        <h2>Share your work</h2>
+        <p>Send your decisions to another analyst who has the same evidence, and import theirs.</p>
+      </header>
+      <div className="share-cols">
+      <section className="card share-panel" aria-labelledby="share-export">
+        <div className="share-panel-head">
+          <span className="share-icon" aria-hidden="true">
+            <Icon name="upload" size={16} />
+          </span>
+          <div>
+            <h2 id="share-export">Export my work</h2>
+            <p className="meta">
+              Your accepted and analyst decisions, as one file another analyst with the same evidence can import.
+            </p>
+          </div>
+        </div>
+        <button className="btn-primary share-main-btn" disabled={busy} onClick={() => void doExport()}>
           Export my work…
         </button>
         {exported && (
@@ -88,18 +102,27 @@ export default function Share({ canImport, onShowQueue }: Props) {
               {exported.items === 1 ? "1 item" : `${exported.items} items`} written to{" "}
               <code>{displaySafe(exported.path)}</code>
             </p>
-            <p>
-              SHA-256: <code className="sha">{exported.sha256}</code>{" "}
-              <button onClick={() => copy(exported.sha256)}>Copy SHA-256</button>
+            <p className="share-sha">
+              <span className="label">SHA-256</span> <code className="sha">{exported.sha256}</code>{" "}
+              <button className="btn-ghost" onClick={() => copy(exported.sha256)}>Copy SHA-256</button>
             </p>
-            <p>Send the SHA separately so the other analyst can check the file.</p>
+            <p className="share-hint">Send the SHA separately so the other analyst can check the file.</p>
           </div>
         )}
       </section>
 
-      <section aria-labelledby="share-import">
-        <h2 id="share-import">Import a bundle</h2>
-        <button disabled={busy} onClick={() => void doPreview()}>
+      <section className="card share-panel" aria-labelledby="share-import">
+        <div className="share-panel-head">
+          <span className="share-icon share-icon-import" aria-hidden="true">
+            <Icon name="download" size={16} />
+          </span>
+          <div>
+            <h2 id="share-import">Import a bundle</h2>
+            <p className="meta">Preview another analyst&apos;s bundle, then confirm to add it to the review queue.</p>
+          </div>
+        </div>
+        <button className="share-drop" disabled={busy} onClick={() => void doPreview()}>
+          <Icon name="download" size={18} />
           Import a bundle…
         </button>
         {preview && (
@@ -112,7 +135,7 @@ export default function Share({ canImport, onShowQueue }: Props) {
           />
         )}
         {imported && (
-          <p role="status">
+          <p role="status" className="share-done">
             {added(imported)} proposals added to the review queue
             {imported.agrees > 0 && `; ${imported.agrees} already agree`}
             {imported.superseded > 0 &&
@@ -124,6 +147,7 @@ export default function Share({ canImport, onShowQueue }: Props) {
           </p>
         )}
       </section>
+      </div>
 
       {error !== null && <p role="alert">{displaySafe(error)}</p>}
     </div>
@@ -172,13 +196,14 @@ function PreviewCard({
       <p>
         From <strong>{displaySafe(preview.analyst)}</strong> — <code>{displaySafe(preview.path)}</code>
       </p>
-      <p>
-        Exported {utc(preview.exported_at)} · {preview.items === 1 ? "1 item" : `${preview.items} items`}
+      <p className="share-hint">
+        Exported <span className="mono">{utc(preview.exported_at)}</span> ·{" "}
+        {preview.items === 1 ? "1 item" : `${preview.items} items`}
       </p>
-      <p>
-        SHA-256: <code className="sha">{preview.sha256}</code>
+      <p className="share-sha">
+        <span className="label">SHA-256</span> <code className="sha">{preview.sha256}</code>
       </p>
-      <p className="meta">Compare it with the SHA the other analyst sent you.</p>
+      <p className="meta share-hint">Compare it with the SHA the other analyst sent you.</p>
       <dl className="share-counts">
         {counts.map(([label, n], i) => (
           <div key={label}>
@@ -189,9 +214,9 @@ function PreviewCard({
           </div>
         ))}
       </dl>
-      <p className="meta">Superseded: replaced by a newer bundle from the same analyst; not added to the queue.</p>
+      <p className="meta share-hint">Superseded: replaced by a newer bundle from the same analyst; not added to the queue.</p>
       {rulesDiffer && (
-        <div className="warnings">
+        <div className="warnings share-warnings">
           <p>The rule set differs from this case's (a warning; the import still works).</p>
           {s.rules_only_in_bundle.length > 0 && (
             <p>
@@ -222,12 +247,12 @@ function PreviewCard({
       ) : (
         <>
           {!canImport && <p className="meta">Importing needs a writable case and an analyst name.</p>}
-          <button disabled={busy || !canImport} onClick={onConfirm}>
+          <button className="btn-primary" disabled={busy || !canImport} onClick={onConfirm}>
             Confirm import
           </button>
         </>
-      )}
-      <button disabled={busy} onClick={onCancel}>
+      )}{" "}
+      <button className="btn-ghost" disabled={busy} onClick={onCancel}>
         {s.already_imported ? "Close" : "Cancel"}
       </button>
     </div>

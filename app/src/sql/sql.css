@@ -1,0 +1,56 @@
+/* SQL: the schema sidebar on the left, the editor, its run bar and the results grid on the right. */
+.sql-screen { display: grid; grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); min-height: calc(100vh - 86px); }
+.sql-screen > * { min-width: 0; }
+
+.sql-side { box-sizing: border-box; padding: 14px 10px 14px 14px; border-right: 1px solid var(--line); background: var(--bg); }
+.sql-side-head { margin: 0 0 8px 4px; }
+.schema-sidebar { max-height: calc(100vh - 130px); overflow: auto; font-size: 12px; }
+.schema-table-row { display: flex; gap: 2px; align-items: center; min-width: 0; padding: 1px 0; }
+.schema-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--faint);
+}
+.schema-toggle:hover:not(:disabled) { background: var(--raised); color: var(--text); }
+.schema-name {
+  min-width: 0;
+  overflow: hidden;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.schema-name:hover:not(:disabled) { background: var(--raised); color: var(--accent-text); }
+.schema-kind { flex: none; margin-left: auto; padding-right: 4px; color: var(--faint); font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; }
+.schema-sidebar .schema-columns { margin: 2px 0 6px; padding-left: 22px; }
+.schema-column { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px; min-width: 0; }
+.schema-column .schema-name { flex: 0 1 auto; color: var(--text-2); font-size: 11px; }
+.schema-type { flex: none; margin-left: auto; padding-right: 4px; color: var(--faint); font-size: 10px; text-transform: uppercase; }
+.schema-comment { flex-basis: 100%; padding: 0 4px 4px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+
+.sql-main { box-sizing: border-box; padding: 14px 16px 20px; min-width: 0; }
+.sql-editor { width: 100%; box-sizing: border-box; }
+.sql-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+.sql-runbar .btn-primary { min-width: 72px; }
+.sql-limit { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); font-size: 12px; }
+.sql-hint { margin-left: auto; color: var(--faint); font-size: 11px; }
+.sql-actions .meta { color: var(--muted); }
+.sql-note { display: flex; gap: 6px; align-items: center; margin: 4px 0 8px; color: var(--faint); font-size: 11px; opacity: 1; }
+
+.sql-results-head { display: flex; gap: 10px; align-items: baseline; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.sql-results-head h3 { margin: 0; font-size: 13px; }
+.sql-count { margin: 4px 0 8px; color: var(--muted); font-size: 12px; opacity: 1; }
+.sql-main [role="alert"].prose, .sql-main [role="status"] { margin: 6px 0; }
+.sql-main [role="status"] { padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--raised); }

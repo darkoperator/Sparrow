@@ -1,0 +1,59 @@
+/* Tables: the table picker, a filter card (builder + chips), the grid and the full row beside it. */
+.tables { padding: 16px 16px 20px; }
+.tbl-head { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-bottom: 12px; }
+.tbl-head h2 { margin: 0; font-size: 18px; }
+.tbl-pick { display: inline-flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12px; }
+.tbl-pick select { min-width: 220px; max-width: 360px; color: var(--text); font-size: 13px; font-weight: 600; }
+.tbl-total { margin: 8px 0; color: var(--muted); font-size: 12px; opacity: 1; }
+.tbl-empty { padding: 24px; border: 1px dashed var(--line-strong); border-radius: 8px; background: var(--card); color: var(--muted); text-align: center; }
+.tbl-more { margin: 6px 0; }
+
+.tbl-filters { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; padding: 10px 12px; min-width: 0; }
+
+.filter-builder { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; margin: 0; }
+.filter-builder label { display: flex; flex-direction: column; gap: 3px; min-width: 0; color: var(--faint); font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.filter-builder select, .filter-builder input, .filter-builder textarea { min-width: 0; max-width: 280px; letter-spacing: 0; text-transform: none; }
+.filter-builder input, .filter-builder textarea { font-family: var(--font-mono); font-size: 12px; }
+.filter-builder textarea { width: 240px; }
+.filter-builder button[type="submit"] { border-style: dashed; }
+
+.filter-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; }
+.filter-chips .filter-chip {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  max-width: 100%;
+  min-width: 0;
+  padding: 3px 4px 3px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--raised);
+  color: var(--text);
+  font-size: 11px;
+}
+.filter-chips .filter-chip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.filter-chips .filter-chip button { display: inline-flex; align-items: center; padding: 2px; border: 0; background: none; color: var(--faint); }
+.filter-chips .filter-chip button:hover:not(:disabled) { background: var(--raised-2); color: var(--text); }
+
+.tables-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 30%); gap: 12px; align-items: start; }
+.tables-layout > * { min-width: 0; }
+
+.row-detail {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  max-height: 420px;
+  overflow: auto;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+}
+.row-detail h3 { margin: 0 0 8px; }
+.row-detail dl { margin: 0; }
+.row-detail-field { padding: 6px 0; border-bottom: 1px solid var(--line); }
+.row-detail-field:last-child { border-bottom: 0; }
+.row-detail dt { color: var(--faint); font-size: 10px; }
+.row-detail dd { margin: 2px 0 0; }
+.row-detail pre { margin: 0; max-width: 100%; overflow-x: auto; color: var(--text); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.filter-builder select, .filter-builder input { height: 28px; }

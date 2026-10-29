@@ -1,0 +1,84 @@
+/* Accounts: the account roll-up as one table card. Severity colours always sit next to the severity's text. */
+.accounts { padding: 20px 24px; }
+.acc-head { margin-bottom: 14px; }
+.acc-head h2 { margin: 0; font-size: 20px; }
+.acc-sub { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+.acc-note, .acc-empty { margin: 8px 0; color: var(--muted); }
+.acc-empty { padding: 24px; border: 1px dashed var(--line-strong); border-radius: 8px; background: var(--card); text-align: center; }
+.accounts .warnings { margin-bottom: 12px; border: 1px solid var(--sus-pill); border-radius: 8px; }
+
+.acc-card { overflow: auto; }
+.acc-table { width: 100%; font-size: 12px; }
+.acc-table th {
+  padding: 10px 14px;
+  background: var(--raised);
+  border-bottom: 1px solid var(--line-strong);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-align: left;
+  text-transform: none;
+  white-space: nowrap;
+}
+.acc-table td { padding: 10px 14px; border-bottom: 1px solid var(--line); color: var(--text-2); text-align: left; vertical-align: middle; }
+.acc-table tbody tr:hover { background: var(--raised); }
+.acc-table tr.acc-sev-high { background: var(--mal-bg); }
+.acc-table th.acc-num { text-align: right; }
+.acc-table td.acc-num { text-align: right; color: var(--text); font-weight: 600; font-size: 13px; }
+
+.acc-account { display: flex; gap: 10px; align-items: center; min-width: 220px; max-width: 420px; }
+.acc-avatar {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-size: 11px;
+  font-weight: 700;
+}
+.acc-sev-high .acc-avatar { background: var(--mal-pill); color: var(--mal); }
+.acc-sev-medium .acc-avatar { background: var(--sus-pill); color: var(--sus); }
+.acc-who { min-width: 0; }
+.acc-upn-line { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.acc-table .acc-upn {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.acc-table .acc-upn:hover { color: var(--accent-text); text-decoration: underline; }
+.acc-who .meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
+
+.acc-open {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--faint);
+  vertical-align: middle;
+}
+.acc-open:hover:not(:disabled) { background: var(--raised-2); color: var(--accent-text); }
+
+.acc-sev { font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+.acc-sev-high .acc-sev { background: var(--mal-pill); color: var(--mal); }
+.acc-sev-medium .acc-sev { background: var(--sus-pill); color: var(--sus); }
+.acc-sev-low .acc-sev { background: var(--accent-soft); color: var(--accent-text); }
+
+.acc-stages { display: flex; flex-wrap: wrap; gap: 4px; }
+.acc-stage { padding: 1px 6px; border-radius: 4px; background: var(--ai-bg); color: var(--ai); font-size: 11px; white-space: nowrap; }
+
+.acc-time { color: var(--text-2); font-size: 11px; white-space: nowrap; }
+.acc-addresses li { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-2); }
+.acc-addresses li + li { margin-top: 2px; }

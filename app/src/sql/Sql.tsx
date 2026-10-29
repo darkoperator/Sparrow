@@ -13,9 +13,11 @@ import {
 import { save } from "../dialog";
 import Grid from "../grid/Grid";
 import { displaySafe, displaySafeMultiline } from "../text";
+import Icon from "../ui/Icon";
 import { identifier } from "./completion";
 import SchemaSidebar from "./SchemaSidebar";
 import SqlEditor, { type CheckNote, type SqlEditorHandle } from "./SqlEditor";
+import "./sql.css";
 
 // The backend clamps to 10000 as well; the default matches `sql_run`'s.
 const LIMITS = [100, 1000, 5000, 10000] as const;
@@ -208,7 +210,8 @@ export default function Sql() {
 
   return (
     <div className="sql-screen">
-      <div>
+      <div className="sql-side">
+        <div className="label sql-side-head">Schema · read-only</div>
         {schemaError !== null && <p role="alert">{displaySafe(schemaError)}</p>}
         <SchemaSidebar tables={tables} onInsert={(name) => editor.current?.insert(identifier(name))} />
       </div>
@@ -227,12 +230,12 @@ export default function Sql() {
             {displaySafeMultiline(checkError.text)}
           </p>
         )}
-        <div className="sql-actions">
-          <button disabled={busy || sql.trim() === ""} onClick={() => void run()}>
+        <div className="sql-actions sql-runbar">
+          <button className="btn-primary" disabled={busy || sql.trim() === ""} onClick={() => void run()}>
             Run
           </button>
           {busy && <button onClick={() => void cancel()}>Cancel</button>}
-          <label>
+          <label className="sql-limit">
             Row limit{" "}
             <select value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
               {LIMITS.map((l) => (
@@ -242,12 +245,16 @@ export default function Sql() {
               ))}
             </select>
           </label>
-          <button disabled={busy || sql.trim() === ""} onClick={() => void exportCsv()}>
+          <button className="btn-ghost" disabled={busy || sql.trim() === ""} onClick={() => void exportCsv()}>
             Export CSV…
           </button>
           {busy && <span className="meta">{exporting ? "Exporting…" : "Running…"}</span>}
+          <span className="sql-hint">Cmd/Ctrl+Enter runs</span>
         </div>
-        <p className="meta">Leaving this screen cancels a running query.</p>
+        <p className="meta sql-note">
+          <Icon name="alert" size={12} />
+          Leaving this screen cancels a running query.
+        </p>
         {cancelError !== null && <p role="alert">{displaySafe(cancelError)}</p>}
         {exportNote !== null &&
           (exportNote.alert ? (
@@ -265,7 +272,10 @@ export default function Sql() {
         )}
         {loaded !== null && (
           <>
-            <p className="meta">
+            <div className="sql-results-head">
+              <h3>Results</h3>
+            </div>
+            <p className="meta sql-count">
               {rowCount(loaded.rows.length)}
               {loaded.truncated &&
                 loaded.pages === 1 &&

@@ -1,56 +1,17 @@
 .meta { opacity: 0.75; font-size: 12px; }
 .tag { font-size: 11px; padding: 0 4px; border: 1px solid #8886; border-radius: 3px; }
 .prose { white-space: pre-wrap; overflow-wrap: anywhere; }
-.accounts { padding: 12px 16px; }
-.accounts table { border-collapse: collapse; }
-.accounts th, .accounts td { text-align: left; vertical-align: top; padding: 4px 10px; border-bottom: 1px solid #8884; }
 .filter-chip { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
-.sql-screen { display: grid; grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); gap: 16px; padding: 12px 16px; }
-.sql-screen > * { min-width: 0; }
-.schema-sidebar { max-height: calc(100vh - 80px); overflow: auto; font-size: 12px; }
-.schema-columns { padding-left: 18px; }
-.sql-editor { width: 100%; box-sizing: border-box; }
-.sql-actions { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
-.share { padding: 12px 16px; }
-.share-card { border: 1px solid #8884; border-radius: 4px; padding: 8px 12px; margin: 8px 0; }
-.share-counts { display: flex; gap: 24px; margin: 6px 0; }
-.share-counts dt { font-weight: 600; }
-.share-counts dd { margin: 0; }
-code.sha { overflow-wrap: anywhere; }
-.tables { padding: 12px 16px; }
-.tables-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 30%); gap: 12px; align-items: start; }
-.filter-builder { margin: 8px 0; }
-.filter-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+/* The base scope chip under Review's and Events' own rules; Tables scopes its chips under .filter-chips. */
 .filter-chip { display: inline-flex; gap: 4px; align-items: center; padding: 1px 6px; border: 1px solid #8886; border-radius: 10px; }
 .filter-chip button { background: none; border: 0; padding: 0 2px; color: inherit; }
-.row-detail { border: 1px solid #8884; padding: 4px 8px; max-height: 420px; overflow: auto; font-size: 12px; }
-.row-detail dt { font-weight: 600; }
-.row-detail dd { margin: 0 0 6px; }
-.row-detail pre { margin: 0; }
-.highlights { padding: 12px 16px; }
-.swatch { display: inline-block; width: 12px; height: 12px; margin-right: 6px; border: 1px solid #8886; vertical-align: middle; }
-.swatch.hl-red { background: #d32f2f; }
-.swatch.hl-amber { background: #f9a825; }
-.swatch.hl-green { background: #2e7d32; }
-.swatch.hl-blue { background: #1976d2; }
-.swatch.hl-purple { background: #7b1fa2; }
 /* ui-fixes-1: wide content scrolls inside its grid, never the page. */
 .detail-fields { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 6px 0; }
 .detail-fields dt { font-weight: 600; }
 .detail-fields dd { margin: 0; overflow-wrap: anywhere; }
 /* ui-fixes-1 fix: plain wide wrappers scroll locally instead of being clipped at the page. */
 .table-scroll { overflow-x: auto; max-width: 100%; }
-.share-card, .row-detail { min-width: 0; max-width: 100%; overflow-x: auto; }
-.share-card code { overflow-wrap: anywhere; }
 pre.prose { max-width: 100%; overflow-x: auto; }
-.devices { padding: 12px 16px; }
-.devices table { border-collapse: collapse; }
-.devices th, .devices td { text-align: left; vertical-align: top; padding: 4px 10px; border-bottom: 1px solid #8884; }
-.status { padding: 0 4px; border: 1px solid #8886; border-radius: 3px; }
-/* A device seen after its removal: bold, a heavy red border and a background, plus the warning sign in the text, so
-   the cue does not depend on colour. The tints are translucent, so they read on light and dark. */
-.status-alert { font-weight: 700; border: 2px solid #b00020; background: #b0002026; }
-.malicious { font-weight: 700; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 /* Entity tabs */
 .entity-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }

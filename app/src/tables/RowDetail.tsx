@@ -22,11 +22,11 @@ function pretty(v: unknown): string {
 export default function RowDetail({ columns, row }: { columns: string[]; row: unknown[] }) {
   return (
     <aside className="row-detail" aria-label="Row detail">
-      <h3>Row</h3>
+      <h3 className="label">Row</h3>
       <dl>
         {columns.map((c, i) => (
           <div key={`${i}:${c}`} className="row-detail-field">
-            <dt>{displaySafe(c)}</dt>
+            <dt className="mono">{displaySafe(c)}</dt>
             <dd>
               <pre className="prose">{displaySafeMultiline(pretty(row[i]))}</pre>
             </dd>
