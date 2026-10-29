@@ -3,6 +3,7 @@
 // parses the text: it goes to the backend as typed, and a refusal comes back as an `errors` entry under its box.
 import { useEffect, useId, useState } from "react";
 import { eventsSuggest, type AiFilter, type EventField, type FlagFilter } from "../api";
+import Icon from "../ui/Icon";
 import { displaySafe } from "../text";
 
 export const FIELD_LABEL: Record<EventField, string> = {
@@ -96,9 +97,10 @@ function FieldBox({
   }, [field, value]);
   return (
     <div className="ev-field">
-      <label htmlFor={`${id}-in`}>{FIELD_LABEL[field]}</label>
+      <label htmlFor={`${id}-in`} className="label">{FIELD_LABEL[field]}</label>
       <input
         id={`${id}-in`}
+        className="mono"
         value={value}
         list={options.length > 0 ? `${id}-list` : undefined}
         aria-invalid={error ? true : undefined}
@@ -139,21 +141,35 @@ export default function Filters({ draft, errors, onChange, onApply, onClear }: P
         onApply();
       }}
     >
-      <div className="ev-row">
+      <div className="ev-row ev-searchrow">
         <div className="ev-field ev-search">
-          <label htmlFor="ev-search">Search text</label>
-          <input
-            id="ev-search"
-            value={draft.search}
-            placeholder="any text in the raw record; comma: any of"
-            aria-invalid={errors.search ? true : undefined}
-            onChange={(e) => onChange({ search: e.target.value })}
-          />
+          <label htmlFor="ev-search" className="sr-only">
+            Search text
+          </label>
+          <span className="ev-searchbox">
+            <Icon name="search" size={14} />
+            <input
+              id="ev-search"
+              className="mono"
+              value={draft.search}
+              placeholder="any text in the raw record; comma: any of"
+              aria-invalid={errors.search ? true : undefined}
+              onChange={(e) => onChange({ search: e.target.value })}
+            />
+          </span>
           {errors.search && (
             <div role="alert" className="ev-error">
               {displaySafe(errors.search)}
             </div>
           )}
+        </div>
+        <div className="ev-actions">
+          <button type="submit" className="btn btn-primary">
+            Search
+          </button>
+          <button type="button" className="btn btn-ghost" onClick={onClear}>
+            Clear filters
+          </button>
         </div>
       </div>
       <div className="ev-row ev-fields">
@@ -163,9 +179,10 @@ export default function Filters({ draft, errors, onChange, onApply, onClear }: P
       </div>
       <div className="ev-row">
         <div className="ev-field">
-          <label htmlFor="ev-from">From (UTC)</label>
+          <label htmlFor="ev-from" className="label">From (UTC)</label>
           <input
             id="ev-from"
+            className="mono"
             value={draft.from}
             placeholder="2026-09-10T00:00:00Z"
             spellCheck={false}
@@ -179,9 +196,10 @@ export default function Filters({ draft, errors, onChange, onApply, onClear }: P
           )}
         </div>
         <div className="ev-field">
-          <label htmlFor="ev-to">To (UTC)</label>
+          <label htmlFor="ev-to" className="label">To (UTC)</label>
           <input
             id="ev-to"
+            className="mono"
             value={draft.to}
             placeholder="2026-09-11T00:00:00Z"
             spellCheck={false}
@@ -195,7 +213,7 @@ export default function Filters({ draft, errors, onChange, onApply, onClear }: P
           )}
         </div>
         <div className="ev-field" role="group" aria-label="Show">
-          <span className="ev-label">Show</span>
+          <span className="ev-label label">Show</span>
           <span className="ev-toggle">
             {FLAGS.map((f) => (
               <button key={f.id} type="button" aria-pressed={draft.flag === f.id} onClick={() => onApply({ flag: f.id })}>
@@ -205,20 +223,12 @@ export default function Filters({ draft, errors, onChange, onApply, onClear }: P
           </span>
         </div>
         <div className="ev-field">
-          <label htmlFor="ev-ai">Agent marks</label>
+          <label htmlFor="ev-ai" className="label">Agent marks</label>
           <select id="ev-ai" value={draft.ai} onChange={(e) => onApply({ ai: e.target.value as AiFilter })}>
             <option value="all">All events</option>
             <option value="marked">Agent-marked</option>
             <option value="unreviewed">Unreviewed agent marks</option>
           </select>
-        </div>
-        <div className="ev-actions">
-          <button type="submit">
-            Search
-          </button>
-          <button type="button" onClick={onClear}>
-            Clear filters
-          </button>
         </div>
       </div>
     </form>

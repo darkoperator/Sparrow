@@ -80,12 +80,12 @@ export default function ReviewMarksDialog({
       role="dialog"
       aria-modal="true"
       aria-label={`${verb} AI marks`}
-      className="entity-dialog mark-dialog"
+      className="mark-dialog"
       onKeyDown={(e) => {
         if (e.key === "Escape") onClose();
       }}
     >
-      <h4>
+      <h4 className="mark-title">
         {verb} the AI marks on {n === 1 ? "this event" : `${n} events`}?
       </h4>
       <p>
@@ -114,12 +114,12 @@ export default function ReviewMarksDialog({
         </div>
       )}
       {error && <p role="alert">{displaySafe(error)}</p>}
-      <div className="entity-dialog-buttons">
-        <button type="button" disabled={busy || found === null} onClick={() => void submit()}>
-          {verb} AI marks
-        </button>
-        <button type="button" onClick={onClose}>
+      <div className="mark-buttons">
+        <button type="button" className="btn btn-ghost" onClick={onClose}>
           Cancel
+        </button>
+        <button type="button" className="btn btn-primary" disabled={busy || found === null} onClick={() => void submit()}>
+          {verb} AI marks
         </button>
       </div>
     </div>

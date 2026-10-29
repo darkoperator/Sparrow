@@ -38,6 +38,9 @@ import { NewTagDialog } from "../marks/TagMenu";
 import { useNav, useRefreshBadges, useWriteBlocked } from "../shell/nav";
 import type { EntityRef } from "../shell/tabs";
 import { displaySafe } from "../text";
+import Icon from "../ui/Icon";
+import "./events.css";
+import "../marks/marks.css";
 import { COLUMN_BY_ID, COLUMNS, DEFAULT_VISIBLE } from "./columns";
 import EventDetail, { TagBadge } from "./EventDetail";
 import Filters, { emptyDraft, FIELD_LABEL, FIELDS, type FilterDraft, type FilterErrors } from "./Filters";
@@ -64,6 +67,8 @@ export interface EventsViewProps {
 const PAGE = 200;
 const MAX_BUCKETS = 120;
 const GRID_HEIGHT = 380;
+/** The name-like columns read in the UI font (events.png); times, IPs, ids and ASNs stay mono. */
+const NAME_COLUMNS: ReadonlySet<string> = new Set(["source", "operation", "actor_upn", "target"]);
 /** The page total is counted up to this; past it paging stops and the analyst is told to narrow the filter. */
 const LOAD_MAX = 1_000_000;
 const LAYOUT_ID = "events";
@@ -506,6 +511,7 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
 
   return (
     <section className="ev-view" aria-label="Events">
+      <div className="ev-left">
       {chip && !entity && (
         <div className="filter-chip" role="group" aria-label="Scope">
           <span>
@@ -516,6 +522,15 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
           </button>
         </div>
       )}
+      <SummaryBar
+        summary={summary}
+        sourceText={sourceText}
+        flag={shown?.draft.flag ?? "all"}
+        onAll={() => apply({ flag: "all", fields: { ...draft.fields, source: "" } })}
+        onSource={(s) => apply({ fields: { ...draft.fields, source: sourceText.trim() === s ? "" : s } })}
+        onFlag={(level) => apply({ flag: shown?.draft.flag === level ? "all" : level })}
+        onIncludeTrace={trace}
+      />
       <Filters
         draft={draft}
         errors={errors}
@@ -539,15 +554,6 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
           {displaySafe(notice.text)}
         </div>
       )}
-      <SummaryBar
-        summary={summary}
-        sourceText={sourceText}
-        flag={shown?.draft.flag ?? "all"}
-        onAll={() => apply({ flag: "all", fields: { ...draft.fields, source: "" } })}
-        onSource={(s) => apply({ fields: { ...draft.fields, source: sourceText.trim() === s ? "" : s } })}
-        onFlag={(level) => apply({ flag: shown?.draft.flag === level ? "all" : level })}
-        onIncludeTrace={trace}
-      />
       <Histogram
         data={hist}
         hasRange={hasRange}
@@ -561,7 +567,7 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
           {atLimit && ` — paging stops here; narrow the filter to see the rest`}
         </span>
         <details className="ev-columns">
-          <summary>Columns</summary>
+          <summary className="btn">Columns</summary>
           <ul className="plain">
             {COLUMNS.map((c) => (
               <li key={c.id}>
@@ -572,7 +578,8 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
             ))}
           </ul>
         </details>
-        <button type="button" disabled={!shown || exporting} onClick={() => void exportCsv()}>
+        <button type="button" className="btn" disabled={!shown || exporting} onClick={() => void exportCsv()}>
+          <Icon name="download" size={13} />
           Export CSV
         </button>
         {exporting && (
@@ -621,6 +628,7 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
                   </span>
                 );
               }
+              if (NAME_COLUMNS.has(column)) return <span className="ev-name">{cellText(value)}</span>;
               if (column === "tags" && r.tags.length > 0) return r.tags.map((t) => <TagBadge key={t.name} tag={t} />);
               if (column === "flag" && r.flag !== null) {
                 return <span className={r.flag === "malicious" ? "ev-flagtext ev-flagtext-malicious" : "ev-flagtext ev-flagtext-suspicious"}>{cellText(value)}</span>;
@@ -630,17 +638,6 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
             cellItems={cellItems}
           />
         </div>
-        {selected && (
-          <EventDetail
-            key={`${selected.source_table}:${selected.record_key}`}
-            event={selected}
-            onClose={() => setSelected(null)}
-            readOnly={readOnly}
-            tagNames={tags.map((t) => t.name)}
-            version={detailVersion}
-            onChanged={wrote}
-          />
-        )}
       </div>
       {tickedRows.length > 0 && (
         <div className="ev-selbar" role="group" aria-label="Selection">
@@ -694,6 +691,18 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
               },
             );
           }}
+        />
+      )}
+      </div>
+      {selected && (
+        <EventDetail
+          key={`${selected.source_table}:${selected.record_key}`}
+          event={selected}
+          onClose={() => setSelected(null)}
+          readOnly={readOnly}
+          tagNames={tags.map((t) => t.name)}
+          version={detailVersion}
+          onChanged={wrote}
         />
       )}
     </section>

@@ -18,11 +18,11 @@ export function sourceColour(source: string): string {
 }
 
 const SEVERITY: Record<string, { glyph: string; colour: string }> = {
-  critical: { glyph: "◆", colour: "#d03b3b" },
-  high: { glyph: "▲", colour: "#ec835a" },
-  medium: { glyph: "●", colour: "#d9a000" },
-  low: { glyph: "○", colour: "#8a8a8a" },
-  info: { glyph: "○", colour: "#8a8a8a" },
+  critical: { glyph: "◆", colour: "var(--mal)" },
+  high: { glyph: "▲", colour: "var(--sus)" },
+  medium: { glyph: "●", colour: "var(--sus)" },
+  low: { glyph: "○", colour: "var(--faint)" },
+  info: { glyph: "○", colour: "var(--faint)" },
 };
 const severity = (s: string) => SEVERITY[s] ?? SEVERITY.info;
 

@@ -20,18 +20,18 @@ export default function SummaryBar({ summary, sourceText, flag, onAll, onSource,
   if (!summary) return <div className="ev-summary" aria-busy="true" />;
   return (
     <div className="ev-summary" role="group" aria-label="Summary">
-      <button type="button" onClick={onAll} title="Show every source and every flag level">
+      <button type="button" className="ev-total" onClick={onAll} title="Show every source and every flag level">
         <strong>{count(summary.total)}</strong> events
       </button>
-      <button type="button" className="ev-count-suspicious" aria-pressed={flag === "suspicious"} onClick={() => onFlag("suspicious")}>
+      <button type="button" className="ev-count-suspicious pill pill-sus" aria-pressed={flag === "suspicious"} onClick={() => onFlag("suspicious")}>
         <strong>{count(summary.suspicious)}</strong> suspicious
       </button>
-      <button type="button" className="ev-count-malicious" aria-pressed={flag === "malicious"} onClick={() => onFlag("malicious")}>
+      <button type="button" className="ev-count-malicious pill pill-mal" aria-pressed={flag === "malicious"} onClick={() => onFlag("malicious")}>
         <strong>{count(summary.malicious)}</strong> malicious
       </button>
       <span className="ev-sources">
         {summary.per_source.map(([source, n]) => (
-          <button key={source} type="button" aria-pressed={sourceText.trim() === source} onClick={() => onSource(source)}>
+          <button key={source} type="button" className="chip" aria-pressed={sourceText.trim() === source} onClick={() => onSource(source)}>
             {displaySafe(source)} <strong>{count(n)}</strong>
           </button>
         ))}
@@ -39,7 +39,7 @@ export default function SummaryBar({ summary, sourceText, flag, onAll, onSource,
       {summary.hidden_trace_events > 0 && (
         <button
           type="button"
-          className="ev-count-hidden"
+          className="ev-count-hidden chip"
           title="Message trace events are many per message, so they are left out until you ask for them"
           onClick={onIncludeTrace}
         >

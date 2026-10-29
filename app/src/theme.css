@@ -42,6 +42,7 @@
   --font-ui: "Inter Variable", Inter, system-ui, sans-serif;
   --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
+  --scrim: rgba(0, 0, 0, 0.45);
   --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.5);
 
   font-family: var(--font-ui);

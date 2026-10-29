@@ -1,0 +1,44 @@
+/* Marking: the dialogs opened from the Events grid and its detail panel (note, tag, add to timeline, confirm or
+   remove AI marks). The right-click menu is the shared cell menu, styled in grid/grid.css. */
+.mark-dialog {
+  position: fixed;
+  top: 16%;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-sizing: border-box;
+  width: min(480px, 92vw);
+  max-height: 70vh;
+  overflow: auto;
+  padding: 16px 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--text);
+  /* The second shadow is the scrim over the window behind the modal. */
+  box-shadow: var(--shadow-pop), 0 0 0 100vmax var(--scrim);
+}
+.mark-title { margin: 0; font-size: 14px; font-weight: 600; color: var(--text); }
+.mark-dialog p { margin: 0; color: var(--text-2); line-height: 1.5; }
+.mark-field { display: flex; flex-direction: column; gap: 4px; color: var(--faint); font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.mark-field input, .mark-field select, .mark-field textarea { width: 100%; padding: 7px 9px; background: var(--bg); font-size: 12px; font-weight: 400; letter-spacing: 0; }
+.mark-field input:focus-visible, .mark-field textarea:focus-visible { border-color: var(--accent); outline: 2px solid var(--accent); outline-offset: 0; }
+.mark-dialog textarea { min-height: 80px; resize: vertical; }
+.mark-dialog ul { margin: 6px 0 0; padding-left: 18px; font-family: var(--font-mono); font-size: 11px; overflow-wrap: anywhere; }
+.mark-dialog [role="alert"] { font-size: 12px; }
+
+/* "One entry for all / one entry each": two choice cards over a radio pair. */
+.mark-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.mark-choices legend { grid-column: 1 / -1; margin-bottom: 6px; padding: 0; }
+.mark-choice { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 10px 8px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--card); color: var(--text-2); font-size: 12px; text-align: center; cursor: pointer; }
+.mark-choice:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.mark-choice:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
+.mark-choice:has(input:disabled) { opacity: 0.5; cursor: not-allowed; }
+.mark-choice input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.mark-hint { grid-column: 1 / -1; color: var(--faint); }
+
+.mark-buttons { display: flex; gap: 8px; justify-content: flex-end; padding-top: 12px; border-top: 1px solid var(--line); }
+.mark-buttons .btn { padding: 6px 14px; }

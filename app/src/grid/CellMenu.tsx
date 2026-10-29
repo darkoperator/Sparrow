@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import Icon from "../ui/Icon";
 
 export interface MenuItem {
   label: string;
@@ -153,7 +154,7 @@ function MenuList({
               {it.label}
               {it.items && (
                 <span aria-hidden="true" className="cell-menu-arrow">
-                  ▸
+                  <Icon name="chevron-right" size={14} />
                 </span>
               )}
             </button>

@@ -34,23 +34,23 @@ export default function NoteDialog({
       role="dialog"
       aria-modal="true"
       aria-label="Add note"
-      className="entity-dialog mark-dialog"
+      className="mark-dialog"
       onKeyDown={(e) => {
         if (e.key === "Escape") onClose();
       }}
     >
-      <h4>{rows.length === 1 ? "Add a note to this event" : `Add the same note to ${rows.length} events`}</h4>
-      <label>
+      <h4 className="mark-title">{rows.length === 1 ? "Add a note to this event" : `Add the same note to ${rows.length} events`}</h4>
+      <label className="mark-field">
         Note
         <textarea autoFocus value={text} onChange={(e) => setText(e.target.value)} />
       </label>
       {error && <p role="alert">{displaySafe(error)}</p>}
-      <div className="entity-dialog-buttons">
-        <button type="button" disabled={busy || text.trim() === ""} onClick={() => void submit()}>
-          Add note
-        </button>
-        <button type="button" onClick={onClose}>
+      <div className="mark-buttons">
+        <button type="button" className="btn btn-ghost" onClick={onClose}>
           Cancel
+        </button>
+        <button type="button" className="btn btn-primary" disabled={busy || text.trim() === ""} onClick={() => void submit()}>
+          Add note
         </button>
       </div>
     </div>

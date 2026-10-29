@@ -61,67 +61,6 @@ pre.prose { max-width: 100%; overflow-x: auto; }
 .status-alert { font-weight: 700; border: 2px solid #b00020; background: #b0002026; }
 .malicious { font-weight: 700; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-/* Events view (investigate Task 9). Flag colours are translucent so they read on light and dark; the dashed edge on
-   a row and the "AI" badge mark what an agent set and no analyst has confirmed, so colour is never the only cue. */
-.ev-view { padding: 8px 16px; }
-.ev-filters { display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px; }
-.ev-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
-.ev-fields { gap: 6px; }
-.ev-field { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.ev-field label, .ev-label { font-size: 11px; font-weight: 600; opacity: 0.8; }
-.ev-field input, .ev-field select { font: inherit; font-size: 12px; padding: 2px 4px; box-sizing: border-box; }
-.ev-fields .ev-field input { width: 130px; }
-.ev-search { flex: 1 1 320px; }
-.ev-search input { width: 100%; }
-.ev-field input[aria-invalid="true"] { outline: 2px solid #b00020; }
-.ev-error { max-width: 220px; font-size: 11px; color: var(--mal); overflow-wrap: anywhere; }
-.ev-actions { display: flex; gap: 6px; align-self: flex-end; }
-.ev-toggle { display: inline-flex; }
-.ev-toggle button { border-radius: 0; margin-left: -1px; }
-.ev-toggle button[aria-pressed="true"], .ev-summary button[aria-pressed="true"], .ev-legend button[aria-pressed="true"] { background: Highlight; color: HighlightText; }
-.ev-running { display: flex; gap: 8px; align-items: center; padding: 4px 8px; }
-.ev-spinner { width: 12px; height: 12px; border: 2px solid #8886; border-top-color: Highlight; border-radius: 50%; animation: ev-spin 0.8s linear infinite; }
-@keyframes ev-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .ev-spinner { animation: none; } }
-.ev-notice { margin: 4px 0; }
-.ev-summary { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; min-height: 26px; }
-.ev-summary button, .ev-legend button { font: inherit; font-size: 12px; padding: 2px 8px; border: 1px solid #8886; border-radius: 12px; background: none; color: inherit; }
-.ev-sources { display: contents; }
-.ev-count-suspicious strong { color: var(--sus); }
-.ev-count-malicious strong { color: var(--mal); }
-.ev-count-hidden { opacity: 0.6; border-style: dashed; }
-.ev-histogram { margin: 6px 0; }
-.ev-histogram-head { display: flex; gap: 12px; align-items: center; }
-.ev-chart { display: block; max-width: 100%; }
-.ev-axis { font-size: 10px; fill: currentColor; opacity: 0.7; }
-.ev-grid-line { stroke: currentColor; opacity: 0.15; }
-.ev-brush { fill: Highlight; opacity: 0.25; pointer-events: none; }
-.ev-plot { cursor: crosshair; }
-.ev-finding { cursor: pointer; }
-.ev-finding:focus-visible { outline: 2px solid Highlight; }
-.ev-finding-glyph { font-size: 13px; }
-.ev-legend { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
-.ev-legend button[aria-pressed="false"] { opacity: 0.5; text-decoration: line-through; }
-.ev-swatch { display: inline-block; width: 10px; height: 10px; margin-right: 4px; border-radius: 2px; }
-.ev-toolbar { display: flex; gap: 12px; align-items: center; margin: 6px 0; }
-.ev-toolbar .meta { flex: 1; }
-.ev-columns { position: relative; }
-.ev-columns[open] ul { position: absolute; right: 0; z-index: 10; padding: 6px 10px; border: 1px solid #8886; border-radius: 4px; background: Canvas; box-shadow: 0 2px 8px #0004; white-space: nowrap; }
-.ev-main { display: flex; gap: 0; align-items: stretch; min-width: 0; }
-.ev-grid { flex: 1; min-width: 0; }
-.ev-detail { position: relative; flex: none; display: flex; border: 1px solid #8884; border-left: 0; max-width: 60%; font-size: 12px; }
-.ev-detail-edge { flex: none; width: 6px; margin-left: -3px; cursor: col-resize; z-index: 1; }
-.ev-detail-edge:hover, .ev-detail-edge:focus-visible { background: Highlight; }
-.ev-detail-body { flex: 1; min-width: 0; max-height: 640px; overflow: auto; padding: 4px 10px; }
-.ev-detail-head { display: flex; justify-content: space-between; align-items: center; }
-.ev-detail h4 { margin: 10px 0 2px; }
-.ev-flagtext { font-weight: 600; }
-.ev-flagtext-malicious { color: var(--mal); }
-.ev-flagtext-suspicious { color: var(--sus); }
-.ev-tag { margin-right: 3px; }
-.ev-tag-ai { border-style: dashed; }
-.ev-ai-badge { margin-left: 3px; padding: 0 3px; border-radius: 3px; background: #7b1fa2; color: #fff; font-size: 9px; font-weight: 700; }
-
 /* Entity tabs */
 .entity-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
 .entity-head h3 { margin: 0 8px 0 0; }
@@ -164,13 +103,3 @@ pre.prose { max-width: 100%; overflow-x: auto; }
 .entity-dialog label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
 .entity-dialog-buttons { display: flex; gap: 8px; justify-content: flex-end; }
 .entity-findings ul { max-height: 220px; overflow: auto; }
-.cell-submenu { position: absolute; left: 100%; top: -5px; }
-.cell-submenu.cell-menu-flip { left: auto; right: 100%; }
-.ev-selbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; padding: 4px 8px; border: 1px solid #8884; border-radius: 4px; }
-.ev-selbar .meta { flex: 1; }
-.ev-tickcell { display: flex; align-items: center; justify-content: center; }
-.mark-dialog { max-height: 70vh; overflow: auto; }
-.mark-dialog textarea { min-height: 80px; font: inherit; }
-.mark-dialog fieldset { border: 1px solid #8886; border-radius: 4px; }
-.ev-detail-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }
-.ev-detail-flag { display: flex; gap: 6px; align-items: baseline; }

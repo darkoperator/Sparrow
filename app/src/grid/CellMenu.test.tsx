@@ -28,7 +28,7 @@ describe("CellMenu", () => {
     // The first item has the focus; arrows move and wrap.
     expect(focused()).toBe("Copy");
     await user.keyboard("{ArrowDown}");
-    expect(focused()).toBe("Flag this event▸");
+    expect(focused()).toBe("Flag this event");
     // → opens the submenu and focuses its first item; ↑↓ wrap inside it only.
     await user.keyboard("{ArrowRight}");
     expect(screen.getAllByRole("menu")).toHaveLength(2);
@@ -42,13 +42,13 @@ describe("CellMenu", () => {
     // ← closes the submenu and returns to its parent item.
     await user.keyboard("{ArrowLeft}");
     expect(screen.getAllByRole("menu")).toHaveLength(1);
-    expect(focused()).toBe("Flag this event▸");
+    expect(focused()).toBe("Flag this event");
     // Enter opens it; Escape closes only the submenu; a second Escape closes the menu.
     await user.keyboard("{Enter}");
     expect(focused()).toBe("Suspicious");
     await user.keyboard("{Escape}");
     expect(screen.getAllByRole("menu")).toHaveLength(1);
-    expect(focused()).toBe("Flag this event▸");
+    expect(focused()).toBe("Flag this event");
     expect(onClose).not.toHaveBeenCalled();
     // Space opens it too.
     await user.keyboard(" ");

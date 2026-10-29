@@ -51,19 +51,19 @@ export default function AddToTimelineDialog({
       role="dialog"
       aria-modal="true"
       aria-label="Add to timeline"
-      className="entity-dialog mark-dialog"
+      className="mark-dialog"
       onKeyDown={(e) => {
         if (e.key === "Escape") onClose();
       }}
     >
-      <h4>
+      <h4 className="mark-title">
         Add {query ? (count === null || count === undefined ? "these events" : `${count} events`) : n === 1 ? "this event" : `${n} events`} to the
         timeline{query ? " as one entry" : ""}
       </h4>
       {query === undefined && n > 1 && (
-        <fieldset>
-          <legend>Entries</legend>
-          <label>
+        <fieldset className="mark-choices">
+          <legend className="label">Entries</legend>
+          <label className="mark-choice">
             <input
               type="radio"
               name="timeline-mode"
@@ -74,17 +74,17 @@ export default function AddToTimelineDialog({
             />{" "}
             One entry per event (max {EACH_MAX})
           </label>
-          {eachBlocked && <span className="meta">{eachBlocked}</span>}
-          <label>
+          {eachBlocked && <span className="meta mark-hint">{eachBlocked}</span>}
+          <label className="mark-choice">
             <input type="radio" name="timeline-mode" checked={mode === "group"} onChange={() => setMode("group")} /> One grouped entry
           </label>
         </fieldset>
       )}
-      <label>
+      <label className="mark-field">
         Title
         <input autoFocus value={title} placeholder="Leave blank to describe the events" onChange={(e) => setTitle(e.target.value)} />
       </label>
-      <label>
+      <label className="mark-field">
         Phase
         <select value={phase} onChange={(e) => setPhase(e.target.value)}>
           <option value="">Choose from the events</option>
@@ -96,12 +96,12 @@ export default function AddToTimelineDialog({
         </select>
       </label>
       {error && <p role="alert">{displaySafe(error)}</p>}
-      <div className="entity-dialog-buttons">
-        <button type="button" disabled={busy} onClick={() => void submit()}>
-          Add to timeline
-        </button>
-        <button type="button" onClick={onClose}>
+      <div className="mark-buttons">
+        <button type="button" className="btn btn-ghost" onClick={onClose}>
           Cancel
+        </button>
+        <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void submit()}>
+          Add to timeline
         </button>
       </div>
     </div>

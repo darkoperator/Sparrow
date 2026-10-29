@@ -48,13 +48,13 @@ export function NewTagDialog({
       role="dialog"
       aria-modal="true"
       aria-label="New tag"
-      className="entity-dialog mark-dialog"
+      className="mark-dialog"
       onKeyDown={(e) => {
         if (e.key === "Escape") onClose();
       }}
     >
-      <h4>Tag {count === 1 ? "this event" : `${count} events`}</h4>
-      <label>
+      <h4 className="mark-title">Tag {count === 1 ? "this event" : `${count} events`}</h4>
+      <label className="mark-field">
         Tag name
         <input
           autoFocus
@@ -72,12 +72,12 @@ export function NewTagDialog({
         ))}
       </datalist>
       {error && <p role="alert">{displaySafe(error)}</p>}
-      <div className="entity-dialog-buttons">
-        <button type="button" disabled={!ok || busy} onClick={() => onAdd(name.trim())}>
-          Add tag
-        </button>
-        <button type="button" onClick={onClose}>
+      <div className="mark-buttons">
+        <button type="button" className="btn btn-ghost" onClick={onClose}>
           Cancel
+        </button>
+        <button type="button" className="btn btn-primary" disabled={!ok || busy} onClick={() => onAdd(name.trim())}>
+          Add tag
         </button>
       </div>
     </div>

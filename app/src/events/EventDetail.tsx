@@ -1,7 +1,7 @@
 // The panel beside the grid for one event: its main fields, the flag and where it comes from, tags, notes, the
 // source file and line, and the raw record (collapsed). Account, IP, device and session values open entity tabs.
 // Everything is rendered as text.
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import {
   eventsDetail,
   isCmdError,
@@ -21,6 +21,7 @@ import AddToTimelineDialog from "../marks/AddToTimelineDialog";
 import NoteDialog from "../marks/NoteDialog";
 import { useNav } from "../shell/nav";
 import { displaySafe, displaySafeMultiline } from "../text";
+import Icon, { type IconName } from "../ui/Icon";
 import { deviceKey, isoSeconds } from "./columns";
 
 const MIN_WIDTH = 280;
@@ -35,14 +36,43 @@ export function TagBadge({ tag }: { tag: TagRef }) {
   );
 }
 
-function Value({ entity, children }: { entity: EntityArg | null; children: ReactNode }) {
+function Value({ entity, full, describedBy, children }: { entity: EntityArg | null; full: string; describedBy: string; children: ReactNode }) {
   const nav = useNav();
-  if (!entity || !nav) return <>{children}</>;
+  if (!entity || !nav) return <span title={full}>{children}</span>;
   return (
-    <button type="button" className="link" title={`Open ${entity.kind} tab`} onClick={() => nav.openEntity(entity)}>
+    <button type="button" className="link" title={`${full} — open ${entity.kind} tab`} aria-describedby={describedBy} onClick={() => nav.openEntity(entity)}>
       {children}
     </button>
   );
+}
+
+interface TabRow {
+  label: string;
+  icon: IconName;
+  value: string;
+  meta?: string;
+  entity: EntityArg | null;
+}
+
+/** Pretty-printed JSON with the key, string, number and keyword colours; every piece stays a text node. */
+const JSON_TOKEN = /("(?:[^"\\\n]|\\.)*")(\s*:)?|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|\b(true|false|null)\b/g;
+function JsonText({ text }: { text: string }) {
+  const out: ReactNode[] = [];
+  let at = 0;
+  for (const m of text.matchAll(JSON_TOKEN)) {
+    const i = m.index ?? 0;
+    if (i > at) out.push(text.slice(at, i));
+    const cls = m[1] !== undefined ? (m[2] !== undefined ? "syn-key" : "syn-str") : m[3] !== undefined ? "syn-num" : "syn-kw";
+    out.push(
+      <span key={i} className={cls}>
+        {m[1] !== undefined ? m[1] : m[0]}
+      </span>,
+    );
+    if (m[2] !== undefined) out.push(m[2]);
+    at = i + m[0].length;
+  }
+  if (at < text.length) out.push(text.slice(at));
+  return <>{out}</>;
 }
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
@@ -76,6 +106,7 @@ function scopeOf(f: FlagSource): { kind: EntityKind; value: string } | null {
 }
 
 export default function EventDetail({ event, onClose, readOnly = null, tagNames = [], version = 0, onChanged }: Props) {
+  const panelId = useId();
   const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [width, setWidth] = useState(420);
@@ -128,6 +159,18 @@ export default function EventDetail({ event, onClose, readOnly = null, tagNames 
 
   const r = detail?.row;
   const eventTitle = r ? [r.operation ?? r.source, r.actor_upn ? `by ${r.actor_upn}` : null, r.ip ? `from ${r.ip}` : null].filter(Boolean).join(" ") : "";
+  const tabRows: TabRow[] = [];
+  if (r) {
+    if (r.actor_upn) tabRows.push({ label: "Account", icon: "user", value: r.actor_upn, entity: { kind: "account", value: r.actor_upn } });
+    if (r.owner_upn) tabRows.push({ label: "Mailbox owner", icon: "user", value: r.owner_upn, entity: { kind: "account", value: r.owner_upn } });
+    if (r.ip) {
+      const where = [r.ip_country, r.asn !== null ? `AS${r.asn}` : null, r.asn_org, r.ip_kind].filter((x): x is string => !!x).map(displaySafe).join(" · ");
+      tabRows.push({ label: "IP", icon: "globe", value: r.ip, meta: where, entity: { kind: "ip", value: r.ip } });
+    }
+    const dev = deviceKey(r);
+    if (r.device_name ?? dev) tabRows.push({ label: "Device", icon: "monitor", value: r.device_name ?? dev ?? "", entity: dev ? { kind: "device", value: dev } : null });
+    if (r.entra_session_id) tabRows.push({ label: "Entra session", icon: "key", value: r.entra_session_id, entity: { kind: "session", value: r.entra_session_id } });
+  }
   return (
     <aside className="ev-detail" aria-label="Event detail" style={{ width }}>
       <div
@@ -147,11 +190,12 @@ export default function EventDetail({ event, onClose, readOnly = null, tagNames 
       />
       <div className="ev-detail-body">
         <div className="ev-detail-head">
-          <strong>{r ? displaySafe(r.operation ?? r.source) : "Event"}</strong>
-          <button type="button" onClick={onClose} aria-label="Close detail">
-            ×
+          <span className="label">Event detail</span>
+          <button type="button" className="ev-close" onClick={onClose} aria-label="Close detail">
+            <Icon name="x" size={16} />
           </button>
         </div>
+        <h3 className="ev-detail-title">{r ? displaySafe(r.operation ?? r.source) : "Event"}</h3>
         {error && <div role="alert">{displaySafe(error)}</div>}
         {!error && !detail && <p className="meta">Loading…</p>}
         {detail && r && (
@@ -165,54 +209,40 @@ export default function EventDetail({ event, onClose, readOnly = null, tagNames 
               <Field label="Category">{displaySafe(r.category)}</Field>
               {r.operation && <Field label="Operation">{displaySafe(r.operation)}</Field>}
               {r.result && <Field label="Result">{displaySafe(r.result)}</Field>}
-              {r.actor_upn && (
-                <Field label="Account">
-                  <Value entity={{ kind: "account", value: r.actor_upn }}>{displaySafe(r.actor_upn)}</Value>
-                </Field>
-              )}
-              {r.owner_upn && (
-                <Field label="Mailbox owner">
-                  <Value entity={{ kind: "account", value: r.owner_upn }}>{displaySafe(r.owner_upn)}</Value>
-                </Field>
-              )}
               {r.target && <Field label="Target">{displaySafe(r.target)}</Field>}
-              {r.ip && (
-                <Field label="IP">
-                  <Value entity={{ kind: "ip", value: r.ip }}>{displaySafe(r.ip)}</Value>
-                  {r.ip_country ? ` ${displaySafe(r.ip_country)}` : ""}
-                  {r.asn !== null ? ` AS${r.asn}` : ""}
-                  {r.asn_org ? ` ${displaySafe(r.asn_org)}` : ""}
-                  {r.ip_kind ? ` · ${displaySafe(r.ip_kind)}` : ""}
-                </Field>
-              )}
-              {(r.device_name ?? deviceKey(r)) && (
-                <Field label="Device">
-                  {(() => {
-                    const id = deviceKey(r);
-                    return (
-                      <Value entity={id ? { kind: "device", value: id } : null}>{displaySafe(r.device_name ?? id ?? "")}</Value>
-                    );
-                  })()}
-                </Field>
-              )}
-              {r.entra_session_id && (
-                <Field label="Entra session">
-                  <Value entity={{ kind: "session", value: r.entra_session_id }}>{displaySafe(r.entra_session_id)}</Value>
-                </Field>
-              )}
               {r.user_agent && <Field label="User agent">{displaySafe(r.user_agent)}</Field>}
               {r.app_id && <Field label="App">{displaySafe(r.app_id)}</Field>}
               {r.summary && <Field label="Summary">{displaySafe(r.summary)}</Field>}
               <Field label="Record">{displaySafe(`${r.source_table}:${r.record_key}`)}</Field>
             </dl>
+            {tabRows.length > 0 && (
+              <section aria-label="Open a tab" className="ev-tabs">
+                <div className="label">Open a tab</div>
+                {tabRows.map((t, i) => (
+                  <div key={`${t.label}:${t.value}`} className="ev-tabrow">
+                    <Icon name={t.icon} size={14} />
+                    <span id={`${panelId}-tab-${i}`} className="ev-tablabel">
+                      {t.label}
+                    </span>
+                    <Value entity={t.entity} full={displaySafe(t.value)} describedBy={`${panelId}-tab-${i}`}>
+                      {displaySafe(t.value)}
+                    </Value>
+                    {t.meta && <span className="ev-tabmeta">{t.meta}</span>}
+                    {t.entity && <Icon name="external" size={13} />}
+                  </div>
+                ))}
+              </section>
+            )}
             {writeError && <div role="alert">{displaySafe(writeError)}</div>}
-            <h4>Flag</h4>
+            <h4 className="label">Flag</h4>
             {detail.flag === null ? (
               <p className="meta">Not flagged.</p>
             ) : (
               <ul className="plain">
                 <li>
-                  <strong>{detail.flag === "malicious" ? "Malicious" : "Suspicious"}</strong>
+                  <strong className={detail.flag === "malicious" ? "pill pill-mal" : "pill pill-sus"}>
+                    {detail.flag === "malicious" ? "Malicious" : "Suspicious"}
+                  </strong>
                 </li>
                 {detail.flag_sources.map((f, i) => (
                   <li key={i} className="ev-detail-flag">
@@ -245,7 +275,7 @@ export default function EventDetail({ event, onClose, readOnly = null, tagNames 
                 Flag malicious
               </button>
             </div>
-            <h4>Tags</h4>
+            <h4 className="label">Tags</h4>
             {detail.tags.length === 0 ? (
               <p className="meta">No tags.</p>
             ) : (
@@ -294,7 +324,7 @@ export default function EventDetail({ event, onClose, readOnly = null, tagNames 
                 Add tag
               </button>
             </form>
-            <h4>Notes</h4>
+            <h4 className="label">Notes</h4>
             {detail.notes.length === 0 ? (
               <p className="meta">No notes.</p>
             ) : (
@@ -309,15 +339,7 @@ export default function EventDetail({ event, onClose, readOnly = null, tagNames 
                 ))}
               </ul>
             )}
-            <div className="ev-detail-actions">
-              <button type="button" disabled={readOnly !== null} title={off} onClick={() => setDialog("note")}>
-                Add note…
-              </button>
-              <button type="button" disabled={readOnly !== null} title={off} onClick={() => setDialog("timeline")}>
-                Add to timeline…
-              </button>
-            </div>
-            <h4>Source</h4>
+            <h4 className="label">Source</h4>
             {detail.source_refs.length === 0 ? (
               <p className="meta">No source reference.</p>
             ) : (
@@ -327,13 +349,27 @@ export default function EventDetail({ event, onClose, readOnly = null, tagNames 
                 ))}
               </ul>
             )}
-            <details>
-              <summary>Raw record</summary>
-              <pre className="prose">{displaySafeMultiline(JSON.stringify(detail.raw, null, 2) ?? "")}</pre>
+            <details className="ev-raw">
+              <summary className="label">Raw record</summary>
+              <pre className="prose">
+                <JsonText text={displaySafeMultiline(JSON.stringify(detail.raw, null, 2) ?? "")} />
+              </pre>
             </details>
           </>
         )}
       </div>
+      {detail && r && (
+        <div className="ev-detail-foot">
+          <button type="button" className="btn" disabled={readOnly !== null} title={off} onClick={() => setDialog("note")}>
+            <Icon name="note" size={13} />
+            Add note…
+          </button>
+          <button type="button" className="btn btn-primary" disabled={readOnly !== null} title={off} onClick={() => setDialog("timeline")}>
+            <Icon name="plus" size={13} />
+            Add to timeline…
+          </button>
+        </div>
+      )}
       {dialog === "note" && (
         <NoteDialog
           rows={[event]}
