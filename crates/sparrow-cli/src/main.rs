@@ -56,6 +56,8 @@ enum Command {
         SPARROW_INGEST_CHECKPOINT  DuckDB checkpoint threshold while loading: a size (256MB, 1GiB) or `default` \
         (DuckDB's own); unset: memory_limit / 8, at most 1GB, never below 16MiB\n  \
         SPARROW_INGEST_PROFILE     set to 1 to print stage and per-file timings to stderr\n  \
+        SPARROW_MEMORY_LIMIT       DuckDB memory limit of every case instance: a size (2GB, 8GiB) or `default` \
+        (DuckDB's own, 80% of RAM); unset: 4GB, or DuckDB's own when that is smaller\n  \
         SPARROW_DATA, SPARROW_RULES  defaults for --data and --rules")]
     Ingest {
         path: PathBuf,

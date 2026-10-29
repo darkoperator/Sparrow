@@ -427,7 +427,8 @@ pub mod fault {
 /// passes the threshold (default 16 MiB), and each checkpoint costs more as the case grows: on the 1M-row Invictus
 /// perf tree the per-file commits took 89 of 180 s. With 1 GB the ingest took 104 s and the case was identical, but
 /// peak memory grew by 1-2 GB on a 32 GB machine (docs: reports/ingest-profile.md, experiment E2; with no threshold
-/// at all, by 4.5 GB for no further gain). Each file still commits its own transaction to the WAL.
+/// at all, by 4.5 GB for no further gain). Each file still commits its own transaction to the WAL. Under the case's
+/// default memory cap ([`crate::db::DEFAULT_MEMORY_LIMIT`], 4 GB) the threshold is 500 MB, below this maximum.
 pub const INGEST_CHECKPOINT_MAX: u64 = 1_000_000_000;
 
 /// The ingest threshold is the writer's `memory_limit` divided by this, capped at [`INGEST_CHECKPOINT_MAX`]: the
@@ -441,39 +442,6 @@ pub const DUCKDB_DEFAULT_CHECKPOINT: u64 = 16 * 1024 * 1024;
 /// DuckDB's own value).
 pub const CHECKPOINT_ENV: &str = "SPARROW_INGEST_CHECKPOINT";
 
-/// Bytes of a DuckDB size string: a non-negative decimal number and an optional unit (B / byte(s), KB..PB in
-/// powers of 1000, KiB..PiB in powers of 1024; any case; spaces allowed), as DuckDB writes `memory_limit`
-/// ("25.5 GiB") and accepts sizes. `None` for anything else.
-fn parse_size(text: &str) -> Option<u64> {
-    let t = text.trim();
-    let split = t
-        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
-        .unwrap_or(t.len());
-    let (num, unit) = t.split_at(split);
-    if num.is_empty() || num.matches('.').count() > 1 || num.starts_with('.') || num.ends_with('.')
-    {
-        return None;
-    }
-    let value: f64 = num.parse().ok()?;
-    let unit = unit.trim().to_ascii_lowercase();
-    let scale: f64 = match unit.as_str() {
-        "" | "b" | "byte" | "bytes" => 1.0,
-        "kb" => 1e3,
-        "mb" => 1e6,
-        "gb" => 1e9,
-        "tb" => 1e12,
-        "pb" => 1e15,
-        "kib" => 1024f64,
-        "mib" => 1024f64.powi(2),
-        "gib" => 1024f64.powi(3),
-        "tib" => 1024f64.powi(4),
-        "pib" => 1024f64.powi(5),
-        _ => return None,
-    };
-    let bytes = value * scale;
-    (bytes.is_finite() && bytes < u64::MAX as f64).then(|| bytes.round() as u64)
-}
-
 /// The `checkpoint_threshold` (bytes) an ingest sets on the writer, or `None` to keep DuckDB's current value.
 /// Without an override: `memory_limit` / [`INGEST_CHECKPOINT_MEMORY_SHARE`], capped at [`INGEST_CHECKPOINT_MAX`],
 /// and `None` when that is not above [`DUCKDB_DEFAULT_CHECKPOINT`] or the limit does not parse (never raised on a
@@ -483,14 +451,14 @@ fn ingest_checkpoint_threshold(memory_limit: &str, override_: Option<&str>) -> R
         if v.trim().eq_ignore_ascii_case("default") {
             return Ok(None);
         }
-        return match parse_size(v) {
+        return match crate::db::parse_size(v) {
             Some(bytes) if bytes > 0 => Ok(Some(bytes)),
             _ => Err(Error::Invalid(format!(
                 "{CHECKPOINT_ENV}={v:?} is not a size: use a DuckDB size such as 256MB or 1GiB, or `default` to keep DuckDB's own checkpoint threshold"
             ))),
         };
     }
-    Ok(parse_size(memory_limit)
+    Ok(crate::db::parse_size(memory_limit)
         .map(|limit| (limit / INGEST_CHECKPOINT_MEMORY_SHARE).min(INGEST_CHECKPOINT_MAX))
         .filter(|&t| t > DUCKDB_DEFAULT_CHECKPOINT))
 }
@@ -1513,6 +1481,13 @@ mod tests {
         let auto = |limit: &str| ingest_checkpoint_threshold(limit, None).unwrap();
         // memory_limit / 8, at most 1 GB (DuckDB's 1GB: 10^9 bytes).
         assert_eq!(auto("32 GiB"), Some(INGEST_CHECKPOINT_MAX));
+        // The case's default cap (crate::db::DEFAULT_MEMORY_LIMIT, 4 GB, which DuckDB prints as 3.7 GiB) gives
+        // about 500 MB, not the 1 GB maximum.
+        assert_eq!(
+            auto(&format!("{} bytes", crate::db::DEFAULT_MEMORY_LIMIT)),
+            Some(500_000_000)
+        );
+        assert_eq!(auto("3.7 GiB"), Some(496_605_593));
         assert_eq!(auto("29.8 GiB"), Some(INGEST_CHECKPOINT_MAX));
         assert_eq!(auto("2 GiB"), Some(256 * MIB));
         assert_eq!(auto("2.0 GiB"), Some(256 * MIB));

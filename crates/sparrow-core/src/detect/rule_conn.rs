@@ -46,6 +46,7 @@ impl RuleConn {
     fn open(path: &Path) -> Result<RuleConn> {
         let t = std::time::Instant::now();
         let conn = Connection::open_in_memory()?;
+        crate::db::cap_memory(&conn, true)?;
         let file = path.display().to_string().replace('\'', "''");
         conn.execute_batch(&format!(
             "ATTACH '{file}' AS case_ro (READ_ONLY); USE case_ro;"
@@ -170,6 +171,18 @@ mod tests {
             ] {
                 assert!(rc.conn.execute_batch(stmt).is_err(), "{stmt} must fail");
             }
+            // Capped like every case instance, with its own spill directory.
+            let (limit, spill): (String, String) = rc
+                .conn
+                .query_row(
+                    "SELECT current_setting('memory_limit'), current_setting('temp_directory')",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            let bytes = crate::db::parse_size(&limit).unwrap();
+            assert!(bytes > 0 && bytes <= crate::db::DEFAULT_MEMORY_LIMIT, "{limit}");
+            assert!(spill.contains("sparrow-spill-"), "{spill}");
             // The tenant can still be switched: views are not configuration.
             for t in ["t1", "t2"] {
                 rc.scope(t).unwrap();

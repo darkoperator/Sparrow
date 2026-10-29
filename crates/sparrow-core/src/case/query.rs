@@ -158,6 +158,7 @@ fn locked(case_path: &Path) -> Result<Connection> {
         )));
     }
     let conn = Connection::open_in_memory()?;
+    crate::db::cap_memory(&conn, true)?;
     conn.execute_batch(
         "SET autoinstall_known_extensions = false; SET autoload_known_extensions = false; \
          SET allow_community_extensions = false;",
