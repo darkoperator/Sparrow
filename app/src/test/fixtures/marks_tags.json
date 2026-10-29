@@ -1,0 +1,12 @@
+[
+  {
+    "name": "ai:relay",
+    "count": 1,
+    "agent_unreviewed": 1
+  },
+  {
+    "name": "phish-lure",
+    "count": 2,
+    "agent_unreviewed": 0
+  }
+]

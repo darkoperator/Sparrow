@@ -3159,3 +3159,1667 @@ fn a_cancel_decides_the_commit_once() {
     });
     assert_eq!(r.unwrap_err().kind, "interrupted");
 }
+
+// ---- events grid, entity tabs, marks and add-to-timeline ----
+
+use chrono::{DateTime, SecondsFormat, Utc};
+use sparrow_app::cmd::entity::{entity_findings, entity_pivot, entity_summary};
+use sparrow_app::cmd::events::{
+    EntityArg, EntityKind, EventQueryArgs, events_detail, events_export_csv, events_histogram,
+    events_page, events_suggest, events_summary,
+};
+use sparrow_app::cmd::marks::{
+    marks_flag_rows, marks_flag_value, marks_list_tags, marks_review, marks_tag_rows,
+    notes_add_rows,
+};
+use sparrow_app::cmd::timeline::{AddEventsArgs, AddMode, EACH_MAX, timeline_add_events};
+use sparrow_core::case::entity::PivotOf;
+use sparrow_core::case::events::{self, AiFilter, Entity, Field, FlagFilter};
+use sparrow_core::case::marks::{self, FlagLevel, RowRef, TagRef, ValueKind};
+
+fn iso(t: &DateTime<Utc>) -> String {
+    t.to_rfc3339_opts(SecondsFormat::Micros, true)
+}
+
+fn text_of(state: &AppState, sql: &str) -> String {
+    with_case(state, |open| {
+        Ok(open.case.conn().query_row(sql, [], |r| r.get(0)).unwrap())
+    })
+    .unwrap()
+}
+
+fn by_source(source: &str) -> EventQueryArgs {
+    EventQueryArgs {
+        fields: vec![(Field::Source, source.into())],
+        ..EventQueryArgs::default()
+    }
+}
+
+fn first_rows(state: &AppState, q: &EventQueryArgs, n: usize) -> Vec<RowRef> {
+    events_page(state, q, None, 0, n, None)
+        .unwrap()
+        .rows
+        .iter()
+        .map(|r| RowRef::new(&r.source_table, &r.record_key))
+        .collect()
+}
+
+fn audit_rows(state: &AppState) -> i64 {
+    rows(state, "SELECT count(*) FROM audit_trail")
+}
+
+fn entity_arg(kind: EntityKind, value: &str) -> EntityArg {
+    EntityArg {
+        kind,
+        value: value.into(),
+    }
+}
+
+/// An account, IP, device and session that have many events in the synthetic case.
+struct Picked {
+    account: String,
+    ip: String,
+    device: String,
+    session: String,
+}
+
+fn picked(state: &AppState) -> Picked {
+    let top = |col: &str| {
+        text_of(
+            state,
+            &format!(
+                "SELECT {col} FROM events WHERE {col} IS NOT NULL GROUP BY 1 ORDER BY count(*) DESC, 1 LIMIT 1"
+            ),
+        )
+    };
+    Picked {
+        account: top("actor_upn"),
+        ip: top("ip"),
+        device: top("device_id"),
+        session: top("entra_session_id"),
+    }
+}
+
+#[test]
+fn events_page_summary_histogram_detail_and_suggest_read_the_events_table() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = open_as_analyst(tmp.path());
+    let total = rows(&state, "SELECT count(*) FROM events") as u64;
+    assert!(total > 1000, "{total}");
+    let all = EventQueryArgs::default();
+
+    // A page: newest first, a total that is the whole table, the next page does not repeat.
+    let page = events_page(&state, &all, None, 0, 5, None).unwrap();
+    assert_eq!((page.rows.len(), page.offset, page.total), (5, 0, total));
+    assert!(!page.total_capped);
+    let newest = rows(&state, "SELECT max(epoch_us(event_time)) FROM events");
+    assert_eq!(page.rows[0].event_time.unwrap().timestamp_micros(), newest);
+    assert!(
+        page.rows
+            .windows(2)
+            .all(|w| w[0].event_time >= w[1].event_time)
+    );
+    let next = events_page(&state, &all, None, 5, 5, None).unwrap();
+    assert_eq!(next.offset, 5);
+    assert!(next.rows.iter().all(|r| !page.rows.contains(r)));
+    // A sort travels as given.
+    let oldest = events_page(
+        &state,
+        &all,
+        Some(&browse::Sort {
+            column: "event_time".into(),
+            descending: false,
+        }),
+        0,
+        1,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        oldest.rows[0].event_time.unwrap().timestamp_micros(),
+        rows(&state, "SELECT min(epoch_us(event_time)) FROM events")
+    );
+    assert_eq!(
+        events_page(
+            &state,
+            &all,
+            Some(&browse::Sort {
+                column: "no_such_column".into(),
+                descending: false
+            }),
+            0,
+            1,
+            None
+        )
+        .unwrap_err()
+        .kind,
+        "invalid"
+    );
+
+    // The summary bar and the histogram count the same events.
+    let summary = events_summary(&state, &all, None).unwrap();
+    assert_eq!(summary.total, total);
+    assert_eq!(
+        summary.per_source.iter().map(|(_, n)| n).sum::<u64>(),
+        total
+    );
+    assert_eq!(summary.hidden_trace_events, 0);
+    let h = events_histogram(&state, &all, 12, None).unwrap();
+    // The case spans 41 days, so even a day is more than 12 buckets: the largest bucket size is used.
+    assert_eq!((h.bucket_seconds, h.series[0].1.len()), (86_400, 41));
+    let per_bucket = h.series[0].1.len();
+    let finer = events_histogram(&state, &all, 100, None).unwrap();
+    assert_eq!(finer.bucket_seconds, 43_200);
+    assert!(finer.series[0].1.len() <= 100);
+    assert!(h.series.iter().all(|(_, c)| c.len() == per_bucket));
+    assert_eq!(
+        h.series.iter().flat_map(|(_, c)| c).sum::<u64>(),
+        total,
+        "every event is in exactly one bucket"
+    );
+    assert_eq!(
+        events_histogram(&state, &all, 0, None).unwrap_err().kind,
+        "invalid"
+    );
+    // The bucket count asked for is bounded: 0 is refused, and anything over 500 is 500 (a case-wide range here would
+    // otherwise allow minute buckets). 500, 501 and usize::MAX give the identical histogram: 3-hour buckets (321).
+    let at_cap = events_histogram(&state, &all, 500, None).unwrap();
+    assert_eq!(
+        (at_cap.bucket_seconds, at_cap.series[0].1.len()),
+        (10_800, 321)
+    );
+    for over in [501, 100_000, usize::MAX] {
+        let h = events_histogram(&state, &all, over, None).unwrap();
+        assert_eq!(
+            (h.bucket_seconds, &h.series),
+            (at_cap.bucket_seconds, &at_cap.series),
+            "{over}"
+        );
+    }
+    // The boundary below it still works as asked: 1 bucket falls back to a day; 321 is the smallest fit for 3 hours.
+    assert_eq!(
+        events_histogram(&state, &all, 1, None)
+            .unwrap()
+            .bucket_seconds,
+        86_400
+    );
+    assert_eq!(
+        events_histogram(&state, &all, 321, None)
+            .unwrap()
+            .bucket_seconds,
+        10_800
+    );
+    assert_eq!(
+        events_histogram(&state, &all, 320, None)
+            .unwrap()
+            .bucket_seconds,
+        21_600
+    );
+    // A wide RFC 3339 range cannot blow past core's hard cap either, even asking for the most.
+    let wide = EventQueryArgs {
+        from: Some("1900-01-01T00:00:00Z".into()),
+        to: Some("2100-01-01T00:00:00Z".into()),
+        ..EventQueryArgs::default()
+    };
+    let h = events_histogram(&state, &wide, usize::MAX, None).unwrap();
+    assert!(h.series[0].1.len() <= events::MAX_HISTOGRAM_BUCKETS);
+    assert_eq!(h.bucket_seconds % 86_400, 0);
+
+    // One row's detail is the page row plus the stored record.
+    let first = &page.rows[0];
+    let d = events_detail(&state, &first.source_table, &first.record_key).unwrap();
+    assert_eq!(&d.row, first);
+    assert!(d.raw.is_object(), "{:?}", d.raw);
+    assert!(!d.source_refs.is_empty());
+    assert_eq!(
+        events_detail(&state, &first.source_table, "no-such-record")
+            .unwrap_err()
+            .kind,
+        "not_found"
+    );
+    assert_eq!(
+        events_detail(&state, "ual", "x").unwrap_err().kind,
+        "invalid",
+        "not an event table"
+    );
+
+    // Suggestions: case-insensitive prefix of the case's own values.
+    let account = text_of(
+        &state,
+        "SELECT actor_upn FROM events WHERE actor_upn IS NOT NULL ORDER BY actor_upn LIMIT 1",
+    );
+    let prefix = account[..4].to_uppercase();
+    let got = events_suggest(&state, Field::Account, &prefix).unwrap();
+    assert!(got.contains(&account), "{got:?}");
+    assert!(
+        got.iter()
+            .all(|s| s.to_lowercase().starts_with(&prefix.to_lowercase())),
+        "{got:?}"
+    );
+    assert!(got.windows(2).all(|w| w[0] <= w[1]));
+}
+
+#[test]
+fn events_query_args_carry_entity_fields_flags_and_iso_times() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = open_as_analyst(tmp.path());
+    let p = picked(&state);
+    let sql_count =
+        |pred: &str| rows(&state, &format!("SELECT count(*) FROM events WHERE {pred}")) as u64;
+
+    // The entity in another spelling finds the same events.
+    let account = EventQueryArgs {
+        entity: Some(entity_arg(EntityKind::Account, &p.account.to_uppercase())),
+        ..EventQueryArgs::default()
+    };
+    let want = sql_count(&format!(
+        "actor_upn = '{0}' OR owner_upn = '{0}'",
+        p.account
+    ));
+    assert_eq!(events_summary(&state, &account, None).unwrap().total, want);
+    // Filter boxes keep Harrier's text; a source plus a range.
+    let ual = by_source("ual");
+    assert_eq!(
+        events_page(&state, &ual, None, 0, 1, None).unwrap().total,
+        sql_count("source = 'ual'")
+    );
+    let not_ual = by_source("!ual");
+    assert_eq!(
+        events_page(&state, &not_ual, None, 0, 1, None)
+            .unwrap()
+            .total,
+        sql_count("source <> 'ual'")
+    );
+    // A time range as ISO text, both ends inclusive: a range of one instant returns the events at it.
+    let at = events_page(&state, &EventQueryArgs::default(), None, 40, 1, None)
+        .unwrap()
+        .rows[0]
+        .event_time
+        .unwrap();
+    let ranged = EventQueryArgs {
+        from: Some(iso(&at)),
+        to: Some(iso(&at)),
+        ..EventQueryArgs::default()
+    };
+    let at_us = at.timestamp_micros();
+    let page = events_page(&state, &ranged, None, 0, 500, None).unwrap();
+    assert_eq!(
+        page.total,
+        sql_count(&format!("epoch_us(event_time) = {at_us}"))
+    );
+    assert!(page.total >= 1);
+    assert!(page.rows.iter().all(|r| r.event_time == Some(at)));
+    // Whole-second text without fractions is also RFC 3339.
+    let secs = EventQueryArgs {
+        from: Some(at.to_rfc3339_opts(SecondsFormat::Secs, true)),
+        ..EventQueryArgs::default()
+    };
+    assert!(events_summary(&state, &secs, None).unwrap().total >= page.total);
+
+    // Flag and AI filters parse, and with no marks they match nothing.
+    let flagged = EventQueryArgs {
+        flag: FlagFilter::Malicious,
+        ai: AiFilter::Marked,
+        ..EventQueryArgs::default()
+    };
+    assert_eq!(events_summary(&state, &flagged, None).unwrap().total, 0);
+    assert_eq!(
+        events_page(&state, &flagged, None, 0, 5, None)
+            .unwrap()
+            .rows
+            .len(),
+        0
+    );
+
+    // Bad input is refused, never silently matched: a bad time, a lone `!`, an IP that is not one.
+    for (what, q) in [
+        (
+            "time",
+            EventQueryArgs {
+                from: Some("yesterday".into()),
+                ..EventQueryArgs::default()
+            },
+        ),
+        (
+            "to",
+            EventQueryArgs {
+                to: Some("2026-03-01 10:00:00".into()),
+                ..EventQueryArgs::default()
+            },
+        ),
+        ("filter", by_source("!")),
+        (
+            "entity",
+            EventQueryArgs {
+                entity: Some(entity_arg(EntityKind::Ip, "not-an-ip")),
+                ..EventQueryArgs::default()
+            },
+        ),
+    ] {
+        for e in [
+            events_page(&state, &q, None, 0, 5, None).unwrap_err(),
+            events_summary(&state, &q, None).unwrap_err(),
+            events_histogram(&state, &q, 10, None).unwrap_err(),
+        ] {
+            assert_eq!(e.kind, "invalid", "{what}: {e:?}");
+        }
+    }
+    // The wire shape: camelCase keys, `{kind, value}` entity, `[field, text]` pairs.
+    let wire: EventQueryArgs = serde_json::from_value(serde_json::json!({
+        "entity": { "kind": "session", "value": "ABC" },
+        "fields": [["source", "ual"], ["tag", "x"]],
+        "search": "needle",
+        "from": "2026-03-01T10:00:00Z",
+        "flag": "suspicious",
+        "ai": "unreviewed"
+    }))
+    .unwrap();
+    assert_eq!(wire.entity, Some(entity_arg(EntityKind::Session, "ABC")));
+    assert_eq!(
+        wire.fields,
+        vec![(Field::Source, "ual".into()), (Field::Tag, "x".into())]
+    );
+    assert_eq!(
+        (wire.search.as_deref(), wire.flag, wire.ai),
+        (Some("needle"), FlagFilter::Suspicious, AiFilter::Unreviewed)
+    );
+    let q = wire.to_query().unwrap();
+    assert_eq!(q.entity, Some(Entity::Session("ABC".into())));
+    assert_eq!(q.from.unwrap().timestamp(), 1_772_359_200);
+    assert_eq!(q.to, None);
+    // An empty object is the whole table.
+    let empty: EventQueryArgs = serde_json::from_value(serde_json::json!({})).unwrap();
+    assert!(empty.fields.is_empty() && empty.entity.is_none());
+}
+
+#[test]
+fn a_raw_search_needs_a_query_id_and_runs_through_the_cancellable_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = open_as_analyst(tmp.path());
+    let p = picked(&state);
+    let q = EventQueryArgs {
+        search: Some(p.ip.clone()),
+        ..EventQueryArgs::default()
+    };
+    // No id: refused by all four readers, so the UI cannot start a search it cannot cancel.
+    let out = tmp.path().join("search.csv");
+    for e in [
+        events_page(&state, &q, None, 0, 5, None).unwrap_err(),
+        events_summary(&state, &q, None).unwrap_err(),
+        events_histogram(&state, &q, 10, None).unwrap_err(),
+        events_export_csv(&state, &q, &out, None).unwrap_err(),
+    ] {
+        assert_eq!(e.kind, "invalid", "{e:?}");
+        assert!(e.message.contains("query id"), "{}", e.message);
+    }
+    assert!(!out.exists());
+    // With one, it returns what the core returns for the same search.
+    let core = with_case(&state, |open| {
+        let query = q.to_query().unwrap();
+        Ok(events::summary(open.case.conn(), &query).unwrap())
+    })
+    .unwrap();
+    assert!(core.total > 0);
+    let got = events_summary(&state, &q, Some("s-1")).unwrap();
+    assert_eq!(got.total, core.total);
+    assert_eq!(
+        events_page(&state, &q, None, 0, 5, Some("s-1"))
+            .unwrap()
+            .total,
+        core.total
+    );
+    assert!(events_histogram(&state, &q, 10, Some("s-1")).is_ok());
+    assert!(state.active.lock().unwrap().is_none());
+    // A cancel for the id (recorded before the query registers) makes each reader return `interrupted` without
+    // running: proof that a search goes through `with_cancellable`. A query without a search ignores the id.
+    for (i, run) in [
+        (|s: &AppState, q: &EventQueryArgs, id: &str| {
+            events_page(s, q, None, 0, 5, Some(id)).map(|_| ())
+        }) as fn(&AppState, &EventQueryArgs, &str) -> sparrow_app::CmdResult<()>,
+        |s, q, id| events_summary(s, q, Some(id)).map(|_| ()),
+        |s, q, id| events_histogram(s, q, 10, Some(id)).map(|_| ()),
+        |s, q, id| {
+            events_export_csv(
+                s,
+                q,
+                &std::env::temp_dir().join("never-written.csv"),
+                Some(id),
+            )
+            .map(|_| ())
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let id = format!("s-cancel-{i}");
+        query_cancel(&state, &id).unwrap();
+        let e = run(&state, &q, &id).unwrap_err();
+        assert_eq!(e.kind, "interrupted", "{i}: {e:?}");
+        // The record was consumed: the same id runs again.
+        run(&state, &q, &id).unwrap_or_else(|e| panic!("{i}: {e:?}"));
+    }
+    let plain = by_source("ual");
+    query_cancel(&state, "plain").unwrap();
+    assert!(events_summary(&state, &plain, Some("plain")).is_ok());
+    // The id is validated like every query id.
+    assert_eq!(
+        events_summary(&state, &q, Some("")).unwrap_err().kind,
+        "invalid"
+    );
+    let _ = std::fs::remove_file(std::env::temp_dir().join("never-written.csv"));
+}
+
+#[test]
+fn events_export_csv_writes_every_matching_event_and_leaves_nothing_on_failure() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = open_as_analyst(tmp.path());
+    let q = by_source("entra_audit");
+    let want = rows(
+        &state,
+        "SELECT count(*) FROM events WHERE source = 'entra_audit'",
+    );
+    assert!(want > 1, "{want}");
+    let out = tmp.path().join("events.csv");
+    let n = events_export_csv(&state, &q, &out, None).unwrap();
+    assert_eq!(n as i64, want);
+    let got = read_csv(&out);
+    assert_eq!(got.len() as i64, want + 1, "header + one line per event");
+    let col = got[0].iter().position(|c| c == "source").unwrap();
+    assert!(got[1..].iter().all(|r| r[col] == "entra_audit"));
+    // The same rows with a search and an id (cancellable path), the file replaced atomically.
+    let q2 = EventQueryArgs {
+        search: Some("".into()),
+        ..q.clone()
+    };
+    drop(q2);
+    let qs = EventQueryArgs {
+        search: Some("contoso".into()),
+        ..q.clone()
+    };
+    let m = events_export_csv(&state, &qs, &out, Some("x-1")).unwrap();
+    assert!(m > 0 && (m as i64) <= want, "{m}");
+    assert_eq!(read_csv(&out).len() as u64, m + 1);
+    assert!(leftovers(tmp.path()).is_empty());
+    // A failing export leaves no file: a filter error, a missing folder, the case itself.
+    let missing = tmp.path().join("no-such-dir").join("e.csv");
+    assert_eq!(
+        events_export_csv(&state, &q, &missing, None)
+            .unwrap_err()
+            .kind,
+        "invalid"
+    );
+    let case_path = with_case(&state, |open| Ok(open.path.clone())).unwrap();
+    assert_eq!(
+        events_export_csv(&state, &q, &case_path, None)
+            .unwrap_err()
+            .kind,
+        "invalid"
+    );
+    let bad = tmp.path().join("bad.csv");
+    assert_eq!(
+        events_export_csv(&state, &by_source("!"), &bad, None)
+            .unwrap_err()
+            .kind,
+        "invalid"
+    );
+    assert!(!bad.exists());
+    // A cancelled export leaves the earlier file as it was and no work folder.
+    let before = std::fs::read(&out).unwrap();
+    query_cancel(&state, "x-2").unwrap();
+    assert_eq!(
+        events_export_csv(&state, &qs, &out, Some("x-2"))
+            .unwrap_err()
+            .kind,
+        "interrupted"
+    );
+    assert_eq!(std::fs::read(&out).unwrap(), before);
+    assert!(leftovers(tmp.path()).is_empty());
+}
+
+#[test]
+fn entity_commands_match_the_events_and_one_entity_has_one_spelling() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = open_as_analyst(tmp.path());
+    let p = picked(&state);
+    let count =
+        |pred: String| rows(&state, &format!("SELECT count(*) FROM events WHERE {pred}")) as u64;
+    let cases = [
+        (
+            EntityKind::Account,
+            p.account.clone(),
+            format!("actor_upn = '{0}' OR owner_upn = '{0}'", p.account),
+        ),
+        (EntityKind::Ip, p.ip.clone(), format!("ip = '{}'", p.ip)),
+        (
+            EntityKind::Device,
+            p.device.clone(),
+            format!("device_id = '{0}' OR device_object_id = '{0}'", p.device),
+        ),
+        (
+            EntityKind::Session,
+            p.session.clone(),
+            format!("entra_session_id = '{}'", p.session),
+        ),
+    ];
+    for (kind, value, pred) in cases {
+        let want = count(pred);
+        assert!(want > 0, "{value}");
+        let lower = entity_summary(&state, &entity_arg(kind, &value), None, None).unwrap();
+        assert_eq!(lower.events, want, "{value}");
+        // Padded and upper-cased: the same tab, the same events.
+        let spelled = format!("  {}  ", value.to_uppercase());
+        let upper = entity_summary(&state, &entity_arg(kind, &spelled), None, None).unwrap();
+        assert_eq!(upper, lower, "{value}");
+        // A pivot is a page of a table: `limit` rows of `total`.
+        let of = match kind {
+            EntityKind::Ip => PivotOf::Accounts,
+            _ => PivotOf::Ips,
+        };
+        let full = entity_pivot(&state, &entity_arg(kind, &value), of, None, None, None).unwrap();
+        assert!(
+            full.total >= 1 && full.rows.len() as u64 == full.total,
+            "{value}"
+        );
+        let one =
+            entity_pivot(&state, &entity_arg(kind, &spelled), of, None, None, Some(1)).unwrap();
+        assert_eq!((one.rows.len(), one.total), (1, full.total), "{value}");
+        assert_eq!(one.rows[0], full.rows[0]);
+        assert_eq!(
+            entity_pivot(&state, &entity_arg(kind, &value), of, None, None, Some(0))
+                .unwrap_err()
+                .kind,
+            "invalid"
+        );
+    }
+    // An IPv6 address in two spellings is one entity, kept in the stored spelling.
+    let a = entity_summary(
+        &state,
+        &entity_arg(EntityKind::Ip, "2001:DB8::1"),
+        None,
+        None,
+    )
+    .unwrap();
+    let b = entity_summary(
+        &state,
+        &entity_arg(EntityKind::Ip, "2001:db8:0::1"),
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(a, b);
+    assert_eq!(a.entity, entity_arg(EntityKind::Ip, "2001:db8::1"));
+    // On the wire the entity is `{ kind, value }`, in the stored spelling, and the times are ISO text.
+    let wire = serde_json::to_value(&a).unwrap();
+    assert_eq!(
+        wire["entity"],
+        serde_json::json!({ "kind": "ip", "value": "2001:db8::1" })
+    );
+    assert_eq!(wire["first_seen"], serde_json::Value::Null);
+    let live = entity_summary(
+        &state,
+        &entity_arg(
+            EntityKind::Account,
+            &format!(" {} ", p.account.to_uppercase()),
+        ),
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(live.entity, entity_arg(EntityKind::Account, &p.account));
+    let wire = serde_json::to_value(&live).unwrap();
+    assert_eq!(
+        wire["entity"],
+        serde_json::json!({ "kind": "account", "value": p.account })
+    );
+    let first = wire["first_seen"].as_str().unwrap();
+    assert!(first.ends_with('Z') && first.contains('T'), "{first}");
+    assert_eq!(a.events, 0);
+    // The range is ISO text; a range with no events empties the tiles and the table.
+    let far = Some("2030-01-01T00:00:00Z");
+    let none = entity_summary(&state, &entity_arg(EntityKind::Ip, &p.ip), far, None).unwrap();
+    assert_eq!(none.events, 0);
+    let table = entity_pivot(
+        &state,
+        &entity_arg(EntityKind::Ip, &p.ip),
+        PivotOf::Accounts,
+        far,
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!((table.rows.len(), table.total), (0, 0));
+    // Bad arguments are `invalid`.
+    for e in [
+        entity_summary(&state, &entity_arg(EntityKind::Ip, "not-an-ip"), None, None).unwrap_err(),
+        entity_summary(&state, &entity_arg(EntityKind::Account, "  "), None, None).unwrap_err(),
+        entity_summary(
+            &state,
+            &entity_arg(EntityKind::Ip, &p.ip),
+            Some("soon"),
+            None,
+        )
+        .unwrap_err(),
+        entity_findings(
+            &state,
+            &entity_arg(EntityKind::Ip, &p.ip),
+            None,
+            Some("soon"),
+        )
+        .unwrap_err(),
+    ] {
+        assert_eq!(e.kind, "invalid", "{e:?}");
+    }
+}
+
+#[test]
+fn entity_findings_lists_the_open_findings_that_cite_the_entity() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = open_as_analyst(tmp.path());
+    // The accounts the findings are about.
+    let upn = text_of(
+        &state,
+        "SELECT f.actor_upn FROM findings f JOIN finding_evidence fe USING (finding_id) \
+         JOIN events e ON e.source_table = fe.source_table AND e.record_key = fe.record_key \
+         WHERE f.actor_upn IS NOT NULL GROUP BY 1 ORDER BY count(DISTINCT f.finding_id) DESC, 1 LIMIT 1",
+    );
+    let who = entity_arg(EntityKind::Account, &upn.to_uppercase());
+    let found = entity_findings(&state, &who, None, None).unwrap();
+    let mut want: Vec<String> = with_case(&state, |open| {
+        let mut st = open
+            .case
+            .conn()
+            .prepare(
+                "SELECT DISTINCT f.finding_id FROM findings f \
+                 JOIN finding_evidence fe ON fe.finding_id = f.finding_id \
+                 JOIN events e ON e.source_table = fe.source_table AND e.record_key = fe.record_key \
+                 WHERE (e.actor_upn = ? OR e.owner_upn = ?) AND CAST(f.status AS VARCHAR) NOT IN ('false_positive', 'benign')",
+            )
+            .unwrap();
+        Ok(st
+            .query_map([&upn, &upn], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect())
+    })
+    .unwrap();
+    want.sort();
+    let mut got: Vec<String> = found.iter().map(|f| f.finding_id.clone()).collect();
+    got.sort();
+    assert!(!want.is_empty());
+    assert_eq!(got, want);
+    // The tile counts them by severity.
+    let tiles = entity_summary(&state, &who, None, None).unwrap();
+    assert_eq!(
+        tiles.open_findings.values().sum::<u64>() as usize,
+        want.len()
+    );
+    // Past the findings, none.
+    assert!(
+        entity_findings(&state, &who, Some("2030-01-01T00:00:00Z"), None)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn marks_flag_tag_and_note_event_rows_with_one_audit_row_per_action() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = open_as_analyst(tmp.path());
+    let refs = first_rows(&state, &by_source("signin_interactive"), 3);
+    assert_eq!(refs.len(), 3);
+    let marked = |state: &AppState| {
+        events_page(state, &by_source("signin_interactive"), None, 0, 3, None)
+            .unwrap()
+            .rows
+    };
+
+    // Flag: one audit row for three events, shown on the rows.
+    let before = audit_rows(&state);
+    let a = marks_flag_rows(&state, &refs, Some(FlagLevel::Suspicious)).unwrap();
+    assert_eq!(
+        (a.action.as_str(), a.object_type.as_str()),
+        ("flag_rows", "event_flag")
+    );
+    assert_eq!(a.actor, "analyst:carlos");
+    assert_eq!(audit_rows(&state), before + 1);
+    assert!(
+        marked(&state)
+            .iter()
+            .all(|r| r.flag == Some(FlagLevel::Suspicious) && !r.flag_ai)
+    );
+    assert_eq!(
+        events_summary(
+            &state,
+            &EventQueryArgs {
+                flag: FlagFilter::Suspicious,
+                ..EventQueryArgs::default()
+            },
+            None
+        )
+        .unwrap()
+        .total,
+        3
+    );
+    // Clear.
+    marks_flag_rows(&state, &refs, None).unwrap();
+    assert!(marked(&state).iter().all(|r| r.flag.is_none()));
+
+    // Tags are stored lower-case; one audit row; the tag list counts the rows.
+    let before = audit_rows(&state);
+    let t = marks_tag_rows(&state, &refs, "  Relay-Session ", true).unwrap();
+    assert_eq!(
+        (t.action.as_str(), t.object_type.as_str()),
+        ("tag_rows", "event_tag")
+    );
+    assert_eq!(audit_rows(&state), before + 1);
+    let tags = marks_list_tags(&state).unwrap();
+    assert_eq!(
+        tags.iter()
+            .map(|t| (t.name.as_str(), t.count, t.agent_unreviewed))
+            .collect::<Vec<_>>(),
+        vec![("relay-session", 3, 0)]
+    );
+    assert!(marked(&state).iter().all(|r| r.tags
+        == vec![TagRef {
+            name: "relay-session".into(),
+            ai: false
+        }]));
+    let tagged = EventQueryArgs {
+        fields: vec![(Field::Tag, "RELAY-SESSION".into())],
+        ..EventQueryArgs::default()
+    };
+    assert_eq!(events_summary(&state, &tagged, None).unwrap().total, 3);
+    marks_tag_rows(&state, &refs[..1], "relay-session", false).unwrap();
+    assert_eq!(events_summary(&state, &tagged, None).unwrap().total, 2);
+    assert_eq!(marks_list_tags(&state).unwrap()[0].count, 2);
+
+    // Notes: one per row, each its own audit row, shown on the rows.
+    let before = audit_rows(&state);
+    let notes = notes_add_rows(&state, &refs, "token replayed from the relay").unwrap();
+    assert_eq!(notes.len(), 3);
+    assert!(
+        notes
+            .iter()
+            .all(|n| n.action == "add_note" && n.object_type == "annotation")
+    );
+    assert_eq!(audit_rows(&state), before + 3);
+    assert!(
+        marked(&state).iter().all(|r| r.note_count == 1
+            && r.latest_note.as_deref() == Some("token replayed from the relay"))
+    );
+    // A bad call adds nothing: an empty note, an unknown row among good ones, no rows, too many rows.
+    let before = audit_rows(&state);
+    let mut with_ghost = refs.clone();
+    with_ghost.push(RowRef::new(&refs[0].source_table, "no-such-record"));
+    assert_eq!(
+        notes_add_rows(&state, &refs, "  ").unwrap_err().kind,
+        "decision"
+    );
+    assert_eq!(
+        notes_add_rows(&state, &with_ghost, "x").unwrap_err().kind,
+        "decision"
+    );
+    assert_eq!(
+        notes_add_rows(&state, &[], "x").unwrap_err().kind,
+        "invalid"
+    );
+    let many = first_rows(&state, &EventQueryArgs::default(), 201);
+    assert_eq!(
+        notes_add_rows(&state, &many, "x").unwrap_err().kind,
+        "invalid"
+    );
+    assert_eq!(
+        marks_tag_rows(&state, &with_ghost, "y", true)
+            .unwrap_err()
+            .kind,
+        "decision"
+    );
+    assert_eq!(audit_rows(&state), before);
+    assert!(marked(&state).iter().all(|r| r.note_count == 1));
+}
+
+#[test]
+fn marks_flag_value_covers_every_event_with_the_value_and_a_scope_narrows_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = open_as_analyst(tmp.path());
+    let p = picked(&state);
+    let count =
+        |pred: String| rows(&state, &format!("SELECT count(*) FROM events WHERE {pred}")) as u64;
+    let flagged = |level| EventQueryArgs {
+        flag: level,
+        ..EventQueryArgs::default()
+    };
+
+    // Malicious on an IP: every event with it, an indicator for the IP, one audit row.
+    let before = audit_rows(&state);
+    let a = marks_flag_value(
+        &state,
+        ValueKind::Ip,
+        &p.ip,
+        None,
+        Some(FlagLevel::Malicious),
+    )
+    .unwrap();
+    assert_eq!(
+        (a.action.as_str(), a.object_type.as_str()),
+        ("flag_value", "value_flag")
+    );
+    // The flag, and the indicator that a malicious IP also records.
+    assert_eq!(audit_rows(&state), before + 2);
+    let actions = text_of(
+        &state,
+        "SELECT string_agg(action, ',' ORDER BY seq) FROM (SELECT seq, action FROM audit_trail ORDER BY seq DESC LIMIT 2)",
+    );
+    assert_eq!(actions, "add_ioc,flag_value");
+    let ip_events = count(format!("ip = '{}'", p.ip));
+    assert_eq!(
+        events_summary(&state, &flagged(FlagFilter::Malicious), None)
+            .unwrap()
+            .total,
+        ip_events
+    );
+    let ind = sparrow_app::cmd::indicators::indicators_active(&state).unwrap();
+    assert!(
+        ind.iter()
+            .any(|i| i.ioc_type == "ip" && i.value == p.ip && i.verdict == "malicious"),
+        "{ind:?}"
+    );
+    // Cleared again.
+    marks_flag_value(&state, ValueKind::Ip, &p.ip, None, None).unwrap();
+    assert_eq!(
+        events_summary(&state, &flagged(FlagFilter::Malicious), None)
+            .unwrap()
+            .total,
+        0
+    );
+
+    // A suspicious account flag limited to one session flags only the account's events in that session.
+    let scope = entity_arg(EntityKind::Session, &p.session.to_uppercase());
+    marks_flag_value(
+        &state,
+        ValueKind::Account,
+        &p.account.to_uppercase(),
+        Some(&scope),
+        Some(FlagLevel::Suspicious),
+    )
+    .unwrap();
+    let want = count(format!(
+        "entra_session_id = '{}' AND (actor_upn = '{1}' OR owner_upn = '{1}')",
+        p.session, p.account
+    ));
+    let all_account = count(format!("actor_upn = '{0}' OR owner_upn = '{0}'", p.account));
+    assert!(want > 0 && want < all_account, "{want} {all_account}");
+    assert_eq!(
+        events_summary(&state, &flagged(FlagFilter::Suspicious), None)
+            .unwrap()
+            .total,
+        want
+    );
+    // Bad kinds and values are refused.
+    assert_eq!(
+        marks_flag_value(
+            &state,
+            ValueKind::Ip,
+            "not-an-ip",
+            None,
+            Some(FlagLevel::Suspicious)
+        )
+        .unwrap_err()
+        .kind,
+        "invalid"
+    );
+    assert_eq!(
+        marks_flag_value(
+            &state,
+            ValueKind::Asn,
+            "AS-nope",
+            None,
+            Some(FlagLevel::Suspicious)
+        )
+        .unwrap_err()
+        .kind,
+        "invalid"
+    );
+    // The wire shape of the kind, level and scope.
+    let kind: ValueKind = serde_json::from_value(serde_json::json!("ip_prefix")).unwrap();
+    assert_eq!(kind, ValueKind::IpPrefix);
+}
+
+#[test]
+fn marks_review_confirms_or_removes_what_an_agent_marked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = open_as_analyst(tmp.path());
+    let q = by_source("signin_interactive");
+    let refs = first_rows(&state, &q, 4);
+    let agent = Actor::agent("triage", Some("carlos")).unwrap();
+    with_case(&state, |open| {
+        marks::flag_rows(
+            open.case.conn(),
+            &agent,
+            &refs[..2],
+            Some(FlagLevel::Malicious),
+        )
+        .unwrap();
+        marks::tag_rows(open.case.conn(), &agent, &refs[2..], "ai:relay", true).unwrap();
+        Ok(())
+    })
+    .unwrap();
+    let rows_of = |state: &AppState| events_page(state, &q, None, 0, 4, None).unwrap().rows;
+    let now = rows_of(&state);
+    assert!(
+        now[..2]
+            .iter()
+            .all(|r| r.flag == Some(FlagLevel::Malicious) && r.flag_ai)
+    );
+    assert!(now[2..].iter().all(|r| r.tags
+        == vec![TagRef {
+            name: "ai:relay".into(),
+            ai: true
+        }]));
+    let unreviewed = EventQueryArgs {
+        ai: AiFilter::Unreviewed,
+        ..EventQueryArgs::default()
+    };
+    assert_eq!(events_summary(&state, &unreviewed, None).unwrap().total, 4);
+
+    // Confirm the flags: one audit row for the agent's one call, the flag stays and is the analyst's now.
+    let before = audit_rows(&state);
+    let done = marks_review(&state, &refs[..2], true).unwrap();
+    assert_eq!(done.len(), 1, "{done:?}");
+    assert_eq!(audit_rows(&state), before + 1);
+    let now = rows_of(&state);
+    assert!(
+        now[..2]
+            .iter()
+            .all(|r| r.flag == Some(FlagLevel::Malicious) && !r.flag_ai)
+    );
+    // Remove the tag: gone from the rows.
+    let removed = marks_review(&state, &refs[2..], false).unwrap();
+    assert_eq!(removed.len(), 1, "{removed:?}");
+    assert!(rows_of(&state)[2..].iter().all(|r| r.tags.is_empty()));
+    // Nothing pending is an empty answer, not an error; no rows is refused.
+    assert!(marks_review(&state, &refs, true).unwrap().is_empty());
+    assert_eq!(marks_review(&state, &[], true).unwrap_err().kind, "invalid");
+    assert_eq!(events_summary(&state, &unreviewed, None).unwrap().total, 0);
+}
+
+/// The case opened read-only (its audit chain is broken) in an app whose analyst is carlos.
+fn read_only_app(tmp: &Path) -> AppState {
+    let path = case_file(tmp);
+    {
+        let case = Case::create_or_open(&path).unwrap();
+        let id = first_finding(&case);
+        let agent = Actor::agent("triage", None).unwrap();
+        let e = write::set_finding_status(
+            case.conn(),
+            &agent,
+            &id,
+            write::FindingStatus::InReview,
+            None,
+        )
+        .unwrap();
+        case.conn()
+            .execute("UPDATE audit_trail SET reason = 'x' WHERE seq = ?", [e.seq])
+            .unwrap();
+    }
+    let state = state_with_settings(&tmp.join("settings"));
+    settings_set_analyst(&state, "carlos").unwrap();
+    let info = case_open(&state, &path, false).unwrap();
+    assert!(info.read_only_reason.is_some());
+    state
+}
+
+#[test]
+fn every_write_command_refuses_read_only_and_writes_no_audit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = read_only_app(tmp.path());
+    // Reads work on a read-only case, and give the rows the writes below name.
+    let q = by_source("signin_interactive");
+    let refs = first_rows(&state, &q, 3);
+    assert_eq!(refs.len(), 3);
+    let p = picked(&state);
+    let tables = "SELECT (SELECT count(*) FROM audit_trail) || '/' || (SELECT count(*) FROM event_flags) || '/' \
+                  || (SELECT count(*) FROM event_tags) || '/' || (SELECT count(*) FROM value_flags) || '/' \
+                  || (SELECT count(*) FROM annotations) || '/' || (SELECT count(*) FROM timeline_entries) \
+                  || '/' || (SELECT count(*) FROM tags)";
+    let snapshot = text_of(&state, tables);
+    let add = |mode, rows: Option<Vec<RowRef>>, query: Option<EventQueryArgs>| AddEventsArgs {
+        rows,
+        query,
+        mode,
+        title: None,
+        phase: None,
+    };
+    type Write<'a> = Box<dyn Fn() -> sparrow_app::CmdResult<()> + 'a>;
+    let writes: Vec<(&str, Write)> = vec![
+        (
+            "marks_flag_rows",
+            Box::new(|| marks_flag_rows(&state, &refs, Some(FlagLevel::Suspicious)).map(|_| ())),
+        ),
+        (
+            "marks_flag_rows clear",
+            Box::new(|| marks_flag_rows(&state, &refs, None).map(|_| ())),
+        ),
+        (
+            "marks_flag_value",
+            Box::new(|| {
+                marks_flag_value(
+                    &state,
+                    ValueKind::Ip,
+                    &p.ip,
+                    None,
+                    Some(FlagLevel::Malicious),
+                )
+                .map(|_| ())
+            }),
+        ),
+        (
+            "marks_flag_value scoped",
+            Box::new(|| {
+                marks_flag_value(
+                    &state,
+                    ValueKind::Account,
+                    &p.account,
+                    Some(&entity_arg(EntityKind::Session, &p.session)),
+                    Some(FlagLevel::Suspicious),
+                )
+                .map(|_| ())
+            }),
+        ),
+        (
+            "marks_tag_rows add",
+            Box::new(|| marks_tag_rows(&state, &refs, "relay", true).map(|_| ())),
+        ),
+        (
+            "marks_tag_rows remove",
+            Box::new(|| marks_tag_rows(&state, &refs, "relay", false).map(|_| ())),
+        ),
+        (
+            "marks_review accept",
+            Box::new(|| marks_review(&state, &refs, true).map(|_| ())),
+        ),
+        (
+            "marks_review remove",
+            Box::new(|| marks_review(&state, &refs, false).map(|_| ())),
+        ),
+        (
+            "notes_add_rows",
+            Box::new(|| notes_add_rows(&state, &refs, "a note").map(|_| ())),
+        ),
+        (
+            "timeline_add_events each rows",
+            Box::new(|| {
+                timeline_add_events(&state, add(AddMode::Each, Some(refs.clone()), None))
+                    .map(|_| ())
+            }),
+        ),
+        (
+            "timeline_add_events group rows",
+            Box::new(|| {
+                timeline_add_events(&state, add(AddMode::Group, Some(refs.clone()), None))
+                    .map(|_| ())
+            }),
+        ),
+        (
+            "timeline_add_events group query",
+            Box::new(|| {
+                timeline_add_events(&state, add(AddMode::Group, None, Some(q.clone()))).map(|_| ())
+            }),
+        ),
+    ];
+    let n = writes.len();
+    let mut ran = 0;
+    for (name, write) in writes {
+        let e = write().unwrap_err();
+        assert_eq!(e.kind, "read_only", "{name}: {e:?}");
+        assert_eq!(text_of(&state, tables), snapshot, "{name} changed the case");
+        ran += 1;
+    }
+    assert_eq!(ran, n);
+    // The marks the writes would have shown are not there; the reads that feed the UI still answer.
+    assert!(marks_list_tags(&state).unwrap().is_empty());
+    assert_eq!(
+        events_summary(&state, &q, None).unwrap().total,
+        rows(
+            &state,
+            "SELECT count(*) FROM events WHERE source = 'signin_interactive'"
+        ) as u64
+    );
+}
+
+#[test]
+fn marking_needs_an_analyst_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = case_file(tmp.path());
+    let state = state_with_settings(&tmp.path().join("settings"));
+    case_open(&state, &path, false).unwrap();
+    let refs = first_rows(&state, &by_source("ual"), 1);
+    let before = audit_rows(&state);
+    for e in [
+        marks_flag_rows(&state, &refs, Some(FlagLevel::Suspicious)).unwrap_err(),
+        marks_tag_rows(&state, &refs, "x", true).unwrap_err(),
+        marks_review(&state, &refs, true).unwrap_err(),
+        notes_add_rows(&state, &refs, "x").unwrap_err(),
+        timeline_add_events(
+            &state,
+            AddEventsArgs {
+                rows: Some(refs.clone()),
+                query: None,
+                mode: AddMode::Group,
+                title: None,
+                phase: None,
+            },
+        )
+        .unwrap_err(),
+    ] {
+        assert_eq!(e.kind, "invalid", "{e:?}");
+    }
+    assert_eq!(audit_rows(&state), before);
+}
+
+fn add_args(
+    mode: AddMode,
+    rows: Option<Vec<RowRef>>,
+    query: Option<EventQueryArgs>,
+) -> AddEventsArgs {
+    AddEventsArgs {
+        rows,
+        query,
+        mode,
+        title: None,
+        phase: None,
+    }
+}
+
+#[test]
+fn timeline_add_events_each_caps_at_200() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = open_as_analyst(tmp.path());
+    assert_eq!(EACH_MAX, 200);
+    let refs = first_rows(&state, &EventQueryArgs::default(), 201);
+    assert_eq!(
+        refs.iter().collect::<std::collections::BTreeSet<_>>().len(),
+        201
+    );
+    let before = (timeline_list(&state).unwrap().len(), audit_rows(&state));
+    // 201 distinct rows: refused, nothing added.
+    let e =
+        timeline_add_events(&state, add_args(AddMode::Each, Some(refs.clone()), None)).unwrap_err();
+    assert_eq!(e.kind, "invalid", "{e:?}");
+    assert!(
+        e.message.contains("201") && e.message.contains("200"),
+        "{}",
+        e.message
+    );
+    // The same cap on a query that matches thousands of events.
+    let e = timeline_add_events(
+        &state,
+        add_args(AddMode::Each, None, Some(EventQueryArgs::default())),
+    )
+    .unwrap_err();
+    assert_eq!(e.kind, "invalid", "{e:?}");
+    assert!(e.message.contains("200"), "{}", e.message);
+    assert_eq!(
+        (timeline_list(&state).unwrap().len(), audit_rows(&state)),
+        before
+    );
+    // 200 distinct rows make 200 verified entries of one event each; a repeated row counts once.
+    let mut with_dup = refs[..200].to_vec();
+    with_dup.push(refs[1].clone());
+    assert_eq!(with_dup.len(), 201);
+    let done = timeline_add_events(&state, add_args(AddMode::Each, Some(with_dup), None)).unwrap();
+    assert_eq!(done.entry_ids.len(), 200);
+    assert_eq!(done.outcome, "Added 200 timeline entries");
+    let all = timeline_list(&state).unwrap();
+    assert_eq!(all.len(), before.0 + 200);
+    for id in &done.entry_ids {
+        let e = all.iter().find(|e| &e.entry_id == id).unwrap();
+        assert_eq!(
+            (e.status.as_str(), e.review_state.as_str(), e.evidence.len()),
+            ("verified", "accepted", 1)
+        );
+        assert!(e.end_time.is_none() && e.event_count.is_none());
+        assert_eq!(e.decided_by, "analyst:carlos");
+    }
+    assert_eq!(
+        audit_rows(&state),
+        before.1 + 2 * 200,
+        "propose + verify for each"
+    );
+}
+
+#[test]
+fn timeline_add_events_group_makes_one_verified_entry_spanning_the_rows() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = open_as_analyst(tmp.path());
+    let q = by_source("signin_interactive");
+    let page = events_page(&state, &q, None, 0, 5, None).unwrap();
+    let refs: Vec<RowRef> = page
+        .rows
+        .iter()
+        .map(|r| RowRef::new(&r.source_table, &r.record_key))
+        .collect();
+    // The rows are all sign-ins, so the phase the backend proposes is initial access.
+    assert_eq!(
+        text_of(
+            &state,
+            "SELECT string_agg(DISTINCT CAST(category AS VARCHAR), ',') FROM events WHERE source = 'signin_interactive'"
+        ),
+        "auth"
+    );
+    let times: Vec<DateTime<Utc>> = page.rows.iter().map(|r| r.event_time.unwrap()).collect();
+    let (start, end) = (*times.iter().min().unwrap(), *times.iter().max().unwrap());
+    assert!(start < end);
+    let before = (timeline_list(&state).unwrap().len(), audit_rows(&state));
+    let done =
+        timeline_add_events(&state, add_args(AddMode::Group, Some(refs.clone()), None)).unwrap();
+    assert_eq!(done.entry_ids.len(), 1);
+    assert_eq!(
+        done.outcome,
+        "Added 1 grouped timeline entry covering 5 events"
+    );
+    assert_eq!(audit_rows(&state), before.1 + 2, "propose + verify");
+    let all = timeline_list(&state).unwrap();
+    assert_eq!(all.len(), before.0 + 1);
+    let e = all
+        .iter()
+        .find(|e| e.entry_id == done.entry_ids[0])
+        .unwrap();
+    assert_eq!(e.status, "verified");
+    assert_eq!(
+        (e.review_state.as_str(), e.decided_by.as_str()),
+        ("accepted", "analyst:carlos")
+    );
+    assert_eq!(e.phase, "initial_access");
+    assert_eq!((e.event_time, e.end_time), (start, Some(end)));
+    assert_eq!(e.event_count, Some(5));
+    let mut cited: Vec<RowRef> = e
+        .evidence
+        .iter()
+        .map(|r| RowRef::new(&r.source_table, &r.record_key))
+        .collect();
+    cited.sort();
+    let mut want = refs.clone();
+    want.sort();
+    assert_eq!(cited, want);
+    assert_eq!(
+        e.title,
+        format!(
+            "5 events {} to {}",
+            start.format("%Y-%m-%dT%H:%M:%SZ"),
+            end.format("%Y-%m-%dT%H:%M:%SZ")
+        )
+    );
+
+    // A given title and phase win; a single row is a span of one moment.
+    let one = timeline_add_events(
+        &state,
+        AddEventsArgs {
+            title: Some("  Relay sign-in  ".into()),
+            phase: Some("persistence".into()),
+            ..add_args(AddMode::Group, Some(refs[..1].to_vec()), None)
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        one.outcome,
+        "Added 1 grouped timeline entry covering 1 event"
+    );
+    let e = timeline_list(&state)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.entry_id == one.entry_ids[0])
+        .unwrap();
+    assert_eq!(
+        (e.title.as_str(), e.phase.as_str(), e.event_count),
+        ("Relay sign-in", "persistence", Some(1))
+    );
+    assert_eq!(e.end_time, Some(e.event_time));
+
+    // Bad calls add nothing.
+    let before = (timeline_list(&state).unwrap().len(), audit_rows(&state));
+    let ghost = vec![
+        refs[0].clone(),
+        RowRef::new(&refs[0].source_table, "no-such-record"),
+    ];
+    let e = timeline_add_events(&state, add_args(AddMode::Group, Some(ghost.clone()), None))
+        .unwrap_err();
+    assert_eq!(e.kind, "decision", "{e:?}");
+    assert!(e.message.contains("no-such-record"), "{}", e.message);
+    assert_eq!(
+        timeline_add_events(&state, add_args(AddMode::Each, Some(ghost), None))
+            .unwrap_err()
+            .kind,
+        "decision"
+    );
+    for (what, args) in [
+        ("neither", add_args(AddMode::Group, None, None)),
+        (
+            "both",
+            add_args(AddMode::Group, Some(refs.clone()), Some(q.clone())),
+        ),
+        ("empty rows", add_args(AddMode::Group, Some(vec![]), None)),
+        (
+            "phase",
+            AddEventsArgs {
+                phase: Some("bogus".into()),
+                ..add_args(AddMode::Group, Some(refs.clone()), None)
+            },
+        ),
+        (
+            "query time",
+            add_args(
+                AddMode::Group,
+                None,
+                Some(EventQueryArgs {
+                    from: Some("soon".into()),
+                    ..EventQueryArgs::default()
+                }),
+            ),
+        ),
+        (
+            "query filter",
+            add_args(AddMode::Group, None, Some(by_source("!"))),
+        ),
+        (
+            "no match",
+            add_args(AddMode::Group, None, Some(by_source("no_such_source"))),
+        ),
+    ] {
+        let e = timeline_add_events(&state, args).unwrap_err();
+        assert_eq!(e.kind, "invalid", "{what}: {e:?}");
+    }
+    assert_eq!(
+        (timeline_list(&state).unwrap().len(), audit_rows(&state)),
+        before
+    );
+}
+
+#[test]
+fn timeline_add_events_from_query_cites_all_rows() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = open_as_analyst(tmp.path());
+    // More than one core page (500) of rows: the backend resolves every match, not the first page.
+    let q = by_source("mailbox_audit");
+    let n = rows(
+        &state,
+        "SELECT count(*) FROM events WHERE source = 'mailbox_audit'",
+    );
+    assert!(n > 1000, "{n}");
+    let (lo, hi) = (
+        rows(
+            &state,
+            "SELECT min(epoch_us(event_time)) FROM events WHERE source = 'mailbox_audit'",
+        ),
+        rows(
+            &state,
+            "SELECT max(epoch_us(event_time)) FROM events WHERE source = 'mailbox_audit'",
+        ),
+    );
+    let done =
+        timeline_add_events(&state, add_args(AddMode::Group, None, Some(q.clone()))).unwrap();
+    assert_eq!(
+        done.outcome,
+        format!("Added 1 grouped timeline entry covering {n} events")
+    );
+    let e = timeline_list(&state)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.entry_id == done.entry_ids[0])
+        .unwrap();
+    assert_eq!(e.event_count, Some(n as u64));
+    assert_eq!(e.evidence.len() as i64, n);
+    assert_eq!(
+        e.evidence
+            .iter()
+            .map(|r| (&r.source_table, &r.record_key))
+            .collect::<std::collections::BTreeSet<_>>()
+            .len() as i64,
+        n,
+        "no repeats"
+    );
+    assert_eq!(e.event_time.timestamp_micros(), lo);
+    assert_eq!(e.end_time.unwrap().timestamp_micros(), hi);
+    // Every cited row is a mailbox_audit event, and every mailbox_audit event is cited.
+    let cited_in_events = with_case(&state, |open| {
+        let mut count = 0i64;
+        for r in &e.evidence {
+            count += open
+                .case
+                .conn()
+                .query_row(
+                    "SELECT count(*) FROM events WHERE source = 'mailbox_audit' AND source_table = ? AND record_key = ?",
+                    [&r.source_table, &r.record_key],
+                    |x| x.get::<_, i64>(0),
+                )
+                .unwrap();
+        }
+        Ok(count)
+    })
+    .unwrap();
+    assert_eq!(cited_in_events, n);
+
+    // The query's entity, range and filters all apply; `each` over a small match makes one entry per event.
+    let small = EventQueryArgs {
+        entity: Some(entity_arg(
+            EntityKind::Account,
+            &picked(&state).account.to_uppercase(),
+        )),
+        fields: vec![(Field::Source, "entra_audit".into())],
+        ..EventQueryArgs::default()
+    };
+    let m = events_summary(&state, &small, None).unwrap().total;
+    assert!((1..=200).contains(&m), "{m}");
+    let each = timeline_add_events(&state, add_args(AddMode::Each, None, Some(small))).unwrap();
+    assert_eq!(each.entry_ids.len() as u64, m);
+    // A query too big to cite is refused with the number, and a search runs without an id on this write path.
+    let huge = EventQueryArgs::default();
+    assert!(
+        rows(&state, "SELECT count(*) FROM events") < 100_000,
+        "the synthetic case is small"
+    );
+    let with_search = EventQueryArgs {
+        search: Some("no-such-text-anywhere-0xdead".into()),
+        ..by_source("azure_activity")
+    };
+    let e =
+        timeline_add_events(&state, add_args(AddMode::Group, None, Some(with_search))).unwrap_err();
+    assert_eq!(e.kind, "invalid", "{e:?}");
+    drop(huge);
+}
+
+/// Records the Investigate-tabs responses the web app's fixtures and mock backend are built on, from the synthetic
+/// case: `cargo test -p sparrow-app --test commands -- --ignored record_investigate_fixtures`.
+#[test]
+#[ignore = "writes app/src/test/fixtures/*.json"]
+fn record_investigate_fixtures() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = open_as_analyst(tmp.path());
+    let mut p = picked(&state);
+    // The account that uses the busiest device, so the account tab has devices to pivot to.
+    p.account = text_of(
+        &state,
+        &format!(
+            "SELECT actor_upn FROM events WHERE device_id = '{}' AND actor_upn LIKE '%@%' \
+             GROUP BY 1 ORDER BY count(*) DESC, 1 LIMIT 1",
+            p.device
+        ),
+    );
+    // Twelve of the newest events of each source: the mock backend's whole event list.
+    let mut list = Vec::new();
+    for (source, _) in events_summary(&state, &EventQueryArgs::default(), None)
+        .unwrap()
+        .per_source
+    {
+        list.extend(
+            events_page(&state, &by_source(&source), None, 0, 12, None)
+                .unwrap()
+                .rows,
+        );
+    }
+    list.sort_by(|a, b| {
+        b.event_time
+            .cmp(&a.event_time)
+            .then(a.record_key.cmp(&b.record_key))
+    });
+    let r = |i: usize| RowRef::new(&list[i].source_table, &list[i].record_key);
+    // One of each mark the grid shows: both flag levels, an analyst tag, an unreviewed agent tag and agent flag, a note.
+    marks_flag_rows(&state, &[r(0)], Some(FlagLevel::Malicious)).unwrap();
+    marks_flag_rows(&state, &[r(1), r(2)], Some(FlagLevel::Suspicious)).unwrap();
+    marks_tag_rows(&state, &[r(3), r(4)], "phish-lure", true).unwrap();
+    notes_add_rows(
+        &state,
+        &[r(5)],
+        "Token replayed from the relay; see the session tab.",
+    )
+    .unwrap();
+    let agent = Actor::agent("triage", Some("carlos")).unwrap();
+    with_case(&state, |open| {
+        marks::tag_rows(open.case.conn(), &agent, &[r(6)], "ai:relay", true).unwrap();
+        marks::flag_rows(
+            open.case.conn(),
+            &agent,
+            &[r(7)],
+            Some(FlagLevel::Suspicious),
+        )
+        .unwrap();
+        Ok(())
+    })
+    .unwrap();
+    let list: Vec<_> = list
+        .iter()
+        .map(|row| {
+            let d = events_detail(&state, &row.source_table, &row.record_key).unwrap();
+            d.row
+        })
+        .collect();
+    let noted = events_detail(&state, &list[5].source_table, &list[5].record_key).unwrap();
+    let flagged = events_detail(&state, &list[0].source_table, &list[0].record_key).unwrap();
+
+    let account = entity_arg(EntityKind::Account, &p.account);
+    let ip = entity_arg(EntityKind::Ip, &p.ip);
+    let device = entity_arg(EntityKind::Device, &p.device);
+    let session = entity_arg(EntityKind::Session, &p.session);
+    let summaries = serde_json::json!({
+        "account": entity_summary(&state, &account, None, None).unwrap(),
+        "ip": entity_summary(&state, &ip, None, None).unwrap(),
+        "device": entity_summary(&state, &device, None, None).unwrap(),
+        "session": entity_summary(&state, &session, None, None).unwrap(),
+    });
+    let pivot = |e: &EntityArg, of| entity_pivot(&state, e, of, None, None, Some(25)).unwrap();
+    // A device that has directory changes, for the device tab's changes table.
+    let changed = with_case(&state, |open| {
+        Ok(open
+            .case
+            .conn()
+            .query_row(
+                "SELECT coalesce(device_id, device_object_id) FROM events WHERE source = 'entra_audit' \
+                 AND coalesce(device_id, device_object_id) IS NOT NULL ORDER BY event_time LIMIT 1",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .ok())
+    })
+    .unwrap()
+    .unwrap_or_else(|| p.device.clone());
+    let pivots = serde_json::json!({
+        "accounts": pivot(&ip, PivotOf::Accounts),
+        "ips": pivot(&account, PivotOf::Ips),
+        "devices": pivot(&account, PivotOf::Devices),
+        "sessions": pivot(&account, PivotOf::Sessions),
+        "device_changes": pivot(&entity_arg(EntityKind::Device, &changed), PivotOf::DeviceChanges),
+    });
+    let upn = text_of(
+        &state,
+        "SELECT f.actor_upn FROM findings f JOIN finding_evidence fe USING (finding_id) \
+         JOIN events e ON e.source_table = fe.source_table AND e.record_key = fe.record_key \
+         WHERE f.actor_upn IS NOT NULL GROUP BY 1 ORDER BY count(DISTINCT f.finding_id) DESC, 1 LIMIT 1",
+    );
+    let added = timeline_add_events(
+        &state,
+        add_args(AddMode::Group, None, Some(by_source("entra_audit"))),
+    )
+    .unwrap();
+    let out = [
+        ("events_list.json", serde_json::to_value(&list).unwrap()),
+        (
+            "events_page.json",
+            serde_json::to_value(
+                events_page(&state, &by_source("signin_interactive"), None, 0, 25, None).unwrap(),
+            )
+            .unwrap(),
+        ),
+        (
+            "events_summary.json",
+            serde_json::to_value(events_summary(&state, &EventQueryArgs::default(), None).unwrap())
+                .unwrap(),
+        ),
+        (
+            "events_histogram.json",
+            serde_json::to_value(
+                events_histogram(&state, &EventQueryArgs::default(), 24, None).unwrap(),
+            )
+            .unwrap(),
+        ),
+        ("events_detail.json", serde_json::to_value(&noted).unwrap()),
+        (
+            "events_detail_flagged.json",
+            serde_json::to_value(&flagged).unwrap(),
+        ),
+        (
+            "events_suggest.json",
+            serde_json::to_value(events_suggest(&state, Field::Account, &p.account[..4]).unwrap())
+                .unwrap(),
+        ),
+        ("entity_summaries.json", summaries),
+        ("entity_pivots.json", pivots),
+        (
+            "entity_findings.json",
+            serde_json::to_value(
+                entity_findings(&state, &entity_arg(EntityKind::Account, &upn), None, None)
+                    .unwrap(),
+            )
+            .unwrap(),
+        ),
+        (
+            "marks_tags.json",
+            serde_json::to_value(marks_list_tags(&state).unwrap()).unwrap(),
+        ),
+        ("timeline_added.json", serde_json::to_value(&added).unwrap()),
+    ];
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../app/src/test/fixtures");
+    for (name, v) in out {
+        let mut text = serde_json::to_string_pretty(&v).unwrap();
+        text.push('\n');
+        std::fs::write(dir.join(name), text).unwrap();
+    }
+}
+
+#[test]
+fn timeline_add_events_each_is_all_or_nothing() {
+    use sparrow_core::case::timeline_entries::test_hooks;
+    let tmp = tempfile::tempdir().unwrap();
+    let state = open_as_analyst(tmp.path());
+    let refs = first_rows(&state, &by_source("signin_interactive"), 5);
+    let snapshot = |state: &AppState| {
+        (
+            timeline_list(state).unwrap().len(),
+            audit_rows(state),
+            rows(state, "SELECT count(*) FROM timeline_entry_evidence"),
+        )
+    };
+    let before = snapshot(&state);
+    // The failure is injected (core's test hook) into the LAST of the five entries, after it was verified: the four
+    // entries before it, and all ten audit rows, roll back with it.
+    test_hooks::fail_create_verified_on_call(5);
+    let e =
+        timeline_add_events(&state, add_args(AddMode::Each, Some(refs.clone()), None)).unwrap_err();
+    test_hooks::fail_create_verified_on_call(0);
+    assert!(e.message.contains("injected"), "{e:?}");
+    assert_eq!(snapshot(&state), before);
+    // The same call without the failure adds all five and ten audit rows.
+    let done = timeline_add_events(&state, add_args(AddMode::Each, Some(refs), None)).unwrap();
+    assert_eq!(done.entry_ids.len(), 5);
+    let after = snapshot(&state);
+    assert_eq!((after.0, after.1), (before.0 + 5, before.1 + 10));
+}

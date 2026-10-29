@@ -22,4 +22,6 @@ sparrow-core = { path = "../sparrow-core" }
 
 [dev-dependencies]
 csv.workspace = true
+# The failure-injection hooks of core (a feature of the existing crate; no new dependency).
+sparrow-core = { path = "../sparrow-core", features = ["test-fixtures"] }
 sparrow-synth = { path = "../sparrow-synth" }

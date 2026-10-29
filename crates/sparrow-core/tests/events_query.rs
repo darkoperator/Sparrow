@@ -1588,3 +1588,141 @@ fn query_timing_on_kept_case() {
     });
     let _ = std::fs::remove_file(out);
 }
+
+#[test]
+fn matching_rows_lists_every_match_in_one_ordered_scan() {
+    let case = six_rows();
+    let keys_of = |q: &EventQuery, cap: usize| {
+        let (rows, capped) = events::matching_rows(case.conn(), q, cap).unwrap();
+        let k: Vec<String> = rows.into_iter().map(|r| r.record_key).collect();
+        (k, capped)
+    };
+    let all = EventQuery::default();
+    let six: Vec<String> = ["k1", "k2", "k3", "k4", "k5", "k6"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    // Oldest first (the rows were made a second apart), and exactly the cap is not "capped".
+    assert_eq!(keys_of(&all, 6), (six.clone(), false));
+    assert_eq!(keys_of(&all, 100), (six.clone(), false));
+    assert_eq!(keys_of(&all, 4), (six[..4].to_vec(), true));
+    assert_eq!(keys_of(&all, 5), (six[..5].to_vec(), true));
+    assert_eq!(keys_of(&all, 0), (vec![], true));
+    // The query's filters apply: the grid's own page and this scan agree.
+    for q in [
+        field(Field::Account, "*@contoso.example"),
+        field(Field::Operation, "!login"),
+        scoped(Entity::Ip("2001:DB8::1".into())),
+    ] {
+        let mut got = keys_of(&q, 100).0;
+        assert!(!got.is_empty());
+        got.sort();
+        assert_eq!(got, keys(&case, &q));
+    }
+    assert_eq!(
+        keys_of(&scoped(Entity::Ip("2001:DB8::1".into())), 100).0,
+        vec!["k5"]
+    );
+    // A time range is inclusive at both ends.
+    let q = EventQuery {
+        from: Some(t0() + Duration::seconds(1)),
+        to: Some(t0() + Duration::seconds(3)),
+        ..EventQuery::default()
+    };
+    assert_eq!(keys_of(&q, 100).0, vec!["k2", "k3", "k4"]);
+    // Awkward filter text is refused here too, never read as "everything".
+    let err = events::matching_rows(case.conn(), &field(Field::Source, "!"), 10).unwrap_err();
+    assert!(matches!(err, Error::Invalid(_)), "{err:?}");
+}
+
+#[test]
+fn histogram_never_exceeds_the_hard_bucket_cap() {
+    assert_eq!(events::MAX_HISTOGRAM_BUCKETS, 2_000);
+    let day = Duration::days(1);
+    let case = Case::in_memory().unwrap();
+    put(&case, &ev("a", "ual", t0()));
+    let hist = |to: Duration, max: usize| {
+        let q = EventQuery {
+            from: Some(t0()),
+            to: Some(t0() + to),
+            ..EventQuery::default()
+        };
+        let h = events::histogram(case.conn(), &q, max).unwrap();
+        let buckets = h.series.first().map_or(0, |(_, c)| c.len());
+        (h.bucket_seconds, buckets)
+    };
+    // Exactly 2,000 one-day buckets (a 1,999-day range) fit, however large the requested maximum.
+    assert_eq!(hist(day * 1_999, usize::MAX), (86_400, 2_000));
+    assert_eq!(hist(day * 1_999, 5_000), (86_400, 2_000));
+    // One day more would be 2,001: the bucket is widened to two days (1,001 buckets), not left at one day.
+    assert_eq!(hist(day * 2_000, usize::MAX), (172_800, 1_001));
+    // A huge range widens further and still fits the cap.
+    let (size, n) = hist(day * 100_000, usize::MAX);
+    assert!(
+        n <= 2_000 && size % 86_400 == 0 && size > 86_400,
+        "{size} {n}"
+    );
+    // And the fewest whole days: one day less per bucket would exceed the cap.
+    let fewer = (100_000 * 86_400 / (size - 86_400)) + 1;
+    assert!(fewer > 2_000, "{fewer}");
+    // The cap applies below a day too: 2,499 hours is 2,500 hourly buckets, over the cap, so 3-hour buckets (834).
+    assert_eq!(hist(Duration::hours(2_499), usize::MAX), (10_800, 834));
+    // 2,000 hourly buckets exactly (1,999 hours) fit.
+    assert_eq!(hist(Duration::hours(1_999), usize::MAX), (3_600, 2_000));
+    // A smaller requested maximum still wins when it is below the cap.
+    assert_eq!(hist(Duration::hours(1_999), 100), (86_400, 84));
+    // The one-day fallback for a small maximum is unchanged.
+    assert_eq!(hist(day * 40, 1), (86_400, 41));
+}
+
+#[test]
+fn matching_rows_breaks_equal_times_by_table_then_key() {
+    let case = Case::in_memory().unwrap();
+    // Inserted in a scrambled order, all at one instant, over two tables; plus one later and one earlier row.
+    let rows = [
+        ("signins", "b", t0()),
+        ("ual_events", "a", t0()),
+        ("signins", "a", t0()),
+        ("ual_events", "b", t0()),
+        ("ual_events", "z", t0() + Duration::seconds(1)),
+        ("signins", "z", t0() - Duration::seconds(1)),
+    ];
+    for (table, key, time) in rows {
+        let source = if table == "signins" {
+            "signin_interactive"
+        } else {
+            "ual"
+        };
+        put(
+            &case,
+            &Ev {
+                table,
+                ..ev(key, source, time)
+            },
+        );
+    }
+    let (got, capped) = events::matching_rows(case.conn(), &EventQuery::default(), 100).unwrap();
+    let got: Vec<(String, String)> = got
+        .into_iter()
+        .map(|r| (r.source_table, r.record_key))
+        .collect();
+    let want: Vec<(String, String)> = [
+        ("signins", "z"),
+        ("signins", "a"),
+        ("signins", "b"),
+        ("ual_events", "a"),
+        ("ual_events", "b"),
+        ("ual_events", "z"),
+    ]
+    .iter()
+    .map(|(a, b)| (a.to_string(), b.to_string()))
+    .collect();
+    assert_eq!((got, capped), (want.clone(), false));
+    // A cap in the middle of the tie keeps the first of it, in that order.
+    let (cut, capped) = events::matching_rows(case.conn(), &EventQuery::default(), 3).unwrap();
+    let cut: Vec<(String, String)> = cut
+        .into_iter()
+        .map(|r| (r.source_table, r.record_key))
+        .collect();
+    assert_eq!((cut, capped), (want[..3].to_vec(), true));
+}

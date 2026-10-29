@@ -14,12 +14,37 @@ import pivotIpJson from "./fixtures/pivot_ip.json";
 import pivotUserJson from "./fixtures/pivot_user.json";
 import browsePageJson from "./fixtures/browse_page.json";
 import indicatorsJson from "./fixtures/indicators.json";
+import eventsListJson from "./fixtures/events_list.json";
+import eventsPageJson from "./fixtures/events_page.json";
+import eventsSummaryJson from "./fixtures/events_summary.json";
+import eventsHistogramJson from "./fixtures/events_histogram.json";
+import eventsDetailJson from "./fixtures/events_detail.json";
+import eventsDetailFlaggedJson from "./fixtures/events_detail_flagged.json";
+import eventsSuggestJson from "./fixtures/events_suggest.json";
+import entitySummariesJson from "./fixtures/entity_summaries.json";
+import entityPivotsJson from "./fixtures/entity_pivots.json";
+import entityFindingsJson from "./fixtures/entity_findings.json";
+import marksTagsJson from "./fixtures/marks_tags.json";
+import timelineAddedJson from "./fixtures/timeline_added.json";
 import type {
   AccountPage,
   ActiveIndicator,
   BrowsePage,
   CaseInfo,
+  EntityKind,
+  EntitySummary,
+  EventDetail,
+  EventRow,
+  EventsAdded,
+  EventsPage,
+  EventsSummary,
+  FindingRef,
+  Histogram,
+  PivotOf,
+  PivotPage,
+  PivotRow,
   SuspectDevice,
+  TagInfo,
   FindingDetail,
   Pivot,
   QueryResult,
@@ -248,3 +273,179 @@ export const devices = (): SuspectDevice[] => checkDevices("devices", devicesJso
 
 /** The `devices_list` response recorded from the synthetic Rust case by the backend recorder. */
 export const devicesRecorded = (): SuspectDevice[] => checkDevices("devices_recorded", devicesRecordedJson);
+
+// ---------------------------------------------------------------- events grid, entity tabs and marks
+// Recorded by `record_investigate_fixtures` (crates/sparrow-app/tests/commands.rs) from the synthetic case, after a
+// few marks were made: a malicious and two suspicious row flags, an analyst tag, an unreviewed agent tag and agent
+// flag, and a note.
+
+const EVENT_ROW = [
+  "source_table", "record_key", "source", "event_time", "time_tz_assumed", "tenant_key", "workload", "category",
+  "operation", "result", "actor_upn", "owner_upn", "target", "ip", "ip_prefix", "ip_country", "asn", "asn_org",
+  "ip_kind", "device_id", "device_name", "device_object_id", "entra_session_id", "user_agent", "app_id", "summary",
+  "finding_count", "tags", "flag", "flag_ai", "latest_note", "note_count",
+];
+
+function checkRow(where: string, r: unknown): EventRow {
+  need(where, r, EVENT_ROW);
+  if (!Array.isArray(r.tags)) throw new Error(`fixture ${where}: tags is not an array`);
+  r.tags.forEach((t: unknown, i) => need(`${where}.tags[${i}]`, t, ["name", "ai"]));
+  if (r.flag !== null && r.flag !== "suspicious" && r.flag !== "malicious") throw new Error(`fixture ${where}: bad flag`);
+  if (typeof r.flag_ai !== "boolean" || typeof r.note_count !== "number") throw new Error(`fixture ${where}: bad marks`);
+  return r as unknown as EventRow;
+}
+
+/** The mock backend's whole event list: a dozen of the newest events of each source, newest first. */
+export function eventsList(): EventRow[] {
+  const v: unknown = clone(eventsListJson);
+  if (!Array.isArray(v) || v.length === 0) throw new Error("fixture events_list: not a non-empty array");
+  return v.map((r: unknown, i) => checkRow(`events_list[${i}]`, r));
+}
+
+export function eventsPage(): EventsPage {
+  const v: unknown = clone(eventsPageJson);
+  need("events_page", v, ["rows", "offset", "total", "total_capped"]);
+  if (!Array.isArray(v.rows) || v.rows.length === 0) throw new Error("fixture events_page: no rows");
+  v.rows.forEach((r: unknown, i) => checkRow(`events_page.rows[${i}]`, r));
+  if (typeof v.total !== "number" || typeof v.total_capped !== "boolean") throw new Error("fixture events_page: bad total");
+  return v as unknown as EventsPage;
+}
+
+export function eventsSummary(): EventsSummary {
+  const v: unknown = clone(eventsSummaryJson);
+  need("events_summary", v, ["total", "suspicious", "malicious", "per_source", "hidden_trace_events"]);
+  if (!Array.isArray(v.per_source) || v.per_source.length === 0) throw new Error("fixture events_summary: no sources");
+  v.per_source.forEach((p: unknown, i) => {
+    if (!Array.isArray(p) || p.length !== 2 || typeof p[0] !== "string" || typeof p[1] !== "number") {
+      throw new Error(`fixture events_summary.per_source[${i}]: not [source, count]`);
+    }
+  });
+  return v as unknown as EventsSummary;
+}
+
+export function eventsHistogram(): Histogram {
+  const v: unknown = clone(eventsHistogramJson);
+  need("events_histogram", v, ["start", "bucket_seconds", "series", "findings"]);
+  if (!Array.isArray(v.series) || v.series.length === 0) throw new Error("fixture events_histogram: no series");
+  const widths = new Set<number>();
+  v.series.forEach((s: unknown, i) => {
+    if (!Array.isArray(s) || s.length !== 2 || typeof s[0] !== "string" || !Array.isArray(s[1])) {
+      throw new Error(`fixture events_histogram.series[${i}]: not [source, counts]`);
+    }
+    widths.add(s[1].length);
+  });
+  if (widths.size !== 1) throw new Error("fixture events_histogram: series of different lengths");
+  if (!Array.isArray(v.findings)) throw new Error("fixture events_histogram: findings is not an array");
+  v.findings.forEach((f: unknown, i) => need(`events_histogram.findings[${i}]`, f, ["finding_id", "severity", "first_seen", "last_seen"]));
+  return v as unknown as Histogram;
+}
+
+function checkDetail(name: string, json: unknown): EventDetail {
+  const v: unknown = clone(json);
+  need(name, v, ["row", "raw", "source_refs", "tags", "notes", "flag", "flag_sources"]);
+  checkRow(`${name}.row`, v.row);
+  if (!Array.isArray(v.source_refs) || !Array.isArray(v.notes) || !Array.isArray(v.flag_sources)) {
+    throw new Error(`fixture ${name}: source_refs, notes and flag_sources must be arrays`);
+  }
+  v.flag_sources.forEach((f: unknown, i) =>
+    need(`${name}.flag_sources[${i}]`, f, ["origin", "level", "kind", "value", "scope_kind", "scope_value", "decided_by", "review_state"]),
+  );
+  return v as unknown as EventDetail;
+}
+
+/** The detail of an event that carries a note. */
+export const eventsDetail = (): EventDetail => checkDetail("events_detail", eventsDetailJson);
+/** The detail of an event with a malicious row flag. */
+export const eventsDetailFlagged = (): EventDetail => checkDetail("events_detail_flagged", eventsDetailFlaggedJson);
+
+export function eventsSuggest(): string[] {
+  const v: unknown = clone(eventsSuggestJson);
+  if (!Array.isArray(v) || v.length === 0 || v.some((s) => typeof s !== "string")) throw new Error("fixture events_suggest: not strings");
+  return v as string[];
+}
+
+const SUMMARY_KEYS = ["entity", "first_seen", "last_seen", "events", "distinct", "open_findings", "roles_matched", "ip_intel", "device"];
+const DISTINCT = ["accounts", "ips", "countries", "asns", "devices", "sessions"];
+
+/** `entity_summary` of one entity of each kind (the first of its kind in the synthetic case). */
+export function entitySummary(kind: EntityKind): EntitySummary {
+  const all: unknown = clone(entitySummariesJson);
+  need("entity_summaries", all, ["account", "ip", "device", "session"]);
+  const v = all[kind];
+  need(`entity_summaries.${kind}`, v, SUMMARY_KEYS);
+  need(`entity_summaries.${kind}.distinct`, v.distinct, DISTINCT);
+  need(`entity_summaries.${kind}.entity`, v.entity, ["kind", "value"]);
+  if (v.entity.kind !== kind) throw new Error(`fixture entity_summaries.${kind}: entity is a ${String(v.entity.kind)}`);
+  return v as unknown as EntitySummary;
+}
+
+function checkPivotRow(where: string, r: unknown): PivotRow {
+  need(where, r, ["value", "label", "count", "first_seen", "last_seen", "is_new", "extra"]);
+  return r as unknown as PivotRow;
+}
+
+/**
+ * `entity_pivot` pages keyed by `of`, recorded for one entity of the right kind (accounts of an IP; the IPs, devices and
+ * sessions of an account). The synthetic case has no directory change of a device, so `device_changes` is written by
+ * hand after the documented shape: one row per `entra_audit` event.
+ */
+export function entityPivots(): Record<PivotOf, PivotPage> {
+  const all: unknown = clone(entityPivotsJson);
+  need("entity_pivots", all, ["accounts", "ips", "devices", "sessions", "device_changes"]);
+  const out = {} as Record<PivotOf, PivotPage>;
+  for (const of of ["accounts", "ips", "devices", "sessions", "device_changes"] as const) {
+    const p = all[of];
+    need(`entity_pivots.${of}`, p, ["rows", "total"]);
+    if (!Array.isArray(p.rows) || typeof p.total !== "number") throw new Error(`fixture entity_pivots.${of}: bad page`);
+    p.rows.forEach((r: unknown, i) => checkPivotRow(`entity_pivots.${of}.rows[${i}]`, r));
+    out[of] = p as unknown as PivotPage;
+  }
+  if (out.device_changes.rows.length === 0) {
+    const at = "2026-08-20T09:15:00.000000Z";
+    out.device_changes = {
+      total: 2,
+      rows: [
+        {
+          value: "Add registered owner to device",
+          label: "Add registered owner to device (Succeeded)",
+          count: 1,
+          first_seen: at,
+          last_seen: at,
+          is_new: false,
+          extra: { source_table: "entra_audit", record_key: "mock-device-change-1", actor: "admin@contoso.example", result: "Succeeded", target: "FRANCES.ROURKE-LAPTOP" },
+        },
+        {
+          value: "Add device",
+          label: "Add device (Succeeded)",
+          count: 1,
+          first_seen: "2026-08-20T09:30:00.000000Z",
+          last_seen: "2026-08-20T09:30:00.000000Z",
+          is_new: false,
+          extra: { source_table: "entra_audit", record_key: "mock-device-change-2", actor: "admin@contoso.example", result: "Succeeded", target: "FRANCES.ROURKE-LAPTOP" },
+        },
+      ],
+    };
+  }
+  return out;
+}
+
+export function entityFindings(): FindingRef[] {
+  const v: unknown = clone(entityFindingsJson);
+  if (!Array.isArray(v) || v.length === 0) throw new Error("fixture entity_findings: not a non-empty array");
+  v.forEach((f: unknown, i) => need(`entity_findings[${i}]`, f, ["finding_id", "rule_id", "title", "severity", "status", "first_seen"]));
+  return v as unknown as FindingRef[];
+}
+
+export function marksTags(): TagInfo[] {
+  const v: unknown = clone(marksTagsJson);
+  if (!Array.isArray(v) || v.length === 0) throw new Error("fixture marks_tags: not a non-empty array");
+  v.forEach((t: unknown, i) => need(`marks_tags[${i}]`, t, ["name", "count", "agent_unreviewed"]));
+  return v as unknown as TagInfo[];
+}
+
+export function timelineAdded(): EventsAdded {
+  const v: unknown = clone(timelineAddedJson);
+  need("timeline_added", v, ["entryIds", "outcome"]);
+  if (!Array.isArray(v.entryIds) || v.entryIds.length === 0 || typeof v.outcome !== "string") throw new Error("fixture timeline_added: bad shape");
+  return v as unknown as EventsAdded;
+}

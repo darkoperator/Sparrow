@@ -207,6 +207,34 @@ pub fn page(
     })
 }
 
+/// The keys of the events `q` matches, oldest first (events without a time last), then by table and key, in one
+/// scan: at most `cap` of them, and `true` when more matched. For callers that act on every match (add them to the
+/// timeline); the grid pages with [`page`].
+pub fn matching_rows(
+    conn: &Connection,
+    q: &EventQuery,
+    cap: usize,
+) -> Result<(Vec<marks::RowRef>, bool)> {
+    let w = filter::build(q, false)?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT e.source_table, e.record_key FROM events e{} \
+         ORDER BY e.event_time ASC NULLS LAST, e.source_table, e.record_key LIMIT {}",
+        w.sql(),
+        cap.saturating_add(1)
+    ))?;
+    let mut rows = Vec::new();
+    let mut result = stmt.query(params_from_iter(bound(&w)))?;
+    while let Some(r) = result.next()? {
+        rows.push(marks::RowRef {
+            source_table: r.get(0)?,
+            record_key: r.get(1)?,
+        });
+    }
+    let capped = rows.len() > cap;
+    rows.truncate(cap);
+    Ok((rows, capped))
+}
+
 /// The summary bar: the total and the rows per source of what `q` matches.
 pub fn summary(conn: &Connection, q: &EventQuery) -> Result<EventsSummary> {
     let w = filter::build(q, false)?;
@@ -283,9 +311,13 @@ fn flag_counts(conn: &Connection, q: &EventQuery) -> Result<(u64, u64)> {
 /// Bucket sizes in seconds: 1m, 5m, 15m, 1h, 3h, 6h, 12h, 1d.
 const BUCKET_SECONDS: [i64; 8] = [60, 300, 900, 3_600, 10_800, 21_600, 43_200, 86_400];
 
+/// The most buckets a histogram ever has, whatever `max_buckets` asks for and however wide the range is.
+pub const MAX_HISTOGRAM_BUCKETS: usize = 2_000;
+
 /// Event counts per time bucket, stacked by source, over the range `q` selects (its own `from` and `to`, else the
 /// first and last matching event). The bucket is the smallest of 1m ... 1d that gives at most `max_buckets` buckets
-/// (1d when even that gives more). A range with no event gives no series. An event exactly at the range end is
+/// (1d when even that gives more). Never more than [`MAX_HISTOGRAM_BUCKETS`] buckets: when a day is still too small
+/// for that, the bucket is widened to the fewest whole days that fit. A range with no event gives no series. An event exactly at the range end is
 /// counted, in the last bucket.
 ///
 /// Two edges to know. With no `from`, the first bucket starts at the first event's time rounded down to a multiple of
@@ -330,11 +362,24 @@ pub fn histogram(conn: &Connection, q: &EventQuery, max_buckets: usize) -> Resul
             .map_or_else(|| min_us.div_euclid(step) * step, |t| t.timestamp_micros());
         (start, ((end_us - start).max(0) / step) as usize + 1)
     };
+    let limit = max_buckets.min(MAX_HISTOGRAM_BUCKETS);
+    let day = BUCKET_SECONDS[BUCKET_SECONDS.len() - 1];
     let size = BUCKET_SECONDS
         .iter()
         .copied()
-        .find(|s| layout(*s).1 <= max_buckets)
-        .unwrap_or(BUCKET_SECONDS[BUCKET_SECONDS.len() - 1]);
+        .find(|s| layout(*s).1 <= limit)
+        .unwrap_or_else(|| {
+            let per_day = layout(day).1;
+            if per_day <= MAX_HISTOGRAM_BUCKETS {
+                return day;
+            }
+            // Past a day: the fewest whole days that fit the hard cap (the estimate, then up until it does).
+            let mut days = (per_day / (MAX_HISTOGRAM_BUCKETS - 1)).max(2) as i64;
+            while layout(days * day).1 > MAX_HISTOGRAM_BUCKETS {
+                days += 1;
+            }
+            days * day
+        });
     let (start_us, buckets) = layout(size);
 
     let mut params = vec![Value::BigInt(start_us), Value::BigInt(size * 1_000_000)];

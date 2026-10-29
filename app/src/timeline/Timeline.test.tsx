@@ -20,6 +20,8 @@ function entry(over: Partial<TimelineEntry> & { entry_id: string }): TimelineEnt
   return {
     tenant_key: null,
     event_time: "2026-03-01T10:00:00.000000Z",
+    end_time: null,
+    event_count: null,
     title: "title " + over.entry_id,
     narrative: null,
     phase: "initial_access",

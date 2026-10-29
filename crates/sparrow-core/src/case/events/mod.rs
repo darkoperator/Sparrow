@@ -11,7 +11,10 @@ pub use crate::case::marks::{FlagLevel, TagRef};
 pub(crate) use build::prefix_of;
 pub(crate) use filter::{Where, build as scope_where, entity_columns, entity_predicate};
 pub(crate) use marksql::{value_columns, value_flag_matches};
-pub use query::{CSV_COLUMNS, detail, export_csv, histogram, page, suggest, summary};
+pub use query::{
+    CSV_COLUMNS, MAX_HISTOGRAM_BUCKETS, detail, export_csv, histogram, matching_rows, page,
+    suggest, summary,
+};
 
 use crate::Result;
 use crate::case::notes::Note;

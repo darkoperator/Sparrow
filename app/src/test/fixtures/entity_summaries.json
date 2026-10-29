@@ -1,0 +1,118 @@
+{
+  "account": {
+    "entity": {
+      "kind": "account",
+      "value": "frances.rourke@contoso.example"
+    },
+    "first_seen": "2026-08-01T00:42:39.000000Z",
+    "last_seen": "2026-09-09T17:16:32.000000Z",
+    "events": 917,
+    "distinct": {
+      "accounts": 22,
+      "asns": 9,
+      "countries": 8,
+      "devices": 1,
+      "ips": 85,
+      "sessions": 46
+    },
+    "open_findings": {
+      "high": 1,
+      "medium": 2
+    },
+    "roles_matched": [
+      "actor",
+      "mailbox owner",
+      "message sender",
+      "message recipient"
+    ],
+    "ip_intel": null,
+    "device": null
+  },
+  "ip": {
+    "entity": {
+      "kind": "ip",
+      "value": "192.0.2.19"
+    },
+    "first_seen": "2026-08-03T00:32:02.000000Z",
+    "last_seen": "2026-09-09T17:16:32.000000Z",
+    "events": 663,
+    "distinct": {
+      "accounts": 17,
+      "asns": 1,
+      "countries": 1,
+      "devices": 1,
+      "ips": 1,
+      "sessions": 27
+    },
+    "open_findings": {},
+    "roles_matched": [],
+    "ip_intel": {
+      "ip": "192.0.2.19",
+      "country_iso": "AU",
+      "country": "Australia",
+      "city": "Port Sable",
+      "latitude": -33.9,
+      "longitude": 151.2,
+      "asn": 64499,
+      "asn_org": "Documentation ISP 4",
+      "is_hosting": false,
+      "hosting_provider": null,
+      "is_microsoft": false,
+      "microsoft_service_area": null,
+      "is_private": false,
+      "source_db_version": "GeoLite2-City 2026-09-10; GeoLite2-ASN 2026-09-10; ms365-endpoints 2026081400",
+      "ip_kind": null
+    },
+    "device": null
+  },
+  "device": {
+    "entity": {
+      "kind": "device",
+      "value": "7d5f6b6a-b999-43da-820e-ac7acb6ae7e7"
+    },
+    "first_seen": "2026-08-12T00:22:04.000000Z",
+    "last_seen": "2026-09-09T07:51:48.000000Z",
+    "events": 104,
+    "distinct": {
+      "accounts": 1,
+      "asns": 3,
+      "countries": 2,
+      "devices": 1,
+      "ips": 4,
+      "sessions": 34
+    },
+    "open_findings": {},
+    "roles_matched": [],
+    "ip_intel": null,
+    "device": {
+      "device_id": "7d5f6b6a-b999-43da-820e-ac7acb6ae7e7",
+      "display_name": "FRANCES.ROURKE-LAPTOP",
+      "os": "Windows 11",
+      "browser": "Chrome",
+      "is_compliant": true,
+      "is_managed": true,
+      "trust_type": "Azure AD joined"
+    }
+  },
+  "session": {
+    "entity": {
+      "kind": "session",
+      "value": "335fd402-004e-44c5-84f3-b052ee70de8c"
+    },
+    "first_seen": "2026-09-07T14:09:20.000000Z",
+    "last_seen": "2026-09-07T22:12:37.000000Z",
+    "events": 15,
+    "distinct": {
+      "accounts": 1,
+      "asns": 1,
+      "countries": 1,
+      "devices": 0,
+      "ips": 1,
+      "sessions": 1
+    },
+    "open_findings": {},
+    "roles_matched": [],
+    "ip_intel": null,
+    "device": null
+  }
+}

@@ -249,6 +249,10 @@ export interface TimelineEntry {
   entry_id: string;
   tenant_key: string | null;
   event_time: string;
+  /** The end of the span a grouped entry covers (`event_time` is the start); null for a single moment. */
+  end_time: string | null;
+  /** How many events a grouped entry covers; null when it is not grouped. */
+  event_count: number | null;
   title: string;
   narrative: string | null;
   phase: string;
@@ -635,3 +639,272 @@ export interface SuspectDevice {
 }
 
 export const devicesList = (tenant?: string) => call<SuspectDevice[]>("devices_list", { tenant });
+
+// ---------------------------------------------------------------- events grid, entity tabs, marks (core serde shapes)
+
+/** The kind of thing an entity tab is about. */
+export type EntityKind = "account" | "ip" | "device" | "session";
+
+/**
+ * An entity, the one shape used everywhere: sent as `{kind, value}` with the value in any spelling (the backend
+ * normalizes it), and returned in the stored spelling (lower-case account, device and session, normalized IP).
+ */
+export interface EntityArg {
+  kind: EntityKind;
+  value: string;
+}
+
+/** `case::events::Field`: the filter boxes of the grid. */
+export type EventField = "source" | "operation" | "account" | "ip" | "country" | "asn" | "device" | "session" | "tag";
+
+export type FlagLevel = "suspicious" | "malicious";
+/** `case::events::FlagFilter`. */
+export type FlagFilter = "all" | FlagLevel;
+/** `case::events::AiFilter`: `marked` has an agent mark, `unreviewed` one no analyst has confirmed. */
+export type AiFilter = "all" | "marked" | "unreviewed";
+
+/**
+ * What the grid asks for (`cmd::events::EventQueryArgs`). `fields` holds Harrier's filter text per box (comma: OR;
+ * `!value` excludes; `*` wildcard); `search` is a raw-text search of every record (it needs a `queryId` on the
+ * command); `from` / `to` are inclusive ISO 8601 UTC times.
+ */
+export interface EventQuery {
+  entity?: EntityArg;
+  fields: [EventField, string][];
+  search?: string;
+  from?: string;
+  to?: string;
+  flag: FlagFilter;
+  ai: AiFilter;
+}
+
+/** `case::marks::TagRef`: `ai` for an agent's tag that no analyst has confirmed. */
+export interface TagRef {
+  name: string;
+  ai: boolean;
+}
+
+/** `case::events::EventRow`. */
+export interface EventRow {
+  source_table: string;
+  record_key: string;
+  source: string;
+  event_time: string | null;
+  time_tz_assumed: boolean | null;
+  tenant_key: string | null;
+  workload: string | null;
+  category: string;
+  operation: string | null;
+  result: string | null;
+  actor_upn: string | null;
+  owner_upn: string | null;
+  target: string | null;
+  ip: string | null;
+  ip_prefix: string | null;
+  ip_country: string | null;
+  asn: number | null;
+  asn_org: string | null;
+  ip_kind: string | null;
+  device_id: string | null;
+  device_name: string | null;
+  device_object_id: string | null;
+  entra_session_id: string | null;
+  user_agent: string | null;
+  app_id: string | null;
+  summary: string | null;
+  finding_count: number;
+  tags: TagRef[];
+  /** The strongest of the row's own flag and every standing value flag that matches it. */
+  flag: FlagLevel | null;
+  /** The flag comes only from an agent's flag that no analyst has confirmed. */
+  flag_ai: boolean;
+  latest_note: string | null;
+  note_count: number;
+}
+
+/** `case::events::EventsPage`: `total` counts up to a cap; `total_capped` says there are more. */
+export interface EventsPage {
+  rows: EventRow[];
+  offset: number;
+  total: number;
+  total_capped: boolean;
+}
+
+/** `case::events::EventsSummary`; `per_source` is in grid order, sources with no event left out. */
+export interface EventsSummary {
+  total: number;
+  suspicious: number;
+  malicious: number;
+  per_source: [string, number][];
+  /** `message_trace_event` rows the query matches but leaves out unless its Source field names them. */
+  hidden_trace_events: number;
+}
+
+/** `case::events::FindingMark`: an open finding in the histogram's findings lane. */
+export interface FindingMark {
+  finding_id: string;
+  severity: string;
+  first_seen: string;
+  last_seen: string;
+}
+
+/**
+ * `case::events::Histogram`. Bucket `i` covers `[start + i * bucket_seconds, start + (i + 1) * bucket_seconds)`; an event
+ * exactly at the range end is in the last bucket. `series` is `[source, counts per bucket]`, empty for no rows.
+ */
+export interface Histogram {
+  start: string;
+  bucket_seconds: number;
+  series: [string, number[]][];
+  findings: FindingMark[];
+}
+
+/** `case::marks::FlagSource`: why a row is flagged (its own flag, or a standing flag on a value it carries). */
+export interface FlagSource {
+  origin: "row" | "value";
+  level: FlagLevel;
+  kind: string | null;
+  value: string | null;
+  scope_kind: string | null;
+  scope_value: string | null;
+  decided_by: string;
+  review_state: string;
+}
+
+/** `case::events::EventDetail`; `raw` is the stored evidence record as JSON. */
+export interface EventDetail {
+  row: EventRow;
+  raw: unknown;
+  source_refs: string[];
+  tags: TagRef[];
+  notes: Note[];
+  flag: FlagLevel | null;
+  flag_sources: FlagSource[];
+}
+
+/** `cmd::entity::EntitySummaryView`: the tiles of an entity tab. `entity` is `{kind, value}` in the stored spelling. */
+export interface EntitySummary {
+  entity: EntityArg;
+  first_seen: string | null;
+  last_seen: string | null;
+  events: number;
+  /** The keys `accounts`, `ips`, `countries`, `asns`, `devices`, `sessions`. */
+  distinct: Record<string, number>;
+  /** Severity to the number of open findings citing the entity's events in range. */
+  open_findings: Record<string, number>;
+  /** Account tab only: `actor`, `mailbox owner`, `message sender`, `message recipient`. */
+  roles_matched: string[];
+  ip_intel: Record<string, unknown> | null;
+  device: Record<string, unknown> | null;
+}
+
+/** `case::entity::PivotOf`. `device_changes` is for the device tab only. */
+export type PivotOf = "accounts" | "ips" | "devices" | "sessions" | "device_changes";
+
+/** `case::entity::PivotRow`; `extra` holds the columns that depend on the table (see the Rust docs). */
+export interface PivotRow {
+  value: string;
+  label: string | null;
+  count: number;
+  first_seen: string;
+  last_seen: string;
+  is_new: boolean;
+  extra: Record<string, unknown>;
+}
+
+/** `case::entity::PivotPage`: the first `rows` of `total`. */
+export interface PivotPage {
+  rows: PivotRow[];
+  total: number;
+}
+
+/** `case::entity::FindingRef`. */
+export interface FindingRef {
+  finding_id: string;
+  rule_id: string | null;
+  title: string;
+  severity: string;
+  status: string;
+  first_seen: string | null;
+}
+
+/** `case::marks::RowRef`: the key of an event row. */
+export interface RowRef {
+  source_table: string;
+  record_key: string;
+}
+
+/** `case::marks::ValueKind`: what a standing flag on a value matches. */
+export type ValueKind = "ip" | "ip_prefix" | "account" | "asn" | "device" | "session";
+
+/** `case::marks::TagInfo`. */
+export interface TagInfo {
+  name: string;
+  count: number;
+  agent_unreviewed: number;
+}
+
+/** `cmd::timeline::AddEventsArgs`: exactly one of `rows` and `query`. `each` is refused over 200 events. */
+export interface AddEventsArgs {
+  rows?: RowRef[];
+  query?: EventQuery;
+  mode: "each" | "group";
+  title?: string;
+  /** A phase name; without one it comes from the events' categories. */
+  phase?: string;
+}
+
+/** `cmd::timeline::EventsAdded`. */
+export interface EventsAdded {
+  entryIds: string[];
+  /** One line for a toast. */
+  outcome: string;
+}
+
+/** The most events `timelineAddEvents` turns into entries one by one. */
+export const EACH_MAX = 200;
+
+/**
+ * `queryId` names the run for `queryCancel`; it is required (the backend refuses without it) when the query has a raw
+ * `search`, and ignored otherwise. A fresh one per run: `newQueryId()`.
+ */
+export const eventsPage = (query: EventQuery, sort: Sort | null, offset: number, limit: number, queryId?: string) =>
+  call<EventsPage>("events_page", { query, sort, offset, limit, queryId });
+export const eventsSummary = (query: EventQuery, queryId?: string) =>
+  call<EventsSummary>("events_summary", { query, queryId });
+export const eventsHistogram = (query: EventQuery, maxBuckets: number, queryId?: string) =>
+  call<Histogram>("events_histogram", { query, maxBuckets, queryId });
+export const eventsDetail = (sourceTable: string, recordKey: string) =>
+  call<EventDetail>("events_detail", { sourceTable, recordKey });
+/** Distinct case values of `field` that start with `prefix`, sorted, at most 200. */
+export const eventsSuggest = (field: EventField, prefix: string) => call<string[]>("events_suggest", { field, prefix });
+/** Writes every event the query matches (not a page) as CSV at `path`; resolves to the rows written. */
+export const eventsExportCsv = (query: EventQuery, path: string, queryId?: string) =>
+  call<number>("events_export_csv", { query, path, queryId });
+
+/** `from` / `to`: inclusive ISO 8601 UTC times; either may be omitted. */
+export const entitySummary = (entity: EntityArg, from?: string, to?: string) =>
+  call<EntitySummary>("entity_summary", { entity, from, to });
+/** At most `limit` rows (default 500, at most 5000); `total` is every value the table has. */
+export const entityPivot = (entity: EntityArg, of: PivotOf, from?: string, to?: string, limit?: number) =>
+  call<PivotPage>("entity_pivot", { entity, of, from, to, limit });
+export const entityFindings = (entity: EntityArg, from?: string, to?: string) =>
+  call<FindingRef[]>("entity_findings", { entity, from, to });
+
+/** Sets (`level`) or clears (`null`) the flag of event rows: one audit row. */
+export const marksFlagRows = (rows: RowRef[], level: FlagLevel | null) =>
+  call<AuditEntry>("marks_flag_rows", { rows, level });
+/** Sets or clears a standing flag on a value; `scope` limits it to one entity's events. */
+export const marksFlagValue = (kind: ValueKind, value: string, scope: EntityArg | null, level: FlagLevel | null) =>
+  call<AuditEntry>("marks_flag_value", { kind, value, scope, level });
+export const marksTagRows = (rows: RowRef[], tag: string, add: boolean) =>
+  call<AuditEntry>("marks_tag_rows", { rows, tag, add });
+export const marksListTags = () => call<TagInfo[]>("marks_list_tags");
+/**
+ * Confirms (`accept`) or removes the agent marks pending on `rows`. This also reviews every pending standing value flag
+ * that covers any of the rows, and so changes every row such a flag covers: the UI must warn.
+ */
+export const marksReview = (rows: RowRef[], accept: boolean) => call<AuditEntry[]>("marks_review", { rows, accept });
+/** One note on each row (at most 200 rows); the audit rows come back in row order. */
+export const notesAddRows = (rows: RowRef[], text: string) => call<AuditEntry[]>("notes_add_rows", { rows, text });
+export const timelineAddEvents = (args: AddEventsArgs) => call<EventsAdded>("timeline_add_events", { args });

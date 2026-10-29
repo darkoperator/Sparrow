@@ -21,6 +21,7 @@ import type {
 } from "../api";
 import * as fx from "../test/fixtures";
 import { GEN_COLUMNS, GEN_ROWS, genObjects, selectRows } from "./generated";
+import { eventHandlers } from "./events";
 
 export const MOCK_MARKER = "sparrow-mock-backend-9f3c1e";
 
@@ -62,6 +63,8 @@ function makeTimeline(): TimelineEntry[] {
       entry_id: `mock-entry-${String(i).padStart(2, "0")}`,
       tenant_key: null,
       event_time: t,
+      end_time: null,
+      event_count: null,
       title: `Mock timeline entry ${i + 1}: ${i % 2 ? "inbox rule created" : "sign-in from relay"}`,
       narrative: i % 4 === 0 ? null : "Synthetic narrative. ".repeat(12),
       phase: phases[i % phases.length],
@@ -257,7 +260,7 @@ const handlers: Record<string, (a: Args) => unknown> = {
     const n = a?.args as NewEntryArgs;
     const now = new Date().toISOString();
     const entry: TimelineEntry = {
-      entry_id: `mock-entry-new-${timeline.length}`, tenant_key: n.tenantKey ?? null, event_time: n.eventTime, title: n.title,
+      entry_id: `mock-entry-new-${timeline.length}`, tenant_key: n.tenantKey ?? null, event_time: n.eventTime, end_time: null, event_count: null, title: n.title,
       narrative: n.narrative ?? null, phase: n.phase, status: "proposed", supersedes: null, created_at: now, updated_at: now,
       decided_by: `analyst:${settings.analyst ?? "unknown"}`, decided_at: now, on_behalf_of: null, review_state: "accepted",
       reviewed_by: null, reviewed_at: null, review_comment: null,
@@ -285,6 +288,19 @@ const handlers: Record<string, (a: Args) => unknown> = {
     timeline = timeline.map((t) => (t.entry_id === id ? next : t));
     return { entryId: id, audit: auditEntry("timeline_edit", "timeline_entry", id) };
   },
+  ...eventHandlers({
+    fail,
+    audit: auditEntry,
+    interruptible,
+    writable: () => {
+      if (info?.read_only_reason) fail("read_only", info.read_only_reason);
+      if (!settings.analyst) fail("invalid", "set the analyst name (settings) before making a decision");
+    },
+    analyst: () => settings.analyst ?? "unknown",
+    addEntries: (entries) => {
+      timeline = [...timeline, ...entries];
+    },
+  }),
   timeline_verify: (a) => setStatus(str(a, "entryId"), "verified", null),
   timeline_reject: (a) => setStatus(str(a, "entryId"), "rejected", str(a, "reason") || null),
 

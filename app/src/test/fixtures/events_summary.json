@@ -1,0 +1,44 @@
+{
+  "total": 11263,
+  "suspicious": 3,
+  "malicious": 1,
+  "per_source": [
+    [
+      "ual",
+      5901
+    ],
+    [
+      "signin_interactive",
+      693
+    ],
+    [
+      "signin_noninteractive",
+      601
+    ],
+    [
+      "message_trace",
+      2261
+    ],
+    [
+      "entra_audit",
+      22
+    ],
+    [
+      "mailbox_audit",
+      1776
+    ],
+    [
+      "risk_detection",
+      4
+    ],
+    [
+      "azure_activity",
+      4
+    ],
+    [
+      "security_alert",
+      1
+    ]
+  ],
+  "hidden_trace_events": 0
+}

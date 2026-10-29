@@ -1299,3 +1299,41 @@ fn fifty_thousand_refs_across_three_tables_are_checked_and_stored_set_based() {
         0
     );
 }
+
+#[test]
+fn create_verified_in_runs_inside_the_callers_transaction_all_or_nothing() {
+    let c = case_with_evidence();
+    let before = (te::list(c.conn(), None, None).unwrap().len(), audit_len(&c));
+    let entry = |key: &str| new_entry(vec![EvidenceRef::parse(key).unwrap()]);
+    // Two entries in one transaction commit together: four audit rows.
+    c.conn().execute_batch("BEGIN TRANSACTION").unwrap();
+    for key in ["signins:k1", "signins:k2"] {
+        te::create_verified_in(c.conn(), &carlos(), entry(key)).unwrap();
+    }
+    c.conn().execute_batch("COMMIT").unwrap();
+    assert_eq!(
+        (te::list(c.conn(), None, None).unwrap().len(), audit_len(&c)),
+        (before.0 + 2, before.1 + 4)
+    );
+    // The same two, with the failure injected into the second: the caller rolls back, and the first entry and its
+    // audit rows go with it.
+    let mid = (te::list(c.conn(), None, None).unwrap().len(), audit_len(&c));
+    te::test_hooks::fail_create_verified_on_call(2);
+    c.conn().execute_batch("BEGIN TRANSACTION").unwrap();
+    let first = te::create_verified_in(c.conn(), &carlos(), entry("signins:k1"));
+    let second = te::create_verified_in(c.conn(), &carlos(), entry("signins:k2"));
+    c.conn().execute_batch("ROLLBACK").unwrap();
+    te::test_hooks::fail_create_verified_on_call(0);
+    assert!(first.is_ok());
+    assert!(second.unwrap_err().to_string().contains("injected"));
+    assert_eq!(
+        (te::list(c.conn(), None, None).unwrap().len(), audit_len(&c)),
+        mid
+    );
+    // The wrapper is the same code in its own transaction: a failed call leaves nothing, a good one two audit rows.
+    te::test_hooks::fail_create_verified_on_call(1);
+    assert!(te::create_verified(c.conn(), &carlos(), entry("signins:k1")).is_err());
+    assert_eq!(audit_len(&c), mid.1);
+    let (_, rows) = te::create_verified(c.conn(), &carlos(), entry("signins:k1")).unwrap();
+    assert_eq!(rows.len(), 2);
+}

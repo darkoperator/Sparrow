@@ -1,0 +1,774 @@
+{
+  "accounts": {
+    "rows": [
+      {
+        "value": "frances.rourke@contoso.example",
+        "label": null,
+        "count": 663,
+        "first_seen": "2026-08-03T00:32:02.000000Z",
+        "last_seen": "2026-09-09T17:16:32.000000Z",
+        "is_new": false,
+        "extra": {}
+      },
+      {
+        "value": "frances rourke",
+        "label": null,
+        "count": 127,
+        "first_seen": "2026-08-03T03:38:56.000000Z",
+        "last_seen": "2026-09-09T17:16:32.000000Z",
+        "is_new": false,
+        "extra": {}
+      },
+      {
+        "value": "ollie.carter@contoso.example",
+        "label": null,
+        "count": 12,
+        "first_seen": "2026-08-05T01:03:45.000000Z",
+        "last_seen": "2026-09-08T04:09:13.000000Z",
+        "is_new": true,
+        "extra": {}
+      },
+      {
+        "value": "xander.irwin@contoso.example",
+        "label": null,
+        "count": 9,
+        "first_seen": "2026-08-17T01:28:28.000000Z",
+        "last_seen": "2026-09-08T03:53:28.000000Z",
+        "is_new": true,
+        "extra": {}
+      },
+      {
+        "value": "marlowe.rhodes@contoso.example",
+        "label": null,
+        "count": 8,
+        "first_seen": "2026-08-03T03:59:07.000000Z",
+        "last_seen": "2026-09-08T03:56:17.000000Z",
+        "is_new": false,
+        "extra": {}
+      },
+      {
+        "value": "vance.ingram@contoso.example",
+        "label": null,
+        "count": 8,
+        "first_seen": "2026-08-05T04:34:15.000000Z",
+        "last_seen": "2026-09-09T05:55:53.000000Z",
+        "is_new": true,
+        "extra": {}
+      },
+      {
+        "value": "drew.vincent@contoso.example",
+        "label": null,
+        "count": 7,
+        "first_seen": "2026-08-03T03:06:58.000000Z",
+        "last_seen": "2026-08-20T01:04:19.000000Z",
+        "is_new": false,
+        "extra": {}
+      },
+      {
+        "value": "gale.yates@contoso.example",
+        "label": null,
+        "count": 7,
+        "first_seen": "2026-08-03T01:38:56.000000Z",
+        "last_seen": "2026-09-03T01:27:44.000000Z",
+        "is_new": false,
+        "extra": {}
+      },
+      {
+        "value": "cameron.tucker@contoso.example",
+        "label": null,
+        "count": 6,
+        "first_seen": "2026-08-04T03:12:21.000000Z",
+        "last_seen": "2026-09-03T00:57:16.000000Z",
+        "is_new": true,
+        "extra": {}
+      },
+      {
+        "value": "kai.ingram@contoso.example",
+        "label": null,
+        "count": 6,
+        "first_seen": "2026-08-06T07:27:02.000000Z",
+        "last_seen": "2026-09-08T02:44:50.000000Z",
+        "is_new": true,
+        "extra": {}
+      },
+      {
+        "value": "admin@contoso.example",
+        "label": null,
+        "count": 5,
+        "first_seen": "2026-08-12T00:30:06.000000Z",
+        "last_seen": "2026-08-31T00:14:32.000000Z",
+        "is_new": true,
+        "extra": {}
+      },
+      {
+        "value": "accounts@partner.example",
+        "label": null,
+        "count": 4,
+        "first_seen": "2026-08-05T06:20:12.000000Z",
+        "last_seen": "2026-09-01T01:53:21.000000Z",
+        "is_new": true,
+        "extra": {}
+      },
+      {
+        "value": "projects@partner.example",
+        "label": null,
+        "count": 4,
+        "first_seen": "2026-08-06T01:38:35.000000Z",
+        "last_seen": "2026-08-27T07:04:34.000000Z",
+        "is_new": true,
+        "extra": {}
+      },
+      {
+        "value": "rowan.chambers@contoso.example",
+        "label": null,
+        "count": 4,
+        "first_seen": "2026-08-05T06:24:24.000000Z",
+        "last_seen": "2026-09-08T03:56:49.000000Z",
+        "is_new": true,
+        "extra": {}
+      },
+      {
+        "value": "sales@partner.example",
+        "label": null,
+        "count": 3,
+        "first_seen": "2026-08-12T05:31:59.000000Z",
+        "last_seen": "2026-08-24T06:00:17.000000Z",
+        "is_new": true,
+        "extra": {}
+      },
+      {
+        "value": "ocean.vincent@contoso.example",
+        "label": null,
+        "count": 2,
+        "first_seen": "2026-08-11T01:52:00.000000Z",
+        "last_seen": "2026-08-18T06:43:11.000000Z",
+        "is_new": true,
+        "extra": {}
+      },
+      {
+        "value": "wren.underwood@contoso.example",
+        "label": null,
+        "count": 1,
+        "first_seen": "2026-09-01T07:54:25.000000Z",
+        "last_seen": "2026-09-01T07:54:25.000000Z",
+        "is_new": true,
+        "extra": {}
+      }
+    ],
+    "total": 17
+  },
+  "ips": {
+    "rows": [
+      {
+        "value": "192.0.2.19",
+        "label": null,
+        "count": 663,
+        "first_seen": "2026-08-03T00:32:02.000000Z",
+        "last_seen": "2026-09-09T17:16:32.000000Z",
+        "is_new": true,
+        "extra": {
+          "country": "AU",
+          "asn": 64499,
+          "asn_org": "Documentation ISP 4"
+        }
+      },
+      {
+        "value": "192.0.2.20",
+        "label": null,
+        "count": 116,
+        "first_seen": "2026-08-01T00:42:39.000000Z",
+        "last_seen": "2026-09-06T08:24:03.000000Z",
+        "is_new": false,
+        "extra": {
+          "country": "AU",
+          "asn": 64499,
+          "asn_org": "Documentation ISP 4"
+        }
+      },
+      {
+        "value": "192.0.2.9",
+        "label": null,
+        "count": 7,
+        "first_seen": "2026-08-13T01:25:33.000000Z",
+        "last_seen": "2026-09-04T03:53:55.000000Z",
+        "is_new": true,
+        "extra": {
+          "country": "JP",
+          "asn": 64500,
+          "asn_org": "Documentation ISP 5"
+        }
+      },
+      {
+        "value": "192.0.2.7",
+        "label": null,
+        "count": 6,
+        "first_seen": "2026-08-11T04:51:44.000000Z",
+        "last_seen": "2026-09-02T03:09:07.000000Z",
+        "is_new": true,
+        "extra": {
+          "country": "AU",
+          "asn": 64499,
+          "asn_org": "Documentation ISP 4"
+        }
+      },
+      {
+        "value": "203.0.113.5",
+        "label": null,
+        "count": 6,
+        "first_seen": "2026-09-03T03:14:00.000000Z",
+        "last_seen": "2026-09-03T03:20:00.000000Z",
+        "is_new": true,
+        "extra": {
+          "country": "CA",
+          "asn": 64502,
+          "asn_org": "Documentation ISP 7"
+        }
+      },
+      {
+        "value": "192.0.2.17",
+        "label": null,
+        "count": 5,
+        "first_seen": "2026-08-04T15:01:33.000000Z",
+        "last_seen": "2026-09-01T13:12:55.000000Z",
+        "is_new": true,
+        "extra": {
+          "country": "DE",
+          "asn": 64498,
+          "asn_org": "Documentation ISP 3"
+        }
+      },
+      {
+        "value": "192.0.2.1",
+        "label": null,
+        "count": 4,
+        "first_seen": "2026-08-18T20:12:24.000000Z",
+        "last_seen": "2026-09-07T19:34:47.000000Z",
+        "is_new": true,
+        "extra": {
+          "country": "US",
+          "asn": 64496,
+          "asn_org": "Documentation ISP 1"
+        }
+      },
+      {
+        "value": "192.0.2.15",
+        "label": null,
+        "count": 4,
+        "first_seen": "2026-08-03T09:29:15.000000Z",
+        "last_seen": "2026-08-24T15:24:22.000000Z",
+        "is_new": true,
+        "extra": {
+          "country": "GB",
+          "asn": 64497,
+          "asn_org": "Documentation ISP 2"
+        }
+      },
+      {
+        "value": "198.51.100.5",
+        "label": null,
+        "count": 4,
+        "first_seen": "2026-09-01T08:00:00.000000Z",
+        "last_seen": "2026-09-01T12:00:00.000000Z",
+        "is_new": true,
+        "extra": {
+          "country": "AU",
+          "asn": 64508,
+          "asn_org": "Documentation Mobile Carrier"
+        }
+      },
+      {
+        "value": "192.0.2.10",
+        "label": null,
+        "count": 3,
+        "first_seen": "2026-08-03T01:27:33.000000Z",
+        "last_seen": "2026-08-25T05:11:53.000000Z",
+        "is_new": true,
+        "extra": {
+          "country": "JP",
+          "asn": 64500,
+          "asn_org": "Documentation ISP 5"
+        }
+      },
+      {
+        "value": "192.0.2.11",
+        "label": null,
+        "count": 3,
+        "first_seen": "2026-08-05T08:48:00.000000Z",
+        "last_seen": "2026-08-17T12:13:29.000000Z",
+        "is_new": true,
+        "extra": {
+          "country": "SE",
+          "asn": 64501,
+          "asn_org": "Documentation ISP 6"
+        }
+      },
+      {
+        "value": "192.0.2.13",
+        "label": null,
+        "count": 3,
+        "first_seen": "2026-08-14T15:00:37.000000Z",
+        "last_seen": "2026-09-04T18:04:45.000000Z",
+        "is_new": true,
+        "extra": {
+          "country": "US",
+          "asn": 64496,
+          "asn_org": "Documentation ISP 1"
+        }
+      },
+      {
+        "value": "192.0.2.21",
+        "label": null,
+        "count": 3,
+        "first_seen": "2026-08-03T01:20:27.000000Z",
+        "last_seen": "2026-08-26T04:21:18.000000Z",
+        "is_new": true,
+        "extra": {
+          "country": "JP",
+          "asn": 64500,
+          "asn_org": "Documentation ISP 5"
+        }
+      },
+      {
+        "value": "192.0.2.23",
+        "label": null,
+        "count": 3,
+        "first_seen": "2026-08-12T09:59:38.000000Z",
+        "last_seen": "2026-09-02T09:46:40.000000Z",
+        "is_new": true,
+        "extra": {
+          "country": "SE",
+          "asn": 64501,
+          "asn_org": "Documentation ISP 6"
+        }
+      },
+      {
+        "value": "192.0.2.4",
+        "label": null,
+        "count": 3,
+        "first_seen": "2026-08-03T12:59:38.000000Z",
+        "last_seen": "2026-09-06T08:14:24.000000Z",
+        "is_new": true,
+        "extra": {
+          "country": "GB",
+          "asn": 64497,
+          "asn_org": "Documentation ISP 2"
+        }
+      },
+      {
+        "value": "192.0.2.5",
+        "label": null,
+        "count": 3,
+        "first_seen": "2026-08-04T16:55:09.000000Z",
+        "last_seen": "2026-08-26T11:34:08.000000Z",
+        "is_new": true,
+        "extra": {
+          "country": "DE",
+          "asn": 64498,
+          "asn_org": "Documentation ISP 3"
+        }
+      },
+      {
+        "value": "192.0.2.6",
+        "label": null,
+        "count": 3,
+        "first_seen": "2026-08-18T14:44:09.000000Z",
+        "last_seen": "2026-09-03T12:26:14.000000Z",
+        "is_new": true,
+        "extra": {
+          "country": "DE",
+          "asn": 64498,
+          "asn_org": "Documentation ISP 3"
+        }
+      },
+      {
+        "value": "192.0.2.12",
+        "label": null,
+        "count": 2,
+        "first_seen": "2026-09-09T08:29:20.000000Z",
+        "last_seen": "2026-09-09T12:30:05.000000Z",
+        "is_new": true,
+        "extra": {
+          "country": "SE",
+          "asn": 64501,
+          "asn_org": "Documentation ISP 6"
+        }
+      },
+      {
+        "value": "192.0.2.2",
+        "label": null,
+        "count": 2,
+        "first_seen": "2026-08-25T21:54:07.000000Z",
+        "last_seen": "2026-08-27T23:24:20.000000Z",
+        "is_new": true,
+        "extra": {
+          "country": "US",
+          "asn": 64496,
+          "asn_org": "Documentation ISP 1"
+        }
+      },
+      {
+        "value": "192.0.2.25",
+        "label": null,
+        "count": 2,
+        "first_seen": "2026-08-06T14:41:08.000000Z",
+        "last_seen": "2026-09-01T16:46:07.000000Z",
+        "is_new": true,
+        "extra": {
+          "country": "US",
+          "asn": 64496,
+          "asn_org": "Documentation ISP 1"
+        }
+      },
+      {
+        "value": "192.0.2.3",
+        "label": null,
+        "count": 2,
+        "first_seen": "2026-08-06T10:19:41.000000Z",
+        "last_seen": "2026-09-02T15:58:52.000000Z",
+        "is_new": true,
+        "extra": {
+          "country": "GB",
+          "asn": 64497,
+          "asn_org": "Documentation ISP 2"
+        }
+      },
+      {
+        "value": "2001:db8:e0::4f",
+        "label": null,
+        "count": 2,
+        "first_seen": "2026-08-06T05:04:17.000000Z",
+        "last_seen": "2026-08-18T03:12:23.000000Z",
+        "is_new": true,
+        "extra": {}
+      },
+      {
+        "value": "2001:db8:e0::c9",
+        "label": null,
+        "count": 2,
+        "first_seen": "2026-08-14T07:36:12.000000Z",
+        "last_seen": "2026-09-08T05:21:53.000000Z",
+        "is_new": true,
+        "extra": {}
+      },
+      {
+        "value": "2001:db8:e0::dd",
+        "label": null,
+        "count": 2,
+        "first_seen": "2026-08-27T05:10:14.000000Z",
+        "last_seen": "2026-09-08T02:08:52.000000Z",
+        "is_new": true,
+        "extra": {}
+      },
+      {
+        "value": "2001:db8:e0::e4",
+        "label": null,
+        "count": 2,
+        "first_seen": "2026-08-18T03:04:04.000000Z",
+        "last_seen": "2026-09-08T03:35:03.000000Z",
+        "is_new": true,
+        "extra": {}
+      }
+    ],
+    "total": 85
+  },
+  "devices": {
+    "rows": [
+      {
+        "value": "7d5f6b6a-b999-43da-820e-ac7acb6ae7e7",
+        "label": "FRANCES.ROURKE-LAPTOP",
+        "count": 104,
+        "first_seen": "2026-08-12T00:22:04.000000Z",
+        "last_seen": "2026-09-09T07:51:48.000000Z",
+        "is_new": true,
+        "extra": {
+          "device_name": "FRANCES.ROURKE-LAPTOP"
+        }
+      }
+    ],
+    "total": 1
+  },
+  "sessions": {
+    "rows": [
+      {
+        "value": "895bd3f0-60ee-4f29-9599-97de834bb852",
+        "label": null,
+        "count": 11,
+        "first_seen": "2026-08-24T00:35:36.000000Z",
+        "last_seen": "2026-08-24T15:43:57.000000Z",
+        "is_new": true,
+        "extra": {
+          "first_ip": "192.0.2.19"
+        }
+      },
+      {
+        "value": "c9b6355a-9f26-4854-bae5-35cfcd1883d5",
+        "label": null,
+        "count": 11,
+        "first_seen": "2026-09-02T00:31:33.000000Z",
+        "last_seen": "2026-09-02T10:07:48.000000Z",
+        "is_new": true,
+        "extra": {
+          "first_ip": "192.0.2.19"
+        }
+      },
+      {
+        "value": "a07e122d-8699-47e1-9f61-c85d9e0738a1",
+        "label": null,
+        "count": 10,
+        "first_seen": "2026-08-28T00:30:44.000000Z",
+        "last_seen": "2026-08-28T15:58:02.000000Z",
+        "is_new": true,
+        "extra": {
+          "first_ip": "192.0.2.20"
+        }
+      },
+      {
+        "value": "0422cdcc-3a67-4cb1-9f11-8a29a40ee1e6",
+        "label": null,
+        "count": 9,
+        "first_seen": "2026-08-25T00:04:42.000000Z",
+        "last_seen": "2026-08-25T22:08:39.000000Z",
+        "is_new": true,
+        "extra": {
+          "first_ip": "192.0.2.19"
+        }
+      },
+      {
+        "value": "6bd4c1d2-0c6f-4f77-a927-6bd97a7bfa56",
+        "label": null,
+        "count": 9,
+        "first_seen": "2026-08-31T00:07:50.000000Z",
+        "last_seen": "2026-08-31T20:35:10.000000Z",
+        "is_new": true,
+        "extra": {
+          "first_ip": "192.0.2.19"
+        }
+      },
+      {
+        "value": "f59ad780-e690-477e-8d29-61793c4e2e4a",
+        "label": null,
+        "count": 9,
+        "first_seen": "2026-09-04T00:07:08.000000Z",
+        "last_seen": "2026-09-04T18:11:56.000000Z",
+        "is_new": true,
+        "extra": {
+          "first_ip": "192.0.2.20"
+        }
+      },
+      {
+        "value": "aa31b745-48c5-47bf-9b18-d1e6e4ac26f2",
+        "label": null,
+        "count": 8,
+        "first_seen": "2026-08-14T00:06:07.000000Z",
+        "last_seen": "2026-08-14T15:14:34.000000Z",
+        "is_new": true,
+        "extra": {
+          "first_ip": "192.0.2.19"
+        }
+      },
+      {
+        "value": "eaeaea87-cc06-485b-aa10-2d414a31cf97",
+        "label": null,
+        "count": 8,
+        "first_seen": "2026-09-09T00:39:55.000000Z",
+        "last_seen": "2026-09-09T15:30:48.000000Z",
+        "is_new": true,
+        "extra": {
+          "first_ip": "192.0.2.19"
+        }
+      },
+      {
+        "value": "f2088807-d447-45f2-abf4-648bf5fe3c14",
+        "label": null,
+        "count": 8,
+        "first_seen": "2026-08-18T00:34:51.000000Z",
+        "last_seen": "2026-08-18T20:14:05.000000Z",
+        "is_new": true,
+        "extra": {
+          "first_ip": "192.0.2.19"
+        }
+      },
+      {
+        "value": "0b8a5320-a5b5-426a-80bb-45e89a942175",
+        "label": null,
+        "count": 7,
+        "first_seen": "2026-08-21T00:51:57.000000Z",
+        "last_seen": "2026-08-21T07:25:23.000000Z",
+        "is_new": true,
+        "extra": {
+          "first_ip": "192.0.2.19"
+        }
+      },
+      {
+        "value": "3a13bfc1-8341-4f0a-8b2c-fbdd29d63efe",
+        "label": null,
+        "count": 7,
+        "first_seen": "2026-08-26T00:53:34.000000Z",
+        "last_seen": "2026-08-26T11:52:36.000000Z",
+        "is_new": true,
+        "extra": {
+          "first_ip": "192.0.2.19"
+        }
+      },
+      {
+        "value": "8d8725bc-eeb4-4be2-8951-ffce569109a1",
+        "label": null,
+        "count": 7,
+        "first_seen": "2026-09-03T00:46:59.000000Z",
+        "last_seen": "2026-09-03T12:31:57.000000Z",
+        "is_new": true,
+        "extra": {
+          "first_ip": "192.0.2.19"
+        }
+      },
+      {
+        "value": "97933601-6c38-4d3d-98fe-b7d68394b3c8",
+        "label": null,
+        "count": 7,
+        "first_seen": "2026-09-07T00:38:49.000000Z",
+        "last_seen": "2026-09-07T19:41:57.000000Z",
+        "is_new": true,
+        "extra": {
+          "first_ip": "192.0.2.19"
+        }
+      },
+      {
+        "value": "b7302649-48aa-4c2e-abd8-ae0c9f482220",
+        "label": null,
+        "count": 7,
+        "first_seen": "2026-08-13T00:31:11.000000Z",
+        "last_seen": "2026-08-13T16:22:49.000000Z",
+        "is_new": true,
+        "extra": {
+          "first_ip": "192.0.2.19"
+        }
+      },
+      {
+        "value": "25a90024-43b5-4a83-85a7-30ae5d40e8ff",
+        "label": null,
+        "count": 6,
+        "first_seen": "2026-08-20T00:41:45.000000Z",
+        "last_seen": "2026-08-20T22:02:43.000000Z",
+        "is_new": true,
+        "extra": {
+          "first_ip": "192.0.2.19"
+        }
+      },
+      {
+        "value": "55193a12-0cae-4efb-954d-f8f864b3b076",
+        "label": null,
+        "count": 6,
+        "first_seen": "2026-08-17T00:20:25.000000Z",
+        "last_seen": "2026-08-17T12:36:44.000000Z",
+        "is_new": true,
+        "extra": {
+          "first_ip": "192.0.2.19"
+        }
+      },
+      {
+        "value": "88c2419d-5d8b-4aba-b87c-df43b9bbce09",
+        "label": null,
+        "count": 6,
+        "first_seen": "2026-09-08T00:56:51.000000Z",
+        "last_seen": "2026-09-08T06:44:43.000000Z",
+        "is_new": true,
+        "extra": {
+          "first_ip": "192.0.2.19"
+        }
+      },
+      {
+        "value": "9f661fc8-2595-423d-8e91-b0d73dbb7606",
+        "label": null,
+        "count": 6,
+        "first_seen": "2026-08-27T00:24:34.000000Z",
+        "last_seen": "2026-08-27T09:38:58.000000Z",
+        "is_new": true,
+        "extra": {
+          "first_ip": "192.0.2.19"
+        }
+      },
+      {
+        "value": "b533ccc7-5212-4023-8318-9872d65765b0",
+        "label": null,
+        "count": 6,
+        "first_seen": "2026-08-12T00:22:04.000000Z",
+        "last_seen": "2026-08-12T10:16:36.000000Z",
+        "is_new": true,
+        "extra": {
+          "first_ip": "192.0.2.19"
+        }
+      },
+      {
+        "value": "9e93e09c-422a-4523-88b5-fa9196d223ea",
+        "label": null,
+        "count": 5,
+        "first_seen": "2026-09-01T00:06:54.000000Z",
+        "last_seen": "2026-09-01T17:02:38.000000Z",
+        "is_new": true,
+        "extra": {
+          "first_ip": "192.0.2.19"
+        }
+      },
+      {
+        "value": "c65ebdb4-9b9d-40a4-882b-853343428782",
+        "label": null,
+        "count": 5,
+        "first_seen": "2026-08-19T00:47:43.000000Z",
+        "last_seen": "2026-08-19T08:40:02.000000Z",
+        "is_new": true,
+        "extra": {
+          "first_ip": "192.0.2.19"
+        }
+      },
+      {
+        "value": "27dc801e-882e-43a3-803a-dae7bf9afcea",
+        "label": null,
+        "count": 4,
+        "first_seen": "2026-08-03T01:00:00.000000Z",
+        "last_seen": "2026-08-03T09:41:05.000000Z",
+        "is_new": true,
+        "extra": {
+          "first_ip": "192.0.2.19"
+        }
+      },
+      {
+        "value": "b7e092f8-6f52-4ae8-bc36-f9b9a62bf5a5",
+        "label": null,
+        "count": 4,
+        "first_seen": "2026-08-04T00:58:23.000000Z",
+        "last_seen": "2026-08-04T15:04:53.000000Z",
+        "is_new": true,
+        "extra": {
+          "first_ip": "192.0.2.19"
+        }
+      },
+      {
+        "value": "0c0a4519-2498-49cc-96d5-bb4684c740e8",
+        "label": null,
+        "count": 3,
+        "first_seen": "2026-08-11T00:48:59.000000Z",
+        "last_seen": "2026-08-11T07:40:09.000000Z",
+        "is_new": true,
+        "extra": {
+          "first_ip": "192.0.2.19"
+        }
+      },
+      {
+        "value": "465169f5-bdac-4543-9c1f-637571294679",
+        "label": null,
+        "count": 3,
+        "first_seen": "2026-08-05T00:16:48.000000Z",
+        "last_seen": "2026-08-05T09:05:13.000000Z",
+        "is_new": true,
+        "extra": {
+          "first_ip": "192.0.2.19"
+        }
+      }
+    ],
+    "total": 46
+  },
+  "device_changes": {
+    "rows": [],
+    "total": 0
+  }
+}

@@ -662,19 +662,31 @@ pub fn create_verified(
     reviewer: &Reviewer,
     entry: NewEntry,
 ) -> Result<(String, Vec<AuditEntry>)> {
+    in_tx(conn, |tx| create_verified_in(tx, reviewer, entry))
+}
+
+/// [`create_verified`] inside the caller's open transaction `tx`: nothing is committed or rolled back here, so a caller
+/// can make many entries all-or-nothing by running them in one transaction.
+pub fn create_verified_in(
+    tx: &Connection,
+    reviewer: &Reviewer,
+    entry: NewEntry,
+) -> Result<(String, Vec<AuditEntry>)> {
     let actor = reviewer.as_actor();
-    in_tx(conn, |tx| {
-        let (id, proposed) = insert_proposed(tx, &actor, &entry, None, None)?;
-        let verified = decide_in(
-            tx,
-            &actor,
-            &id,
-            "verify_entry",
-            None,
-            verify_step(&id, false),
-        )?;
-        Ok((id, vec![proposed, verified]))
-    })
+    let (id, proposed) = insert_proposed(tx, &actor, &entry, None, None)?;
+    let verified = decide_in(
+        tx,
+        &actor,
+        &id,
+        "verify_entry",
+        None,
+        verify_step(&id, false),
+    )?;
+    #[cfg(any(test, feature = "test-fixtures"))]
+    if test_hooks::countdown_hits() {
+        return Err(Error::Decision("injected failure after verify".into()));
+    }
+    Ok((id, vec![proposed, verified]))
 }
 
 /// Reject a proposed or verified entry; the reason is required (it is the audit reason).
@@ -971,6 +983,26 @@ pub fn list(
 pub mod test_hooks {
     thread_local! {
         pub(super) static FAIL_AFTER_EVIDENCE_DELETE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        pub(super) static FAIL_CREATE_COUNTDOWN: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    /// Make the `n`th `create_verified_in` on this thread from now fail right after its entry is verified (0: off).
+    pub fn fail_create_verified_on_call(n: usize) {
+        FAIL_CREATE_COUNTDOWN.with(|c| c.set(n));
+    }
+
+    pub(super) fn countdown_hits() -> bool {
+        FAIL_CREATE_COUNTDOWN.with(|c| match c.get() {
+            0 => false,
+            1 => {
+                c.set(0);
+                true
+            }
+            n => {
+                c.set(n - 1);
+                false
+            }
+        })
     }
 
     /// Make every evidence replacement on this thread fail right after its DELETE.
