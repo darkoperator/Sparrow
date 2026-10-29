@@ -185,6 +185,24 @@ describe("ReviewQueue", () => {
     await waitFor(() => expect(screen.getByTestId(PROP_A)).toHaveAttribute("aria-selected", "true"));
   });
 
+  it("a requested finding that is not in the queue (decided) is shown read-only in the detail pane", async () => {
+    m.queue.mockImplementation(async () => queue);
+    const user = userEvent.setup();
+    const view = render(<ReviewQueue canWrite focusFinding={{ id: "decided-finding", nonce: 1 }} />);
+    await waitFor(() => expect(m.detail).toHaveBeenCalledWith("decided-finding"));
+    // The same finding detail as for a queue item (its guidance and recorded evidence), with nothing to accept or discard.
+    expect(await screen.findByText(/is how a BEC actor hides replies/)).toBeInTheDocument();
+    expect(screen.getAllByText("inbox_rules")).toHaveLength(4);
+    expect(screen.getByText(/Finding decided-finding is not waiting for review.*Shown read-only/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Accept" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Discard" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Select an item/)).not.toBeInTheDocument();
+    // Choosing a queue item takes the pane over, with its actions.
+    await user.click(screen.getByTestId(PROP_A));
+    expect(await screen.findByRole("button", { name: "Accept" })).toBeInTheDocument();
+    view.unmount();
+  });
+
   it("evidence_text_is_rendered_literally", async () => {
     detail.evidence[0].context = { rule_name: "<img src=x onerror=alert(1)>‮" };
     detail.analyst_guidance = "<b>bold</b>";

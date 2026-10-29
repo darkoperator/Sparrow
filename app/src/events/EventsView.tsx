@@ -40,6 +40,11 @@ export interface EventsViewProps {
   onClearChip?: () => void;
   /** The applied range changed (undefined: no end). An entity tab narrows its tiles, pivots and findings with it. */
   onRangeChange?: (from?: string, to?: string) => void;
+  /**
+   * The query whose results are on screen, and how many events it matches (null until a run succeeds). `pending` is
+   * true while a newer run is loading: the query and count are then the previous ones, not what the boxes show.
+   */
+  onQueryChange?: (query: EventQuery | null, count: number | null, pending: boolean) => void;
   /** The most rows paging loads (the backend counts to one million); a smaller number is for tests. */
   maxLoaded?: number;
 }
@@ -115,7 +120,7 @@ interface Shown {
   sort: Sort | null;
 }
 
-export default function EventsView({ entity, chip, onClearChip, onRangeChange, maxLoaded = LOAD_MAX }: EventsViewProps) {
+export default function EventsView({ entity, chip, onClearChip, onRangeChange, onQueryChange, maxLoaded = LOAD_MAX }: EventsViewProps) {
   const nav = useNav();
   const scope: EntityRef | undefined = entity ?? chip;
   const scopeKind = scope?.kind;
@@ -141,6 +146,9 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, m
   useEffect(() => {
     latest.current = { draft, shown, onRangeChange, rows, total, maxLoaded };
   });
+  useEffect(() => {
+    onQueryChange?.(shown?.query ?? null, summary?.total ?? null, running !== null);
+  }, [onQueryChange, shown, summary, running]);
   const token = useRef(0);
   const inflight = useRef<string[]>([]);
   const moreBusy = useRef(false);

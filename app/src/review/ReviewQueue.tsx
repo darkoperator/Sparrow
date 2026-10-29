@@ -13,6 +13,7 @@ import {
 } from "../api";
 import { useRefreshBadges } from "../shell/nav";
 import { displaySafe } from "../text";
+import FindingDetail from "./FindingDetail";
 import QueueItemDetail, { findingIdOf } from "./QueueItemDetail";
 import QueueItemRow, { identity, itemKey } from "./QueueItemRow";
 
@@ -72,10 +73,13 @@ export default function ReviewQueue({ canWrite, accountFilter = null, onClearFil
   }, []);
   const itemsRef = useRef<QueueItem[]>([]);
   const selectedRef = useRef<string | null>(null);
+  // A finding shown on request that has no queue item (already decided): read-only, nothing to accept or discard.
+  const [standalone, setStandalone] = useState<string | null>(null);
 
   const select = useCallback((key: string | null) => {
     selectedRef.current = key;
     setSelected(key);
+    setStandalone(null);
     setComment("");
   }, []);
 
@@ -136,7 +140,9 @@ export default function ReviewQueue({ canWrite, accountFilter = null, onClearFil
         select(identity(hit));
         setNotice(null);
       } else {
-        setNotice({ kind: "info", text: `Finding ${focusFinding.id} is not waiting for review: it has no pending decision or proposal.` });
+        select(null);
+        setStandalone(focusFinding.id);
+        setNotice({ kind: "info", text: `Finding ${focusFinding.id} is not waiting for review: it has no pending decision or proposal. Shown read-only.` });
       }
     });
   }, [focusFinding, loaded, flat, select]);
@@ -289,6 +295,8 @@ export default function ReviewQueue({ canWrite, accountFilter = null, onClearFil
               </div>
               <QueueItemDetail item={current} />
             </>
+          ) : standalone !== null ? (
+            <FindingDetail findingId={standalone} />
           ) : (
             <p>Select an item (j/k), then a to accept or d to discard.</p>
           )}

@@ -4554,6 +4554,94 @@ fn timeline_add_events_from_query_cites_all_rows() {
     drop(huge);
 }
 
+fn rows_in(state: &AppState, q: &EventQueryArgs) -> i64 {
+    // How many message trace events the query names: all of them if its Source mentions the source or a wildcard.
+    let named = q
+        .fields
+        .iter()
+        .any(|(_, t)| t.contains("message_trace_event") || t.trim() == "*");
+    if named {
+        rows(
+            state,
+            "SELECT count(*) FROM events WHERE source = 'message_trace_event'",
+        )
+    } else {
+        0
+    }
+}
+
+#[test]
+fn timeline_group_from_query_covers_exactly_what_the_summary_counts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = open_as_analyst(tmp.path());
+    // The synthetic case has no message trace events, so relabel seven mailbox audit events (their keys stay citable).
+    with_case(&state, |open| {
+        open.case
+            .conn()
+            .execute_batch(
+                "UPDATE events SET source = 'message_trace_event' WHERE (source_table, record_key) IN \
+                 (SELECT source_table, record_key FROM events WHERE source = 'mailbox_audit' \
+                  ORDER BY record_key LIMIT 7)",
+            )
+            .unwrap();
+        Ok(())
+    })
+    .unwrap();
+    let trace = rows(
+        &state,
+        "SELECT count(*) FROM events WHERE source = 'message_trace_event'",
+    );
+    assert_eq!(trace, 7);
+    // Hidden by default: the group covers the summary total, none of the trace events; naming them adds them.
+    let default = EventQueryArgs::default();
+    let named = by_source("message_trace_event");
+    let wildcard = by_source("*");
+    let everything_but = by_source("!ual");
+    for (q, hidden) in [
+        (default, trace),
+        (named, 0),
+        (wildcard, 0),
+        (everything_but, trace),
+    ] {
+        let s = events_summary(&state, &q, None).unwrap();
+        assert_eq!(s.hidden_trace_events as i64, hidden);
+        let done =
+            timeline_add_events(&state, add_args(AddMode::Group, None, Some(q.clone()))).unwrap();
+        let e = timeline_list(&state)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.entry_id == done.entry_ids[0])
+            .unwrap();
+        assert_eq!(e.event_count, Some(s.total), "{q:?}");
+        assert_eq!(e.evidence.len() as u64, s.total, "{q:?}");
+        let trace_cited = with_case(&state, |open| {
+            let mut n = 0i64;
+            for r in &e.evidence {
+                n += open
+                    .case
+                    .conn()
+                    .query_row(
+                        "SELECT count(*) FROM events WHERE source = 'message_trace_event' AND source_table = ? AND record_key = ?",
+                        [&r.source_table, &r.record_key],
+                        |x| x.get::<_, i64>(0),
+                    )
+                    .unwrap();
+            }
+            Ok(n)
+        })
+        .unwrap();
+        let want = rows_in(&state, &q);
+        assert_eq!(trace_cited, want, "{q:?}");
+    }
+    // The named and wildcard queries really include the trace events.
+    assert_eq!(
+        events_summary(&state, &by_source("message_trace_event"), None)
+            .unwrap()
+            .total as i64,
+        trace
+    );
+}
+
 /// Records the Investigate-tabs responses the web app's fixtures and mock backend are built on, from the synthetic
 /// case: `cargo test -p sparrow-app --test commands -- --ignored record_investigate_fixtures`.
 #[test]
