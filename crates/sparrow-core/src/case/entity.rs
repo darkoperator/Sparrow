@@ -338,6 +338,15 @@ fn allowed(e: &Entity, of: PivotOf) -> bool {
     }
 }
 
+/// The pivot tables an entity of this kind has, in `PivotOf` order.
+pub fn pivots_of(e: &Entity) -> Vec<PivotOf> {
+    use PivotOf::*;
+    [Accounts, Ips, Devices, Sessions, DeviceChanges]
+        .into_iter()
+        .filter(|of| allowed(e, *of))
+        .collect()
+}
+
 fn kind_name(e: &Entity) -> &'static str {
     match e {
         Entity::Account(_) => "account",

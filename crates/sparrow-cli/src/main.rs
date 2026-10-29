@@ -31,7 +31,7 @@ mod cmd;
     name = "sparrow",
     version,
     about = "Ingest Hawk / Microsoft-Extractor-Suite output into a DuckDB case database for M365 BEC investigations",
-    after_help = "Agent workflow: every command takes --json. Writes (finding set-status|assign|ack-rule-update, ioc, timeline-entry, note) \
+    after_help = "Agent workflow: every command takes --json. Writes (finding set-status|assign|ack-rule-update, ioc, timeline-entry, note, mark) \
 are agent decisions recorded in the audit trail with --agent and --analyst; review happens outside the CLI.\n\
 \n\
 Exit codes: 0 success; 1 other error (including a refused query); 2 completed with problems (ingest, verify, synth coverage/conformance); \
@@ -181,11 +181,20 @@ enum Command {
         #[command(subcommand)]
         command: cmd::timeline_entry::TimelineEntryCommand,
     },
+    /// Flag or tag event rows (pending until an analyst confirms them in the app)
+    Mark {
+        #[command(subcommand)]
+        command: cmd::mark::MarkCommand,
+    },
     /// Notes on findings, timeline entries, indicators and evidence rows
     Note {
         #[command(subcommand)]
         command: cmd::note::NoteCommand,
     },
+    /// The Events grid: every event record with account, IP, device and Entra session, filtered like the app's grid
+    Events(cmd::events::EventsArgs),
+    /// One account, IP, device or Entra session: tiles, pivot tables and findings
+    Entity(cmd::entity::EntityArgs),
     /// The evidence timeline (every event record), filtered; capped by --limit
     Timeline(cmd::read::TimelineArgs),
     /// Everything the case knows about an IP or a user, section by section (each capped)
@@ -743,6 +752,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Some(Command::Finding { command }) => cmd::finding::run(command, json),
         Some(Command::TimelineEntry { command }) => cmd::timeline_entry::run(command, json),
         Some(Command::Note { command }) => cmd::note::run(command, json),
+        Some(Command::Mark { command }) => cmd::mark::run(command, json),
+        Some(Command::Events(a)) => cmd::events::run(a, json),
+        Some(Command::Entity(a)) => cmd::entity::run(a, json),
         Some(Command::Timeline(a)) => cmd::read::timeline(a, json),
         Some(Command::Pivot { command }) => cmd::read::pivot(command, json),
         Some(Command::Query { sql, case, limit }) => cmd::read::query(&case, &sql, limit, json),

@@ -24,7 +24,7 @@ fn ts(t: &DateTime<Utc>) -> String {
     t.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
-fn time(flag: &str, s: &str) -> Result<DateTime<Utc>> {
+pub(crate) fn time(flag: &str, s: &str) -> Result<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(s)
         .map(|t| t.with_timezone(&Utc))
         .with_context(|| {

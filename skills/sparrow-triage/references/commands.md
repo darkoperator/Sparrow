@@ -56,6 +56,66 @@ it gives `rows`, `first`, `last`, `days` and `sampled` (rows from a capped expor
 lists what to ask for, one per account and source with gaps, with `console` (admin portal), `hawk` and `invictus`
 (Microsoft-Extractor-Suite) commands filled in with the user and dates; `null` means that collector has no command for it.
 
+## Events, entities, marks
+
+`sparrow events` is the Events grid: one row per event record of every event table, with account, IP, device and Entra
+session. `sparrow entity` is one account, IP, device or session. Both are read-only.
+
+```bash
+sparrow events --case case.duckdb --user alice@contoso.example --from 2026-08-21T00:00:00Z --json
+sparrow events --case case.duckdb --ip 203.0.113.7 --where operation=New-InboxRule,Set-InboxRule --limit 50 --json
+sparrow events --case case.duckdb --where source=ual --where operation=!MailItemsAccessed --search forward --json
+sparrow events --case case.duckdb --session 4f1c8d3e-1111-4222-8333-444455559a2e --json
+sparrow events --case case.duckdb --flag malicious --csv events.csv
+sparrow entity --case case.duckdb --user alice@contoso.example --json
+sparrow entity --case case.duckdb --ip 203.0.113.7 --from 2026-08-21T00:00:00Z --to 2026-08-22T00:00:00Z --json
+```
+
+- `events --json` returns `{"rows": [...], "offset": N, "total": N, "total_capped": bool}`; each row has `source_table`,
+  `record_key`, `source`, `event_time`, `operation`, `actor_upn`, `owner_upn`, `ip`, `ip_country`, `asn`,
+  `device_id`, `device_name`, `entra_session_id`, `finding_count`, `tags` (`[{name, ai}]`), `flag` (`suspicious`,
+  `malicious` or null) and `flag_ai` (the flag is an agent's and no analyst has confirmed it). `--limit` defaults to
+  200. `source_table` and `record_key` are what `mark` and `note add` take as `TABLE:KEY`.
+- `--where FIELD=TEXT` (repeatable). FIELD is `source`, `operation`, `account`, `ip`, `country`, `asn`, `device`,
+  `session` or `tag`. TEXT: comma separates values (any of), `!value` excludes, `*` is a wildcard; a list of only
+  excludes means everything except those. A lone `!` or `,,` is refused (exit 1), never read as "everything".
+  Without `*` a value matches exactly. `message_trace_event` rows are left out unless `source` names them.
+- `--csv PATH` writes every matching row (not a page) and prints the row count.
+- `entity --json` returns `{"summary": {entity, first_seen, last_seen, events, distinct, open_findings, roles_matched,
+  ip_intel, device}, "pivots": {"ips": {rows, total}, ...}, "findings": [...]}`. An account has the `ips`, `devices`
+  and `sessions` pivots; an IP `accounts`, `devices`, `sessions`; a device `accounts`, `ips`, `sessions`,
+  `device_changes`; a session `accounts`, `ips`, `devices`. A pivot holds at most 500 rows: compare `rows` with `total`.
+  Spellings do not matter: `Alice@Contoso.example` and `alice@contoso.example` are one account.
+
+### Marks: flag, tag, note
+
+```bash
+sparrow mark flag --case case.duckdb --row ual_events:<RECORD_KEY> --row signins:<RECORD_KEY> --level suspicious
+sparrow mark flag --case case.duckdb --value ip=203.0.113.7 --level malicious
+sparrow mark flag --case case.duckdb --value ip_prefix=203.0.113.0/24 --scope account=alice@contoso.example --level suspicious
+sparrow mark flag --case case.duckdb --row ual_events:<RECORD_KEY> --level clear
+sparrow mark tag --case case.duckdb --row ual_events:<RECORD_KEY> --tag ai:forwarding-rule
+sparrow mark tag --case case.duckdb --row ual_events:<RECORD_KEY> --tag ai:forwarding-rule --remove
+sparrow note add ual_events:<RECORD_KEY> --text "creates the rule 3 minutes after the sign-in" --case case.duckdb
+```
+
+- Use `--agent` / `--analyst` (or `$SPARROW_AGENT` / `$SPARROW_ANALYST`) as for every write. Marks are agent
+  decisions: they show at once (`flag_ai`, tag `ai: true`) and wait for the analyst to confirm or remove them in
+  the app. There is no CLI confirm.
+- **Flag** a row or value when it is the attacker's, or you cannot rule it out: `suspicious` for a lead, `malicious`
+  for a confirmed attacker IP or account (a malicious `ip` or `account` flag also adds a pending indicator). `--value`
+  flags every event with that value, also ones ingested later; `--scope KIND=VALUE` (account, ip, device, session)
+  limits it to that entity's events. `--level clear` removes the flag. `--value` kinds: `ip`, `ip_prefix`, `account`,
+  `asn`, `device`, `session`.
+- **Tag** to group rows under a name for the analyst's filter (`--where tag=ai:forwarding-rule`). An agent may create
+  only tags starting `ai:`, or use a tag that already exists; any other new name is refused (exit 5). An agent may
+  remove only its own unconfirmed tags.
+- **Note** (`note add`) to say why. Flag and tag say what; a note carries the reasoning, so add one to anything you
+  flag as malicious.
+- A call takes at most 1,000 rows from an agent (use a `--value` flag for more) and writes one audit entry, not one per
+  row. A row that does not exist in the case is refused (exit 5); nothing is written. Another writer holding the case
+  gives exit 4, as for every write.
+
 ## Accounts (the roll-up) and facts
 
 `sparrow accounts` returns `{"accounts": [...], "total": N, "truncated": bool, "warnings": [...]}`. Each account:

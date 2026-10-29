@@ -61,5 +61,5 @@ sparrow finding set-status --case case.duckdb <ID> confirmed --reason "attacker 
 sparrow ioc add --case case.duckdb --type ip --value 203.0.113.7 --verdict malicious --note "takeover address" --agent triage
 ```
 
-`finding set-status`, `ioc add`, `note add` and `timeline-entry` write agent decisions into the audit trail as
+`finding set-status`, `ioc add`, `note add`, `mark` and `timeline-entry` write agent decisions into the audit trail as
 pending review. `--reason` is required for confirmed, false_positive and benign. Do not run them otherwise.

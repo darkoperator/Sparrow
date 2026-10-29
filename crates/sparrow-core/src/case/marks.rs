@@ -872,7 +872,7 @@ fn prune_tags(tx: &Connection) -> Result<()> {
 ///
 /// - An analyst's tag is accepted; an agent's is pending review. An analyst adding a tag an agent has pending confirms
 ///   it as their own; removing it deletes it.
-/// - An agent may create only names starting `ai:`, or use a tag already in use; anything else is `Error::Invalid`.
+/// - An agent may create only names starting `ai:`, or use a tag already in use; anything else is `Error::Decision`.
 ///   It may remove only its own pending tags.
 /// - A call that changes no row fails.
 pub fn tag_rows(
@@ -893,7 +893,7 @@ pub fn tag_rows(
             |r| r.get(0),
         )?;
         if add && is_agent(actor) && !known && !name.starts_with("ai:") {
-            return Err(Error::Invalid(format!(
+            return Err(Error::Decision(format!(
                 "an agent may create only tags starting \"ai:\" (got {name:?}); it can use a tag already in use"
             )));
         }

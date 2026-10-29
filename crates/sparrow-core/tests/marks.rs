@@ -1369,7 +1369,7 @@ fn agent_tag_rules() {
     let n = audit_total(&case);
     let err = tag_rows(c, &a, &rows, "foo", true).unwrap_err();
     assert!(
-        matches!(err, Error::Invalid(ref m) if m.contains("ai:")),
+        matches!(err, Error::Decision(ref m) if m.contains("ai:")),
         "{err:?}"
     );
     assert_eq!(audit_total(&case), n);

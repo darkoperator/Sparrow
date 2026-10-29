@@ -366,6 +366,11 @@ sparrow timeline-entry propose --time T --title X --phase P --evidence TABLE:KEY
                                                   # also verify ID, reject ID --reason R,
                                                   # edit ID [--title ...] [--clear-narrative]
 sparrow note add finding:ID|entry:ID|ioc:ID|TABLE:KEY --text "..." --case case.duckdb
+sparrow mark flag --row TABLE:KEY... --level suspicious|malicious|clear --case case.duckdb
+                                                  # or --value KIND=V [--scope KIND=V] for a standing flag on a value
+                                                  # (KIND ip|ip_prefix|account|asn|device|session; scope kinds
+                                                  # account|ip|device|session); [--agent ID] [--analyst NAME]
+sparrow mark tag --row TABLE:KEY... --tag NAME [--remove] --case case.duckdb   # an agent's new tag starts `ai:`
 sparrow accounts --case case.duckdb              # [--tenant T --limit N]: the accounts with findings, worst first, with
                                                   # stages and the addresses worth a look (the roll-up detection builds)
 sparrow coverage --case case.duckdb              # [--tenant T --user UPN... --rules DIR...]: per account, the rows and dates each
@@ -376,6 +381,10 @@ sparrow finding list --case case.duckdb           # [--status --severity MIN --r
 sparrow finding show ID [ID...] --case case.duckdb  # evidence with source refs (first 50; --all), guidance, notes,
                                                   # decision, history; up to 50 ids at once
 sparrow timeline --case case.duckdb               # [--user --ip --category --from --to --finding --limit 200]
+sparrow events --case case.duckdb                 # the Events grid: [--user V|--ip V|--device V|--session V] [--where FIELD=TEXT]...
+                                                  # [--search S --from T --to T --flag suspicious|malicious --offset N
+                                                  #  --limit 200 --csv PATH]
+sparrow entity --case case.duckdb --user|--ip|--device|--session V   # [--from T --to T]: tiles, every pivot, findings
 sparrow timeline-entry list --case case.duckdb    # [--status --review-state]
 sparrow pivot ip|user VALUE --case case.duckdb    # every section capped by --cap 50, truncation reported
 sparrow query "SELECT ..." --case case.duckdb     # one read-only SELECT, --limit 1000
@@ -503,6 +512,61 @@ Indicators from a case made before the audit trail get one reviewable `legacy_de
 | `SPARROW_ANALYST` | every write | Default for `--analyst NAME` |
 | `SPARROW_INGEST_CHECKPOINT` | ingest | DuckDB's `checkpoint_threshold` while the files load. Unset: the case's `memory_limit` / 8, at most 1 GB, never below DuckDB's own 16 MiB (a limit that cannot be read keeps 16 MiB). A size (`256MB`, `1GiB`, ...) sets it; `default` keeps DuckDB's own value. Anything else stops the ingest before a file is loaded (exit 1). The previous threshold is restored afterwards, and one `CHECKPOINT` runs at the end. A bigger threshold avoids repeated checkpoints inside the per-file commits (180 s → 104 s on a 1M-row tree) and costs memory: the WAL's changes stay in memory until the checkpoint |
 | `SPARROW_INGEST_PROFILE` | ingest | `1`: print stage spans and per-file timings to stderr (off by default; the output on stdout is unchanged) |
+
+## Events, entities and marks
+
+`events` and `entity` read the `events` table (one row per event record of every event table, rebuilt with `ip_intel`
+by `profile`); they open the case read-only. `mark` writes. Times are ISO 8601 UTC (`2026-09-01T10:00:00Z`).
+
+**`sparrow events`** lists the events that match all the options: an entity (`--user` for the actor or mailbox owner,
+`--ip`, `--device` for a device id or directory object id (not a name), or `--session`; at most one), `--where FIELD=TEXT`
+(repeatable; FIELD `source`, `operation`, `account`, `ip`, `country`, `asn`, `device`, `session` or `tag`), `--search`,
+`--from`/`--to` (RFC 3339, inclusive) and `--flag`. A device name goes in `--where device=NAME`: that field matches the
+device id, the object id or the name. TEXT is Harrier's list syntax: comma separates values (any of),
+`!value` excludes, `*` is a case-insensitive wildcard, a list of only excludes means everything except those. A lone
+`!`, or only commas, is refused (exit 1). Rows come newest first; `--offset` and `--limit` (default 200) page them.
+Plain output is a header line, then one line per row, columns two spaces apart with `-` for none:
+
+```
+total 3  showing 3 from offset 0
+2026-09-01T10:10:00Z  signin_interactive  UserLoggedIn  jdoe@contoso.example  198.51.100.7  JDOE-LAPTOP  7a7a…0b0b  -  -
+```
+
+The columns are time, source, operation, account (the actor, else the owner), IP, device (name, else id), Entra session
+(first and last four characters), flag (`suspicious`, `malicious`, with ` (ai)` while an agent's flag awaits the
+analyst) and tags (comma separated, ` (ai)` likewise). The header says `total N (capped)` when the count stopped at its
+cap. `--json` prints `{"rows": [...], "offset", "total", "total_capped"}`; a row has `source_table`, `record_key`, `source`,
+`event_time`, `time_tz_assumed`, `tenant_key`, `workload`, `category`, `operation`, `result`, `actor_upn`, `owner_upn`,
+`target`, `ip`, `ip_prefix`, `ip_country`, `asn`, `asn_org`, `ip_kind`, `device_id`, `device_name`, `device_object_id`,
+`entra_session_id`, `user_agent`, `app_id`, `summary`, `finding_count`, `tags` (`[{"name", "ai"}]`), `flag`, `flag_ai`,
+`latest_note` and `note_count` (every field of the row).
+`--csv PATH` writes every matching row (not a page; UTF-8 with a BOM, formula-looking text prefixed with `'`) and
+prints `wrote N rows to PATH` (`--json`: `{"csv", "rows"}`).
+
+**`sparrow entity`** takes exactly one of `--user`, `--ip`, `--device`, `--session` and an optional `--from`/`--to`.
+It prints the tiles (events, first and last seen, distinct counts, open findings by severity, roles matched, the
+IP's `ip_intel` or the device's details), then each pivot table the kind has, then the open findings that cite the
+entity's events. A pivot shows at most 500 rows; the heading says `showing N of TOTAL` when it is cut. `--json`
+prints `{"summary": {...}, "pivots": {"ips": {"rows": [...], "total": N}, ...}, "findings": [...]}`. An account has
+the pivots `devices`, `ips`, `sessions`; an IP `accounts`, `devices`, `sessions`; a device `accounts`, `device_changes`,
+`ips`, `sessions`; a session `accounts`, `devices`, `ips`. The spelling of the value does not matter (case, IPv6
+form): `Jdoe@Contoso.example` and `jdoe@contoso.example` are one entity.
+
+**`sparrow mark flag`** flags rows (`--row TABLE:KEY`, repeatable) or every event with a value (`--value KIND=V`,
+KIND `ip`, `ip_prefix`, `account`, `asn`, `device` or `session`; a standing flag that also covers events ingested
+later; `--scope KIND=V` with KIND `account`, `ip`, `device` or `session` limits it to that entity's events) to
+`--level suspicious`, `malicious` or `clear`. A malicious `ip` or `account` flag also adds an indicator. **`sparrow
+mark tag`** adds a tag to rows, or with `--remove` takes it off. Tag names are stored trimmed and lower-cased. Each
+call is one transaction and writes one audit entry (not one per row). Like every CLI write these are agent decisions
+(`--agent`/`--analyst`, `$SPARROW_AGENT`/`$SPARROW_ANALYST`): pending review, visible at once, confirmed or discarded by
+the analyst in the app. An agent may flag or tag at most 1,000 rows per call, may create only tags starting `ai:`
+(or use a tag already in use), and may clear or remove only its own pending marks. Plain output is the object id,
+what was done and the provenance (`... flag malicious on 2 row(s) (decided by agent:triage for analyst:carlos,
+pending review)`); `--json` prints the audit entry. Evidence tables are never written.
+
+Exit codes are those of the other writes: 4 while another writer holds the case (nothing is written), 5 for a row
+that is not in the case, a malformed `TABLE:KEY`, or a tag name an agent may not create, 1 for a bad option, level, kind,
+a `--where` the grammar refuses, or `--csv` together with `--offset` or `--limit`.
 
 ## Agent workflow
 
