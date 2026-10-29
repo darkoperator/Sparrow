@@ -91,10 +91,10 @@ export default function Accounts({ onSelect }: { onSelect: (upn: string) => void
                   {nav && (
                     <button
                       className="link"
-                      aria-label={`Pivot on account ${displaySafe(a.upn)}`}
-                      onClick={() => nav.openPivot("account", a.upn)}
+                      aria-label={`Open account tab ${displaySafe(a.upn)}`}
+                      onClick={() => nav.openEntity({ kind: "account", value: a.upn })}
                     >
-                      Pivot
+                      Open tab
                     </button>
                   )}
                   <div className="meta">{displaySafe(a.tenant_key)}</div>
@@ -114,10 +114,10 @@ export default function Accounts({ onSelect }: { onSelect: (upn: string) => void
                             {" "}
                             <button
                               className="link"
-                              aria-label={`Pivot on IP ${displaySafe(x.ip)}`}
-                              onClick={() => nav.openPivot("ip", x.ip)}
+                              aria-label={`Open IP tab ${displaySafe(x.ip)}`}
+                              onClick={() => nav.openEntity({ kind: "ip", value: x.ip })}
                             >
-                              Pivot
+                              Open tab
                             </button>
                           </>
                         )}

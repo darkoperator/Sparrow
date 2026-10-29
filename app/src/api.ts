@@ -359,23 +359,7 @@ export const exportReport = (path: string, reviewedOnly: boolean) =>
 export const exportTimelineCsv = (path: string) => call<null>("export_timeline_csv", { path });
 export const exportWorkbook = (path: string) => call<null>("export_workbook", { path });
 
-// ---------------------------------------------------------------- pivots and highlights (core serde shapes)
-
-/** `read::PivotSection`: `rows` are JSON objects (DuckDB `to_json` of each row); `unavailable` says why the section cannot be read. */
-export interface PivotSection {
-  name: string;
-  rows: unknown[];
-  total: number;
-  truncated: boolean;
-  unavailable?: string;
-}
-
-export interface Pivot {
-  sections: PivotSection[];
-}
-
-export const pivotIp = (value: string, cap?: number) => call<Pivot>("pivot_ip", { value, cap });
-export const pivotUser = (value: string, cap?: number) => call<Pivot>("pivot_user", { value, cap });
+// ---------------------------------------------------------------- highlights (core serde shapes)
 
 export const HIGHLIGHT_COLOURS = ["red", "amber", "green", "blue", "purple"] as const;
 export type HighlightColour = (typeof HIGHLIGHT_COLOURS)[number];

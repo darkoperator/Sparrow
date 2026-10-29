@@ -11,6 +11,7 @@ import {
   type Proposal,
   type QueueItem,
 } from "../api";
+import { useRefreshBadges } from "../shell/nav";
 import { displaySafe } from "../text";
 import QueueItemDetail from "./QueueItemDetail";
 import QueueItemRow, { identity, itemKey } from "./QueueItemRow";
@@ -121,6 +122,7 @@ export default function ReviewQueue({ canWrite, accountFilter = null, onClearFil
 
   const current = flat.find((q) => identity(q) === selected) ?? null;
 
+  const refreshBadges = useRefreshBadges();
   const act = useCallback(
     async (q: QueueItem, verb: "accept" | "discard", why: string) => {
       if (!canWrite || busy.current) return;
@@ -147,9 +149,10 @@ export default function ReviewQueue({ canWrite, accountFilter = null, onClearFil
       }
       // Stay busy through the reload: the controls must not act on the list we are about to replace.
       await load();
+      refreshBadges();
       setBusy(false);
     },
-    [canWrite, load, setBusy],
+    [canWrite, load, setBusy, refreshBadges],
   );
 
   const acceptAll = async (analyst: string) => {
@@ -174,6 +177,7 @@ export default function ReviewQueue({ canWrite, accountFilter = null, onClearFil
       });
     }
     await load();
+    refreshBadges();
     setBusy(false);
   };
 

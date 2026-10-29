@@ -60,10 +60,10 @@ export default function FindingDetail({ findingId }: { findingId: string }) {
             {" "}
             <button
               className="link"
-              aria-label={`Pivot on account ${displaySafe(f.actor_upn)}`}
-              onClick={() => nav.openPivot("account", f.actor_upn!)}
+              aria-label={`Open account tab ${displaySafe(f.actor_upn)}`}
+              onClick={() => nav.openEntity({ kind: "account", value: f.actor_upn! })}
             >
-              Pivot
+              Open tab
             </button>
           </>
         )}

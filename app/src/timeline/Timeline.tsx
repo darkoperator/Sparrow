@@ -10,6 +10,7 @@ import {
   type NewEntryArgs,
   type TimelineEntry,
 } from "../api";
+import { useRefreshBadges } from "../shell/nav";
 import { displaySafe } from "../text";
 import { EntryEditor, PHASES, phaseLabel } from "./EntryEditor";
 
@@ -45,7 +46,11 @@ export function Timeline({ readOnly = false }: { readOnly?: boolean }) {
     };
   }, [version]);
 
-  const reload = () => setVersion((v) => v + 1);
+  const refreshBadges = useRefreshBadges();
+  const reload = () => {
+    setVersion((v) => v + 1);
+    refreshBadges();
+  };
 
   /**
    * Runs a write; a refusal is shown and the entries reloaded (what the analyst saw may have changed). Returns null

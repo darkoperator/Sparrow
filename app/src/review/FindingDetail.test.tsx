@@ -19,34 +19,34 @@ beforeEach(() => {
   vi.mocked(api.findingDetail).mockImplementation(async () => detail);
 });
 
-describe("FindingDetail pivot links", () => {
-  it("offers a pivot on the finding's account inside a shell", async () => {
+describe("FindingDetail entity-tab links", () => {
+  it("offers a tab on the finding's account inside a shell", async () => {
     const upn = detail.finding.actor_upn;
     expect(upn).toBeTruthy();
-    const openPivot = vi.fn();
+    const openEntity = vi.fn();
     render(
-      <NavContext.Provider value={{ openPivot, openTable: vi.fn() }}>
+      <NavContext.Provider value={{ openEntity, openTable: vi.fn(), showInEvents: vi.fn() }}>
         <FindingDetail findingId={detail.finding.finding_id} />
       </NavContext.Provider>,
     );
-    await userEvent.setup().click(await screen.findByRole("button", { name: `Pivot on account ${upn}` }));
-    expect(openPivot).toHaveBeenCalledExactlyOnceWith("account", upn);
+    await userEvent.setup().click(await screen.findByRole("button", { name: `Open account tab ${upn}` }));
+    expect(openEntity).toHaveBeenCalledExactlyOnceWith({ kind: "account", value: upn });
   });
 
   it("offers none outside a shell, or for a finding without an account", async () => {
     render(<FindingDetail findingId={detail.finding.finding_id} />);
     await screen.findByText(/Evidence \(/);
-    expect(screen.queryByRole("button", { name: /^Pivot on/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Open account tab/ })).toBeNull();
   });
 
   it("offers none for a finding without an account", async () => {
     detail.finding.actor_upn = null;
     render(
-      <NavContext.Provider value={{ openPivot: vi.fn(), openTable: vi.fn() }}>
+      <NavContext.Provider value={{ openEntity: vi.fn(), openTable: vi.fn(), showInEvents: vi.fn() }}>
         <FindingDetail findingId={detail.finding.finding_id} />
       </NavContext.Provider>,
     );
     await screen.findByText(/Evidence \(/);
-    expect(screen.queryByRole("button", { name: /^Pivot on/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Open account tab/ })).toBeNull();
   });
 });

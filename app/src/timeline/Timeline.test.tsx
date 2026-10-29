@@ -13,6 +13,7 @@ const api = vi.hoisted(() => ({
 }));
 vi.mock("../api", async (orig) => ({ ...(await orig<typeof import("../api")>()), ...api }));
 
+import { RefreshBadgesContext } from "../shell/nav";
 import { Timeline } from "./Timeline";
 import { findingDetail as recordedFindingDetail } from "../test/fixtures";
 
@@ -292,5 +293,39 @@ describe("Timeline", () => {
     await waitFor(() =>
       expect(api.timelinePropose).toHaveBeenCalledWith(expect.objectContaining({ evidence: ["signins:k-b"] })),
     );
+  });
+});
+
+describe("Timeline tells the shell to refresh its badges", () => {
+  const withRefresh = () => {
+    const refresh = vi.fn();
+    render(
+      <RefreshBadgesContext.Provider value={refresh}>
+        <Timeline />
+      </RefreshBadgesContext.Provider>,
+    );
+    return refresh;
+  };
+
+  it("once per verify, reject and propose, and not on load", async () => {
+    api.timelineVerify.mockResolvedValue(audit);
+    api.timelineReject.mockResolvedValue(audit);
+    api.timelinePropose.mockResolvedValue({ entryId: "n1", audit });
+    const refresh = withRefresh();
+    await userEvent.click(await screen.findByRole("button", { name: "Verify Proposed exfil" }));
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    await userEvent.click(screen.getByRole("button", { name: "Reject Proposed exfil" }));
+    await userEvent.type(screen.getByLabelText("Reason for rejecting"), "not ours");
+    await userEvent.click(screen.getByRole("button", { name: "Confirm reject" }));
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+    await userEvent.click(screen.getByRole("button", { name: "Add entry" }));
+    const form = screen.getByRole("form", { name: "Add entry" });
+    await userEvent.type(within(form).getByLabelText(/^Time/), "2026-03-02T08:00:00Z");
+    await userEvent.type(within(form).getByLabelText("Title"), "Token replayed");
+    await userEvent.selectOptions(within(form).getByLabelText("Phase"), "persistence");
+    await userEvent.type(within(form).getByLabelText(/Add a reference/), "signins:abc");
+    await userEvent.click(within(form).getByRole("button", { name: "Add reference" }));
+    await userEvent.click(within(form).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(3));
   });
 });

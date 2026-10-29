@@ -59,25 +59,25 @@ describe("Accounts", () => {
     expect(onSelect).toHaveBeenCalledExactlyOnceWith(page.accounts[0].upn);
   });
 
-  it("inside a shell, offers a pivot per account and per address with the raw values", async () => {
-    const openPivot = vi.fn();
+  it("inside a shell, offers an entity tab per account and per address with the raw values", async () => {
+    const openEntity = vi.fn();
     const user = userEvent.setup();
     render(
-      <NavContext.Provider value={{ openPivot, openTable: vi.fn() }}>
+      <NavContext.Provider value={{ openEntity, openTable: vi.fn(), showInEvents: vi.fn() }}>
         <Accounts onSelect={() => {}} />
       </NavContext.Provider>,
     );
     const first = page.accounts[0];
-    await user.click(await screen.findByRole("button", { name: `Pivot on account ${first.upn}` }));
-    expect(openPivot).toHaveBeenLastCalledWith("account", first.upn);
+    await user.click(await screen.findByRole("button", { name: `Open account tab ${first.upn}` }));
+    expect(openEntity).toHaveBeenLastCalledWith({ kind: "account", value: first.upn });
     const row = screen.getByRole("button", { name: first.upn }).closest("tr")!;
-    await user.click(within(row).getByRole("button", { name: `Pivot on IP ${first.addresses[0].ip}` }));
-    expect(openPivot).toHaveBeenLastCalledWith("ip", first.addresses[0].ip);
+    await user.click(within(row).getByRole("button", { name: `Open IP tab ${first.addresses[0].ip}` }));
+    expect(openEntity).toHaveBeenLastCalledWith({ kind: "ip", value: first.addresses[0].ip });
   });
 
-  it("offers no pivot buttons outside a shell", async () => {
+  it("offers no entity-tab buttons outside a shell", async () => {
     render(<Accounts onSelect={() => {}} />);
     await screen.findByRole("button", { name: page.accounts[0].upn });
-    expect(screen.queryByRole("button", { name: /^Pivot on/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Open (account|IP) tab/ })).toBeNull();
   });
 });

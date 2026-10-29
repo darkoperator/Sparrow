@@ -4,7 +4,7 @@ import { useState, type ReactNode } from "react";
 import { evidenceFilter, isCmdError, type QueueItem } from "../api";
 import { useNav } from "../shell/nav";
 import { displaySafe, displaySafeMultiline } from "../text";
-import { valueKind } from "../value";
+import { entityKindFor } from "../value";
 import Diff from "./Diff";
 import FindingDetail from "./FindingDetail";
 
@@ -33,17 +33,17 @@ const text = (v: unknown): ReactNode => {
   return s === null ? null : <span className="prose">{displaySafeMultiline(s)}</span>;
 };
 
-function PivotButton({ value }: { value: string }) {
+function EntityButton({ value }: { value: string }) {
   const nav = useNav();
-  const kind = nav ? valueKind(value) : null;
+  const kind = nav ? entityKindFor("", value) : null;
   if (!nav || !kind) return null;
   return (
     <button
       className="link"
-      aria-label={kind === "ip" ? `Pivot on IP ${displaySafe(value)}` : `Pivot on account ${displaySafe(value)}`}
-      onClick={() => nav.openPivot(kind, value)}
+      aria-label={`Open ${kind === "ip" ? "IP" : kind} tab ${displaySafe(value)}`}
+      onClick={() => nav.openEntity({ kind, value })}
     >
-      {kind === "ip" ? "Pivot on this IP" : "Pivot on this account"}
+      {kind === "ip" ? "Open IP tab" : "Open account tab"}
     </button>
   );
 }
@@ -93,7 +93,7 @@ function IndicatorFields({ o }: { o: Rec }) {
           "Value",
           value === null ? null : (
             <>
-              {text(value)} <PivotButton value={value} />
+              {text(value)} <EntityButton value={value} />
             </>
           ),
         ],

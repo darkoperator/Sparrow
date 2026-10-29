@@ -16,7 +16,7 @@ vi.mock("../api", async (orig) => ({
 }));
 
 import * as api from "../api";
-import { NavContext } from "../shell/nav";
+import { NavContext, RefreshBadgesContext } from "../shell/nav";
 import ReviewQueue from "./ReviewQueue";
 
 // The recorded queue: three agent decisions on one account (finding set_status, indicator add_ioc, timeline
@@ -346,7 +346,7 @@ describe("ReviewQueue", () => {
 });
 
 describe("ReviewQueue detail for every item", () => {
-  const nav = () => ({ openPivot: vi.fn(), openTable: vi.fn() });
+  const nav = () => ({ openEntity: vi.fn(), openTable: vi.fn(), showInEvents: vi.fn() });
   async function open(testId: string) {
     const n = nav();
     const user = userEvent.setup();
@@ -359,7 +359,7 @@ describe("ReviewQueue detail for every item", () => {
     return { user, n, detail: document.querySelector(".queue-detail") as HTMLElement };
   }
 
-  it("an indicator decision shows its fields and pivots on the value", async () => {
+  it("an indicator decision shows its fields and opens a tab on the value", async () => {
     const { user, n, detail } = await open(INDICATOR);
     const d = within(detail);
     expect(d.getByText("upn")).toBeInTheDocument();
@@ -367,8 +367,8 @@ describe("ReviewQueue detail for every item", () => {
     expect(d.getByText("suspicious")).toBeInTheDocument();
     expect(d.getByText("account used from the relay")).toBeInTheDocument();
     expect(d.getByText("agent:triage")).toBeInTheDocument();
-    await user.click(d.getByRole("button", { name: `Pivot on account ${ACCOUNT}` }));
-    expect(n.openPivot).toHaveBeenCalledWith("account", ACCOUNT);
+    await user.click(d.getByRole("button", { name: `Open account tab ${ACCOUNT}` }));
+    expect(n.openEntity).toHaveBeenCalledWith({ kind: "account", value: ACCOUNT });
   });
 
   it("a timeline-entry decision shows its narrative and links each evidence ref to Tables", async () => {
@@ -434,7 +434,7 @@ describe("ReviewQueue detail for every item", () => {
     expect(d.getByText("relay <b>egress</b>")).toBeInTheDocument();
     expect(detail.querySelector("b")).toBeNull();
     expect(d.getAllByText(/old note/).length).toBeGreaterThan(0);
-    expect(d.getByRole("button", { name: "Pivot on IP 203.0.113.9" })).toBeInTheDocument();
+    expect(d.getByRole("button", { name: "Open IP tab 203.0.113.9" })).toBeInTheDocument();
   });
 
   it("a note proposal shows the target and the text", async () => {
@@ -452,5 +452,40 @@ describe("ReviewQueue detail for every item", () => {
     const { detail } = await open(`item-${sha}:note:n1`);
     expect(within(detail).getByText("full note text")).toBeInTheDocument();
     expect(within(detail).getByText("finding:abc")).toBeInTheDocument();
+  });
+});
+
+describe("ReviewQueue tells the shell to refresh its badges", () => {
+  async function readyWithRefresh() {
+    const refresh = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <RefreshBadgesContext.Provider value={refresh}>
+        <ReviewQueue canWrite />
+      </RefreshBadgesContext.Provider>,
+    );
+    await screen.findByTestId(FINDING);
+    return { user, refresh };
+  }
+
+  it("not on load, once after an accept, once after a discard, once after accept all", async () => {
+    const { user, refresh } = await readyWithRefresh();
+    expect(refresh).not.toHaveBeenCalled();
+    await user.click(screen.getByTestId(FINDING));
+    await user.click(screen.getByRole("button", { name: "Accept" }));
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByTestId(INDICATOR));
+    await user.click(screen.getByRole("button", { name: "Discard" }));
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+    await user.click(screen.getByRole("button", { name: "Accept all from analyst:ann" }));
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(3));
+  });
+
+  it("also after a refused write, because the reload may have changed the queue", async () => {
+    m.accept.mockRejectedValueOnce({ kind: "decision", message: "changed since" } satisfies CmdError);
+    const { user, refresh } = await readyWithRefresh();
+    await user.click(screen.getByTestId(FINDING));
+    await user.click(screen.getByRole("button", { name: "Accept" }));
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
   });
 });

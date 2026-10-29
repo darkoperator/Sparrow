@@ -1,33 +1,45 @@
-// The window shell: case opening, the analyst name, the read-only banner and the sidebar. Screens are plugged in
-// by name; a screen that is not built yet renders a placeholder.
+// The window shell: case opening, the analyst name, the read-only banner and the tab strip. Screens are plugged in
+// by name; a screen that is not built yet renders a placeholder. Entity tabs stay mounted while hidden, so each
+// keeps its filters, range and page.
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { caseClose, caseOpen, isCmdError, settingsGet, type CaseInfo, type Filter, type Settings } from "../api";
+import {
+  caseClose,
+  caseOpen,
+  isCmdError,
+  reviewQueue,
+  settingsGet,
+  timelineList,
+  type CaseInfo,
+  type Filter,
+  type Settings,
+} from "../api";
 import Highlights from "../highlights/Highlights";
 import { HighlightsError, HighlightsProvider } from "../highlights/useHighlights";
-import Pivot, { type PivotRequest } from "../pivot/Pivot";
 import Tables, { type TableRequest } from "../tables/Tables";
 import ReviewQueue from "../review/ReviewQueue";
 import { displaySafe } from "../text";
-import type { PivotKind } from "../value";
 import AnalystPrompt from "./AnalystPrompt";
 import ExportMenu from "./ExportMenu";
-import { NavContext } from "./nav";
+import { NavContext, RefreshBadgesContext } from "./nav";
 import OpenCase, { type UpgradePrompt } from "./OpenCase";
 import ReadOnlyBanner from "./ReadOnlyBanner";
+import TabStrip, { type TabBadges } from "./TabStrip";
+import {
+  closeTab,
+  FIXED_TABS,
+  initialTabs,
+  isEntityRef,
+  loadTabs,
+  openEntity as openEntityTab,
+  saveTabs,
+  showTab,
+  tabKey,
+  type EntityRef,
+  type FixedTab,
+  type TabsState,
+} from "./tabs";
 
-export type ScreenId = "review" | "timeline" | "accounts" | "devices" | "pivot" | "tables" | "sql" | "share" | "highlights";
-
-const NAV: ReadonlyArray<{ id: ScreenId; label: string }> = [
-  { id: "review", label: "Review queue" },
-  { id: "timeline", label: "Timeline" },
-  { id: "accounts", label: "Accounts" },
-  { id: "devices", label: "Devices" },
-  { id: "pivot", label: "Pivot" },
-  { id: "tables", label: "Tables" },
-  { id: "sql", label: "SQL" },
-  { id: "share", label: "Share" },
-  { id: "highlights", label: "Highlights" },
-];
+export type ScreenId = FixedTab;
 
 export interface ScreenProps {
   canWrite: boolean;
@@ -35,25 +47,38 @@ export interface ScreenProps {
   showAccount: (upn: string) => void;
   /** Show the review queue, unfiltered. */
   showQueue: () => void;
-  /** Open the pivot screen on an IP or an account. */
-  openPivot: (kind: PivotKind, value: string) => void;
+  /** Open (or switch to) the tab of an account, IP, device or Entra session. */
+  openEntity: (e: EntityRef) => void;
+  /** Switch to the Events tab, limited to this entity. */
+  showInEvents: (e: EntityRef) => void;
+  /** The entity "Show in Events" asked for, if any; `nonce` changes with each request. */
+  eventsEntity: (EntityRef & { nonce: number }) | null;
+  clearEventsEntity: () => void;
   /** Open the table browser on a table, with these filters applied. */
   openTable: (table: string, filters: Filter[]) => void;
 }
 
 interface ShellProps {
   /** Screens built elsewhere, by id; anything missing renders a placeholder. */
-  screens?: Partial<Record<Exclude<ScreenId, "review" | "pivot" | "tables" | "highlights">, (p: ScreenProps) => ReactNode>>;
+  screens?: Partial<Record<Exclude<ScreenId, "review" | "tables" | "highlights">, (p: ScreenProps) => ReactNode>>;
+  /** The body of an entity tab; until it is built, a placeholder shows the entity. */
+  entityTab?: (e: EntityRef, p: ScreenProps) => ReactNode;
 }
 
-export default function Shell({ screens = {} }: ShellProps) {
+const TOAST_MS = 6000;
+
+export default function Shell({ screens = {}, entityTab }: ShellProps) {
   const [settings, setSettings] = useState<Settings>({ analyst: null, recent: [] });
   const [info, setInfo] = useState<CaseInfo | null>(null);
-  const [screen, setScreen] = useState<ScreenId>("review");
+  const [tabs, setTabs] = useState<TabsState>(initialTabs);
+  const [toast, setToast] = useState<string | null>(null);
+  const [badgeTick, setBadgeTick] = useState(0);
+  const refreshBadges = useCallback(() => setBadgeTick((n) => n + 1), []);
+  const [badges, setBadges] = useState<TabBadges>({ review: 0, timeline: 0 });
+  // The entity the Events tab is limited to ("Show in Events"); `nonce` tells the screen a new request came.
+  const [eventsEntity, setEventsEntity] = useState<(EntityRef & { nonce: number }) | null>(null);
   // The review queue's account filter lives here: the accounts screen sets it, the queue shows it.
   const [accountFilter, setAccountFilter] = useState<string | null>(null);
-  // The pivot request that opened the pivot screen; `nonce` remounts the screen for each new request.
-  const [pivotReq, setPivotReq] = useState<(PivotRequest & { nonce: number }) | null>(null);
   const [tableReq, setTableReq] = useState<(TableRequest & { nonce: number }) | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [upgrade, setUpgrade] = useState<UpgradePrompt | null>(null);
@@ -77,15 +102,43 @@ export default function Shell({ screens = {} }: ShellProps) {
     };
   }, []);
 
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), TOAST_MS);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const caseId = info?.case_id;
+  const activeKey = tabKey(tabs.active);
+  useEffect(() => {
+    if (caseId !== undefined) saveTabs(caseId, tabs);
+  }, [caseId, tabs]);
+
+  // The badges: what is waiting for the analyst. Read again whenever the analyst switches tab.
+  useEffect(() => {
+    if (caseId === undefined) return;
+    let live = true;
+    Promise.all([reviewQueue(), timelineList()]).then(
+      ([queue, entries]) =>
+        live && setBadges({ review: queue.length, timeline: entries.filter((x) => x.review_state === "pending_review").length }),
+      () => live && setBadges({ review: 0, timeline: 0 }),
+    );
+    return () => {
+      live = false;
+    };
+  }, [caseId, activeKey, badgeTick]);
+
   const openCase = async (path: string, allowUpgrade = false) => {
     setError(null);
     setUpgrade(null);
     try {
-      setInfo(await caseOpen(path, allowUpgrade));
-      setScreen("review");
+      const opened = await caseOpen(path, allowUpgrade);
+      setTabs(loadTabs(opened.case_id));
+      setInfo(opened);
       setAccountFilter(null);
-      setPivotReq(null);
+      setEventsEntity(null);
       setTableReq(null);
+      setToast(null);
       await refreshSettings();
     } catch (e) {
       if (isCmdError(e) && e.kind === "needs_upgrade") {
@@ -104,8 +157,10 @@ export default function Shell({ screens = {} }: ShellProps) {
       setError(isCmdError(e) ? e.message : String(e));
     }
     setInfo(null);
-    setPivotReq(null);
+    setTabs(initialTabs());
+    setEventsEntity(null);
     setTableReq(null);
+    setToast(null);
   };
 
   if (!info) {
@@ -125,22 +180,39 @@ export default function Shell({ screens = {} }: ShellProps) {
   }
 
   const canWrite = info.read_only_reason === null && settings.analyst !== null;
+  const show = (t: FixedTab | EntityRef) => setTabs(showTab(tabs, t));
   const showAccount = (upn: string) => {
     setAccountFilter(upn);
-    setScreen("review");
+    show("review");
   };
   const showQueue = () => {
     setAccountFilter(null);
-    setScreen("review");
+    show("review");
   };
-  const openPivot = (kind: PivotKind, value: string) => {
-    setPivotReq((r) => ({ kind, value, nonce: (r?.nonce ?? 0) + 1 }));
-    setScreen("pivot");
+  const openEntity = (e: EntityRef) => {
+    const { state, closed } = openEntityTab(tabs, e);
+    setTabs(state);
+    if (closed) setToast(`Closed ${displaySafe(closed.value)} (10 tabs max)`);
+  };
+  const showInEvents = (e: EntityRef) => {
+    setEventsEntity((r) => ({ ...e, nonce: (r?.nonce ?? 0) + 1 }));
+    show("events");
   };
   const openTable = (table: string, filters: Filter[]) => {
     setTableReq((r) => ({ table, filters, nonce: (r?.nonce ?? 0) + 1 }));
-    setScreen("tables");
+    show("tables");
   };
+  const screenProps: ScreenProps = {
+    canWrite,
+    showAccount,
+    showQueue,
+    openEntity,
+    showInEvents,
+    eventsEntity,
+    clearEventsEntity: () => setEventsEntity(null),
+    openTable,
+  };
+  const screen = isEntityRef(tabs.active) ? null : tabs.active;
   const body = (() => {
     if (screen === "review") {
       return (
@@ -149,10 +221,10 @@ export default function Shell({ screens = {} }: ShellProps) {
     }
     if (screen === "tables") return <Tables key={tableReq?.nonce ?? 0} initial={tableReq ?? undefined} />;
     if (screen === "highlights") return <Highlights />;
-    if (screen === "pivot") return <Pivot key={pivotReq?.nonce ?? 0} initial={pivotReq ?? undefined} />;
+    if (screen === null) return null;
     const render = screens[screen];
-    if (render) return render({ canWrite, showAccount, showQueue, openPivot, openTable });
-    const label = NAV.find((n) => n.id === screen)?.label ?? screen;
+    if (render) return render(screenProps);
+    const label = FIXED_TABS.find((t) => t.id === screen)?.label ?? screen;
     return <p>{label} is not built yet.</p>;
   })();
 
@@ -172,20 +244,26 @@ export default function Shell({ screens = {} }: ShellProps) {
         </ul>
       )}
       {settings.analyst === null && <AnalystPrompt onSaved={setSettings} />}
+      <TabStrip state={tabs} badges={badges} onShow={show} onClose={(key) => setTabs(closeTab(tabs, key))} />
+      {toast && (
+        <div role="status" className="toast">
+          {toast}
+        </div>
+      )}
       <div className="layout">
-        <nav aria-label="Screens">
-          {NAV.map((n) => (
-            <button key={n.id} aria-current={n.id === screen ? "page" : undefined} onClick={() => setScreen(n.id)}>
-              {n.label}
-            </button>
-          ))}
-        </nav>
         <HighlightsProvider caseId={info.case_id}>
-          <NavContext.Provider value={{ openPivot, openTable }}>
+          <NavContext.Provider value={{ openEntity, openTable, showInEvents }}>
+            <RefreshBadgesContext.Provider value={refreshBadges}>
             <main>
               {screen !== "highlights" && <HighlightsError />}
               {body}
+              {tabs.open.map((e) => (
+                <section key={tabKey(e)} hidden={tabKey(e) !== activeKey} aria-label={`${e.kind} ${displaySafe(e.value)}`}>
+                  {entityTab ? entityTab(e, screenProps) : <p>{`${e.kind} ${displaySafe(e.value)}`}</p>}
+                </section>
+              ))}
             </main>
+            </RefreshBadgesContext.Provider>
           </NavContext.Provider>
         </HighlightsProvider>
       </div>

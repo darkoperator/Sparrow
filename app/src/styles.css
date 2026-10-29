@@ -8,9 +8,17 @@ button.link { background: none; border: 0; padding: 0; color: LinkText; text-dec
 .banner { padding: 8px 16px; border-bottom: 1px solid #8884; }
 .banner-readonly { background: #b4540033; }
 .warnings { margin: 0; padding: 8px 32px; background: #b4540022; }
-.layout { display: grid; grid-template-columns: 160px 1fr; min-height: calc(100vh - 44px); }
-nav[aria-label="Screens"] { display: flex; flex-direction: column; gap: 4px; padding: 8px; border-right: 1px solid #8884; }
-nav button[aria-current="page"] { font-weight: 700; }
+.layout { display: block; min-height: calc(100vh - 80px); }
+.tabstrip { display: flex; gap: 2px; align-items: flex-end; padding: 4px 8px 0; border-bottom: 1px solid #8884; overflow-x: auto; }
+.tab { padding: 5px 10px; border: 1px solid transparent; border-bottom: 0; border-radius: 4px 4px 0 0; background: none; color: inherit; font: inherit; white-space: nowrap; }
+.tab:hover { background: #8882; }
+.tab[aria-selected="true"] { font-weight: 700; border-color: #8884; background: Canvas; box-shadow: 0 1px 0 Canvas; }
+.tab-entity { display: inline-flex; align-items: center; }
+.tab-entity .tab { padding-right: 4px; }
+.tab-close { border: 0; background: none; color: inherit; font: inherit; opacity: 0.6; padding: 2px 6px; border-radius: 3px; }
+.tab-close:hover { opacity: 1; background: #8883; }
+.tab-badge { margin-left: 5px; padding: 0 5px; border-radius: 8px; background: Highlight; color: HighlightText; font-size: 11px; font-weight: 600; }
+.toast { padding: 6px 16px; background: #b4540033; border-bottom: 1px solid #8884; }
 .queue-layout { display: grid; grid-template-columns: minmax(280px, 40%) 1fr; gap: 16px; }
 .queue-list ul { list-style: none; margin: 0; padding: 0; }
 .queue-item { padding: 6px 8px; border: 1px solid #8884; border-radius: 4px; margin-bottom: 4px; cursor: pointer; }
@@ -55,9 +63,6 @@ code.sha { overflow-wrap: anywhere; }
 .cell-menu { z-index: 10; display: flex; flex-direction: column; min-width: 180px; padding: 4px; border: 1px solid #8886; border-radius: 4px; background: Canvas; box-shadow: 0 2px 8px #0004; }
 .cell-menu button { text-align: left; background: none; border: 0; padding: 4px 8px; color: inherit; }
 .cell-menu button:hover, .cell-menu button:focus { background: Highlight; color: HighlightText; }
-.pivot { padding: 12px 16px; }
-.pivot-section { margin: 8px 0; }
-.pivot-section summary { cursor: pointer; font-weight: 600; }
 .grid-sort { all: unset; cursor: pointer; font-weight: 600; }
 .grid-sort:focus-visible { outline: 2px solid Highlight; }
 .tables { padding: 12px 16px; }

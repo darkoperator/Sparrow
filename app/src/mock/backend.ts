@@ -10,7 +10,6 @@ import type {
   Filter,
   HighlightSet,
   NewEntryArgs,
-  Pivot,
   QueryResult,
   QueueItem,
   Settings,
@@ -20,7 +19,7 @@ import type {
   TimelineEntry,
 } from "../api";
 import * as fx from "../test/fixtures";
-import { GEN_COLUMNS, GEN_ROWS, genObjects, selectRows } from "./generated";
+import { GEN_COLUMNS, GEN_ROWS, selectRows } from "./generated";
 import { eventHandlers } from "./events";
 
 export const MOCK_MARKER = "sparrow-mock-backend-9f3c1e";
@@ -109,18 +108,6 @@ const str = (a: Record<string, unknown> | undefined, k: string): string => {
 };
 
 const TOTAL_CAP = 4000;
-
-function pivot(base: Pivot, cap: unknown): Pivot {
-  const n = typeof cap === "number" && cap > 0 ? Math.min(cap, 200) : 200;
-  const hostile = genObjects(300).filter((r) => /[<\u202E=]/.test(String(r.user_upn)));
-  return {
-    sections: [
-      ...base.sections,
-      { name: "signins (stress)", rows: genObjects(n), total: 1342, truncated: true },
-      { name: "hostile values", rows: hostile, total: hostile.length, truncated: false },
-    ],
-  };
-}
 
 function sqlRun(a: Record<string, unknown> | undefined): Promise<QueryResult> {
   const sql = str(a, "sql");
@@ -310,8 +297,6 @@ const handlers: Record<string, (a: Args) => unknown> = {
   export_timeline_csv: () => null,
   export_workbook: () => null,
 
-  pivot_ip: (a) => pivot(fx.pivotIp(), a?.cap),
-  pivot_user: (a) => pivot(fx.pivotUser(), a?.cap),
   highlights_get: (a) => highlights.get(str(a, "caseId")) ?? [],
   highlights_set: (a) => {
     const sets = (a?.sets ?? []) as HighlightSet[];

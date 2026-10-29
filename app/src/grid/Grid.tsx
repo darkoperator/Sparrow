@@ -8,7 +8,7 @@ import { HIGHLIGHT_COLOURS, type HighlightRule, type Sort } from "../api";
 import { useHighlights } from "../highlights/useHighlights";
 import { useNav } from "../shell/nav";
 import { displaySafe } from "../text";
-import { rawText, valueKind } from "../value";
+import { entityKindFor, rawText } from "../value";
 import CellMenu, { type MenuItem } from "./CellMenu";
 import ValueViewer from "./ValueViewer";
 
@@ -126,14 +126,8 @@ export default function Grid({
     out.push({ label: "Show full value", run: () => openViewer(opener.current ?? document.body, m.row, m.col) });
     if (cellActions?.onFilter) out.push({ label: "Filter by this value", run: () => cellActions.onFilter!(column, value) });
     if (onHighlight) out.push({ label: "Highlight this value", run: () => onHighlight(column, value) });
-    const kind = nav ? valueKind(value) : null;
-    if (nav && kind) {
-      const text = rawText(value);
-      out.push({
-        label: kind === "ip" ? `Pivot on IP ${displaySafe(text)}` : `Pivot on account ${displaySafe(text)}`,
-        run: () => nav.openPivot(kind, text),
-      });
-    }
+    const kind = nav ? entityKindFor(column, value) : null;
+    if (nav && kind) out.push({ label: `Open ${kind === "ip" ? "IP" : kind} tab`, run: () => nav.openEntity({ kind, value: rawText(value) }) });
     return out;
   };
 

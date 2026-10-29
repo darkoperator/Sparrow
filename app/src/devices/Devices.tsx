@@ -86,8 +86,8 @@ function Detail({ device }: { device: SuspectDevice }) {
               {nav && (
                 <>
                   {" "}
-                  <button className="link" aria-label={`Pivot on IP ${displaySafe(o.ip)}`} onClick={() => nav.openPivot("ip", o.ip)}>
-                    Pivot
+                  <button className="link" aria-label={`Open IP tab ${displaySafe(o.ip)}`} onClick={() => nav.openEntity({ kind: "ip", value: o.ip })}>
+                    Open tab
                   </button>
                 </>
               )}

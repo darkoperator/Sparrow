@@ -21,10 +21,6 @@ describe("mock backend", () => {
     expect(id).toBe("abc");
     expect((await mockCall<unknown[]>("timeline_list")).length).toBeGreaterThan(0);
     expect((await mockCall<{ accounts: unknown[] }>("accounts_list")).accounts.length).toBeGreaterThan(0);
-    for (const cmd of ["pivot_ip", "pivot_user"]) {
-      const p = await mockCall<{ sections: { rows: unknown[] }[] }>(cmd, { value: "x" });
-      expect(p.sections.some((s) => s.rows.length === 200)).toBe(true);
-    }
     expect((await mockCall<string[]>("browse_tables")).length).toBeGreaterThan(0);
     expect((await mockCall<unknown[]>("sql_schema")).length).toBeGreaterThan(0);
     expect((await mockCall<unknown[]>("indicators_active")).length).toBeGreaterThan(0);
@@ -174,8 +170,6 @@ const TABLE: { cmd: string; args?: Obj; check: (r: unknown) => void }[] = [
   { cmd: "export_report", args: { path: "/o.md", reviewedOnly: true }, check: (r) => expect(r).toBeNull() },
   { cmd: "export_timeline_csv", args: { path: "/o.csv" }, check: (r) => expect(r).toBeNull() },
   { cmd: "export_workbook", args: { path: "/o.xlsx" }, check: (r) => expect(r).toBeNull() },
-  { cmd: "pivot_ip", args: { value: "203.0.113.5", cap: 50 }, check: (r) => { keys(r, ["sections"]); arrOf((r as Obj).sections, ["name", "rows", "total", "truncated"]); } },
-  { cmd: "pivot_user", args: { value: "a@contoso.example" }, check: (r) => arrOf((r as Obj).sections, ["name", "rows", "total", "truncated"]) },
   { cmd: "highlights_get", args: { caseId: "c" }, check: (r) => expect(r).toEqual([]) },
   { cmd: "highlights_set", args: { caseId: "c", sets: [{ name: "s", rules: [] }] }, check: (r) => expect(r).toEqual([{ name: "s", rules: [] }]) },
   { cmd: "highlights_clear", args: { caseId: "c" }, check: (r) => expect(r).toBeNull() },

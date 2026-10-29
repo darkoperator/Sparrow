@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { rawText, valueKind } from "./value";
+import { entityKindFor, rawText } from "./value";
+
+const valueKind = (v: unknown) => entityKindFor("", v);
 
 describe("valueKind", () => {
   it("recognises IPv4 and IPv6 addresses", () => {
@@ -30,5 +32,32 @@ describe("rawText", () => {
     expect(rawText(null)).toBe("");
     expect(rawText(7)).toBe("7");
     expect(rawText({ a: 1 })).toBe('{"a":1}');
+  });
+});
+
+describe("entityKindFor", () => {
+  const guid = "4f1c0000-1111-2222-3333-44449a2e5555";
+  it("decides by column first", () => {
+    expect(entityKindFor("device_id", guid)).toBe("device");
+    expect(entityKindFor("entra_session_id", guid)).toBe("session");
+    expect(entityKindFor("session", guid)).toBe("session");
+    for (const c of ["ip", "client_ip", "from_ip"]) expect(entityKindFor(c, "203.0.113.9"), c).toBe("ip");
+    for (const c of ["actor_upn", "owner_upn", "user_upn", "sender", "recipient"]) {
+      expect(entityKindFor(c, "a@contoso.example"), c).toBe("account");
+    }
+  });
+  it("gives a GUID in any other column no tab, and a listed column's wrong value none", () => {
+    expect(entityKindFor("note", guid)).toBeNull();
+    expect(entityKindFor("", guid)).toBeNull();
+    expect(entityKindFor("ip", "a@contoso.example")).toBeNull();
+    expect(entityKindFor("actor_upn", "203.0.113.9")).toBeNull();
+    expect(entityKindFor("device_id", "")).toBeNull();
+    expect(entityKindFor("device_id", "x\u0007")).toBeNull();
+    expect(entityKindFor("device_id", 42)).toBeNull();
+  });
+  it("falls back to the value for other columns", () => {
+    expect(entityKindFor("whatever", "2001:db8::1")).toBe("ip");
+    expect(entityKindFor("whatever", "a@contoso.example")).toBe("account");
+    expect(entityKindFor("constructor", "plain")).toBeNull();
   });
 });

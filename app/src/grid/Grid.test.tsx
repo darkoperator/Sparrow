@@ -68,37 +68,37 @@ describe("Grid cell actions", () => {
     fireEvent.contextMenu(screen.getByText(text));
     return screen.getByRole("menu");
   };
-  const withNav = (ui: React.ReactElement, openPivot = vi.fn()) => (
-    <NavContext.Provider value={{ openPivot, openTable: vi.fn() }}>{ui}</NavContext.Provider>
+  const withNav = (ui: React.ReactElement, openEntity = vi.fn()) => (
+    <NavContext.Provider value={{ openEntity, openTable: vi.fn(), showInEvents: vi.fn() }}>{ui}</NavContext.Provider>
   );
 
-  it("offers Pivot on IP only for an IP value, Pivot on account only for an account-shaped one", () => {
+  it("offers an IP tab only for an IP value, an account tab only for an account-shaped one", () => {
     render(withNav(<Grid columns={columns} rows={rows} />));
     let menu = openMenu("203.0.113.1");
-    expect(within(menu).getByRole("menuitem", { name: "Pivot on IP 203.0.113.1" })).toBeInTheDocument();
-    expect(within(menu).queryByRole("menuitem", { name: /Pivot on account/ })).toBeNull();
+    expect(within(menu).getByRole("menuitem", { name: "Open IP tab" })).toBeInTheDocument();
+    expect(within(menu).queryByRole("menuitem", { name: /Open account tab/ })).toBeNull();
     fireEvent.keyDown(menu, { key: "Escape" });
     menu = openMenu("marlowe.rhodes@contoso.example");
-    expect(within(menu).getByRole("menuitem", { name: "Pivot on account marlowe.rhodes@contoso.example" })).toBeInTheDocument();
-    expect(within(menu).queryByRole("menuitem", { name: /Pivot on IP/ })).toBeNull();
+    expect(within(menu).getByRole("menuitem", { name: "Open account tab" })).toBeInTheDocument();
+    expect(within(menu).queryByRole("menuitem", { name: /Open IP tab/ })).toBeNull();
     fireEvent.keyDown(menu, { key: "Escape" });
     menu = openMenu("plain text");
-    expect(within(menu).queryByRole("menuitem", { name: /Pivot/ })).toBeNull();
+    expect(within(menu).queryByRole("menuitem", { name: /Open .* tab/ })).toBeNull();
     expect(within(menu).getByRole("menuitem", { name: "Copy" })).toBeInTheDocument();
   });
 
-  it("hides the pivot actions outside a shell, and Filter/Highlight unless the host supports them", () => {
+  it("hides the tab actions outside a shell, and Filter/Highlight unless the host supports them", () => {
     render(<Grid columns={columns} rows={rows} />);
     const menu = openMenu("203.0.113.1");
     expect(within(menu).getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Copy", "Show full value"]);
   });
 
-  it("Pivot calls the shell with the kind and the raw value, and closes the menu", async () => {
-    const openPivot = vi.fn();
-    render(withNav(<Grid columns={columns} rows={rows} />, openPivot));
+  it("Open tab calls the shell with the kind and the raw value, and closes the menu", async () => {
+    const openEntity = vi.fn();
+    render(withNav(<Grid columns={columns} rows={rows} />, openEntity));
     openMenu("2001:db8::1");
-    await userEvent.setup().click(screen.getByRole("menuitem", { name: "Pivot on IP 2001:db8::1" }));
-    expect(openPivot).toHaveBeenCalledExactlyOnceWith("ip", "2001:db8::1");
+    await userEvent.setup().click(screen.getByRole("menuitem", { name: "Open IP tab" }));
+    expect(openEntity).toHaveBeenCalledExactlyOnceWith({ kind: "ip", value: "2001:db8::1" });
     expect(screen.queryByRole("menu")).toBeNull();
   });
 
@@ -130,7 +130,7 @@ describe("Grid cell actions", () => {
     render(withNav(<Grid columns={columns} rows={rows} />));
     screen.getByText("203.0.113.1").focus();
     await user.keyboard("{Enter}");
-    expect(screen.getByRole("menuitem", { name: "Pivot on IP 203.0.113.1" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Open IP tab" })).toBeInTheDocument();
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("menu")).toBeNull();
   });
@@ -395,5 +395,48 @@ describe("Grid value viewer focus", () => {
     fireEvent.doubleClick(cell);
     await user.click(screen.getByRole("button", { name: "Close" }));
     expect(cell).toHaveFocus();
+  });
+});
+
+describe("Grid cell menu: entity tabs by column", () => {
+  const guid = "4F1C0000-1111-2222-3333-44449A2E5555";
+  const columns = ["entra_session_id", "device_id", "other", "actor_upn"];
+  const rows = [[guid, guid, guid, "JDoe@Contoso.example"]];
+  const openMenuAt = (n: number) => {
+    fireEvent.contextMenu(screen.getAllByText(guid)[n]);
+    return screen.getByRole("menu");
+  };
+  const wrap = (openEntity = vi.fn()) => (
+    <NavContext.Provider value={{ openEntity, openTable: vi.fn(), showInEvents: vi.fn() }}>
+      <Grid columns={columns} rows={rows} />
+    </NavContext.Provider>
+  );
+
+  it("an entra_session_id cell offers Open session tab and passes the raw value", async () => {
+    const openEntity = vi.fn();
+    render(wrap(openEntity));
+    const menu = openMenuAt(0);
+    expect(within(menu).getAllByRole("menuitem").map((i) => i.textContent)).toEqual([
+      "Copy",
+      "Show full value",
+      "Open session tab",
+    ]);
+    await userEvent.setup().click(within(menu).getByRole("menuitem", { name: "Open session tab" }));
+    expect(openEntity).toHaveBeenCalledExactlyOnceWith({ kind: "session", value: guid });
+  });
+
+  it("a device_id cell offers Open device tab; a GUID in another column offers none", () => {
+    render(wrap());
+    let menu = openMenuAt(1);
+    expect(within(menu).getByRole("menuitem", { name: "Open device tab" })).toBeInTheDocument();
+    fireEvent.keyDown(menu, { key: "Escape" });
+    menu = openMenuAt(2);
+    expect(within(menu).queryByRole("menuitem", { name: /Open .* tab/ })).toBeNull();
+  });
+
+  it("an actor_upn cell offers Open account tab", () => {
+    render(wrap());
+    fireEvent.contextMenu(screen.getByText("JDoe@Contoso.example"));
+    expect(within(screen.getByRole("menu")).getByRole("menuitem", { name: "Open account tab" })).toBeInTheDocument();
   });
 });

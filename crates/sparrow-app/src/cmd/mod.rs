@@ -11,7 +11,6 @@ pub mod export;
 pub mod highlights;
 pub mod indicators;
 pub mod marks;
-pub mod pivot;
 pub mod review;
 pub mod share;
 pub mod sql;

@@ -10,8 +10,6 @@ import devicesRecordedJson from "./fixtures/devices_recorded.json";
 import schemaJson from "./fixtures/schema.json";
 import sqlResultJson from "./fixtures/sql_result.json";
 import sharePreviewJson from "./fixtures/share_preview.json";
-import pivotIpJson from "./fixtures/pivot_ip.json";
-import pivotUserJson from "./fixtures/pivot_user.json";
 import browsePageJson from "./fixtures/browse_page.json";
 import indicatorsJson from "./fixtures/indicators.json";
 import eventsListJson from "./fixtures/events_list.json";
@@ -46,7 +44,6 @@ import type {
   SuspectDevice,
   TagInfo,
   FindingDetail,
-  Pivot,
   QueryResult,
   QueueItem,
   SharePreview,
@@ -121,29 +118,6 @@ export function accounts(): AccountPage {
   return v as unknown as AccountPage;
 }
 
-const SECTION = ["name", "rows", "total", "truncated"];
-
-function checkPivot(name: string, json: unknown): Pivot {
-  const v: unknown = clone(json);
-  need(name, v, ["sections"]);
-  if (!Array.isArray(v.sections) || v.sections.length === 0) throw new Error(`fixture ${name}: no sections`);
-  v.sections.forEach((s: unknown, i) => {
-    need(`${name}.sections[${i}]`, s, SECTION);
-    if (typeof s.name !== "string") throw new Error(`fixture ${name}.sections[${i}]: name is not a string`);
-    if (!Array.isArray(s.rows)) throw new Error(`fixture ${name}.sections[${i}]: rows is not an array`);
-    if (typeof s.total !== "number") throw new Error(`fixture ${name}.sections[${i}]: total is not a number`);
-    if (typeof s.truncated !== "boolean") throw new Error(`fixture ${name}.sections[${i}]: truncated is not a boolean`);
-    if ("unavailable" in s && typeof s.unavailable !== "string") {
-      throw new Error(`fixture ${name}.sections[${i}]: unavailable is not a string`);
-    }
-  });
-  return v as unknown as Pivot;
-}
-
-/** `read::Pivot` for an IP, recorded from a synthetic case. */
-export const pivotIp = (): Pivot => checkPivot("pivot_ip", pivotIpJson);
-/** `read::Pivot` for an account (its `addresses` section is the only one that can be `unavailable`). */
-export const pivotUser = (): Pivot => checkPivot("pivot_user", pivotUserJson);
 
 const BROWSE = ["table", "columns", "rows", "offset", "total", "total_capped"];
 

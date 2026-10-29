@@ -1,7 +1,6 @@
-// What a cell value looks like, for the cell menu only. The backend validates every pivot value again; this just
+// What a cell value looks like, for the cell menu only. The backend validates every entity value again; this just
 // decides whether to offer the action.
-
-export type PivotKind = "ip" | "account";
+import type { EntityKind } from "./api";
 
 /** The cell's value as the analyst would copy it: strings untouched, everything else its JSON/text form. */
 export function rawText(v: unknown): string {
@@ -28,9 +27,40 @@ function isIp(s: string): boolean {
 
 const ACCOUNT = /^[^\s@]+@[^\s@]+$/;
 
-export function valueKind(v: unknown): PivotKind | null {
+function isAccount(s: string): boolean {
+  return s.length <= 320 && ACCOUNT.test(s) && !/\p{Cc}/u.test(s);
+}
+
+/** A device or session id: any short text without control characters (the backend lower-cases it). */
+function isOpaqueId(s: string): boolean {
+  return s.trim().length > 0 && s.length <= 128 && !/\p{Cc}/u.test(s);
+}
+
+const BY_COLUMN: Record<string, EntityKind> = {
+  device_id: "device",
+  entra_session_id: "session",
+  session: "session",
+  ip: "ip",
+  client_ip: "ip",
+  from_ip: "ip",
+  actor_upn: "account",
+  owner_upn: "account",
+  user_upn: "account",
+  sender: "account",
+  recipient: "account",
+};
+
+/**
+ * The entity tab a cell can open. The column decides first (a device or session id cannot be told from a GUID in
+ * another column by its value, so GUID-looking values elsewhere get no action); a listed column whose value does not
+ * fit its kind gets none. Any other column falls back to the value: an IP address or an account name.
+ */
+export function entityKindFor(column: string, v: unknown): EntityKind | null {
   if (typeof v !== "string") return null;
+  const kind = Object.hasOwn(BY_COLUMN, column) ? BY_COLUMN[column] : undefined;
+  if (kind === "device" || kind === "session") return isOpaqueId(v) ? kind : null;
+  if (kind === "ip") return isIp(v) ? "ip" : null;
+  if (kind === "account") return isAccount(v) ? "account" : null;
   if (isIp(v)) return "ip";
-  if (v.length <= 320 && ACCOUNT.test(v) && !/\p{Cc}/u.test(v)) return "account";
-  return null;
+  return isAccount(v) ? "account" : null;
 }

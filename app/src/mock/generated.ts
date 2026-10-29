@@ -113,8 +113,3 @@ export function selectRows(filters: Filter[], sort: Sort | null): unknown[][] {
   }
   return rows;
 }
-
-/** A pivot section's rows: JSON objects of the synthetic columns (the first `n`). */
-export function genObjects(n: number): Record<string, unknown>[] {
-  return genRows().slice(0, n).map((row) => Object.fromEntries(GEN_COLUMNS.map((c, i) => [c, row[i]])));
-}

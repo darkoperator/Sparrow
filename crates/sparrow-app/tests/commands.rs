@@ -1457,11 +1457,10 @@ fn a_symlink_target_is_refused_and_an_earlier_export_is_overwritten() {
     assert!(leftovers(tmp.path()).is_empty());
 }
 
-// ---- M3: pivot, browse, SQL with cancel, indicators, share files, highlights ----
+// ---- M3: browse, SQL with cancel, indicators, share files, highlights ----
 
 use sparrow_app::cmd::browse::{browse_page as browse_page_id, browse_tables};
 use sparrow_app::cmd::indicators::indicators_active;
-use sparrow_app::cmd::pivot::{cap_of, pivot_ip, pivot_user};
 use sparrow_app::cmd::share::{share_export, share_import, share_preview};
 use sparrow_app::cmd::sql::query_cancel;
 use sparrow_app::cmd::sql::{sql_run as sql_run_id, sql_schema};
@@ -2024,76 +2023,6 @@ fn share_files_are_checked() {
 }
 
 #[test]
-fn pivot_rejects_bad_input() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (state, _) = open_seeded(tmp.path());
-    let huge = "9".repeat(10 * 1024);
-    for bad in [
-        "not-an-ip",
-        "",
-        "   ",
-        "1.2.3.4 ",
-        "1.2.3.4\n",
-        "999.1.1.1",
-        &huge,
-    ] {
-        let e = pivot_ip(&state, bad, None).unwrap_err();
-        assert_eq!(e.kind, "invalid", "{bad:?}: {e:?}");
-    }
-    let long_upn = format!("{}@example.com", "a".repeat(320));
-    for bad in [
-        "",
-        "  ",
-        "a\u{0}@b.example",
-        "a\n@b.example",
-        "a\u{202e}\u{7}@b",
-        &huge,
-        &long_upn,
-    ] {
-        // U+202E alone is not a control character; the BEL after it is.
-        let e = pivot_user(&state, bad, None).unwrap_err();
-        assert_eq!(e.kind, "invalid", "{bad:?}: {e:?}");
-    }
-    // Valid input never errors, even for values the case has never seen.
-    let p = pivot_ip(&state, "203.0.113.250", None).unwrap();
-    assert!(!p.sections.is_empty());
-    assert!(p.sections.iter().all(|s| s.rows.is_empty()));
-    assert!(pivot_ip(&state, "2001:db8::1", None).is_ok());
-    assert!(pivot_user(&state, "nobody@nowhere.example", None).is_ok());
-    // The cap is clamped to 1..=1000, default 200.
-    assert_eq!(
-        (cap_of(None), cap_of(Some(0)), cap_of(Some(99_999))),
-        (200, 1, 1000)
-    );
-    // It is applied: a real account with more than one row in some section comes back truncated at 1.
-    let upn: String = with_case(&state, |open| {
-        Ok(open
-            .case
-            .conn()
-            .query_row(
-                "SELECT actor_upn FROM findings ORDER BY finding_id LIMIT 1",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap())
-    })
-    .unwrap();
-    let capped = pivot_user(&state, &upn, Some(0)).unwrap();
-    let full = pivot_user(&state, &upn, None).unwrap();
-    let mut checked = 0;
-    for (c, f) in capped.sections.iter().zip(&full.sections) {
-        assert_eq!(c.name, f.name);
-        assert!(c.rows.len() <= 1);
-        assert_eq!(c.total, f.total);
-        if f.total > 1 {
-            assert!(c.truncated && c.rows.len() == 1, "{}", c.name);
-            checked += 1;
-        }
-    }
-    assert!(checked > 0, "no section had more than one row to cap");
-}
-
-#[test]
 fn sql_run_limits_and_refusals() {
     let tmp = tempfile::tempdir().unwrap();
     let (state, _) = open_seeded(tmp.path());
@@ -2138,7 +2067,7 @@ fn sql_run_limits_and_refusals() {
 #[test]
 fn read_only_case_runs_sql_and_browses_but_refuses_writes() {
     // Decision (probed): lock_down works on a read-only connection, so a broken-chain case is locked down at open
-    // and SQL / browse / pivot work on it; share_import and the other writes are refused as read_only.
+    // and SQL / browse work on it; share_import and the other writes are refused as read_only.
     let tmp = tempfile::tempdir().unwrap();
     let path = case_file(tmp.path());
     {
@@ -2178,7 +2107,6 @@ fn read_only_case_runs_sql_and_browses_but_refuses_writes() {
             .unwrap()
             .contains(&"findings".to_string())
     );
-    assert!(pivot_ip(&state, "203.0.113.9", None).is_ok());
     let junk = tmp.path().join("b.json");
     std::fs::write(&junk, b"{}").unwrap();
     // The write is refused as read-only before the bundle is even looked at.
@@ -2438,7 +2366,7 @@ fn highlights_round_trip_with_caps() {
     );
 }
 
-/// The M3 fixtures: pivot, a filtered browse page, a SQL result, the schema, a share preview and the active
+/// The M3 fixtures: a filtered browse page, a SQL result, the schema, a share preview and the active
 /// indicators, from the seeded synthetic case (two copies for the share).
 fn record_m3_fixtures(tmp: &Path) -> Vec<(String, serde_json::Value)> {
     let (a, b) = two_apps(&tmp.join("m3"), "ann", "bob");
@@ -2446,17 +2374,17 @@ fn record_m3_fixtures(tmp: &Path) -> Vec<(String, serde_json::Value)> {
     let file = tmp.join("m3-work.sparrow-share.json");
     share_export(&a, &file).unwrap();
     let preview = share_preview(&b, &file).unwrap();
-    // The case with an indicator in it, for the pivot and the highlight set.
+    // The case with an indicator in it, for the highlight set.
     let me = analyst(&a).unwrap();
-    let (upn, ip): (String, String) = with_case(&a, |open| {
+    let ip: String = with_case(&a, |open| {
         Ok(open
             .case
             .conn()
             .query_row(
-                "SELECT f.actor_upn, t.ip FROM findings f JOIN timeline t ON lower(t.actor_upn) = lower(f.actor_upn) \
+                "SELECT t.ip FROM findings f JOIN timeline t ON lower(t.actor_upn) = lower(f.actor_upn) \
                  WHERE t.ip IS NOT NULL ORDER BY f.finding_id, t.event_time LIMIT 1",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| r.get(0),
             )
             .unwrap())
     })
@@ -2491,8 +2419,6 @@ fn record_m3_fixtures(tmp: &Path) -> Vec<(String, serde_json::Value)> {
     let page = browse_page(&a, "signins", &filters, None, 0, 20).unwrap();
     let json = |v: &dyn erased::Ser| v.value();
     vec![
-        ("pivot_ip.json".into(), json(&pivot_ip(&a, &ip, Some(20)).unwrap())),
-        ("pivot_user.json".into(), json(&pivot_user(&a, &upn, Some(20)).unwrap())),
         ("browse_page.json".into(), json(&page)),
         (
             "sql_result.json".into(),

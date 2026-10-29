@@ -39,8 +39,6 @@ fn main() {
             cmd::export::commands::export_report,
             cmd::export::commands::export_timeline_csv,
             cmd::export::commands::export_workbook,
-            cmd::pivot::commands::pivot_ip,
-            cmd::pivot::commands::pivot_user,
             cmd::events::commands::events_page,
             cmd::events::commands::events_summary,
             cmd::events::commands::events_histogram,
