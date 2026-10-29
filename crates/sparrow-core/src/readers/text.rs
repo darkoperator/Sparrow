@@ -2,6 +2,7 @@
 //! from decoded text positions back to physical lines and raw byte offsets.
 
 use serde::Serialize;
+use std::borrow::Cow;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum TextEncoding {
@@ -39,8 +40,9 @@ impl TextEncoding {
 }
 
 #[derive(Debug, Clone)]
-pub struct DecodedText {
-    pub text: String,
+pub struct DecodedText<'a> {
+    /// Borrowed from the raw bytes when they are valid UTF-8 (no second copy of a large file), owned otherwise.
+    pub text: Cow<'a, str>,
     pub encoding: TextEncoding,
     /// Bytes of byte-order mark preceding the text in the raw file.
     pub bom_len: u64,
@@ -49,11 +51,11 @@ pub struct DecodedText {
     pub lossy: bool,
 }
 
-impl DecodedText {
+impl DecodedText<'_> {
     /// Empty text for binary files (XLSX) that parsers read from the raw bytes.
-    pub fn binary() -> DecodedText {
+    pub fn binary() -> DecodedText<'static> {
         DecodedText {
-            text: String::new(),
+            text: Cow::Borrowed(""),
             encoding: TextEncoding::Utf8,
             bom_len: 0,
             lossy: false,
@@ -74,11 +76,11 @@ impl DecodedText {
     }
 }
 
-pub fn decode(bytes: &[u8]) -> DecodedText {
+pub fn decode(bytes: &[u8]) -> DecodedText<'_> {
     if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
         return match std::str::from_utf8(rest) {
             Ok(s) => DecodedText {
-                text: s.to_string(),
+                text: Cow::Borrowed(s),
                 encoding: TextEncoding::Utf8Bom,
                 bom_len: 3,
                 lossy: false,
@@ -97,7 +99,7 @@ pub fn decode(bytes: &[u8]) -> DecodedText {
     }
     match std::str::from_utf8(bytes) {
         Ok(s) => DecodedText {
-            text: s.to_string(),
+            text: Cow::Borrowed(s),
             encoding: TextEncoding::Utf8,
             bom_len: 0,
             lossy: false,
@@ -106,7 +108,7 @@ pub fn decode(bytes: &[u8]) -> DecodedText {
     }
 }
 
-fn utf16(bytes: &[u8], encoding: TextEncoding, bom_len: u64) -> DecodedText {
+fn utf16(bytes: &[u8], encoding: TextEncoding, bom_len: u64) -> DecodedText<'_> {
     let codec = if encoding == TextEncoding::Utf16Le {
         encoding_rs::UTF_16LE
     } else {
@@ -114,7 +116,7 @@ fn utf16(bytes: &[u8], encoding: TextEncoding, bom_len: u64) -> DecodedText {
     };
     let (text, had_errors) = codec.decode_without_bom_handling(bytes);
     DecodedText {
-        text: text.into_owned(),
+        text,
         encoding,
         bom_len,
         lossy: had_errors,
@@ -123,10 +125,10 @@ fn utf16(bytes: &[u8], encoding: TextEncoding, bom_len: u64) -> DecodedText {
 
 /// Fallback used only when the bytes are not valid UTF-8, so the result is always lossy:
 /// the bytes are guessed to be Windows-1252.
-fn windows_1252(bytes: &[u8], bom_len: u64) -> DecodedText {
+fn windows_1252(bytes: &[u8], bom_len: u64) -> DecodedText<'_> {
     let (text, _had_errors) = encoding_rs::WINDOWS_1252.decode_without_bom_handling(bytes);
     DecodedText {
-        text: text.into_owned(),
+        text,
         encoding: TextEncoding::Windows1252,
         bom_len,
         lossy: true,
@@ -217,7 +219,7 @@ pub struct OffsetMapper {
 
 impl OffsetMapper {
     /// `raw_len` is the length of the raw file `decoded` was decoded from.
-    pub fn new(decoded: &DecodedText, raw_len: u64) -> Self {
+    pub fn new(decoded: &DecodedText<'_>, raw_len: u64) -> Self {
         OffsetMapper {
             encoding: decoded.encoding,
             bom_len: decoded.bom_len,

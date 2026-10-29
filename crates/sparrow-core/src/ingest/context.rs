@@ -26,7 +26,7 @@ pub struct ParseContext<'a> {
     pub rel_path: &'a str,
     pub subject: Option<&'a str>,
     pub raw: &'a [u8],
-    pub text: &'a DecodedText,
+    pub text: &'a DecodedText<'a>,
     pub index: &'a LineIndex,
     pub options: &'a IngestOptions,
     pub stats: FileStats,
@@ -66,7 +66,7 @@ impl<'a> ParseContext<'a> {
         rel_path: &'a str,
         subject: Option<&'a str>,
         raw: &'a [u8],
-        text: &'a DecodedText,
+        text: &'a DecodedText<'a>,
         index: &'a LineIndex,
         options: &'a IngestOptions,
     ) -> Self {

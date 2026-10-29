@@ -363,3 +363,57 @@ fn a_raw_file_can_take_its_order_from_a_derived_file() {
         1_786_269_600
     );
 }
+
+#[test]
+fn one_ual_file_whose_order_is_proved_only_by_its_last_row() {
+    // The UAL parser reads a file twice (the date order first, then the records): rows before the deciding date
+    // must be normalized with the order a later row proves, keep their own lines, and load once each.
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    let rel = "bob@contoso.example/Exchange_UAL_Audit_bob@contoso.example.csv";
+    let header = csv_line(&[
+        "CreationTime",
+        "Id",
+        "Operation",
+        "RecordType",
+        "UserId",
+        "Workload",
+    ]);
+    let record = |time: &str, id: &str| {
+        csv_line(&[time, id, "Update", "2", "bob@contoso.example", "Exchange"])
+    };
+    let csv = header
+        + &record("03/09/2026 08:30:00", "e6e6e6e6-0000-4000-8000-000000000001")
+        + &record("04/09/2026 09:00:00", "e6e6e6e6-0000-4000-8000-000000000002")
+        + &record("15/09/2026 08:30:00", "e6e6e6e6-0000-4000-8000-000000000003");
+    fixtures::write(&root, rel, &fixtures::utf8_bom(&csv));
+    let (case, report) = ingest(dir.path(), None);
+    let file = row(&report, rel);
+    assert_eq!(file.status, FileStatus::Parsed, "{file:#?}");
+    assert_eq!(
+        (file.records_read, file.records_loaded, file.records_duplicate, file.records_error),
+        (3, 3, 0, 0)
+    );
+    let mut stmt = case
+        .conn()
+        .prepare(
+            "SELECT epoch(e.event_time)::BIGINT, s.line_start FROM ual_events e
+             JOIN record_sources s ON s.table_name = 'ual_events' AND s.record_key = e.record_id::VARCHAR
+             ORDER BY s.line_start",
+        )
+        .unwrap();
+    let got: Vec<(i64, i64)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    // Day first: 3 and 4 September, not 9 March and 9 April.
+    assert_eq!(got, vec![(1_788_424_200, 2), (1_788_512_400, 3), (1_789_461_000, 4)]);
+    assert_eq!(
+        count(
+            &case,
+            &format!("SELECT count(*) FROM source_files WHERE rel_path = '{rel}' AND date_order = 'day_first'")
+        ),
+        1
+    );
+}

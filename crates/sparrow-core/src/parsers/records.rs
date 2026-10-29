@@ -5,7 +5,7 @@ use crate::Result;
 use crate::discovery::{FileFormat, format_from_path};
 use crate::ingest::context::ParseContext;
 use crate::normalize::fields::is_placeholder;
-use crate::readers::csv_scan::read_csv;
+use crate::readers::csv_scan::{fields_map, read_csv};
 use crate::readers::format_list::{FlBlock, parse_format_list, parse_format_list_object};
 use crate::readers::json_scan::scan_json;
 use crate::readers::text::Span;
@@ -87,11 +87,13 @@ pub fn read_records(ctx: &mut ParseContext<'_>, format: RecordFormat) -> Result<
                 ctx.stats.read += 1;
                 ctx.parse_error(e.ordinal, e.span, &e.message)?;
             }
-            for row in &table.rows {
+            out.reserve(table.rows.len());
+            // Consumed: each field moves into its record's map, so the file's values are not held twice.
+            for row in table.rows {
                 out.push(SourceRecord {
                     ordinal: row.ordinal,
                     span: row.span,
-                    map: table.row_map(row),
+                    map: fields_map(&table.headers, row.fields),
                     field_spans: Vec::new(),
                 });
             }

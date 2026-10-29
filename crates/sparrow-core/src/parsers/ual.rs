@@ -232,45 +232,43 @@ impl ArtifactParser for UalParser {
         ctx.stats.read += records.len() as u64;
         let lossy = is_csv || self.derived;
         let ediscovery = is_hawk3_ediscovery(ctx.rel_path);
-        let inputs: Vec<(SourceRecord, std::result::Result<AuditInput, String>)> = records
-            .into_iter()
-            .map(|r| {
-                let input = if self.source == UalSource::Quickual && is_csv {
-                    quickual_csv_input(&r.map).map_err(|e| e.to_string())
-                } else {
-                    to_audit(shape, &r.map, lossy).map(|mut i| {
-                        // Hawk 3.1's reduced eDiscoveryLogs CSV has no RecordType column.
-                        if ediscovery
-                            && shape == UalShape::Record
-                            && i.outer_record_type.is_none()
-                            && crate::normalize::ual_shape::get_ci(&i.audit, "RecordType").is_none()
-                        {
-                            i.outer_record_type = Some(DISCOVERY_RECORD_TYPE.to_string());
-                        }
-                        i
-                    })
-                };
-                (r, input)
-            })
-            .collect();
-        let timed = |i: &std::result::Result<AuditInput, String>| {
-            i.as_ref().is_ok_and(|i| event_time_text(i).is_some())
+        let input_of = |r: &SourceRecord| -> std::result::Result<AuditInput, String> {
+            if self.source == UalSource::Quickual && is_csv {
+                quickual_csv_input(&r.map).map_err(|e| e.to_string())
+            } else {
+                to_audit(shape, &r.map, lossy).map(|mut i| {
+                    // Hawk 3.1's reduced eDiscoveryLogs CSV has no RecordType column.
+                    if ediscovery
+                        && shape == UalShape::Record
+                        && i.outer_record_type.is_none()
+                        && crate::normalize::ual_shape::get_ci(&i.audit, "RecordType").is_none()
+                    {
+                        i.outer_record_type = Some(DISCOVERY_RECORD_TYPE.to_string());
+                    }
+                    i
+                })
+            }
         };
-        if shape == UalShape::AppAudit && !inputs.iter().any(|(_, i)| timed(i)) {
+        // Two passes so the file's parsed records are never all held at once (a 1.76 GB Purview export held every
+        // AuditData tree next to its row and peaked at 21.5 GB): the first reads each record's time for the
+        // day/month order and drops the record's tree, the second parses again and normalizes one record at a time.
+        let mut detector = DateOrderDetector::default();
+        let mut any_timed = false;
+        for r in &records {
+            if let Some(t) = input_of(r).ok().as_ref().and_then(event_time_text) {
+                any_timed = true;
+                detector.observe(&t);
+            }
+        }
+        if shape == UalShape::AppAudit && !any_timed {
             return Err(Error::UnsupportedShape(
                 "Hawk application audit export has no timestamps (env_time is null); the same events are in the raw UAL and directory audit logs".into(),
             ));
         }
-        let mut detector = DateOrderDetector::default();
-        for input in inputs.iter().filter_map(|(_, i)| i.as_ref().ok()) {
-            if let Some(t) = event_time_text(input) {
-                detector.observe(&t);
-            }
-        }
         let order = ctx.resolve_date_order(&detector)?;
-        let mut staged = Vec::with_capacity(inputs.len());
-        for (r, input) in inputs {
-            match input.and_then(|i| normalize_audit(&i, order)) {
+        let mut staged = Vec::with_capacity(records.len());
+        for r in records {
+            match input_of(&r).and_then(|i| normalize_audit(&i, order)) {
                 Ok(rec) => {
                     let (pos, raw_sha256) = ctx.sighting(r.span);
                     staged.push(StagedUal {

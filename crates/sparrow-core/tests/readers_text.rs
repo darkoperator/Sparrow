@@ -26,7 +26,8 @@ fn decodes_utf8_with_bom() {
 
 #[test]
 fn decodes_utf16le_with_bom_including_non_ascii() {
-    let d = decode(&utf16le("café\r\nzoë", true));
+    let raw = utf16le("café\r\nzoë", true);
+    let d = decode(&raw);
     assert_eq!(d.encoding, TextEncoding::Utf16Le);
     assert_eq!(d.bom_len, 2);
     assert_eq!(d.text, "café\r\nzoë");
@@ -34,7 +35,8 @@ fn decodes_utf16le_with_bom_including_non_ascii() {
 
 #[test]
 fn detects_bomless_utf16le() {
-    let d = decode(&utf16le("[2026-09-10 14:15:00Z] - hello", false));
+    let raw = utf16le("[2026-09-10 14:15:00Z] - hello", false);
+    let d = decode(&raw);
     assert_eq!(d.encoding, TextEncoding::Utf16Le);
     assert_eq!(d.bom_len, 0);
     assert_eq!(d.text, "[2026-09-10 14:15:00Z] - hello");
@@ -152,9 +154,29 @@ fn line_spans_strip_terminators() {
 #[test]
 fn bomless_utf16le_csv_with_quoted_header_decodes() {
     let s = "\"origin_timestamp_utc\",\"sender_address\"\r\n\"2026-09-01T10:00:00.0000000Z\",\"a@contoso.example\"\r\n";
-    let d = decode(&utf16le(s, false));
+    let raw = utf16le(s, false);
+    let d = decode(&raw);
     assert_eq!(d.encoding, TextEncoding::Utf16Le);
     assert_eq!(d.bom_len, 0);
     assert!(!d.lossy);
     assert_eq!(d.text, s);
+}
+
+#[test]
+fn utf8_text_borrows_the_raw_bytes_and_other_encodings_own_theirs() {
+    use std::borrow::Cow;
+    let plain = b"a,b\r\n1,2\r\n".to_vec();
+    let d = decode(&plain);
+    assert!(matches!(d.text, Cow::Borrowed(_)), "plain UTF-8 is copied");
+    assert_eq!((d.text.as_ptr(), d.text.len()), (plain.as_ptr(), plain.len()));
+    let bom = [&[0xEF, 0xBB, 0xBF][..], "café".as_bytes()].concat();
+    let d = decode(&bom);
+    assert!(matches!(d.text, Cow::Borrowed(_)), "UTF-8 with BOM is copied");
+    assert_eq!((d.text.as_ptr(), d.text.len()), (bom[3..].as_ptr(), bom.len() - 3));
+    let raw = utf16le("café", true);
+    assert!(matches!(decode(&raw).text, Cow::Owned(_)));
+    let cp1252 = b"caf\xe9".to_vec();
+    let d = decode(&cp1252);
+    assert_eq!(d.encoding, TextEncoding::Windows1252);
+    assert!(matches!(d.text, Cow::Owned(_)));
 }

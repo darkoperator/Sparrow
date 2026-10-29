@@ -266,8 +266,8 @@ pub fn normalize_audit(input: &AuditInput, order: Option<DateOrder>) -> Result<U
             .map(|u| u.hyphenated().to_string()),
         mailbox_upn: text(a, "MailboxOwnerUPN").and_then(|u| normalize_upn(&u)),
         parameters,
-        audit_data: serde_json::to_string(&Value::Object(a.clone()))
-            .expect("JSON values serialize"),
+        // A map serializes exactly as `Value::Object` of it: no copy of the record's tree just to write it.
+        audit_data: serde_json::to_string(a).expect("JSON values serialize"),
         completeness: input.completeness,
         mail_items: if op.eq_ignore_ascii_case("MailItemsAccessed") {
             mail_items(a)

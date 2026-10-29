@@ -117,14 +117,20 @@ fn skip_newlines(text: &str, start: usize, end: usize) -> usize {
 impl CsvTable {
     /// Header → value map for a row; extra fields are keyed `_extra_<n>`.
     pub fn row_map(&self, row: &CsvRow) -> Map<String, Value> {
-        let mut map = Map::new();
-        for (i, field) in row.fields.iter().enumerate() {
-            let key = match self.headers.get(i) {
-                Some(h) => h.clone(),
-                None => format!("_extra_{}", i - self.headers.len()),
-            };
-            map.insert(key, Value::String(field.clone()));
-        }
-        map
+        fields_map(&self.headers, row.fields.clone())
     }
+}
+
+/// [`CsvTable::row_map`] of an owned row's fields: the strings move into the map instead of being copied, so a
+/// caller that consumes `CsvTable::rows` holds each value once.
+pub fn fields_map(headers: &[String], fields: Vec<String>) -> Map<String, Value> {
+    let mut map = Map::new();
+    for (i, field) in fields.into_iter().enumerate() {
+        let key = match headers.get(i) {
+            Some(h) => h.clone(),
+            None => format!("_extra_{}", i - headers.len()),
+        };
+        map.insert(key, Value::String(field));
+    }
+    map
 }

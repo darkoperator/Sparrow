@@ -409,7 +409,7 @@ pub struct EmailParser;
 
 impl ArtifactParser for EmailParser {
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
-        let text = ctx.text.text.as_str();
+        let text = &*ctx.text.text;
         let (headers, header_end) = parse_header_block(text);
         if headers.is_empty() {
             return Ok(());
@@ -661,7 +661,7 @@ pub struct HawkHeaderParser;
 
 impl ArtifactParser for HawkHeaderParser {
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
-        let text = ctx.text.text.as_str();
+        let text = &*ctx.text.text;
         let subject = ctx.subject.unwrap_or_default().to_string();
         let headers = csv_headers(text);
         if headers.is_empty() {
@@ -744,7 +744,7 @@ pub struct HawkFindingsParser;
 
 impl ArtifactParser for HawkFindingsParser {
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
-        let text = ctx.text.text.as_str();
+        let text = &*ctx.text.text;
         let subject = ctx.subject.unwrap_or_default().to_string();
         let findings = parse_findings(text);
         let (key, message_id, sibling_found) = match sibling_header_row(ctx) {
