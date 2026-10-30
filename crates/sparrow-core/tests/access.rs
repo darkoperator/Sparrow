@@ -446,3 +446,176 @@ fn ignores_removed_discarded_and_pending_flags() {
     rflag(&case, "ual_events", "k3", State::Pending);
     assert_eq!(access::pending_flags(case.conn()).unwrap(), 2);
 }
+
+// Task 2: windows and time attribution.
+
+fn at(h: i64, m: i64) -> i64 {
+    h * 3600 + m * 60
+}
+
+/// A Teams read with no IP and no session (as Graph-only reads are), `secs` after t0.
+fn identityless(key: &'static str, secs: i64) -> Ev {
+    Ev {
+        workload: Some("MicrosoftTeams"),
+        operation: Some("ChatRetrieved"),
+        at: secs,
+        ..ual(key)
+    }
+}
+
+#[test]
+fn windows_split_at_gaps_over_an_hour() {
+    let case = Case::in_memory().unwrap();
+    for (k, s) in [("k1", at(0, 0)), ("k2", at(0, 40)), ("k3", at(3, 0))] {
+        put(
+            &case,
+            &Ev {
+                ip: Some(IP),
+                at: s,
+                ..ual(k)
+            },
+        );
+    }
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let scope = access::scope(case.conn(), JDOE).unwrap();
+    assert_eq!(scope.len(), 1);
+    assert_eq!(
+        (scope[0].kind.as_str(), scope[0].value.as_str()),
+        ("ip", IP)
+    );
+    let w: Vec<_> = scope[0].windows.iter().map(|w| (w.start, w.end)).collect();
+    assert_eq!(
+        w,
+        vec![
+            (t0(), t0() + Duration::minutes(100)),
+            (t0() + Duration::hours(3), t0() + Duration::hours(4))
+        ]
+    );
+}
+
+#[test]
+fn day_1_and_day_20_give_two_windows() {
+    let case = Case::in_memory().unwrap();
+    put(
+        &case,
+        &Ev {
+            ip: Some(IP),
+            ..ual("k1")
+        },
+    );
+    put(
+        &case,
+        &Ev {
+            ip: Some(IP),
+            at: 19 * 86_400,
+            ..ual("k2")
+        },
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    assert_eq!(
+        access::scope(case.conn(), JDOE).unwrap()[0].windows.len(),
+        2
+    );
+}
+
+#[test]
+fn time_attribution_takes_identityless_records_inside_a_window() {
+    let case = Case::in_memory().unwrap();
+    put(
+        &case,
+        &Ev {
+            ip: Some(IP),
+            ..ual("k1")
+        },
+    );
+    put(&case, &identityless("t1", at(0, 20)));
+    put(&case, &identityless("t2", at(2, 30)));
+    vflag(&case, "ip", IP, None, State::Accepted);
+    assert_eq!(
+        keys(&case),
+        vec![
+            ("k1".to_string(), Attribution::Ip),
+            ("t1".to_string(), Attribution::Time)
+        ]
+    );
+}
+
+#[test]
+fn time_attribution_skips_records_with_their_own_identity() {
+    let case = Case::in_memory().unwrap();
+    put(
+        &case,
+        &Ev {
+            ip: Some(IP),
+            ..ual("k1")
+        },
+    );
+    put(
+        &case,
+        &Ev {
+            ip: Some("198.51.100.1"),
+            ..identityless("t1", at(0, 20))
+        },
+    );
+    put(
+        &case,
+        &Ev {
+            session: Some(SESSION),
+            ..identityless("t2", at(0, 21))
+        },
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    assert_eq!(keys(&case), vec![("k1".to_string(), Attribution::Ip)]);
+}
+
+#[test]
+fn time_never_adds_an_account() {
+    let case = Case::in_memory().unwrap();
+    put(
+        &case,
+        &Ev {
+            ip: Some(IP),
+            ..ual("k1")
+        },
+    );
+    put(
+        &case,
+        &Ev {
+            actor: Some(BOB),
+            ..identityless("t1", at(0, 20))
+        },
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    assert_eq!(keys(&case), vec![("k1".to_string(), Attribution::Ip)]);
+}
+
+#[test]
+fn time_attribution_follows_the_actor_not_the_owner() {
+    // Mail delivered to jdoe (owner only) and bob reading jdoe's mailbox are not jdoe's attacker activity.
+    let case = Case::in_memory().unwrap();
+    put(
+        &case,
+        &Ev {
+            ip: Some(IP),
+            ..ual("k1")
+        },
+    );
+    put(
+        &case,
+        &Ev {
+            actor: None,
+            owner: Some(JDOE),
+            ..identityless("t1", at(0, 10))
+        },
+    );
+    put(
+        &case,
+        &Ev {
+            actor: Some(BOB),
+            owner: Some(JDOE),
+            ..identityless("t2", at(0, 11))
+        },
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    assert_eq!(keys(&case), vec![("k1".to_string(), Attribution::Ip)]);
+}

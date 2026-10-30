@@ -5,7 +5,7 @@
 
 mod scope;
 
-pub use scope::{Attributed, attributed, pending_flags};
+pub use scope::{Attributed, ScopeValue, Window, attributed, pending_flags, scope};
 
 use serde::Serialize;
 
