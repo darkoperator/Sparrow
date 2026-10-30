@@ -859,6 +859,14 @@ fn record_fixtures() {
     for (name, v) in more {
         write(&name, v);
     }
+    // Last: the flag it needs would change the fixtures above.
+    flag_attacker_ip(&state);
+    let access = access_report(&state, None).unwrap();
+    assert!(
+        !access.accounts.is_empty(),
+        "the flagged IP attributes activity"
+    );
+    write("access_report.json", serde_json::to_value(&access).unwrap());
 }
 
 // ---- timeline ----
@@ -5180,4 +5188,92 @@ fn entity_coverage_of_an_ip_judges_the_accounts_seen_from_it() {
         // No account: only the two tenant-wide sources; otherwise all seven.
         assert_eq!(t.sources.len(), if want == 0 { 2 } else { 7 }, "{t:?}");
     }
+}
+
+// ---- access report ----
+
+use sparrow_app::cmd::access::{
+    access_accounts, access_report, export_access_csv, export_access_summary,
+};
+
+/// The most frequent IP of the findings' evidence, flagged malicious by the analyst: the attacker's address.
+fn flag_attacker_ip(state: &AppState) -> String {
+    with_writable(state, |open| {
+        let conn = open.case.conn();
+        let ip: String = conn
+            .query_row(
+                "SELECT e.ip FROM finding_evidence fe JOIN events e USING (source_table, record_key) \
+                 WHERE e.ip IS NOT NULL GROUP BY 1 ORDER BY count(*) DESC, 1 LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        sparrow_core::case::marks::flag_value(
+            conn,
+            &Actor::analyst("carlos").unwrap(),
+            sparrow_core::case::marks::ValueKind::Ip,
+            &ip,
+            None,
+            Some(sparrow_core::case::marks::FlagLevel::Malicious),
+        )
+        .unwrap();
+        Ok(ip)
+    })
+    .unwrap()
+}
+
+#[test]
+fn access_report_and_exports() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, _) = open_seeded(tmp.path());
+    assert!(access_report(&state, None).unwrap().accounts.is_empty());
+    let ip = flag_attacker_ip(&state);
+    let accounts = access_accounts(&state).unwrap();
+    assert!(!accounts.is_empty(), "{ip}");
+    let r = access_report(&state, Some(&accounts[0])).unwrap();
+    assert_eq!(r.accounts.len(), 1);
+    assert_eq!(r.accounts[0].tiles.len(), 7);
+    assert!(r.accounts[0].scope.iter().any(|s| s.value == ip));
+    let csv = tmp.path().join("access.csv");
+    export_access_csv(&state, &csv, None).unwrap();
+    assert!(
+        std::fs::read_to_string(&csv)
+            .unwrap()
+            .starts_with("\u{feff}account,category,")
+    );
+    let one = tmp.path().join("one.csv");
+    export_access_csv(&state, &one, Some(&accounts[0])).unwrap();
+    let md = tmp.path().join("access.md");
+    export_access_summary(&state, &md).unwrap();
+    assert!(
+        std::fs::read_to_string(&md)
+            .unwrap()
+            .starts_with("| Account |")
+    );
+    assert!(leftovers(tmp.path()).is_empty());
+}
+
+#[test]
+fn access_unknown_account_and_exports_over_the_case_are_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, s) = open_seeded(tmp.path());
+    let r = access_report(&state, Some("Nobody@Contoso.example")).unwrap();
+    assert_eq!(r.accounts[0].account, "nobody@contoso.example");
+    assert!(r.accounts[0].items.is_empty());
+    assert_eq!(r.accounts[0].tiles.len(), 7);
+    let before = std::fs::metadata(&s.path).unwrap().len();
+    let mut wal = s.path.clone().into_os_string();
+    wal.push(".wal");
+    for target in [s.path.clone(), PathBuf::from(wal)] {
+        assert_eq!(
+            export_access_csv(&state, &target, None).unwrap_err().kind,
+            "invalid"
+        );
+        assert_eq!(
+            export_access_summary(&state, &target).unwrap_err().kind,
+            "invalid"
+        );
+    }
+    assert_eq!(std::fs::metadata(&s.path).unwrap().len(), before);
+    assert!(leftovers(tmp.path()).is_empty());
 }

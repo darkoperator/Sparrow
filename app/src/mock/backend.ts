@@ -23,6 +23,7 @@ import type {
   SqlExported,
   TimelineEntry,
 } from "../api";
+import { ACCESS_TITLES } from "../api";
 import * as fx from "../test/fixtures";
 import { GEN_COLUMNS, GEN_ROWS, selectRows } from "./generated";
 import { eventHandlers } from "./events";
@@ -412,6 +413,37 @@ const handlers: Record<string, (a: Args) => unknown> = {
   export_report: () => null,
   export_timeline_csv: () => null,
   export_workbook: () => null,
+  access_report: (a) => {
+    const r = fx.accessReport();
+    const want = typeof a?.account === "string" ? a.account.toLowerCase() : null;
+    if (want === null) return r;
+    const hit = r.accounts.find((x) => x.account === want);
+    // As the core: an account with nothing attributed gets an empty section with its seven tiles.
+    const empty = {
+      account: want,
+      tenant_key: null,
+      scope: [],
+      tiles: r.accounts[0].tiles.map((t) => ({
+        ...t,
+        direct: 0,
+        by_time: 0,
+        qualifier: null,
+        none_seen: false,
+        coverage: { status: "none", reason: "The case has no availability record for this source (run sparrow profile)", remediation: null },
+      })),
+      items: [],
+      gaps: [] as string[],
+    };
+    // The coverage reason of each category, then the gaps Microsoft never logs (the last four of any account's).
+    empty.gaps = [
+      ...empty.tiles.map((t) => `${ACCESS_TITLES[t.category]}: ${t.coverage.reason}`),
+      ...r.accounts[0].gaps.slice(-4),
+    ];
+    return { ...r, accounts: [hit ?? empty] };
+  },
+  access_accounts: () => fx.accessReport().accounts.map((x) => x.account),
+  export_access_csv: () => null,
+  export_access_summary: () => null,
 
   highlights_get: (a) => highlights.get(str(a, "caseId")) ?? [],
   highlights_set: (a) => {

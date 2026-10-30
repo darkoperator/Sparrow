@@ -39,7 +39,7 @@ fn csv_err(e: csv::Error) -> crate::Error {
 }
 
 /// Every item of every account in `report`.
-pub fn write_csv(report: &AccessReport, out: &mut impl Write) -> Result<()> {
+pub fn write_csv(report: &AccessReport, out: &mut (impl Write + ?Sized)) -> Result<()> {
     out.write_all("\u{feff}".as_bytes())
         .map_err(super::io_err)?;
     let mut w = csv::Writer::from_writer(out);
@@ -104,7 +104,7 @@ fn cell(t: &Tile) -> String {
 }
 
 /// The summary table, then the coverage gaps per account.
-pub fn write_summary(report: &AccessReport, out: &mut impl Write) -> Result<()> {
+pub fn write_summary(report: &AccessReport, out: &mut (impl Write + ?Sized)) -> Result<()> {
     let mut s = String::from("| Account |");
     for c in Category::ALL {
         s.push_str(&format!(" {} |", c.title()));

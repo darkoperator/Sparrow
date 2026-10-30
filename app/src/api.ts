@@ -361,6 +361,101 @@ export const exportReport = (path: string, reviewedOnly: boolean) =>
 export const exportTimelineCsv = (path: string) => call<null>("export_timeline_csv", { path });
 export const exportWorkbook = (path: string) => call<null>("export_workbook", { path });
 
+/** `case::access::Attribution`: how a record is tied to the attacker. Every value but `time` is direct evidence. */
+export type Attribution = "session" | "row" | "device" | "ip" | "time";
+
+/** `case::access::Category`, in tile order. */
+export type AccessCategory = "mail_read" | "mail_sent" | "attachment" | "file" | "teams" | "copilot" | "other";
+
+export const ACCESS_TITLES: Record<AccessCategory, string> = {
+  mail_read: "Emails read",
+  mail_sent: "Emails sent",
+  attachment: "Attachments",
+  file: "SharePoint / OneDrive",
+  teams: "Teams",
+  copilot: "Copilot",
+  other: "Other apps",
+};
+
+/** `case::access::Item`: one thing the attacker reached; times are RFC 3339 UTC. */
+export interface AccessItem {
+  account: string;
+  category: AccessCategory;
+  attribution: Attribution;
+  accessed: string;
+  action: string;
+  item: string | null;
+  location: string | null;
+  from: string | null;
+  to: string | null;
+  size_bytes: number | null;
+  item_time: string | null;
+  app: string | null;
+  ip: string | null;
+  session_id: string | null;
+  /** The owner of the data when it is not the account (shared or delegated mailbox, send as). */
+  owner: string | null;
+  note: string | null;
+  source: string;
+  source_table: string;
+  record_key: string;
+}
+
+/** `case::access::CategoryCoverage`: an `evidence_availability` status, or `none`. */
+export interface AccessCoverage {
+  status: string;
+  reason: string;
+  remediation: string | null;
+}
+
+/** `case::access::Tile`. A zero is "none seen" only when `none_seen` is true. */
+export interface AccessTile {
+  category: AccessCategory;
+  direct: number;
+  by_time: number;
+  qualifier: string | null;
+  coverage: AccessCoverage;
+  none_seen: boolean;
+}
+
+export interface AccessWindow {
+  start: string;
+  end: string;
+}
+
+/** `case::access::ScopeValue`: a flagged value seen for the account, with the windows of its sightings. */
+export interface ScopeValue {
+  kind: string;
+  value: string;
+  windows: AccessWindow[];
+}
+
+/** `case::access::AccountAccess`: `tiles` has one entry per category, in tile order. */
+export interface AccessAccount {
+  account: string;
+  tenant_key: string | null;
+  scope: ScopeValue[];
+  tiles: AccessTile[];
+  items: AccessItem[];
+  gaps: string[];
+}
+
+export interface AccessReport {
+  accounts: AccessAccount[];
+  /** Malicious flags waiting for review: they attribute nothing until accepted. */
+  pending_flags: number;
+}
+
+/** What the attacker reached through `account` (any case), or through every account with accepted malicious flags. */
+export const accessReport = (account?: string | null) => call<AccessReport>("access_report", { account: account ?? null });
+/** The accounts the access report lists. */
+export const accessAccounts = () => call<string[]>("access_accounts");
+/** The access CSV (one row per item) of every account, or of `account`. */
+export const exportAccessCsv = (path: string, account?: string | null) =>
+  call<null>("export_access_csv", { path, account: account ?? null });
+/** The access summary (Markdown) of every account. */
+export const exportAccessSummary = (path: string) => call<null>("export_access_summary", { path });
+
 // ---------------------------------------------------------------- highlights (core serde shapes)
 
 export const HIGHLIGHT_COLOURS = ["red", "amber", "green", "blue", "purple"] as const;

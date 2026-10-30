@@ -3,7 +3,8 @@ import { MOCK_COMMANDS, mockCall, mockOpen, mockSave } from "./backend";
 import { GEN_COLUMNS, GEN_ROWS, genRows } from "./generated";
 import apiSource from "../api.ts?raw";
 import * as fx from "../test/fixtures";
-import type { BrowsePage, CmdError, EventQuery, EventRow, EventsAdded, EventsPage, EventsSummary, FieldValues, Histogram, QueueItem, QueryResult, RowRef, SqlCheck, TimelineEntry } from "../api";
+import { ACCESS_TITLES } from "../api";
+import type { AccessReport, BrowsePage, CmdError, EventQuery, EventRow, EventsAdded, EventsPage, EventsSummary, FieldValues, Histogram, QueueItem, QueryResult, RowRef, SqlCheck, TimelineEntry } from "../api";
 
 const apiCommands = [...apiSource.matchAll(/\bcall(?:<[^(]*>)?\(\s*"([a-z_]+)"/g)].map((m) => m[1]);
 
@@ -169,6 +170,10 @@ const TABLE: { cmd: string; args?: Obj; check: (r: unknown) => void }[] = [
   { cmd: "devices_set_analyst_status", args: { deviceId: "AAAAAAAA-0000-0000-0000-00000000000A", status: "disabled", note: "by IT" }, check: (r) => { keys(r, ["seq", "action", "object_type", "object_id"]); expect((r as Obj).object_id).toBe("aaaaaaaa-0000-0000-0000-00000000000a"); } },
   { cmd: "devices_list", args: {}, check: (r) => { arrOf(r, ["tenant_key", "device_id", "confidence", "reasons", "users", "malicious_ips", "other_ips", "sightings", "lifecycle", "analyst", "active_after_analyst_removal"]); const d = (r as Obj[])[0]; keys(d.lifecycle, ["status", "registered", "removed", "disabled", "last_active", "latest_inventory_at"]); arrOf(d.sightings, ["device_id", "event_time", "activity", "source_table", "record_key"]); } },
   { cmd: "export_report", args: { path: "/o.md", reviewedOnly: true }, check: (r) => expect(r).toBeNull() },
+  { cmd: "access_report", args: { account: null }, check: (r) => { keys(r, ["accounts", "pending_flags"]); arrOf((r as Obj).accounts, ["account", "tenant_key", "scope", "tiles", "items", "gaps"]); arrOf(((r as Obj).accounts as Obj[])[0].tiles, ["category", "direct", "by_time", "qualifier", "coverage", "none_seen"]); arrOf(((r as Obj).accounts as Obj[])[0].items, ["account", "category", "attribution", "accessed", "action", "item", "location", "from", "to", "size_bytes", "item_time", "app", "ip", "session_id", "owner", "note", "source", "source_table", "record_key"]); } },
+  { cmd: "access_accounts", check: (r) => { expect(Array.isArray(r)).toBe(true); expect((r as unknown[]).length).toBeGreaterThan(0); } },
+  { cmd: "export_access_csv", args: { path: "/a.csv", account: null }, check: (r) => expect(r).toBeNull() },
+  { cmd: "export_access_summary", args: { path: "/a.md" }, check: (r) => expect(r).toBeNull() },
   { cmd: "export_timeline_csv", args: { path: "/o.csv" }, check: (r) => expect(r).toBeNull() },
   { cmd: "export_workbook", args: { path: "/o.xlsx" }, check: (r) => expect(r).toBeNull() },
   { cmd: "highlights_get", args: { caseId: "c" }, check: (r) => expect(r).toEqual([]) },
@@ -210,6 +215,18 @@ const TABLE: { cmd: string; args?: Obj; check: (r: unknown) => void }[] = [
   { cmd: "timeline_add_events", args: { args: { rows: "ROWS", mode: "group" } }, check: (r) => { keys(r, ["entryIds", "outcome"]); expect((r as EventsAdded).entryIds.length).toBe(1); } },
   { cmd: "share_import", args: { path: "/b.json", sha256: "SHA" }, check: (r) => keys(r, ["bundle_sha256", "analyst", "new", "agrees", "conflicts", "missing", "superseded", "already_imported"]) },
 ];
+
+describe("access_report", () => {
+  it("answers an unknown account like the core: seven empty tiles, the coverage reasons and the never-logged gaps", async () => {
+    const r = await mockCall<AccessReport>("access_report", { account: "Nobody@Contoso.example" });
+    const a = r.accounts[0];
+    expect(a.account).toBe("nobody@contoso.example");
+    expect(a.tiles.map((t) => [t.direct, t.by_time, t.none_seen, t.coverage.status])).toEqual(Array(7).fill([0, 0, false, "none"]));
+    expect(a.gaps.slice(0, 7)).toEqual(a.tiles.map((t) => `${ACCESS_TITLES[t.category]}: ${t.coverage.reason}`));
+    expect(a.gaps.slice(7)).toEqual(fx.accessReport().accounts[0].gaps.slice(-4));
+    expect(a.gaps.some((g) => g.startsWith("Teams chats read in the Teams app"))).toBe(true);
+  });
+});
 
 describe("every command, valid arguments", () => {
   it("covers every command the mock answers", () => {
