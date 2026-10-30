@@ -22,7 +22,7 @@ fn setup() -> (tempfile::TempDir, std::path::PathBuf) {
     (tmp, path)
 }
 
-/// The `flag` and `tags` columns (the last two) of each event line, keyed by line order.
+/// The `flag` and `tags` columns (the two before the last, `rules`) of each event line, keyed by line order.
 fn flag_tags(case: &str, extra: &[&str]) -> Vec<(String, String)> {
     let mut args = vec!["events", "--case", case];
     args.extend_from_slice(extra);
@@ -34,8 +34,8 @@ fn flag_tags(case: &str, extra: &[&str]) -> Vec<(String, String)> {
         .map(|l| {
             let cols: Vec<&str> = l.split("  ").collect();
             (
+                cols[cols.len() - 3].to_string(),
                 cols[cols.len() - 2].to_string(),
-                cols[cols.len() - 1].to_string(),
             )
         })
         .collect()

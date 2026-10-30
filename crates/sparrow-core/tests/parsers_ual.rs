@@ -479,3 +479,31 @@ fn phase1_hawk_fixture_now_loads_its_raw_ual_file() {
     );
     assert!(!report.has_errors(), "{report:#?}");
 }
+
+#[test]
+fn a_purview_export_with_plural_column_names_in_a_user_folder_is_loaded() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    let rel = format!("alice@contoso.example/{PURVIEW}");
+    let text = "\"RecordId\",\"CreationDate\",\"RecordType\",\"Operations\",\"UserIds\",\"AuditData\",\"AssociatedAdminUnits\",\"AssociatedAdminUnitsNames\"\r\n".to_string()
+        + &csv_line(&[
+            ID_A,
+            "2026-09-01T10:00:00.0000000Z",
+            "ExchangeAdmin",
+            "New-InboxRule",
+            "admin@contoso.example",
+            &audit(ID_A, "New-InboxRule").to_string(),
+            "",
+            "",
+        ]);
+    fixtures::write(&root, &rel, text.as_bytes());
+    let (case, report) = ingest(dir.path(), None);
+    let f = row(&report, &rel);
+    assert_eq!(f.artifact_id.as_deref(), Some("portal.ual"));
+    assert_eq!((f.records_read, f.records_loaded), (1, 1));
+    let op: String = case
+        .conn()
+        .query_row("SELECT operation FROM ual_events", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(op, "New-InboxRule");
+}

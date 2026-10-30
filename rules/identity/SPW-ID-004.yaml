@@ -26,8 +26,22 @@
 #       known and differ (then the country test above counts it). That is a deliberate, documented
 #       fallback so partial GeoIP never suppresses a session move: the context says
 #       `network: unknown`.
+#     - the ASN differs AND the device differs: the OS family or the browser family of the use is not
+#       the one of the creating sign-in (both known; `Windows` and `Windows10` are one family, a
+#       browser `Other` is unknown). A phone that changes network keeps its OS and browser; a
+#       stolen session cookie replayed from the attacker's machine does not (context:
+#       `session_moved (device changed)`). signins carry device.os / device.browser; a UAL
+#       UserLoggedIn record carries them in DeviceProperties (OS, BrowserType); other UAL records
+#       have none and never count by device.
+#   Creators are also UAL UserLoggedIn records (Entra sign-ins in the audit log, session id from
+#   DeviceProperties.SessionId) that did not fail (ResultStatus Failed or False): a case with no Entra sign-in export (a Purview
+#   audit export alone) still shows a session moving. The audit log does not say whether that
+#   sign-in satisfied MFA, so any successful one creates the session, and a move of such a session counts
+#   only with a device change (the networks differ or cannot be compared): probed on a tenant-wide case,
+#   without that test the audit-log sessions flagged dozens of users behind Zscaler and Microsoft service
+#   addresses.
 #   Missed on purpose: a same-country replay from an ordinary ISP address that never sprayed the
-#   tenant, with no risk rating on the use.
+#   tenant, with no risk rating on the use and the same OS and browser.
 # - suspicious_user_agent: a SUCCESSFUL signins row (error_code 0, or NULL when the result is
 #   unknown: fail closed), or a UAL UserLoggedIn / MailboxLogin / MailItemsAccessed record (successful
 #   by definition), whose user agent contains an entry of @list:suspicious_user_agents (substring,
@@ -38,7 +52,7 @@
 # A record that matches both is one hit; the context lists the indicators.
 id: SPW-ID-004
 title: Adversary-in-the-middle indicators
-version: 3
+version: 4
 status: stable
 severity: high
 confidence: medium
@@ -48,28 +62,106 @@ stage: suspicious_sign_in
 requires: []
 requires_evidence: []
 sql: |
-  WITH creators AS (
-    SELECT s.record_key, s.session_id, s.event_time AS t, s.ip
+  WITH ual_logons AS (
+    -- Only an Entra sign-in record carries DeviceProperties: parse it there, never across the whole audit log.
+    SELECT lower(CAST(u.record_id AS VARCHAR)) AS record_key, u.event_time AS t, u.user_upn AS actor,
+           u.client_ip AS ip, u.session_id, u.user_agent,
+           -- Both failure spellings, as auth_events reads them.
+           lower(coalesce(u.result_status, '')) NOT IN ('failed', 'false') AS logon,
+           json_extract(u.audit_data, '$.DeviceProperties') AS dp
+    FROM ual_events u
+    WHERE u.session_id IS NOT NULL AND u.session_id <> '' AND lower(u.operation) = 'userloggedin'
+  ),
+  ual_logon_devices AS (
+    -- The [{Name, Value}] array, also when a collector embedded it as a JSON string (as the normalizer reads it).
+    SELECT l.record_key, l.t, l.actor, l.ip, l.session_id, l.user_agent, l.logon,
+           lower(list_filter(p.props, x -> lower(x.Name) = 'os')[1].Value) AS os,
+           lower(list_filter(p.props, x -> lower(x.Name) = 'browsertype')[1].Value) AS browser
+    FROM ual_logons l,
+         LATERAL (SELECT CASE WHEN json_type(l.dp) = 'ARRAY'
+                              THEN from_json(l.dp, '[{"Name":"VARCHAR","Value":"VARCHAR"}]')
+                              WHEN json_type(l.dp) = 'VARCHAR' AND json_valid(l.dp ->> '$')
+                                   AND json_type(l.dp ->> '$') = 'ARRAY'
+                              THEN from_json(l.dp ->> '$', '[{"Name":"VARCHAR","Value":"VARCHAR"}]') END AS props) p
+  ),
+  ual_devices AS (
+    -- Every UAL record with a session; OS and browser only on the sign-ins.
+    SELECT * FROM ual_logon_devices
+    UNION ALL
+    SELECT lower(CAST(u.record_id AS VARCHAR)), u.event_time, u.user_upn, u.client_ip, u.session_id, u.user_agent,
+           false, NULL, NULL
+    FROM ual_events u
+    WHERE u.session_id IS NOT NULL AND u.session_id <> ''
+      AND lower(u.operation) IS DISTINCT FROM 'userloggedin'
+  ),
+  creators_raw AS (
+    SELECT s.record_key, s.session_id, s.event_time AS t, s.ip,
+           lower(s.device.os) AS os, lower(s.device.browser) AS browser, false AS audit_log
     FROM signins s
     WHERE s.session_id IS NOT NULL AND s.session_id <> ''
       AND (s.error_code IS NULL OR s.error_code = 0)
       AND coalesce(s.is_interactive, true)
       AND (lower(coalesce(s.auth_requirement, '')) LIKE 'multifactor%'
            OR lower(coalesce(s.mfa_result, '')) LIKE '%mfa successfully completed%')
+    UNION ALL
+    SELECT d.record_key, d.session_id, d.t, d.ip, d.os, d.browser, true
+    FROM ual_devices d
+    WHERE d.logon AND d.session_id IS NOT NULL AND d.session_id <> ''
   ),
-  uses AS (
+  uses_raw AS (
     SELECT s.record_key, 'signins' AS src, s.event_time AS t, s.user_upn AS actor, s.ip, s.session_id,
-           lower(coalesce(s.risk_level_during, '')) IN ('medium', 'high') AS risky
+           lower(coalesce(s.risk_level_during, '')) IN ('medium', 'high') AS risky,
+           lower(s.device.os) AS os, lower(s.device.browser) AS browser
     FROM signins s
     WHERE s.session_id IS NOT NULL AND s.session_id <> ''
     UNION ALL
-    SELECT lower(CAST(u.record_id AS VARCHAR)), 'ual_events', u.event_time, u.user_upn, u.client_ip,
-           u.session_id, false
-    FROM ual_events u
-    WHERE u.session_id IS NOT NULL AND u.session_id <> ''
+    SELECT d.record_key, 'ual_events', d.t, d.actor, d.ip, d.session_id, false, d.os, d.browser
+    FROM ual_devices d
+    -- Office for the web (MSWAC) opens a file server-side from a Microsoft datacenter address that is not on
+    -- the Office 365 endpoint list: a request made for the user's session, not a use of it from elsewhere.
+    WHERE NOT starts_with(lower(coalesce(d.user_agent, '')), 'mswac')
   ),
+  -- The device is compared by family: one Windows machine reports `Windows` through the sign-in broker and
+  -- `Windows10` through a browser, and a native client reports the browser `Other` (unknown, never a change).
+  creators_n AS (SELECT * REPLACE ((CASE WHEN lower(trim(os)) LIKE 'windows%' THEN 'windows'
+                 WHEN lower(trim(os)) LIKE 'mac%' OR lower(trim(os)) LIKE 'os x%' THEN 'macos'
+                 WHEN lower(trim(os)) LIKE 'ios%' OR lower(trim(os)) LIKE 'iphone%' OR lower(trim(os)) LIKE 'ipad%' THEN 'ios'
+                 WHEN lower(trim(os)) LIKE 'android%' THEN 'android'
+                 WHEN lower(trim(os)) LIKE 'linux%' OR lower(trim(os)) LIKE 'ubuntu%' THEN 'linux'
+                 WHEN lower(trim(os)) IN ('', 'other', 'unknown') THEN NULL
+                 ELSE lower(trim(os)) END) AS os, (CASE WHEN lower(trim(browser)) LIKE '%edge%' THEN 'edge'
+                 WHEN lower(trim(browser)) LIKE '%chrome%' THEN 'chrome'
+                 WHEN lower(trim(browser)) LIKE '%firefox%' THEN 'firefox'
+                 WHEN lower(trim(browser)) LIKE '%safari%' THEN 'safari'
+                 WHEN lower(trim(browser)) LIKE '%opera%' THEN 'opera'
+                 WHEN lower(trim(browser)) = 'ie' OR lower(trim(browser)) LIKE 'ie %'
+                      OR lower(trim(browser)) LIKE '%internet explorer%' THEN 'ie'
+                 WHEN lower(trim(browser)) IN ('', 'other', 'unknown') THEN NULL
+                 ELSE nullif(trim(regexp_extract(lower(browser), '^[a-z ]+')), '') END) AS browser) FROM creators_raw),
+  uses_n AS (SELECT * REPLACE ((CASE WHEN lower(trim(os)) LIKE 'windows%' THEN 'windows'
+                 WHEN lower(trim(os)) LIKE 'mac%' OR lower(trim(os)) LIKE 'os x%' THEN 'macos'
+                 WHEN lower(trim(os)) LIKE 'ios%' OR lower(trim(os)) LIKE 'iphone%' OR lower(trim(os)) LIKE 'ipad%' THEN 'ios'
+                 WHEN lower(trim(os)) LIKE 'android%' THEN 'android'
+                 WHEN lower(trim(os)) LIKE 'linux%' OR lower(trim(os)) LIKE 'ubuntu%' THEN 'linux'
+                 WHEN lower(trim(os)) IN ('', 'other', 'unknown') THEN NULL
+                 ELSE lower(trim(os)) END) AS os, (CASE WHEN lower(trim(browser)) LIKE '%edge%' THEN 'edge'
+                 WHEN lower(trim(browser)) LIKE '%chrome%' THEN 'chrome'
+                 WHEN lower(trim(browser)) LIKE '%firefox%' THEN 'firefox'
+                 WHEN lower(trim(browser)) LIKE '%safari%' THEN 'safari'
+                 WHEN lower(trim(browser)) LIKE '%opera%' THEN 'opera'
+                 WHEN lower(trim(browser)) = 'ie' OR lower(trim(browser)) LIKE 'ie %'
+                      OR lower(trim(browser)) LIKE '%internet explorer%' THEN 'ie'
+                 WHEN lower(trim(browser)) IN ('', 'other', 'unknown') THEN NULL
+                 ELSE nullif(trim(regexp_extract(lower(browser), '^[a-z ]+')), '') END) AS browser) FROM uses_raw),
+  -- The one-hour window as an equi-join: a creator is offered to the uses of its own UTC hour and of the next
+  -- one (each use meets it once), so a busy session's records are never paired with all of its sign-ins.
+  creators AS (
+    SELECT c.*, epoch_ms(c.t) // 3600000 + k.k AS hour FROM creators_n c, (VALUES (0), (1)) k(k)
+    WHERE c.t IS NOT NULL
+  ),
+  uses AS (SELECT x.*, epoch_ms(x.t) // 3600000 AS hour FROM uses_n x WHERE x.t IS NOT NULL),
   net AS (
-    SELECT x.record_key, x.src, x.t, x.actor, x.ip, x.risky,
+    SELECT x.record_key, x.src, x.t, x.actor, x.ip, x.risky, c.audit_log,
            (ix.asn IS NOT NULL AND ic.asn IS NOT NULL AND ix.asn <> ic.asn) AS asn_changed,
            (ix.country_iso IS NOT NULL AND ic.country_iso IS NOT NULL
             AND ix.country_iso <> ic.country_iso) AS country_changed,
@@ -77,8 +169,11 @@ sql: |
             AND NOT (ix.country_iso IS NOT NULL AND ic.country_iso IS NOT NULL
                      AND ix.country_iso <> ic.country_iso)) AS unknown,
            (coalesce(ix.is_hosting, false) OR coalesce(ic.is_hosting, false)
-            OR EXISTS (SELECT 1 FROM spray_sources p WHERE p.ip IN (x.ip, c.ip))) AS infra
-    FROM uses x JOIN creators c ON c.session_id = x.session_id
+            OR EXISTS (SELECT 1 FROM spray_sources p WHERE p.ip IN (x.ip, c.ip))) AS infra,
+           (coalesce(x.os, '') <> '' AND coalesce(c.os, '') <> '' AND x.os <> c.os)
+            OR (coalesce(x.browser, '') <> '' AND coalesce(c.browser, '') <> ''
+                AND x.browser <> c.browser) AS device_changed
+    FROM uses x JOIN creators c ON c.session_id = x.session_id AND c.hour = x.hour
     LEFT JOIN ip_intel ix ON ix.ip = x.ip
     LEFT JOIN ip_intel ic ON ic.ip = c.ip
     WHERE x.record_key <> c.record_key AND x.ip IS NOT NULL AND x.ip <> '' AND c.ip IS NOT NULL
@@ -88,10 +183,18 @@ sql: |
   ),
   moved AS (
     SELECT n.record_key, n.src, n.t, n.actor, n.ip,
-           CASE WHEN n.unknown THEN 'session_moved (network: unknown)'
-                ELSE 'session_moved' END AS indicator
+           CASE WHEN n.audit_log AND n.unknown THEN 'session_moved (network: unknown, device changed)'
+                WHEN n.audit_log THEN 'session_moved (device changed)'
+                WHEN n.unknown THEN 'session_moved (network: unknown)'
+                WHEN n.country_changed OR n.infra OR n.risky THEN 'session_moved'
+                ELSE 'session_moved (device changed)' END AS indicator
     FROM net n
-    WHERE n.unknown OR n.country_changed OR (n.asn_changed AND (n.infra OR n.risky))
+    -- A session an audit-log sign-in created (no MFA test) counts only when the device changes too: a
+    -- corporate proxy (Zscaler) that egresses in two countries, a Microsoft service address or one laptop on
+    -- two ISPs is the user's own traffic in that session.
+    WHERE (NOT n.audit_log AND (n.unknown OR n.country_changed
+                                OR (n.asn_changed AND (n.infra OR n.risky OR n.device_changed))))
+       OR (n.audit_log AND n.device_changed AND (n.unknown OR n.country_changed OR n.asn_changed))
   ),
   agents AS (
     SELECT s.record_key, 'signins' AS src, s.event_time AS t, s.user_upn AS actor, s.ip,
@@ -124,7 +227,8 @@ analyst_guidance: |
   a hosting provider, the risk detections, and what the session did next (mailbox logon, rules).
 false_positives:
   - A user whose phone moves from Wi-Fi to cellular inside one hour on a long-lived session, when no
-    GeoIP data is loaded (with it, a same-country move between ordinary ISPs is not reported).
+    GeoIP data is loaded (with it, a same-country move between ordinary ISPs on the same OS and
+    browser is not reported). A session an audit-log sign-in created needs a device change.
   - Legitimate automation or a monitoring tool that uses a scripted client (okhttp, curl) and succeeds.
 references:
   - https://learn.microsoft.com/en-us/entra/id-protection/concept-identity-protection-risks
@@ -786,4 +890,414 @@ tests:
         user_agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0
         session_id: s-1
         event_time: "2026-03-01T09:30:00Z"
+    expect_hits: 1
+  - name: a session cookie replayed on another OS and browser from an ordinary ISP (audit log only)
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.2
+        asn: 64500
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ual_events
+        operation: UserLoggedIn
+        result_status: Success
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.1
+        session_id: s-1
+        audit_data: '{"DeviceProperties":[{"Name":"OS","Value":"MacOs"},{"Name":"BrowserType","Value":"Chrome"},{"Name":"SessionId","Value":"s-1"}]}'
+        event_time: "2026-03-01T09:00:00Z"
+      - table: ual_events
+        operation: UserLoggedIn
+        result_status: Success
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.2
+        session_id: s-1
+        audit_data: '{"DeviceProperties":[{"Name":"OS","Value":"Windows10"},{"Name":"BrowserType","Value":"Firefox"},{"Name":"SessionId","Value":"s-1"}]}'
+        event_time: "2026-03-01T09:02:00Z"
+    expect_hits: 1
+  - name: the same OS and browser on another ISP in the audit log is a network change
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.2
+        asn: 64500
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ual_events
+        operation: UserLoggedIn
+        result_status: Success
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.1
+        session_id: s-1
+        audit_data: '{"DeviceProperties":[{"Name":"OS","Value":"MacOs"},{"Name":"BrowserType","Value":"Chrome"},{"Name":"SessionId","Value":"s-1"}]}'
+        event_time: "2026-03-01T09:00:00Z"
+      - table: ual_events
+        operation: UserLoggedIn
+        result_status: Success
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.2
+        session_id: s-1
+        audit_data: '{"DeviceProperties":[{"Name":"OS","Value":"MacOs"},{"Name":"BrowserType","Value":"Chrome"},{"Name":"SessionId","Value":"s-1"}]}'
+        event_time: "2026-03-01T09:02:00Z"
+    expect_hits: 0
+  - name: a failed audit-log sign-in creates no session
+    records:
+      - table: ual_events
+        operation: UserLoggedIn
+        result_status: Failed
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.1
+        session_id: s-1
+        audit_data: '{"DeviceProperties":[{"Name":"OS","Value":"MacOs"},{"Name":"BrowserType","Value":"Chrome"},{"Name":"SessionId","Value":"s-1"}]}'
+        event_time: "2026-03-01T09:00:00Z"
+      - table: ual_events
+        operation: MailItemsAccessed
+        result_status: Success
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.2
+        session_id: s-1
+        audit_data: '{"DeviceProperties":[{"Name":"OS","Value":"Windows10"},{"Name":"BrowserType","Value":"Firefox"},{"Name":"SessionId","Value":"s-1"}]}'
+        event_time: "2026-03-01T09:02:00Z"
+    expect_hits: 0
+  - name: an MFA session used from another ISP on another OS (Entra sign-ins)
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.2
+        asn: 64500
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        is_interactive: true
+        error_code: 0
+        auth_requirement: multiFactorAuthentication
+        session_id: s-1
+        device: {device_id: null, display_name: null, os: Windows10, browser: Edge, is_compliant: null, is_managed: null, trust_type: null}
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.2
+        is_interactive: false
+        session_id: s-1
+        device: {device_id: null, display_name: null, os: MacOs, browser: Safari, is_compliant: null, is_managed: null, trust_type: null}
+        event_time: "2026-03-01T09:05:00Z"
+    expect_hits: 1
+  - name: an audit-log sign-in with the result False creates no session
+    records:
+      - table: ual_events
+        operation: UserLoggedIn
+        result_status: False
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.1
+        session_id: s-1
+        audit_data: '{"DeviceProperties":[{"Name":"OS","Value":"MacOs"},{"Name":"BrowserType","Value":"Chrome"},{"Name":"SessionId","Value":"s-1"}]}'
+        event_time: "2026-03-01T09:00:00Z"
+      - table: ual_events
+        operation: MailItemsAccessed
+        result_status: Succeeded
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.2
+        session_id: s-1
+        audit_data: '{"DeviceProperties":[{"Name":"OS","Value":"Windows10"},{"Name":"BrowserType","Value":"Firefox"},{"Name":"SessionId","Value":"s-1"}]}'
+        event_time: "2026-03-01T09:02:00Z"
+    expect_hits: 0
+  - name: DeviceProperties embedded as a JSON string still gives the device
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.2
+        asn: 64500
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ual_events
+        operation: UserLoggedIn
+        result_status: Success
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.1
+        session_id: s-1
+        audit_data: '{"DeviceProperties":"[{\"Name\":\"OS\",\"Value\":\"MacOs\"},{\"Name\":\"BrowserType\",\"Value\":\"Chrome\"},{\"Name\":\"SessionId\",\"Value\":\"s-1\"}]"}'
+        event_time: "2026-03-01T09:00:00Z"
+      - table: ual_events
+        operation: UserLoggedIn
+        result_status: Success
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.2
+        session_id: s-1
+        audit_data: '{"DeviceProperties":"[{\"Name\":\"OS\",\"Value\":\"Windows10\"},{\"Name\":\"BrowserType\",\"Value\":\"Firefox\"},{\"Name\":\"SessionId\",\"Value\":\"s-1\"}]"}'
+        event_time: "2026-03-01T09:02:00Z"
+    expect_hits: 1
+  - name: an audit-log session creator and an Entra sign-in use on another OS
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.2
+        asn: 64500
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ual_events
+        operation: UserLoggedIn
+        result_status: Success
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.1
+        session_id: s-1
+        audit_data: '{"DeviceProperties":[{"Name":"OS","Value":"MacOs"},{"Name":"BrowserType","Value":"Chrome"},{"Name":"SessionId","Value":"s-1"}]}'
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.2
+        is_interactive: false
+        session_id: s-1
+        device: {device_id: null, display_name: null, os: Windows10, browser: Firefox, is_compliant: null, is_managed: null, trust_type: null}
+        event_time: "2026-03-01T09:04:00Z"
+    expect_hits: 1
+  - name: an Entra MFA session creator and an audit-log sign-in use on another browser
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.2
+        asn: 64500
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        is_interactive: true
+        error_code: 0
+        auth_requirement: multiFactorAuthentication
+        session_id: s-1
+        device: {device_id: null, display_name: null, os: Windows10, browser: Edge, is_compliant: null, is_managed: null, trust_type: null}
+        event_time: "2026-03-01T09:00:00Z"
+      - table: ual_events
+        operation: UserLoggedIn
+        result_status: Success
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.2
+        session_id: s-1
+        audit_data: '{"DeviceProperties":[{"Name":"OS","Value":"Windows10"},{"Name":"BrowserType","Value":"Firefox"},{"Name":"SessionId","Value":"s-1"}]}'
+        event_time: "2026-03-01T09:04:00Z"
+    expect_hits: 1
+  - name: without GeoIP an audit-log session at another address on the same device does not count
+    records:
+      - table: ual_events
+        operation: UserLoggedIn
+        result_status: Success
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.1
+        session_id: s-1
+        audit_data: '{"DeviceProperties":[{"Name":"OS","Value":"MacOs"},{"Name":"BrowserType","Value":"Chrome"},{"Name":"SessionId","Value":"s-1"}]}'
+        event_time: "2026-03-01T09:00:00Z"
+      - table: ual_events
+        operation: UserLoggedIn
+        result_status: Success
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.2
+        session_id: s-1
+        audit_data: '{"DeviceProperties":[{"Name":"OS","Value":"MacOs"},{"Name":"BrowserType","Value":"Chrome"},{"Name":"SessionId","Value":"s-1"}]}'
+        event_time: "2026-03-01T09:02:00Z"
+    expect_hits: 0
+  - name: the sign-in broker and a browser on one Windows machine across two ISPs are one device
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.2
+        asn: 64500
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ual_events
+        operation: UserLoggedIn
+        result_status: Success
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.1
+        session_id: s-1
+        audit_data: '{"DeviceProperties":[{"Name":"OS","Value":"Windows"},{"Name":"BrowserType","Value":"Other"},{"Name":"SessionId","Value":"s-1"}]}'
+        event_time: "2026-03-01T09:00:00Z"
+      - table: ual_events
+        operation: UserLoggedIn
+        result_status: Success
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.2
+        session_id: s-1
+        audit_data: '{"DeviceProperties":[{"Name":"OS","Value":"Windows10"},{"Name":"BrowserType","Value":"Chrome"},{"Name":"SessionId","Value":"s-1"}]}'
+        event_time: "2026-03-01T09:03:00Z"
+    expect_hits: 0
+  - name: Office for the web opening a file from a Microsoft datacenter abroad is not a session use
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.3
+        asn: 8075
+        country_iso: BR
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ual_events
+        operation: UserLoggedIn
+        result_status: Success
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.1
+        session_id: s-1
+        audit_data: '{"DeviceProperties":[{"Name":"OS","Value":"Windows10"},{"Name":"BrowserType","Value":"Chrome"},{"Name":"SessionId","Value":"s-1"}]}'
+        event_time: "2026-03-01T09:00:00Z"
+      - table: ual_events
+        operation: FileAccessed
+        result_status: Success
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.3
+        session_id: s-1
+        user_agent: MSWAC
+        audit_data: '{"DeviceProperties":[{"Name":"OS","Value":"Windows10"},{"Name":"BrowserType","Value":"Chrome"},{"Name":"SessionId","Value":"s-1"}]}'
+        event_time: "2026-03-01T09:01:00Z"
+    expect_hits: 0
+  - name: without GeoIP an audit-log session at another address on another OS counts (network unknown)
+    records:
+      - table: ual_events
+        operation: UserLoggedIn
+        result_status: Success
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.1
+        session_id: s-1
+        audit_data: '{"DeviceProperties":[{"Name":"OS","Value":"MacOs"},{"Name":"BrowserType","Value":"Chrome"},{"Name":"SessionId","Value":"s-1"}]}'
+        event_time: "2026-03-01T09:00:00Z"
+      - table: ual_events
+        operation: UserLoggedIn
+        result_status: Success
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.2
+        session_id: s-1
+        audit_data: '{"DeviceProperties":[{"Name":"OS","Value":"Windows10"},{"Name":"BrowserType","Value":"Firefox"},{"Name":"SessionId","Value":"s-1"}]}'
+        event_time: "2026-03-01T09:02:00Z"
+    expect_hits: 1
+  - name: an audit-log session through a corporate proxy in another country on the same device is not a move
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.4
+        asn: 22616
+        country_iso: CA
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ual_events
+        operation: UserLoggedIn
+        result_status: Success
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.1
+        session_id: s-1
+        audit_data: '{"DeviceProperties":[{"Name":"OS","Value":"Windows10"},{"Name":"BrowserType","Value":"Chrome"},{"Name":"SessionId","Value":"s-1"}]}'
+        event_time: "2026-03-01T09:00:00Z"
+      - table: ual_events
+        operation: UserLoggedIn
+        result_status: Success
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.4
+        session_id: s-1
+        audit_data: '{"DeviceProperties":[{"Name":"OS","Value":"Windows10"},{"Name":"BrowserType","Value":"Chrome"},{"Name":"SessionId","Value":"s-1"}]}'
+        event_time: "2026-03-01T09:05:00Z"
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.4
+        session_id: s-1
+        event_time: "2026-03-01T09:06:00Z"
+    expect_hits: 0
+  - name: a UAL record with no operation still uses an MFA session
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 64496
+        country_iso: US
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: ip_intel
+        ip: 198.51.100.5
+        asn: 64501
+        country_iso: GB
+        is_hosting: false
+        is_microsoft: false
+        is_private: false
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        is_interactive: true
+        error_code: 0
+        auth_requirement: multiFactorAuthentication
+        session_id: s-1
+        event_time: "2026-03-01T09:00:00Z"
+      - table: ual_events
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.5
+        session_id: s-1
+        event_time: "2026-03-01T09:10:00Z"
     expect_hits: 1

@@ -330,3 +330,30 @@ fn missing_or_ambiguous_time_is_an_error() {
             .contains("--culture")
     );
 }
+
+#[test]
+fn an_entra_sign_in_takes_its_session_from_device_properties() {
+    let r = record(
+        json!({
+            "CreationTime": "2026-09-01T09:59:00", "Id": ID, "Operation": "UserLoggedIn",
+            "RecordType": 15, "Workload": "AzureActiveDirectory", "ClientIP": "203.0.113.10",
+            "UserId": "alice@contoso.example",
+            "DeviceProperties": [
+                {"Name": "OS", "Value": "MacOs"},
+                {"Name": "BrowserType", "Value": "Chrome"},
+                {"Name": "SessionId", "Value": "s-entra-1"}
+            ]
+        }),
+        false,
+    );
+    assert_eq!(r.session_id.as_deref(), Some("s-entra-1"));
+    // A record's own SessionId still wins.
+    let r = record(
+        json!({
+            "CreationTime": "2026-09-01T09:59:00", "Id": ID, "Operation": "UserLoggedIn",
+            "SessionId": "s-own", "DeviceProperties": [{"Name": "SessionId", "Value": "s-entra-1"}]
+        }),
+        false,
+    );
+    assert_eq!(r.session_id.as_deref(), Some("s-own"));
+}

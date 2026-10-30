@@ -16,6 +16,27 @@ fn events_text_output_exact_lines() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("case.duckdb");
     build(&path);
+    // The sign-in is the evidence of two open findings: the last column lists their rules.
+    {
+        let case = sparrow_core::Case::create_or_open(&path).unwrap();
+        for (id, rule) in [("F2", "SPW-MAIL-005"), ("F1", "SPW-ID-004")] {
+            case.conn()
+                .execute(
+                    "INSERT INTO findings (finding_id, fingerprint, tenant_key, rule_id, rule_version, rule_sha256, \
+                     severity, title, status, created_by, created_at, updated_at) \
+                     VALUES (?, ?, 'contoso', ?, 1, 'x', 'high', 't', 'new', 'rule', now(), now())",
+                    [id, id, rule],
+                )
+                .unwrap();
+            case.conn()
+                .execute(
+                    "INSERT INTO finding_evidence (finding_id, source_table, record_key, role, added_run_id) \
+                     VALUES (?, 'signins', 's1', 'trigger', 1)",
+                    [id],
+                )
+                .unwrap();
+        }
+    }
     let case = path.to_str().unwrap();
     let r = run(&["events", "--case", case, "--user", "JDoe@Contoso.example"]);
     assert_eq!(r.code, 0, "{}", r.err);
@@ -24,11 +45,14 @@ fn events_text_output_exact_lines() {
         lines,
         [
             "total 3  showing 3 from offset 0",
-            "2026-09-01T10:10:00Z  signin_interactive  UserLoggedIn  jdoe@contoso.example  198.51.100.7  JDOE-LAPTOP  7a7a…0b0b  -  -",
-            "2026-09-01T10:05:00Z  ual  MailItemsAccessed  jdoe@contoso.example  203.0.113.45  -  4f1c…9a2e  -  -",
-            "2026-09-01T10:00:00Z  ual  Send  jdoe@contoso.example  203.0.113.45  -  4f1c…9a2e  -  -",
+            "2026-09-01T10:10:00Z  signin_interactive  UserLoggedIn  jdoe@contoso.example  198.51.100.7  JDOE-LAPTOP  7a7a…0b0b  -  -  SPW-ID-004,SPW-MAIL-005",
+            "2026-09-01T10:05:00Z  ual  MailItemsAccessed  jdoe@contoso.example  203.0.113.45  -  4f1c…9a2e  -  -  -",
+            "2026-09-01T10:00:00Z  ual  Send  jdoe@contoso.example  203.0.113.45  -  4f1c…9a2e  -  -  -",
         ]
     );
+    let r = run(&["events", "--case", case, "--where", "rule=spw-id-004"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(r.out.starts_with("total 1  "), "{}", r.out);
     // A filter box narrows the same way as in the grid; the header counts what matches, not what is shown.
     let r = run(&[
         "events",
@@ -44,7 +68,7 @@ fn events_text_output_exact_lines() {
         r.out.lines().collect::<Vec<_>>(),
         [
             "total 2  showing 1 from offset 0",
-            "2026-09-01T11:00:00Z  ual  Send  other@contoso.example  192.0.2.9  -  -  -  -",
+            "2026-09-01T11:00:00Z  ual  Send  other@contoso.example  192.0.2.9  -  -  -  -  -",
         ]
     );
     // An excluding-only list means everything except; a lone `!` is refused, never "everything".

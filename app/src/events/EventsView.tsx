@@ -745,6 +745,9 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
               }
               if (NAME_COLUMNS.has(column)) return <span className="ev-name">{cellText(value)}</span>;
               if (column === "tags" && r.tags.length > 0) return r.tags.map((t) => <TagBadge key={t.name} tag={t} />);
+              if (column === "rules" && r.rules.length > 0) {
+                return r.rules.map((id) => <span key={id} className="tag ev-tag ev-rule" title="A rule whose open finding has this event as evidence">{displaySafe(id)}</span>);
+              }
               if (column === "flag" && r.flag !== null) {
                 return <span className={r.flag === "malicious" ? "ev-flagtext ev-flagtext-malicious" : "ev-flagtext ev-flagtext-suspicious"}>{cellText(value)}</span>;
               }

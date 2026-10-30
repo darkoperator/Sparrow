@@ -67,7 +67,11 @@ npm --prefix app ci --offline            # or without --offline on a machine wit
 npx --prefix app tauri dev               # run from the repo root; starts Vite on :5173 and the app window
 ```
 
-The Tauri CLI finds `crates/sparrow-app/tauri.conf.json` and runs its `beforeDevCommand` / `beforeBuildCommand` (`npm run dev` / `npm run build`) in `app/`. A plain debug `cargo build -p sparrow-app` loads the frontend from the dev server (`devUrl`); `tauri build` builds the frontend into `app/dist` (git-ignored) and embeds it.
+The Tauri CLI finds `crates/sparrow-app/tauri.conf.json` and runs its `beforeDevCommand` / `beforeBuildCommand` (`npm --prefix ../app run dev` / `npm --prefix ../app run build`). The CLI runs them in `app/` when started from the repo root and in `crates/` when started from `crates/sparrow-app`; `../app` is the front end from both. A plain debug `cargo build -p sparrow-app` loads the frontend from the dev server (`devUrl`); `tauri build` builds the frontend into `app/dist` (git-ignored) and embeds it.
+
+### Release builds
+
+`scripts/release.sh` builds both release binaries from any directory: `--cli` only the CLI (`target/release/sparrow`), `--app` only the review app (`target/release/sparrow-app`, plus `target/release/bundle/macos/Sparrow.app` on macOS, where it asks Tauri for the `.app` bundle that `tauri.conf.json` leaves off), neither flag both. It installs the front-end packages from the lockfile first when `app/node_modules` is missing (`NPM_OFFLINE=1` for `npm ci --offline`) and honours `CARGO_TARGET_DIR`.
 
 ### UI debugging in a browser
 

@@ -73,11 +73,12 @@ sparrow entity --case case.duckdb --ip 203.0.113.7 --from 2026-08-21T00:00:00Z -
 
 - `events --json` returns `{"rows": [...], "offset": N, "total": N, "total_capped": bool}`; each row has `source_table`,
   `record_key`, `source`, `event_time`, `operation`, `actor_upn`, `owner_upn`, `ip`, `ip_country`, `asn`,
-  `device_id`, `device_name`, `entra_session_id`, `finding_count`, `tags` (`[{name, ai}]`), `flag` (`suspicious`,
+  `device_id`, `device_name`, `entra_session_id`, `finding_count`, `tags` (`[{name, ai}]`), `rules` (rule ids of the
+  open findings with the row as evidence), `flag` (`suspicious`,
   `malicious` or null) and `flag_ai` (the flag is an agent's and no analyst has confirmed it). `--limit` defaults to
   200. `source_table` and `record_key` are what `mark` and `note add` take as `TABLE:KEY`.
 - `--where FIELD=TEXT` (repeatable). FIELD is `source`, `operation`, `account`, `ip`, `country`, `asn`, `device`,
-  `session` or `tag`. TEXT: comma separates values (any of), `!value` excludes, `*` is a wildcard; a list of only
+  `session`, `tag` or `rule` (the rule id of an open finding citing the row). TEXT: comma separates values (any of), `!value` excludes, `*` is a wildcard; a list of only
   excludes means everything except those. A value in double quotes is literal (commas, `*`, a leading `!` included;
   `""` is one quote): `--where 'operation="a,b"'`. A lone `!`, `,,` or an unclosed quote is refused (exit 1), never
   read as "everything".

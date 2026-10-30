@@ -810,6 +810,22 @@ static PORTAL_DEFS: &[PortalDef] = &[
         exact: false,
         xlsx: false,
     },
+    // The same Purview export with the plural column names (`Operations`, `UserIds`). `RecordId`
+    // keeps it apart from Hawk's raw Search-UnifiedAuditLog CSVs, which have no such column.
+    PortalDef {
+        id: "portal.ual",
+        target: "ual_events",
+        columns: &[
+            "recordid",
+            "creationdate",
+            "recordtype",
+            "operations",
+            "userids",
+            "auditdata",
+        ],
+        exact: false,
+        xlsx: false,
+    },
     // Older Microsoft 365 audit log search export: exactly these four columns. Hawk's raw
     // Search-UnifiedAuditLog CSVs have more (RecordType, ResultIndex, ...), so they never match.
     PortalDef {

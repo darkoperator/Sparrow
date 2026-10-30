@@ -555,7 +555,10 @@ rules:
       within 1 hour from a different NETWORK. The country differs
       (ip_intel), or the ASN differs and the use or the creating sign-in is a hosting ASN or a
       password-spray source of the tenant (spray_sources), or the use is a sign-in rated medium/high
-      risk. A Microsoft service address (ip_intel.is_microsoft) on either side never counts, and a plain
+      risk, or the ASN differs and the OS or browser of the use differs from the creating sign-in's
+      (signins device, UAL UserLoggedIn DeviceProperties). A successful UAL UserLoggedIn (session id
+      from DeviceProperties) also creates a session, so an audit-log-only case sees a move. A
+      Microsoft service address (ip_intel.is_microsoft) on either side never counts, and a plain
       address change inside one ASN (IPv6 privacy rotation, carrier pools, a Wi-Fi to cellular switch in
       one country) is not a move. When the ASN is missing on either side (no GeoIP data or a partial
       record) the address difference alone counts, unless both countries are known and differ (then the

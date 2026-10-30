@@ -54,7 +54,7 @@ const SOURCES = [
 const BUCKET_SECONDS = [60, 300, 900, 3_600, 10_800, 21_600, 43_200, 86_400];
 const LABEL: Record<EventField, string> = {
   source: "Source", operation: "Operation", account: "Account", ip: "IP", country: "Country", asn: "ASN",
-  device: "Device", session: "Session", tag: "Tag",
+  device: "Device", session: "Session", tag: "Tag", rule: "Rule",
 };
 const FIELDS = Object.keys(LABEL) as EventField[];
 /** Rows one `notes_add_rows` call writes a note on. */
@@ -105,9 +105,10 @@ export function eventHandlers(deps: EventDeps): Record<string, (a: Args) => unkn
       case "device": return [r.device_id, r.device_object_id, r.device_name].map(lower).filter(Boolean);
       case "session": return r.entra_session_id ? [lower(r.entra_session_id)] : [];
       case "tag": return r.tags.map((t) => lower(t.name));
+      case "rule": return r.rules.map(lower);
     }
   };
-  const caseFolded = (f: EventField) => f === "account" || f === "device" || f === "session" || f === "tag" || f === "ip";
+  const caseFolded = (f: EventField) => f === "account" || f === "device" || f === "session" || f === "tag" || f === "rule" || f === "ip";
   const wildcard = (p: string) => new RegExp(`^${p.split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`, "i");
 
   /** Harrier's list syntax with quoting (`../events/fieldSyntax`, core's rules); refusals name the field, never match all. */
@@ -381,7 +382,7 @@ export function eventHandlers(deps: EventDeps): Record<string, (a: Args) => unkn
     const p = str(a, "prefix").toLowerCase();
     const found = new Set<string>();
     for (const r of events) {
-      const vals = field === "tag" ? r.tags.map((t) => t.name) : field === "account" ? [r.actor_upn, r.owner_upn] : field === "device"
+      const vals = field === "tag" ? r.tags.map((t) => t.name) : field === "rule" ? r.rules : field === "account" ? [r.actor_upn, r.owner_upn] : field === "device"
         ? [r.device_id, r.device_object_id, r.device_name] : valuesOf(field, r);
       for (const v of vals) if (v && v.toLowerCase().startsWith(p)) found.add(field === "account" || field === "session" ? v.toLowerCase() : v);
     }
@@ -398,13 +399,14 @@ export function eventHandlers(deps: EventDeps): Record<string, (a: Args) => unkn
     const limit = Math.min(asked, VALUES_MAX);
     const prefix = wildcardPrefix(str(a, "prefix").trim());
     const rest: EventQuery = { ...q, fields: (q?.fields ?? []).filter(([f]) => f !== field) };
-    const folded = field === "account" || field === "device" || field === "session" || field === "tag";
+    const folded = field === "account" || field === "device" || field === "session" || field === "tag" || field === "rule";
     return run(a, q, () => {
       const groups = new Map<string, { value: string; count: number }>();
       for (const r of match(rest, field === "source").rows) {
         const own = field === "account" ? [...new Set([r.actor_upn, r.owner_upn])]
           : field === "device" ? [r.device_name ?? r.device_id ?? r.device_object_id]
           : field === "tag" ? r.tags.map((t) => t.name)
+          : field === "rule" ? r.rules
           : field === "ip" ? [r.ip]
           : valuesOf(field, r);
         for (const v of own) {

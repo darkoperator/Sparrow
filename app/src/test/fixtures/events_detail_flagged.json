@@ -28,6 +28,7 @@
     "summary": "Owner Send \\Sent Items",
     "finding_count": 0,
     "tags": [],
+    "rules": [],
     "flag": "malicious",
     "flag_ai": false,
     "ai_pending": false,

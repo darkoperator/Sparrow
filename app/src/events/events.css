@@ -109,6 +109,7 @@
 .ev-flagtext-suspicious { color: var(--sus); }
 .ev-tag { margin-right: 4px; padding: 1px 6px; border: 0; border-radius: 4px; background: var(--raised-2); color: var(--text-2); font-family: var(--font-mono); font-size: 10px; }
 .ev-tag-ai { border: 1px dashed var(--ai); background: var(--ai-bg); color: var(--ai); }
+.ev-rule { background: var(--accent-soft); color: var(--accent-text); }
 .ev-ai-badge { margin-left: 4px; padding: 0 4px; border-radius: 3px; background: var(--ai); color: var(--on-accent); font-size: 9px; font-weight: 700; }
 
 .ev-hiddenfilter { display: inline-flex; gap: 6px; align-items: center; color: var(--sus); font-size: 11px; }

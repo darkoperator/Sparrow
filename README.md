@@ -41,7 +41,7 @@ cargo build -p sparrow-cli
 
 `ingest` profiles the case and runs detection automatically. Start with `capabilities`: it says which evidence is present, incomplete, unavailable, or beyond retention and why. Then use `summary` for the tenant, collections, coverage window, top actors, and gaps. Use the returned finding IDs with `finding show` before deciding what to do. The synthetic tree contains a ground-truth manifest; `sparrow synth check --manifest tree/manifest.json --case case.duckdb` compares the ingested case and detection results with it.
 
-For a release build, use `cargo build --release -p sparrow-cli` and run `./target/release/sparrow`. All examples below assume `sparrow` is on your `PATH`; substitute `./target/debug/sparrow` if it is not.
+For a release build, use `cargo build --release -p sparrow-cli` (or `scripts/release.sh --cli`; `scripts/release.sh` alone also builds the review app) and run `./target/release/sparrow`. All examples below assume `sparrow` is on your `PATH`; substitute `./target/debug/sparrow` if it is not.
 
 ## From collector output to a case
 

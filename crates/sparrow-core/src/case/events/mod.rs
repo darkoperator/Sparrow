@@ -77,6 +77,8 @@ pub enum Field {
     Device,
     Session,
     Tag,
+    /// The rule id of an open finding (not closed as `false_positive` or `benign`) that has the row as evidence.
+    Rule,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -102,7 +104,7 @@ pub enum AiFilter {
 pub struct EventQuery {
     pub entity: Option<Entity>,
     /// Filter boxes: comma separates values (OR); `!value` excludes; `*` is a case-insensitive wildcard; without `*` a
-    /// value matches exactly (case-sensitively, except Account, Device, Session and Tag, which are compared
+    /// value matches exactly (case-sensitively, except Account, Device, Session, Tag and Rule, which are compared
     /// lower-cased); a list of only excludes means everything except those. A value in double quotes is literal
     /// (commas, `*`, a leading `!` and outer spaces included; `""` is one quote). A blank text is no filter; a lone
     /// `!`, a text of only commas, an unclosed quote or text after a closing quote is refused with an `Error::Invalid`
@@ -164,6 +166,9 @@ pub struct EventRow {
     pub finding_count: u32,
     /// The tags the row carries, by name; `ai` for an agent's tag no analyst has confirmed.
     pub tags: Vec<TagRef>,
+    /// The rule ids of the open findings (not closed as `false_positive` or `benign`) with this row as evidence, sorted:
+    /// derived from `finding_evidence` when queried, so they follow every detection run and finding decision.
+    pub rules: Vec<String>,
     /// The effective flag: the strongest of the row's own flag and every standing value flag that matches it.
     pub flag: Option<FlagLevel>,
     /// The effective flag comes only from an agent's flag that no analyst has confirmed.

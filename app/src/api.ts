@@ -667,7 +667,7 @@ export interface EntityArg {
 }
 
 /** `case::events::Field`: the filter boxes of the grid. */
-export type EventField = "source" | "operation" | "account" | "ip" | "country" | "asn" | "device" | "session" | "tag";
+export type EventField = "source" | "operation" | "account" | "ip" | "country" | "asn" | "device" | "session" | "tag" | "rule";
 
 export type FlagLevel = "suspicious" | "malicious";
 /** `case::events::FlagFilter`. */
@@ -726,6 +726,8 @@ export interface EventRow {
   summary: string | null;
   finding_count: number;
   tags: TagRef[];
+  /** Rule ids of the open findings (not closed as false positive or benign) with this event as evidence, sorted. */
+  rules: string[];
   /** The strongest of the row's own flag and every standing value flag that matches it. */
   flag: FlagLevel | null;
   /** The flag comes only from an agent's flag that no analyst has confirmed. */

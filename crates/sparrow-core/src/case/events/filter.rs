@@ -46,11 +46,13 @@ impl Field {
             Field::Device => "Device",
             Field::Session => "Session",
             Field::Tag => "Tag",
+            Field::Rule => "Rule",
         }
     }
 
     /// The SQL expressions a value is compared with (OR'ed). Tag compares `t.name` of the tags a row carries, inside
-    /// an `EXISTS` over `event_tags` (see [`tag_exists`]).
+    /// an `EXISTS` over `event_tags` (see [`tag_exists`]); Rule compares the rule id of the row's open findings, inside an
+    /// `EXISTS` over `finding_evidence` (see [`rule_exists`]).
     fn exprs(self) -> &'static [&'static str] {
         match self {
             Field::Source => &["e.source"],
@@ -62,6 +64,7 @@ impl Field {
             Field::Device => &["e.device_id", "e.device_object_id", "lower(e.device_name)"],
             Field::Session => &["e.entra_session_id"],
             Field::Tag => &["t.name"],
+            Field::Rule => &["lower(f.rule_id)"],
         }
     }
 
@@ -69,7 +72,7 @@ impl Field {
     fn case_insensitive(self) -> bool {
         matches!(
             self,
-            Field::Account | Field::Device | Field::Session | Field::Tag
+            Field::Account | Field::Device | Field::Session | Field::Tag | Field::Rule
         )
     }
 }
@@ -233,6 +236,17 @@ fn tag_exists(pred: &str) -> String {
     )
 }
 
+/// The findings an event row's rule labels come from: open ones (not closed as false positive or benign).
+pub(super) const OPEN_FINDING: &str = "f.status NOT IN ('false_positive', 'benign')";
+
+/// `EXISTS` an open finding with the row `e` as evidence whose rule satisfies `pred` (over `f.rule_id`).
+fn rule_exists(pred: &str) -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM finding_evidence fe JOIN findings f ON f.finding_id = fe.finding_id \
+         WHERE fe.source_table = e.source_table AND fe.record_key = e.record_key AND {OPEN_FINDING} AND {pred})"
+    )
+}
+
 /// The clause of one filter field, or `None` for a blank field.
 fn field_clause(field: Field, text: &str) -> Result<Option<(String, Vec<Value>)>> {
     let Some(parsed) = parse_list(field, text)? else {
@@ -243,10 +257,10 @@ fn field_clause(field: Field, text: &str) -> Result<Option<(String, Vec<Value>)>
     let mut inc = Vec::new();
     for v in &parsed.include {
         let (sql, p) = value_predicate(field, exprs, v);
-        inc.push(if field == Field::Tag {
-            tag_exists(&sql)
-        } else {
-            sql
+        inc.push(match field {
+            Field::Tag => tag_exists(&sql),
+            Field::Rule => rule_exists(&sql),
+            _ => sql,
         });
         params.extend(p);
     }
@@ -259,6 +273,8 @@ fn field_clause(field: Field, text: &str) -> Result<Option<(String, Vec<Value>)>
         if field == Field::Tag {
             // Rows without the tag, untagged rows included: `!x` alone is "everything except x".
             parts.push(format!("NOT {}", tag_exists(&sql)));
+        } else if field == Field::Rule {
+            parts.push(format!("NOT {}", rule_exists(&sql)));
         } else {
             // A NULL column is not a match, so an excluded value never hides rows that simply have none.
             parts.push(format!("NOT coalesce({sql}, false)"));

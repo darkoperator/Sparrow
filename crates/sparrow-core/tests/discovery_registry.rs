@@ -757,6 +757,18 @@ fn portal_exports_are_recognized_by_header_anywhere() {
             .artifact_id,
         "portal.ual"
     );
+    // The Purview export with plural column names, quoted, inside a Hawk user folder.
+    let plural = b"\"RecordId\",\"CreationDate\",\"RecordType\",\"Operations\",\"UserIds\",\"AuditData\",\"AssociatedAdminUnits\",\"AssociatedAdminUnitsNames\"\r\n";
+    assert_eq!(
+        reg.classify_with_head(
+            Hawk,
+            &format!("alice@contoso.example/{GUID_CSV}"),
+            Some(plural)
+        )
+        .unwrap()
+        .artifact_id,
+        "portal.ual"
+    );
     let legacy = b"CreationDate,UserIds,Operations,AuditData\r\n";
     assert_eq!(
         reg.classify_with_head(Tool::PortalExport, "export.csv", Some(legacy))

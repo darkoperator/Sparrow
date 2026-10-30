@@ -257,7 +257,13 @@ fn like_metacharacters_in_values_are_literal() {
 #[test]
 fn filter_values_are_bound_not_formatted() {
     let case = six_rows();
-    for f in [Field::Account, Field::Operation, Field::Ip, Field::Tag] {
+    for f in [
+        Field::Account,
+        Field::Operation,
+        Field::Ip,
+        Field::Tag,
+        Field::Rule,
+    ] {
         let q = field(f, "x'; DROP TABLE events; --");
         let page = events::page(case.conn(), &q, None, 0, 10).unwrap();
         assert_eq!(page.total, 0, "{f:?}");
@@ -278,6 +284,7 @@ fn field_syntax_rejects_degenerate_input() {
         (Field::Ip, "IP"),
         (Field::Source, "Source"),
         (Field::Tag, "Tag"),
+        (Field::Rule, "Rule"),
         (Field::Asn, "ASN"),
     ] {
         for bad in ["!", ",,", "!,", "a@contoso.example, !", " ! "] {
@@ -527,6 +534,93 @@ fn finding(
             )
             .unwrap();
     }
+}
+
+/// Inserts a finding of `rule` with `status` and evidence on `rows` (`(source_table, record_key)`).
+fn rule_finding(case: &Case, id: &str, rule: &str, status: &str, rows: &[(&str, &str)]) {
+    case.conn()
+        .execute(
+            "INSERT INTO findings (finding_id, fingerprint, tenant_key, rule_id, rule_version, rule_sha256, severity, \
+             title, status, created_by, created_at, updated_at) \
+             VALUES (?, ?, 'contoso', ?, 1, 'x', 'high', 't', CAST(? AS finding_status), 'rule', now(), now())",
+            [id, id, rule, status],
+        )
+        .unwrap();
+    for (table, key) in rows {
+        case.conn()
+            .execute(
+                "INSERT INTO finding_evidence (finding_id, source_table, record_key, role, added_run_id) \
+                 VALUES (?, ?, ?, 'trigger', 1)",
+                [id, table, key],
+            )
+            .unwrap();
+    }
+}
+
+#[test]
+fn rows_carry_the_rules_of_their_open_findings_and_filter_by_them() {
+    let case = six_rows();
+    rule_finding(
+        &case,
+        "F1",
+        "SPW-ID-004",
+        "new",
+        &[("ual_events", "k1"), ("ual_events", "k2")],
+    );
+    rule_finding(
+        &case,
+        "F2",
+        "SPW-MAIL-005",
+        "confirmed",
+        &[("ual_events", "k1")],
+    );
+    // Closed as false positive or benign: no label, no match.
+    rule_finding(
+        &case,
+        "F3",
+        "SPW-ID-002",
+        "false_positive",
+        &[("ual_events", "k3")],
+    );
+    rule_finding(&case, "F4", "SPW-ID-003", "benign", &[("ual_events", "k3")]);
+    // Open, but its evidence is not an event: no row carries it, so it is not suggested.
+    rule_finding(&case, "F5", "SPW-ID-005", "new", &[("ual_events", "gone")]);
+    let page = events::page(case.conn(), &EventQuery::default(), None, 0, 10).unwrap();
+    let rules = |k: &str| {
+        page.rows
+            .iter()
+            .find(|r| r.record_key == k)
+            .unwrap()
+            .rules
+            .clone()
+    };
+    assert_eq!(rules("k1"), ["SPW-ID-004", "SPW-MAIL-005"]);
+    assert_eq!(rules("k2"), ["SPW-ID-004"]);
+    assert!(rules("k3").is_empty());
+    assert!(rules("k4").is_empty());
+
+    assert_eq!(keys(&case, &field(Field::Rule, "spw-id-004")), ["k1", "k2"]);
+    assert_eq!(keys(&case, &field(Field::Rule, "SPW-MAIL-*")), ["k1"]);
+    assert!(keys(&case, &field(Field::Rule, "SPW-ID-002")).is_empty());
+    assert_eq!(
+        keys(&case, &field(Field::Rule, "!SPW-ID-004")),
+        ["k3", "k4", "k5", "k6"]
+    );
+
+    assert_eq!(
+        events::suggest(case.conn(), Field::Rule, "spw-", 10).unwrap(),
+        ["SPW-ID-004", "SPW-MAIL-005"]
+    );
+    let v = events::values(case.conn(), &EventQuery::default(), Field::Rule, "", 10).unwrap();
+    let got: Vec<(String, u64)> = v.values.into_iter().map(|x| (x.value, x.count)).collect();
+    assert_eq!(
+        got,
+        [
+            ("SPW-ID-004".to_string(), 2),
+            ("SPW-MAIL-005".to_string(), 1)
+        ]
+    );
+    assert_eq!(v.total, 2);
 }
 
 /// Six events over two days from three sources: the histogram case.
@@ -1104,6 +1198,10 @@ fn csv_export_columns_and_rows() {
             .unwrap();
     }
 
+    for (id, rule) in [("FB", "SPW-B"), ("FA", "SPW-A"), ("FA2", "SPW-A")] {
+        rule_finding(&case, id, rule, "new", &[("signins", "full")]);
+    }
+
     let out = std::env::temp_dir().join(format!("sparrow-events-csv-{}.csv", std::process::id()));
     // 12 matching rows, though a page is smaller than that.
     let q = field(Field::Operation, "Match");
@@ -1117,7 +1215,7 @@ fn csv_export_columns_and_rows() {
     assert_eq!(
         CSV_COLUMNS.join(","),
         "event_time,source,operation,actor_upn,owner_upn,target,ip,ip_country,asn,asn_org,device_id,device_name,\
-         entra_session_id,result,user_agent,flag,tags,latest_note,source_table,record_key"
+         entra_session_id,result,user_agent,flag,tags,rules,latest_note,source_table,record_key"
     );
     let rows: Vec<csv::StringRecord> = rd.records().map(|r| r.unwrap()).collect();
     assert_eq!(rows.len(), 12);
@@ -1127,13 +1225,13 @@ fn csv_export_columns_and_rows() {
     assert!(bytes[3..].starts_with(b"event_time,source,operation,"));
     // Newest first, ISO 8601 UTC.
     assert_eq!(&rows[0][0], "2026-09-01T10:00:11Z");
-    assert_eq!(&rows[11][19], "c00");
+    assert_eq!(&rows[11][20], "c00");
 
     let all = events::export_csv(case.conn(), &EventQuery::default(), &out).unwrap();
     assert_eq!(all, 31);
     let mut rd = csv::Reader::from_path(&out).unwrap();
     let rows: Vec<csv::StringRecord> = rd.records().map(|r| r.unwrap()).collect();
-    let full = rows.iter().find(|r| &r[19] == "full").unwrap();
+    let full = rows.iter().find(|r| &r[20] == "full").unwrap();
     let got: Vec<&str> = full.iter().collect();
     assert_eq!(
         got,
@@ -1156,6 +1254,7 @@ fn csv_export_columns_and_rows() {
             "UA/1",
             "",
             "",
+            "SPW-A|SPW-B",
             "second note",
             "signins",
             "full",

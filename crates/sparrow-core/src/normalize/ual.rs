@@ -255,8 +255,15 @@ pub fn normalize_audit(input: &AuditInput, order: Option<DateOrder>) -> Result<U
         client_ip: first_text(a, &["ClientIP", "ClientIPAddress", "ActorIpAddress"])
             .and_then(|ip| normalize_ip(&ip)),
         user_agent,
+        // An Entra sign-in (UserLoggedIn) carries its session in `DeviceProperties`.
         session_id: text(a, "SessionId")
-            .or_else(|| nested_text(a, "AppAccessContext", "AADSessionId")),
+            .or_else(|| nested_text(a, "AppAccessContext", "AADSessionId"))
+            .or_else(|| {
+                name_values(get_ci(a, "DeviceProperties"))
+                    .into_iter()
+                    .find(|(n, v)| n.eq_ignore_ascii_case("SessionId") && !v.is_empty())
+                    .map(|(_, v)| v)
+            }),
         app_id: first_text(a, &["AppId", "ApplicationId"]),
         client_app_id: text(a, "ClientAppId")
             .or_else(|| nested_text(a, "AppAccessContext", "ClientAppId")),

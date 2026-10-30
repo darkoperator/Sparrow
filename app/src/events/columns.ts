@@ -68,6 +68,7 @@ export const COLUMNS: EventColumn[] = [
   },
   { id: "result", label: "Result", width: 100, visible: true, sortable: true, text: (r) => s(r.result) },
   { id: "tags", label: "Tags", width: 170, visible: true, sortable: false, text: (r) => r.tags.map((t) => t.name).join(", ") },
+  { id: "rules", label: "Rules", width: 150, visible: true, sortable: false, text: (r) => r.rules.join(", ") },
   {
     id: "notes", label: "Notes", width: 200, visible: true, sortable: false,
     text: (r) => (r.latest_note === null ? "" : r.note_count > 1 ? `${r.latest_note} +${r.note_count - 1}` : r.latest_note),
@@ -91,12 +92,13 @@ export const COLUMNS: EventColumn[] = [
 export const COLUMN_BY_ID: ReadonlyMap<string, EventColumn> = new Map(COLUMNS.map((c) => [c.id, c]));
 
 /**
- * The filter field of a column, for its header filter: the columns that feed a filter box, and Tags. Each field has one
+ * The filter field of a column, for its header filter: the columns that feed a filter box, Tags and Rules. Each field has one
  * column (the mailbox owner column has none: the Account field already matches owners).
  */
 export const COLUMN_FIELD: Readonly<Record<string, EventField>> = {
   ...Object.fromEntries(COLUMNS.flatMap((c) => (c.filter ? [[c.id, c.filter.field]] : []))),
   tags: "tag",
+  rules: "rule",
 };
 
 export const DEFAULT_VISIBLE: string[] = COLUMNS.filter((c) => c.visible).map((c) => c.id);

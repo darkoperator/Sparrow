@@ -262,13 +262,14 @@ const EVENT_ROW = [
   "source_table", "record_key", "source", "event_time", "time_tz_assumed", "tenant_key", "workload", "category",
   "operation", "result", "actor_upn", "owner_upn", "target", "ip", "ip_prefix", "ip_country", "asn", "asn_org",
   "ip_kind", "device_id", "device_name", "device_object_id", "entra_session_id", "user_agent", "app_id", "summary",
-  "finding_count", "tags", "flag", "flag_ai", "ai_pending", "latest_note", "note_count",
+  "finding_count", "tags", "rules", "flag", "flag_ai", "ai_pending", "latest_note", "note_count",
 ];
 
 function checkRow(where: string, r: unknown): EventRow {
   need(where, r, EVENT_ROW);
   if (!Array.isArray(r.tags)) throw new Error(`fixture ${where}: tags is not an array`);
   r.tags.forEach((t: unknown, i) => need(`${where}.tags[${i}]`, t, ["name", "ai"]));
+  if (!Array.isArray(r.rules) || r.rules.some((x: unknown) => typeof x !== "string")) throw new Error(`fixture ${where}: rules is not a list of ids`);
   if (r.flag !== null && r.flag !== "suspicious" && r.flag !== "malicious") throw new Error(`fixture ${where}: bad flag`);
   if (typeof r.flag_ai !== "boolean" || typeof r.ai_pending !== "boolean" || typeof r.note_count !== "number") throw new Error(`fixture ${where}: bad marks`);
   return r as unknown as EventRow;

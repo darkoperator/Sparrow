@@ -33,7 +33,7 @@ pub struct EventsArgs {
     /// Only the events of this Entra session id
     #[arg(long, group = "entity")]
     pub session: Option<String>,
-    /// FIELD=TEXT filter (repeatable). FIELD: source, operation, account, ip, country, asn, device, session or tag.
+    /// FIELD=TEXT filter (repeatable). FIELD: source, operation, account, ip, country, asn, device, session, tag or rule.
     /// TEXT: comma separates values, !value excludes, * is a wildcard; a value in double quotes is literal
     /// (commas, *, a leading ! and spaces included; "" inside is one quote), like operation="a,b"
     #[arg(long = "where", value_name = "FIELD=TEXT")]
@@ -72,9 +72,10 @@ fn field(name: &str) -> Result<Field> {
         "device" => Field::Device,
         "session" => Field::Session,
         "tag" => Field::Tag,
+        "rule" => Field::Rule,
         other => {
             return Err(Error::Invalid(format!(
-                "unknown --where field {other:?} (source, operation, account, ip, country, asn, device, session or tag)"
+                "unknown --where field {other:?} (source, operation, account, ip, country, asn, device, session, tag or rule)"
             ))
             .into());
         }
@@ -148,7 +149,8 @@ fn dash(s: Option<&str>) -> String {
     s.filter(|s| !s.is_empty()).map_or_else(|| "-".into(), safe)
 }
 
-/// One line: time, source, operation, account, ip, device, session, flag, tags (two spaces apart, `-` for none).
+/// One line: time, source, operation, account, ip, device, session, flag, tags, rules (two spaces apart, `-` for
+/// none).
 pub fn row_line(r: &EventRow) -> String {
     let account = r.actor_upn.as_deref().or(r.owner_upn.as_deref());
     let device = r.device_name.as_deref().or(r.device_id.as_deref());
@@ -184,6 +186,15 @@ pub fn row_line(r: &EventRow) -> String {
             .map_or_else(|| "-".into(), |s| safe(&short_id(s))),
         flag,
         tags,
+        if r.rules.is_empty() {
+            "-".to_string()
+        } else {
+            r.rules
+                .iter()
+                .map(|id| safe(id))
+                .collect::<Vec<_>>()
+                .join(",")
+        },
     ]
     .join("  ")
 }

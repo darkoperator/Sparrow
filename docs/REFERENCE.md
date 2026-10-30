@@ -521,9 +521,11 @@ by `profile`); they open the case read-only. `mark` writes. Times are ISO 8601 U
 
 **`sparrow events`** lists the events that match all the options: an entity (`--user` for the actor or mailbox owner,
 `--ip`, `--device` for a device id or directory object id (not a name), or `--session`; at most one), `--where FIELD=TEXT`
-(repeatable; FIELD `source`, `operation`, `account`, `ip`, `country`, `asn`, `device`, `session` or `tag`), `--search`,
+(repeatable; FIELD `source`, `operation`, `account`, `ip`, `country`, `asn`, `device`, `session`, `tag` or `rule`),
+`--search`,
 `--from`/`--to` (RFC 3339, inclusive) and `--flag`. A device name goes in `--where device=NAME`: that field matches the
-device id, the object id or the name. TEXT is Harrier's list syntax: comma separates values (any of),
+device id, the object id or the name. `rule` matches the rule id of an open finding (not closed as `false_positive` or
+`benign`) that has the row as evidence (case-insensitive: `--where rule=spw-id-004`). TEXT is Harrier's list syntax: comma separates values (any of),
 `!value` excludes, `*` is a case-insensitive wildcard, a list of only excludes means everything except those. A value
 in double quotes is literal: commas, `*`, a leading `!` and outer spaces are part of it, and `""` inside it is one
 quote (`--where 'operation="a,b"'`, `--where 'operation=!"*"'`); a quote anywhere but at the start of a value is an
@@ -533,18 +535,20 @@ Plain output is a header line, then one line per row, columns two spaces apart w
 
 ```
 total 3  showing 3 from offset 0
-2026-09-01T10:10:00Z  signin_interactive  UserLoggedIn  jdoe@contoso.example  198.51.100.7  JDOE-LAPTOP  7a7a…0b0b  -  -
+2026-09-01T10:10:00Z  signin_interactive  UserLoggedIn  jdoe@contoso.example  198.51.100.7  JDOE-LAPTOP  7a7a…0b0b  -  -  SPW-ID-004
 ```
 
 The columns are time, source, operation, account (the actor, else the owner), IP, device (name, else id), Entra session
 (first and last four characters), flag (`suspicious`, `malicious`, with ` (ai)` while an agent's flag awaits the
-analyst) and tags (comma separated, ` (ai)` likewise). The header says `total N (capped)` when the count stopped at its
+analyst), tags (comma separated, ` (ai)` likewise) and rules (the rule ids of the open findings with the row as
+evidence, comma separated: the rule labels the app's Rules column shows). The header says `total N (capped)` when the count stopped at its
 cap. `--json` prints `{"rows": [...], "offset", "total", "total_capped"}`; a row has `source_table`, `record_key`, `source`,
 `event_time`, `time_tz_assumed`, `tenant_key`, `workload`, `category`, `operation`, `result`, `actor_upn`, `owner_upn`,
 `target`, `ip`, `ip_prefix`, `ip_country`, `asn`, `asn_org`, `ip_kind`, `device_id`, `device_name`, `device_object_id`,
-`entra_session_id`, `user_agent`, `app_id`, `summary`, `finding_count`, `tags` (`[{"name", "ai"}]`), `flag`, `flag_ai`,
+`entra_session_id`, `user_agent`, `app_id`, `summary`, `finding_count`, `tags` (`[{"name", "ai"}]`), `rules` (rule ids),
+`flag`, `flag_ai`,
 `latest_note` and `note_count` (every field of the row).
-`--csv PATH` writes every matching row (not a page; UTF-8 with a BOM, formula-looking text prefixed with `'`) and
+`--csv PATH` writes every matching row (not a page; a `rules` column after `tags`, ids separated by `|`; UTF-8 with a BOM, formula-looking text prefixed with `'`) and
 prints `wrote N rows to PATH` (`--json`: `{"csv", "rows"}`).
 
 **`sparrow entity`** takes exactly one of `--user`, `--ip`, `--device`, `--session` and an optional `--from`/`--to`.

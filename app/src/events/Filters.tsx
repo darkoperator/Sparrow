@@ -16,6 +16,7 @@ export const FIELD_LABEL: Record<EventField, string> = {
   device: "Device",
   session: "Session",
   tag: "Tag",
+  rule: "Rule",
 };
 export const FIELDS = Object.keys(FIELD_LABEL) as EventField[];
 

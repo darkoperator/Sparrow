@@ -3,7 +3,7 @@ import { MOCK_COMMANDS, mockCall, mockOpen, mockSave } from "./backend";
 import { GEN_COLUMNS, GEN_ROWS, genRows } from "./generated";
 import apiSource from "../api.ts?raw";
 import * as fx from "../test/fixtures";
-import type { BrowsePage, CmdError, EventQuery, EventRow, EventsAdded, EventsPage, EventsSummary, Histogram, QueueItem, QueryResult, RowRef, SqlCheck, TimelineEntry } from "../api";
+import type { BrowsePage, CmdError, EventQuery, EventRow, EventsAdded, EventsPage, EventsSummary, FieldValues, Histogram, QueueItem, QueryResult, RowRef, SqlCheck, TimelineEntry } from "../api";
 
 const apiCommands = [...apiSource.matchAll(/\bcall(?:<[^(]*>)?\(\s*"([a-z_]+)"/g)].map((m) => m[1]);
 
@@ -613,6 +613,19 @@ describe("events mock: marks and add to timeline", () => {
   const pageOf = (m: typeof import("./backend"), q: Partial<EventQuery> = {}) =>
     m.mockCall<EventsPage>("events_page", { query: { ...Q, ...q }, sort: null, offset: 0, limit: 500 });
   const find = async (m: typeof import("./backend"), r: EventRow) => (await pageOf(m)).rows.find((x) => x.record_key === r.record_key)!;
+
+  it("filters, suggests and counts the rule labels of the rows (case-insensitive)", async () => {
+    const m = await fresh();
+    const labelled = list.filter((r) => r.rules.length > 0);
+    expect(labelled.length).toBeGreaterThan(0);
+    const rule = labelled[0].rules[0];
+    const want = list.filter((r) => r.rules.includes(rule)).length;
+    expect((await pageOf(m, { fields: [["rule", rule.toLowerCase()]] })).total).toBe(want);
+    expect((await pageOf(m, { fields: [["rule", `!${rule}`]] })).total).toBe(list.length - want);
+    expect(await m.mockCall("events_suggest", { field: "rule", prefix: rule.slice(0, 5).toLowerCase() })).toContain(rule);
+    const v = await m.mockCall<FieldValues>("events_values", { query: Q, field: "rule", prefix: "", limit: 10 });
+    expect(v.values).toContainEqual({ value: rule, count: want });
+  });
 
   it("flags rows and shows it on the next page; clearing removes it", async () => {
     const m = await fresh();

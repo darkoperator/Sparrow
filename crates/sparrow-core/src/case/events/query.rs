@@ -20,7 +20,8 @@ use std::path::Path;
 
 /// The query behind [`EventRow`]s: `rows` (a select of `events` rows, with their order and limit) is taken once as the
 /// page, and everything beyond the `events` columns is computed for those rows only: finding and note counts, the
-/// effective flag (built once by `marksql::flagged` over the page) and the tags as JSON. `tail` follows the select.
+/// effective flag (built once by `marksql::flagged` over the page), the tags as JSON and the rule ids of the open findings.
+/// `tail` follows the select.
 fn row_query(rows: &str, tail: &str) -> String {
     let page = "SELECT source_table, record_key FROM page";
     format!(
@@ -30,7 +31,7 @@ fn row_query(rows: &str, tail: &str) -> String {
          e.target, e.ip, e.ip_prefix, e.ip_country, e.asn, e.asn_org, e.ip_kind, e.device_id, e.device_name, \
          e.device_object_id, e.entra_session_id, e.user_agent, e.app_id, e.summary, \
          coalesce(fc.n, 0), coalesce(nt.n, 0), nt.latest, {flags}, tg.tags, \
-         (coalesce(fl.agent_pend, false) OR coalesce(tg.pend, false)) \
+         (coalesce(fl.agent_pend, false) OR coalesce(tg.pend, false)), rl.rules \
          FROM page e \
          LEFT JOIN (SELECT source_table, record_key, count(DISTINCT finding_id) AS n FROM finding_evidence \
                     WHERE (source_table, record_key) IN ({page}) GROUP BY 1, 2) fc \
@@ -47,8 +48,14 @@ fn row_query(rows: &str, tail: &str) -> String {
                     FROM event_tags et JOIN tags t ON t.tag_id = et.tag_id \
                     WHERE (et.source_table, et.record_key) IN ({page}) GROUP BY 1, 2) tg \
                 ON tg.source_table = e.source_table AND tg.record_key = e.record_key \
+         LEFT JOIN (SELECT fe.source_table, fe.record_key, CAST(to_json(list(DISTINCT f.rule_id ORDER BY f.rule_id)) AS VARCHAR) AS rules \
+                    FROM finding_evidence fe JOIN findings f ON f.finding_id = fe.finding_id \
+                    WHERE f.rule_id IS NOT NULL AND {open} AND (fe.source_table, fe.record_key) IN ({page}) \
+                    GROUP BY 1, 2) rl \
+                ON rl.source_table = e.source_table AND rl.record_key = e.record_key \
          LEFT JOIN ({flagged}) fl ON fl.source_table = e.source_table AND fl.record_key = e.record_key{tail}",
         flags = marksql::FLAG_COLUMNS,
+        open = filter::OPEN_FINDING,
         flagged = marksql::flagged("page", true),
     )
 }
@@ -96,6 +103,11 @@ fn row_of(r: &Row) -> Result<EventRow> {
             None => Vec::new(),
         },
         ai_pending: r.get::<_, Option<bool>>(32)?.unwrap_or(false),
+        rules: match r.get::<_, Option<String>>(33)? {
+            Some(json) => serde_json::from_str(&json)
+                .map_err(|e| Error::Invalid(format!("rules of an event are not JSON: {e}")))?,
+            None => Vec::new(),
+        },
     })
 }
 
@@ -547,11 +559,26 @@ pub fn detail(conn: &Connection, source_table: &str, record_key: &str) -> Result
 }
 
 /// Distinct case values of `field` that start with `prefix` (case-insensitively), sorted, at most `limit` (200). Tag
-/// suggests the tag names in use.
+/// suggests the tag names in use, Rule the rule ids of the open findings with an event as evidence (the rules a row can
+/// carry).
 pub fn suggest(conn: &Connection, field: Field, prefix: &str, limit: usize) -> Result<Vec<String>> {
     if field == Field::Tag {
         let mut stmt = conn.prepare(&format!(
             "SELECT name FROM tags WHERE name ILIKE ? ESCAPE '\\' ORDER BY name LIMIT {}",
+            limit.min(200)
+        ))?;
+        let pattern = format!("{}%", filter::like_pattern(prefix.trim()));
+        let rows = stmt.query_map([pattern], |r| r.get::<_, String>(0))?;
+        return Ok(rows.collect::<std::result::Result<_, _>>()?);
+    }
+    if field == Field::Rule {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT DISTINCT f.rule_id FROM findings f WHERE f.rule_id ILIKE ? ESCAPE '\\' AND {} \
+             AND EXISTS (SELECT 1 FROM finding_evidence fe JOIN events e \
+                         ON e.source_table = fe.source_table AND e.record_key = fe.record_key \
+                         WHERE fe.finding_id = f.finding_id) \
+             ORDER BY 1 LIMIT {}",
+            filter::OPEN_FINDING,
             limit.min(200)
         ))?;
         let pattern = format!("{}%", filter::like_pattern(prefix.trim()));
@@ -567,7 +594,7 @@ pub fn suggest(conn: &Connection, field: Field, prefix: &str, limit: usize) -> R
         Field::Asn => &["CAST(e.asn AS VARCHAR)"],
         Field::Device => &["e.device_name", "e.device_id"],
         Field::Session => &["e.entra_session_id"],
-        Field::Tag => unreachable!("handled above"),
+        Field::Tag | Field::Rule => unreachable!("handled above"),
     };
     let pattern = format!("{}%", filter::like_pattern(prefix.trim()));
     let parts: Vec<String> = exprs
@@ -591,7 +618,7 @@ pub const MAX_VALUES: usize = 200;
 /// most events first (then by value), at most `limit` (capped at [`MAX_VALUES`]) of them; `total` counts every distinct
 /// value. `prefix` keeps the values that start with it, case-insensitively (`*` is a wildcard, so `*x` finds any value
 /// holding `x`). Blank values are left out. A value is what the field's filter compares: an event with an actor and
-/// another mailbox owner counts for both accounts; Account, Device, Session and Tag values that differ only in case
+/// another mailbox owner counts for both accounts; Account, Device, Session, Tag and Rule values that differ only in case
 /// are one value (shown in one of their spellings), as their filter compares them lower-cased. A device is its display
 /// name, else its device id, else its object id. For Source the `message_trace_event` rows are counted even though the
 /// grid hides them until the Source filter names them, so they can be ticked. A `limit` below 1 is refused.
@@ -618,6 +645,14 @@ pub fn values(
              JOIN tags t ON t.tag_id = et.tag_id{}",
             w.sql()
         ),
+        // One row per (event, rule): a row that is evidence of two findings of one rule counts once.
+        Field::Rule => format!(
+            "SELECT DISTINCT e.source_table, e.record_key, f.rule_id AS v FROM events e JOIN finding_evidence fe \
+             ON fe.source_table = e.source_table AND fe.record_key = e.record_key \
+             JOIN findings f ON f.finding_id = fe.finding_id AND {}{}",
+            filter::OPEN_FINDING,
+            w.sql()
+        ),
         Field::Account => format!(
             "SELECT unnest(list_distinct([e.actor_upn, e.owner_upn])) AS v FROM events e{}",
             w.sql()
@@ -631,14 +666,14 @@ pub fn values(
                 Field::Asn => "CAST(e.asn AS VARCHAR)",
                 Field::Device => "coalesce(e.device_name, e.device_id, e.device_object_id)",
                 Field::Session => "e.entra_session_id",
-                Field::Account | Field::Tag => unreachable!("handled above"),
+                Field::Account | Field::Tag | Field::Rule => unreachable!("handled above"),
             };
             format!("SELECT {expr} AS v FROM events e{}", w.sql())
         }
     };
     let group = if matches!(
         field,
-        Field::Account | Field::Device | Field::Session | Field::Tag
+        Field::Account | Field::Device | Field::Session | Field::Tag | Field::Rule
     ) {
         "lower(v)"
     } else {
@@ -672,7 +707,7 @@ pub fn values(
 }
 
 /// The CSV columns, in order.
-pub const CSV_COLUMNS: [&str; 20] = [
+pub const CSV_COLUMNS: [&str; 21] = [
     "event_time",
     "source",
     "operation",
@@ -690,6 +725,7 @@ pub const CSV_COLUMNS: [&str; 20] = [
     "user_agent",
     "flag",
     "tags",
+    "rules",
     "latest_note",
     "source_table",
     "record_key",
@@ -749,6 +785,7 @@ pub fn export_csv(conn: &Connection, q: &EventQuery, out: &Path) -> Result<u64> 
                 .map(|t: &TagRef| t.name.as_str())
                 .collect::<Vec<_>>()
                 .join("|"),
+            e.rules.join("|"),
             text(&e.latest_note),
             e.source_table.clone(),
             e.record_key.clone(),
