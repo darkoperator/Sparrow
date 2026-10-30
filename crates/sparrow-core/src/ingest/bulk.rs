@@ -283,8 +283,13 @@ pub fn load_ual_batch(
     // one, which a single batch decides in `stage_chosen`: not an upgrade. `file_inserted` holds the rows this file's
     // batches inserted (a row that existed before the file and was only sighted by it is still upgraded); it keeps
     // one file's ids at a time.
-    conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS file_inserted (file_id BIGINT, record_id VARCHAR)")?;
-    conn.execute("DELETE FROM file_inserted WHERE file_id <> ?", params![file_id])?;
+    conn.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS file_inserted (file_id BIGINT, record_id VARCHAR)",
+    )?;
+    conn.execute(
+        "DELETE FROM file_inserted WHERE file_id <> ?",
+        params![file_id],
+    )?;
     let (inserted, upgraded): (i64, i64) = conn.query_row(
         "SELECT (SELECT count(*) FROM stage_fresh),
                 (SELECT count(*) FROM stage_upgrade u WHERE NOT EXISTS (

@@ -333,18 +333,26 @@ pub fn load_streamed(
     let batch = ctx.options.batch_rows.max(1);
     let mut staged: Vec<Vec<StagedRow>> = tables.iter().map(|_| Vec::new()).collect();
     let mut outcomes: Vec<LoadOutcome> = vec![LoadOutcome::default(); tables.len()];
-    let load = |ctx: &ParseContext<'_>, i: usize, rows: &mut Vec<StagedRow>, total: &mut LoadOutcome| {
-        if rows.is_empty() {
-            return Ok(());
-        }
-        let (spec, columns) = tables[i];
-        let out = load_rows_batch(ctx.conn, spec, columns, ctx.collection_id, ctx.file_id, rows)?;
-        total.staged += out.staged;
-        total.inserted += out.inserted;
-        total.updated += out.updated;
-        rows.clear();
-        Ok::<(), Error>(())
-    };
+    let load =
+        |ctx: &ParseContext<'_>, i: usize, rows: &mut Vec<StagedRow>, total: &mut LoadOutcome| {
+            if rows.is_empty() {
+                return Ok(());
+            }
+            let (spec, columns) = tables[i];
+            let out = load_rows_batch(
+                ctx.conn,
+                spec,
+                columns,
+                ctx.collection_id,
+                ctx.file_id,
+                rows,
+            )?;
+            total.staged += out.staged;
+            total.inserted += out.inserted;
+            total.updated += out.updated;
+            rows.clear();
+            Ok::<(), Error>(())
+        };
     for_each_record(&text.text, format, |event| {
         let RecordEvent::Record(r) = event else {
             return Ok(true);

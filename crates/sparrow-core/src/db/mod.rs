@@ -782,8 +782,6 @@ impl Case {
 mod tests {
     use super::*;
 
-
-
     fn memory_limit(conn: &Connection) -> u64 {
         let v: String = conn
             .query_row("SELECT current_setting('memory_limit')", [], |r| r.get(0))
@@ -803,7 +801,9 @@ mod tests {
         assert_eq!(target("1 GiB", Some("8GB")), Some(8 * gb));
         assert_eq!(target("25.5 GiB", Some(" Default ")), None);
         for bad in ["0", "lots", "-1GB", ""] {
-            let msg = memory_limit_target("25.5 GiB", Some(bad)).unwrap_err().to_string();
+            let msg = memory_limit_target("25.5 GiB", Some(bad))
+                .unwrap_err()
+                .to_string();
             assert!(msg.contains(MEMORY_LIMIT_ENV), "{bad}: {msg}");
         }
     }
@@ -818,9 +818,13 @@ mod tests {
         drop(case);
         let ro = Case::open_read_only(&path).unwrap();
         let read_only = memory_limit(ro.conn());
-        assert!(read_only > 0 && read_only <= DEFAULT_MEMORY_LIMIT, "{read_only}");
+        assert!(
+            read_only > 0 && read_only <= DEFAULT_MEMORY_LIMIT,
+            "{read_only}"
+        );
         // The locked query instance (its own in-memory DuckDB) reports its own setting.
-        let q = crate::case::query::run(&path, "SELECT current_setting('memory_limit') AS m", 1).unwrap();
+        let q = crate::case::query::run(&path, "SELECT current_setting('memory_limit') AS m", 1)
+            .unwrap();
         let text = q.rows[0][0].as_str().unwrap().to_string();
         let query = parse_size(&text).unwrap();
         assert!(query > 0 && query <= DEFAULT_MEMORY_LIMIT, "{text}");
@@ -828,10 +832,16 @@ mod tests {
         let mut case = Case::create_or_open(&path).unwrap();
         case.with_file_released(|_| Ok(())).unwrap();
         let reopened = memory_limit(case.conn());
-        assert!(reopened > 0 && reopened <= DEFAULT_MEMORY_LIMIT, "{reopened}");
+        assert!(
+            reopened > 0 && reopened <= DEFAULT_MEMORY_LIMIT,
+            "{reopened}"
+        );
         let mem = Case::in_memory().unwrap();
         let in_memory = memory_limit(mem.conn());
-        assert!(in_memory > 0 && in_memory <= DEFAULT_MEMORY_LIMIT, "{in_memory}");
+        assert!(
+            in_memory > 0 && in_memory <= DEFAULT_MEMORY_LIMIT,
+            "{in_memory}"
+        );
         let spill: String = mem
             .conn()
             .query_row("SELECT current_setting('temp_directory')", [], |r| r.get(0))
@@ -854,7 +864,10 @@ mod tests {
             let msg = memory_override(Err(VarError::NotUnicode(bad)))
                 .unwrap_err()
                 .to_string();
-            assert!(msg.contains(MEMORY_LIMIT_ENV) && msg.contains("UTF-8"), "{msg}");
+            assert!(
+                msg.contains(MEMORY_LIMIT_ENV) && msg.contains("UTF-8"),
+                "{msg}"
+            );
         }
     }
 
@@ -883,7 +896,9 @@ mod tests {
         cap_memory_using(&no_spill, false, Some("256MB")).unwrap();
         no_spill.execute_batch("SET temp_directory = ''").unwrap();
         no_spill.execute_batch(lock).unwrap();
-        let err = no_spill.query_row(sort, [], |r| r.get::<_, i64>(0)).unwrap_err();
+        let err = no_spill
+            .query_row(sort, [], |r| r.get::<_, i64>(0))
+            .unwrap_err();
         assert!(err.to_string().contains("Out of Memory"), "{err}");
         let conn = Connection::open_in_memory().unwrap();
         cap_memory_using(&conn, true, Some("256MB")).unwrap();

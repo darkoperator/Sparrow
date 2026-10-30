@@ -363,14 +363,27 @@ fn a_row_stored_before_the_file_is_still_upgraded_across_its_batches() {
     };
     let one = Case::in_memory().unwrap();
     prior(&one);
-    let whole = load_ual_batch(one.conn(), 7, 2, &[staged(0, mia_partial()), staged(1, mia_full())]).unwrap();
-    assert_eq!((whole.inserted, whole.upgraded, whole.duplicate()), (0, 1, 1));
+    let whole = load_ual_batch(
+        one.conn(),
+        7,
+        2,
+        &[staged(0, mia_partial()), staged(1, mia_full())],
+    )
+    .unwrap();
+    assert_eq!(
+        (whole.inserted, whole.upgraded, whole.duplicate()),
+        (0, 1, 1)
+    );
     let two = Case::in_memory().unwrap();
     prior(&two);
     let a = load_ual_batch(two.conn(), 7, 2, &[staged(0, mia_partial())]).unwrap();
     let b = load_ual_batch(two.conn(), 7, 2, &[staged(1, mia_full())]).unwrap();
     assert_eq!(
-        (a.inserted + b.inserted, a.upgraded + b.upgraded, a.duplicate() + b.duplicate()),
+        (
+            a.inserted + b.inserted,
+            a.upgraded + b.upgraded,
+            a.duplicate() + b.duplicate()
+        ),
         (0, 1, 1)
     );
 }
@@ -387,9 +400,13 @@ fn split_batches_count_like_one_for_every_completeness_order() {
                  ORDER BY 1",
             )
             .unwrap();
-        stmt.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
     };
-    let orders: [(&str, fn() -> UalRecord, fn() -> UalRecord); 4] = [
+    type Make = fn() -> UalRecord;
+    let orders: [(&str, Make, Make); 4] = [
         ("partial,full", mia_partial, mia_full),
         ("full,partial", mia_full, mia_partial),
         ("full,full", mia_full, mia_full),
@@ -403,7 +420,11 @@ fn split_batches_count_like_one_for_every_completeness_order() {
         let b = load_ual_batch(two.conn(), 7, 1, &[staged(1, y())]).unwrap();
         assert_eq!(
             (w.inserted, w.upgraded, w.duplicate()),
-            (a.inserted + b.inserted, a.upgraded + b.upgraded, a.duplicate() + b.duplicate()),
+            (
+                a.inserted + b.inserted,
+                a.upgraded + b.upgraded,
+                a.duplicate() + b.duplicate()
+            ),
             "{name}"
         );
         assert_eq!(snapshot(&one), snapshot(&two), "{name}");

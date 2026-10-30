@@ -240,7 +240,10 @@ fn load(
         conn.execute_batch(
             "CREATE TEMP TABLE IF NOT EXISTS file_picked (table_name VARCHAR, file_id BIGINT, record_key VARCHAR)",
         )?;
-        conn.execute("DELETE FROM file_picked WHERE file_id <> ?", params![file_id])?;
+        conn.execute(
+            "DELETE FROM file_picked WHERE file_id <> ?",
+            params![file_id],
+        )?;
         format!(
             "WHERE NOT EXISTS (SELECT 1 FROM file_picked f
                                WHERE f.table_name = '{t}' AND f.file_id = {file_id} AND f.record_key = s.record_key)"

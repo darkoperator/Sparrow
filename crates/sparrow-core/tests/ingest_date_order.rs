@@ -383,15 +383,29 @@ fn one_ual_file_whose_order_is_proved_only_by_its_last_row() {
         csv_line(&[time, id, "Update", "2", "bob@contoso.example", "Exchange"])
     };
     let csv = header
-        + &record("03/09/2026 08:30:00", "e6e6e6e6-0000-4000-8000-000000000001")
-        + &record("04/09/2026 09:00:00", "e6e6e6e6-0000-4000-8000-000000000002")
-        + &record("15/09/2026 08:30:00", "e6e6e6e6-0000-4000-8000-000000000003");
+        + &record(
+            "03/09/2026 08:30:00",
+            "e6e6e6e6-0000-4000-8000-000000000001",
+        )
+        + &record(
+            "04/09/2026 09:00:00",
+            "e6e6e6e6-0000-4000-8000-000000000002",
+        )
+        + &record(
+            "15/09/2026 08:30:00",
+            "e6e6e6e6-0000-4000-8000-000000000003",
+        );
     fixtures::write(&root, rel, &fixtures::utf8_bom(&csv));
     let (case, report) = ingest(dir.path(), None);
     let file = row(&report, rel);
     assert_eq!(file.status, FileStatus::Parsed, "{file:#?}");
     assert_eq!(
-        (file.records_read, file.records_loaded, file.records_duplicate, file.records_error),
+        (
+            file.records_read,
+            file.records_loaded,
+            file.records_duplicate,
+            file.records_error
+        ),
         (3, 3, 0, 0)
     );
     let mut stmt = case
@@ -408,11 +422,16 @@ fn one_ual_file_whose_order_is_proved_only_by_its_last_row() {
         .map(Result::unwrap)
         .collect();
     // Day first: 3 and 4 September, not 9 March and 9 April.
-    assert_eq!(got, vec![(1_788_424_200, 2), (1_788_512_400, 3), (1_789_461_000, 4)]);
+    assert_eq!(
+        got,
+        vec![(1_788_424_200, 2), (1_788_512_400, 3), (1_789_461_000, 4)]
+    );
     assert_eq!(
         count(
             &case,
-            &format!("SELECT count(*) FROM source_files WHERE rel_path = '{rel}' AND date_order = 'day_first'")
+            &format!(
+                "SELECT count(*) FROM source_files WHERE rel_path = '{rel}' AND date_order = 'day_first'"
+            )
         ),
         1
     );

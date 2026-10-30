@@ -12,7 +12,8 @@ use crate::normalize::fields::{Cell, Rec};
 use crate::normalize::net::{normalize_ip, normalize_upn};
 use crate::parsers::message_trace::{COLS as TRACE_COLS, message_trace_key, received_cells};
 use crate::parsers::records::{
-    RecordEvent, RecordFormat, SourceRecord, for_each_record, holds_placeholder, placeholder_message,
+    RecordEvent, RecordFormat, SourceRecord, for_each_record, holds_placeholder,
+    placeholder_message,
 };
 use crate::parsers::stage::{
     CellRow, RowDraft, RowOut, TableRows, csv_row_key, load_streamed, lower, non_empty_cells,

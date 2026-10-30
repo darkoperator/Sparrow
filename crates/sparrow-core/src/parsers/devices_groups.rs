@@ -75,7 +75,7 @@ pub struct DevicesParser;
 impl ArtifactParser for DevicesParser {
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
         let mut format = RecordFormat::of(ctx.rel_path);
-        if format == RecordFormat::Csv && RecordFormat::json_content(&*ctx.text.text) {
+        if format == RecordFormat::Csv && RecordFormat::json_content(&ctx.text.text) {
             format = RecordFormat::Json;
         }
         let records = read_state_records(ctx, format)?;

@@ -883,7 +883,16 @@ fn every_batch_size_stores_what_one_batch_stores() {
         .into_iter()
         .map(|e| {
             e.into_iter()
-                .map(|(k, v)| (k, if k == "network_message_id" { other.to_string() } else { v }))
+                .map(|(k, v)| {
+                    (
+                        k,
+                        if k == "network_message_id" {
+                            other.to_string()
+                        } else {
+                            v
+                        },
+                    )
+                })
                 .collect()
         })
         .collect();
@@ -905,16 +914,28 @@ fn every_batch_size_stores_what_one_batch_stores() {
         let f = row(&report, DETAIL_REL);
         let file = format!(
             "{:?} {} {} {} {} {:?}",
-            f.status, f.records_read, f.records_loaded, f.records_duplicate, f.records_error, f.warnings
+            f.status,
+            f.records_read,
+            f.records_loaded,
+            f.records_duplicate,
+            f.records_error,
+            f.warnings
         );
         (all_tables(&case), file)
     };
     let (want_tables, want_file) = run(usize::MAX);
     // 13 event rows (12 + the repeated RECEIVE, a duplicate) and the message rows of two messages.
-    let traces = want_tables.iter().find(|(t, ..)| t == "message_trace").unwrap().1;
+    let traces = want_tables
+        .iter()
+        .find(|(t, ..)| t == "message_trace")
+        .unwrap()
+        .1;
     assert!(traces >= 4, "{traces} message rows");
     assert!(want_file.starts_with("Parsed "), "{want_file}");
-    assert!(want_file.contains(" 1 0 "), "one duplicate, no error: {want_file}");
+    assert!(
+        want_file.contains(" 1 0 "),
+        "one duplicate, no error: {want_file}"
+    );
     for batch in [1, 2, 3] {
         let (tables, file) = run(batch);
         assert_eq!(file, want_file, "batch {batch}: file report");

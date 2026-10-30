@@ -624,12 +624,42 @@ fn every_batch_size_stores_what_one_batch_stores() {
         &root,
         PORTAL_CSV,
         &portal_csv(&[
-            portal_row(&S1.to_uppercase(), "2026-09-01T09:30:00Z", "Lagos, Lagos, NG", "No", "sess-1"),
-            portal_row(S3, "2026-09-01T11:00:00Z", "Seattle, Washington, US", "Yes", "sess-3"),
+            portal_row(
+                &S1.to_uppercase(),
+                "2026-09-01T09:30:00Z",
+                "Lagos, Lagos, NG",
+                "No",
+                "sess-1",
+            ),
+            portal_row(
+                S3,
+                "2026-09-01T11:00:00Z",
+                "Seattle, Washington, US",
+                "Yes",
+                "sess-3",
+            ),
             portal_row(s4, "not a time", "Seattle, Washington, US", "Yes", "sess-4"),
-            portal_row(S3, "2026-09-01T11:05:00Z", "Paris, Ile-de-France, FR", "No", "sess-3b"),
-            portal_row("", "2026-09-01T11:10:00Z", "Paris, Ile-de-France, FR", "No", "sess-5"),
-            portal_row(S2, "2026-09-01T10:00:00Z", "Lagos, Lagos, NG", "No", "sess-2"),
+            portal_row(
+                S3,
+                "2026-09-01T11:05:00Z",
+                "Paris, Ile-de-France, FR",
+                "No",
+                "sess-3b",
+            ),
+            portal_row(
+                "",
+                "2026-09-01T11:10:00Z",
+                "Paris, Ile-de-France, FR",
+                "No",
+                "sess-5",
+            ),
+            portal_row(
+                S2,
+                "2026-09-01T10:00:00Z",
+                "Lagos, Lagos, NG",
+                "No",
+                "sess-2",
+            ),
         ]),
     );
     let run = |batch: usize| {
@@ -646,20 +676,39 @@ fn every_batch_size_stores_what_one_batch_stores() {
             .map(|f| {
                 format!(
                     "{} {:?} {} {} {} {} {:?}",
-                    f.rel_path, f.status, f.records_read, f.records_loaded, f.records_duplicate,
-                    f.records_error, f.warnings
+                    f.rel_path,
+                    f.status,
+                    f.records_read,
+                    f.records_loaded,
+                    f.records_duplicate,
+                    f.records_error,
+                    f.warnings
                 )
             })
             .collect();
         (all_tables(&case), files)
     };
     let (want_tables, want_files) = run(usize::MAX);
-    let file = |rel: &str| want_files.iter().find(|f| f.starts_with(rel)).unwrap().clone();
+    let file = |rel: &str| {
+        want_files
+            .iter()
+            .find(|f| f.starts_with(rel))
+            .unwrap()
+            .clone()
+    };
     // read / loaded / duplicate / error: JSON 5 records, 2 kept, 2 later copies, 1 without an Id.
-    assert!(file(&json_rel).contains(" Parsed 5 2 2 1 "), "{}", file(&json_rel));
+    assert!(
+        file(&json_rel).contains(" Parsed 5 2 2 1 "),
+        "{}",
+        file(&json_rel)
+    );
     // Portal: 6 rows; S1 and S2 update the Graph rows, S3 is new, its second copy is a duplicate, one bad time and
     // one row without a Request ID are errors.
-    assert!(file(PORTAL_CSV).contains(" Parsed 6 3 1 2 "), "{}", file(PORTAL_CSV));
+    assert!(
+        file(PORTAL_CSV).contains(" Parsed 6 3 1 2 "),
+        "{}",
+        file(PORTAL_CSV)
+    );
     for batch in [1, 2, 3] {
         let (tables, files) = run(batch);
         assert_eq!(files, want_files, "batch {batch}: file reports");

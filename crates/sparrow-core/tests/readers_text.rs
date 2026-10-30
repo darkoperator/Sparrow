@@ -168,11 +168,20 @@ fn utf8_text_borrows_the_raw_bytes_and_other_encodings_own_theirs() {
     let plain = b"a,b\r\n1,2\r\n".to_vec();
     let d = decode(&plain);
     assert!(matches!(d.text, Cow::Borrowed(_)), "plain UTF-8 is copied");
-    assert_eq!((d.text.as_ptr(), d.text.len()), (plain.as_ptr(), plain.len()));
+    assert_eq!(
+        (d.text.as_ptr(), d.text.len()),
+        (plain.as_ptr(), plain.len())
+    );
     let bom = [&[0xEF, 0xBB, 0xBF][..], "café".as_bytes()].concat();
     let d = decode(&bom);
-    assert!(matches!(d.text, Cow::Borrowed(_)), "UTF-8 with BOM is copied");
-    assert_eq!((d.text.as_ptr(), d.text.len()), (bom[3..].as_ptr(), bom.len() - 3));
+    assert!(
+        matches!(d.text, Cow::Borrowed(_)),
+        "UTF-8 with BOM is copied"
+    );
+    assert_eq!(
+        (d.text.as_ptr(), d.text.len()),
+        (bom[3..].as_ptr(), bom.len() - 3)
+    );
     let raw = utf16le("café", true);
     assert!(matches!(decode(&raw).text, Cow::Owned(_)));
     let cp1252 = b"caf\xe9".to_vec();
@@ -194,9 +203,14 @@ fn backward_lookups_resume_from_a_checkpoint_with_the_same_offsets() {
     let mut m = OffsetMapper::new(&d, raw.len() as u64);
     let mut state = 12345u64;
     for _ in 0..400 {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let at = bounds[(state >> 33) as usize % bounds.len()];
         assert_eq!(m.raw_offset(&d.text, at), fresh(at), "decoded offset {at}");
     }
-    assert!(d.text.len() > 10 * 64 * 1024, "too short to cross checkpoints");
+    assert!(
+        d.text.len() > 10 * 64 * 1024,
+        "too short to cross checkpoints"
+    );
 }

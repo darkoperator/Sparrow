@@ -438,7 +438,9 @@ fn portal_success_rows_have_an_empty_error_code_cell() {
                 {
                     continue;
                 }
-                let text = sparrow_core::readers::text::decode(&std::fs::read(&path).unwrap()).text.into_owned();
+                let text = sparrow_core::readers::text::decode(&std::fs::read(&path).unwrap())
+                    .text
+                    .into_owned();
                 found += text.matches(",Success,,").count();
                 assert_eq!(text.matches(",Success,0,").count(), 0, "{path:?}");
             }
@@ -484,7 +486,12 @@ fn message_trace_summary_is_utf16_by_default_and_cp1252_after_an_excel_resave() 
             .expect("the message-trace summary");
         let decoded = sparrow_core::readers::text::decode(bytes);
         let quoted = decoded.text.starts_with("\"origin_timestamp_utc\"");
-        (decoded.encoding, quoted, bytes.to_vec(), decoded.text.into_owned())
+        (
+            decoded.encoding,
+            quoted,
+            bytes.to_vec(),
+            decoded.text.into_owned(),
+        )
     };
 
     let mut utf16 = 0;

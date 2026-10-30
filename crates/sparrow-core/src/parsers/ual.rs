@@ -10,7 +10,9 @@ use crate::normalize::fields::Rec;
 use crate::normalize::ual::{event_time_text, normalize_audit};
 use crate::normalize::ual_shape::{AuditInput, Completeness, UalShape, detect_shape, to_audit};
 use crate::parsers::admin_audit::load_admin_audit;
-use crate::parsers::records::{RecordEvent, RecordFormat, SourceRecord, for_each_record, read_records};
+use crate::parsers::records::{
+    RecordEvent, RecordFormat, SourceRecord, for_each_record, read_records,
+};
 use crate::readers::time::DateOrderDetector;
 use crate::{Error, Result};
 use serde_json::{Map, Value};

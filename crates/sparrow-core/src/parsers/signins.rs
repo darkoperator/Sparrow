@@ -12,11 +12,13 @@ use crate::ingest::context::ParseContext;
 use crate::ingest::parser::{ArtifactParser, ParserRegistry};
 use crate::normalize::fields::{Cell, Rec};
 use crate::normalize::net::{normalize_ip, normalize_upn};
-use crate::parsers::records::{RecordEvent, RecordFormat, for_each_record, holds_placeholder, placeholder_message};
+use crate::parsers::records::{
+    RecordEvent, RecordFormat, for_each_record, holds_placeholder, placeholder_message,
+};
 use crate::parsers::risk::graph_location;
 use crate::parsers::stage::{
-    CellRow, RowDraft, RowOut, SheetRow, TableRows, load_streamed, load_tables, lower, read_state_records,
-    reject_at,
+    CellRow, RowDraft, RowOut, SheetRow, TableRows, load_streamed, load_tables, lower,
+    read_state_records, reject_at,
 };
 use crate::readers::csv_scan::normalize_headers;
 use crate::readers::text::Span;
