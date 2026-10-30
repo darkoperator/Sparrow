@@ -217,7 +217,7 @@ impl ArtifactParser for UalParser {
         }
         // The records are streamed, never collected (a 1.76 GB Purview export collected peaked at 21.5 GB): the first
         // readable record decides the shape, a first pass reads the times for the day/month order, and a second
-        // normalizes and loads them in batches of `ual_batch_rows` inside the file's transaction.
+        // normalizes and loads them in batches of `batch_rows` inside the file's transaction.
         let text = ctx.text;
         let mut first = None;
         for_each_record(&text.text, format, |event| match event {
@@ -311,7 +311,7 @@ impl ArtifactParser for UalParser {
             ));
         }
         let order = ctx.resolve_date_order(&detector)?;
-        let batch = ctx.options.ual_batch_rows.max(1);
+        let batch = ctx.options.batch_rows.max(1);
         let mut staged = Vec::new();
         let mut loads = Loads::default();
         for_each_record(&text.text, format, |event| {

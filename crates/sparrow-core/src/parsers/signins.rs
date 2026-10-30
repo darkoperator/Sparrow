@@ -12,10 +12,11 @@ use crate::ingest::context::ParseContext;
 use crate::ingest::parser::{ArtifactParser, ParserRegistry};
 use crate::normalize::fields::{Cell, Rec};
 use crate::normalize::net::{normalize_ip, normalize_upn};
-use crate::parsers::records::RecordFormat;
+use crate::parsers::records::{RecordEvent, RecordFormat, for_each_record, holds_placeholder, placeholder_message};
 use crate::parsers::risk::graph_location;
 use crate::parsers::stage::{
-    CellRow, RowDraft, SheetRow, TableRows, load_tables, lower, read_state_records, reject_at,
+    CellRow, RowDraft, RowOut, SheetRow, TableRows, load_streamed, load_tables, lower, read_state_records,
+    reject_at,
 };
 use crate::readers::csv_scan::normalize_headers;
 use crate::readers::text::Span;
@@ -87,20 +88,6 @@ struct Input {
     sheet_row: Option<SheetRow>,
     map: Map<String, Value>,
     lossy: bool,
-}
-
-fn text_inputs(ctx: &mut ParseContext<'_>) -> Result<Vec<Input>> {
-    let format = RecordFormat::of(ctx.rel_path);
-    Ok(read_state_records(ctx, format)?
-        .into_iter()
-        .map(|r| Input {
-            ordinal: r.ordinal,
-            span: r.span,
-            sheet_row: None,
-            map: r.map,
-            lossy: format.lossy(),
-        })
-        .collect())
 }
 
 /// XLSX rows keyed by the normalized header row (same cleanup as CSV headers).
@@ -513,12 +500,83 @@ fn portal_row(rec: &Rec, event_type: Option<&'static str>) -> Vec<Cell> {
 
 pub struct SigninsParser;
 
+/// A CSV/JSON sign-in export, streamed (see [`load_streamed`]): a portal or Graph export can hold millions of
+/// sign-ins (a 170 MB portal CSV collected as records peaked at 11 GB).
+fn parse_streamed(ctx: &mut ParseContext<'_>) -> Result<()> {
+    let format = RecordFormat::of(ctx.rel_path);
+    let text = ctx.text;
+    // What `text_inputs` + `shape_of` decided from the collected records: the shape (portal if any record is one),
+    // the first record's columns for the error, and the placeholder count.
+    let (mut first, mut portal, mut graph, mut placeholders) = (None, false, false, 0usize);
+    // Once a portal record is seen the shape is settled; only the placeholder count can still change, and it is
+    // not reported for a portal download or a JSON file, so the scan stops there.
+    let count_placeholders = format == RecordFormat::Csv && !ctx.portal_export;
+    for_each_record(&text.text, format, |event| {
+        if let RecordEvent::Record(r) = event {
+            let rec = Rec::new(&r.map, false);
+            portal |= rec.has("Date (UTC)") && rec.has("Request ID");
+            graph |= rec.has("CreatedDateTime") && rec.has("Id");
+            if count_placeholders && holds_placeholder(&r) {
+                placeholders += 1;
+            }
+            if first.is_none() {
+                first = Some(r.map.keys().take(12).cloned().collect::<Vec<_>>());
+            }
+            return Ok(!(portal && !count_placeholders));
+        }
+        Ok(true)
+    })?;
+    let Some(first) = first else {
+        // No readable record: recording the unreadable ones is all there is to do.
+        read_state_records(ctx, format)?;
+        return Ok(());
+    };
+    if !ctx.portal_export
+        && let Some(w) = placeholder_message(placeholders)
+    {
+        ctx.warn(w);
+    }
+    let shape = if portal {
+        Shape::Portal
+    } else if graph {
+        Shape::Graph
+    } else {
+        return Err(Error::UnsupportedShape(format!(
+            "no Entra sign-in fields (CreatedDateTime + Id, or Date (UTC) + Request ID) in [{}]",
+            first.join(", ")
+        )));
+    };
+    let event_type = portal_event_type(ctx.rel_path);
+    let lossy = format.lossy();
+    load_streamed(ctx, format, &[(&SIGNINS, COLS)], Vec::new(), |r| {
+        let rec = Rec::new(&r.map, lossy);
+        let Some(key) = signin_key(&rec) else {
+            return vec![RowOut::Reject("sign-in has no Id / Request ID".into())];
+        };
+        let cells = match shape {
+            Shape::Graph => graph_row(&rec),
+            Shape::Portal => portal_row(&rec, event_type),
+        };
+        vec![RowOut::Row {
+            table: 0,
+            draft: RowDraft {
+                ordinal: r.ordinal,
+                span: r.span,
+                record_key: key,
+                cells,
+                raw: Some(Value::Object(r.map.clone())),
+                sheet_row: None,
+            },
+        }]
+    })
+}
+
 impl ArtifactParser for SigninsParser {
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
         let inputs = if format_from_path(ctx.rel_path) == FileFormat::Xlsx {
             xlsx_inputs(ctx)?
         } else {
-            text_inputs(ctx)?
+            return parse_streamed(ctx);
         };
         let Some(first) = inputs.first() else {
             return Ok(());

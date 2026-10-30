@@ -204,10 +204,12 @@ impl LineIndex {
     }
 }
 
-/// Maps decoded offsets to raw file offsets. Queries should move forward; moving
-/// backwards restarts the scan from the beginning. Offsets never exceed the raw length:
-/// a replacement character for a truncated trailing code unit stands for fewer raw bytes
-/// than a full code unit.
+/// Maps decoded offsets to raw file offsets. Queries moving forward continue the scan; a query
+/// moving backwards resumes from the nearest checkpoint the scan recorded at or before it (every
+/// [`CHECKPOINT_EVERY`] decoded bytes), not from the beginning, so out-of-order lookups (the
+/// message-trace rows that point back at a message's first event) stay linear. Offsets never
+/// exceed the raw length: a replacement character for a truncated trailing code unit stands for
+/// fewer raw bytes than a full code unit.
 #[derive(Debug, Clone)]
 pub struct OffsetMapper {
     encoding: TextEncoding,
@@ -215,7 +217,12 @@ pub struct OffsetMapper {
     raw_len: u64,
     cur_dec: usize,
     cur_raw: u64,
+    /// (decoded, raw) offsets of char boundaries the scan passed, ascending, the first `(0, bom_len)`.
+    checkpoints: Vec<(usize, u64)>,
 }
+
+/// Decoded bytes between two [`OffsetMapper`] checkpoints.
+const CHECKPOINT_EVERY: usize = 64 * 1024;
 
 impl OffsetMapper {
     /// `raw_len` is the length of the raw file `decoded` was decoded from.
@@ -226,6 +233,7 @@ impl OffsetMapper {
             raw_len,
             cur_dec: 0,
             cur_raw: decoded.bom_len,
+            checkpoints: vec![(0, decoded.bom_len)],
         }
     }
 
@@ -239,15 +247,18 @@ impl OffsetMapper {
             return self.bom_len + decoded as u64;
         }
         if decoded < self.cur_dec {
-            self.cur_dec = 0;
-            self.cur_raw = self.bom_len;
+            let i = self.checkpoints.partition_point(|&(d, _)| d <= decoded) - 1;
+            (self.cur_dec, self.cur_raw) = self.checkpoints[i];
         }
         let enc = self.encoding;
-        self.cur_raw += text[self.cur_dec..decoded]
-            .chars()
-            .map(|c| enc.encoded_len(c))
-            .sum::<u64>();
-        self.cur_dec = decoded;
+        for c in text[self.cur_dec..decoded].chars() {
+            self.cur_raw += enc.encoded_len(c);
+            self.cur_dec += c.len_utf8();
+            let last = self.checkpoints.last().map_or(0, |&(d, _)| d);
+            if self.cur_dec >= last + CHECKPOINT_EVERY {
+                self.checkpoints.push((self.cur_dec, self.cur_raw));
+            }
+        }
         self.cur_raw
     }
 }

@@ -1,4 +1,4 @@
-//! The UAL parser loads a file in batches of `IngestOptions::ual_batch_rows` inside its transaction: every batch
+//! The UAL parser loads a file in batches of `IngestOptions::batch_rows` inside its transaction: every batch
 //! size must store exactly what one batch stores, with the same per-file counts.
 
 use sparrow_core::Case;
@@ -39,7 +39,7 @@ fn tables(case: &Case) -> Vec<(String, i64, String)> {
 fn ingest(base: &Path, batch: usize) -> (Vec<(String, i64, String)>, Vec<String>) {
     let mut case = Case::in_memory().unwrap();
     let opts = IngestOptions {
-        ual_batch_rows: batch,
+        batch_rows: batch,
         ..IngestOptions::default()
     };
     let report = ingest_path(&mut case, base, &ParserRegistry::builtin(), &opts).unwrap();

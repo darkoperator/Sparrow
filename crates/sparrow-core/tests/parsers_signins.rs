@@ -571,3 +571,98 @@ fn risky_signin_flag_links_to_the_signin() {
         1
     );
 }
+
+/// Every base table as (name, rows, content hash), without the random case id and the clock columns.
+fn all_tables(case: &Case) -> Vec<(String, i64, String)> {
+    let sql: String = case
+        .conn()
+        .query_row(
+            "WITH c AS (
+                SELECT table_name,
+                       string_agg(format('\"{}\"', column_name), ',' ORDER BY ordinal_position) AS cols
+                FROM information_schema.columns
+                WHERE table_schema = 'main' AND table_name <> 'case_meta'
+                  AND table_name IN (SELECT table_name FROM information_schema.tables
+                                     WHERE table_type = 'BASE TABLE' AND table_schema = 'main')
+                  AND NOT regexp_matches(column_name, '(_at|started|finished|duration|elapsed)$')
+                GROUP BY table_name)
+             SELECT string_agg(format('SELECT ''{}'' AS t, count(*) AS n, CAST(coalesce(sum(hash({})), 0) AS VARCHAR) AS h FROM \"{}\"',
+                                      table_name, cols, table_name), ' UNION ALL ' ORDER BY table_name)
+             FROM c",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mut stmt = case.conn().prepare(&format!("{sql} ORDER BY t")).unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[test]
+fn every_batch_size_stores_what_one_batch_stores() {
+    // Sign-in files are streamed and loaded in batches: a later copy of a key in the same file must stay a
+    // duplicate across batches (the file's first copy wins), rejects and bad times must stay errors, and the
+    // portal rows must update the Graph rows exactly as in one batch.
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    let mut no_id = graph_signin(S3, "2026-09-01T12:00:00Z", 0, "none");
+    no_id.as_object_mut().unwrap().remove("Id");
+    let json_rel = signin_json(
+        &root,
+        &[
+            graph_signin(S1, "2026-09-01T09:30:00Z", 0, "none"),
+            graph_signin(S2, "2026-09-01T10:00:00Z", 50126, "high"),
+            graph_signin(S1, "2026-09-01T09:31:00Z", 50126, "medium"),
+            no_id,
+            graph_signin(S2, "2026-09-01T10:01:00Z", 0, "none"),
+        ],
+    );
+    let s4 = "a4a4a4a4-4444-4444-8444-444444444444";
+    fixtures::write(
+        &root,
+        PORTAL_CSV,
+        &portal_csv(&[
+            portal_row(&S1.to_uppercase(), "2026-09-01T09:30:00Z", "Lagos, Lagos, NG", "No", "sess-1"),
+            portal_row(S3, "2026-09-01T11:00:00Z", "Seattle, Washington, US", "Yes", "sess-3"),
+            portal_row(s4, "not a time", "Seattle, Washington, US", "Yes", "sess-4"),
+            portal_row(S3, "2026-09-01T11:05:00Z", "Paris, Ile-de-France, FR", "No", "sess-3b"),
+            portal_row("", "2026-09-01T11:10:00Z", "Paris, Ile-de-France, FR", "No", "sess-5"),
+            portal_row(S2, "2026-09-01T10:00:00Z", "Lagos, Lagos, NG", "No", "sess-2"),
+        ]),
+    );
+    let run = |batch: usize| {
+        let mut case = Case::in_memory().unwrap();
+        let opts = IngestOptions {
+            batch_rows: batch,
+            ..IngestOptions::default()
+        };
+        let report = ingest_path(&mut case, dir.path(), &ParserRegistry::builtin(), &opts).unwrap();
+        let files: Vec<String> = report
+            .collections
+            .iter()
+            .flat_map(|c| &c.files)
+            .map(|f| {
+                format!(
+                    "{} {:?} {} {} {} {} {:?}",
+                    f.rel_path, f.status, f.records_read, f.records_loaded, f.records_duplicate,
+                    f.records_error, f.warnings
+                )
+            })
+            .collect();
+        (all_tables(&case), files)
+    };
+    let (want_tables, want_files) = run(usize::MAX);
+    let file = |rel: &str| want_files.iter().find(|f| f.starts_with(rel)).unwrap().clone();
+    // read / loaded / duplicate / error: JSON 5 records, 2 kept, 2 later copies, 1 without an Id.
+    assert!(file(&json_rel).contains(" Parsed 5 2 2 1 "), "{}", file(&json_rel));
+    // Portal: 6 rows; S1 and S2 update the Graph rows, S3 is new, its second copy is a duplicate, one bad time and
+    // one row without a Request ID are errors.
+    assert!(file(PORTAL_CSV).contains(" Parsed 6 3 1 2 "), "{}", file(PORTAL_CSV));
+    for batch in [1, 2, 3] {
+        let (tables, files) = run(batch);
+        assert_eq!(files, want_files, "batch {batch}: file reports");
+        assert_eq!(tables, want_tables, "batch {batch}: tables");
+    }
+}

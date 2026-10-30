@@ -844,3 +844,80 @@ fn a_folder_holding_only_the_detail_report_resolves_to_the_tenant_in_its_rows() 
         "message_trace_tenant"
     );
 }
+
+/// Every base table as (name, rows, content hash), without the random case id and the clock columns.
+fn all_tables(case: &Case) -> Vec<(String, i64, String)> {
+    let sql: String = case
+        .conn()
+        .query_row(
+            "WITH c AS (
+                SELECT table_name,
+                       string_agg(format('\"{}\"', column_name), ',' ORDER BY ordinal_position) AS cols
+                FROM information_schema.columns
+                WHERE table_schema = 'main' AND table_name <> 'case_meta'
+                  AND table_name IN (SELECT table_name FROM information_schema.tables
+                                     WHERE table_type = 'BASE TABLE' AND table_schema = 'main')
+                  AND NOT regexp_matches(column_name, '(_at|started|finished|duration|elapsed)$')
+                GROUP BY table_name)
+             SELECT string_agg(format('SELECT ''{}'' AS t, count(*) AS n, CAST(coalesce(sum(hash({})), 0) AS VARCHAR) AS h FROM \"{}\"',
+                                      table_name, cols, table_name), ' UNION ALL ' ORDER BY table_name)
+             FROM c",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mut stmt = case.conn().prepare(&format!("{sql} ORDER BY t")).unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[test]
+fn every_batch_size_stores_what_one_batch_stores() {
+    // Events are streamed in batches and the collapsed message rows are loaded after them: two interleaved
+    // messages, a repeated event row (a duplicate), with batches of 1-3 the events and the message rows both cross
+    // batch boundaries.
+    let other = "CCCCCCCC-0000-4000-8000-000000000003";
+    let second: Vec<Ev> = main_message()
+        .into_iter()
+        .map(|e| {
+            e.into_iter()
+                .map(|(k, v)| (k, if k == "network_message_id" { other.to_string() } else { v }))
+                .collect()
+        })
+        .collect();
+    let mut events = Vec::new();
+    for (a, b) in main_message().into_iter().zip(second) {
+        events.push(a);
+        events.push(b);
+    }
+    events.push(e_receive());
+    let dir = tempfile::tempdir().unwrap();
+    fixtures::write(&dir.path().join("downloads"), DETAIL_REL, &report(&events));
+    let run = |batch: usize| {
+        let mut case = Case::in_memory().unwrap();
+        let opts = IngestOptions {
+            batch_rows: batch,
+            ..IngestOptions::default()
+        };
+        let report = ingest_path(&mut case, dir.path(), &ParserRegistry::builtin(), &opts).unwrap();
+        let f = row(&report, DETAIL_REL);
+        let file = format!(
+            "{:?} {} {} {} {} {:?}",
+            f.status, f.records_read, f.records_loaded, f.records_duplicate, f.records_error, f.warnings
+        );
+        (all_tables(&case), file)
+    };
+    let (want_tables, want_file) = run(usize::MAX);
+    // 13 event rows (12 + the repeated RECEIVE, a duplicate) and the message rows of two messages.
+    let traces = want_tables.iter().find(|(t, ..)| t == "message_trace").unwrap().1;
+    assert!(traces >= 4, "{traces} message rows");
+    assert!(want_file.starts_with("Parsed "), "{want_file}");
+    assert!(want_file.contains(" 1 0 "), "one duplicate, no error: {want_file}");
+    for batch in [1, 2, 3] {
+        let (tables, file) = run(batch);
+        assert_eq!(file, want_file, "batch {batch}: file report");
+        assert_eq!(tables, want_tables, "batch {batch}: tables");
+    }
+}

@@ -11,10 +11,12 @@ use crate::ingest::parser::{ArtifactParser, ParserRegistry};
 use crate::normalize::fields::{Cell, Rec};
 use crate::normalize::net::{normalize_ip, normalize_upn};
 use crate::parsers::message_trace::{COLS as TRACE_COLS, message_trace_key, received_cells};
-use crate::parsers::records::RecordFormat;
+use crate::parsers::records::{
+    RecordEvent, RecordFormat, SourceRecord, for_each_record, holds_placeholder, placeholder_message,
+};
 use crate::parsers::stage::{
-    CellRow, RowDraft, TableRows, csv_row_key, load_tables, lower, non_empty_cells,
-    read_state_records, require_any_key,
+    CellRow, RowDraft, RowOut, TableRows, csv_row_key, load_streamed, lower, non_empty_cells,
+    read_state_records, unsupported,
 };
 use crate::readers::text::Span;
 use crate::readers::time::parse_timestamp;
@@ -292,50 +294,89 @@ pub struct MessageTraceDetailParser;
 
 impl ArtifactParser for MessageTraceDetailParser {
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
+        // Streamed (see `load_streamed`): a large export collected as records peaked at 17.7 GB for 186 MB. A first
+        // scan keeps only what the collapse needs of each event; the event rows are then streamed and loaded in
+        // batches, and the collapsed message rows after them.
         let format = RecordFormat::of(ctx.rel_path);
-        let records = read_state_records(ctx, format)?;
-        require_any_key(
-            &records,
-            &["network_message_id"],
-            "message trace detail (network_message_id)",
-        )?;
-        let mut events_rows = TableRows::new(&MESSAGE_TRACE_EVENTS, COLS);
+        let text = ctx.text;
+        let mut first: Option<SourceRecord> = None;
+        let (mut keyed, mut placeholders) = (false, 0usize);
+        let count_placeholders = format == RecordFormat::Csv && !ctx.portal_export;
         // Messages in order of first appearance, each with its events.
         let mut order: Vec<String> = Vec::new();
         let mut by_message: HashMap<String, Vec<Event>> = HashMap::new();
         // Where each record sits in the file, for the collapsed rows.
-        let mut spans: Vec<(u64, Span)> = Vec::with_capacity(records.len());
-        // The records are consumed: each row map moves into its event's `raw` instead of being
-        // copied, so a large file is not held twice.
-        for (i, r) in records.into_iter().enumerate() {
+        let mut spans: Vec<(u64, Span)> = Vec::new();
+        for_each_record(&text.text, format, |event| {
+            let RecordEvent::Record(r) = event else {
+                return Ok(true);
+            };
+            let i = spans.len();
             spans.push((r.ordinal, r.span));
+            keyed |= Rec::new(&r.map, false).has("network_message_id");
+            if count_placeholders && holds_placeholder(&r) {
+                placeholders += 1;
+            }
             // A portal download holds no PowerShell placeholders: nothing is filtered.
             let rec = Rec::new(&r.map, false);
             let recipients = addresses(rec.text("recipient_address"));
-            let cells = event_cells(&rec, &recipients);
-            let record_key = csv_row_key(&non_empty_cells(&r.map));
-            let event =
-                lower(rec.text("network_message_id")).map(|id| (id, event_of(i, &rec, recipients)));
-            events_rows.push_draft(RowDraft {
-                ordinal: r.ordinal,
-                span: r.span,
-                record_key,
-                cells,
-                raw: Some(Value::Object(r.map)),
-                sheet_row: None,
-            });
-            if let Some((id, event)) = event {
-                let group = by_message.entry(id.clone()).or_insert_with(|| {
-                    order.push(id);
-                    Vec::new()
-                });
-                group.push(event);
+            if let Some(id) = lower(rec.text("network_message_id")) {
+                let event = event_of(i, &rec, recipients);
+                by_message
+                    .entry(id.clone())
+                    .or_insert_with(|| {
+                        order.push(id);
+                        Vec::new()
+                    })
+                    .push(event);
             }
+            if first.is_none() {
+                first = Some(r);
+            }
+            Ok(true)
+        })?;
+        let Some(first) = first else {
+            // No readable record: recording the unreadable ones is all there is to do.
+            read_state_records(ctx, format)?;
+            return Ok(());
+        };
+        if !ctx.portal_export
+            && let Some(w) = placeholder_message(placeholders)
+        {
+            ctx.warn(w);
+        }
+        if !keyed {
+            return Err(unsupported(
+                &first,
+                "message trace detail (network_message_id)",
+            ));
         }
         let mut trace_rows = TableRows::new(&MESSAGE_TRACE, TRACE_COLS);
         for id in &order {
             collapse(id, &by_message[id], &spans, &mut trace_rows);
         }
-        load_tables(ctx, vec![events_rows, trace_rows])
+        drop(by_message);
+        let tail = trace_rows.rows.into_iter().map(|d| (1, d)).collect();
+        load_streamed(
+            ctx,
+            format,
+            &[(&MESSAGE_TRACE_EVENTS, COLS), (&MESSAGE_TRACE, TRACE_COLS)],
+            tail,
+            |r| {
+                let rec = Rec::new(&r.map, false);
+                let recipients = addresses(rec.text("recipient_address"));
+                vec![RowOut::Row {
+                    table: 0,
+                    draft: RowDraft {
+                        ordinal: r.ordinal,
+                        span: r.span,
+                        record_key: csv_row_key(&non_empty_cells(&r.map)),
+                        cells: event_cells(&rec, &recipients),
+                        raw: Some(Value::Object(r.map.clone())),
+                        sheet_row: None,
+                    },
+                }]
+            },
+        )
     }
 }

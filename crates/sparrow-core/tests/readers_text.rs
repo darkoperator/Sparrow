@@ -180,3 +180,23 @@ fn utf8_text_borrows_the_raw_bytes_and_other_encodings_own_theirs() {
     assert_eq!(d.encoding, TextEncoding::Windows1252);
     assert!(matches!(d.text, Cow::Owned(_)));
 }
+
+#[test]
+fn backward_lookups_resume_from_a_checkpoint_with_the_same_offsets() {
+    // Several checkpoints' worth of UTF-16 with 2-byte and 4-byte (surrogate pair) characters.
+    let line = "café,zoë,😀,naïve,ascii-only text\r\n";
+    let text: String = line.repeat(20_000);
+    let raw = utf16le(&text, true);
+    let d = decode(&raw);
+    let bounds: Vec<usize> = d.text.char_indices().map(|(i, _)| i).step_by(997).collect();
+    // A fresh forward-only scan per query is the reference.
+    let fresh = |at: usize| OffsetMapper::new(&d, raw.len() as u64).raw_offset(&d.text, at);
+    let mut m = OffsetMapper::new(&d, raw.len() as u64);
+    let mut state = 12345u64;
+    for _ in 0..400 {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let at = bounds[(state >> 33) as usize % bounds.len()];
+        assert_eq!(m.raw_offset(&d.text, at), fresh(at), "decoded offset {at}");
+    }
+    assert!(d.text.len() > 10 * 64 * 1024, "too short to cross checkpoints");
+}

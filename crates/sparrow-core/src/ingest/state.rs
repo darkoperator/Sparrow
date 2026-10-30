@@ -145,6 +145,32 @@ pub fn load_rows(
     file_id: i64,
     rows: &[StagedRow],
 ) -> Result<LoadOutcome> {
+    load(conn, spec, columns, collection_id, file_id, rows, false)
+}
+
+/// [`load_rows`] for one batch of a file loaded in several (in file order, inside the file's transaction): a key an
+/// earlier batch of the same file already picked is a duplicate, as it is within one batch (the file's first copy
+/// wins), instead of updating the row with a later copy. `file_picked` holds the picked keys of one file at a time.
+pub fn load_rows_batch(
+    conn: &Connection,
+    spec: &TableSpec,
+    columns: &[&str],
+    collection_id: i64,
+    file_id: i64,
+    rows: &[StagedRow],
+) -> Result<LoadOutcome> {
+    load(conn, spec, columns, collection_id, file_id, rows, true)
+}
+
+fn load(
+    conn: &Connection,
+    spec: &TableSpec,
+    columns: &[&str],
+    collection_id: i64,
+    file_id: i64,
+    rows: &[StagedRow],
+    batched: bool,
+) -> Result<LoadOutcome> {
     let t = spec.table;
     let cols: Vec<&Col> = columns
         .iter()
@@ -210,9 +236,21 @@ pub fn load_rows(
         app.flush()?;
     }
     let tp = super::timing::span("state load: pick + new");
+    let earlier_batches = if batched {
+        conn.execute_batch(
+            "CREATE TEMP TABLE IF NOT EXISTS file_picked (table_name VARCHAR, file_id BIGINT, record_key VARCHAR)",
+        )?;
+        conn.execute("DELETE FROM file_picked WHERE file_id <> ?", params![file_id])?;
+        format!(
+            "WHERE NOT EXISTS (SELECT 1 FROM file_picked f
+                               WHERE f.table_name = '{t}' AND f.file_id = {file_id} AND f.record_key = s.record_key)"
+        )
+    } else {
+        String::new()
+    };
     conn.execute_batch(&format!(
-        "CREATE OR REPLACE TEMP TABLE stage_pick AS SELECT * FROM stage_state
-             QUALIFY row_number() OVER (PARTITION BY record_key ORDER BY ord, seq) = 1;
+        "CREATE OR REPLACE TEMP TABLE stage_pick AS SELECT * FROM (SELECT * FROM stage_state
+             QUALIFY row_number() OVER (PARTITION BY record_key ORDER BY ord, seq) = 1) s {earlier_batches};
          CREATE OR REPLACE TEMP TABLE stage_new AS SELECT p.* FROM stage_pick p
              WHERE NOT EXISTS (SELECT 1 FROM {t} t WHERE t.record_key = p.record_key);"
     ))?;
@@ -256,6 +294,12 @@ pub fn load_rows(
         ),
         params![file_id],
     )?;
+    if batched {
+        conn.execute(
+            &format!("INSERT INTO file_picked SELECT '{t}', ?, record_key FROM stage_pick"),
+            params![file_id],
+        )?;
+    }
     Ok(LoadOutcome {
         staged: rows.len() as u64,
         inserted: inserted as u64,

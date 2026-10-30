@@ -4,9 +4,11 @@
 use crate::db::state_tables::{LoadMode, TableSpec};
 use crate::hash::sha256_hex;
 use crate::ingest::context::ParseContext;
-use crate::ingest::state::{StagedRow, load_rows};
+use crate::ingest::state::{LoadOutcome, StagedRow, load_rows, load_rows_batch};
 use crate::normalize::fields::{Cell, Rec};
-use crate::parsers::records::{RecordFormat, SourceRecord, placeholder_warning, read_records};
+use crate::parsers::records::{
+    RecordEvent, RecordFormat, SourceRecord, for_each_record, placeholder_warning, read_records,
+};
 use crate::readers::text::Span;
 use crate::readers::time::{DateOrder, DateOrderDetector, parse_timestamp};
 use crate::{Error, Result};
@@ -205,52 +207,179 @@ pub fn load_tables(ctx: &mut ParseContext<'_>, tables: Vec<TableRows>) -> Result
     for t in tables {
         let mut staged = Vec::with_capacity(t.rows.len());
         for r in t.rows {
-            ctx.stats.read += 1;
-            let cells: std::result::Result<Vec<(Option<String>, bool)>, String> =
-                r.cells.iter().map(|c| c.stage_zoned(order)).collect();
-            match cells {
-                Ok(cells) => {
-                    let (cells, tz_assumed): (Vec<_>, Vec<_>) = cells.into_iter().unzip();
-                    let (pos, raw_sha256) = match &r.sheet_row {
-                        Some(s) => ctx.row_sighting(s.row, &s.text),
-                        None => ctx.sighting(r.span),
-                    };
-                    staged.push(StagedRow {
-                        ordinal: r.ordinal,
-                        pos,
-                        raw_sha256,
-                        record_key: r.record_key,
-                        cells,
-                        raw: r.raw.map(|v| v.to_string()),
-                        tz_assumed,
-                    });
-                }
-                Err(msg) => {
-                    let msg = format!("{}: {msg}", t.spec.table);
-                    match &r.sheet_row {
-                        Some(s) => ctx.row_parse_error(r.ordinal, s.row, &s.text, &msg)?,
-                        None => ctx.parse_error(r.ordinal, r.span, &msg)?,
-                    }
-                }
+            if let Some(row) = stage_draft(ctx, t.spec, r, order)? {
+                staged.push(row);
             }
         }
-        let spec = t.spec;
         let out = load_rows(
             ctx.conn,
-            spec,
+            t.spec,
             t.columns,
             ctx.collection_id,
             ctx.file_id,
             &staged,
         )?;
-        ctx.stats.loaded += out.inserted + out.updated;
-        ctx.stats.duplicate += out.duplicate();
-        if spec.mode == LoadMode::FillMissing && out.updated > 0 {
-            ctx.warn(format!(
-                "{} {} records filled values missing from copies loaded earlier",
-                out.updated, spec.table
-            ));
+        count_load(ctx, t.spec, out);
+    }
+    Ok(())
+}
+
+/// Count `draft` as read and stage it: its cells parsed with `order` and its sighting located, or a parse error
+/// (`None`) when a cell cannot be parsed.
+fn stage_draft(
+    ctx: &mut ParseContext<'_>,
+    spec: &TableSpec,
+    r: RowDraft,
+    order: Option<DateOrder>,
+) -> Result<Option<StagedRow>> {
+    ctx.stats.read += 1;
+    let cells: std::result::Result<Vec<(Option<String>, bool)>, String> =
+        r.cells.iter().map(|c| c.stage_zoned(order)).collect();
+    match cells {
+        Ok(cells) => {
+            let (cells, tz_assumed): (Vec<_>, Vec<_>) = cells.into_iter().unzip();
+            let (pos, raw_sha256) = match &r.sheet_row {
+                Some(s) => ctx.row_sighting(s.row, &s.text),
+                None => ctx.sighting(r.span),
+            };
+            Ok(Some(StagedRow {
+                ordinal: r.ordinal,
+                pos,
+                raw_sha256,
+                record_key: r.record_key,
+                cells,
+                raw: r.raw.map(|v| v.to_string()),
+                tz_assumed,
+            }))
         }
+        Err(msg) => {
+            let msg = format!("{}: {msg}", spec.table);
+            match &r.sheet_row {
+                Some(s) => ctx.row_parse_error(r.ordinal, s.row, &s.text, &msg)?,
+                None => ctx.parse_error(r.ordinal, r.span, &msg)?,
+            }
+            Ok(None)
+        }
+    }
+}
+
+/// Add one table's load to the file's counts (and its fill-missing warning).
+fn count_load(ctx: &mut ParseContext<'_>, spec: &TableSpec, out: LoadOutcome) {
+    ctx.stats.loaded += out.inserted + out.updated;
+    ctx.stats.duplicate += out.duplicate();
+    if spec.mode == LoadMode::FillMissing && out.updated > 0 {
+        ctx.warn(format!(
+            "{} {} records filled values missing from copies loaded earlier",
+            out.updated, spec.table
+        ));
+    }
+}
+
+/// What one record gives [`load_streamed`].
+pub enum RowOut {
+    /// A row for `tables[table]`.
+    Row { table: usize, draft: RowDraft },
+    /// The record cannot be loaded, for this reason ([`reject`]).
+    Reject(String),
+}
+
+/// [`load_tables`] for a large CSV/JSON file, without holding its records or rows: the records are streamed twice
+/// (the first pass records the unreadable ones and reads every time cell for the day/month order, the second turns
+/// each record into rows with `rows_of` again and stages them) and each table is loaded every
+/// [`crate::ingest::IngestOptions::batch_rows`] rows with [`load_rows_batch`], so a key keeps the file's first copy
+/// across batches as within one. `rows_of` must be pure: it runs twice per record. `tail` are rows the caller built
+/// before (each `(table, draft)`; e.g. per-message rows collapsed from the records): their times count for the order
+/// and they are staged after the streamed rows, as [`load_tables`] would after the earlier tables. Counts, errors and
+/// warnings are those of [`load_tables`] over the same rows.
+pub fn load_streamed(
+    ctx: &mut ParseContext<'_>,
+    format: RecordFormat,
+    tables: &[(&'static TableSpec, &'static [&'static str])],
+    tail: Vec<(usize, RowDraft)>,
+    mut rows_of: impl FnMut(&SourceRecord) -> Vec<RowOut>,
+) -> Result<()> {
+    let text = ctx.text;
+    let mut detector = DateOrderDetector::default();
+    for cell in tail.iter().flat_map(|(_, d)| &d.cells) {
+        if let Cell::Time(s) = cell {
+            detector.observe(s);
+        }
+    }
+    for_each_record(&text.text, format, |event| {
+        match event {
+            RecordEvent::Error {
+                ordinal,
+                span,
+                message,
+            } => {
+                ctx.stats.read += 1;
+                ctx.parse_error(ordinal, span, &message)?;
+            }
+            RecordEvent::Record(r) => {
+                for out in rows_of(&r) {
+                    if let RowOut::Row { draft, .. } = out {
+                        for cell in &draft.cells {
+                            if let Cell::Time(s) = cell {
+                                detector.observe(s);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(true)
+    })?;
+    let order = ctx.resolve_date_order(&detector)?;
+    let batch = ctx.options.batch_rows.max(1);
+    let mut staged: Vec<Vec<StagedRow>> = tables.iter().map(|_| Vec::new()).collect();
+    let mut outcomes: Vec<LoadOutcome> = vec![LoadOutcome::default(); tables.len()];
+    let load = |ctx: &ParseContext<'_>, i: usize, rows: &mut Vec<StagedRow>, total: &mut LoadOutcome| {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let (spec, columns) = tables[i];
+        let out = load_rows_batch(ctx.conn, spec, columns, ctx.collection_id, ctx.file_id, rows)?;
+        total.staged += out.staged;
+        total.inserted += out.inserted;
+        total.updated += out.updated;
+        rows.clear();
+        Ok::<(), Error>(())
+    };
+    for_each_record(&text.text, format, |event| {
+        let RecordEvent::Record(r) = event else {
+            return Ok(true);
+        };
+        for out in rows_of(&r) {
+            match out {
+                RowOut::Reject(msg) => reject(ctx, &r, &msg)?,
+                RowOut::Row { table, draft } => {
+                    if let Some(row) = stage_draft(ctx, tables[table].0, draft, order)? {
+                        staged[table].push(row);
+                        if staged[table].len() >= batch {
+                            load(ctx, table, &mut staged[table], &mut outcomes[table])?;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(true)
+    })?;
+    for (i, rows) in staged.iter_mut().enumerate() {
+        load(ctx, i, rows, &mut outcomes[i])?;
+    }
+    for (table, draft) in tail {
+        if let Some(row) = stage_draft(ctx, tables[table].0, draft, order)? {
+            staged[table].push(row);
+            if staged[table].len() >= batch {
+                load(ctx, table, &mut staged[table], &mut outcomes[table])?;
+            }
+        }
+    }
+    for (i, rows) in staged.iter_mut().enumerate() {
+        load(ctx, i, rows, &mut outcomes[i])?;
+    }
+    for (i, out) in outcomes.into_iter().enumerate() {
+        count_load(ctx, tables[i].0, out);
     }
     Ok(())
 }

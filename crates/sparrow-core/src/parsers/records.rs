@@ -212,14 +212,18 @@ pub fn placeholder_warning(records: &[SourceRecord], format: RecordFormat) -> Op
     if format != RecordFormat::Csv {
         return None;
     }
-    let n = records
-        .iter()
-        .filter(|r| {
-            r.map
-                .values()
-                .any(|v| v.as_str().is_some_and(is_placeholder))
-        })
-        .count();
+    placeholder_message(records.iter().filter(|r| holds_placeholder(r)).count())
+}
+
+/// True when a value of `r` is a PowerShell placeholder (counted by [`placeholder_warning`] for CSV files).
+pub fn holds_placeholder(r: &SourceRecord) -> bool {
+    r.map
+        .values()
+        .any(|v| v.as_str().is_some_and(is_placeholder))
+}
+
+/// [`placeholder_warning`]'s text for `n` CSV records holding placeholders (`None` for none).
+pub fn placeholder_message(n: usize) -> Option<String> {
     (n > 0).then(|| {
         format!(
             "{n} CSV records hold PowerShell placeholders (System.Object[], @{{...}}, .NET type names); nested and multi-valued values are missing (no usable JSON twin)"
