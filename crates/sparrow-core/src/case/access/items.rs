@@ -130,6 +130,86 @@ fn mail_sql() -> String {
     )
 }
 
+/// The other categories, as `rest` with the columns of `mail`. A UAL record is in exactly one: attachment
+/// (AttachmentAccess), file (it has a `file_events` or `sharing_events` child), teams (workload MicrosoftTeams), copilot
+/// (CopilotInteraction), else other. Mail operations, sign-ins (`auth`) and mail flow (message trace) are never other.
+fn rest_sql() -> String {
+    let j = |path: &str| format!("json_extract_string(u.audit_data, '{path}')");
+    let (chat, item_name, msg_id, thread) = (
+        j("$.ChatName"),
+        j("$.ItemName"),
+        j("$.MessageId"),
+        j("$.ChatThreadId"),
+    );
+    let (att_name, att_id, att_size) = (
+        j("$.AttachmentName"),
+        j("$.AttachmentId"),
+        j("$.AttachmentSizeInBytes"),
+    );
+    let host = j("$.CopilotEventData.AppHost");
+    let common = "a.attribution, epoch_us(a.event_time)";
+    let tail = "u.client_ip, u.session_id, NULL, NULL";
+    let src = "'ual_events:' || u.operation, a.source_table, a.record_key";
+    format!(
+        "shares AS ( \
+           SELECT sh.record_id, string_agg(DISTINCT coalesce(sh.target_email, sh.target_user, 'someone') \
+               || CASE WHEN sh.is_external THEN ' (external)' ELSE '' END, '; ') AS targets \
+             FROM sharing_events sh WHERE sh.record_id IN (SELECT CAST(record_key AS UUID) FROM attributed \
+               WHERE source_table = 'ual_events') GROUP BY 1), \
+         files AS ( \
+           SELECT a.account, 'file' AS category, {common} AS accessed, u.operation AS action, f.file_name AS item, \
+               f.site_url || coalesce(f.relative_url, '') AS location, NULL AS \"from\", NULL AS \"to\", \
+               NULL::BIGINT AS size_bytes, NULL::BIGINT AS item_time, f.application_name AS app, u.client_ip AS ip, \
+               u.session_id, NULL AS owner, 'shared with ' || sh.targets AS note, {src} \
+             FROM {UAL} JOIN file_events f ON f.record_id = u.record_id LEFT JOIN shares sh ON sh.record_id = u.record_id \
+           UNION ALL \
+           SELECT a.account, 'file', {common}, u.operation, NULL, NULL, NULL, NULL, NULL, NULL, u.app_id, {tail_ip}, \
+               NULL, 'shared with ' || sh.targets, {src} \
+             FROM {UAL} JOIN shares sh ON sh.record_id = u.record_id \
+               WHERE u.record_id NOT IN (SELECT record_id FROM file_events)), \
+         rest AS ( \
+           SELECT * FROM files \
+           UNION ALL \
+           SELECT a.account, 'attachment', {common}, 'accessed', coalesce({att_name}, {att_id}), NULL, NULL, NULL, \
+               TRY_CAST({att_size} AS BIGINT), NULL, u.app_id, {tail}, {src} \
+             FROM {UAL} WHERE u.operation = 'AttachmentAccess' \
+           UNION ALL \
+           SELECT a.account, 'teams', {common}, u.operation, coalesce({chat}, {item_name}, {msg_id}), {thread}, NULL, \
+               NULL, NULL, NULL, u.app_id, {tail}, {src} \
+             FROM {UAL} WHERE u.workload = 'MicrosoftTeams' AND u.operation IS DISTINCT FROM 'CopilotInteraction' \
+           UNION ALL \
+           SELECT a.account, 'copilot', {common}, coalesce(json_extract_string(r.res, '$.Action'), 'read'), \
+               json_extract_string(r.res, '$.Name'), json_extract_string(r.res, '$.SiteUrl'), NULL, NULL, NULL, NULL, \
+               u.app_id, u.client_ip, u.session_id, NULL, 'via Copilot in ' || coalesce({host}, 'an app'), {src} \
+             FROM {UAL} CROSS JOIN LATERAL (SELECT unnest(json_extract(u.audit_data, \
+               '$.CopilotEventData.AccessedResources[*]')) AS res) r WHERE u.operation = 'CopilotInteraction' \
+           UNION ALL \
+           SELECT a.account, 'copilot', {common}, 'prompt', NULL, NULL, NULL, NULL, NULL, NULL, u.app_id, {tail_ip}, \
+               NULL, 'Copilot in ' || coalesce({host}, 'an app'), {src} \
+             FROM {UAL} WHERE u.operation = 'CopilotInteraction' AND coalesce(json_array_length(u.audit_data, \
+               '$.CopilotEventData.AccessedResources'), 0) = 0 \
+           UNION ALL \
+           SELECT a.account, 'other', {common}, coalesce(e.operation, a.source_table), \
+               coalesce(q.query_text, u.object_id, e.target), coalesce(e.workload, a.source_table), NULL, NULL, NULL, NULL, \
+               coalesce(u.app_id, e.app_id), e.ip, u.session_id, NULL, NULL, \
+               a.source_table || ':' || coalesce(e.operation, ''), a.source_table, a.record_key \
+             FROM attributed a JOIN events e USING (source_table, record_key) \
+             LEFT JOIN ual_events u ON a.source_table = 'ual_events' AND a.record_key = CAST(u.record_id AS VARCHAR) \
+             LEFT JOIN search_queries q ON q.record_id = u.record_id \
+             WHERE e.category NOT IN ('auth', 'mail_flow') \
+               AND a.source_table NOT IN ('mail_items_accessed', 'message_trace', 'message_trace_events', 'signins') \
+               AND NOT (a.source_table = 'mailbox_audit_legacy' AND coalesce(e.operation, '') IN \
+                 ('MailItemsAccessed', 'MessageBind', 'Send', 'SendAs', 'SendOnBehalf')) \
+               AND (u.record_id IS NULL OR ( \
+                 coalesce(u.operation, '') NOT IN ('MailItemsAccessed', 'Send', 'SendAs', 'SendOnBehalf', \
+                   'AttachmentAccess', 'CopilotInteraction') \
+                 AND coalesce(u.workload, '') <> 'MicrosoftTeams' \
+                 AND u.record_id NOT IN (SELECT record_id FROM file_events) \
+                 AND u.record_id NOT IN (SELECT record_id FROM sharing_events))))",
+        tail_ip = "u.client_ip, u.session_id"
+    )
+}
+
 fn ts(us: Option<i64>) -> Option<DateTime<Utc>> {
     us.and_then(DateTime::from_timestamp_micros)
 }
@@ -137,10 +217,11 @@ fn ts(us: Option<i64>) -> Option<DateTime<Utc>> {
 /// Every item of one account (any case) or of every attributed account, by account, time, category and record.
 pub fn items(conn: &Connection, account: Option<&str>) -> Result<Vec<Item>> {
     let sql = format!(
-        "WITH {}, {} SELECT * FROM mail WHERE ? IS NULL OR account = lower(?) \
-         ORDER BY account, accessed, category, source_table, record_key, item",
+        "WITH {}, {}, {} SELECT * FROM (SELECT * FROM mail UNION ALL SELECT * FROM rest) \
+         WHERE ? IS NULL OR account = lower(?) ORDER BY account, accessed, category, source_table, record_key, item",
         ctes(),
-        mail_sql()
+        mail_sql(),
+        rest_sql()
     );
     let mut st = conn.prepare(&sql)?;
     let rows = st.query_map(duckdb::params![account, account], |r| {

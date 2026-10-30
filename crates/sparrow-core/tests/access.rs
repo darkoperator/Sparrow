@@ -980,3 +980,418 @@ fn send_as_without_its_property_falls_back_to_the_mailbox() {
         "a case-only difference is the same mailbox"
     );
 }
+
+// Task 4: attachments, files, Teams, Copilot, other apps.
+
+/// A UAL record of `workload` and its `events` row, by jdoe; `ip` None leaves both without an IP.
+#[allow(clippy::too_many_arguments)]
+fn ual_w(
+    case: &Case,
+    key: &'static str,
+    workload: &'static str,
+    op: &'static str,
+    ip: Option<&'static str>,
+    secs: i64,
+    category: &'static str,
+    audit: serde_json::Value,
+) {
+    let mut f = json!({"record_id": key, "user_upn": JDOE, "operation": op, "workload": workload,
+                       "event_time": ts(t0() + Duration::seconds(secs)), "audit_data": audit.to_string(),
+                       "object_id": "obj-1", "app_id": "app-9"});
+    if let Some(ip) = ip {
+        f["client_ip"] = json!(ip);
+    }
+    insert_row(case, "ual_events", "contoso", f);
+    put(
+        case,
+        &Ev {
+            ip,
+            workload: Some(workload),
+            operation: Some(op),
+            category: Some(category),
+            at: secs,
+            ..ual(key)
+        },
+    );
+}
+
+const R4: &str = "10000000-0000-4000-8000-000000000004";
+const R5: &str = "10000000-0000-4000-8000-000000000005";
+const R6: &str = "10000000-0000-4000-8000-000000000006";
+
+#[test]
+fn attachment_access_is_an_attachment_item() {
+    let case = Case::in_memory().unwrap();
+    ual_w(
+        &case,
+        R1,
+        "Exchange",
+        "AttachmentAccess",
+        Some(IP),
+        0,
+        "other",
+        json!({"AttachmentId": "att-1", "AttachmentSizeInBytes": 4096}),
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let a = items_of(&case, Category::Attachment);
+    assert_eq!(a.len(), 1);
+    assert_eq!(
+        (a[0].item.as_deref(), a[0].size_bytes, a[0].action.as_str()),
+        (Some("att-1"), Some(4096), "accessed")
+    );
+    assert!(items_of(&case, Category::Other).is_empty());
+}
+
+#[test]
+fn file_events_become_file_items() {
+    let case = Case::in_memory().unwrap();
+    ual_w(
+        &case,
+        R1,
+        "SharePoint",
+        "FileDownloaded",
+        Some(IP),
+        0,
+        "other",
+        json!({}),
+    );
+    insert_row(
+        &case,
+        "file_events",
+        "contoso",
+        json!({"record_id": R1, "item_type": "file", "is_onenote": false,
+        "file_name": "payroll.xlsx", "site_url": "https://contoso.sharepoint.com/sites/hr/", "relative_url": "Shared Documents/payroll.xlsx",
+        "application_name": "Microsoft Office"}),
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let f = items_of(&case, Category::File);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].action, "FileDownloaded");
+    assert_eq!(f[0].item.as_deref(), Some("payroll.xlsx"));
+    assert_eq!(
+        f[0].location.as_deref(),
+        Some("https://contoso.sharepoint.com/sites/hr/Shared Documents/payroll.xlsx")
+    );
+    assert_eq!(f[0].app.as_deref(), Some("Microsoft Office"));
+    assert!(items_of(&case, Category::Other).is_empty());
+}
+
+#[test]
+fn sharing_notes_the_target() {
+    let case = Case::in_memory().unwrap();
+    ual_w(
+        &case,
+        R1,
+        "OneDrive",
+        "SharingSet",
+        Some(IP),
+        0,
+        "other",
+        json!({}),
+    );
+    insert_row(
+        &case,
+        "sharing_events",
+        "contoso",
+        json!({"record_id": R1, "link_type": "specific_people",
+        "target_email": "x@evil.example", "is_external": true}),
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let f = items_of(&case, Category::File);
+    assert_eq!(f.len(), 1);
+    assert_eq!(
+        (f[0].action.as_str(), f[0].note.as_deref()),
+        ("SharingSet", Some("shared with x@evil.example (external)"))
+    );
+}
+
+#[test]
+fn teams_reads_by_time_are_marked_time() {
+    let case = Case::in_memory().unwrap();
+    ual_w(
+        &case,
+        R1,
+        "Exchange",
+        "MailItemsAccessed",
+        Some(IP),
+        0,
+        "other",
+        json!({}),
+    );
+    ual_w(
+        &case,
+        R2,
+        "MicrosoftTeams",
+        "ChatRetrieved",
+        None,
+        600,
+        "other",
+        json!({"ChatName": "Finance", "ChatThreadId": "19:abc"}),
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let t = items_of(&case, Category::Teams);
+    assert_eq!(t.len(), 1);
+    assert_eq!(t[0].attribution, Attribution::Time);
+    assert_eq!(
+        (
+            t[0].item.as_deref(),
+            t[0].location.as_deref(),
+            t[0].action.as_str()
+        ),
+        (Some("Finance"), Some("19:abc"), "ChatRetrieved")
+    );
+}
+
+#[test]
+fn copilot_lists_each_accessed_resource() {
+    let case = Case::in_memory().unwrap();
+    ual_w(
+        &case,
+        R1,
+        "Copilot",
+        "CopilotInteraction",
+        Some(IP),
+        0,
+        "other",
+        json!({"CopilotEventData": {"AppHost": "Outlook",
+        "AccessedResources": [{"Name": "Q3.docx", "SiteUrl": "https://contoso.sharepoint.com/q3", "Action": "Read"},
+                              {"Name": "Board deck", "Action": "Read"}]}}),
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let mut c: Vec<_> = items_of(&case, Category::Copilot)
+        .into_iter()
+        .map(|i| (i.item, i.location, i.action, i.note))
+        .collect();
+    c.sort();
+    assert_eq!(
+        c,
+        vec![
+            (
+                Some("Board deck".to_string()),
+                None,
+                "Read".to_string(),
+                Some("via Copilot in Outlook".to_string())
+            ),
+            (
+                Some("Q3.docx".to_string()),
+                Some("https://contoso.sharepoint.com/q3".to_string()),
+                "Read".to_string(),
+                Some("via Copilot in Outlook".to_string())
+            ),
+        ]
+    );
+}
+
+#[test]
+fn copilot_without_resources_is_one_prompt() {
+    let case = Case::in_memory().unwrap();
+    ual_w(
+        &case,
+        R1,
+        "Copilot",
+        "CopilotInteraction",
+        Some(IP),
+        0,
+        "other",
+        json!({"CopilotEventData": {"AppHost": "Teams", "AccessedResources": []}}),
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let c = items_of(&case, Category::Copilot);
+    assert_eq!(c.len(), 1);
+    assert_eq!(
+        (
+            c[0].item.as_deref(),
+            c[0].action.as_str(),
+            c[0].note.as_deref()
+        ),
+        (None, "prompt", Some("Copilot in Teams"))
+    );
+}
+
+#[test]
+fn other_catches_everything_else_but_sign_ins() {
+    let case = Case::in_memory().unwrap();
+    ual_w(
+        &case,
+        R4,
+        "SharePoint",
+        "SearchQueryPerformed",
+        Some(IP),
+        0,
+        "other",
+        json!({}),
+    );
+    insert_row(
+        &case,
+        "search_queries",
+        "contoso",
+        json!({"record_id": R4, "workload": "sharepoint", "query_text": "wire instructions"}),
+    );
+    ual_w(
+        &case,
+        R5,
+        "PowerBI",
+        "ViewReport",
+        Some(IP),
+        1,
+        "other",
+        json!({}),
+    );
+    ual_w(
+        &case,
+        R6,
+        "AzureActiveDirectory",
+        "UserLoggedIn",
+        Some(IP),
+        2,
+        "auth",
+        json!({}),
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let mut o: Vec<_> = items_of(&case, Category::Other)
+        .into_iter()
+        .map(|i| (i.record_key, i.action, i.item, i.location, i.app))
+        .collect();
+    o.sort();
+    assert_eq!(
+        o,
+        vec![
+            (
+                R4.to_string(),
+                "SearchQueryPerformed".to_string(),
+                Some("wire instructions".to_string()),
+                Some("SharePoint".to_string()),
+                Some("app-9".to_string())
+            ),
+            (
+                R5.to_string(),
+                "ViewReport".to_string(),
+                Some("obj-1".to_string()),
+                Some("PowerBI".to_string()),
+                Some("app-9".to_string())
+            ),
+        ]
+    );
+}
+
+#[test]
+fn no_record_lands_in_two_categories() {
+    let case = Case::in_memory().unwrap();
+    ual_w(
+        &case,
+        R1,
+        "Exchange",
+        "MailItemsAccessed",
+        Some(IP),
+        0,
+        "other",
+        json!({}),
+    );
+    mia_item(&case, R1, 0, "bind", "\\Inbox", Some("<a@x>"), 10);
+    ual_w(
+        &case,
+        R2,
+        "Exchange",
+        "Send",
+        Some(IP),
+        1,
+        "other",
+        json!({"Item": {"Subject": "s"}}),
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let all = access::items(case.conn(), None).unwrap();
+    assert_eq!(
+        all.iter().filter(|i| i.category == Category::Other).count(),
+        0,
+        "{all:?}"
+    );
+}
+
+#[test]
+fn a_sharing_record_with_a_file_child_keeps_its_target() {
+    let case = Case::in_memory().unwrap();
+    ual_w(
+        &case,
+        R1,
+        "SharePoint",
+        "SharingSet",
+        Some(IP),
+        0,
+        "other",
+        json!({}),
+    );
+    insert_row(
+        &case,
+        "file_events",
+        "contoso",
+        json!({"record_id": R1, "item_type": "file", "is_onenote": false,
+        "file_name": "plan.docx", "site_url": "https://contoso.sharepoint.com/", "relative_url": "plan.docx"}),
+    );
+    insert_row(
+        &case,
+        "sharing_events",
+        "contoso",
+        json!({"record_id": R1, "link_type": "anonymous",
+        "target_email": "x@evil.example", "is_external": true}),
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let all = access::items(case.conn(), None).unwrap();
+    assert_eq!(all.len(), 1, "{all:?}");
+    assert_eq!(all[0].category, Category::File);
+    assert_eq!(all[0].item.as_deref(), Some("plan.docx"));
+    assert_eq!(
+        all[0].note.as_deref(),
+        Some("shared with x@evil.example (external)")
+    );
+}
+
+#[test]
+fn copilot_in_teams_is_copilot_only() {
+    let case = Case::in_memory().unwrap();
+    ual_w(
+        &case,
+        R1,
+        "MicrosoftTeams",
+        "CopilotInteraction",
+        Some(IP),
+        0,
+        "other",
+        json!({"CopilotEventData": {"AppHost": "Teams"}}),
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let cats: Vec<_> = access::items(case.conn(), None)
+        .unwrap()
+        .into_iter()
+        .map(|i| i.category)
+        .collect();
+    assert_eq!(cats, vec![Category::Copilot]);
+}
+
+#[test]
+fn a_non_ual_row_with_a_mail_operation_name_is_other() {
+    let case = Case::in_memory().unwrap();
+    put(
+        &case,
+        &Ev {
+            table: "admin_audit_events",
+            key: "aa-1",
+            actor: Some(JDOE),
+            ip: Some(IP),
+            operation: Some("Send"),
+            ..Ev::default()
+        },
+    );
+    case.conn()
+        .execute(
+            "UPDATE events SET target = 'mailbox ceo' WHERE record_key = 'aa-1'",
+            [],
+        )
+        .unwrap();
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let all = access::items(case.conn(), None).unwrap();
+    assert_eq!(all.len(), 1, "{all:?}");
+    assert_eq!(
+        (all[0].category, all[0].item.as_deref()),
+        (Category::Other, Some("mailbox ceo"))
+    );
+}
