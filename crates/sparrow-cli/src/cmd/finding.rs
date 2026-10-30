@@ -104,9 +104,9 @@ pub fn print_decision_with(
                 m.insert((*k).to_string(), x.clone());
             }
         }
-        println!("{}", serde_json::to_string_pretty(&v)?);
+        outln!("{}", serde_json::to_string_pretty(&v)?);
     } else {
-        println!(
+        outln!(
             "{} {} {}",
             display_safe_line(&e.object_id),
             display_safe_line(what),

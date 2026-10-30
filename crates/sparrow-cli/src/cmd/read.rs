@@ -10,7 +10,6 @@ use clap::{Args, Subcommand};
 use sparrow_core::case::read::{self, FindingFilter, Page, Pivot, TimelineFilter, TimelineRow};
 use sparrow_core::case::text::{display_safe, display_safe_line as safe};
 use sparrow_core::case::{audit, query, timeline_entries};
-use sparrow_core::data::DataDirs;
 use sparrow_core::detect::enrich::facts::FindingFacts;
 use sparrow_core::detect::load::load_rules;
 use std::path::{Path, PathBuf};
@@ -34,7 +33,7 @@ pub(crate) fn time(flag: &str, s: &str) -> Result<DateTime<Utc>> {
 
 fn truncated_line(shown: usize, total: i64) {
     if total > shown as i64 {
-        println!("… {} more (truncated)", total - shown as i64);
+        outln!("… {} more (truncated)", total - shown as i64);
     }
 }
 
@@ -64,10 +63,10 @@ pub fn accounts(a: AccountsArgs, json: bool) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     for w in &page.warnings {
-        eprintln!("warning: {w}");
+        errln!("warning: {w}");
     }
     for acc in &page.accounts {
-        println!(
+        outln!(
             "{}  {}  {}  ({} findings)",
             safe(&acc.upn),
             safe(&acc.tenant_key),
@@ -75,7 +74,7 @@ pub fn accounts(a: AccountsArgs, json: bool) -> Result<ExitCode> {
             acc.finding_count
         );
         let stages: Vec<&str> = acc.stages.iter().map(|s| s.as_str()).collect();
-        println!(
+        outln!(
             "  stages {}  first suspicious {}  {}",
             if stages.is_empty() {
                 "-".to_string()
@@ -93,7 +92,7 @@ pub fn accounts(a: AccountsArgs, json: bool) -> Result<ExitCode> {
         );
         let covered = acc.signins_first.is_some();
         for x in acc.addresses.iter().take(ACCOUNT_ADDRESSES_SHOWN) {
-            println!(
+            outln!(
                 "  {}  {}{}{}",
                 safe(&x.ip),
                 x.reasons.join(", "),
@@ -111,10 +110,10 @@ pub fn accounts(a: AccountsArgs, json: bool) -> Result<ExitCode> {
         let shown = acc.addresses.len().min(ACCOUNT_ADDRESSES_SHOWN);
         let more = (acc.addresses_total as usize).saturating_sub(shown);
         if more > 0 {
-            println!("  +{more} more addresses");
+            outln!("  +{more} more addresses");
         }
     }
-    println!("{} of {} accounts", page.accounts.len(), page.total);
+    outln!("{} of {} accounts", page.accounts.len(), page.total);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -156,7 +155,7 @@ fn facts_lines(facts: &FindingFacts) -> Vec<String> {
 
 fn print_facts(facts: &FindingFacts) {
     for line in facts_lines(facts) {
-        println!("{line}");
+        outln!("{line}");
     }
 }
 
@@ -222,7 +221,7 @@ pub fn finding_list(a: FindingListArgs, json: bool) -> Result<ExitCode> {
             (Some(by), Some(rs)) => format!("  [{} {}]", safe(by), rs),
             _ => String::new(),
         };
-        println!(
+        outln!(
             "{}  {:<8} {:<15} {:<12} {}  {}  ({} evidence){}{}",
             f.finding_id,
             f.severity,
@@ -236,7 +235,7 @@ pub fn finding_list(a: FindingListArgs, json: bool) -> Result<ExitCode> {
         );
     }
     truncated_line(page.rows.len(), page.total);
-    println!("{} findings", page.total);
+    outln!("{} findings", page.total);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -269,7 +268,7 @@ pub fn finding_show(
         );
     }
     let c = open_read(case)?;
-    let set = load_rules(&DataDirs::with_env_fallback(data, rules))?;
+    let set = load_rules(&crate::data_dirs(data, rules))?;
     if let [id] = ids {
         let d = read::finding_show(c.conn(), id, &set)?;
         if json {
@@ -294,10 +293,10 @@ pub fn finding_show(
     } else {
         for d in &found {
             print_finding(d, all);
-            println!("{}", show_separator());
+            outln!("{}", show_separator());
         }
         if !missing.is_empty() {
-            println!(
+            outln!(
                 "not found: {}",
                 missing
                     .iter()
@@ -317,20 +316,20 @@ pub fn finding_show(
 /// One finding's plain block, as `finding show <id>` prints it.
 fn print_finding(d: &read::FindingDetail, all: bool) {
     let f = &d.finding;
-    println!("{}  {}  {}", f.finding_id, f.severity, safe(&f.title));
-    println!(
+    outln!("{}  {}  {}", f.finding_id, f.severity, safe(&f.title));
+    outln!(
         "  rule {}  tenant {}  actor {}",
         opt(f.rule_id.as_deref()),
         safe(&f.tenant_key),
         opt(f.actor_upn.as_deref())
     );
-    println!(
+    outln!(
         "  seen {} .. {}{}",
         f.first_seen.as_ref().map(ts).unwrap_or_else(|| "-".into()),
         f.last_seen.as_ref().map(ts).unwrap_or_else(|| "-".into()),
         if f.rule_updated { "  RULE UPDATED" } else { "" }
     );
-    println!(
+    outln!(
         "  status {}{}  assigned {}",
         f.status,
         f.disposition_reason
@@ -340,7 +339,7 @@ fn print_finding(d: &read::FindingDetail, all: bool) {
         opt(f.assigned_to.as_deref())
     );
     match &f.decided_by {
-        Some(by) => println!(
+        Some(by) => outln!(
             "  decided by {}{}  review {}{}",
             safe(by),
             f.on_behalf_of
@@ -353,12 +352,12 @@ fn print_finding(d: &read::FindingDetail, all: bool) {
                 .map(|r| format!(" by {}", safe(r)))
                 .unwrap_or_default()
         ),
-        None => println!("  no decision yet"),
+        None => outln!("  no decision yet"),
     }
     if let Some(g) = &d.analyst_guidance {
-        println!("guidance:");
+        outln!("guidance:");
         for line in g.lines() {
-            println!("  {}", display_safe(line));
+            outln!("  {}", display_safe(line));
         }
     }
     match &d.facts {
@@ -366,11 +365,11 @@ fn print_finding(d: &read::FindingDetail, all: bool) {
             print_facts(facts);
         }
         Some(read::FactsField::Unavailable { facts_unavailable }) => {
-            println!("facts unavailable: {}", safe(facts_unavailable));
+            outln!("facts unavailable: {}", safe(facts_unavailable));
         }
         None => {}
     }
-    println!("evidence ({}):", d.evidence.len());
+    outln!("evidence ({}):", d.evidence.len());
     let shown = if all {
         d.evidence.len()
     } else {
@@ -388,7 +387,7 @@ fn print_finding(d: &read::FindingDetail, all: bool) {
                 )
             })
             .unwrap_or_default();
-        println!(
+        outln!(
             "  {} {}:{}{}  [{}]",
             e.event_time.as_ref().map(ts).unwrap_or_else(|| "-".into()),
             e.source_table,
@@ -398,15 +397,15 @@ fn print_finding(d: &read::FindingDetail, all: bool) {
         );
     }
     if shown < d.evidence.len() {
-        println!(
+        outln!(
             "  … {} more (use --json or --all)",
             d.evidence.len() - shown
         );
     }
     if !d.notes.is_empty() {
-        println!("notes:");
+        outln!("notes:");
         for n in &d.notes {
-            println!(
+            outln!(
                 "  {} {}: {}",
                 audit::ts_text(&n.created_at),
                 safe(&n.actor),
@@ -415,9 +414,9 @@ fn print_finding(d: &read::FindingDetail, all: bool) {
         }
     }
     if !d.audit.is_empty() {
-        println!("history:");
+        outln!("history:");
         for e in &d.audit {
-            println!(
+            outln!(
                 "  {} {} {} {}{}",
                 e.seq,
                 audit::ts_text(&e.ts),
@@ -463,7 +462,7 @@ pub struct TimelineArgs {
 }
 
 fn print_timeline_row(r: &TimelineRow) {
-    println!(
+    outln!(
         "{}  {:<20} {:<14} {:<28} {:<32} {:<15} {}",
         ts(&r.event_time),
         r.source_table,
@@ -513,7 +512,7 @@ pub fn timeline_entry_list(
         return Ok(ExitCode::SUCCESS);
     }
     for e in &entries {
-        println!(
+        outln!(
             "{}  {}  {:<10} {:<15} {:<16} {}  ({} evidence; {} {}){}",
             e.entry_id,
             ts(&e.event_time),
@@ -533,7 +532,7 @@ pub fn timeline_entry_list(
                 .unwrap_or_default()
         );
     }
-    println!("{} entries", entries.len());
+    outln!("{} entries", entries.len());
     Ok(ExitCode::SUCCESS)
 }
 
@@ -578,13 +577,13 @@ pub fn pivot(cmd: PivotCommand, json: bool) -> Result<ExitCode> {
     }
     for s in &p.sections {
         if let Some(why) = &s.unavailable {
-            println!("== {}", s.name);
-            println!("  {} unavailable: {}", s.name, safe(why));
+            outln!("== {}", s.name);
+            outln!("  {} unavailable: {}", s.name, safe(why));
             continue;
         }
-        println!("== {} ({})", s.name, s.total);
+        outln!("== {} ({})", s.name, s.total);
         for r in &s.rows {
-            println!("  {}", safe(&r.to_string()));
+            outln!("  {}", safe(&r.to_string()));
         }
         truncated_line(s.rows.len(), s.total);
     }
@@ -601,7 +600,7 @@ pub fn query(case: &Path, sql: &str, limit: usize, json: bool) -> Result<ExitCod
         print_json(&r)?;
         return Ok(ExitCode::SUCCESS);
     }
-    println!(
+    outln!(
         "{}",
         r.columns
             .iter()
@@ -618,10 +617,10 @@ pub fn query(case: &Path, sql: &str, limit: usize, json: bool) -> Result<ExitCod
                 other => safe(&other.to_string()),
             })
             .collect();
-        println!("{}", cells.join("\t"));
+        outln!("{}", cells.join("\t"));
     }
     if r.truncated {
-        println!("… more rows (truncated at {limit}; raise --limit)");
+        outln!("… more rows (truncated at {limit}; raise --limit)");
     }
     Ok(ExitCode::SUCCESS)
 }

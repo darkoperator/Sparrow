@@ -4,11 +4,11 @@ use sparrow_core::case::actor::Actor;
 /// optionally on behalf of `--analyst` or $SPARROW_ANALYST. A blank analyst counts as none.
 pub fn resolve(agent: Option<String>, analyst: Option<String>) -> anyhow::Result<Actor> {
     let agent = agent
-        .or_else(|| std::env::var("SPARROW_AGENT").ok())
+        .or_else(|| crate::cx::env_var("SPARROW_AGENT"))
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "unnamed".into());
     let analyst = analyst
-        .or_else(|| std::env::var("SPARROW_ANALYST").ok())
+        .or_else(|| crate::cx::env_var("SPARROW_ANALYST"))
         .filter(|s| !s.trim().is_empty());
     Ok(Actor::agent(&agent, analyst.as_deref())?)
 }

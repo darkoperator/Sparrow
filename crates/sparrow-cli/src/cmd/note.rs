@@ -40,9 +40,9 @@ pub fn run(command: NoteCommand, json: bool) -> Result<ExitCode> {
             if json {
                 let mut v = serde_json::to_value(&e)?;
                 v["annotation_id"] = id.clone().into();
-                println!("{}", serde_json::to_string_pretty(&v)?);
+                outln!("{}", serde_json::to_string_pretty(&v)?);
             } else {
-                println!(
+                outln!(
                     "note {id} on {} by {}",
                     display_safe_line(&target),
                     display_safe_line(&e.actor)

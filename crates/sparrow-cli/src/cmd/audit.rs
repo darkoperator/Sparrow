@@ -14,13 +14,13 @@ fn print_report(r: &ChainReport, json: bool) -> Result<()> {
         return crate::print_json(r);
     }
     if r.ok {
-        println!(
+        outln!(
             "audit chain ok: {} entries, head {}",
             r.entries,
             r.head_hash.as_deref().unwrap_or("(none)")
         );
     } else {
-        println!(
+        outln!(
             "audit chain BROKEN at seq {}: {} ({} entries)",
             r.first_bad_seq.unwrap_or(0),
             display_safe_line(r.problem.as_deref().unwrap_or("")),
@@ -29,7 +29,7 @@ fn print_report(r: &ChainReport, json: bool) -> Result<()> {
     }
     if !r.acknowledged_breaks.is_empty() {
         let seqs: Vec<String> = r.acknowledged_breaks.iter().map(i64::to_string).collect();
-        println!("acknowledged breaks at seq {}", seqs.join(", "));
+        outln!("acknowledged breaks at seq {}", seqs.join(", "));
     }
     Ok(())
 }
@@ -88,7 +88,7 @@ pub fn log(case_path: &Path, object: Option<&str>, json: bool) -> Result<ExitCod
                 .as_deref()
                 .map(|a| format!(" for {}", display_safe_line(a)))
                 .unwrap_or_default();
-            println!(
+            outln!(
                 "{} {} {}{on_behalf} {} {}:{}",
                 e.seq,
                 audit::ts_text(&e.ts),

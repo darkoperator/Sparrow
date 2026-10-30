@@ -54,7 +54,7 @@ fn tile_line(t: &Tile) -> String {
 }
 
 fn print_account(a: &AccountAccess) {
-    println!(
+    outln!(
         "{}  tenant {}",
         safe(&a.account),
         a.tenant_key
@@ -68,13 +68,13 @@ fn print_account(a: &AccountAccess) {
             .iter()
             .map(|w| format!("{}..{}", iso(&w.start), iso(&w.end)))
             .collect();
-        println!("  scope  {} {}  {}", s.kind, safe(&s.value), w.join(", "));
+        outln!("  scope  {} {}  {}", s.kind, safe(&s.value), w.join(", "));
     }
     for t in &a.tiles {
-        println!("  {}", tile_line(t));
+        outln!("  {}", tile_line(t));
     }
     for g in &a.gaps {
-        println!("  gap  {}", safe(g));
+        outln!("  gap  {}", safe(g));
     }
 }
 
@@ -101,7 +101,7 @@ pub fn run(a: AccessArgs, json: bool) -> Result<ExitCode> {
             Ok(())
         })?;
         let n: usize = r.accounts.iter().map(|a| a.items.len()).sum();
-        println!(
+        outln!(
             "wrote {n} items for {} accounts to {}",
             r.accounts.len(),
             safe(&path.display().to_string())
@@ -109,20 +109,19 @@ pub fn run(a: AccessArgs, json: bool) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     if a.markdown {
-        let mut out = std::io::stdout().lock();
-        write_summary(&r, &mut out)?;
+        crate::cx::with_out(|out| write_summary(&r, out))?;
         return Ok(ExitCode::SUCCESS);
     }
     for acc in &r.accounts {
         print_account(acc);
     }
     if r.accounts.is_empty() {
-        println!(
+        outln!(
             "no accounts with accepted malicious flags; flag the attacker's sessions or IPs first"
         );
     }
     if r.pending_flags > 0 {
-        println!(
+        outln!(
             "{} malicious flags are waiting for review (they count once accepted)",
             r.pending_flags
         );

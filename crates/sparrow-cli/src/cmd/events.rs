@@ -225,7 +225,7 @@ pub fn run(a: EventsArgs, json: bool) -> Result<ExitCode> {
         if json {
             print_json(&serde_json::json!({ "csv": out.display().to_string(), "rows": rows }))?;
         } else {
-            println!("wrote {rows} rows to {}", safe(&out.display().to_string()));
+            outln!("wrote {rows} rows to {}", safe(&out.display().to_string()));
         }
         return Ok(ExitCode::SUCCESS);
     }
@@ -240,9 +240,9 @@ pub fn run(a: EventsArgs, json: bool) -> Result<ExitCode> {
         print_json(&page)?;
         return Ok(ExitCode::SUCCESS);
     }
-    println!("{}", header_line(&page));
+    outln!("{}", header_line(&page));
     for r in &page.rows {
-        println!("{}", row_line(r));
+        outln!("{}", row_line(r));
     }
     Ok(ExitCode::SUCCESS)
 }

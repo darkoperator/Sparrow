@@ -5,7 +5,6 @@
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use clap::Subcommand;
-use sparrow_core::data::DataDirs;
 use sparrow_core::export::devices_csv;
 use sparrow_core::export::report_md::{self, ReportOpts};
 use sparrow_core::export::timeline_csv::{self, CsvOpts, Scope};
@@ -207,11 +206,12 @@ fn with_sink<T>(
             if json {
                 bail!("--json needs --out (the export itself goes to stdout)");
             }
-            let stdout = std::io::stdout();
-            let mut w = BufWriter::new(stdout.lock());
-            let v = f(&mut w)?;
-            w.flush()?;
-            Ok(v)
+            crate::cx::with_out(|out| {
+                let mut w = BufWriter::new(out);
+                let v = f(&mut w)?;
+                w.flush()?;
+                Ok(v)
+            })
         }
     }
 }
@@ -220,11 +220,11 @@ fn summary(kind: &str, out: &Path, rows: Option<u64>, json: bool) -> Result<()> 
     if json {
         let v =
             serde_json::json!({ "export": kind, "out": out.display().to_string(), "rows": rows });
-        println!("{}", crate::with_warnings(&v)?);
+        outln!("{}", crate::with_warnings(&v)?);
     } else {
         match rows {
-            Some(n) => println!("wrote {kind} ({n} rows) to {}", out.display()),
-            None => println!("wrote {kind} to {}", out.display()),
+            Some(n) => outln!("wrote {kind} ({n} rows) to {}", out.display()),
+            None => outln!("wrote {kind} to {}", out.display()),
         }
     }
     Ok(())
@@ -249,7 +249,7 @@ pub fn run(command: ExportCommand, json: bool) -> Result<ExitCode> {
             let opts = ReportOpts {
                 reviewed_only,
                 generated_at,
-                dirs: DataDirs::with_env_fallback(data, rules),
+                dirs: crate::data_dirs(data, rules),
             };
             with_sink(out.as_deref(), json, |w| {
                 Ok(report_md::write(c.conn(), w, &opts)?)
@@ -311,13 +311,13 @@ pub fn run(command: ExportCommand, json: bool) -> Result<ExitCode> {
                     "devices": {"out": devices_path.display().to_string(), "rows": devices},
                     "sightings": {"out": sightings_path.display().to_string(), "rows": sightings},
                 });
-                println!("{}", crate::with_warnings(&v)?);
+                outln!("{}", crate::with_warnings(&v)?);
             } else {
-                println!(
+                outln!(
                     "wrote devices ({devices} rows) to {}",
                     devices_path.display()
                 );
-                println!(
+                outln!(
                     "wrote device sightings ({sightings} rows) to {}",
                     sightings_path.display()
                 );
@@ -335,7 +335,7 @@ pub fn run(command: ExportCommand, json: bool) -> Result<ExitCode> {
                 bail!("export workbook needs --out FILE (a workbook is binary)");
             };
             check_out(&out, &case)?;
-            let dirs = DataDirs::with_env_fallback(data, rules);
+            let dirs = crate::data_dirs(data, rules);
             let c = crate::open_read(&case)?;
             atomic(&out, |tmp| {
                 Ok(workbook_xlsx::write(c.conn(), tmp, generated_at, &dirs)?)

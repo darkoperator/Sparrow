@@ -8,7 +8,6 @@ use sparrow_core::case::coverage::{
     AccountCoverage, CoverageOptions, Request, SourceCoverage, coverage, thousands,
 };
 use sparrow_core::case::text::display_safe_line as safe;
-use sparrow_core::data::DataDirs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -47,7 +46,7 @@ pub fn source_line(s: &SourceCoverage) -> String {
 }
 
 fn print_account(a: &AccountCoverage, requests: &[&Request]) {
-    println!(
+    outln!(
         "{}  {}  {}",
         safe(&a.upn),
         safe(&a.tenant_key),
@@ -57,10 +56,10 @@ fn print_account(a: &AccountCoverage, requests: &[&Request]) {
         }
     );
     for s in &a.sources {
-        println!("  {}", source_line(s));
+        outln!("  {}", source_line(s));
     }
     for r in requests {
-        println!(
+        outln!(
             "  Request: {}  {}..{}  ({})",
             r.source,
             r.from,
@@ -68,7 +67,7 @@ fn print_account(a: &AccountCoverage, requests: &[&Request]) {
             r.reasons.join(", ")
         );
         let line = |name: &str, how: &Option<String>| {
-            println!(
+            outln!(
                 "    {name}: {}",
                 how.as_deref()
                     .map(safe)
@@ -88,7 +87,7 @@ pub fn run(a: CoverageArgs, json: bool) -> Result<ExitCode> {
         &CoverageOptions {
             tenant: a.tenant,
             users: a.user,
-            dirs: DataDirs::with_env_fallback(None, a.rules),
+            dirs: crate::data_dirs(None, a.rules),
         },
     )?;
     if json {
@@ -96,7 +95,7 @@ pub fn run(a: CoverageArgs, json: bool) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     for w in &report.warnings {
-        eprintln!("warning: {w}");
+        errln!("warning: {w}");
     }
     for acc in &report.accounts {
         let own: Vec<&Request> = report
@@ -107,7 +106,7 @@ pub fn run(a: CoverageArgs, json: bool) -> Result<ExitCode> {
         print_account(acc, &own);
     }
     if report.accounts.is_empty() {
-        println!("no accounts with findings; name one with --user");
+        outln!("no accounts with findings; name one with --user");
     }
     Ok(ExitCode::SUCCESS)
 }

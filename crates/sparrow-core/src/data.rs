@@ -29,13 +29,19 @@ impl DataDirs {
 
     /// Explicit directories (CLI flags) win over the environment.
     pub fn with_env_fallback(data: Option<PathBuf>, rules: Vec<PathBuf>) -> DataDirs {
-        let env = |k: &str| {
-            std::env::var_os(k)
-                .filter(|v| !v.is_empty())
-                .map(PathBuf::from)
-        };
+        DataDirs::with_lookup(data, rules, |k| std::env::var_os(k))
+    }
+
+    /// [`DataDirs::with_env_fallback`] reading the variables through `var` (the CLI run's own environment when the
+    /// app's agent bridge runs it).
+    pub fn with_lookup(
+        data: Option<PathBuf>,
+        rules: Vec<PathBuf>,
+        var: impl Fn(&str) -> Option<std::ffi::OsString>,
+    ) -> DataDirs {
+        let env = |k: &str| var(k).filter(|v| !v.is_empty()).map(PathBuf::from);
         let rules = if rules.is_empty() {
-            std::env::var_os("SPARROW_RULES")
+            var("SPARROW_RULES")
                 .filter(|v| !v.is_empty())
                 .map(|v| std::env::split_paths(&v).collect())
                 .unwrap_or_default()

@@ -109,14 +109,14 @@ fn pivot_line(of: PivotOf, r: &PivotRow) -> String {
 fn print_text(rep: &EntityReport) {
     let s = &rep.summary;
     let (k, v) = kind(&s.entity);
-    println!("{k} {}", safe(v));
-    println!(
+    outln!("{k} {}", safe(v));
+    outln!(
         "events {}  first {}  last {}",
         s.events,
         iso_opt(&s.first_seen),
         iso_opt(&s.last_seen)
     );
-    println!(
+    outln!(
         "distinct  {}",
         s.distinct
             .iter()
@@ -124,7 +124,7 @@ fn print_text(rep: &EntityReport) {
             .collect::<Vec<_>>()
             .join("  ")
     );
-    println!(
+    outln!(
         "open findings  {}",
         if s.open_findings.is_empty() {
             "none".to_string()
@@ -137,30 +137,30 @@ fn print_text(rep: &EntityReport) {
         }
     );
     if !s.roles_matched.is_empty() {
-        println!("roles  {}", safe(&s.roles_matched.join(", ")));
+        outln!("roles  {}", safe(&s.roles_matched.join(", ")));
     }
     if let Some(i) = &s.ip_intel {
-        println!("ip_intel  {}", safe(&i.to_string()));
+        outln!("ip_intel  {}", safe(&i.to_string()));
     }
     if let Some(d) = &s.device {
-        println!("device  {}", safe(&d.to_string()));
+        outln!("device  {}", safe(&d.to_string()));
     }
     for (of, name) in PIVOTS {
         let Some(p) = rep.pivots.get(name) else {
             continue;
         };
         if (p.rows.len() as u64) < p.total {
-            println!("\n{name} (showing {} of {})", p.rows.len(), p.total);
+            outln!("\n{name} (showing {} of {})", p.rows.len(), p.total);
         } else {
-            println!("\n{name} ({})", p.total);
+            outln!("\n{name} ({})", p.total);
         }
         for r in &p.rows {
-            println!("{}", pivot_line(of, r));
+            outln!("{}", pivot_line(of, r));
         }
     }
-    println!("\nfindings ({})", rep.findings.len());
+    outln!("\nfindings ({})", rep.findings.len());
     for f in &rep.findings {
-        println!(
+        outln!(
             "  {}  {}  {}  {}  {}",
             safe(&f.finding_id),
             safe(&f.severity),
