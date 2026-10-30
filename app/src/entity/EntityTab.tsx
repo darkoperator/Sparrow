@@ -28,6 +28,7 @@ import { displaySafe } from "../text";
 import AddToTimelineDialog from "../marks/AddToTimelineDialog";
 import CellMenu, { type MenuItem } from "../grid/CellMenu";
 import { AnalystPill, AnalystStatusDialog, analystStatusItem, clearAnalystStatus } from "../devices/analystStatus";
+import AccessSection from "../access/AccessSection";
 import CoverageStrip from "./CoverageStrip";
 import PivotTable, { PIVOTS } from "./PivotTable";
 import Tiles from "./Tiles";
@@ -232,6 +233,7 @@ export default function EntityTab({ entity }: EntityTabProps) {
       )}
       {data.error && <p role="alert" className="entity-error">{displaySafe(data.error)}</p>}
       {summary ? <Tiles kind={kind} summary={summary} /> : !data.error && <p className="entity-empty">Loading…</p>}
+      {kind === "account" && <AccessSection account={value} />}
       <div className="entity-coverage">
         <CoverageStrip coverage={data.coverage} />
       </div>

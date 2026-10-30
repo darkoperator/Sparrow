@@ -7,6 +7,8 @@ vi.mock("../api", async (orig) => ({
   exportReport: vi.fn(),
   exportTimelineCsv: vi.fn(),
   exportWorkbook: vi.fn(),
+  exportAccessCsv: vi.fn(),
+  exportAccessSummary: vi.fn(),
 }));
 const dialogSave = vi.fn();
 vi.mock("@tauri-apps/plugin-dialog", () => ({ save: (...a: unknown[]) => dialogSave(...a) }));
@@ -16,7 +18,7 @@ import ExportMenu from "./ExportMenu";
 
 beforeEach(() => {
   dialogSave.mockReset();
-  for (const f of [api.exportReport, api.exportTimelineCsv, api.exportWorkbook]) {
+  for (const f of [api.exportReport, api.exportTimelineCsv, api.exportWorkbook, api.exportAccessCsv, api.exportAccessSummary]) {
     vi.mocked(f).mockReset();
     vi.mocked(f).mockResolvedValue(null);
   }
@@ -71,5 +73,22 @@ describe("ExportMenu", () => {
     const user = await menu();
     await user.click(screen.getByRole("button", { name: "Report" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("the folder /nope does not exist");
+  });
+
+  it("exports_access_csv_and_summary", async () => {
+    dialogSave.mockResolvedValue("/out/access.csv");
+    let user = await menu();
+    await user.click(screen.getByRole("button", { name: "Access CSV (all accounts)" }));
+    expect(api.exportAccessCsv).toHaveBeenCalledWith("/out/access.csv", null);
+    dialogSave.mockResolvedValue("/out/access-summary.md");
+    user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Export" }));
+    await user.click(screen.getByRole("button", { name: "Access summary (Markdown)" }));
+    expect(api.exportAccessSummary).toHaveBeenCalledWith("/out/access-summary.md");
+    const today = new Date().toISOString().slice(0, 10);
+    expect(dialogSave.mock.calls.map((c) => (c[0] as { defaultPath: string }).defaultPath)).toEqual([
+      `access-${today}.csv`,
+      `access-summary-${today}.md`,
+    ]);
   });
 });

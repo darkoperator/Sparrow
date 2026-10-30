@@ -8,6 +8,7 @@ import type { AccountPage } from "../api";
 vi.mock("../api", async (orig) => ({
   ...(await orig<typeof import("../api")>()),
   accountsList: vi.fn(),
+  accessAccounts: vi.fn(),
 }));
 
 import * as api from "../api";
@@ -18,6 +19,8 @@ beforeEach(() => {
   page = accountsFixture();
   vi.mocked(api.accountsList).mockReset();
   vi.mocked(api.accountsList).mockImplementation(async () => page);
+  vi.mocked(api.accessAccounts).mockReset();
+  vi.mocked(api.accessAccounts).mockResolvedValue([]);
 });
 
 describe("Accounts", () => {
@@ -79,5 +82,21 @@ describe("Accounts", () => {
     render(<Accounts onSelect={() => {}} />);
     await screen.findByRole("button", { name: page.accounts[0].upn });
     expect(screen.queryByRole("button", { name: /^Open (account|IP) tab/ })).toBeNull();
+  });
+
+  it("badges_flagged_accounts", async () => {
+    const [flagged, other] = page.accounts;
+    vi.mocked(api.accessAccounts).mockResolvedValue([flagged.upn.toLowerCase()]);
+    render(<Accounts onSelect={() => {}} />);
+    const row1 = (await screen.findByRole("button", { name: flagged.upn })).closest("tr")!;
+    expect(await within(row1).findByText("Malicious")).toHaveAttribute("title", "Accepted malicious flags tie activity to this account: see the Access section of its tab");
+    const row2 = screen.getByRole("button", { name: other.upn }).closest("tr")!;
+    expect(within(row2).queryByText("Malicious")).toBeNull();
+  });
+
+  it("lists the accounts even when the access accounts cannot be read", async () => {
+    vi.mocked(api.accessAccounts).mockRejectedValue(new Error("no"));
+    render(<Accounts onSelect={() => {}} />);
+    expect(await screen.findByRole("button", { name: page.accounts[0].upn })).toBeInTheDocument();
   });
 });

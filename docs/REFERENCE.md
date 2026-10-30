@@ -698,7 +698,10 @@ succeeds, and is refused when it is the case file, its `.wal`, or inside the tes
 `sparrow access --case C [--account UPN] [--csv FILE | --markdown] [--json]` answers "what did the attacker get?" per
 compromised account: mail read and sent, attachments, SharePoint/OneDrive files, Teams, Copilot and other apps.
 Read-only; no audit entry. `--csv` is refused (exit 5) when it names the case or its `.wal`, and is written through a
-temp file; `--json` cannot be combined with `--csv` or `--markdown`.
+temp file; `--json` cannot be combined with `--csv` or `--markdown`. In the app, an account tab has an Access section (scope chips,
+the seven tiles, the coverage line and a table per category, with "Export CSV" for that account), the export menu
+has "Access CSV (all accounts)" and "Access summary (Markdown)", and the account list badges accounts the report
+lists as "Malicious".
 
 - **Scope.** Only accepted (or analyst-made), not removed, malicious flags count; pending agent flags are counted
   (`pending_flags`) and attribute nothing. A record is attributed `session` (a flagged Entra session on the record or

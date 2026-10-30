@@ -82,3 +82,4 @@
 .acc-time { color: var(--text-2); font-size: 11px; white-space: nowrap; }
 .acc-addresses li { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-2); }
 .acc-addresses li + li { margin-top: 2px; }
+.acc-mal { border-color: var(--mal); color: var(--mal); background: var(--mal-bg); }

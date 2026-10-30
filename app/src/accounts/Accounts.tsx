@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { accountsList, isCmdError, type AccountPage, type AccountRow } from "../api";
+import { accessAccounts, accountsList, isCmdError, type AccountPage, type AccountRow } from "../api";
 import { useNav } from "../shell/nav";
 import { displaySafe } from "../text";
 import Icon from "../ui/Icon";
@@ -56,6 +56,19 @@ export default function Accounts({ onSelect }: { onSelect: (upn: string) => void
   const [page, setPage] = useState<AccountPage | null>(null);
   const [error, setError] = useState<string | null>(null);
   const nav = useNav();
+  // The accounts the access report lists (accepted malicious flags tie activity to them); a failure only hides the badge.
+  const [flagged, setFlagged] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    let live = true;
+    accessAccounts().then(
+      (a) => live && setFlagged(new Set(a)),
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -116,6 +129,14 @@ export default function Accounts({ onSelect }: { onSelect: (upn: string) => void
                         >
                           {displaySafe(a.upn)}
                         </button>
+                        {flagged.has(a.upn.toLowerCase()) && (
+                          <span
+                            className="tag acc-mal"
+                            title="Accepted malicious flags tie activity to this account: see the Access section of its tab"
+                          >
+                            Malicious
+                          </span>
+                        )}
                         {nav && (
                           <button
                             className="acc-open"
