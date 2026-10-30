@@ -214,6 +214,13 @@ fn counts(c: Category, items: &[&Item]) -> (u64, u64, Option<String>) {
             if !synced.is_empty() {
                 q.push(format!("{} synced", plural(synced.len(), "folder")));
             }
+            let unnamed = items
+                .iter()
+                .filter(|i| i.action == "read (no message id)")
+                .count();
+            if unnamed > 0 {
+                q.push(format!("{} without a message id", plural(unnamed, "read")));
+            }
             (d, t, (!q.is_empty()).then(|| q.join(" · ")))
         }
         Category::MailSent => {
@@ -263,12 +270,14 @@ fn account_access(conn: &Connection, account: String, items: Vec<Item>) -> Resul
         Some(t) => coverage::presence(conn, t, &account)?,
         None => BTreeSet::new(),
     };
+    let limits = coverage::mail_limits(conn, &account)?;
     let mut tiles = Vec::new();
     let mut gaps = Vec::new();
     for c in Category::ALL {
         let of: Vec<&Item> = items.iter().filter(|i| i.category == c).collect();
         let (direct, by_time, qualifier) = counts(c, &of);
         let (coverage, covered) = coverage::coverage(conn, tenant.as_deref(), c, &present)?;
+        let (coverage, covered) = coverage::limited(c, &limits, coverage, covered);
         if coverage.status != "collected" {
             gaps.push(format!("{}: {}", c.title(), coverage.reason));
         }

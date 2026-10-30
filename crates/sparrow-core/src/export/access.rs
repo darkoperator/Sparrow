@@ -5,7 +5,7 @@
 use super::text::md_cell;
 use super::timeline_csv::neutralise;
 use crate::Result;
-use crate::case::access::{AccessReport, Category, Tile};
+use crate::case::access::{AccessReport, Category, NEVER_LOGGED, Tile};
 use chrono::{DateTime, Utc};
 use std::io::Write;
 
@@ -119,11 +119,17 @@ pub fn write_summary(report: &AccessReport, out: &mut (impl Write + ?Sized)) -> 
         }
         s.push('\n');
     }
+    // Per account, what its capture lacked; then, once, what Microsoft never logs (every account's last lines).
+    let never: Vec<&str> = NEVER_LOGGED.iter().map(|(_, g)| *g).collect();
     s.push_str("\n### Coverage gaps\n\n");
     for a in &report.accounts {
-        for g in &a.gaps {
+        for g in a.gaps.iter().filter(|g| !never.contains(&g.as_str())) {
             s.push_str(&format!("- {}: {}\n", md_cell(&a.account), md_cell(g)));
         }
+    }
+    s.push_str("\n### Not logged by Microsoft\n\n");
+    for g in never {
+        s.push_str(&format!("- {}\n", md_cell(g)));
     }
     out.write_all(s.as_bytes()).map_err(super::io_err)?;
     Ok(())

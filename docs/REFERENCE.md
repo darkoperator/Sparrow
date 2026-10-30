@@ -706,7 +706,9 @@ lists as "Malicious".
 - **Scope.** Only accepted (or analyst-made), not removed, malicious flags count; pending agent flags are counted
   (`pending_flags`) and attribute nothing. A record is attributed `session` (a flagged Entra session on the record or
   its UAL `SessionId`, or a UAL record sharing an Exchange `SessionId` with a directly attributed record of the same
-  account), `row` (the record itself flagged), `device`, or `ip` (a flagged IP or prefix, or an ASN flagged for the
+  account when it has no Entra session and no IP of its own or that record's IP: Exchange sessions can last weeks, so
+  a record from another, unflagged IP in the session is the real user's and stays out; propagated records never open
+  a time window), `row` (the record itself flagged), `device`, or `ip` (a flagged IP or prefix, or an ASN flagged for the
   account; a case-wide ASN flag attributes nothing). A malicious `account` flag only puts the account on the report.
   An account scope on a flag matches the record's actor, never its mailbox owner. Items are filed under the actor.
 - **By time.** A record of the account with no IP and no Entra session (Teams Graph reads, most Copilot records) is
@@ -720,16 +722,21 @@ lists as "Malicious".
   `copilot` (one item per `CopilotEventData.AccessedResources` entry, or one `prompt`), `other` (everything else but
   sign-ins and mail flow). Someone else's data reached through the account (a delegated or shared mailbox, send as)
   stays under the account, with `owner` and a `note` ("in mailbox ...", "sent as ...").
+- **Reads without a message id** (a Bind item or legacy MessageBind that names none) are `read (no message id)`
+  items, counted apart from the messages (the tile qualifier says how many).
 - **Coverage.** Each tile carries its source's `evidence_availability` status for the account's tenant
   (`mail_items_accessed` or `mailbox_audit_legacy` for mail read, `mail_send` for mail sent, `ual` otherwise; `none`
   when the case has no row). A zero is "none seen" only when the source was collected, or partial and the capture holds
-  the category's operations for that account; otherwise the tile gives the status. Every account lists the gaps
+  the category's operations for that account; otherwise the tile gives the status. Mail read is partial when
+  MailItemsAccessed was throttled for the account (the per-message list is incomplete), and mail read or sent are
+  partial when the account's mailbox (`mailboxes`) has an audit bypass or does not audit the action for its owner. Every account lists the gaps
   Microsoft never logs (Teams app reads, Outlook-synced mail, attachments opened in Outlook/OWA, Exchange searches
   without Audit Premium).
 - **Exports.** `--csv` writes one row per item (columns `account, category, attribution, accessed_utc, action, item,
   location, from, to, size_bytes, item_time_utc, app, ip, session_id, owner, note, source, record_id`; UTF-8 with a BOM,
   ISO 8601 UTC, formula-like cells prefixed with `'`). `--markdown` prints a table (one row per account, a cell per
-  category: `48`, `48 (+3 by time)`, `0 (1 folder synced)`, `0 none seen` or `0 (<status>)`) and the coverage gaps.
+  category: `48`, `48 (+3 by time)`, `0 (1 folder synced)`, `0 none seen` or `0 (<status>)`), the coverage gaps
+  per account, and once the gaps Microsoft never logs.
 
 ## Synthetic data
 

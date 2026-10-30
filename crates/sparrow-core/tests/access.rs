@@ -344,15 +344,19 @@ fn an_account_scope_matches_the_actor_not_the_mailbox_owner() {
 
 #[test]
 fn exchange_session_inherits_from_an_attributed_record() {
+    // Within jdoe's Exchange session X1: a (flagged IP) is direct; d (no IP of its own) inherits the session; b, from an
+    // unflagged IP, is the real user's client sharing a long-lived session and stays out; c is another account's.
     let case = Case::in_memory().unwrap();
-    let (a, b, c) = (
+    let (a, b, c, d) = (
         "00000000-0000-4000-8000-00000000000a",
         "00000000-0000-4000-8000-00000000000b",
         "00000000-0000-4000-8000-00000000000c",
+        "00000000-0000-4000-8000-00000000000d",
     );
     ual_record(&case, a, JDOE, "X1");
     ual_record(&case, b, JDOE, "x1");
     ual_record(&case, c, BOB, "X1");
+    ual_record(&case, d, JDOE, "X1");
     put(
         &case,
         &Ev {
@@ -377,14 +381,58 @@ fn exchange_session_inherits_from_an_attributed_record() {
             ..ual(c)
         },
     );
+    put(&case, &Ev { at: 3, ..ual(d) });
     vflag(&case, "ip", IP, Some(("account", JDOE)), State::Accepted);
     assert_eq!(
         keys(&case),
         vec![
             (a.to_string(), Attribution::Ip),
-            (b.to_string(), Attribution::Session)
+            (d.to_string(), Attribution::Session)
         ]
     );
+}
+
+#[test]
+fn propagation_never_makes_windows() {
+    // A propagated record a day later must not open a window that time-attributes the account's identityless records.
+    let case = Case::in_memory().unwrap();
+    let (a, d) = (
+        "00000000-0000-4000-8000-0000000000aa",
+        "00000000-0000-4000-8000-0000000000dd",
+    );
+    ual_record(&case, a, JDOE, "X1");
+    ual_record(&case, d, JDOE, "X1");
+    put(
+        &case,
+        &Ev {
+            ip: Some(IP),
+            ..ual(a)
+        },
+    );
+    put(
+        &case,
+        &Ev {
+            at: 86_400,
+            ..ual(d)
+        },
+    );
+    put(
+        &case,
+        &Ev {
+            workload: Some("MicrosoftTeams"),
+            operation: Some("ChatRetrieved"),
+            at: 86_400 + 60,
+            ..ual("t1")
+        },
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let kinds: Vec<_> = access::scope(case.conn(), JDOE)
+        .unwrap()
+        .into_iter()
+        .map(|s| s.kind)
+        .collect();
+    assert_eq!(kinds, vec!["ip"]);
+    assert!(!keys(&case).iter().any(|(k, _)| k == "t1"));
 }
 
 #[test]
@@ -1945,4 +1993,182 @@ fn staging_spans_chunks_without_loss_or_repeats() {
     let subjects: std::collections::BTreeSet<_> =
         items.iter().map(|i| i.item.clone().unwrap()).collect();
     assert_eq!(subjects.len(), n as usize);
+}
+
+// Final review fixes.
+
+#[test]
+fn a_throttled_mail_read_is_partial() {
+    let case = Case::in_memory().unwrap();
+    ual_ev(
+        &case,
+        R1,
+        "MailItemsAccessed",
+        JDOE,
+        JDOE,
+        Some(IP),
+        0,
+        json!({}),
+    );
+    insert_row(
+        &case,
+        "mail_items_accessed",
+        "contoso",
+        json!({"record_id": R1, "item_ordinal": 0, "access_type": "bind",
+        "folder_path": "\\Inbox", "internet_message_id": "<a@x>", "size_bytes": 10, "is_throttled": true}),
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    availability(&case, "mail_items_accessed", "collected");
+    let r = access::report(case.conn(), Some(JDOE)).unwrap();
+    let t = tile(&r.accounts[0], Category::MailRead);
+    assert_eq!(t.coverage.status, "partial");
+    assert!(
+        t.coverage.reason.contains("throttled"),
+        "{}",
+        t.coverage.reason
+    );
+    assert!(r.accounts[0].gaps.iter().any(|g| g.contains("throttled")));
+}
+
+#[test]
+fn a_mailbox_that_does_not_audit_the_action_is_partial() {
+    let case = Case::in_memory().unwrap();
+    ual_w(
+        &case,
+        R1,
+        "SharePoint",
+        "FileAccessed",
+        Some(IP),
+        0,
+        "other",
+        json!({}),
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    availability(&case, "mail_items_accessed", "collected");
+    availability(&case, "mail_send", "collected");
+    insert_row(
+        &case,
+        "mailboxes",
+        "contoso",
+        json!({"record_key": "mb1", "upn": "JDOE@contoso.example",
+        "audit_owner": ["Send"], "audit_bypass_enabled": false}),
+    );
+    let r = access::report(case.conn(), Some(JDOE)).unwrap();
+    let read = tile(&r.accounts[0], Category::MailRead);
+    assert_eq!(
+        (read.coverage.status.as_str(), read.none_seen),
+        ("partial", false)
+    );
+    assert!(
+        read.coverage
+            .reason
+            .contains("does not audit MailItemsAccessed"),
+        "{}",
+        read.coverage.reason
+    );
+    assert!(tile(&r.accounts[0], Category::MailSent).none_seen);
+    case.conn()
+        .execute("UPDATE mailboxes SET audit_bypass_enabled = TRUE", [])
+        .unwrap();
+    let r = access::report(case.conn(), Some(JDOE)).unwrap();
+    let sent = tile(&r.accounts[0], Category::MailSent);
+    assert_eq!(
+        (sent.coverage.status.as_str(), sent.none_seen),
+        ("partial", false)
+    );
+    assert!(
+        sent.coverage.reason.contains("audit bypass"),
+        "{}",
+        sent.coverage.reason
+    );
+}
+
+#[test]
+fn reads_without_a_message_id_are_counted_apart() {
+    let case = Case::in_memory().unwrap();
+    ual_ev(
+        &case,
+        R1,
+        "MailItemsAccessed",
+        JDOE,
+        JDOE,
+        Some(IP),
+        0,
+        json!({}),
+    );
+    mia_item(&case, R1, 0, "bind", "\\Inbox", Some("<a@x>"), 10);
+    mia_item(&case, R1, 1, "bind", "\\Inbox", None, 10);
+    ual_ev(
+        &case,
+        R2,
+        "MailItemsAccessed",
+        JDOE,
+        JDOE,
+        Some(IP),
+        5,
+        json!({}),
+    );
+    mia_item(&case, R2, 0, "bind", "\\Inbox", None, 10);
+    legacy(&case, "mal-9", "MessageBind", &[], &[]);
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let read = items_of(&case, Category::MailRead);
+    assert_eq!(
+        read.iter()
+            .filter(|i| i.action == "read (no message id)")
+            .count(),
+        3,
+        "{read:?}"
+    );
+    let r = access::report(case.conn(), Some(JDOE)).unwrap();
+    let t = tile(&r.accounts[0], Category::MailRead);
+    assert_eq!((t.direct, t.by_time), (1, 0));
+    assert!(
+        t.qualifier
+            .as_deref()
+            .unwrap()
+            .ends_with(" · 3 reads without a message id"),
+        "{:?}",
+        t.qualifier
+    );
+}
+
+#[test]
+fn the_staging_table_is_dropped_after_the_items() {
+    let case = Case::in_memory().unwrap();
+    ual_ev(
+        &case,
+        R1,
+        "MailItemsAccessed",
+        JDOE,
+        JDOE,
+        Some(IP),
+        0,
+        json!({}),
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    access::report(case.conn(), None).unwrap();
+    let n: i64 = case
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM duckdb_tables() WHERE temporary AND table_name = 'access_ual'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 0);
+}
+
+#[test]
+fn the_summary_lists_the_never_logged_gaps_once() {
+    let case = Case::in_memory().unwrap();
+    vflag(&case, "account", JDOE, None, State::Accepted);
+    vflag(&case, "account", BOB, None, State::Accepted);
+    let (_, md) = exported(&case);
+    assert_eq!(
+        md.matches("Teams chats read in the Teams app are not audited")
+            .count(),
+        1,
+        "{md}"
+    );
+    assert!(md.contains("### Not logged by Microsoft"), "{md}");
 }

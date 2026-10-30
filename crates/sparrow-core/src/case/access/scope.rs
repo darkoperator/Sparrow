@@ -45,8 +45,11 @@ const SCOPE: &str = "(vf.scope_kind IS NULL \
 ///
 /// - `hits`: every flag match (`rank` 1 session, 2 row, 3 device, 4 ip; the flag's `kind` and `value`).
 /// - `direct`: one row per matched event with an actor, the strongest attribution kept; `prop`: the UAL records sharing
-///   an Exchange session id with a direct UAL record of the same account.
-/// - `windows` (times in epoch microseconds): per account and flagged value (`row` for row flags, `session` with the Exchange id for `prop`), the
+///   an Exchange session id with a direct UAL record of the same account, when they carry no identity of their own
+///   (no Entra session, and no IP or the IP of a direct record of that session). Exchange session ids can live for
+///   weeks: a record from another, unflagged IP in the same session is the real user's client and stays out.
+/// - `windows` (times in epoch microseconds): per account and flagged value (`row` for row flags; propagated records
+///   never open a window), the
 ///   bursts of its sightings split at gaps over an hour, each from its first sighting to its last plus an hour.
 /// - `timed`: the events the account performed (its actor; never as mailbox owner, which would claim mail it
 ///   received and other people's reads of it) with no IP and no Entra session, not direct, inside one of its windows.
@@ -83,17 +86,18 @@ pub(crate) fn ctes() -> String {
              CASE b.rank WHEN 1 THEN 'session' WHEN 2 THEN 'row' WHEN 3 THEN 'device' ELSE 'ip' END AS attribution, \
              e.event_time FROM best b JOIN events e USING (source_table, record_key) \
              WHERE e.actor_upn IS NOT NULL AND e.event_time IS NOT NULL), \
-         xs AS (SELECT DISTINCT d.account, lower(u.session_id) AS sid FROM direct d JOIN ual_events u \
+         xs AS (SELECT DISTINCT d.account, lower(u.session_id) AS sid, e.ip FROM direct d JOIN ual_events u \
              ON d.source_table = 'ual_events' AND d.record_key = CAST(u.record_id AS VARCHAR) \
+             JOIN events e USING (source_table, record_key) \
              WHERE coalesce(u.session_id, '') <> ''), \
-         prop AS (SELECT e.source_table, e.record_key, lower(e.actor_upn) AS account, 'session' AS attribution, \
-             e.event_time, xs.sid FROM {WITH_UAL} \
+         prop AS (SELECT DISTINCT e.source_table, e.record_key, lower(e.actor_upn) AS account, \
+             'session' AS attribution, e.event_time FROM {WITH_UAL} \
              JOIN xs ON xs.sid = lower(u.session_id) AND xs.account = lower(e.actor_upn) \
-             WHERE e.event_time IS NOT NULL \
+             WHERE e.event_time IS NOT NULL AND e.entra_session_id IS NULL \
+             AND (e.ip IS NULL OR e.ip = xs.ip) \
              AND (e.source_table, e.record_key) NOT IN (SELECT source_table, record_key FROM direct)), \
          sightings AS (SELECT d.account, h.kind, h.value, epoch_us(d.event_time) AS t FROM direct d \
-                 JOIN hits h USING (source_table, record_key) \
-             UNION ALL SELECT account, 'session', sid, epoch_us(event_time) FROM prop), \
+                 JOIN hits h USING (source_table, record_key)), \
          breaks AS (SELECT *, CASE WHEN t - lag(t) OVER (PARTITION BY account, kind, value ORDER BY t) \
              > {HOUR_US} THEN 1 ELSE 0 END AS brk FROM sightings), \
          islands AS (SELECT *, sum(brk) OVER (PARTITION BY account, kind, value ORDER BY t \

@@ -146,3 +146,78 @@ fn none() -> CategoryCoverage {
         remediation: None,
     }
 }
+
+/// What can make the mail tiles of one account incomplete although their source was collected: MailItemsAccessed
+/// throttled for it (Exchange stops listing items once an account passes its limit, exactly when a whole mailbox is
+/// read), or its mailbox not auditing the action for its owner (an audit bypass, or a customised owner audit set).
+#[derive(Debug, Default)]
+pub(crate) struct MailLimits {
+    pub throttled: bool,
+    pub bypass: bool,
+    pub no_read_audit: bool,
+    pub no_send_audit: bool,
+}
+
+pub(crate) fn mail_limits(conn: &Connection, account: &str) -> Result<MailLimits> {
+    let sql = format!(
+        "WITH {} SELECT coalesce(bool_or(m.is_throttled), FALSE) FROM attributed a JOIN mail_items_accessed m \
+         ON a.source_table = 'ual_events' AND m.record_id = TRY_CAST(a.record_key AS UUID) WHERE a.account = ?",
+        super::scope::ctes()
+    );
+    let throttled: bool = conn.query_row(&sql, [account], |r| r.get(0))?;
+    let mailbox: Option<(bool, bool, bool)> = conn
+        .query_row(
+            "SELECT coalesce(audit_bypass_enabled, FALSE), \
+                 audit_owner IS NOT NULL AND NOT list_contains(list_transform(audit_owner, x -> lower(x)), 'mailitemsaccessed'), \
+                 audit_owner IS NOT NULL AND NOT list_contains(list_transform(audit_owner, x -> lower(x)), 'send') \
+             FROM mailboxes WHERE lower(upn) = ?1 OR lower(primary_smtp_address) = ?1 \
+             ORDER BY collected_at DESC NULLS LAST LIMIT 1",
+            [account],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let (bypass, no_read_audit, no_send_audit) = mailbox.unwrap_or_default();
+    Ok(MailLimits {
+        throttled,
+        bypass,
+        no_read_audit,
+        no_send_audit,
+    })
+}
+
+/// `cov` (and whether its zero is a finding) after the account's mail limits: a collected or covered-partial mail
+/// source becomes partial with the reason; a source already worse keeps its own status.
+pub(crate) fn limited(
+    c: Category,
+    limits: &MailLimits,
+    cov: CategoryCoverage,
+    covered: bool,
+) -> (CategoryCoverage, bool) {
+    let reason = match c {
+        Category::MailRead if limits.throttled => Some(
+            "MailItemsAccessed was throttled for this account: the per-message list is incomplete"
+                .to_string(),
+        ),
+        Category::MailRead | Category::MailSent if limits.bypass => {
+            Some("the mailbox has an audit bypass: its owner's actions are not audited".to_string())
+        }
+        Category::MailRead if limits.no_read_audit => {
+            Some("the mailbox does not audit MailItemsAccessed for its owner".to_string())
+        }
+        Category::MailSent if limits.no_send_audit => {
+            Some("the mailbox does not audit Send for its owner".to_string())
+        }
+        _ => None,
+    };
+    match reason {
+        Some(reason) if cov.status == "collected" || cov.status == "partial" => (
+            CategoryCoverage {
+                status: "partial".into(),
+                reason,
+                remediation: cov.remediation,
+            },
+            false,
+        ),
+        _ => (cov, covered),
+    }
+}

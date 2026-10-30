@@ -65,14 +65,15 @@ fn mail_sql() -> String {
              FROM attributed a JOIN mail_items_accessed m ON a.source_table = 'mail_items_accessed' \
                AND a.record_key = m.item_key \
            UNION ALL \
-           SELECT a.account, a.attribution, a.event_time, 'bind', l.folder_path, x.imid, NULL, l.app_id, l.client_ip, \
+           SELECT a.account, a.attribution, a.event_time, 'bind', l.folder_path, l.internet_message_ids[x.i], NULL, \
+               l.app_id, l.client_ip, \
                l.session_id, lower(l.mailbox_upn), 'mailbox_audit_legacy:' || l.operation, a.source_table, \
-               a.record_key, x.ord \
+               a.record_key, x.i - 1 \
              FROM attributed a JOIN mailbox_audit_legacy l ON a.source_table = 'mailbox_audit_legacy' \
                AND a.record_key = l.record_key \
                AND l.operation IN ('MailItemsAccessed', 'MessageBind') \
-             CROSS JOIN LATERAL (SELECT unnest(l.internet_message_ids) AS imid, \
-               generate_subscripts(l.internet_message_ids, 1) - 1 AS ord) x), \
+             CROSS JOIN LATERAL (SELECT unnest(range(1, greatest(len(coalesce(l.internet_message_ids, [])), 1) \
+               + 1)) AS i) x), \
          reads AS ( \
            SELECT * EXCLUDE (rn) FROM ( \
              SELECT *, CASE WHEN imid IS NULL OR access = 'sync' THEN 1 ELSE row_number() OVER ( \
@@ -110,7 +111,7 @@ fn mail_sql() -> String {
              GROUP BY 1), \
          mail AS ( \
            SELECT r.account, 'mail_read' AS category, r.attribution, epoch_us(r.event_time) AS accessed, \
-               CASE WHEN r.access = 'sync' THEN 'synced' ELSE 'read' END AS action, \
+               CASE WHEN r.access = 'sync' THEN 'synced' WHEN r.imid IS NULL THEN 'read (no message id)' ELSE 'read' END AS action, \
                CASE WHEN r.access = 'sync' THEN NULL ELSE t.subject END AS item, r.folder_path AS location, \
                t.sender AS \"from\", t.rcpts AS \"to\", r.size_bytes, epoch_us(t.received) AS item_time, r.app, r.ip, \
                r.session_id, CASE WHEN r.mailbox <> r.account THEN r.mailbox END AS owner, \
@@ -274,5 +275,8 @@ pub fn items(conn: &Connection, account: Option<&str>) -> Result<Vec<Item>> {
             record_key: r.get(18)?,
         })
     })?;
-    Ok(rows.collect::<std::result::Result<_, _>>()?)
+    let out: Vec<Item> = rows.collect::<std::result::Result<_, _>>()?;
+    // The staged AuditData is only needed for this query: free it.
+    conn.execute_batch("DROP TABLE IF EXISTS access_ual")?;
+    Ok(out)
 }
