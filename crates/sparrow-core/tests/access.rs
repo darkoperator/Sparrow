@@ -1395,3 +1395,293 @@ fn a_non_ual_row_with_a_mail_operation_name_is_other() {
         (Category::Other, Some("mailbox ceo"))
     );
 }
+
+// Task 5: coverage, tiles and the report.
+
+use sparrow_core::case::access::NEVER_LOGGED;
+
+fn availability(case: &Case, evidence: &str, status: &str) {
+    insert_row(
+        case,
+        "evidence_availability",
+        "contoso",
+        json!({"tenant_key": "contoso", "evidence": evidence,
+        "title": evidence, "status": status, "reason": format!("{evidence} {status}"), "rows": 1,
+        "evaluated_at": ts(t0())}),
+    );
+}
+
+fn tile(acc: &access::AccountAccess, c: Category) -> &access::Tile {
+    acc.tiles.iter().find(|t| t.category == c).unwrap()
+}
+
+#[test]
+fn report_lists_flagged_accounts_with_seven_tiles() {
+    let case = Case::in_memory().unwrap();
+    ual_ev(
+        &case,
+        R1,
+        "MailItemsAccessed",
+        JDOE,
+        JDOE,
+        Some(IP),
+        0,
+        json!({}),
+    );
+    mia_item(&case, R1, 0, "bind", "\\Inbox", Some("<a@x>"), 10);
+    vflag(&case, "ip", IP, None, State::Accepted);
+    vflag(&case, "account", BOB, None, State::Accepted);
+    vflag(
+        &case,
+        "account",
+        "eve@contoso.example",
+        None,
+        State::Pending,
+    );
+    let r = access::report(case.conn(), None).unwrap();
+    let names: Vec<_> = r.accounts.iter().map(|a| a.account.as_str()).collect();
+    assert_eq!(names, vec![BOB, JDOE]);
+    assert_eq!(r.pending_flags, 1);
+    for a in &r.accounts {
+        assert_eq!(
+            a.tiles.iter().map(|t| t.category).collect::<Vec<_>>(),
+            Category::ALL.to_vec()
+        );
+    }
+    let bob = &r.accounts[0];
+    assert!(bob.items.is_empty() && bob.scope.is_empty());
+    let jdoe = &r.accounts[1];
+    assert_eq!(jdoe.items.len(), 1);
+    assert_eq!(jdoe.tenant_key.as_deref(), Some("contoso"));
+    assert_eq!(jdoe.scope[0].value, IP);
+    assert_eq!(
+        access::flagged_accounts(case.conn()).unwrap(),
+        vec![BOB.to_string(), JDOE.to_string()]
+    );
+    let one = access::report(case.conn(), Some("JDOE@contoso.example")).unwrap();
+    assert_eq!(one.accounts.len(), 1);
+    assert_eq!(one.accounts[0].items.len(), 1);
+}
+
+#[test]
+fn tile_counts_split_direct_and_time() {
+    let case = Case::in_memory().unwrap();
+    ual_ev(
+        &case,
+        R1,
+        "MailItemsAccessed",
+        JDOE,
+        JDOE,
+        Some(IP),
+        0,
+        json!({}),
+    );
+    mia_item(&case, R1, 0, "bind", "\\Inbox", Some("<a@x>"), 1_048_576);
+    mia_item(&case, R1, 1, "bind", "\\Inbox", Some("<b@x>"), 1_048_576);
+    mia_item(&case, R1, 2, "sync", "\\Sent Items", None, 0);
+    ual_ev(
+        &case,
+        R2,
+        "MailItemsAccessed",
+        JDOE,
+        JDOE,
+        None,
+        60,
+        json!({}),
+    );
+    mia_item(&case, R2, 0, "bind", "\\Archive", Some("<c@x>"), 1_048_576);
+    mia_item(&case, R2, 1, "bind", "\\Inbox", Some("<a@x>"), 1_048_576);
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let r = access::report(case.conn(), Some(JDOE)).unwrap();
+    let t = tile(&r.accounts[0], Category::MailRead);
+    assert_eq!((t.direct, t.by_time), (2, 1));
+    assert_eq!(
+        t.qualifier.as_deref(),
+        Some("2 folders · 3.0 MB · 1 folder synced")
+    );
+}
+
+#[test]
+fn zero_is_never_none_seen_without_coverage() {
+    let teams = |case: &Case| {
+        let r = access::report(case.conn(), Some(JDOE)).unwrap();
+        tile(&r.accounts[0], Category::Teams).clone()
+    };
+    let base = || {
+        let case = Case::in_memory().unwrap();
+        ual_ev(
+            &case,
+            R1,
+            "MailItemsAccessed",
+            JDOE,
+            JDOE,
+            Some(IP),
+            0,
+            json!({}),
+        );
+        vflag(&case, "ip", IP, None, State::Accepted);
+        case
+    };
+    let none = base();
+    let t = teams(&none);
+    assert_eq!(
+        (t.direct, t.none_seen, t.coverage.status.as_str()),
+        (0, false, "none")
+    );
+    let collected = base();
+    availability(&collected, "ual", "collected");
+    let t = teams(&collected);
+    assert!(t.none_seen);
+    assert_eq!(t.coverage.status, "collected");
+    let partial = base();
+    availability(&partial, "ual", "partial");
+    let t = teams(&partial);
+    assert!(!t.none_seen);
+    assert_eq!(
+        t.coverage.reason,
+        "UAL partial: Teams operations of this account may not have been collected"
+    );
+    // A partial UAL that does hold Teams operations for the tenant: none of them is the attacker's.
+    ual_w(
+        &partial,
+        R5,
+        "MicrosoftTeams",
+        "MessageSent",
+        Some("198.51.100.7"),
+        5,
+        "other",
+        json!({}),
+    );
+    assert!(teams(&partial).none_seen);
+}
+
+#[test]
+fn never_logged_gaps_are_always_listed() {
+    let case = Case::in_memory().unwrap();
+    vflag(&case, "account", JDOE, None, State::Accepted);
+    let r = access::report(case.conn(), None).unwrap();
+    for (_, gap) in NEVER_LOGGED {
+        assert!(r.accounts[0].gaps.iter().any(|g| g == gap), "{gap}");
+    }
+    assert_eq!(NEVER_LOGGED.len(), 4);
+}
+
+#[test]
+fn a_partial_source_needs_the_account_own_operations() {
+    let case = Case::in_memory().unwrap();
+    ual_ev(
+        &case,
+        R1,
+        "MailItemsAccessed",
+        JDOE,
+        JDOE,
+        Some(IP),
+        0,
+        json!({}),
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    availability(&case, "ual", "partial");
+    // Teams operations exist in the tenant, but only for bob: they say nothing about jdoe's coverage.
+    insert_row(
+        &case,
+        "ual_events",
+        "contoso",
+        json!({"record_id": R6, "user_upn": BOB, "operation": "MessageSent",
+        "workload": "MicrosoftTeams", "event_time": ts(t0())}),
+    );
+    let r = access::report(case.conn(), Some(JDOE)).unwrap();
+    assert!(!tile(&r.accounts[0], Category::Teams).none_seen);
+}
+
+#[test]
+fn a_mail_source_status_is_not_overridden_by_the_ual() {
+    let case = Case::in_memory().unwrap();
+    ual_w(
+        &case,
+        R1,
+        "SharePoint",
+        "FileAccessed",
+        Some(IP),
+        0,
+        "other",
+        json!({}),
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    availability(&case, "ual", "collected");
+    availability(&case, "mail_items_accessed", "not_enabled");
+    availability(&case, "mail_send", "not_licensed");
+    let r = access::report(case.conn(), Some(JDOE)).unwrap();
+    let read = tile(&r.accounts[0], Category::MailRead);
+    assert_eq!(
+        (read.coverage.status.as_str(), read.none_seen),
+        ("not_enabled", false)
+    );
+    let sent = tile(&r.accounts[0], Category::MailSent);
+    assert_eq!(
+        (sent.coverage.status.as_str(), sent.none_seen),
+        ("not_licensed", false)
+    );
+    availability(&case, "mailbox_audit_legacy", "collected");
+    let r = access::report(case.conn(), Some(JDOE)).unwrap();
+    assert_eq!(
+        tile(&r.accounts[0], Category::MailRead).coverage.status,
+        "collected"
+    );
+}
+
+#[test]
+fn a_sync_only_read_is_not_none_seen() {
+    let case = Case::in_memory().unwrap();
+    ual_ev(
+        &case,
+        R1,
+        "MailItemsAccessed",
+        JDOE,
+        JDOE,
+        Some(IP),
+        0,
+        json!({}),
+    );
+    mia_item(&case, R1, 0, "sync", "\\Inbox", None, 0);
+    vflag(&case, "ip", IP, None, State::Accepted);
+    availability(&case, "mail_items_accessed", "collected");
+    let r = access::report(case.conn(), Some(JDOE)).unwrap();
+    let t = tile(&r.accounts[0], Category::MailRead);
+    assert!(!t.none_seen);
+    assert_eq!(t.qualifier.as_deref(), Some("1 folder synced"));
+}
+
+#[test]
+fn the_tenant_comes_from_the_attributed_records() {
+    let case = Case::in_memory().unwrap();
+    ual_ev(
+        &case,
+        R1,
+        "MailItemsAccessed",
+        JDOE,
+        JDOE,
+        Some(IP),
+        0,
+        json!({}),
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    // More (unattributed) events of the same UPN in another tenant.
+    for (i, k) in ["f1", "f2", "f3"].into_iter().enumerate() {
+        put(
+            &case,
+            &Ev {
+                ip: Some("198.51.100.4"),
+                at: i as i64 + 1,
+                ..ual(k)
+            },
+        );
+        case.conn()
+            .execute(
+                "UPDATE events SET tenant_key = 'fabrikam' WHERE record_key = ?",
+                [k],
+            )
+            .unwrap();
+    }
+    let r = access::report(case.conn(), Some(JDOE)).unwrap();
+    assert_eq!(r.accounts[0].tenant_key.as_deref(), Some("contoso"));
+}
