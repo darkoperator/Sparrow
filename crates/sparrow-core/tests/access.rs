@@ -1858,3 +1858,91 @@ fn a_sync_only_cell_shows_the_synced_folders() {
         "{md}"
     );
 }
+
+// The staging of attributed UAL records (items read their AuditData from a connection temp table).
+
+#[test]
+fn items_work_on_a_read_only_case_file_twice() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("case.duckdb");
+    {
+        let case = Case::create_or_open(&path).unwrap();
+        ual_ev(
+            &case,
+            R1,
+            "SendAs",
+            JDOE,
+            "ceo@contoso.example",
+            Some(IP),
+            0,
+            json!({"SendAsUserSmtp": "ceo@contoso.example", "Item": {"Subject": "Wire"}}),
+        );
+        ual_w(
+            &case,
+            R2,
+            "MicrosoftTeams",
+            "ChatRetrieved",
+            None,
+            60,
+            "other",
+            json!({"ChatName": "Finance"}),
+        );
+        vflag(&case, "ip", IP, None, State::Accepted);
+        case.conn().execute_batch("CHECKPOINT").unwrap();
+    }
+    let ro = Case::open_read_only(&path).unwrap();
+    for _ in 0..2 {
+        let items = access::items(ro.conn(), None).unwrap();
+        let got: Vec<_> = items
+            .iter()
+            .map(|i| (i.category, i.attribution, i.item.clone()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (
+                    Category::MailSent,
+                    Attribution::Ip,
+                    Some("Wire".to_string())
+                ),
+                (
+                    Category::Teams,
+                    Attribution::Time,
+                    Some("Finance".to_string())
+                ),
+            ]
+        );
+    }
+}
+
+#[test]
+fn staging_spans_chunks_without_loss_or_repeats() {
+    let case = Case::in_memory().unwrap();
+    let n = 1_205;
+    for k in 0..n {
+        let key: &'static str =
+            Box::leak(format!("20000000-0000-4000-8000-{k:012}").into_boxed_str());
+        insert_row(
+            &case,
+            "ual_events",
+            "contoso",
+            json!({"record_id": key, "user_upn": JDOE, "operation": "Send",
+            "workload": "Exchange", "client_ip": IP, "event_time": ts(t0() + Duration::seconds(k)),
+            "audit_data": json!({"Item": {"Subject": format!("s{k}")}}).to_string()}),
+        );
+        put(
+            &case,
+            &Ev {
+                ip: Some(IP),
+                at: k,
+                ..ual(key)
+            },
+        );
+    }
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let items = access::items(case.conn(), None).unwrap();
+    assert_eq!(items.len(), n as usize);
+    let subjects: std::collections::BTreeSet<_> =
+        items.iter().map(|i| i.item.clone().unwrap()).collect();
+    assert_eq!(subjects.len(), n as usize);
+}

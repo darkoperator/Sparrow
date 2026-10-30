@@ -42,16 +42,17 @@ pub struct Item {
     pub record_key: String,
 }
 
-/// `attributed a` joined to its UAL record `u`.
-const UAL: &str = "attributed a JOIN ual_events u ON a.source_table = 'ual_events' \
-     AND a.record_key = CAST(u.record_id AS VARCHAR)";
+/// `attributed a` joined to its UAL record `u` in `access_ual` (see [`stage_ual`]).
+const UAL: &str = "attributed_ual a JOIN access_ual u ON u.record_id = a.rid";
 
 /// The item columns, in [`Item`] order after `category`: account, category, attribution, accessed (epoch us), action,
 /// item, location, from, to, size_bytes, item_time (epoch us), app, ip, session_id, owner, note, source, source_table,
 /// record_key.
 fn mail_sql() -> String {
     format!(
-        "reads_raw AS ( \
+        "attributed_ual AS MATERIALIZED (SELECT *, TRY_CAST(record_key AS UUID) AS rid FROM attributed \
+           WHERE source_table = 'ual_events'), \
+         reads_raw AS ( \
            SELECT a.account, a.attribution, a.event_time, CAST(m.access_type AS VARCHAR) AS access, m.folder_path, \
                m.internet_message_id AS imid, m.size_bytes, u.app_id AS app, u.client_ip AS ip, u.session_id, \
                lower(u.mailbox_upn) AS mailbox, 'ual_events:MailItemsAccessed' AS source, a.source_table, \
@@ -154,8 +155,7 @@ fn rest_sql() -> String {
         "shares AS ( \
            SELECT sh.record_id, string_agg(DISTINCT coalesce(sh.target_email, sh.target_user, 'someone') \
                || CASE WHEN sh.is_external THEN ' (external)' ELSE '' END, '; ') AS targets \
-             FROM sharing_events sh WHERE sh.record_id IN (SELECT CAST(record_key AS UUID) FROM attributed \
-               WHERE source_table = 'ual_events') GROUP BY 1), \
+             FROM sharing_events sh WHERE sh.record_id IN (SELECT rid FROM attributed_ual) GROUP BY 1), \
          files AS ( \
            SELECT a.account, 'file' AS category, {common} AS accessed, u.operation AS action, f.file_name AS item, \
                f.site_url || coalesce(f.relative_url, '') AS location, NULL AS \"from\", NULL AS \"to\", \
@@ -194,7 +194,8 @@ fn rest_sql() -> String {
                coalesce(u.app_id, e.app_id), e.ip, u.session_id, NULL, NULL, \
                a.source_table || ':' || coalesce(e.operation, ''), a.source_table, a.record_key \
              FROM attributed a JOIN events e USING (source_table, record_key) \
-             LEFT JOIN ual_events u ON a.source_table = 'ual_events' AND a.record_key = CAST(u.record_id AS VARCHAR) \
+             LEFT JOIN attributed_ual au ON au.source_table = a.source_table AND au.record_key = a.record_key \
+             LEFT JOIN access_ual u ON u.record_id = au.rid \
              LEFT JOIN search_queries q ON q.record_id = u.record_id \
              WHERE e.category NOT IN ('auth', 'mail_flow') \
                AND a.source_table NOT IN ('mail_items_accessed', 'message_trace', 'message_trace_events', 'signins') \
@@ -214,6 +215,29 @@ fn ts(us: Option<i64>) -> Option<DateTime<Utc>> {
     us.and_then(DateTime::from_timestamp_micros)
 }
 
+/// The attributed UAL records, copied into the connection's temp table `access_ual`. The item queries read their
+/// AuditData; joined straight to `ual_events`, DuckDB scans the whole AuditData column before the join filters it (a
+/// minute on a tenant-wide case), while a lookup by constant record ids uses the table's primary-key index.
+fn stage_ual(conn: &Connection, account: Option<&str>) -> Result<()> {
+    conn.execute_batch(
+        "CREATE OR REPLACE TEMP TABLE access_ual AS SELECT * FROM ual_events WHERE FALSE",
+    )?;
+    // Parsed as UUIDs (a record id is one; anything else is never inlined) and de-duplicated.
+    let ids: std::collections::BTreeSet<uuid::Uuid> = super::scope::attributed(conn, account)?
+        .into_iter()
+        .filter(|a| a.source_table == "ual_events")
+        .filter_map(|a| uuid::Uuid::parse_str(&a.record_key).ok())
+        .collect();
+    let ids: Vec<String> = ids.into_iter().map(|u| format!("'{u}'")).collect();
+    for chunk in ids.chunks(1000) {
+        conn.execute_batch(&format!(
+            "INSERT INTO access_ual SELECT * FROM ual_events WHERE record_id IN ({})",
+            chunk.join(", ")
+        ))?;
+    }
+    Ok(())
+}
+
 /// Every item of one account (any case) or of every attributed account, by account, time, category and record.
 pub fn items(conn: &Connection, account: Option<&str>) -> Result<Vec<Item>> {
     let sql = format!(
@@ -223,6 +247,7 @@ pub fn items(conn: &Connection, account: Option<&str>) -> Result<Vec<Item>> {
         mail_sql(),
         rest_sql()
     );
+    stage_ual(conn, account)?;
     let mut st = conn.prepare(&sql)?;
     let rows = st.query_map(duckdb::params![account, account], |r| {
         let category: String = r.get(1)?;

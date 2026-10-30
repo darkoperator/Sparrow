@@ -108,7 +108,7 @@ pub(crate) fn ctes() -> String {
          timed AS (SELECT DISTINCT c.source_table, c.record_key, c.account, 'time' AS attribution, c.event_time \
              FROM cand c JOIN windows w ON w.account = c.account AND c.t BETWEEN w.start AND w.\"end\" \
              WHERE (c.source_table, c.record_key) NOT IN (SELECT source_table, record_key FROM dir)), \
-         attributed AS (SELECT * FROM dir UNION ALL SELECT * FROM timed)"
+         attributed AS MATERIALIZED (SELECT * FROM dir UNION ALL SELECT * FROM timed)"
     )
 }
 
