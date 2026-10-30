@@ -16,7 +16,7 @@ vi.mock("../api", async (orig) => ({
 }));
 
 import * as api from "../api";
-import { NavContext, RefreshBadgesContext } from "../shell/nav";
+import { FocusAnalystContext, NavContext, RefreshBadgesContext, WriteBlockedContext, writeBlockedReason } from "../shell/nav";
 import ReviewQueue from "./ReviewQueue";
 
 // The recorded queue: three agent decisions on one account (finding set_status, indicator add_ioc, timeline
@@ -216,6 +216,54 @@ describe("ReviewQueue", () => {
     expect(document.body.textContent).not.toContain("‮");
   });
 
+  it("says why the writes are off: a missing analyst name, with a way to the prompt", async () => {
+    const user = userEvent.setup();
+    const focus = vi.fn();
+    render(
+      <WriteBlockedContext.Provider value={writeBlockedReason(null, null)}>
+        <FocusAnalystContext.Provider value={focus}>
+          <ReviewQueue canWrite={false} />
+        </FocusAnalystContext.Provider>
+      </WriteBlockedContext.Provider>,
+    );
+    await user.click(await screen.findByTestId(FINDING));
+    const why = writeBlockedReason(null, null)!;
+    expect(screen.getByRole("button", { name: "Accept" })).toHaveAttribute("title", why);
+    expect(screen.getByRole("button", { name: "Discard" })).toHaveAttribute("title", why);
+    expect(screen.getByRole("button", { name: "Accept all from analyst:ann" })).toHaveAttribute("title", why);
+    expect(screen.getByRole("note")).toHaveTextContent(why);
+    await user.click(screen.getByRole("button", { name: "Enter the name" }));
+    expect(focus).toHaveBeenCalledTimes(1);
+  });
+
+  it("says why the writes are off: a read-only case, with no name prompt", async () => {
+    const user = userEvent.setup();
+    const why = writeBlockedReason("the audit chain is broken", "ann")!;
+    render(
+      <WriteBlockedContext.Provider value={why}>
+        <ReviewQueue canWrite={false} />
+      </WriteBlockedContext.Provider>,
+    );
+    await user.click(await screen.findByTestId(FINDING));
+    expect(screen.getByRole("button", { name: "Accept" })).toHaveAttribute("title", why);
+    expect(screen.getByRole("note")).toHaveTextContent(why);
+    expect(screen.queryByRole("button", { name: "Enter the name" })).toBeNull();
+  });
+
+  it("says writes are off even without the shell's reason", async () => {
+    const user = await ready(false);
+    await user.click(screen.getByTestId(FINDING));
+    expect(screen.getByRole("button", { name: "Accept" })).toHaveAttribute("title", "Changes are not possible in this case now");
+    expect(screen.getByRole("note")).toHaveTextContent("Changes are not possible in this case now");
+  });
+
+  it("shows no reason while writes are possible", async () => {
+    const user = await ready();
+    await user.click(screen.getByTestId(FINDING));
+    expect(screen.getByRole("button", { name: "Accept" })).not.toHaveAttribute("title");
+    expect(screen.queryByRole("note")).toBeNull();
+  });
+
   it("read-only case disables every write control", async () => {
     const user = await ready(false);
     await user.click(screen.getByTestId(FINDING));
@@ -301,6 +349,7 @@ describe("ReviewQueue", () => {
     const user = await ready();
     await user.click(screen.getByTestId(`item-${SHA}:note:ffffffffffffffff`));
     expect(screen.getByRole("button", { name: "Accept" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Accept" })).toHaveAttribute("title", expect.stringMatching(/cannot be accepted/));
     expect(screen.getByRole("button", { name: "Discard" })).toBeEnabled();
     await user.keyboard("a");
     expect(m.pAccept).not.toHaveBeenCalled();

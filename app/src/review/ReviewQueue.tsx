@@ -11,7 +11,7 @@ import {
   type Proposal,
   type QueueItem,
 } from "../api";
-import { useRefreshBadges } from "../shell/nav";
+import { useFocusAnalyst, useRefreshBadges, useWriteBlocked } from "../shell/nav";
 import { displaySafe } from "../text";
 import FindingDetail from "./FindingDetail";
 import QueueItemDetail, { findingIdOf } from "./QueueItemDetail";
@@ -68,6 +68,10 @@ export default function ReviewQueue({ canWrite, accountFilter = null, onClearFil
   const [notice, setNotice] = useState<Notice | null>(null);
   const busy = useRef(false);
   const [working, setWorking] = useState(false);
+  // Why Accept and Discard are off (a read-only case, or no analyst name): on the buttons and under them.
+  const writeBlocked = useWriteBlocked();
+  const blocked = canWrite ? null : (writeBlocked ?? "Changes are not possible in this case now");
+  const focusAnalyst = useFocusAnalyst();
   const setBusy = useCallback((v: boolean) => {
     busy.current = v;
     setWorking(v);
@@ -257,7 +261,7 @@ export default function ReviewQueue({ canWrite, accountFilter = null, onClearFil
         {bundleAnalysts.length > 0 && (
           <div className="bundles">
             {bundleAnalysts.map((a) => (
-              <button key={a} disabled={!canWrite || working} onClick={() => void acceptAll(a)}>
+              <button key={a} disabled={!canWrite || working} title={blocked ?? undefined} onClick={() => void acceptAll(a)}>
                 {`Accept all from ${displaySafe(a)}`}
               </button>
             ))}
@@ -304,15 +308,34 @@ export default function ReviewQueue({ canWrite, accountFilter = null, onClearFil
                 <button
                   className="btn btn-primary"
                   disabled={!canWrite || working || cannotAccept(current) !== null}
+                  title={blocked ?? cannotAccept(current) ?? undefined}
                   onClick={() => void act(current, "accept", comment)}
                 >
                   Accept
                 </button>{" "}
-                <button className="btn" disabled={!canWrite || working} onClick={() => void act(current, "discard", comment)}>
+                <button
+                  className="btn"
+                  disabled={!canWrite || working}
+                  title={blocked ?? undefined}
+                  onClick={() => void act(current, "discard", comment)}
+                >
                   Discard
                 </button>
               </div>
             </div>
+            {blocked !== null && (
+              <p className="rq-blocked" role="note">
+                {displaySafe(blocked)}
+                {focusAnalyst && (
+                  <>
+                    {" "}
+                    <button type="button" className="link" onClick={focusAnalyst}>
+                      Enter the name
+                    </button>
+                  </>
+                )}
+              </p>
+            )}
             <QueueItemDetail item={current} />
           </>
         ) : standalone !== null ? (
