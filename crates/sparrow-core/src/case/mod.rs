@@ -2,6 +2,7 @@
 //! `timeline_entries`; notes through `notes`; reviews through
 //! `review`; `audit` is the only writer of `audit_trail`, inside the same transaction as each change.
 
+pub mod access;
 pub mod actor;
 pub mod audit;
 pub mod browse;
