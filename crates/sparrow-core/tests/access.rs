@@ -619,3 +619,364 @@ fn time_attribution_follows_the_actor_not_the_owner() {
     vflag(&case, "ip", IP, None, State::Accepted);
     assert_eq!(keys(&case), vec![("k1".to_string(), Attribution::Ip)]);
 }
+
+// Task 3: mail read and mail sent.
+
+use sparrow_core::case::access::{Category, Item};
+
+/// A UAL record and its `events` row: `audit` becomes AuditData, `ip` the client IP of both.
+#[allow(clippy::too_many_arguments)]
+fn ual_ev(
+    case: &Case,
+    key: &'static str,
+    op: &'static str,
+    user: &'static str,
+    mailbox: &str,
+    ip: Option<&'static str>,
+    secs: i64,
+    audit: serde_json::Value,
+) {
+    let mut f = json!({"record_id": key, "user_upn": user, "mailbox_upn": mailbox, "operation": op,
+                       "workload": "Exchange", "event_time": ts(t0() + Duration::seconds(secs)), "audit_data": audit.to_string()});
+    if let Some(ip) = ip {
+        f["client_ip"] = json!(ip);
+    }
+    insert_row(case, "ual_events", "contoso", f);
+    put(
+        case,
+        &Ev {
+            ip,
+            actor: Some(user),
+            owner: Some(Box::leak(mailbox.to_lowercase().into_boxed_str())),
+            workload: Some("Exchange"),
+            operation: Some(op),
+            at: secs,
+            ..ual(key)
+        },
+    );
+}
+
+fn mia_item(
+    case: &Case,
+    record: &str,
+    ord: i32,
+    access: &str,
+    folder: &str,
+    imid: Option<&str>,
+    size: i64,
+) {
+    insert_row(
+        case,
+        "mail_items_accessed",
+        "contoso",
+        json!({"record_id": record, "item_ordinal": ord, "access_type": access, "folder_path": folder,
+               "internet_message_id": imid, "size_bytes": size}),
+    );
+}
+
+fn trace(case: &Case, imid: &str, sender: &str, recipient: &str, subject: &str, secs: i64) {
+    insert_row(
+        case,
+        "message_trace",
+        "contoso",
+        json!({"record_key": format!("mt-{imid}-{recipient}"), "internet_message_id": imid, "sender": sender,
+               "recipient": recipient, "subject": subject, "received": ts(t0() - Duration::seconds(secs))}),
+    );
+}
+
+fn items_of(case: &Case, category: Category) -> Vec<Item> {
+    access::items(case.conn(), None)
+        .unwrap()
+        .into_iter()
+        .filter(|i| i.category == category)
+        .collect()
+}
+
+const R1: &str = "10000000-0000-4000-8000-000000000001";
+const R2: &str = "10000000-0000-4000-8000-000000000002";
+const R3: &str = "10000000-0000-4000-8000-000000000003";
+
+#[test]
+fn mail_read_lists_one_item_per_message_with_trace_details() {
+    let case = Case::in_memory().unwrap();
+    ual_ev(
+        &case,
+        R1,
+        "MailItemsAccessed",
+        JDOE,
+        JDOE,
+        Some(IP),
+        0,
+        json!({}),
+    );
+    mia_item(&case, R1, 0, "bind", "\\Inbox", Some("<a@x>"), 1000);
+    mia_item(&case, R1, 1, "bind", "\\Inbox", Some("<b@x>"), 2000);
+    trace(
+        &case,
+        "<a@x>",
+        "ap@vendor.example",
+        "jdoe@contoso.example",
+        "Q3 invoices",
+        3600,
+    );
+    trace(
+        &case,
+        "<a@x>",
+        "ap@vendor.example",
+        "amy@contoso.example",
+        "Q3 invoices",
+        3600,
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let items = items_of(&case, Category::MailRead);
+    assert_eq!(items.len(), 2);
+    let a = items
+        .iter()
+        .find(|i| i.record_key == R1 && i.item.is_some())
+        .unwrap();
+    assert_eq!(a.account, JDOE);
+    assert_eq!(a.action, "read");
+    assert_eq!(a.attribution, Attribution::Ip);
+    assert_eq!(a.item.as_deref(), Some("Q3 invoices"));
+    assert_eq!(a.from.as_deref(), Some("ap@vendor.example"));
+    assert_eq!(
+        a.to.as_deref(),
+        Some("amy@contoso.example; jdoe@contoso.example")
+    );
+    assert_eq!(a.item_time, Some(t0() - Duration::hours(1)));
+    assert_eq!(a.location.as_deref(), Some("\\Inbox"));
+    assert_eq!(a.size_bytes, Some(1000));
+    assert_eq!(a.ip.as_deref(), Some(IP));
+    assert_eq!(a.source, "ual_events:MailItemsAccessed");
+    assert_eq!((a.owner.as_deref(), a.note.as_deref()), (None, None));
+    let b = items.iter().find(|i| i.item.is_none()).unwrap();
+    assert_eq!(
+        (b.from.as_deref(), b.item_time, b.size_bytes),
+        (None, None, Some(2000))
+    );
+}
+
+#[test]
+fn sync_is_a_folder_item() {
+    let case = Case::in_memory().unwrap();
+    ual_ev(
+        &case,
+        R1,
+        "MailItemsAccessed",
+        JDOE,
+        JDOE,
+        Some(IP),
+        0,
+        json!({}),
+    );
+    mia_item(&case, R1, 0, "sync", "\\Inbox", None, 0);
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let items = items_of(&case, Category::MailRead);
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        (
+            items[0].action.as_str(),
+            items[0].location.as_deref(),
+            items[0].item.as_deref()
+        ),
+        ("synced", Some("\\Inbox"), None)
+    );
+}
+
+#[test]
+fn a_message_counts_once_and_direct_wins() {
+    let case = Case::in_memory().unwrap();
+    // Time-attributed first (no IP, inside the window), then direct, then a legacy mailbox-audit sighting.
+    ual_ev(
+        &case,
+        R1,
+        "MailItemsAccessed",
+        JDOE,
+        JDOE,
+        Some(IP),
+        600,
+        json!({}),
+    );
+    ual_ev(
+        &case,
+        R2,
+        "MailItemsAccessed",
+        JDOE,
+        JDOE,
+        None,
+        900,
+        json!({}),
+    );
+    mia_item(&case, R1, 0, "bind", "\\Inbox", Some("<a@x>"), 10);
+    mia_item(&case, R2, 0, "bind", "\\Inbox", Some("<a@x>"), 10);
+    insert_row(
+        &case,
+        "mailbox_audit_legacy",
+        "contoso",
+        json!({"record_key": "mal-1", "operation": "MailItemsAccessed", "mailbox_upn": JDOE, "client_ip": IP,
+               "folder_path": "\\Inbox", "internet_message_ids": ["<a@x>"], "event_time": ts(t0() + Duration::seconds(1200))}),
+    );
+    put(
+        &case,
+        &Ev {
+            table: "mailbox_audit_legacy",
+            key: "mal-1",
+            actor: Some(JDOE),
+            owner: Some(JDOE),
+            ip: Some(IP),
+            at: 1200,
+            ..Ev::default()
+        },
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let items = items_of(&case, Category::MailRead);
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(
+        (items[0].attribution, items[0].record_key.as_str()),
+        (Attribution::Ip, R1)
+    );
+}
+
+#[test]
+fn send_as_is_filed_under_the_account_with_a_note() {
+    let case = Case::in_memory().unwrap();
+    ual_ev(
+        &case,
+        R1,
+        "SendAs",
+        JDOE,
+        "ceo@contoso.example",
+        Some(IP),
+        0,
+        json!({"SendAsUserSmtp": "CEO@contoso.example", "Item": {"Subject": "Wire today", "InternetMessageId": "<s@x>"}}),
+    );
+    trace(
+        &case,
+        "<s@x>",
+        "ceo@contoso.example",
+        "cfo@contoso.example",
+        "Wire today",
+        -5,
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let items = items_of(&case, Category::MailSent);
+    assert_eq!(items.len(), 1);
+    let s = &items[0];
+    assert_eq!((s.account.as_str(), s.action.as_str()), (JDOE, "sent as"));
+    assert_eq!(s.item.as_deref(), Some("Wire today"));
+    assert_eq!(s.to.as_deref(), Some("cfo@contoso.example"));
+    assert_eq!(s.owner.as_deref(), Some("ceo@contoso.example"));
+    assert_eq!(s.note.as_deref(), Some("sent as ceo@contoso.example"));
+}
+
+#[test]
+fn delegate_read_notes_the_mailbox() {
+    let case = Case::in_memory().unwrap();
+    ual_ev(
+        &case,
+        R3,
+        "MailItemsAccessed",
+        JDOE,
+        "AP@contoso.example",
+        Some(IP),
+        0,
+        json!({}),
+    );
+    mia_item(&case, R3, 0, "bind", "\\Inbox", Some("<d@x>"), 10);
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let items = items_of(&case, Category::MailRead);
+    assert_eq!(items[0].owner.as_deref(), Some("ap@contoso.example"));
+    assert_eq!(
+        items[0].note.as_deref(),
+        Some("in mailbox ap@contoso.example")
+    );
+}
+
+fn legacy(case: &Case, key: &'static str, op: &str, ids: &[&str], subjects: &[&str]) {
+    insert_row(
+        case,
+        "mailbox_audit_legacy",
+        "contoso",
+        json!({"record_key": key, "operation": op, "mailbox_upn": JDOE, "client_ip": IP, "folder_path": "\\Inbox",
+               "internet_message_ids": ids, "subjects": subjects, "event_time": ts(t0())}),
+    );
+    put(
+        case,
+        &Ev {
+            table: "mailbox_audit_legacy",
+            key,
+            actor: Some(JDOE),
+            owner: Some(JDOE),
+            ip: Some(IP),
+            ..Ev::default()
+        },
+    );
+}
+
+#[test]
+fn a_legacy_read_of_several_messages_lists_each() {
+    let case = Case::in_memory().unwrap();
+    legacy(
+        &case,
+        "mal-1",
+        "MailItemsAccessed",
+        &["<a@x>", "<b@x>", "<c@x>"],
+        &[],
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    assert_eq!(items_of(&case, Category::MailRead).len(), 3);
+}
+
+#[test]
+fn a_legacy_send_of_several_messages_lists_each_with_its_subject() {
+    let case = Case::in_memory().unwrap();
+    legacy(
+        &case,
+        "mal-2",
+        "Send",
+        &["<a@x>", "<b@x>"],
+        &["First", "Second"],
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let mut got: Vec<_> = items_of(&case, Category::MailSent)
+        .into_iter()
+        .map(|i| i.item.unwrap())
+        .collect();
+    got.sort();
+    assert_eq!(got, vec!["First", "Second"]);
+}
+
+#[test]
+fn send_as_without_its_property_falls_back_to_the_mailbox() {
+    let case = Case::in_memory().unwrap();
+    ual_ev(
+        &case,
+        R1,
+        "SendAs",
+        JDOE,
+        "CEO@contoso.example",
+        Some(IP),
+        0,
+        json!({"Item": {"Subject": "Hi"}}),
+    );
+    ual_ev(
+        &case,
+        R2,
+        "SendOnBehalf",
+        JDOE,
+        "JDOE@contoso.example",
+        Some(IP),
+        1,
+        json!({"Item": {"Subject": "Hi 2"}}),
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let items = items_of(&case, Category::MailSent);
+    let a = items.iter().find(|i| i.record_key == R1).unwrap();
+    assert_eq!(a.note.as_deref(), Some("sent as ceo@contoso.example"));
+    let b = items.iter().find(|i| i.record_key == R2).unwrap();
+    assert_eq!(
+        (b.owner.as_deref(), b.note.as_deref()),
+        (None, None),
+        "a case-only difference is the same mailbox"
+    );
+}
