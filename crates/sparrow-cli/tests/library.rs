@@ -147,3 +147,55 @@ fn the_run_reads_its_own_environment() {
     assert_ne!(code, 0, "the run's SPARROW_RULES was not used");
     assert!(err.contains("no-such-rules"), "{err}");
 }
+
+#[test]
+fn inspect_classifies_commands() {
+    use sparrow_cli::{Kind, inspect};
+    let k = |args: &[&str]| {
+        let v: Vec<OsString> = std::iter::once("sparrow")
+            .chain(args.iter().copied())
+            .map(OsString::from)
+            .collect();
+        inspect(&v)
+    };
+    let i = k(&[
+        "mark", "tag", "--case", "c.duckdb", "--row", "t:k", "--tag", "ai:x", "--agent", "claude",
+    ]);
+    assert_eq!(i.kind, Kind::Write("marks"));
+    assert_eq!(i.command, "mark tag");
+    assert_eq!(i.case.as_deref(), Some(Path::new("c.duckdb")));
+    assert_eq!(i.agent.as_deref(), Some("claude"));
+    assert_eq!(
+        k(&["note", "add", "t:k", "--text", "x", "--case", "c"]).kind,
+        Kind::Write("notes")
+    );
+    assert_eq!(k(&["finding", "list", "--case", "c"]).kind, Kind::Read);
+    assert_eq!(
+        k(&["finding", "assign", "f", "a", "--case", "c"]).kind,
+        Kind::Write("findings")
+    );
+    assert_eq!(k(&["ioc", "list", "--case", "c"]).kind, Kind::Read);
+    assert_eq!(
+        k(&["timeline-entry", "list", "--case", "c"]).kind,
+        Kind::Read
+    );
+    assert_eq!(
+        k(&["tenant", "domains", "list", "--case", "c"]).kind,
+        Kind::Read
+    );
+    assert_eq!(
+        k(&["tenant", "domains", "add", "x.example", "--case", "c"]).kind,
+        Kind::Write("tenant")
+    );
+    assert_eq!(k(&["events", "--case", "c", "--json"]).kind, Kind::Read);
+    assert_eq!(k(&["profile", "--case", "c"]).kind, Kind::Heavy);
+    assert_eq!(k(&["audit", "verify", "--case", "c"]).kind, Kind::Read);
+    assert_eq!(
+        k(&["audit", "verify", "--case", "c", "--acknowledge"]).kind,
+        Kind::Heavy
+    );
+    assert_eq!(k(&["rules", "list"]).kind, Kind::Local);
+    assert_eq!(k(&["discover", "x"]).kind, Kind::Local);
+    assert_eq!(k(&["--help"]).kind, Kind::Local);
+    assert_eq!(k(&["events", "--bogus"]).kind, Kind::Local);
+}

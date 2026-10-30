@@ -19,6 +19,10 @@ chrono.workspace = true
 duckdb.workspace = true
 tempfile.workspace = true
 sparrow-core = { path = "../sparrow-core" }
+sparrow-cli = { path = "../sparrow-cli" }
+anyhow.workspace = true
+getrandom = "0.3"
+hex.workspace = true
 
 [dev-dependencies]
 csv.workspace = true

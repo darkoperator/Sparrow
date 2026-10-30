@@ -464,6 +464,9 @@ pub struct Case {
     /// Declared last so it drops after `conn`: the database is closed (and its WAL settled)
     /// before the directory that holds the file goes.
     scratch: Option<ScratchDir>,
+    /// A second connection to another `Case`'s database ([`Case::shared_view`]): it holds no writer registration and
+    /// no file of its own.
+    shared: bool,
 }
 
 impl Case {
@@ -478,6 +481,7 @@ impl Case {
             poisoned: Default::default(),
             _writer: Some(writer),
             scratch: None,
+            shared: false,
         })
     }
 
@@ -519,6 +523,7 @@ impl Case {
             poisoned: Default::default(),
             _writer: None,
             scratch: None,
+            shared: false,
         })
     }
 
@@ -541,6 +546,7 @@ impl Case {
             poisoned: Default::default(),
             _writer: Some(writer),
             scratch: None,
+            shared: false,
         };
         let schema_version = migrations::current_version(&case.conn)?;
         let latest = migrations::latest_version();
@@ -640,6 +646,7 @@ impl Case {
             poisoned: Default::default(),
             _writer: None,
             scratch: None,
+            shared: false,
         })
     }
 
@@ -761,6 +768,29 @@ impl Case {
         &self.conn
     }
 
+    /// A second connection to this case's open database (DuckDB `try_clone`): the app's agent bridge reads (and,
+    /// under the app's own case lock, writes) through it while this `Case` stays the file's one writer. Temp tables
+    /// and prepared-statement caches are per connection; committed data is shared. `read_only` marks the view as a
+    /// read view ([`Case::is_read_only`]). The view must be dropped before this `Case` is closed and its file
+    /// reopened in this process.
+    pub fn shared_view(&self, read_only: bool) -> Result<Case> {
+        self.ensure_usable()?;
+        Ok(Case {
+            conn: self.conn.try_clone()?,
+            path: self.path.clone(),
+            read_only: read_only || self.read_only,
+            poisoned: Default::default(),
+            _writer: None,
+            scratch: None,
+            shared: true,
+        })
+    }
+
+    /// True for a [`Case::shared_view`]: commands must read through its connection, never open the file again.
+    pub fn is_shared_view(&self) -> bool {
+        self.shared
+    }
+
     pub fn conn_mut(&mut self) -> &mut Connection {
         &mut self.conn
     }
@@ -781,6 +811,30 @@ impl Case {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shared_view_sees_committed_rows_but_not_temp_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let case = Case::create_or_open(&dir.path().join("c.duckdb")).unwrap();
+        let view = case.shared_view(true).unwrap();
+        assert!(view.is_shared_view() && view.is_read_only());
+        assert!(!case.is_shared_view());
+        case.conn()
+            .execute_batch(
+                "CREATE TABLE t AS SELECT 1 AS x; CREATE TEMP TABLE only_here AS SELECT 1 AS y;",
+            )
+            .unwrap();
+        let n: i64 = view
+            .conn()
+            .query_row("SELECT count(*) FROM t", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+        assert!(
+            view.conn()
+                .execute_batch("SELECT * FROM only_here")
+                .is_err()
+        );
+    }
 
     fn memory_limit(conn: &Connection) -> u64 {
         let v: String = conn

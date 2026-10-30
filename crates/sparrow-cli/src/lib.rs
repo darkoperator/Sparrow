@@ -28,6 +28,7 @@ use std::rc::Rc;
 
 #[macro_use]
 pub mod cx;
+pub mod bridge;
 mod cmd;
 
 pub use cx::{CaseSource, CliIo, FileSource, SharedBuf};
@@ -750,6 +751,83 @@ fn error_exit_code(e: &anyhow::Error) -> u8 {
         Some(sparrow_core::Error::Decision(_)) => 5,
         _ => 1,
     }
+}
+
+/// What a command line does to its case, for the app's agent bridge: where it may run and what it changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    /// Reads the case.
+    Read,
+    /// A short write (an agent decision or a tenant setting); the label names what changes (`marks`, `notes`,
+    /// `findings`, `indicators`, `timeline`, `tenant`).
+    Write(&'static str),
+    /// Holds the case for minutes: ingest, profile, detect, upgrade, synth, audit verify --acknowledge.
+    Heavy,
+    /// Opens no case (discover, rules, help, version), or does not parse: runs where it is typed.
+    Local,
+}
+
+/// A command line as [`inspect`] reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Inspected {
+    pub kind: Kind,
+    /// The command words, e.g. `mark tag`.
+    pub command: String,
+    /// `--case`, as given.
+    pub case: Option<PathBuf>,
+    /// `--agent` and `--analyst`, as given.
+    pub agent: Option<String>,
+    pub analyst: Option<String>,
+}
+
+/// Read a command line (`args[0]` is the program name) without running it.
+pub fn inspect(args: &[OsString]) -> Inspected {
+    let mut out = Inspected {
+        kind: Kind::Local,
+        command: String::new(),
+        case: None,
+        agent: None,
+        analyst: None,
+    };
+    let Ok(matches) = Cli::command().try_get_matches_from(args) else {
+        return out;
+    };
+    let mut words = Vec::new();
+    let mut leaf = &matches;
+    while let Some((name, sub)) = leaf.subcommand() {
+        words.push(name.to_string());
+        leaf = sub;
+    }
+    let get = |id: &str| leaf.try_get_one::<String>(id).ok().flatten().cloned();
+    out.case = leaf.try_get_one::<PathBuf>("case").ok().flatten().cloned();
+    out.agent = get("agent");
+    out.analyst = get("analyst");
+    let w: Vec<&str> = words.iter().map(String::as_str).collect();
+    let reads_only = matches!(w.last(), Some(&"list" | &"show"));
+    out.kind = match w.as_slice() {
+        [] | ["discover", ..] | ["rules", ..] => Kind::Local,
+        ["ingest" | "profile" | "detect" | "upgrade" | "synth", ..] => Kind::Heavy,
+        ["audit", "verify"]
+            if leaf
+                .try_get_one::<bool>("acknowledge")
+                .ok()
+                .flatten()
+                .copied()
+                .unwrap_or(false) =>
+        {
+            Kind::Heavy
+        }
+        [_, ..] if reads_only => Kind::Read,
+        ["mark", ..] => Kind::Write("marks"),
+        ["note", ..] => Kind::Write("notes"),
+        ["finding", ..] => Kind::Write("findings"),
+        ["ioc", ..] => Kind::Write("indicators"),
+        ["timeline-entry", ..] => Kind::Write("timeline"),
+        ["tenant", ..] => Kind::Write("tenant"),
+        _ => Kind::Read,
+    };
+    out.command = words.join(" ");
+    out
 }
 
 fn dispatch(cli: Cli) -> Result<ExitCode> {
@@ -1619,16 +1697,20 @@ struct SchemaOutput {
 fn cmd_schema(case_path: &Path, table: Option<&str>, json: bool) -> Result<ExitCode> {
     // Opened (and closed) first for its warnings; the catalog is read on `query`'s locked connection, so the
     // objects listed are the ones `query` reads.
-    drop(open_read(case_path)?);
+    // A shared view (the app's agent bridge) is read on its own locked connection: attaching the file again in this
+    // process would open a second instance of a database the process already holds.
+    let case = open_read(case_path)?;
+    let view = case.is_shared_view().then_some(case);
+    let schema = |table: Option<&str>| match &view {
+        Some(c) => sparrow_core::case::query::schema_on(c, table),
+        None => sparrow_core::case::query::schema(case_path, table),
+    };
     let out = SchemaOutput {
-        tables: sparrow_core::case::query::schema(case_path, table)?,
+        tables: schema(table)?,
     };
     if let Some(t) = table {
         if out.tables.is_empty() {
-            let names: Vec<String> = sparrow_core::case::query::schema(case_path, None)?
-                .into_iter()
-                .map(|t| t.table)
-                .collect();
+            let names: Vec<String> = schema(None)?.into_iter().map(|t| t.table).collect();
             anyhow::bail!(
                 "no table named '{t}' in the case database; tables and views: {}",
                 names.join(", ")

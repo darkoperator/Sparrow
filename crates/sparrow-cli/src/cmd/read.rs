@@ -593,9 +593,15 @@ pub fn pivot(cmd: PivotCommand, json: bool) -> Result<ExitCode> {
 // ------------------------------------------------------------------ query
 
 pub fn query(case: &Path, sql: &str, limit: usize, json: bool) -> Result<ExitCode> {
-    // The query attaches the file itself; the case is opened (and closed) first for its warnings.
-    drop(open_read(case)?);
-    let r = query::run(case, sql, limit)?;
+    // The query attaches the file itself; the case is opened (and closed) first for its warnings. A shared view (the
+    // app's agent bridge) is queried on its own locked connection instead: the process already holds the file.
+    let c = open_read(case)?;
+    let r = if c.is_shared_view() {
+        query::run_on(&c, sql, limit, 0)?
+    } else {
+        drop(c);
+        query::run(case, sql, limit)?
+    };
     if json {
         print_json(&r)?;
         return Ok(ExitCode::SUCCESS);

@@ -32,6 +32,8 @@ pub struct AppState {
     /// True while an import or a profile run holds the case (see `cmd::ingest`). Writes, reads that queued meanwhile
     /// and case switches are refused `busy` instead of running after it.
     pub importing: AtomicBool,
+    /// The agent bridge serving the open case ([`crate::bridge`]).
+    pub bridge: crate::bridge::BridgeSlot,
 }
 
 /// The refusal while an import runs.
@@ -111,6 +113,8 @@ pub fn case_open(state: &AppState, path: &Path, allow_upgrade: bool) -> CmdResul
     // Requests already queued for the current case are void from now on, whichever gets the lock first.
     new_generation(state);
     let mut slot = lock(state);
+    // The bridge's connections to the current case go before it closes (under the lock: no bridge write runs).
+    crate::bridge::stop(state);
     // Release the current case's writer first: reopening the same file would otherwise find it busy.
     *slot = None;
     new_generation(state);
@@ -186,6 +190,9 @@ pub fn case_open(state: &AppState, path: &Path, allow_upgrade: bool) -> CmdResul
         read_only_reason,
         rules,
     });
+    if let Some(open) = slot.as_ref() {
+        crate::bridge::start(state, open);
+    }
     // The case is open; failing to remember it in the recent list is not worth failing the open over.
     if let Err(e) = settings::record_recent(state, &info.path) {
         info.warnings.push(format!(
@@ -400,6 +407,7 @@ pub fn case_close(state: &AppState) -> CmdResult<()> {
     }
     new_generation(state);
     let mut slot = lock(state);
+    crate::bridge::stop(state);
     *slot = None;
     new_generation(state);
     Ok(())

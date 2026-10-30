@@ -81,12 +81,16 @@ impl<'a> RunGuard<'a> {
             return Err(CmdError::new("invalid", "an import is already running"));
         }
         state.importing.store(true, Ordering::SeqCst);
+        // The agent bridge stops for the import (its connections must not hold the file) and comes back after it.
+        crate::bridge::stop(state);
         Ok(RunGuard { ing, state })
     }
 }
 
 impl Drop for RunGuard<'_> {
     fn drop(&mut self) {
+        // The bridge comes back while `importing` still refuses closes, switches and a second import.
+        crate::bridge::restart(self.state);
         self.state.importing.store(false, Ordering::SeqCst);
         self.ing.shared.closing.store(false, Ordering::SeqCst);
         self.ing.running.store(false, Ordering::SeqCst);

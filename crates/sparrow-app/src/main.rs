@@ -1,9 +1,22 @@
 // No console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use sparrow_app::cmd;
 use sparrow_app::state::AppState;
+use sparrow_app::{bridge, cmd};
 use tauri::{Emitter, Manager};
+
+/// The bridge's view of the running app.
+struct TauriHost(tauri::AppHandle);
+
+impl bridge::BridgeHost for TauriHost {
+    fn state(&self) -> &AppState {
+        self.0.state::<AppState>().inner()
+    }
+
+    fn emit(&self, event: &str, payload: serde_json::Value) {
+        let _ = self.0.emit(event, payload);
+    }
+}
 
 fn main() {
     tauri::Builder::default()
@@ -16,6 +29,11 @@ fn main() {
                 .settings_dir
                 .lock()
                 .unwrap_or_else(|p| p.into_inner()) = Some(dir);
+            // The agent bridge serves every case the window opens (see `sparrow_app::bridge`).
+            if let Some(dir) = sparrow_cli::bridge::discovery_dir() {
+                let host = std::sync::Arc::new(TauriHost(app.handle().clone()));
+                bridge::enable(&app.state::<AppState>(), host, dir);
+            }
             Ok(())
         })
         .on_window_event(|window, event| {

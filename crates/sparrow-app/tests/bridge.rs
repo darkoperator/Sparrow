@@ -1,0 +1,513 @@
+//! The agent bridge without a window: a test host stands in for the Tauri app, requests go over loopback TCP as the
+//! CLI sends them.
+
+use serde_json::Value;
+use sparrow_app::bridge::{self, BridgeHost};
+use sparrow_app::settings::settings_set_analyst;
+use sparrow_app::state::{AppState, case_close, case_open, with_case, with_writable};
+use sparrow_cli::bridge::{Discovery, Request, VERSION, read_discovery, send};
+use sparrow_core::Case;
+use std::collections::BTreeMap;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+struct Host {
+    state: AppState,
+    events: Mutex<Vec<(String, Value)>>,
+}
+
+impl BridgeHost for Host {
+    fn state(&self) -> &AppState {
+        &self.state
+    }
+    fn emit(&self, event: &str, payload: Value) {
+        self.events
+            .lock()
+            .unwrap()
+            .push((event.to_string(), payload));
+    }
+}
+
+struct Fixture {
+    _tmp: tempfile::TempDir,
+    host: Arc<Host>,
+    case: PathBuf,
+    dir: PathBuf,
+}
+
+impl Fixture {
+    fn discovery(&self) -> Discovery {
+        read_discovery(&self.dir).expect("the open case has a discovery file")
+    }
+
+    fn state(&self) -> &AppState {
+        &self.host.state
+    }
+
+    fn case_arg(&self) -> String {
+        self.case.display().to_string()
+    }
+
+    fn ask(&self, args: &[&str]) -> (u8, String, String) {
+        self.ask_with(args, BTreeMap::new())
+    }
+
+    fn ask_with(&self, args: &[&str], env: BTreeMap<String, String>) -> (u8, String, String) {
+        ask(&self.discovery(), args, env)
+    }
+
+    fn events(&self, name: &str) -> Vec<Value> {
+        self.host
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(n, _)| n == name)
+            .map(|(_, v)| v.clone())
+            .collect()
+    }
+}
+
+fn request(args: &[&str], env: BTreeMap<String, String>) -> Request {
+    Request {
+        version: VERSION.to_string(),
+        args: args.iter().map(|a| a.to_string()).collect(),
+        cwd: std::env::temp_dir(),
+        env,
+        out_is_terminal: false,
+    }
+}
+
+fn ask(d: &Discovery, args: &[&str], env: BTreeMap<String, String>) -> (u8, String, String) {
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = send(d, &request(args, env), &mut out, &mut err).expect("an answer");
+    (
+        code,
+        String::from_utf8_lossy(&out).into_owned(),
+        String::from_utf8_lossy(&err).into_owned(),
+    )
+}
+
+/// A small synthetic case: two accounts' events.
+fn build(path: &Path) {
+    let case = Case::create_or_open(path).unwrap();
+    let c = case.conn();
+    for (key, at, actor, ip) in [
+        (
+            "u1",
+            "2026-09-01 10:00:00",
+            "jdoe@contoso.example",
+            "203.0.113.45",
+        ),
+        (
+            "u2",
+            "2026-09-01 10:05:00",
+            "jdoe@contoso.example",
+            "203.0.113.45",
+        ),
+        (
+            "x1",
+            "2026-09-01 11:00:00",
+            "other@contoso.example",
+            "192.0.2.9",
+        ),
+    ] {
+        c.execute(
+            "INSERT INTO events (source_table, record_key, source, event_time, category, tenant_key, actor_upn, \
+             operation, ip) VALUES ('ual_events', ?, 'ual', CAST(? AS TIMESTAMPTZ), 'other', 'contoso', ?, 'Send', ?)",
+            duckdb::params![key, format!("{at}+00"), actor, ip],
+        )
+        .unwrap();
+    }
+}
+
+fn fixture(analyst: Option<&str>) -> Fixture {
+    let tmp = tempfile::tempdir().unwrap();
+    let case = tmp.path().join("case.duckdb");
+    build(&case);
+    let settings = tmp.path().join("settings");
+    std::fs::create_dir_all(&settings).unwrap();
+    let dir = tmp.path().join("bridge");
+    let host = Arc::new(Host {
+        state: AppState::default(),
+        events: Mutex::new(Vec::new()),
+    });
+    *host.state.settings_dir.lock().unwrap() = Some(settings);
+    if let Some(a) = analyst {
+        settings_set_analyst(&host.state, a).unwrap();
+    }
+    bridge::enable(&host.state, host.clone(), dir.clone());
+    case_open(&host.state, &case, false).unwrap();
+    Fixture {
+        _tmp: tmp,
+        host,
+        case,
+        dir,
+    }
+}
+
+fn tags(f: &Fixture) -> Vec<(String, String, Option<String>, String)> {
+    with_case(f.state(), f.state().ticket(), |open| {
+        let mut stmt = open
+            .case
+            .conn()
+            .prepare(
+                "SELECT t.name, e.decided_by, e.on_behalf_of, CAST(e.review_state AS VARCHAR) \
+                 FROM event_tags e JOIN tags t USING (tag_id) ORDER BY t.name",
+            )
+            .unwrap();
+        Ok(stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap())
+    })
+    .unwrap()
+}
+
+#[test]
+fn a_bridge_read_matches_the_cli() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("direct.duckdb");
+    build(&path);
+    let direct = sparrow_cli::SharedBuf::default();
+    let code = sparrow_cli::run(
+        [
+            "sparrow",
+            "events",
+            "--case",
+            path.to_str().unwrap(),
+            "--json",
+        ]
+        .map(Into::into)
+        .to_vec(),
+        sparrow_cli::CliIo::new(Box::new(direct.clone()), Box::new(std::io::sink()), false),
+        std::rc::Rc::new(sparrow_cli::FileSource),
+    );
+    assert_eq!(code, 0);
+
+    let f = fixture(Some("Carol"));
+    let (code, out, err) = f.ask(&["events", "--case", &f.case_arg(), "--json"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out, direct.text());
+    // Lit while it runs, then the last request.
+    let activity = f.events("agent-activity");
+    assert_eq!(activity.len(), 2);
+    assert_eq!(activity[0]["running"], true);
+    assert_eq!(activity[1]["running"], false);
+    assert_eq!(activity[1]["command"], "events");
+    assert!(
+        f.events("case-changed").is_empty(),
+        "a read changes nothing"
+    );
+}
+
+#[test]
+fn a_wrong_token_is_refused() {
+    let f = fixture(Some("Carol"));
+    let mut d = f.discovery();
+    d.token = "00".repeat(32);
+    let row = "ual_events:u1";
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let r = send(
+        &d,
+        &request(
+            &[
+                "mark",
+                "tag",
+                "--case",
+                &f.case_arg(),
+                "--row",
+                row,
+                "--tag",
+                "ai:x",
+            ],
+            BTreeMap::new(),
+        ),
+        &mut out,
+        &mut err,
+    );
+    assert!(r.is_err(), "no answer for a wrong token");
+    assert!(out.is_empty() && err.is_empty());
+    // A missing token line (the request JSON first) gets nothing either.
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", d.port)).unwrap();
+    s.write_all(b"{\"args\":[]}\n").unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut got = Vec::new();
+    let _ = s.read_to_end(&mut got);
+    assert!(got.is_empty());
+    assert!(tags(&f).is_empty(), "nothing was written");
+}
+
+#[test]
+fn a_bridge_write_is_pending_and_signed_by_the_app_analyst() {
+    let f = fixture(Some("Carol"));
+    let (code, _, err) = f.ask(&[
+        "mark",
+        "tag",
+        "--case",
+        &f.case_arg(),
+        "--row",
+        "ual_events:u1",
+        "--tag",
+        "ai:test",
+        "--agent",
+        "claude",
+        "--analyst",
+        "Mallory",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        err.contains("Carol"),
+        "the replaced analyst is noted: {err}"
+    );
+    assert_eq!(
+        tags(&f),
+        vec![(
+            "ai:test".to_string(),
+            "agent:claude".to_string(),
+            Some("analyst:Carol".to_string()),
+            "pending_review".to_string()
+        )]
+    );
+    let changed = f.events("case-changed");
+    assert_eq!(changed.len(), 1);
+    assert_eq!(changed[0]["kinds"], serde_json::json!(["marks"]));
+    let activity = f.events("agent-activity");
+    assert_eq!(activity.last().unwrap()["agent"], "claude");
+}
+
+#[test]
+fn no_analyst_refuses_writes() {
+    let f = fixture(None);
+    let (code, _, err) = f.ask(&[
+        "mark",
+        "tag",
+        "--case",
+        &f.case_arg(),
+        "--row",
+        "ual_events:u1",
+        "--tag",
+        "ai:test",
+    ]);
+    assert_eq!(code, 5, "{err}");
+    assert!(err.contains("set the analyst name"), "{err}");
+    assert!(tags(&f).is_empty());
+    // Reads need no analyst.
+    let (code, _, err) = f.ask(&["events", "--case", &f.case_arg()]);
+    assert_eq!(code, 0, "{err}");
+}
+
+#[test]
+fn reads_run_on_a_second_connection_while_the_app_writes() {
+    let f = fixture(Some("Carol"));
+    let count_sql = "SELECT count(*) AS n FROM events";
+    // The app holds its case lock for a while (a long screen query, or a write): a bridge read does not wait for it.
+    std::thread::scope(|s| {
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let state = f.state();
+        s.spawn(move || {
+            with_writable(state, state.ticket(), |open| {
+                held_tx.send(()).unwrap();
+                // Rows added in batches of 10 inside transactions while the bridge reads.
+                for b in 0..20 {
+                    let c = open.case.conn();
+                    c.execute_batch("BEGIN").unwrap();
+                    for i in 0..10 {
+                        c.execute(
+                            "INSERT INTO events (source_table, record_key, source, event_time, category, actor_upn) \
+                             VALUES ('ual_events', ?, 'ual', TIMESTAMPTZ '2026-09-02 00:00:00+00', 'other', 'w@x')",
+                            [format!("w{b}-{i}")],
+                        )
+                        .unwrap();
+                    }
+                    c.execute_batch("COMMIT").unwrap();
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Ok(())
+            })
+            .unwrap();
+        });
+        held_rx.recv().unwrap();
+        let started = Instant::now();
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            let (code, out, err) = f.ask(&["query", "--case", &f.case_arg(), count_sql, "--json"]);
+            assert_eq!(code, 0, "{err}");
+            let v: Value = serde_json::from_str(&out).unwrap();
+            let n = v["rows"][0][0].as_i64().unwrap_or_else(|| panic!("{v}"));
+            // Never half a batch: the read sees whole transactions only.
+            assert_eq!((n - 3) % 10, 0, "torn read: {n}");
+            seen.push(n);
+        }
+        assert!(
+            started.elapsed() < Duration::from_millis(400) || seen.windows(2).any(|w| w[0] != w[1]),
+            "the reads ran while the app held its lock"
+        );
+    });
+    // Temp tables stay per connection: the app's are invisible to the bridge's reads.
+    with_case(f.state(), f.state().ticket(), |open| {
+        open.case
+            .conn()
+            .execute_batch("CREATE TEMP TABLE app_only AS SELECT 1 AS x")
+            .unwrap();
+        Ok(())
+    })
+    .unwrap();
+    let (code, _, err) = f.ask(&["query", "--case", &f.case_arg(), "SELECT x FROM app_only"]);
+    assert_ne!(code, 0);
+    assert!(err.contains("app_only"), "{err}");
+}
+
+/// A read that runs until it is stopped.
+const LONG_SQL: &str =
+    "SELECT count(*) FROM range(10000000000) a(i), range(1000) b(j) WHERE a.i * b.j = -1";
+
+#[test]
+fn a_long_read_stops_at_the_time_limit() {
+    let f = fixture(Some("Carol"));
+    let started = Instant::now();
+    let (code, _, err) = f.ask_with(
+        &["query", "--case", &f.case_arg(), LONG_SQL],
+        [("SPARROW_BRIDGE_TIMEOUT".to_string(), "1".to_string())].into(),
+    );
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_ne!(code, 0);
+    assert!(err.contains("time limit"), "{err}");
+    // The bridge serves the next request.
+    let (code, _, err) = f.ask(&["events", "--case", &f.case_arg()]);
+    assert_eq!(code, 0, "{err}");
+}
+
+#[test]
+fn closing_the_case_interrupts_the_request_and_removes_the_discovery_file() {
+    let f = fixture(Some("Carol"));
+    let d = f.discovery();
+    let case = f.case_arg();
+    let asked =
+        std::thread::spawn(move || ask(&d, &["query", "--case", &case, LONG_SQL], BTreeMap::new()));
+    std::thread::sleep(Duration::from_millis(500));
+    let started = Instant::now();
+    case_close(f.state()).unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the close was held up"
+    );
+    let (code, _, err) = asked.join().unwrap();
+    assert_eq!(code, 4, "{err}");
+    assert!(err.contains("closed the case"), "{err}");
+    assert!(read_discovery(&f.dir).is_none());
+    let port = f.discovery_port_after_close();
+    assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
+    // The file can be opened again at once (the bridge's connection is gone).
+    case_open(f.state(), &f.case, false).unwrap();
+    assert!(read_discovery(&f.dir).is_some());
+}
+
+impl Fixture {
+    fn discovery_port_after_close(&self) -> u16 {
+        self.host.state.bridge.last_port().expect("the bridge ran")
+    }
+}
+
+#[test]
+fn heavy_commands_are_refused() {
+    let f = fixture(Some("Carol"));
+    for args in [
+        vec!["profile", "--case", f.case.to_str().unwrap()],
+        vec!["detect", "--case", f.case.to_str().unwrap()],
+        vec!["upgrade", "--case", f.case.to_str().unwrap()],
+    ] {
+        let (code, _, err) = f.ask(&args);
+        assert_eq!(code, 4, "{args:?}: {err}");
+        assert!(
+            err.contains("run it from the app, or with the case closed in the app"),
+            "{err}"
+        );
+    }
+}
+
+#[test]
+fn another_case_is_refused() {
+    let f = fixture(Some("Carol"));
+    let other = f._tmp.path().join("other.duckdb");
+    build(&other);
+    let (code, _, err) = f.ask(&["events", "--case", other.to_str().unwrap()]);
+    assert_eq!(code, 4, "{err}");
+    assert!(err.contains("has another case open"), "{err}");
+}
+
+#[test]
+fn requests_run_one_at_a_time() {
+    let f = fixture(Some("Carol"));
+    let d = f.discovery();
+    let case = f.case_arg();
+    let long = std::thread::spawn({
+        let (d, case) = (d.clone(), case.clone());
+        move || {
+            let r = ask(
+                &d,
+                &["query", "--case", &case, LONG_SQL],
+                [("SPARROW_BRIDGE_TIMEOUT".to_string(), "2".to_string())].into(),
+            );
+            (r, Instant::now())
+        }
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    let (r, quick_done) = (
+        ask(&d, &["events", "--case", &case], BTreeMap::new()),
+        Instant::now(),
+    );
+    assert_eq!(r.0, 0, "{}", r.2);
+    let (_, long_done) = long.join().unwrap();
+    assert!(
+        quick_done >= long_done,
+        "the second request waited for the first"
+    );
+}
+
+#[test]
+fn a_client_that_stops_reading_does_not_hold_up_the_close() {
+    let f = fixture(Some("Carol"));
+    let d = f.discovery();
+    // Megabytes of output to a CLI that never reads: the bridge's send blocks on a full socket.
+    let sql = "SELECT repeat('x', 100000) AS big FROM range(200)";
+    let req = request(
+        &[
+            "query",
+            "--case",
+            &f.case_arg(),
+            sql,
+            "--limit",
+            "200",
+            "--json",
+        ],
+        BTreeMap::new(),
+    );
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", d.port)).unwrap();
+    let mut line = format!("{}\n", d.token).into_bytes();
+    line.extend(serde_json::to_vec(&req).unwrap());
+    line.push(b'\n');
+    s.write_all(&line).unwrap();
+    std::thread::sleep(Duration::from_millis(1500));
+    let started = Instant::now();
+    case_close(f.state()).unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the close waited {:?} for a client that does not read",
+        started.elapsed()
+    );
+    drop(s);
+}
+
+#[test]
+fn a_huge_time_limit_is_bounded() {
+    let f = fixture(Some("Carol"));
+    let huge = [("SPARROW_BRIDGE_TIMEOUT".to_string(), u64::MAX.to_string())].into();
+    let (code, _, err) = f.ask_with(&["events", "--case", &f.case_arg()], huge);
+    assert_eq!(code, 0, "{err}");
+    let (code, _, err) = f.ask(&["events", "--case", &f.case_arg()]);
+    assert_eq!(code, 0, "the bridge still serves: {err}");
+}

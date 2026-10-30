@@ -3695,11 +3695,15 @@ dependencies = [
 name = "sparrow-app"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "chrono",
  "csv",
  "duckdb",
+ "getrandom 0.3.4",
+ "hex",
  "serde",
  "serde_json",
+ "sparrow-cli",
  "sparrow-core",
  "sparrow-synth",
  "tauri",
@@ -3718,6 +3722,7 @@ dependencies = [
  "chrono",
  "clap",
  "csv",
+ "dirs",
  "duckdb",
  "predicates",
  "serde",
