@@ -1685,3 +1685,176 @@ fn the_tenant_comes_from_the_attributed_records() {
     let r = access::report(case.conn(), Some(JDOE)).unwrap();
     assert_eq!(r.accounts[0].tenant_key.as_deref(), Some("contoso"));
 }
+
+// Task 6: exports.
+
+use sparrow_core::export::access::{CSV_COLUMNS, write_csv, write_summary};
+
+fn exported(case: &Case) -> (String, String) {
+    let r = access::report(case.conn(), None).unwrap();
+    let (mut c, mut m) = (Vec::new(), Vec::new());
+    write_csv(&r, &mut c).unwrap();
+    write_summary(&r, &mut m).unwrap();
+    (String::from_utf8(c).unwrap(), String::from_utf8(m).unwrap())
+}
+
+#[test]
+fn csv_has_the_columns_and_iso_times() {
+    let case = Case::in_memory().unwrap();
+    ual_ev(
+        &case,
+        R1,
+        "MailItemsAccessed",
+        JDOE,
+        JDOE,
+        Some(IP),
+        0,
+        json!({}),
+    );
+    mia_item(&case, R1, 0, "bind", "\\Inbox", Some("<a@x>"), 10);
+    trace(&case, "<a@x>", "ap@vendor.example", JDOE, "Q3", 3600);
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let (csv, _) = exported(&case);
+    assert!(csv.starts_with('\u{feff}'));
+    let mut lines = csv.trim_start_matches('\u{feff}').lines();
+    assert_eq!(lines.next().unwrap(), CSV_COLUMNS.join(","));
+    let row = lines.next().unwrap();
+    assert!(row.starts_with("jdoe@contoso.example,mail_read,ip,2026-09-01T10:00:00Z,read,Q3,\\Inbox,ap@vendor.example,"), "{row}");
+    assert!(row.contains(",2026-09-01T09:00:00Z,"), "{row}");
+    assert_eq!(lines.next(), None);
+}
+
+#[test]
+fn csv_neutralises_formulas() {
+    let case = Case::in_memory().unwrap();
+    ual_ev(
+        &case,
+        R1,
+        "MailItemsAccessed",
+        JDOE,
+        JDOE,
+        Some(IP),
+        0,
+        json!({}),
+    );
+    mia_item(&case, R1, 0, "bind", "\\Inbox", Some("<a@x>"), 10);
+    trace(
+        &case,
+        "<a@x>",
+        "ap@vendor.example",
+        JDOE,
+        "=HYPERLINK(\"http://evil\")",
+        60,
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let (csv, _) = exported(&case);
+    assert!(
+        csv.contains("\"'=HYPERLINK(\"\"http://evil\"\")\""),
+        "{csv}"
+    );
+}
+
+#[test]
+fn markdown_summary_counts_and_escapes_pipes() {
+    let case = Case::in_memory().unwrap();
+    ual_ev(
+        &case,
+        R1,
+        "MailItemsAccessed",
+        JDOE,
+        JDOE,
+        Some(IP),
+        0,
+        json!({}),
+    );
+    mia_item(&case, R1, 0, "bind", "\\Inbox", Some("<a@x>"), 10);
+    ual_ev(
+        &case,
+        R2,
+        "MailItemsAccessed",
+        JDOE,
+        JDOE,
+        None,
+        60,
+        json!({}),
+    );
+    mia_item(&case, R2, 0, "bind", "\\Inbox", Some("<b@x>"), 10);
+    vflag(&case, "ip", IP, None, State::Accepted);
+    vflag(
+        &case,
+        "account",
+        "a|b@contoso.example",
+        None,
+        State::Accepted,
+    );
+    availability(&case, "mail_items_accessed", "collected");
+    availability(&case, "mail_send", "collected");
+    let (_, md) = exported(&case);
+    assert!(md.contains("| Account | Emails read | Emails sent | Attachments | SharePoint / OneDrive | Teams | Copilot | Other apps |"), "{md}");
+    assert!(
+        md.contains("| jdoe@contoso.example | 1 (+1 by time) | 0 none seen |"),
+        "{md}"
+    );
+    assert!(md.contains("a\\|b@contoso.example"), "{md}");
+    assert!(md.contains("### Coverage gaps"), "{md}");
+    assert!(
+        md.contains("Teams chats read in the Teams app are not audited \\(only Graph reads are\\)"),
+        "{md}"
+    );
+}
+
+#[test]
+fn csv_neutralises_every_text_column() {
+    let case = Case::in_memory().unwrap();
+    ual_w(
+        &case,
+        R1,
+        "SharePoint",
+        "FileDownloaded",
+        Some(IP),
+        0,
+        "other",
+        json!({}),
+    );
+    insert_row(
+        &case,
+        "file_events",
+        "contoso",
+        json!({"record_id": R1, "item_type": "file", "is_onenote": false,
+        "file_name": "+cmd.xlsx", "site_url": "@site/", "relative_url": "x", "application_name": "-app"}),
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let (csv, _) = exported(&case);
+    let mut r = csv::Reader::from_reader(csv.trim_start_matches('\u{feff}').as_bytes());
+    let rec = r.records().next().unwrap().unwrap();
+    let col = |name: &str| {
+        rec.get(CSV_COLUMNS.iter().position(|c| *c == name).unwrap())
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(col("item"), "'+cmd.xlsx");
+    assert_eq!(col("location"), "'@site/x");
+    assert_eq!(col("app"), "'-app");
+}
+
+#[test]
+fn a_sync_only_cell_shows_the_synced_folders() {
+    let case = Case::in_memory().unwrap();
+    ual_ev(
+        &case,
+        R1,
+        "MailItemsAccessed",
+        JDOE,
+        JDOE,
+        Some(IP),
+        0,
+        json!({}),
+    );
+    mia_item(&case, R1, 0, "sync", "\\Inbox", None, 0);
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let (_, md) = exported(&case);
+    assert!(
+        md.contains("| jdoe@contoso.example | 0 (1 folder synced) |"),
+        "{md}"
+    );
+}

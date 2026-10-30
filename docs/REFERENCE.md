@@ -375,6 +375,8 @@ sparrow accounts --case case.duckdb              # [--tenant T --limit N]: the a
                                                   # stages and the addresses worth a look (the roll-up detection builds)
 sparrow coverage --case case.duckdb              # [--tenant T --user UPN... --rules DIR...]: per account, the rows and dates each
                                                   # source holds, the dates it does not cover, and what to request next
+sparrow access --case case.duckdb                # [--account UPN] [--csv FILE | --markdown]: what the attacker reached
+                                                  # through each account, from the accepted malicious flags
 sparrow finding list --case case.duckdb           # [--status --severity MIN --rule ID... --user UPN --tenant
                                                   #  --rule-updated --review-state --limit N]; severity first,
                                                   #  then the most recent
@@ -690,6 +692,41 @@ the rest of the report, and `[text](url)`, `![](url)` and `[^3]` stay plain text
 state: they are labelled "agent note — not reviewed", and `--reviewed-only` leaves them out. A date Excel cannot
 hold is written to the workbook as ISO text. `--out` is written through a temp file and renamed when the export
 succeeds, and is refused when it is the case file, its `.wal`, or inside the test cache root (`$CARGO_TARGET_TMPDIR/sparrow-cache`, only when that variable is set) (exit 5).
+
+## Access report
+
+`sparrow access --case C [--account UPN] [--csv FILE | --markdown] [--json]` answers "what did the attacker get?" per
+compromised account: mail read and sent, attachments, SharePoint/OneDrive files, Teams, Copilot and other apps.
+Read-only; no audit entry. `--csv` is refused (exit 5) when it names the case or its `.wal`, and is written through a
+temp file; `--json` cannot be combined with `--csv` or `--markdown`.
+
+- **Scope.** Only accepted (or analyst-made), not removed, malicious flags count; pending agent flags are counted
+  (`pending_flags`) and attribute nothing. A record is attributed `session` (a flagged Entra session on the record or
+  its UAL `SessionId`, or a UAL record sharing an Exchange `SessionId` with a directly attributed record of the same
+  account), `row` (the record itself flagged), `device`, or `ip` (a flagged IP or prefix, or an ASN flagged for the
+  account; a case-wide ASN flag attributes nothing). A malicious `account` flag only puts the account on the report.
+  An account scope on a flag matches the record's actor, never its mailbox owner. Items are filed under the actor.
+- **By time.** A record of the account with no IP and no Entra session (Teams Graph reads, most Copilot records) is
+  attributed `time` when it falls in a window of the account's malicious activity: per flagged value, bursts of its
+  sightings split at gaps over an hour, each from the first sighting to the last plus an hour. A record with an
+  unflagged IP or session never is. Time never adds an account. Tiles count `direct · by time` separately.
+- **Categories.** `mail_read` (MailItemsAccessed Bind items, one per message and account, direct winning, subject,
+  sender, recipients and sent time from the message trace; Sync rows are `synced` folder items), `mail_sent` (Send,
+  SendAs, SendOnBehalf; UAL and legacy mailbox audit), `attachment` (AttachmentAccess: Graph only), `file` (a
+  `file_events` or `sharing_events` child; sharing targets in the note), `teams` (workload MicrosoftTeams),
+  `copilot` (one item per `CopilotEventData.AccessedResources` entry, or one `prompt`), `other` (everything else but
+  sign-ins and mail flow). Someone else's data reached through the account (a delegated or shared mailbox, send as)
+  stays under the account, with `owner` and a `note` ("in mailbox ...", "sent as ...").
+- **Coverage.** Each tile carries its source's `evidence_availability` status for the account's tenant
+  (`mail_items_accessed` or `mailbox_audit_legacy` for mail read, `mail_send` for mail sent, `ual` otherwise; `none`
+  when the case has no row). A zero is "none seen" only when the source was collected, or partial and the capture holds
+  the category's operations for that account; otherwise the tile gives the status. Every account lists the gaps
+  Microsoft never logs (Teams app reads, Outlook-synced mail, attachments opened in Outlook/OWA, Exchange searches
+  without Audit Premium).
+- **Exports.** `--csv` writes one row per item (columns `account, category, attribution, accessed_utc, action, item,
+  location, from, to, size_bytes, item_time_utc, app, ip, session_id, owner, note, source, record_id`; UTF-8 with a BOM,
+  ISO 8601 UTC, formula-like cells prefixed with `'`). `--markdown` prints a table (one row per account, a cell per
+  category: `48`, `48 (+3 by time)`, `0 (1 folder synced)`, `0 none seen` or `0 (<status>)`) and the coverage gaps.
 
 ## Synthetic data
 

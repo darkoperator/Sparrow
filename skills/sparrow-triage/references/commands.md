@@ -27,6 +27,7 @@ truncated} ]}`.
 | Tenant, window, row counts, top actors, gaps? | `sparrow summary --case case.duckdb --json` |
 | Which accounts have findings, what stages, which addresses? | `sparrow accounts --case case.duckdb --json` |
 | Which evidence covers each account, over which dates, and what should I request next? | `sparrow coverage --case case.duckdb --json` |
+| What did the attacker read, send or open through each compromised account? | `sparrow access --case case.duckdb --json` |
 | Which tables and columns exist? | `sparrow schema --case case.duckdb --json` |
 | Columns of one table? | `sparrow schema --case case.duckdb --table signins --json` |
 
@@ -55,6 +56,16 @@ it gives `rows`, `first`, `last`, `days` and `sampled` (rows from a capped expor
 (30 days before its first finding, to the tenant's last event). No event inside a gap proves nothing. `requests`
 lists what to ask for, one per account and source with gaps, with `console` (admin portal), `hawk` and `invictus`
 (Microsoft-Extractor-Suite) commands filled in with the user and dates; `null` means that collector has no command for it.
+
+## Access report
+
+`sparrow access` is read-only. From the accepted malicious flags (pending agent flags do not count until accepted) it
+lists, per compromised account, the items the attacker reached by category (`mail_read`, `mail_sent`, `attachment`,
+`file`, `teams`, `copilot`, `other`), each with `attribution` (`session`, `row`, `device`, `ip`, or `time` for records
+with no IP and no session inside a window of malicious activity), and per category a tile with `direct`, `by_time`,
+`coverage` (the source's status) and `none_seen` (a zero is a finding only when that is true). `--account UPN` limits it;
+`--csv FILE` writes one row per item; `--markdown` prints the summary table. Flag the attacker's sessions and IPs first
+(`sparrow mark flag`), and have them accepted, or the report is empty.
 
 ## Events, entities, marks
 

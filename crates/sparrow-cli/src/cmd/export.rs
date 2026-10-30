@@ -131,7 +131,7 @@ fn canonical(p: &Path) -> Result<PathBuf> {
 /// Refuse an `--out` that is the case file, its write-ahead log, or inside the test cache root
 /// (`$CARGO_TARGET_TMPDIR/sparrow-cache`, when set): the one way an export could write the case, or step on another
 /// run's files. Exit code 5.
-fn check_out(out: &Path, case: &Path) -> Result<()> {
+pub(crate) fn check_out(out: &Path, case: &Path) -> Result<()> {
     let target = canonical(out)?;
     let case = case
         .canonicalize()
@@ -164,7 +164,7 @@ fn check_out(out: &Path, case: &Path) -> Result<()> {
 
 /// A temp file beside `path`, renamed over it when `f` succeeds and removed when it fails: a failed export never
 /// leaves a partial `--out` file.
-fn atomic<T>(path: &Path, f: impl FnOnce(&Path) -> Result<T>) -> Result<T> {
+pub(crate) fn atomic<T>(path: &Path, f: impl FnOnce(&Path) -> Result<T>) -> Result<T> {
     let dir = match path.parent() {
         Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
         _ => PathBuf::from("."),

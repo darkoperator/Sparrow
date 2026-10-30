@@ -104,6 +104,10 @@ enum Command {
     /// Evidence coverage per account: rows and dates per source, which dates the evidence does not cover (sampled
     /// exports included), and what to request next with the admin portal, Hawk and Microsoft-Extractor-Suite
     Coverage(cmd::coverage::CoverageArgs),
+    /// What the attacker reached through each compromised account (mail read and sent, attachments,
+    /// SharePoint/OneDrive, Teams, Copilot, other apps), from the accepted malicious flags; --csv for legal,
+    /// --markdown for the final report
+    Access(cmd::access::AccessArgs),
     /// Evidence availability: what the case holds, what is missing and why
     Capabilities {
         /// Case database file
@@ -724,6 +728,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Some(Command::Summary { case }) => cmd_summary(&case, json),
         Some(Command::Accounts(a)) => cmd::read::accounts(a, json),
         Some(Command::Coverage(a)) => cmd::coverage::run(a, json),
+        Some(Command::Access(a)) => cmd::access::run(a, json),
         Some(Command::Verify {
             table,
             record_key,
