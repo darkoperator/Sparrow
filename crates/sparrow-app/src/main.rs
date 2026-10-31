@@ -22,7 +22,11 @@ fn main() {
     let builder = tauri::Builder::default();
     // Debug builds only: the Tauri MCP server drives the window over a loopback WebSocket.
     #[cfg(debug_assertions)]
-    let builder = builder.plugin(tauri_plugin_mcp_bridge::Builder::new().bind_address("127.0.0.1").build());
+    let builder = builder.plugin(
+        tauri_plugin_mcp_bridge::Builder::new()
+            .bind_address("127.0.0.1")
+            .build(),
+    );
     builder
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
