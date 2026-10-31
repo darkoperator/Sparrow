@@ -24,7 +24,7 @@ import { isoSeconds } from "../events/columns";
 import Icon, { type IconName } from "../ui/Icon";
 import EventsView, { indicatorNote } from "../events/EventsView";
 import { flagValueMessage, pivotMenu, type ValueMenuContext } from "../marks/rowMenu";
-import { useDataVersion, useFocusAnalyst, useNav, useRefreshBadges, useWriteBlocked } from "../shell/nav";
+import { useDataVersion, useFocusAnalyst, useNav, useRefreshBadges, useWriteBlocked, useWriteTick } from "../shell/nav";
 import type { EntityRef } from "../shell/tabs";
 import { displaySafe } from "../text";
 import AddToTimelineDialog from "../marks/AddToTimelineDialog";
@@ -42,7 +42,7 @@ const ICON: Record<EntityKind, IconName> = { account: "user", ip: "globe", devic
 /** The account's access in one line (the reviewed report's counts) and the way into its Access tab. */
 function AccessLine({ account }: { account: string }) {
   const nav = useNav();
-  const dataVersion = useDataVersion();
+  const dataVersion = `${useDataVersion()}.${useWriteTick()}`;
   const [line, setLine] = useState<{ for: string; text: string } | null>(null);
   const key = `${account}\u0000${dataVersion}`;
   useEffect(() => {

@@ -30,7 +30,7 @@ import { isoSeconds } from "../events/columns";
 import { displaySafe } from "../text";
 import "./access.css";
 import { mergeAccess, type MergedTile } from "./merge";
-import { useDataVersion } from "../shell/nav";
+import { useDataVersion, useWriteTick } from "../shell/nav";
 
 const STATUS_LABELS: Record<string, string> = {
   none: "no coverage data",
@@ -214,7 +214,8 @@ export default function AccessView({ scope }: { scope: AccessScope }) {
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [only, setOnly] = useState<string | null>(null);
-  const dataVersion = useDataVersion();
+  // An agent's write (the data version) or the analyst's own (the write tick) reads the report again.
+  const dataVersion = `${useDataVersion()}.${useWriteTick()}`;
   // The preview: component state, so it is off again whenever the tab is reopened.
   const [includePending, setIncludePending] = useState(false);
   const [whatIfKind, setWhatIfKind] = useState<WhatIfKind>("ip");

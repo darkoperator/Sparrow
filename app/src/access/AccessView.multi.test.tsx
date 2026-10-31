@@ -12,7 +12,7 @@ const dialogSave = vi.fn();
 vi.mock("@tauri-apps/plugin-dialog", () => ({ save: (...a: unknown[]) => dialogSave(...a) }));
 
 import * as api from "../api";
-import { DataVersionContext } from "../shell/nav";
+import { DataVersionContext, WriteTickContext } from "../shell/nav";
 import AccessView from "./AccessView";
 import { A, account, item, ORDER, report, tile } from "./testData";
 
@@ -184,5 +184,21 @@ describe("AccessView across accounts", () => {
     view.rerender(tree(3));
     await screen.findByText("Bob's mail");
     expect(screen.getByRole("combobox", { name: "Account" })).toHaveValue("");
+  });
+
+  it("an_analyst_write_reloads_an_open_tab", async () => {
+    two();
+    const tree = (tick: number) => (
+      <WriteTickContext.Provider value={tick}>
+        <AccessView scope={{ kind: "case" }} />
+      </WriteTickContext.Provider>
+    );
+    const view = render(tree(0));
+    await screen.findByRole("table", { name: "Emails read" });
+    const calls = vi.mocked(api.accessReport).mock.calls.length;
+    vi.mocked(api.accessReport).mockResolvedValue(report([account({ items: [item({ item: "After the flag" })] })]));
+    view.rerender(tree(1));
+    expect(await screen.findByText("After the flag")).toBeInTheDocument();
+    expect(vi.mocked(api.accessReport).mock.calls.length).toBe(calls + 1);
   });
 });

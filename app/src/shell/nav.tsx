@@ -56,6 +56,14 @@ export const useFocusAnalyst = () => useContext(FocusAnalystContext);
  */
 export const DataVersionContext = createContext(0);
 
+/**
+ * Bumped by the shell each time the analyst wrote (the same tick that refreshes the tab badges): a screen that stays
+ * mounted while hidden (an Access tab) reads again, so it never shows an answer from before the analyst's own flag.
+ */
+export const WriteTickContext = createContext(0);
+
+export const useWriteTick = () => useContext(WriteTickContext);
+
 export const useDataVersion = () => useContext(DataVersionContext);
 
 /** Calls `reload` each time the data version changes (not on mount: the screen's first load does that). */

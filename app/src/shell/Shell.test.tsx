@@ -61,7 +61,7 @@ vi.mock("./ExportMenu", () => ({ default: () => <button>Export</button> }));
 
 import * as api from "../api";
 import Grid from "../grid/Grid";
-import { useFocusAnalyst, useNav, useOnDataChanged, useRefreshBadges, useWriteBlocked, writeBlockedReason } from "./nav";
+import { useFocusAnalyst, useNav, useOnDataChanged, useRefreshBadges, useWriteBlocked, useWriteTick, writeBlockedReason } from "./nav";
 import Shell from "./Shell";
 import type { EntityRef } from "./tabs";
 
@@ -417,6 +417,22 @@ describe("Shell", () => {
     expect(screen.getAllByRole("tab", { name: /^IP / })).toHaveLength(1);
     expect(screen.getByRole("tab", { name: "IP 2001:db8::1" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("region", { name: "ip 2001:db8::1" })).toHaveTextContent("ip 2001:db8::1");
+  });
+
+  it("an_analyst_write_bumps_the_write_tick", async () => {
+    dialogOpen.mockResolvedValue("/synthetic/case-a.duckdb");
+    const user = userEvent.setup();
+    function Writes() {
+      const refresh = useRefreshBadges();
+      const tick = useWriteTick();
+      return <button onClick={refresh}>{`tick ${tick}`}</button>;
+    }
+    render(<Shell screens={{ accounts: () => <Writes /> }} />);
+    await user.click(await screen.findByRole("button", { name: "Open a case" }));
+    await user.click(await screen.findByRole("tab", { name: "Accounts" }));
+    const before = Number(screen.getByRole("button", { name: /^tick / }).textContent!.slice(5));
+    await user.click(screen.getByRole("button", { name: /^tick / }));
+    expect(screen.getByRole("button", { name: `tick ${before + 1}` })).toBeInTheDocument();
   });
 
   it("nav_open_access_shows_the_tab", async () => {

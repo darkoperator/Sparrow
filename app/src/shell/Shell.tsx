@@ -29,6 +29,7 @@ import AnalystPrompt from "./AnalystPrompt";
 import ExportMenu from "./ExportMenu";
 import {
   DataVersionContext,
+  WriteTickContext,
   FocusAnalystContext,
   NavContext,
   RefreshBadgesContext,
@@ -451,6 +452,7 @@ export default function Shell({ screens = {}, entityTab, accessTab }: ShellProps
             <WriteBlockedContext.Provider value={writeBlockedReason(info.read_only_reason, settings.analyst)}>
             <FocusAnalystContext.Provider value={focusAnalyst}>
             <DataVersionContext.Provider value={dataVersion}>
+            <WriteTickContext.Provider value={badgeTick}>
             <main key={dataEpoch}>
               {screen !== "highlights" && <HighlightsError />}
               {body}
@@ -471,6 +473,7 @@ export default function Shell({ screens = {}, entityTab, accessTab }: ShellProps
                 </section>
               ))}
             </main>
+            </WriteTickContext.Provider>
             </DataVersionContext.Provider>
             </FocusAnalystContext.Provider>
             </WriteBlockedContext.Provider>
