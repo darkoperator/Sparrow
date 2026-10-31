@@ -380,10 +380,14 @@ export const ACCESS_TITLES: Record<AccessCategory, string> = {
 /** What puts a record or scope value in the access report: an accepted flag, a pending agent flag, or a what-if value. */
 export type Basis = "accepted" | "pending" | "adhoc";
 
-/** The Access section's preview: pending agent flags too, and what-if values (as if flagged malicious and accepted). */
+/**
+ * An Access tab's preview: pending agent flags too, and what-if values (as if flagged malicious and accepted). With
+ * `without_accepted`, the case's accepted flags are left out: a device or IP tab's what-if counts its value alone.
+ */
 export interface PreviewArgs {
   include_pending: boolean;
   adhoc: { kind: "ip" | "ip_prefix" | "session" | "device"; value: string }[];
+  without_accepted?: boolean;
 }
 
 /** `case::access::Item`: one thing the attacker reached; times are RFC 3339 UTC. */

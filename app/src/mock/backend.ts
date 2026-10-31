@@ -434,7 +434,10 @@ const handlers: Record<string, (a: Args) => unknown> = {
   export_workbook: () => null,
   access_report: (a) => {
     // The recorded case has no pending flags, and the mock attributes nothing to a what-if value (it would need the
-    // core's attribution): a preview answers the reviewed report, as the core does when nothing new matches.
+    // core's attribution): a preview answers the reviewed report, as the core does when nothing new matches. Without
+    // the accepted flags (a device or IP what-if) nothing is left to attribute.
+    const preview = a?.preview as { without_accepted?: boolean } | null | undefined;
+    if (preview?.without_accepted) return { ...fx.accessReport(), accounts: [], preview: true };
     const r = fx.accessReport();
     const want = typeof a?.account === "string" ? a.account.toLowerCase() : null;
     if (want === null) return r;
