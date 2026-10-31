@@ -72,7 +72,7 @@ describe("mergeAccess", () => {
     const a = account({ items: [item({})], gaps: ["Mail: x"], tiles: ORDER.map((c) => tile(c, c === "file" ? { direct: 2, qualifier: "q" } : {})) });
     const m = mergeAccess(report([a]), null);
     expect(m.items).toEqual(a.items);
-    expect(m.tiles.map((t) => Object.fromEntries(Object.entries(t).filter(([k]) => k !== "notCollectedFor" && k !== "of")))).toEqual(a.tiles);
+    expect(m.tiles.map((t) => Object.fromEntries(Object.entries(t).filter(([k]) => k !== "notCollectedFor" && k !== "of" && k !== "missingStatuses")))).toEqual(a.tiles);
     expect(m.gaps).toEqual(["Mail: x", ...NEVER]);
   });
 
@@ -104,5 +104,26 @@ describe("mergeAccess", () => {
     expect(t.qualifier).toBe(`${a.account}: 1 folder synced · ${B}: 1 folder · 0.1 MB`);
     expect(mailRead(mergeAccess(report([a, b, c]), a.account)).qualifier).toBe("1 folder synced");
     expect(mailRead(mergeAccess(report([a, c]), "c@contoso.example")).qualifier).toBeNull();
+  });
+
+  it("identical_gaps_are_listed_once_with_their_accounts", () => {
+    const C = "c@contoso.example";
+    const D = "d@contoso.example";
+    const E = "e@contoso.example";
+    const g = "Mail: Hawk collected it for 12 users of 13";
+    const accts = [account({ gaps: [g, "Files: y"] }), account({ account: B, gaps: [g] }), account({ account: C, gaps: [g] }), account({ account: D, gaps: [g] }), account({ account: E })];
+    expect(mergeAccess(report(accts), null).gaps).toEqual([`${g} (4 accounts: ${accts[0].account}, ${B}, ${C} +1 more)`, `${accts[0].account}: Files: y`, ...NEVER]);
+    // Every shown account alike: said once.
+    expect(mergeAccess(report(accts.slice(1, 3)), null).gaps).toEqual([`${g} (all 2 accounts)`, ...NEVER]);
+  });
+
+  it("records_which_coverage_statuses_are_missing", () => {
+    const lic = { status: "not_licensed", reason: "No E5", remediation: null };
+    const ret = { status: "beyond_retention", reason: "Too old", remediation: null };
+    const a = account({ tiles: ORDER.map((c) => tile(c, c === "mail_read" ? { none_seen: false, coverage: lic } : {})) });
+    const b = account({ account: B, tiles: ORDER.map((c) => tile(c, c === "mail_read" ? { none_seen: false, coverage: ret } : {})) });
+    const c = account({ account: "c@contoso.example", tiles: ORDER.map((x) => tile(x, x === "mail_read" ? { none_seen: false, coverage: lic } : {})) });
+    expect(mailRead(mergeAccess(report([a, b, c]), null)).missingStatuses).toEqual(["not_licensed", "beyond_retention"]);
+    expect(mailRead(mergeAccess(report([a, c]), null)).missingStatuses).toEqual(["not_licensed"]);
   });
 });

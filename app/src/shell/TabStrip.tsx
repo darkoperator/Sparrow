@@ -1,6 +1,6 @@
 // The tab strip: the fixed tabs in order, then one closable tab per open entity or Access tab. Selecting, closing and the
 // keyboard are handled here; what the tabs mean is in tabs.ts.
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { displaySafe } from "../text";
 import Icon, { type IconName } from "../ui/Icon";
 import { FIXED_TABS, isAccessRef, tabKey, tabName, tabText, type EntityKind, type FixedTab, type OpenTab, type TabsState } from "./tabs";
@@ -28,6 +28,11 @@ export default function TabStrip({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const activeKey = tabKey(state.active);
+  // The strip scrolls sideways when many tabs are open: a newly shown tab is brought into view.
+  useEffect(() => {
+    const tab = ref.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]');
+    if (typeof tab?.scrollIntoView === "function") tab.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeKey]);
 
   const onKeyDown = (e: React.KeyboardEvent, key: string | null) => {
     if (key !== null && (e.key === "Delete" || e.key === "Backspace")) {

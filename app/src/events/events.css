@@ -29,19 +29,27 @@
 .ev-filters { display: flex; flex-direction: column; gap: 10px; margin: 0 0 12px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
 .ev-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
 .ev-searchrow { align-items: flex-start; }
-.ev-time { flex: 0 1 190px; }
+/* Wide enough for a canonical To (`2026-09-10T23:59:59.999999Z`) beside the calendar button. */
+.ev-time { flex: 0 1 250px; }
 .ev-inline { flex: none; }
 .ev-inline select { width: auto; padding: 6px 8px; }
 .ev-inline .ev-toggle button { padding: 6px 10px; }
 .ev-time input { padding: 7px 8px; }
 .ev-time { position: relative; }
-.ev-time input { padding-right: 30px; }
+.ev-time input { padding-right: 30px; text-overflow: ellipsis; }
 /* The calendar sits inside the box's right edge; its popover opens under the box. */
 .ev-picker-button { position: absolute; top: 3px; right: 3px; padding: 3px 5px; }
 .ev-picker-pop { position: absolute; top: calc(100% + 4px); left: 0; z-index: 20; display: flex; flex-direction: column; gap: 8px; min-width: 220px; padding: 10px; }
-.ev-picker-pop label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; }
+.ev-picker-pop label, .ev-picker-field { display: flex; flex-direction: column; gap: 3px; font-size: 11px; }
 .ev-picker-pop input { width: 100%; padding: 5px 8px; font-family: var(--font-mono); }
 .ev-picker-pop .meta { margin: 0; }
+.ev-picker-date { position: relative; display: block; }
+/* An empty date control: hide WebKit's greyed "today" and say there is no date instead. */
+/* (WebKit paints the segments with -webkit-text-fill-color; `color` on its pseudo-elements does not hide them.) */
+.ev-picker-empty:not(:focus) { color: transparent; -webkit-text-fill-color: transparent; }
+/* Typing into it: the partial date shows, the hint goes. */
+.ev-picker-empty:focus + .ev-picker-none { display: none; }
+.ev-picker-none { position: absolute; top: 50%; left: 9px; transform: translateY(-50%); color: var(--muted); font-family: var(--font-mono); pointer-events: none; }
 .ev-picker-actions { display: flex; justify-content: flex-end; gap: 6px; }
 .ev-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .ev-field input, .ev-field select { width: 100%; min-width: 0; padding: 5px 8px; background: var(--bg); font-size: 11px; }

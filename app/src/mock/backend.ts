@@ -462,6 +462,11 @@ const handlers: Record<string, (a: Args) => unknown> = {
     empty.gaps = empty.tiles.map((t) => `${ACCESS_TITLES[t.category]}: ${t.coverage.reason}`);
     return { ...r, accounts: [hit ?? empty] };
   },
+  access_tiles: (a) => {
+    const want = typeof a?.account === "string" ? a.account.toLowerCase() : "";
+    const hit = fx.accessReport().accounts.find((x) => x.account === want);
+    return (hit ?? fx.accessReport().accounts[0]).tiles.map((t) => (hit ? t : { ...t, direct: 0, by_time: 0, qualifier: null }));
+  },
   access_accounts: () => fx.accessReport().accounts.map((x) => x.account),
   export_access_csv: () => null,
   export_access_summary: () => null,

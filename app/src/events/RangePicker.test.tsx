@@ -104,4 +104,64 @@ describe("RangePicker", () => {
     fireEvent.keyDown(date(), { key: "Escape" });
     expect(screen.getByRole("button", { name: "Pick From date" })).toHaveFocus();
   });
+
+  it("the_time_is_a_24_hour_utc_box", () => {
+    open("");
+    expect(time()).toHaveAttribute("type", "text");
+    expect(time()).toHaveAttribute("placeholder", "HH:MM (24 h)");
+  });
+
+  it("a_one_digit_hour_is_padded", async () => {
+    const onPick = open("");
+    fireEvent.change(date(), { target: { value: "2026-10-23" } });
+    fireEvent.change(time(), { target: { value: "9:05" } });
+    await userEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(onPick).toHaveBeenCalledWith("2026-10-23T09:05");
+  });
+
+  it.each(["25:00", "12:60", "noon", "1205"])("refuses_the_time_%j", async (bad) => {
+    const onPick = open("");
+    fireEvent.change(date(), { target: { value: "2026-10-23" } });
+    fireEvent.change(time(), { target: { value: bad } });
+    await userEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(onPick).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Time is HH:MM, 00:00 to 23:59 (UTC)");
+    expect(time()).toHaveAttribute("aria-invalid", "true");
+  });
+
+  it("an_empty_date_says_so", () => {
+    open("");
+    expect(date()).toHaveClass("ev-picker-empty");
+    expect(screen.getByText("No date yet")).toBeInTheDocument();
+    fireEvent.change(date(), { target: { value: "2026-10-23" } });
+    expect(date()).not.toHaveClass("ev-picker-empty");
+    expect(screen.queryByText("No date yet")).toBeNull();
+  });
+
+  it("opening_focuses_the_dialog_not_an_empty_date", () => {
+    // A focused empty WebKit date control shows today's date greyed, which reads as a value.
+    open("");
+    expect(screen.getByRole("dialog")).toHaveFocus();
+  });
+
+  it("opening_on_a_date_focuses_the_date", () => {
+    open("2026-10-23");
+    expect(date()).toHaveFocus();
+  });
+
+  it("a_rerender_does_not_take_focus_back", () => {
+    const onPick = vi.fn();
+    const ui = (v: string) => (
+      <>
+        <input aria-label="elsewhere" />
+        <RangePicker end="from" value={v} onPick={onPick} />
+      </>
+    );
+    const view = render(ui(""));
+    fireEvent.click(screen.getByRole("button", { name: "Pick From date" }));
+    expect(screen.getByRole("dialog")).toHaveFocus();
+    screen.getByLabelText("elsewhere").focus();
+    view.rerender(ui(""));
+    expect(screen.getByLabelText("elsewhere")).toHaveFocus();
+  });
 });

@@ -1,4 +1,5 @@
-//! The access report (`case::access`): the Access section of an account tab and the access exports of the export menu.
+//! The access report (`case::access`): the Access tabs, the account tab's summary line and the access exports of the
+//! export menu.
 //! They only read the case, so they work on a read-only one; the exports are written atomically like the others.
 //! The Access section can preview the report with pending agent flags or a what-if value ([`PreviewArgs`]); the export
 //! menu's exports never do.
@@ -7,7 +8,7 @@ use super::export::{atomic, to_file};
 use crate::error::{CmdError, CmdResult};
 use crate::state::{AppState, with_case};
 use serde::Deserialize;
-use sparrow_core::case::access::{self, AccessReport, ScopeSource};
+use sparrow_core::case::access::{self, AccessReport, ScopeSource, Tile};
 use sparrow_core::case::marks::ValueKind;
 use sparrow_core::export::access::{write_csv, write_summary};
 use std::path::Path;
@@ -80,6 +81,20 @@ pub fn access_report(
     })
 }
 
+/// The reviewed report's seven tiles of `account` (any case), without its items: the account tab's one-line summary,
+/// so a long attacker dwell does not ship thousands of rows just to be counted.
+pub fn access_tiles(state: &AppState, account: &str) -> CmdResult<Vec<Tile>> {
+    let ticket = state.ticket();
+    with_case(state, ticket, |open| {
+        let r = access::report(open.case.conn(), Some(account))?;
+        Ok(r.accounts
+            .into_iter()
+            .next()
+            .map(|a| a.tiles)
+            .unwrap_or_default())
+    })
+}
+
 /// The accounts the report lists (for the account list's badge).
 pub fn access_accounts(state: &AppState) -> CmdResult<Vec<String>> {
     let ticket = state.ticket();
@@ -127,6 +142,11 @@ pub mod commands {
         preview: Option<PreviewArgs>,
     ) -> CmdResult<AccessReport> {
         super::access_report(&state, account.as_deref(), preview.as_ref())
+    }
+
+    #[tauri::command(async)]
+    pub fn access_tiles(state: State<'_, AppState>, account: String) -> CmdResult<Vec<Tile>> {
+        super::access_tiles(&state, &account)
     }
 
     #[tauri::command(async)]

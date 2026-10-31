@@ -16,7 +16,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 vi.mock("../dialog", () => ({ save: vi.fn(), open: vi.fn() }));
 
-import { account, ORDER, report, tile } from "../access/testData";
+import { ORDER, tile } from "../access/testData";
 import { NavContext, type Nav } from "../shell/nav";
 import type { EntityRef } from "../shell/tabs";
 import EntityTab from "./EntityTab";
@@ -42,27 +42,26 @@ beforeEach(() => {
 
 describe("EntityTab Access entry points", () => {
   it("account_tab_has_a_summary_and_open_access", async () => {
-    h.override.access_report = () =>
-      report([account({ account: ACCOUNT.value, tiles: ORDER.map((c) => tile(c, c === "mail_read" ? { direct: 3 } : c === "file" ? { by_time: 2 } : {})) })]);
+    h.override.access_tiles = () => ORDER.map((c) => tile(c, c === "mail_read" ? { direct: 3 } : c === "file" ? { by_time: 2 } : {}));
     const n = view(ACCOUNT);
     expect(await screen.findByText("3 Emails read · 2 SharePoint / OneDrive")).toBeInTheDocument();
-    // The reviewed report of this account only.
-    expect(h.calls.filter((c) => c.cmd === "access_report").at(-1)!.args).toEqual({ account: ACCOUNT.value, preview: null });
+    // The reviewed tiles of this account only, never the whole report with its items.
+    expect(h.calls.filter((c) => c.cmd === "access_tiles").at(-1)!.args).toEqual({ account: ACCOUNT.value });
+    expect(h.calls.some((c) => c.cmd === "access_report")).toBe(false);
     expect(screen.queryByRole("list", { name: "What the attacker reached" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Open access" }));
     expect(n.openAccess).toHaveBeenCalledWith({ access: "account", value: ACCOUNT.value });
   });
 
   it("a_synced_only_account_is_not_nothing", async () => {
-    h.override.access_report = () =>
-      report([account({ account: ACCOUNT.value, tiles: ORDER.map((c) => tile(c, c === "mail_read" ? { qualifier: "1 folder synced", none_seen: false } : {})) })]);
+    h.override.access_tiles = () => ORDER.map((c) => tile(c, c === "mail_read" ? { qualifier: "1 folder synced", none_seen: false } : {}));
     view(ACCOUNT);
     expect(await screen.findByText("Emails read: 1 folder synced")).toBeInTheDocument();
     expect(screen.queryByText("Nothing attributed yet")).toBeNull();
   });
 
   it("an_account_with_nothing_says_so", async () => {
-    h.override.access_report = () => report([account({ account: ACCOUNT.value, scope: [] })]);
+    h.override.access_tiles = () => ORDER.map((c) => tile(c));
     view(ACCOUNT);
     expect(await screen.findByText("Nothing attributed yet")).toBeInTheDocument();
   });

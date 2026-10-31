@@ -1,13 +1,15 @@
 // One list from an access report's accounts: what an Access tab shows when it can span accounts (a device or IP
 // what-if, the whole case). Counts add up; a category reads "collected" only when every shown account's source was
 // collected, and "none seen" only when every shown account says so, so a merge never turns a gap into a zero; each
-// account's qualifier is kept, named. `only` is the tab's Account filter. A single account comes back as it was.
+// account's qualifier is kept, named; a gap shared by several accounts is said once. `only` is the tab's Account filter. A single account comes back as it was.
 import type { AccessItem, AccessReport, AccessTile, ScopeValue } from "../api";
 
 export interface MergedTile extends AccessTile {
   /** Of the `of` accounts shown, how many did not have this category's source collected. */
   notCollectedFor: number;
   of: number;
+  /** The distinct coverage statuses of those accounts, in account order (`not_licensed`, `beyond_retention`…). */
+  missingStatuses: string[];
 }
 
 export interface MergedAccess {
@@ -17,9 +19,16 @@ export interface MergedAccess {
   tiles: MergedTile[];
   /** By `accessed` (as an instant), oldest first; equal times keep the report's order. */
   items: AccessItem[];
-  /** Each account's gaps, named by account when the report has several; then what Microsoft never logs, once. */
+  /**
+   * Each gap once, in order: as is when the report has one account; named by its account when one shown account has
+   * it; else with how many accounts have it (`… (all 3 accounts)`, `… (4 accounts: a, b, c +1 more)`). Then what
+   * Microsoft never logs, once.
+   */
   gaps: string[];
 }
+
+/** Accounts named in a shared gap before "+N more". */
+const GAP_NAMES = 3;
 
 export function mergeAccess(report: AccessReport, only: string | null): MergedAccess {
   const accounts = report.accounts.map((a) => a.account);
@@ -54,6 +63,7 @@ export function mergeAccess(report: AccessReport, only: string | null): MergedAc
       none_seen: all.every((t) => t.none_seen),
       notCollectedFor: missing.length,
       of: all.length,
+      missingStatuses: [...new Set(missing.map((t) => t.coverage.status))],
     };
   });
 
@@ -63,9 +73,23 @@ export function mergeAccess(report: AccessReport, only: string | null): MergedAc
     .sort((x, y) => (x.at < y.at ? -1 : x.at > y.at ? 1 : x.n - y.n))
     .map((x) => x.i);
 
-  const own = shown.flatMap((a) => (several ? a.gaps.map((g) => `${a.account}: ${g}`) : a.gaps));
-  const raw = new Set(shown.flatMap((a) => a.gaps));
-  return { accounts, scope, tiles, items, gaps: [...own, ...report.never_logged.filter((g) => !raw.has(g))] };
+  // A gap shared by many accounts (the same collection limit) is said once, not once per account.
+  const holders = new Map<string, string[]>();
+  for (const a of shown) {
+    for (const g of a.gaps) {
+      const who = holders.get(g);
+      if (who) who.push(a.account);
+      else holders.set(g, [a.account]);
+    }
+  }
+  const own = [...holders].map(([g, who]) => {
+    if (!several) return g;
+    if (who.length === 1) return `${who[0]}: ${g}`;
+    if (who.length === shown.length) return `${g} (all ${who.length} accounts)`;
+    const named = who.slice(0, GAP_NAMES).join(", ");
+    return `${g} (${who.length} accounts: ${named}${who.length > GAP_NAMES ? ` +${who.length - GAP_NAMES} more` : ""})`;
+  });
+  return { accounts, scope, tiles, items, gaps: [...own, ...report.never_logged.filter((g) => !holders.has(g))] };
 }
 
 /**

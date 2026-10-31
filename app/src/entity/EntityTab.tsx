@@ -4,7 +4,7 @@
 // the tab does. The coverage strip sits under the tiles and follows the same range.
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  accessReport,
+  accessTiles,
   entityCoverage,
   entityFindings,
   entityPivot,
@@ -47,8 +47,8 @@ function AccessLine({ account }: { account: string }) {
   const key = `${account}\u0000${dataVersion}`;
   useEffect(() => {
     let live = true;
-    accessReport(account, null).then(
-      (r) => live && setLine({ for: key, text: r.accounts[0] ? accessSummary(r.accounts[0]) : "Nothing attributed yet" }),
+    accessTiles(account).then(
+      (tiles) => live && setLine({ for: key, text: accessSummary(tiles) }),
       (e: unknown) => live && setLine({ for: key, text: isCmdError(e) ? e.message : String(e) }),
     );
     return () => {

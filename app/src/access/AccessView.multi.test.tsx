@@ -95,7 +95,7 @@ describe("AccessView across accounts", () => {
     render(<AccessView scope={{ kind: "case" }} />);
     await screen.findByRole("table", { name: "Emails read" });
     await user.selectOptions(screen.getByRole("combobox", { name: "Account" }), B);
-    await user.click(screen.getByRole("button", { name: "Export CSV" }));
+    await user.click(screen.getByRole("button", { name: "Export CSV (all accounts)" }));
     expect((dialogSave.mock.calls[0][0] as { defaultPath: string }).defaultPath).toMatch(new RegExp(`^access-case-${DAY}\\.csv$`));
     // The whole tab, never the filter.
     expect(api.exportAccessCsv).toHaveBeenCalledWith("/out/case.csv", null, null);
@@ -120,6 +120,40 @@ describe("AccessView across accounts", () => {
     render(<AccessView scope={{ kind: "case" }} />);
     expect(await screen.findByRole("listitem", { name: "Emails read" })).toHaveTextContent("not collected for 1 of 2 accounts");
     expect(mailTile()).not.toHaveTextContent("none seen");
+  });
+
+  it.each([
+    ["one_status", ["not_licensed", null], "not licensed for 1 of 2 accounts"],
+    ["mixed_statuses", ["not_licensed", "beyond_retention", null], "no full coverage for 2 of 3 accounts"],
+    ["all_missing_mixed", ["not_licensed", "beyond_retention"], "not licensed or beyond retention"],
+    ["all_missing_alike", ["not_licensed", "not_licensed"], "not licensed"],
+  ] as const)("coverage_wording_%s", async (_name, statuses, want) => {
+    const accts = statuses.map((st, n) =>
+      account({
+        account: `u${n}@contoso.example`,
+        tiles: ORDER.map((c) => tile(c, c === "mail_read" && st ? { none_seen: false, coverage: { status: st, reason: st, remediation: null } } : {})),
+      }),
+    );
+    vi.mocked(api.accessReport).mockResolvedValue(report(accts));
+    render(<AccessView scope={{ kind: "case" }} />);
+    const t = await screen.findByRole("listitem", { name: "Emails read" });
+    expect(t.querySelector(".access-tile-note")).toHaveTextContent(new RegExp(`^${want}$`));
+  });
+
+  it("an_empty_preview_says_so", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.accessReport).mockResolvedValue(report([]));
+    render(<AccessView scope={{ kind: "case" }} />);
+    await screen.findByText("No malicious flags are accepted yet.");
+    await user.click(screen.getByRole("checkbox", { name: "Include pending agent flags" }));
+    expect(await screen.findByText("Nothing found for this preview.")).toBeInTheDocument();
+    expect(screen.queryByText("No malicious flags are accepted yet.")).toBeNull();
+  });
+
+  it("a_merged_tab_says_its_export_is_every_account", async () => {
+    two();
+    render(<AccessView scope={{ kind: "case" }} />);
+    expect(await screen.findByRole("button", { name: "Export CSV (all accounts)" })).toBeInTheDocument();
   });
 
   it("empty_what_if", async () => {

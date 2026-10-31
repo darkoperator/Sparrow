@@ -83,6 +83,7 @@ fn main() {
             cmd::export::commands::export_timeline_csv,
             cmd::export::commands::export_workbook,
             cmd::access::commands::access_report,
+            cmd::access::commands::access_tiles,
             cmd::access::commands::access_accounts,
             cmd::access::commands::export_access_csv,
             cmd::access::commands::export_access_summary,

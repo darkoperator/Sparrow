@@ -17,7 +17,6 @@ import {
   accessReport,
   exportAccessCsv,
   isCmdError,
-  type AccessAccount,
   type AccessCategory,
   type AccessItem,
   type AccessReport,
@@ -53,8 +52,17 @@ function tileNote(t: MergedTile): string {
 }
 
 /** On a merged tile whose accounts disagree: "not collected for 2 of 5 accounts". */
-const partly = (t: MergedTile) =>
-  t.of > 1 && t.notCollectedFor > 0 && t.notCollectedFor < t.of ? `not collected for ${t.notCollectedFor} of ${t.of} accounts` : null;
+/**
+ * On a merged tile whose accounts lack coverage: the status when one explains every gap ("not licensed for 1 of 2
+ * accounts", or just "not licensed" when it is all of them), else "no full coverage for 2 of 3 accounts" or, all of
+ * them, the statuses joined ("not licensed or beyond retention"). The coverage line's title gives each reason.
+ */
+function partly(t: MergedTile): string | null {
+  if (t.of < 2 || t.notCollectedFor === 0) return null;
+  const one = t.missingStatuses.length === 1 ? statusLabel(t.missingStatuses[0]) : null;
+  if (t.notCollectedFor === t.of) return one ?? t.missingStatuses.map(statusLabel).join(" or ");
+  return `${one ?? "no full coverage"} for ${t.notCollectedFor} of ${t.of} accounts`;
+}
 
 function windowsText(ws: { start: string; end: string }[]): string {
   return ws.map((w) => `${isoSeconds(w.start)} to ${isoSeconds(w.end)}`).join(", ");
@@ -190,8 +198,8 @@ const KIND_NAME = { ip: "IP", device: "device" } as const;
  * The account tab's one line, from the reviewed report: the count per category, or its qualifier when exposure has no
  * count (a folder synced as a whole), so such an account never reads as "Nothing attributed yet".
  */
-export function accessSummary(acc: AccessAccount): string {
-  const hits = acc.tiles
+export function accessSummary(tiles: AccessTile[]): string {
+  const hits = tiles
     .filter(exposed)
     .map((t) => (t.direct + t.by_time > 0 ? `${t.direct + t.by_time} ${ACCESS_TITLES[t.category]}` : `${ACCESS_TITLES[t.category]}: ${t.qualifier}`));
   return hits.length > 0 ? hits.join(" · ") : "Nothing attributed yet";
@@ -364,7 +372,9 @@ export default function AccessView({ scope }: { scope: AccessScope }) {
   const several = report.accounts.length > 1;
   const empty = merged.scope.length === 0 && merged.items.length === 0;
   const emptyText =
-    scope.kind === "account"
+    preview && !whatIfTab
+      ? "Nothing found for this preview."
+      : scope.kind === "account"
       ? "No malicious sessions or IPs are flagged for this account."
       : scope.kind === "case"
         ? "No malicious flags are accepted yet."
@@ -393,7 +403,8 @@ export default function AccessView({ scope }: { scope: AccessScope }) {
         )}
         {!empty && (
           <button type="button" className="btn btn-ghost" onClick={() => void exportCsv()}>
-            Export CSV
+            {/* The CSV is the whole tab, whatever the Account filter shows. */}
+            {several ? "Export CSV (all accounts)" : "Export CSV"}
           </button>
         )}
       </header>

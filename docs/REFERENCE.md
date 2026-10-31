@@ -552,8 +552,8 @@ Indicators from a case made before the audit trail get one reviewable `legacy_de
 by `profile`); they open the case read-only. `mark` writes. Times are ISO 8601 UTC (`2026-09-01T10:00:00Z`).
 
 In the app, the Events window's From and To boxes are UTC and inclusive. Type ISO 8601 (`2026-10-23`,
-`2026-10-23T14:30`, `…:36Z`) or US month/day/year (`10/23/2026`, `10/23/2026 14:30`), or pick a date and an optional
-minute with the calendar beside each box. A date alone covers the whole day; a To with minutes and no seconds covers
+`2026-10-23T14:30`, `…:36Z`) or US month/day/year (`10/23/2026`, `10/23/2026 9:05`), or pick a date and an optional
+24-hour `HH:MM` with the calendar beside each box. A date alone covers the whole day; a To with minutes and no seconds covers
 its whole minute (`14:30` runs to `14:30:59.999999Z`). Applying the calendar unchanged leaves the box as it was, so a
 range with seconds (a pivot's, the histogram's) is not rounded.
 

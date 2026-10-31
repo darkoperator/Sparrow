@@ -476,6 +476,8 @@ export interface AccessReport {
  */
 export const accessReport = (account?: string | null, preview?: PreviewArgs | null) =>
   call<AccessReport>("access_report", { account: account ?? null, preview: preview ?? null });
+/** The reviewed report's seven tiles of `account`, without its items (the account tab's summary line). */
+export const accessTiles = (account: string) => call<AccessTile[]>("access_tiles", { account });
 /** The accounts the access report lists. */
 export const accessAccounts = () => call<string[]>("access_accounts");
 /** The access CSV (one row per item) of every account, or of `account`. */

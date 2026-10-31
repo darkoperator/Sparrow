@@ -5193,7 +5193,7 @@ fn entity_coverage_of_an_ip_judges_the_accounts_seen_from_it() {
 // ---- access report ----
 
 use sparrow_app::cmd::access::{
-    access_accounts, access_report, export_access_csv, export_access_summary,
+    access_accounts, access_report, access_tiles, export_access_csv, export_access_summary,
 };
 
 /// The most frequent IP of the findings' evidence, flagged malicious by the analyst: the attacker's address.
@@ -5220,6 +5220,24 @@ fn flag_attacker_ip(state: &AppState) -> String {
         Ok(ip)
     })
     .unwrap()
+}
+
+#[test]
+fn access_tiles_are_the_reviewed_reports_tiles() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, _) = open_seeded(tmp.path());
+    flag_attacker_ip(&state);
+    let account = access_accounts(&state).unwrap()[0].clone();
+    let full = access_report(&state, Some(&account), None).unwrap();
+    assert!(!full.accounts[0].items.is_empty());
+    assert_eq!(
+        access_tiles(&state, &account).unwrap(),
+        full.accounts[0].tiles
+    );
+    // An account with nothing attributed: its seven empty tiles, as the report gives it.
+    let none = access_tiles(&state, "Nobody@Contoso.example").unwrap();
+    assert_eq!(none.len(), 7);
+    assert!(none.iter().all(|t| t.direct + t.by_time == 0));
 }
 
 #[test]
