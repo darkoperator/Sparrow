@@ -112,6 +112,11 @@ pub(crate) struct Cx {
     pub warnings: Vec<String>,
     /// Set when writing to `io.out` failed: the run then cannot report success.
     pub out_failed: bool,
+    /// `--snapshot` / `SPARROW_SNAPSHOT=1`: a read of a case another program holds may take a copy.
+    pub snapshot_allowed: bool,
+    /// The copy this run read (`"snapshot"` in its JSON), and the copies themselves, deleted when the run ends.
+    pub snapshot_json: Option<serde_json::Value>,
+    pub snapshots: Vec<crate::snapshot::Snapshot>,
 }
 
 thread_local! {
@@ -130,6 +135,9 @@ impl Installed {
                 cases,
                 warnings: Vec::new(),
                 out_failed: false,
+                snapshot_allowed: false,
+                snapshot_json: None,
+                snapshots: Vec::new(),
             })
         });
         Installed
@@ -140,6 +148,17 @@ impl Drop for Installed {
     fn drop(&mut self) {
         if let Some(mut cx) = CX.with(|c| c.borrow_mut().take()) {
             let _ = cx.io.out.flush();
+            // A copy of the case that could not be deleted holds case data: say where it is.
+            for snap in std::mem::take(&mut cx.snapshots) {
+                let dir = snap.case.parent().map(std::path::Path::to_path_buf);
+                if let Err(e) = snap.remove() {
+                    let _ = writeln!(
+                        cx.io.err,
+                        "warning: could not delete the snapshot copy in {} ({e}); delete it yourself",
+                        dir.map(|d| d.display().to_string()).unwrap_or_default()
+                    );
+                }
+            }
             let _ = cx.io.err.flush();
         }
     }

@@ -12,6 +12,10 @@ stay pending review; with no analyst name set in the app they are refused (exit 
 `upgrade`, `synth` and `audit verify --acknowledge` are refused (exit 4). A read stops after
 `SPARROW_BRIDGE_TIMEOUT` seconds (default 120). `--no-bridge` opens the file directly (exit 4 while the app holds it).
 
+When the bridge cannot serve (the app is importing, or older, or a sandbox blocks it), a read with `--snapshot` reads a
+private copy of the case instead (stderr says so, `--json` has `snapshot.taken_at`); writes then wait until the
+analyst closes the case or the import ends.
+
 A sandboxed agent needs, once: network access to `localhost` (any port), and read access to the app's
 discovery directory: `~/Library/Application Support/Sparrow` (macOS), `~/.local/share/Sparrow` or
 `$XDG_DATA_HOME/Sparrow` (Linux), `%LOCALAPPDATA%\Sparrow` (Windows). The error names which one is missing.

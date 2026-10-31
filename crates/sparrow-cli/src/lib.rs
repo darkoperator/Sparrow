@@ -31,6 +31,7 @@ pub mod cx;
 pub mod bridge;
 pub mod bridge_client;
 mod cmd;
+mod snapshot;
 
 pub use cx::{CaseSource, CliIo, FileSource, SharedBuf};
 
@@ -55,6 +56,10 @@ struct Cli {
     /// agent bridge); also SPARROW_BRIDGE=off
     #[arg(long, global = true)]
     no_bridge: bool,
+    /// For a read-only command on a case another program holds (the app, when its agent bridge cannot serve): read
+    /// a private copy, deleted afterwards; also SPARROW_SNAPSHOT=1. Writes never use a copy
+    #[arg(long, global = true)]
+    snapshot: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -909,6 +914,12 @@ pub fn inspect(args: &[OsString]) -> Inspected {
 
 fn dispatch(cli: Cli) -> Result<ExitCode> {
     let json = cli.json;
+    let snapshot = cli.snapshot || cx::env_var("SPARROW_SNAPSHOT").is_some_and(|v| v.trim() == "1");
+    cx::with_cx(|cx| {
+        if let Some(cx) = cx {
+            cx.snapshot_allowed = snapshot;
+        }
+    });
     if matches!(
         cli.command,
         Some(
@@ -1043,7 +1054,19 @@ const PENDING_STEP_WARNING: &str = "case has a pending post-migration step; run 
 /// case owes a post-migration step, the warning is printed to stderr (stdout stays clean for piped output) and kept
 /// for the `warnings` key of the JSON output ([`print_json`]).
 pub(crate) fn open_read(path: &Path) -> Result<Case> {
-    let case = cx::cases().read(path)?;
+    let case = match cx::cases().read(path) {
+        Ok(c) => c,
+        Err(e) if writer_busy(&e) => {
+            if !cx::with_cx(|cx| cx.is_some_and(|cx| cx.snapshot_allowed)) {
+                return Err(e.context(
+                    "another program has the case open (the app does, when its agent bridge cannot serve this \
+                     command); pass --snapshot to read a copy",
+                ));
+            }
+            open_snapshot(path)?
+        }
+        Err(e) => return Err(e),
+    };
     if case.pending_post_migration()?.is_some() {
         errln!("warning: {PENDING_STEP_WARNING}");
         add_warning(PENDING_STEP_WARNING);
@@ -1054,6 +1077,42 @@ pub(crate) fn open_read(path: &Path) -> Result<Case> {
 /// `--data` / `--rules`, else `SPARROW_DATA` / `SPARROW_RULES` as this run sees them ([`cx::env_var`]).
 pub(crate) fn data_dirs(data: Option<PathBuf>, rules: Vec<PathBuf>) -> DataDirs {
     DataDirs::with_lookup(data, rules, |k| cx::env_var(k).map(OsString::from))
+}
+
+fn writer_busy(e: &anyhow::Error) -> bool {
+    matches!(
+        e.downcast_ref::<sparrow_core::Error>(),
+        Some(sparrow_core::Error::WriterBusy(_))
+    )
+}
+
+/// A read-only open of a fresh [`snapshot`] of `path`, kept until the run ends and named on stderr and in the JSON.
+fn open_snapshot(path: &Path) -> Result<Case> {
+    let snap = snapshot::take(path)?;
+    let case = Case::open_read_only(&snap.case)?;
+    let taken = snap
+        .taken_at
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    errln!(
+        "note: read a snapshot of {} taken {taken} (another program, such as the app, has it open)",
+        path.display()
+    );
+    cx::with_cx(|cx| {
+        if let Some(cx) = cx {
+            cx.snapshot_json =
+                Some(serde_json::json!({ "case": path.display().to_string(), "taken_at": taken }));
+            cx.snapshots.push(snap);
+        }
+    });
+    Ok(case)
+}
+
+/// The file a command that opens the case file again (`query`, `schema`) must read: the snapshot when the run took
+/// one, else `path`.
+pub(crate) fn file_to_read(case: &Case, path: &Path) -> PathBuf {
+    case.path()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| path.to_path_buf())
 }
 
 /// Keep `w` (once) for the `warnings` key of this run's JSON output.
@@ -1071,15 +1130,23 @@ pub(crate) fn add_warning(w: &str) {
 /// is not an object is wrapped as `{"result": value, "warnings": [...]}`.
 pub(crate) fn with_warnings<T: Serialize>(value: &T) -> Result<serde_json::Value> {
     let mut v = serde_json::to_value(value)?;
-    let warnings = cx::with_cx(|cx| cx.map(|cx| cx.warnings.clone()).unwrap_or_default());
-    if warnings.is_empty() {
+    let (warnings, snapshot) = cx::with_cx(|cx| {
+        cx.map(|cx| (cx.warnings.clone(), cx.snapshot_json.clone()))
+            .unwrap_or_default()
+    });
+    if warnings.is_empty() && snapshot.is_none() {
         return Ok(v);
     }
-    match v.as_object_mut() {
-        Some(o) => {
+    if !v.is_object() {
+        v = serde_json::json!({ "result": v });
+    }
+    if let Some(o) = v.as_object_mut() {
+        if !warnings.is_empty() {
             o.insert("warnings".into(), warnings.into());
         }
-        None => v = serde_json::json!({ "result": v, "warnings": warnings }),
+        if let Some(s) = snapshot {
+            o.insert("snapshot".into(), s);
+        }
     }
     Ok(v)
 }
@@ -1777,10 +1844,11 @@ fn cmd_schema(case_path: &Path, table: Option<&str>, json: bool) -> Result<ExitC
     // A shared view (the app's agent bridge) is read on its own locked connection: attaching the file again in this
     // process would open a second instance of a database the process already holds.
     let case = open_read(case_path)?;
+    let file = file_to_read(&case, case_path);
     let view = case.is_shared_view().then_some(case);
     let schema = |table: Option<&str>| match &view {
         Some(c) => sparrow_core::case::query::schema_on(c, table),
-        None => sparrow_core::case::query::schema(case_path, table),
+        None => sparrow_core::case::query::schema(&file, table),
     };
     let out = SchemaOutput {
         tables: schema(table)?,

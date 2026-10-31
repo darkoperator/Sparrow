@@ -599,8 +599,9 @@ pub fn query(case: &Path, sql: &str, limit: usize, json: bool) -> Result<ExitCod
     let r = if c.is_shared_view() {
         query::run_on(&c, sql, limit, 0)?
     } else {
+        let file = crate::file_to_read(&c, case);
         drop(c);
-        query::run(case, sql, limit)?
+        query::run(&file, sql, limit)?
     };
     if json {
         print_json(&r)?;

@@ -398,7 +398,20 @@ sparrow export timeline --format csv [--scope verified|all --from T --to T --use
 sparrow export workbook --format xlsx --out FILE --case case.duckdb
 ```
 
-Add `--json` to any command for machine-readable output. Exit codes:
+Add `--json` to any command for machine-readable output. Two more options work on every command: `--no-bridge`
+(never send the command to the app, see [Agent bridge](#agent-bridge)) and `--snapshot`.
+
+**`--snapshot`** (or `SPARROW_SNAPSHOT=1`) lets a read-only command read a case another program holds (the review
+app, when its agent bridge cannot serve: it is importing, an older build, or not answering). Without it such a read
+exits 4 and the message names the option. With it the CLI copies the case (its WAL first, then the database), checks
+that neither file changed during the copy (else it copies again, three times at most, then exits 4), opens the copy
+read-only, runs the command and deletes the copy. The copy goes in a hidden `.sparrow-snapshot-<pid>/` beside the case
+(the same volume), else in the system temp directory, and is refused when it would leave less than 10% of that volume
+free. The output says so: a stderr line `note: read a snapshot of <case> taken <time> ...` and, with `--json`,
+`"snapshot": {"case": …, "taken_at": …}`. Writes never use a copy: with the case held they still exit 4. A free
+case is read directly, as without the option.
+
+Exit codes:
 
 | Code | Meaning |
 | ---: | --- |
@@ -406,7 +419,7 @@ Add `--json` to any command for machine-readable output. Exit codes:
 | 1 | any other error, including a refused `query` (not a single SELECT, or one that tries to write or reach outside the case) and a bad option |
 | 2 | `ingest` completed but a file failed, a record could not be parsed, or a file's record counts did not reconcile; `verify`: a record no longer matches its source; `finding show` with several ids: one or more ids were not found (the others are shown, the unknown ones listed); `synth coverage` / `conformance`: a gap |
 | 3 | the audit chain is broken (`audit verify`, and any write refused because of it) |
-| 4 | the case is open by another writer (a write, and also a read or `audit verify` while a writer holds the case) |
+| 4 | the case is open by another writer (a write, and also a read or `audit verify` while a writer holds the case: `--snapshot` reads a copy instead); through the app's agent bridge: refused (a heavy command, another version), busy, or stopped by a close |
 | 5 | an invalid agent decision (a bad status, verdict, phase or time, a missing reason, an unknown object, an evidence reference not in the case, text over its cap: 16 KiB for notes, narratives, reasons and comments, 500 characters for titles) or an `export --out` that would overwrite the case; nothing was written |
 | 6 | `ingest` completed and the only records not loaded are ones the collector lost: it wrote placeholder or error rows instead of data (their `parse_errors` start `collector lost the record: `). Any file, parse or reconciliation problem makes it 2 instead. The plain line of such a file says `N records rejected (M lost by the collector)`, or `M records lost by the collector` when all are; `--json` has `records_error` and `records_collector_lost` per file |
 
@@ -516,6 +529,7 @@ Indicators from a case made before the audit trail get one reviewable `legacy_de
 | `SPARROW_MEMORY_LIMIT` | every command that opens a case, and the app | DuckDB's `memory_limit` on every instance Sparrow opens on a case (the writer, read-only opens, the detection rule instance, the locked `query` instance). Unset: 4 GB, or DuckDB's own 80% of RAM when that is smaller. A size (`2GB`, `8GiB`, ...) sets it; `default` keeps DuckDB's own. Anything else fails the open (exit 1). Above the limit DuckDB spills to disk (beside the case file, or a private directory under the system temp directory for the in-memory rule and query instances, removed when they close). Uncapped, DuckDB's cache grows toward 80% of RAM: `detect` on a 3.47M-event case peaked at 17 GB, 6.2 GB capped; the ingest's checkpoint threshold follows the limit (`memory_limit` / 8: 500 MB) |
 | `SPARROW_BRIDGE` | every command that opens a case | `off`: never use the app's [agent bridge](#agent-bridge) (as `--no-bridge`) |
 | `SPARROW_BRIDGE_DIR` | the CLI and the app (macOS, Linux) | Directory of the bridge's discovery file instead of `Sparrow/` in the per-user local data directory |
+| `SPARROW_SNAPSHOT` | read-only commands | `1`: as `--snapshot` |
 | `SPARROW_BRIDGE_TIMEOUT` | reads through the bridge | Seconds a read may run in the app before it is stopped (default 120, at most 86400) |
 | `SPARROW_INGEST_PROFILE` | ingest | `1`: print stage spans and per-file timings to stderr (off by default; the output on stdout is unchanged) |
 

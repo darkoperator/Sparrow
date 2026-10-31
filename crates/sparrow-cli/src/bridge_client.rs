@@ -27,6 +27,7 @@ pub fn route(
         return None;
     }
     let seen = inspect(args);
+    let wants_snapshot = snapshot_requested(args);
     if !matches!(seen.kind, Kind::Read | Kind::Write(_)) {
         return None;
     }
@@ -71,11 +72,29 @@ pub fn route(
         Ok(code) => Some(code),
         // Without a process check (Windows), a refused connection is a dead app: the file is free to open here.
         Err(e) if !cfg!(unix) && e.kind() == std::io::ErrorKind::ConnectionRefused => None,
+        // A read that asked for a snapshot reads a copy here instead.
+        Err(e) if seen.kind == Kind::Read && wants_snapshot => {
+            let _ = writeln!(
+                err,
+                "note: the app's agent bridge did not answer on 127.0.0.1:{} ({e}); reading a snapshot instead",
+                d.port
+            );
+            None
+        }
         Err(e) => {
             let _ = writeln!(err, "error: {}", unreachable(&d, &e, &seen.kind));
             Some(4)
         }
     }
+}
+
+/// `--snapshot` on the command line, or `SPARROW_SNAPSHOT=1`.
+fn snapshot_requested(args: &[OsString]) -> bool {
+    args.iter()
+        .skip(1)
+        .take_while(|a| *a != "--")
+        .any(|a| a == "--snapshot")
+        || std::env::var("SPARROW_SNAPSHOT").is_ok_and(|v| v.trim() == "1")
 }
 
 /// Why the bridge could not serve, and what to do.

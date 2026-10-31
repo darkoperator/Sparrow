@@ -209,3 +209,27 @@ fn an_app_that_does_not_answer_is_explained() {
     assert!(err.contains("--snapshot"), "{err}");
     assert!(err.contains("localhost"), "{err}");
 }
+
+#[test]
+fn an_unreachable_app_falls_back_to_the_snapshot_when_asked() {
+    let (_tmp, case, dir) = setup();
+    let port = TcpListener::bind(("127.0.0.1", 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    write_discovery(&dir, &discovery(&case, port, std::process::id(), VERSION)).unwrap();
+    let (code, out, err) = sparrow(
+        &dir,
+        &[
+            "events",
+            "--case",
+            case.to_str().unwrap(),
+            "--snapshot",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("did not answer"), "{err}");
+    assert!(out.contains("\"rows\""), "{out}");
+}
