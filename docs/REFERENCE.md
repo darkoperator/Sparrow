@@ -412,9 +412,14 @@ durations on stderr (`timing  <phase>  <seconds> s`) and `"timings": [{"phase", 
 app, when its agent bridge cannot serve: it is importing, an older build, or not answering). Without it such a read
 exits 4 and the message names the option. With it the CLI copies the case (its WAL first, then the database), checks
 that neither file changed during the copy (else it copies again, three times at most, then exits 4), opens the copy
-read-only, runs the command and deletes the copy. The copy goes in a hidden `.sparrow-snapshot-<pid>/` beside the case
-(the same volume), else in the system temp directory, and is refused when it would leave less than 10% of that volume
-free. The output says so: a stderr line `note: read a snapshot of <case> taken <time> ...` and, with `--json`,
+read-only, runs the command and deletes the copy. The copy goes in a hidden `.sparrow-snapshot-<pid>-<random>/` beside
+the case (the same volume), else in the system temp directory, and is refused when it would leave less than 10% of that
+volume free. A run stopped before it could delete its copy (Ctrl-C, a kill) leaves it behind. The next `--snapshot` run
+of the same case removes such a directory only when its marker file (`.sparrow-snapshot.json`, written first) names
+this case and a process that has ended, you own it, and it holds nothing but the copy; it says so on stderr
+(`note: removed <dir>, ...`). A directory beside the case that may be a leftover but is not proven one is never deleted:
+a `warning: <dir> may be a snapshot copy left by an interrupted run; not removed (<why>)` line asks you to check it.
+On Windows nothing is removed automatically. The output says so: a stderr line `note: read a snapshot of <case> taken <time> ...` and, with `--json`,
 `"snapshot": {"case": …, "taken_at": …}`. Writes never use a copy: with the case held they still exit 4. A free
 case is read directly, as without the option.
 

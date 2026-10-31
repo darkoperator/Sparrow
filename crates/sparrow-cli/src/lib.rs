@@ -1106,6 +1106,19 @@ fn writer_busy(e: &anyhow::Error) -> bool {
 /// A read-only open of a fresh [`snapshot`] of `path`, kept until the run ends and named on stderr and in the JSON.
 fn open_snapshot(path: &Path) -> Result<Case> {
     let snap = snapshot::take(path)?;
+    for d in &snap.swept {
+        errln!(
+            "note: removed {}, a snapshot copy left by a run that was interrupted",
+            d.display()
+        );
+    }
+    for (d, why) in &snap.left {
+        errln!(
+            "warning: {} may be a snapshot copy left by an interrupted run; not removed ({why}): check it and delete it \
+             by hand",
+            d.display()
+        );
+    }
     let case = Case::open_read_only(&snap.case)?;
     let taken = snap
         .taken_at

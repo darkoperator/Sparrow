@@ -146,7 +146,7 @@ fn discovery(dir: &Path, err: &mut dyn Write) -> Option<Discovery> {
 
 /// Whether process `pid` still runs (a discovery file left by an app that crashed names a dead one).
 #[cfg(unix)]
-fn pid_alive(pid: u32) -> bool {
+pub(crate) fn pid_alive(pid: u32) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else {
         return false;
     };
@@ -158,6 +158,6 @@ fn pid_alive(pid: u32) -> bool {
 
 /// On Windows the connection attempt decides: a dead app's port refuses it.
 #[cfg(not(unix))]
-fn pid_alive(_pid: u32) -> bool {
+pub(crate) fn pid_alive(_pid: u32) -> bool {
     true
 }

@@ -21,6 +21,20 @@ pub(crate) struct Snapshot {
     dir: Option<tempfile::TempDir>,
     pub case: PathBuf,
     pub taken_at: DateTime<Utc>,
+    /// Copies left by runs that ended without cleaning up (Ctrl-C, a kill), removed before this one was taken.
+    pub swept: Vec<PathBuf>,
+    /// Snapshot directories beside the case that may be such copies but were not removed, with why.
+    pub left: Vec<(PathBuf, String)>,
+}
+
+/// The file each snapshot directory holds from the start, naming the process and the case it copies: what proves a
+/// leftover directory is a copy of this case before it is removed.
+const MARKER: &str = ".sparrow-snapshot.json";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Marker {
+    pid: u64,
+    source: PathBuf,
 }
 
 impl Snapshot {
@@ -113,15 +127,24 @@ pub(crate) fn take_with(
     let wal = wal_of(&case);
     let size =
         std::fs::metadata(&case)?.len() + std::fs::metadata(&wal).map(|m| m.len()).unwrap_or(0);
-    let dir = private_dir(&case, size)?;
     let name = case
         .file_name()
         .map(PathBuf::from)
         .unwrap_or_else(|| "case.duckdb".into());
+    let (swept, left) = sweep(&case, &parents(&case), &name);
+    let dir = private_dir(&case, size)?;
+    let marker = Marker {
+        pid: std::process::id().into(),
+        source: case.clone(),
+    };
+    std::fs::write(dir.path().join(MARKER), serde_json::to_vec(&marker)?)
+        .with_context(|| format!("writing {}", dir.path().display()))?;
     let mut snap = Snapshot {
         case: dir.path().join(&name),
         dir: Some(dir),
         taken_at: Utc::now(),
+        swept,
+        left,
     };
     let copy_wal = wal_of(&snap.case);
     for _ in 0..ATTEMPTS {
@@ -150,16 +173,114 @@ pub(crate) fn take_with(
     .into())
 }
 
+/// Where copies of `case` go, in order: beside the case, else the system temp directory.
+fn parents(case: &Path) -> Vec<PathBuf> {
+    case.parent()
+        .map(Path::to_path_buf)
+        .into_iter()
+        .chain([std::env::temp_dir()])
+        .collect()
+}
+
+/// Remove the copies of `case` that runs which ended without cleaning up (Ctrl-C, a kill) left in `parents`. A
+/// `.sparrow-snapshot-<pid>-<random>` directory is removed only when its marker names `case` and that pid, the pid is a
+/// valid process id of a process that has ended, this user owns it and it holds nothing but the marker and a copy of
+/// `name` (and its WAL). A run still going and another case's copy are left alone silently; anything else that may be
+/// a leftover beside the case is left and reported, never guessed at. Returns (removed, left with why).
+fn sweep(case: &Path, parents: &[PathBuf], name: &Path) -> (Vec<PathBuf>, Vec<(PathBuf, String)>) {
+    let (mut removed, mut left) = (Vec::new(), Vec::new());
+    for (n, parent) in parents.iter().enumerate() {
+        let beside_the_case = n == 0;
+        let Ok(entries) = std::fs::read_dir(parent) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let Some(pid) = e
+                .file_name()
+                .to_str()
+                .and_then(|n| n.strip_prefix(".sparrow-snapshot-"))
+                .and_then(|rest| rest.split_once('-'))
+                .filter(|(pid, random)| {
+                    !random.is_empty() && pid.bytes().all(|b| b.is_ascii_digit())
+                })
+                .and_then(|(pid, _)| pid.parse::<u64>().ok())
+            else {
+                continue;
+            };
+            let valid = u32::try_from(pid)
+                .ok()
+                .filter(|p| *p > 0 && i32::try_from(*p).is_ok());
+            if valid.is_some_and(|p| p == std::process::id() || crate::bridge_client::pid_alive(p))
+            {
+                continue;
+            }
+            let path = e.path();
+            let marker = std::fs::read(path.join(MARKER))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Marker>(&b).ok());
+            if marker.as_ref().is_some_and(|m| m.source != case) {
+                continue;
+            }
+            match leftover_copy(&e, marker.as_ref(), pid, valid.is_some(), name) {
+                Ok(()) => match std::fs::remove_dir_all(&path) {
+                    Ok(()) => removed.push(path),
+                    Err(err) => left.push((path, format!("could not be removed: {err}"))),
+                },
+                Err(why) if beside_the_case => left.push((path, why)),
+                Err(_) => {}
+            }
+        }
+    }
+    (removed, left)
+}
+
+/// Whether `e` is provably a leftover copy (see [`sweep`]); else why not.
+fn leftover_copy(
+    e: &std::fs::DirEntry,
+    marker: Option<&Marker>,
+    pid: u64,
+    valid_pid: bool,
+    name: &Path,
+) -> std::result::Result<(), String> {
+    if marker.is_none_or(|m| m.pid != pid) {
+        return Err("it has no snapshot marker for this case".into());
+    }
+    if !valid_pid {
+        return Err(format!("{pid} is not a valid process id"));
+    }
+    if !e.file_type().is_ok_and(|t| t.is_dir()) {
+        return Err("it is not a directory".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let me = unsafe { libc::geteuid() };
+        if e.metadata().map_err(|err| err.to_string())?.uid() != me {
+            return Err("another user owns it".into());
+        }
+    }
+    let wal = wal_of(name);
+    let files = std::fs::read_dir(e.path()).map_err(|err| format!("could not be read: {err}"))?;
+    for f in files {
+        let f = f.map_err(|err| format!("could not be read: {err}"))?;
+        let n = PathBuf::from(f.file_name());
+        let expected = n == name || n == wal || n == Path::new(MARKER);
+        if !expected || !f.file_type().is_ok_and(|t| t.is_file()) {
+            return Err(format!(
+                "it holds {}, which is not part of a copy",
+                n.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// A new private directory (unique name, created atomically) for a copy of `size` bytes: beside the case, else in the
 /// system temp directory.
 fn private_dir(case: &Path, size: u64) -> Result<tempfile::TempDir> {
     let mut tried = Vec::new();
-    for parent in case
-        .parent()
-        .map(Path::to_path_buf)
-        .into_iter()
-        .chain([std::env::temp_dir()])
-    {
+    for parent in parents(case) {
         let dir = match tempfile::Builder::new()
             .prefix(&format!(".sparrow-snapshot-{}-", std::process::id()))
             .tempdir_in(&parent)
@@ -260,6 +381,111 @@ mod tests {
             e.to_string().contains("changed while it was being copied"),
             "{e:#}"
         );
+    }
+
+    /// The pid of a process that has ended.
+    #[cfg(unix)]
+    fn dead_pid() -> u32 {
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        pid
+    }
+
+    /// A copy left beside `case` by process `pid`, holding `files` and, when `marked_for` is given, the marker a
+    /// snapshot writes (naming that case and `pid`).
+    fn leftover(case: &Path, pid: u64, marked_for: Option<&Path>, files: &[&str]) -> PathBuf {
+        let dir = case
+            .parent()
+            .unwrap()
+            .join(format!(".sparrow-snapshot-{pid}-abc123"));
+        std::fs::create_dir(&dir).unwrap();
+        for f in files {
+            std::fs::write(dir.join(f), b"copy").unwrap();
+        }
+        if let Some(source) = marked_for {
+            let m =
+                serde_json::json!({ "pid": pid, "source": std::fs::canonicalize(source).unwrap() });
+            std::fs::write(dir.join(MARKER), m.to_string()).unwrap();
+        }
+        dir
+    }
+
+    fn canon(dir: &Path) -> PathBuf {
+        std::fs::canonicalize(dir.parent().unwrap())
+            .unwrap()
+            .join(dir.file_name().unwrap())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_left_by_an_ended_run_is_removed_and_named() {
+        let (_tmp, case) = files();
+        let old = leftover(
+            &case,
+            dead_pid().into(),
+            Some(&case),
+            &["case.duckdb", "case.duckdb.wal"],
+        );
+        let want = canon(&old);
+        let snap = take(&case).unwrap();
+        assert!(!old.exists(), "the interrupted run's copy is gone");
+        assert_eq!(snap.swept, vec![want]);
+        assert!(snap.left.is_empty(), "{:?}", snap.left);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_running_run_or_another_cases_copy_is_kept_silently() {
+        let (tmp, case) = files();
+        let other = tmp.path().join("elsewhere");
+        std::fs::create_dir(&other).unwrap();
+        let other_case = other.join("case.duckdb");
+        std::fs::write(&other_case, b"x").unwrap();
+        let live = leftover(
+            &case,
+            std::process::id().into(),
+            Some(&case),
+            &["case.duckdb"],
+        );
+        let theirs = leftover(
+            &case,
+            dead_pid().into(),
+            Some(&other_case),
+            &["case.duckdb"],
+        );
+        let snap = take(&case).unwrap();
+        assert!(live.exists() && theirs.exists());
+        assert!(
+            snap.swept.is_empty() && snap.left.is_empty(),
+            "{:?}",
+            snap.left
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unproven_leftover_is_reported_not_deleted() {
+        let (_tmp, case) = files();
+        // No marker; a marker but a file that is not part of a copy; a marker whose pid is not a valid process id.
+        let unmarked = leftover(&case, dead_pid().into(), None, &["case.duckdb"]);
+        let extra = leftover(
+            &case,
+            u64::from(dead_pid()) + 1_000_000,
+            Some(&case),
+            &["case.duckdb", "notes.txt"],
+        );
+        let bad_pid = leftover(&case, 2_147_483_648, Some(&case), &["case.duckdb"]);
+        let snap = take(&case).unwrap();
+        for d in [&unmarked, &extra, &bad_pid] {
+            assert!(d.exists(), "{} kept", d.display());
+        }
+        assert!(snap.swept.is_empty());
+        let mut reported: Vec<_> = snap.left.iter().map(|(d, _)| d.clone()).collect();
+        reported.sort();
+        let mut want = vec![canon(&unmarked), canon(&extra), canon(&bad_pid)];
+        want.sort();
+        assert_eq!(reported, want);
     }
 
     #[test]
