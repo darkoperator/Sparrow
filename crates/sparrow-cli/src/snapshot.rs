@@ -261,12 +261,34 @@ fn leftover_copy(
         }
     }
     let wal = wal_of(name);
+    // DuckDB's spill folder for a large query on the copy: `<db>.tmp/`, holding only its temporary files.
+    let mut spill = name.as_os_str().to_owned();
+    spill.push(".tmp");
+    let only_files = |dir: &Path| -> std::result::Result<(), String> {
+        for f in std::fs::read_dir(dir).map_err(|err| format!("could not be read: {err}"))? {
+            let f = f.map_err(|err| format!("could not be read: {err}"))?;
+            if !f.file_type().is_ok_and(|t| t.is_file()) {
+                return Err(format!(
+                    "it holds {}, which is not part of a copy",
+                    f.path().display()
+                ));
+            }
+        }
+        Ok(())
+    };
     let files = std::fs::read_dir(e.path()).map_err(|err| format!("could not be read: {err}"))?;
     for f in files {
         let f = f.map_err(|err| format!("could not be read: {err}"))?;
         let n = PathBuf::from(f.file_name());
+        let kind = f
+            .file_type()
+            .map_err(|err| format!("could not be read: {err}"))?;
+        if n.as_os_str() == spill && kind.is_dir() {
+            only_files(&f.path())?;
+            continue;
+        }
         let expected = n == name || n == wal || n == Path::new(MARKER);
-        if !expected || !f.file_type().is_ok_and(|t| t.is_file()) {
+        if !expected || !kind.is_file() {
             return Err(format!(
                 "it holds {}, which is not part of a copy",
                 n.display()
@@ -432,6 +454,35 @@ mod tests {
         assert!(!old.exists(), "the interrupted run's copy is gone");
         assert_eq!(snap.swept, vec![want]);
         assert!(snap.left.is_empty(), "{:?}", snap.left);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_that_spilled_to_disk_is_removed_too() {
+        // DuckDB spills a large query into `<db>.tmp/` beside the database: here, inside the copy's directory.
+        let (_tmp, case) = files();
+        let old = leftover(&case, dead_pid().into(), Some(&case), &["case.duckdb"]);
+        std::fs::create_dir(old.join("case.duckdb.tmp")).unwrap();
+        std::fs::write(
+            old.join("case.duckdb.tmp")
+                .join("duckdb_temp_storage-0.tmp"),
+            b"spill",
+        )
+        .unwrap();
+        let other = leftover(
+            &case,
+            u64::from(dead_pid()) + 2_000_000,
+            Some(&case),
+            &["case.duckdb"],
+        );
+        std::fs::create_dir_all(other.join("case.duckdb.tmp").join("nested")).unwrap();
+        let snap = take(&case).unwrap();
+        assert!(!old.exists(), "the spilled copy is gone");
+        assert!(
+            other.exists(),
+            "a spill folder holding anything but files is not proof"
+        );
+        assert_eq!(snap.left.len(), 1, "{:?}", snap.left);
     }
 
     #[cfg(unix)]

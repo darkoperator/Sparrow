@@ -75,8 +75,9 @@ pub fn route(
         Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
             let _ = writeln!(
                 err,
-                "note: the app's agent bridge on 127.0.0.1:{} refused the connection ({e}); running here instead (an \
-                 agent in a sandbox that blocks localhost sees this too: see the sparrow-triage skill)",
+                "note: the app's agent bridge on 127.0.0.1:{} refused the connection ({e}); running here instead (the \
+                 app may be importing; an agent in a sandbox that blocks localhost sees this too: see the \
+                 sparrow-triage skill)",
                 d.port
             );
             None

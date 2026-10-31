@@ -632,6 +632,9 @@ impl Worker {
                 }
             }
         };
+        // From here, with the lock held, a stop waits for this write: an import that claims the case now (without the
+        // lock) must let it answer, refused or done (cleared once the answer is sent).
+        shared.writing.store(true, Ordering::SeqCst);
         if state.importing.load(Ordering::SeqCst) || state.ticket() != self.ticket {
             refuse(&mut job.stream, CLOSED, 4);
             return None;
@@ -686,8 +689,6 @@ impl Worker {
             write_ok: true,
             reading: None,
         });
-        // From here the write runs to the end and answers; a stop waits for it (cleared once the answer is sent).
-        shared.writing.store(true, Ordering::SeqCst);
         // A command that panics must not take the worker down with the app's case lock held.
         let code = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             sparrow_cli::run(args, io, source)
