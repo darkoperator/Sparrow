@@ -13,7 +13,8 @@ Triage an M365 BEC with `sparrow`. FEWER COMMANDS is the goal: every call re-sen
 command takes `--case case.duckdb` and `--json` (always use `--json`). One command per call: no `for` loops, no
 `$(...)`, no `jq` pipes, no `;` chains. A typical case needs 10-20 commands; **if you are past 25, stop exploring
 and answer with what the evidence shows.** What counts as a compromise and when to dig deeper is in the
-`bec-triage` skill.
+`bec-triage` skill. If the analyst has the case open in the app, the same commands run through it (no copy); if one
+still exits 4 "open by another writer", add `--snapshot` to a read.
 
 ## Fast path
 
@@ -24,44 +25,40 @@ sparrow capabilities --case case.duckdb --json
 sparrow summary --case case.duckdb --json
 ```
 
-2. **Accounts first.** One row per account with a finding, worst first: `stages` (what the findings show together),
-   `first_suspicious`, `addresses` with their `reasons`. An address with `acts_without_signin` is one the account
-   acts from, within the span of its collected sign-ins, but never signs in from (for example only in mail-read records):
-   an attacker candidate to REPORT. An account with null `signins_first`/`signins_last` has no collected sign-ins, so the
-   absence of this reason there is not evidence.
+2. **Accounts first.** One row per account with a finding, worst first: `stages`, `first_suspicious`, `addresses`
+   with their `reasons`. An address with `acts_without_signin` is one the account acts from, within the span of its
+   collected sign-ins, but never signs in from (e.g. only in mail-read records): an attacker candidate to REPORT. With
+   null `signins_first`/`signins_last` the account has no collected sign-ins: the reason's absence is not evidence.
 
 ```bash
 sparrow accounts --case case.duckdb --json
+sparrow investigate --case case.duckdb --user <UPN> --on <YYYY-MM-DD> --pad 12h --json
 ```
 
-   An empty list WITH a warning is not "no suspicious accounts": read the warning's reason (never computed, stale
-   or failed). If it says to, run `sparrow detect --case case.duckdb` once and call `accounts` again; if the warning
-   remains, report the roll-up and facts as unavailable and work from `finding list` instead.
+   Given an account and the customer's date, `investigate` is one call: its sessions (new addresses, what each reached),
+   the mail from the day before (the lure), config changes, findings' times. Widen or move the window as needed.
 
-   Before you clear an account because no event was found, check what evidence covers it:
+   An empty list WITH a warning is not "no suspicious accounts": read its reason. If it says to, run `sparrow detect
+   --case case.duckdb` once and call `accounts` again; if it remains, report the roll-up and facts as unavailable and
+   work from `finding list` instead.
 
-```bash
-sparrow coverage --case case.duckdb --json
-```
+   Before you clear an account because no event was found, `sparrow coverage --case case.duckdb --json`: a source
+   with `gaps` (`absent`, `before`, `after`, `sampled` = a capped export) proves nothing about those dates; `requests`
+   says what to collect next, per collector (`null` = that collector has no command for it).
 
-   A source with `gaps` (`absent`, `before`, `after`, or `sampled` for a capped export) proves nothing about those
-   dates; `requests` says what to collect next, per collector (`null` = that collector has no command for it).
-
-3. **Findings of the accounts you will name or clear.** `accounts` includes accounts whose findings are all low, so
-   take an UNFILTERED list (the ids of every account), then read the ones you need with `finding show`, several ids
-   per call, at most 50 ids per call (more than 50: batches of 50):
+3. **Findings of the accounts you will name or clear.** Take an UNFILTERED list (`accounts` includes all-low ones), then
+   read the ones you need with `finding show`, several ids per call, at most 50 per call (more: batches of 50):
 
 ```bash
 sparrow finding list --case case.duckdb --json
 sparrow finding show --case case.duckdb <ID1> <ID2> <ID3> --json
 ```
 
-4. **Read `facts`** on persistence, consent and MFA findings. `actor_ips[].user_signin_days_before`: the days the
-   account signed in from that address earlier IN THE CAPTURE (it starts at `window_start`): 0 = none, null = cannot be
-   compared, unknown, never zero.
-   `other_signals`: its other findings. `targets`: every forwarding target with `scope` internal or external and
-   `prior_messages` (null = unknown). Facts are counter-evidence, never verdicts: decide with the `bec-triage` table.
-   `facts_unavailable` means run `sparrow detect`. `analyst_guidance` names the known false positives.
+4. **Read `facts`** on persistence, consent and MFA findings. `actor_ips[].user_signin_days_before`: days the account
+   signed in from that address earlier IN THE CAPTURE (from `window_start`): 0 = none, null = unknown, never zero.
+   `other_signals`: its other findings. `targets`: every forwarding target, `scope` internal or external,
+   `prior_messages` (null = unknown). Facts are counter-evidence, never verdicts (decide with the `bec-triage` table);
+   `facts_unavailable` means run `sparrow detect`; `analyst_guidance` names the known false positives.
 5. **`pivot user` only when the evidence is mixed** (one call; `pivot ip` for an address shared by accounts):
 
 ```bash
@@ -69,8 +66,7 @@ sparrow pivot user <UPN> --case case.duckdb --json
 sparrow pivot ip <IP> --case case.duckdb --json
 ```
 
-   `sparrow events` / `entity` list an entity's rows; `sparrow mark` flags or tags them (commands.md, "Events, entities, marks").
-
+   `events` / `entity` list an entity's rows; `mark` flags or tags them (commands.md, "Events, entities, marks").
 6. **SQL only for what no finding shows.** Look up columns first; never `SELECT *` to discover them:
 
 ```bash
@@ -78,23 +74,28 @@ sparrow schema --case case.duckdb --table inbox_rules --json
 sparrow query --case case.duckdb --json --limit 100 "SELECT mailbox, name, forward_to, redirect_to, delete_message, mark_as_read, move_to_folder FROM inbox_rules WHERE forward_to IS NOT NULL OR redirect_to IS NOT NULL OR delete_message OR mark_as_read ORDER BY mailbox, name"
 ```
 
-7. **Write the answer** in the format asked. List EVERY forwarding target of an attacker rule, internal ones too
-   (an attacker may forward to a colleague as well), and every attacker address, including the
-   `acts_without_signin` ones. Say what you cleared, one line each, and what you could not check.
+7. **What the attacker got**: flag its sessions or IPs (`mark flag`), then the compact access report. Read `preview`
+   and each `basis`: pending or adhoc parts are not the reviewed answer; say so when you quote them.
+
+```bash
+sparrow access --case case.duckdb --account <UPN> --brief --include-pending --json
+sparrow mark list --case case.duckdb --pending --agent <YOUR_AGENT_ID> --json
+```
+
+8. **Write the answer** in the format asked. List EVERY forwarding target of an attacker rule, internal ones too,
+   and every attacker address, including the `acts_without_signin` ones. Say what you cleared, one line each, what you
+   could not check, and (from `mark list --pending`) which of your marks the analyst should review.
 
 ## Column cheat-sheet (real names; `sparrow schema --table T --json` is the authority)
 
-- **signins**: event_time, user_upn, app_id, app_name, ip, asn, user_agent, client_app, status, error_code (0 =
-  success, 50126 = invalid password), risk_level_during, risk_state, auth_requirement, session_id, is_interactive,
-  location (struct), device (struct).
+- **signins**: event_time, user_upn, app_id, app_name, ip, asn, user_agent, client_app, status, error_code (0 = success,
+  50126 = invalid password), risk_level_during, risk_state, auth_requirement, session_id, is_interactive, location, device.
 - **ual_events**: event_time, operation (New-InboxRule, UpdateInboxRules, MailItemsAccessed, Consent to
   application., ...), user_upn, mailbox_upn, client_ip, user_agent, session_id, app_id, object_id, result_status,
   parameters (map, e.g. `parameters['ForwardTo']`).
 - **inbox_rules**: mailbox, name, enabled, forward_to[], redirect_to[], forward_as_attachment_to[], delete_message,
-  mark_as_read, move_to_folder, subject_or_body_contains[], from_addresses[]. The state has no creator or time: use
-  `ual_events` for those.
-- **mailboxes**: upn, primary_smtp_address, forwarding_smtp_address, forwarding_address, deliver_and_forward.
-  (`forward_to` is NOT here: it is in `inbox_rules`.)
+  mark_as_read, move_to_folder, subject_or_body_contains[], from_addresses[]; no creator or time (see `ual_events`).
+- **mailboxes**: upn, primary_smtp_address, forwarding_smtp_address, forwarding_address, deliver_and_forward (no `forward_to`).
 - **oauth_grants**: client_id, client_name, permission, consent_type, principal_upn, principal_name, publisher,
   verified_publisher, risk_category, created. (NOT `app_id` / `app_name`.)
 
@@ -106,5 +107,4 @@ text: `WHERE ip = '203.0.113.7'`. Times are UTC. Other tables: [references/table
 - [references/commands.md](references/commands.md): question to exact command, output shapes and ready SQL
   (persistence sweep, one user, one address, sessions, spray, connectors); the app's agent bridge (case open in the app).
 - [references/tables.md](references/tables.md): the key tables and their columns.
-- [references/notes.md](references/notes.md): reading `capabilities` and `summary`, traps, source verification,
-  recording decisions.
+- [references/notes.md](references/notes.md): `capabilities`, `summary`, traps, verification, decisions.
