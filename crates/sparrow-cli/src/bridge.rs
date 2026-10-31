@@ -189,8 +189,12 @@ pub fn read_frame(r: &mut dyn Read) -> io::Result<Option<(u8, Vec<u8>)>> {
     Ok(Some((head[0], bytes)))
 }
 
-/// A `Write` that sends everything written to it as frames of one kind. After one failed send every later write
-/// fails at once (a CLI that went away, or stopped reading until the send timed out, is not waited for again).
+/// The most a `FrameWriter` puts in one frame, far below `MAX_FRAME`: a large output goes as several frames.
+pub const FRAME_CHUNK: usize = 1 << 20;
+
+/// A `Write` that sends everything written to it as frames of one kind, at most `FRAME_CHUNK` bytes each. After one
+/// failed send every later write fails at once (a CLI that went away, or stopped reading until the send timed out, is
+/// not waited for again).
 pub struct FrameWriter<W: Write> {
     inner: W,
     kind: u8,
@@ -212,10 +216,11 @@ impl<W: Write> Write for FrameWriter<W> {
         if self.failed {
             return Err(io::ErrorKind::BrokenPipe.into());
         }
-        if !buf.is_empty() {
-            write_frame(&mut self.inner, self.kind, buf).inspect_err(|_| self.failed = true)?;
+        let chunk = &buf[..buf.len().min(FRAME_CHUNK)];
+        if !chunk.is_empty() {
+            write_frame(&mut self.inner, self.kind, chunk).inspect_err(|_| self.failed = true)?;
         }
-        Ok(buf.len())
+        Ok(chunk.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -334,6 +339,27 @@ mod tests {
         assert!(w.write(b"a").is_err());
         assert!(w.write(b"b").is_err());
         assert_eq!(w.inner.0, 1, "no second send after a failure");
+    }
+
+    #[test]
+    fn output_larger_than_a_frame_is_sent_in_frames_a_client_accepts() {
+        // One line past the client's frame limit, written as the app writes command output (a LineWriter hands the
+        // whole line to the FrameWriter in one write).
+        let mut line = vec![b'x'; MAX_FRAME as usize + 3];
+        line.push(b'\n');
+        let mut sent = Vec::new();
+        {
+            let mut w = io::LineWriter::new(FrameWriter::new(&mut sent, OUT));
+            w.write_all(&line).unwrap();
+            w.flush().unwrap();
+        }
+        let mut r = &sent[..];
+        let mut got = Vec::new();
+        while let Some((kind, bytes)) = read_frame(&mut r).unwrap() {
+            assert_eq!(kind, OUT);
+            got.extend(bytes);
+        }
+        assert!(got == line, "the frames carry the output unchanged");
     }
 
     #[test]
