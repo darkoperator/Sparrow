@@ -2172,3 +2172,340 @@ fn the_summary_lists_the_never_logged_gaps_once() {
     );
     assert!(md.contains("### Not logged by Microsoft"), "{md}");
 }
+
+// ---- Preview: pending and ad-hoc scope (`report_with`) ----
+
+use sparrow_core::case::access::{Basis, ScopeSource, report_with};
+use sparrow_core::case::marks::ValueKind;
+
+/// jdoe read one message from `IP` (R1) and one from another address (R2).
+fn preview_case() -> Case {
+    let case = Case::in_memory().unwrap();
+    ual_ev(
+        &case,
+        R1,
+        "MailItemsAccessed",
+        JDOE,
+        JDOE,
+        Some(IP),
+        0,
+        json!({}),
+    );
+    mia_item(&case, R1, 0, "bind", "\\Inbox", Some("<a@x>"), 10);
+    ual_ev(
+        &case,
+        R2,
+        "MailItemsAccessed",
+        JDOE,
+        JDOE,
+        Some("198.51.100.77"),
+        60,
+        json!({}),
+    );
+    mia_item(&case, R2, 0, "bind", "\\Inbox", Some("<b@x>"), 10);
+    case
+}
+
+fn pending() -> ScopeSource {
+    ScopeSource {
+        include_pending: true,
+        ..ScopeSource::accepted()
+    }
+}
+
+fn adhoc(kind: ValueKind, value: &str) -> ScopeSource {
+    ScopeSource {
+        adhoc: vec![(kind, value.to_string())],
+        ..ScopeSource::accepted()
+    }
+}
+
+#[test]
+fn pending_flags_count_with_include_pending() {
+    let case = preview_case();
+    vflag(&case, "ip", IP, None, State::Pending);
+    let plain = report_with(case.conn(), Some(JDOE), &ScopeSource::accepted()).unwrap();
+    assert!(
+        plain.accounts[0].items.is_empty(),
+        "pending counts for nothing by default"
+    );
+    assert!(!plain.preview);
+    let r = report_with(case.conn(), Some(JDOE), &pending()).unwrap();
+    let a = &r.accounts[0];
+    assert_eq!(a.items.len(), 1);
+    assert_eq!(a.items[0].record_key, R1);
+    assert_eq!(a.items[0].basis, Basis::Pending);
+    assert_eq!(a.scope.len(), 1);
+    assert_eq!(a.scope[0].basis, Basis::Pending);
+    assert!(r.preview);
+    // Removed and discarded flags stay out even then.
+    let case = preview_case();
+    vflag(&case, "ip", IP, None, State::Discarded);
+    vflag(&case, "ip", IP, None, State::Removed);
+    let r = report_with(case.conn(), Some(JDOE), &pending()).unwrap();
+    assert!(r.accounts[0].items.is_empty());
+}
+
+#[test]
+fn pending_row_flags_count_with_include_pending() {
+    let case = preview_case();
+    rflag(&case, "ual_events", R2, State::Pending);
+    let r = report_with(case.conn(), Some(JDOE), &pending()).unwrap();
+    let keys: Vec<_> = r.accounts[0]
+        .items
+        .iter()
+        .map(|i| (i.record_key.as_str(), i.basis))
+        .collect();
+    assert_eq!(keys, vec![(R2, Basis::Pending)]);
+}
+
+#[test]
+fn adhoc_scope_reaches_like_a_flag() {
+    let flagged = preview_case();
+    vflag(&flagged, "ip", IP, None, State::Accepted);
+    let accepted = access::report(flagged.conn(), Some(JDOE)).unwrap();
+    let case = preview_case();
+    let r = report_with(case.conn(), Some(JDOE), &adhoc(ValueKind::Ip, IP)).unwrap();
+    let (a, b) = (&accepted.accounts[0], &r.accounts[0]);
+    let strip = |items: &[Item]| -> Vec<(String, String)> {
+        items
+            .iter()
+            .map(|i| (i.record_key.clone(), i.action.clone()))
+            .collect()
+    };
+    assert_eq!(strip(&b.items), strip(&a.items));
+    assert!(b.items.iter().all(|i| i.basis == Basis::Adhoc));
+    assert_eq!(b.scope[0].basis, Basis::Adhoc);
+    assert_eq!(b.scope[0].windows, a.scope[0].windows);
+    assert!(r.preview);
+    // Case-wide: without --account the ad-hoc value puts the account on the report.
+    let all = report_with(case.conn(), None, &adhoc(ValueKind::Ip, IP)).unwrap();
+    assert_eq!(
+        all.accounts
+            .iter()
+            .map(|a| a.account.as_str())
+            .collect::<Vec<_>>(),
+        vec![JDOE]
+    );
+}
+
+#[test]
+fn accepted_wins_over_pending_and_adhoc() {
+    let case = preview_case();
+    vflag(&case, "ip", IP, None, State::Accepted);
+    vflag(&case, "ip", IP, None, State::Pending);
+    let src = ScopeSource {
+        include_pending: true,
+        adhoc: vec![(ValueKind::Ip, IP.to_string())],
+    };
+    let r = report_with(case.conn(), Some(JDOE), &src).unwrap();
+    let a = &r.accounts[0];
+    assert_eq!(a.items.len(), 1);
+    assert_eq!(a.items[0].basis, Basis::Accepted);
+    assert_eq!(a.scope.len(), 1);
+    assert_eq!(a.scope[0].basis, Basis::Accepted);
+    assert!(
+        !r.preview,
+        "nothing but accepted scope is in play: not a preview"
+    );
+    // A pending flag on the other address puts one non-accepted record in play: a preview.
+    vflag(&case, "ip", "198.51.100.77", None, State::Pending);
+    let r = report_with(case.conn(), Some(JDOE), &src).unwrap();
+    let bases: Vec<_> = r.accounts[0].items.iter().map(|i| i.basis).collect();
+    assert_eq!(bases, vec![Basis::Accepted, Basis::Pending]);
+    assert!(r.preview);
+    // Pending beats ad-hoc.
+    let case = preview_case();
+    vflag(&case, "ip", IP, None, State::Pending);
+    let r = report_with(case.conn(), Some(JDOE), &src).unwrap();
+    assert_eq!(r.accounts[0].items[0].basis, Basis::Pending);
+}
+
+#[test]
+fn adhoc_values_are_bound() {
+    let case = preview_case();
+    vflag(&case, "ip", IP, None, State::Accepted);
+    for kind in [
+        ValueKind::Ip,
+        ValueKind::IpPrefix,
+        ValueKind::Session,
+        ValueKind::Device,
+    ] {
+        let src = adhoc(kind, "1.2.3.4' OR 1=1 --");
+        let r = report_with(case.conn(), None, &src).unwrap();
+        // Only the accepted flag's record: the text matched nothing.
+        let keys: Vec<_> = r
+            .accounts
+            .iter()
+            .flat_map(|a| a.items.iter().map(|i| i.record_key.as_str()))
+            .collect();
+        assert_eq!(keys, vec![R1], "{kind:?}");
+    }
+}
+
+#[test]
+fn adhoc_kinds_are_ip_prefix_session_and_device() {
+    let case = preview_case();
+    for kind in [ValueKind::Account, ValueKind::Asn] {
+        let e = report_with(case.conn(), None, &adhoc(kind, "x")).unwrap_err();
+        assert!(
+            e.to_string().contains("ip, ip_prefix, session or device"),
+            "{e}"
+        );
+    }
+}
+
+#[test]
+fn report_is_unchanged_for_the_app() {
+    let case = preview_case();
+    vflag(&case, "ip", IP, None, State::Accepted);
+    vflag(&case, "ip", "198.51.100.77", None, State::Pending);
+    let a = access::report(case.conn(), None).unwrap();
+    let b = report_with(case.conn(), None, &ScopeSource::accepted()).unwrap();
+    assert_eq!(a, b);
+    assert!(!a.preview);
+    assert!(
+        a.accounts[0]
+            .items
+            .iter()
+            .all(|i| i.basis == Basis::Accepted)
+    );
+}
+
+#[test]
+fn csv_has_the_basis_column() {
+    let case = preview_case();
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let r = report_with(
+        case.conn(),
+        Some(JDOE),
+        &adhoc(ValueKind::Ip, "198.51.100.77"),
+    )
+    .unwrap();
+    assert_eq!(CSV_COLUMNS.len(), 19);
+    assert_eq!(CSV_COLUMNS[18], "basis");
+    assert_eq!(
+        CSV_COLUMNS[17], "record_id",
+        "the 18 earlier columns keep their places"
+    );
+    let mut out = Vec::new();
+    write_csv(&r, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let mut rd = csv::Reader::from_reader(text.trim_start_matches('\u{feff}').as_bytes());
+    let bases: Vec<String> = rd.records().map(|r| r.unwrap()[18].to_string()).collect();
+    assert_eq!(bases, vec!["accepted", "adhoc"]);
+}
+
+#[test]
+fn a_message_seen_several_times_takes_the_strongest_basis() {
+    // The same message read twice: first from a pending IP, later from an accepted one. One item, accepted.
+    let case = Case::in_memory().unwrap();
+    ual_ev(
+        &case,
+        R1,
+        "MailItemsAccessed",
+        JDOE,
+        JDOE,
+        Some(IP),
+        0,
+        json!({}),
+    );
+    mia_item(&case, R1, 0, "bind", "\\Inbox", Some("<same@x>"), 10);
+    ual_ev(
+        &case,
+        R2,
+        "MailItemsAccessed",
+        JDOE,
+        JDOE,
+        Some("198.51.100.77"),
+        60,
+        json!({}),
+    );
+    mia_item(&case, R2, 0, "bind", "\\Inbox", Some("<same@x>"), 10);
+    // And one message sent twice (two Send records with one InternetMessageId).
+    let sent = json!({"Item": {"InternetMessageId": "<sent@x>", "Subject": "s"}});
+    ual_ev(&case, R3, "Send", JDOE, JDOE, Some(IP), 120, sent.clone());
+    ual_ev(
+        &case,
+        R4,
+        "Send",
+        JDOE,
+        JDOE,
+        Some("198.51.100.77"),
+        180,
+        sent,
+    );
+    vflag(&case, "ip", IP, None, State::Pending);
+    vflag(&case, "ip", "198.51.100.77", None, State::Accepted);
+    let r = report_with(case.conn(), Some(JDOE), &pending()).unwrap();
+    let a = &r.accounts[0];
+    let mail: Vec<_> = a
+        .items
+        .iter()
+        .filter(|i| matches!(i.category, Category::MailRead | Category::MailSent))
+        .map(|i| (i.category, i.record_key.as_str(), i.basis))
+        .collect();
+    // The earliest sighting stays the item (as before); its basis is the strongest of the message's sightings.
+    assert_eq!(
+        mail,
+        vec![
+            (Category::MailRead, R1, Basis::Accepted),
+            (Category::MailSent, R3, Basis::Accepted)
+        ]
+    );
+}
+
+#[test]
+fn preview_tiles_and_summary_rows_say_what_is_not_accepted() {
+    let case = preview_case();
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let src = adhoc(ValueKind::Ip, "198.51.100.77");
+    let r = report_with(case.conn(), Some(JDOE), &src).unwrap();
+    let t = tile(&r.accounts[0], Category::MailRead);
+    assert_eq!((t.direct, t.pending, t.adhoc), (2, 0, 1));
+    let mut md = Vec::new();
+    write_summary(&r, &mut md).unwrap();
+    let md = String::from_utf8(md).unwrap();
+    let row = md.lines().find(|l| l.contains(JDOE)).unwrap();
+    assert!(row.starts_with("| PREVIEW "), "{row}");
+    assert!(row.contains("2 (1 ad-hoc)"), "{row}");
+    // The reviewed report: no marks at all.
+    let r = access::report(case.conn(), Some(JDOE)).unwrap();
+    let t = tile(&r.accounts[0], Category::MailRead);
+    assert_eq!((t.direct, t.pending, t.adhoc), (1, 0, 0));
+    let mut md = Vec::new();
+    write_summary(&r, &mut md).unwrap();
+    assert!(!String::from_utf8(md).unwrap().contains("PREVIEW"));
+}
+
+#[test]
+fn the_reviewed_report_carries_no_preview_marks() {
+    let case = preview_case();
+    vflag(&case, "ip", IP, None, State::Accepted);
+    vflag(&case, "ip", "198.51.100.77", None, State::Pending);
+    let v = serde_json::to_value(access::report(case.conn(), None).unwrap()).unwrap();
+    assert_eq!(v["preview"], false);
+    for a in v["accounts"].as_array().unwrap() {
+        assert!(
+            a["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|i| i["basis"] == "accepted")
+        );
+        assert!(
+            a["scope"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|s| s["basis"] == "accepted")
+        );
+        assert!(
+            a["tiles"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|t| t["pending"] == 0 && t["adhoc"] == 0)
+        );
+    }
+}

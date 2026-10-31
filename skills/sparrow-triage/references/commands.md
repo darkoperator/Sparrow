@@ -81,7 +81,15 @@ lists, per compromised account, the items the attacker reached by category (`mai
 with no IP and no session inside a window of malicious activity), and per category a tile with `direct`, `by_time`,
 `coverage` (the source's status) and `none_seen` (a zero is a finding only when that is true). `--account UPN` limits it;
 `--csv FILE` writes one row per item; `--markdown` prints the summary table. Flag the attacker's sessions and IPs first
-(`sparrow mark flag`), and have them accepted, or the report is empty.
+(`sparrow mark flag`), and have them accepted, or the report is empty. Before review, `--include-pending` counts your
+own pending flags and `--ip/--prefix/--session/--device VALUE` asks "what would this reach?" without flagging; such a
+report is a PREVIEW (`"preview": true`, every item and scope value has `basis` `pending` or `adhoc`): say so when you
+quote it.
+
+```bash
+sparrow access --case case.duckdb --account alice@contoso.example --include-pending --json
+sparrow access --case case.duckdb --ip 203.0.113.7 --json
+```
 
 ## Events, entities, marks
 

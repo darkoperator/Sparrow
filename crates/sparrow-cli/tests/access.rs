@@ -141,3 +141,63 @@ fn access_csv_path_is_printed_terminal_safe() {
     assert_eq!(r.code, 0, "{}", r.err);
     assert!(!r.out.contains('\u{1b}'), "{:?}", r.out);
 }
+
+#[test]
+fn access_preview_prints_the_banner_and_chips() {
+    let (_tmp, path) = setup();
+    let p = path.to_str().unwrap();
+    // The accepted flag alone: no banner.
+    let r = run(&["access", "--case", p, "--include-pending"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(!r.out.starts_with("PREVIEW"), "{}", r.out);
+    // An ad-hoc address of the other account's events: a preview, its chip says so.
+    let r = run(&["access", "--case", p, "--ip", "192.0.2.9"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let first = r.out.lines().next().unwrap();
+    assert_eq!(
+        first,
+        "PREVIEW: includes pending or ad-hoc scope; not the reviewed report"
+    );
+    assert!(
+        r.out
+            .lines()
+            .any(|l| l.starts_with("  scope  AD-HOC ip 192.0.2.9  ")),
+        "{}",
+        r.out
+    );
+    assert!(
+        r.out
+            .lines()
+            .any(|l| l.starts_with("  scope  ip 203.0.113.45  ")),
+        "{}",
+        r.out
+    );
+    // The other account's tile counts are ad-hoc: its line says so.
+    assert!(
+        r.out
+            .lines()
+            .any(|l| l.starts_with("  other  1 direct  0 by time  AD-HOC 1")),
+        "{}",
+        r.out
+    );
+    let v = json(&["access", "--case", p, "--ip", "192.0.2.9", "--json"]);
+    assert_eq!(v["preview"], true);
+    let other = v["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["account"] == "other@contoso.example")
+        .unwrap();
+    assert_eq!(other["scope"][0]["basis"], "adhoc");
+    assert!(
+        other["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|i| i["basis"] == "adhoc")
+    );
+    // A bad address is refused, not silently empty.
+    let r = run(&["access", "--case", p, "--ip", "1.2.3.4' OR 1=1 --"]);
+    assert_eq!(r.code, 1);
+    assert!(r.err.contains("not an IP"), "{}", r.err);
+}

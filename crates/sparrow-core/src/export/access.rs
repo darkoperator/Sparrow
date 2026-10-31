@@ -5,11 +5,24 @@
 use super::text::md_cell;
 use super::timeline_csv::neutralise;
 use crate::Result;
-use crate::case::access::{AccessReport, Category, NEVER_LOGGED, Tile};
+use crate::case::access::{AccessReport, Basis, Category, NEVER_LOGGED, Tile};
+
+/// `5 pending, 1 ad-hoc`: the part of a tile's count a preview added, if any.
+pub fn preview_share(t: &Tile) -> Option<String> {
+    let mut parts = Vec::new();
+    if t.pending > 0 {
+        parts.push(format!("{} pending", t.pending));
+    }
+    if t.adhoc > 0 {
+        parts.push(format!("{} ad-hoc", t.adhoc));
+    }
+    (!parts.is_empty()).then(|| parts.join(", "))
+}
 use chrono::{DateTime, Utc};
 use std::io::Write;
 
-pub const CSV_COLUMNS: [&str; 18] = [
+/// The CSV's columns; `basis` (accepted, pending, adhoc) is last so the earlier ones keep their places.
+pub const CSV_COLUMNS: [&str; 19] = [
     "account",
     "category",
     "attribution",
@@ -28,6 +41,7 @@ pub const CSV_COLUMNS: [&str; 18] = [
     "note",
     "source",
     "record_id",
+    "basis",
 ];
 
 fn iso(t: &DateTime<Utc>) -> String {
@@ -66,6 +80,7 @@ pub fn write_csv(report: &AccessReport, out: &mut (impl Write + ?Sized)) -> Resu
                 text(&i.note),
                 neutralise(&i.source),
                 neutralise(&i.record_key),
+                i.basis.as_str().to_string(),
             ])
             .map_err(csv_err)?;
         }
@@ -92,7 +107,10 @@ fn cell(t: &Tile) -> String {
         k => format!("{} (+{k} by time)", t.direct),
     };
     if t.direct + t.by_time > 0 {
-        n
+        match preview_share(t) {
+            Some(p) => format!("{n} ({p})"),
+            None => n,
+        }
     } else if let Some(q) = &t.qualifier {
         // Nothing counted but something exposed (folders synced as a whole).
         format!("0 ({})", md_cell(q))
@@ -113,7 +131,11 @@ pub fn write_summary(report: &AccessReport, out: &mut (impl Write + ?Sized)) -> 
     s.push_str(&"---|".repeat(Category::ALL.len()));
     s.push('\n');
     for a in &report.accounts {
-        s.push_str(&format!("| {} |", md_cell(&a.account)));
+        // A preview row says so itself: a row copied out of the table must not pass for the reviewed answer.
+        let preview = a.tiles.iter().any(|t| t.pending + t.adhoc > 0)
+            || a.scope.iter().any(|v| v.basis != Basis::Accepted);
+        let mark = if preview { "PREVIEW " } else { "" };
+        s.push_str(&format!("| {mark}{} |", md_cell(&a.account)));
         for t in &a.tiles {
             s.push_str(&format!(" {} |", cell(t)));
         }

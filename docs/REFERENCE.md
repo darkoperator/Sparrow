@@ -751,7 +751,8 @@ succeeds, and is refused when it is the case file, its `.wal`, or inside the tes
 
 ## Access report
 
-`sparrow access --case C [--account UPN] [--csv FILE | --markdown] [--json]` answers "what did the attacker get?" per
+`sparrow access --case C [--account UPN] [--include-pending] [--ip IP] [--prefix CIDR] [--session ID] [--device ID]
+[--csv FILE | --markdown] [--json]` answers "what did the attacker get?" per
 compromised account: mail read and sent, attachments, SharePoint/OneDrive files, Teams, Copilot and other apps.
 Read-only; no audit entry. `--csv` is refused (exit 5) when it names the case or its `.wal`, and is written through a
 temp file; `--json` cannot be combined with `--csv` or `--markdown`. In the app, an account tab has an Access section (scope chips,
@@ -767,6 +768,15 @@ lists as "Malicious".
   a time window), `row` (the record itself flagged), `device`, or `ip` (a flagged IP or prefix, or an ASN flagged for the
   account; a case-wide ASN flag attributes nothing). A malicious `account` flag only puts the account on the report.
   An account scope on a flag matches the record's actor, never its mailbox owner. Items are filed under the actor.
+- **Preview** (agents asking "what would this reach?" before the analyst reviews). `--include-pending` counts pending
+  (not removed, not discarded) malicious flags too; `--ip`, `--prefix`, `--session` and `--device` (repeatable) add
+  ad-hoc values, as if flagged malicious and accepted, case-wide (`--account` still limits the report; a value that is
+  not an address, network or id of its kind is refused, exit 1). Ad-hoc values are bound parameters, never SQL text.
+  Every item and scope value then carries `basis` (`accepted`, `pending` or `adhoc`; the strongest wins when several
+  match), and when any is not `accepted` the report is a preview: `"preview": true` in JSON, a first line `PREVIEW:
+  includes pending or ad-hoc scope; not the reviewed report` in the text, the CSV message and the Markdown, scope lines
+  prefixed `PENDING` / `AD-HOC`, and the CSV's last column `basis`. Without these options (and in the app's export
+  menu) the report is the reviewed one.
 - **By time.** A record of the account with no IP and no Entra session (Teams Graph reads, most Copilot records) is
   attributed `time` when it falls in a window of the account's malicious activity: per flagged value, bursts of its
   sightings split at gaps over an hour, each from the first sighting to the last plus an hour. A record with an
@@ -789,7 +799,7 @@ lists as "Malicious".
   Microsoft never logs (Teams app reads, Outlook-synced mail, attachments opened in Outlook/OWA, Exchange searches
   without Audit Premium).
 - **Exports.** `--csv` writes one row per item (columns `account, category, attribution, accessed_utc, action, item,
-  location, from, to, size_bytes, item_time_utc, app, ip, session_id, owner, note, source, record_id`; UTF-8 with a BOM,
+  location, from, to, size_bytes, item_time_utc, app, ip, session_id, owner, note, source, record_id, basis`; UTF-8 with a BOM,
   ISO 8601 UTC, formula-like cells prefixed with `'`). `--markdown` prints a table (one row per account, a cell per
   category: `48`, `48 (+3 by time)`, `0 (1 folder synced)`, `0 none seen` or `0 (<status>)`), the coverage gaps
   per account, and once the gaps Microsoft never logs.

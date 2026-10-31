@@ -158,13 +158,19 @@ pub(crate) struct MailLimits {
     pub no_send_audit: bool,
 }
 
-pub(crate) fn mail_limits(conn: &Connection, account: &str) -> Result<MailLimits> {
+pub(crate) fn mail_limits(
+    conn: &Connection,
+    account: &str,
+    src: &super::ScopeSource,
+) -> Result<MailLimits> {
+    let (ctes, mut params) = super::scope::ctes(src);
     let sql = format!(
-        "WITH {} SELECT coalesce(bool_or(m.is_throttled), FALSE) FROM attributed a JOIN mail_items_accessed m \
-         ON a.source_table = 'ual_events' AND m.record_id = TRY_CAST(a.record_key AS UUID) WHERE a.account = ?",
-        super::scope::ctes()
+        "WITH {ctes} SELECT coalesce(bool_or(m.is_throttled), FALSE) FROM attributed a JOIN mail_items_accessed m \
+         ON a.source_table = 'ual_events' AND m.record_id = TRY_CAST(a.record_key AS UUID) WHERE a.account = ?"
     );
-    let throttled: bool = conn.query_row(&sql, [account], |r| r.get(0))?;
+    params.push(duckdb::types::Value::Text(account.to_string()));
+    let throttled: bool =
+        conn.query_row(&sql, duckdb::params_from_iter(params.iter()), |r| r.get(0))?;
     let mailbox: Option<(bool, bool, bool)> = conn
         .query_row(
             "SELECT coalesce(audit_bypass_enabled, FALSE), \

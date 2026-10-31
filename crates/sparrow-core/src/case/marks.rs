@@ -133,7 +133,7 @@ impl ValueKind {
     }
 
     /// The stored spelling of `value`, or an error when it is not one.
-    fn normalize(self, value: &str) -> Result<String> {
+    pub fn normalize(self, value: &str) -> Result<String> {
         let v = value.trim();
         let bad = |what: &str| Error::Invalid(format!("{v:?} is not {what}"));
         match self {
