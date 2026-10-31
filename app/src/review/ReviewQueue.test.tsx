@@ -437,7 +437,7 @@ describe("ReviewQueue", () => {
 });
 
 describe("ReviewQueue detail for every item", () => {
-  const nav = () => ({ openEntity: vi.fn(), openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn() });
+  const nav = () => ({ openEntity: vi.fn(), openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn(), openAccess: vi.fn() });
   async function open(testId: string) {
     const n = nav();
     const user = userEvent.setup();

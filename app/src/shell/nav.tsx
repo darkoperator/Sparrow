@@ -2,11 +2,13 @@
 // components then simply do not offer the actions.
 import { createContext, useContext, useEffect, useRef } from "react";
 import type { Filter } from "../api";
-import type { EntityRef } from "./tabs";
+import type { AccessRef, EntityRef } from "./tabs";
 
 export interface Nav {
   /** Open (or switch to) the tab for an account, IP, device or Entra session. */
   openEntity: (e: EntityRef) => void;
+  /** Open (or switch to) an Access tab: an account's, a device's or IP's what-if, or the whole case's. */
+  openAccess: (a: AccessRef) => void;
   openTable: (table: string, filters: Filter[]) => void;
   /** Switch to the Events tab, limited to this entity. */
   showInEvents: (e: EntityRef) => void;

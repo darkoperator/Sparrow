@@ -121,7 +121,7 @@ describe("Devices", () => {
 
   it("a sighting opens its evidence row in the table browser", async () => {
     const user = userEvent.setup();
-    const nav: Nav = { openEntity: vi.fn(), openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn() };
+    const nav: Nav = { openEntity: vi.fn(), openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn(), openAccess: vi.fn() };
     vi.mocked(api.evidenceFilter).mockResolvedValue({
       table: "signins",
       filters: [{ op: "eq", column: "record_key", value: "si-0003" }],

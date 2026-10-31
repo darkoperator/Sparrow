@@ -419,6 +419,39 @@ describe("Shell", () => {
     expect(screen.getByRole("region", { name: "ip 2001:db8::1" })).toHaveTextContent("ip 2001:db8::1");
   });
 
+  it("nav_open_access_shows_the_tab", async () => {
+    dialogOpen.mockResolvedValue("/synthetic/case-a.duckdb");
+    const user = userEvent.setup();
+    function AccessOpener() {
+      const nav = useNav();
+      return (
+        <>
+          <button onClick={() => nav?.openAccess({ access: "case", value: "" })}>open case access</button>
+          <button onClick={() => nav?.openAccess({ access: "ip", value: "203.0.113.7" })}>open ip access</button>
+        </>
+      );
+    }
+    render(
+      <Shell
+        screens={{ accounts: () => <AccessOpener /> }}
+        accessTab={(a) => <p>{`access body ${a.access} ${a.value}`}</p>}
+      />,
+    );
+    await user.click(await screen.findByRole("button", { name: "Open a case" }));
+    await user.click(await screen.findByRole("tab", { name: "Accounts" }));
+    await user.click(screen.getByRole("button", { name: "open case access" }));
+    const tab = screen.getByRole("tab", { name: "Access whole case" });
+    expect(tab).toHaveAttribute("aria-selected", "true");
+    expect(tab).toHaveTextContent("Access · case");
+    expect(screen.getByText("access body case")).toBeVisible();
+    await user.click(screen.getByRole("tab", { name: "Accounts" }));
+    await user.click(screen.getByRole("button", { name: "open ip access" }));
+    expect(screen.getByRole("tab", { name: "Access IP 203.0.113.7 (what-if)" })).toHaveTextContent("Access · 203.0.113.7 (what-if)");
+    expect(screen.getByText("access body ip 203.0.113.7")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Close Access whole case" }));
+    expect(screen.queryByRole("tab", { name: "Access whole case" })).toBeNull();
+  });
+
   it("an open entity tab keeps its typed filter text when switching away and back", async () => {
     dialogOpen.mockResolvedValue("/synthetic/case-a.duckdb");
     const user = userEvent.setup();

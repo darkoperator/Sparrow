@@ -1,3 +1,4 @@
+import AccessView from "./access/AccessView";
 import Accounts from "./accounts/Accounts";
 import Devices from "./devices/Devices";
 import EntityTab from "./entity/EntityTab";
@@ -12,6 +13,7 @@ export default function App() {
   return (
     <Shell
       entityTab={(e) => <EntityTab entity={e} />}
+      accessTab={(a) => <AccessView scope={a.access === "case" ? { kind: "case" } : { kind: a.access, value: a.value }} />}
       screens={{
         events: (p) => <EventsView chip={p.eventsEntity ?? undefined} onClearChip={p.clearEventsEntity} />,
         timeline: (p) => <Timeline readOnly={!p.canWrite} />,

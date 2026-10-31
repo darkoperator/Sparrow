@@ -42,7 +42,7 @@ async function filterColumn(user: ReturnType<typeof userEvent.setup>, label: str
 
 let all: EventRow[];
 const badges = vi.fn();
-const nav = (): Nav => ({ openEntity: vi.fn(), openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn() });
+const nav = (): Nav => ({ openEntity: vi.fn(), openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn(), openAccess: vi.fn() });
 
 const WRITE_BLOCKED = "Read-only case: the case file is older than this version";
 

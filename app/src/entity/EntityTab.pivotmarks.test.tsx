@@ -20,7 +20,7 @@ import { NavContext, RefreshBadgesContext, WriteBlockedContext, type Nav } from 
 import type { EntityRef } from "../shell/tabs";
 import EntityTab from "./EntityTab";
 
-const nav = (): Nav => ({ openEntity: vi.fn(), openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn() });
+const nav = (): Nav => ({ openEntity: vi.fn(), openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn(), openAccess: vi.fn() });
 
 function view(entity: EntityRef, opts: { writeBlocked?: string } = {}) {
   const n = nav();

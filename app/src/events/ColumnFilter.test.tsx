@@ -26,7 +26,7 @@ const callsOf = (cmd: string) => h.calls.filter((c) => c.cmd === cmd);
 const lastQuery = () => callsOf("events_page").at(-1)!.args!.query as EventQuery;
 const shown = (a: number, b: number) => screen.findByText(`${a} of ${b} shown`);
 const header = (label: string) => screen.getByRole("columnheader", { name: new RegExp(`^${label}`) });
-const nav = (): Nav => ({ openEntity: vi.fn(), openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn() });
+const nav = (): Nav => ({ openEntity: vi.fn(), openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn(), openAccess: vi.fn() });
 const ALL: EventQuery = { fields: [], flag: "all", ai: "all" };
 
 async function openFilter(label: string) {

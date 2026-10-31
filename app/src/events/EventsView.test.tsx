@@ -24,7 +24,7 @@ import * as fx from "../test/fixtures";
 import EventsView, { parseUtc } from "./EventsView";
 import { isoJustBefore, isoZ } from "./Histogram";
 
-const nav = (): Nav => ({ openEntity: vi.fn(), openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn() });
+const nav = (): Nav => ({ openEntity: vi.fn(), openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn(), openAccess: vi.fn() });
 
 function view(ui = <EventsView />, n: Nav = nav()) {
   const out = render(<NavContext.Provider value={n}>{ui}</NavContext.Provider>);

@@ -44,14 +44,18 @@ import {
   closeTab,
   FIXED_TABS,
   initialTabs,
-  isEntityRef,
+  isAccessRef,
   loadTabs,
+  openAccess as openAccessTab,
   openEntity as openEntityTab,
   saveTabs,
   showTab,
   tabKey,
+  tabName,
+  type AccessRef,
   type EntityRef,
   type FixedTab,
+  type OpenTab,
   type TabsState,
 } from "./tabs";
 
@@ -79,6 +83,8 @@ interface ShellProps {
   screens?: Partial<Record<Exclude<ScreenId, "review" | "tables" | "highlights">, (p: ScreenProps) => ReactNode>>;
   /** The body of an entity tab; until it is built, a placeholder shows the entity. */
   entityTab?: (e: EntityRef, p: ScreenProps) => ReactNode;
+  /** The body of an Access tab; until it is built, a placeholder names it. */
+  accessTab?: (a: AccessRef) => ReactNode;
 }
 
 const TOAST_MS = 6000;
@@ -93,7 +99,7 @@ function initials(name: string): string {
   return letters.toUpperCase();
 }
 
-export default function Shell({ screens = {}, entityTab }: ShellProps) {
+export default function Shell({ screens = {}, entityTab, accessTab }: ShellProps) {
   const [settings, setSettings] = useState<Settings>({ analyst: null, recent: [] });
   const [info, setInfo] = useState<CaseInfo | null>(null);
   const [tabs, setTabs] = useState<TabsState>(initialTabs);
@@ -308,7 +314,7 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
       : null;
   // Importing needs a writable case; it does not need an analyst name (`sparrow ingest` has none).
   const importBlocked = info.read_only_reason !== null ? `Read-only case: ${info.read_only_reason}` : null;
-  const show = (t: FixedTab | EntityRef) => setTabs(showTab(tabs, t));
+  const show = (t: FixedTab | OpenTab) => setTabs(showTab(tabs, t));
   const showAccount = (upn: string) => {
     setAccountFilter(upn);
     show("review");
@@ -317,10 +323,17 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
     setAccountFilter(null);
     show("review");
   };
+  // An entity tab by its value (as before Access tabs existed), an Access tab by its name.
+  const evicted = (t: OpenTab) => `Closed ${displaySafe(isAccessRef(t) ? tabName(t) : t.value)} (10 tabs max)`;
   const openEntity = (e: EntityRef) => {
     const { state, closed } = openEntityTab(tabs, e);
     setTabs(state);
-    if (closed) setToast(`Closed ${displaySafe(closed.value)} (10 tabs max)`);
+    if (closed) setToast(evicted(closed));
+  };
+  const openAccess = (a: AccessRef) => {
+    const { state, closed } = openAccessTab(tabs, a);
+    setTabs(state);
+    if (closed) setToast(evicted(closed));
   };
   const showInEvents = (e: EntityRef) => {
     setEventsEntity((r) => ({ ...e, nonce: (r?.nonce ?? 0) + 1 }));
@@ -345,7 +358,7 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
     clearEventsEntity: () => setEventsEntity(null),
     openTable,
   };
-  const screen = isEntityRef(tabs.active) ? null : tabs.active;
+  const screen = typeof tabs.active === "string" ? tabs.active : null;
   const body = (() => {
     if (screen === "review") {
       return (
@@ -433,7 +446,7 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
       )}
       <div className="layout">
         <HighlightsProvider caseId={info.case_id}>
-          <NavContext.Provider value={{ openEntity, openTable, showInEvents, openFinding }}>
+          <NavContext.Provider value={{ openEntity, openAccess, openTable, showInEvents, openFinding }}>
             <RefreshBadgesContext.Provider value={refreshBadges}>
             <WriteBlockedContext.Provider value={writeBlockedReason(info.read_only_reason, settings.analyst)}>
             <FocusAnalystContext.Provider value={focusAnalyst}>
@@ -447,8 +460,14 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
                 </section>
               )}
               {tabs.open.map((e) => (
-                <section key={tabKey(e)} hidden={tabKey(e) !== activeKey} aria-label={`${e.kind} ${displaySafe(e.value)}`}>
-                  {entityTab ? entityTab(e, screenProps) : <p>{`${e.kind} ${displaySafe(e.value)}`}</p>}
+                <section key={tabKey(e)} hidden={tabKey(e) !== activeKey} aria-label={isAccessRef(e) ? displaySafe(tabName(e)) : `${e.kind} ${displaySafe(e.value)}`}>
+                  {isAccessRef(e)
+                    ? accessTab
+                      ? accessTab(e)
+                      : <p>{displaySafe(tabName(e))}</p>
+                    : entityTab
+                      ? entityTab(e, screenProps)
+                      : <p>{`${e.kind} ${displaySafe(e.value)}`}</p>}
                 </section>
               ))}
             </main>

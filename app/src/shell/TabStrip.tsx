@@ -1,12 +1,12 @@
-// The tab strip: the fixed tabs in order, then one closable tab per open entity. Selecting, closing and the
+// The tab strip: the fixed tabs in order, then one closable tab per open entity or Access tab. Selecting, closing and the
 // keyboard are handled here; what the tabs mean is in tabs.ts.
 import { useRef } from "react";
 import { displaySafe } from "../text";
 import Icon, { type IconName } from "../ui/Icon";
-import { FIXED_TABS, shortValue, tabKey, type EntityKind, type EntityRef, type FixedTab, type TabsState } from "./tabs";
+import { FIXED_TABS, isAccessRef, tabKey, tabName, tabText, type EntityKind, type FixedTab, type OpenTab, type TabsState } from "./tabs";
 
 const ICON: Record<EntityKind, IconName> = { account: "user", ip: "globe", device: "monitor", session: "key" };
-const KIND_LABEL: Record<EntityKind, string> = { account: "account", ip: "IP", device: "device", session: "session" };
+const iconOf = (t: OpenTab): IconName => (!isAccessRef(t) ? ICON[t.kind] : t.access === "case" ? "flag" : ICON[t.access]);
 
 export interface TabBadges {
   /** Items waiting in the review queue. */
@@ -23,7 +23,7 @@ export default function TabStrip({
 }: {
   state: TabsState;
   badges: TabBadges;
-  onShow: (t: FixedTab | EntityRef) => void;
+  onShow: (t: FixedTab | OpenTab) => void;
   onClose: (key: string) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -67,15 +67,15 @@ export default function TabStrip({
       })}
       {state.open.map((e) => {
         const key = tabKey(e);
-        const full = displaySafe(e.value);
+        const full = displaySafe(tabName(e));
         return (
           <span key={key} className={activeKey === key ? "tab-entity tab-entity-active" : "tab-entity"}>
             <button
               role="tab"
               className="tab"
               aria-selected={activeKey === key}
-              aria-label={`${KIND_LABEL[e.kind]} ${full}`}
-              title={`${KIND_LABEL[e.kind]} ${full}`}
+              aria-label={full}
+              title={full}
               onClick={() => onShow(e)}
               onMouseDown={(ev) => {
                 if (ev.button === 1) ev.preventDefault(); // no autoscroll cursor on a middle-click
@@ -88,10 +88,10 @@ export default function TabStrip({
               }}
               onKeyDown={(ev) => onKeyDown(ev, key)}
             >
-              <Icon name={ICON[e.kind]} size={13} />
-              <span className="tab-value">{displaySafe(shortValue(e.value))}</span>
+              <Icon name={iconOf(e)} size={13} />
+              <span className="tab-value">{displaySafe(tabText(e))}</span>
             </button>
-            <button className="tab-close" aria-label={`Close ${KIND_LABEL[e.kind]} ${full}`} onClick={() => onClose(key)}>
+            <button className="tab-close" aria-label={`Close ${full}`} onClick={() => onClose(key)}>
               <Icon name="x" size={12} />
             </button>
           </span>

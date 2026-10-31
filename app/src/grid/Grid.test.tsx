@@ -69,7 +69,7 @@ describe("Grid cell actions", () => {
     return screen.getByRole("menu");
   };
   const withNav = (ui: React.ReactElement, openEntity = vi.fn()) => (
-    <NavContext.Provider value={{ openEntity, openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn() }}>{ui}</NavContext.Provider>
+    <NavContext.Provider value={{ openEntity, openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn(), openAccess: vi.fn() }}>{ui}</NavContext.Provider>
   );
 
   it("offers an IP tab only for an IP value, an account tab only for an account-shaped one", () => {
@@ -407,7 +407,7 @@ describe("Grid cell menu: entity tabs by column", () => {
     return screen.getByRole("menu");
   };
   const wrap = (openEntity = vi.fn()) => (
-    <NavContext.Provider value={{ openEntity, openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn() }}>
+    <NavContext.Provider value={{ openEntity, openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn(), openAccess: vi.fn() }}>
       <Grid columns={columns} rows={rows} />
     </NavContext.Provider>
   );
@@ -485,7 +485,7 @@ describe("Grid host hooks (labels, widths, sortable, renderCell, rowClass, cellI
     const run = vi.fn();
     const onFilter = vi.fn();
     render(
-      <NavContext.Provider value={{ openEntity: vi.fn(), openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn() }}>
+      <NavContext.Provider value={{ openEntity: vi.fn(), openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn(), openAccess: vi.fn() }}>
         <Grid columns={columns} rows={rows} cellActions={{ onFilter }} cellItems={({ column, row }) => [{ label: `mine ${column} ${row}`, run }]} />
       </NavContext.Provider>,
     );

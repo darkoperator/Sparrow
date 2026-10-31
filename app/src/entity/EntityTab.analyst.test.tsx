@@ -23,7 +23,7 @@ import { entityPivots } from "../test/fixtures";
 import EntityTab from "./EntityTab";
 import { flaggedText, flaggedTitle } from "./PivotTable";
 
-const nav = (): Nav => ({ openEntity: vi.fn(), openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn() });
+const nav = (): Nav => ({ openEntity: vi.fn(), openTable: vi.fn(), showInEvents: vi.fn(), openFinding: vi.fn(), openAccess: vi.fn() });
 
 function view(entity: EntityRef, writeBlocked: string | null = null) {
   return render(
