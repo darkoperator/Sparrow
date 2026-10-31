@@ -1,10 +1,11 @@
-// The Events filter card: one row with the raw-text search, a From/To range in ISO 8601 UTC, the flag toggle, the
-// agent-mark filter, Search and Clear all. The field filters (Harrier's syntax: comma, any of; `*`, wildcard; `!`,
+// The Events filter card: one row with the raw-text search, a From/To range in UTC (typed, or picked with the
+// calendar beside each box), the flag toggle, the agent-mark filter, Search and Clear all. The field filters (Harrier's syntax: comma, any of; `*`, wildcard; `!`,
 // exclude) live in the grid's column titles (`ColumnFilter.tsx`) but are held here, in `FilterDraft.fields`. Nothing
 // here parses the text: it goes to the backend as written, and a refusal comes back as an `errors` entry.
 import { type AiFilter, type EventField, type FlagFilter } from "../api";
 import Icon from "../ui/Icon";
 import { displaySafe } from "../text";
+import RangePicker from "./RangePicker";
 
 export const FIELD_LABEL: Record<EventField, string> = {
   source: "Source",
@@ -102,6 +103,7 @@ export default function Filters({ draft, errors, onChange, onApply, onClear }: P
             aria-invalid={errors.from ? true : undefined}
             onChange={(e) => onChange({ from: e.target.value })}
           />
+          <RangePicker end="from" value={draft.from} onPick={(t) => onChange({ from: t })} />
           {errors.from && (
             <div role="alert" className="ev-error">
               {displaySafe(errors.from)}
@@ -120,6 +122,7 @@ export default function Filters({ draft, errors, onChange, onApply, onClear }: P
             aria-invalid={errors.to ? true : undefined}
             onChange={(e) => onChange({ to: e.target.value })}
           />
+          <RangePicker end="to" value={draft.to} onPick={(t) => onChange({ to: t })} />
           {errors.to && (
             <div role="alert" className="ev-error">
               {displaySafe(errors.to)}

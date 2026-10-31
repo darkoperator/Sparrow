@@ -64,6 +64,14 @@ const PATHS = {
     </>
   ),
   filter: <path d="M22 3H2l8 9.46V19l4 2v-8.54z" />,
+  calendar: (
+    <>
+      <rect x="3" y="4" width="18" height="18" rx="2" />
+      <path d="M16 2v4" />
+      <path d="M8 2v4" />
+      <path d="M3 10h18" />
+    </>
+  ),
   clock: (
     <>
       <circle cx="12" cy="12" r="10" />

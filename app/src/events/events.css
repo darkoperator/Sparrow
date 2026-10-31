@@ -34,6 +34,15 @@
 .ev-inline select { width: auto; padding: 6px 8px; }
 .ev-inline .ev-toggle button { padding: 6px 10px; }
 .ev-time input { padding: 7px 8px; }
+.ev-time { position: relative; }
+.ev-time input { padding-right: 30px; }
+/* The calendar sits inside the box's right edge; its popover opens under the box. */
+.ev-picker-button { position: absolute; top: 3px; right: 3px; padding: 3px 5px; }
+.ev-picker-pop { position: absolute; top: calc(100% + 4px); left: 0; z-index: 20; display: flex; flex-direction: column; gap: 8px; min-width: 220px; padding: 10px; }
+.ev-picker-pop label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; }
+.ev-picker-pop input { width: 100%; padding: 5px 8px; font-family: var(--font-mono); }
+.ev-picker-pop .meta { margin: 0; }
+.ev-picker-actions { display: flex; justify-content: flex-end; gap: 6px; }
 .ev-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .ev-field input, .ev-field select { width: 100%; min-width: 0; padding: 5px 8px; background: var(--bg); font-size: 11px; }
 .ev-field input.mono, .ev-searchbox input { font-family: var(--font-mono); }
