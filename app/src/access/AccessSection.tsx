@@ -51,6 +51,24 @@ function windowsText(ws: { start: string; end: string }[]): string {
 
 const cell = (v: string | null) => (v === null || v === "" ? "—" : displaySafe(v));
 
+/** Recipients shown before "+N more": an all-staff message can list thousands, which would swamp the table. The core joins them with "; ". */
+const RECIPIENTS = 3;
+
+function Recipients({ to }: { to: string | null }) {
+  const [open, setOpen] = useState(false);
+  const all = to === null ? [] : to.split("; ").filter((r) => r !== "");
+  if (all.length <= RECIPIENTS) return <>{cell(to)}</>;
+  const more = all.length - RECIPIENTS;
+  return (
+    <>
+      {displaySafe((open ? all : all.slice(0, RECIPIENTS)).join("; "))}{" "}
+      <button type="button" className="link access-recipients" onClick={() => setOpen(!open)}>
+        {open ? "Show fewer recipients" : `+${more} more recipients`}
+      </button>
+    </>
+  );
+}
+
 /** The label of what a preview added; nothing for the reviewed answer. */
 const BASIS_LABEL: Record<Basis, string | null> = { accepted: null, pending: "PENDING", adhoc: "WHAT-IF" };
 
@@ -119,7 +137,9 @@ function ItemTable({ category, items, preview }: { category: AccessCategory; ite
                 </td>
                 <td>{cell(i.location)}</td>
                 <td>{cell(i.from)}</td>
-                <td>{cell(i.to)}</td>
+                <td>
+                  <Recipients to={i.to} />
+                </td>
                 {mail && <td className="mono">{i.item_time ? isoSeconds(i.item_time) : "—"}</td>}
                 {mail && <td>{sizeText(i.size_bytes)}</td>}
                 <td>

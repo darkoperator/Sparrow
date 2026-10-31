@@ -174,6 +174,37 @@ describe("AccessSection", () => {
     expect(screen.queryByRole("button", { name: /^Show \d+ more of Emails read/ })).toBeNull();
   });
 
+  it("a_long_recipient_list_shows_three_then_expands", async () => {
+    const user = userEvent.setup();
+    const to = Array.from({ length: 500 }, (_, n) => `staff${n}@contoso.example`).join("; ");
+    load(account({ items: [item({ to })] }));
+    render(<AccessSection account={A} />);
+    const table = await screen.findByRole("table", { name: "Emails read" });
+    expect(table).toHaveTextContent("staff0@contoso.example; staff1@contoso.example; staff2@contoso.example");
+    expect(table).not.toHaveTextContent("staff3@contoso.example");
+    await user.click(within(table).getByRole("button", { name: "+497 more recipients" }));
+    expect(table).toHaveTextContent("staff499@contoso.example");
+    await user.click(within(table).getByRole("button", { name: "Show fewer recipients" }));
+    expect(table).not.toHaveTextContent("staff3@contoso.example");
+  });
+
+  it("recipients_split_only_on_the_cores_separator", async () => {
+    // The core joins with "; "; a bare ";" inside one value is evidence text, not a separator.
+    load(account({ items: [item({ to: "a@x.example; b;c@x.example; d@x.example; e@x.example" })] }));
+    render(<AccessSection account={A} />);
+    const table = await screen.findByRole("table", { name: "Emails read" });
+    expect(table).toHaveTextContent("a@x.example; b;c@x.example; d@x.example");
+    expect(within(table).getByRole("button", { name: "+1 more recipients" })).toBeInTheDocument();
+  });
+
+  it("a_short_recipient_list_has_no_toggle", async () => {
+    load(account({ items: [item({ to: "a@contoso.example; b@contoso.example; c@contoso.example" })] }));
+    render(<AccessSection account={A} />);
+    const table = await screen.findByRole("table", { name: "Emails read" });
+    expect(table).toHaveTextContent("a@contoso.example; b@contoso.example; c@contoso.example");
+    expect(within(table).queryByRole("button", { name: /recipients/ })).toBeNull();
+  });
+
   it("no_scope_still_shows_tiles_and_coverage", async () => {
     const tiles = ORDER.map((c) => tile(c, { none_seen: false, coverage: { status: "available_not_collected", reason: "run a Purview export", remediation: null } }));
     load(account({ scope: [], items: [], tiles, gaps: ["Emails read: run a Purview export"] }));

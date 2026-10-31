@@ -21,7 +21,10 @@
 .access-table h5 { margin: 0 0 6px; font-size: 13px; }
 .access-table table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .access-table th { color: var(--muted); font-weight: 600; text-align: left; }
-.access-table th, .access-table td { padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
+.access-table th, .access-table td { padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: break-word; }
+/* break-word, not anywhere: anywhere lets auto layout shrink every column to one character when one cell is long. */
+.access-recipients { white-space: nowrap; }
+.access-table td.mono { white-space: nowrap; }
 .access-time { background: var(--sus-bg); }
 .access-bytime { color: var(--sus); font-weight: 600; }
 .access-more { margin-top: 6px; }
