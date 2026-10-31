@@ -150,6 +150,8 @@ struct Shared {
     reading: Mutex<Vec<Arc<duckdb::InterruptHandle>>>,
     /// The connection of the request now running, so a stop can break a send blocked on a CLI that stopped reading.
     current: Mutex<Option<TcpStream>>,
+    /// A write is running (it holds the case lock) or sending its answer: a stop waits for it.
+    writing: AtomicBool,
     handshakes: AtomicUsize,
 }
 
@@ -167,6 +169,7 @@ impl Shared {
             wake: Condvar::new(),
             reading: Mutex::new(Vec::new()),
             current: Mutex::new(None),
+            writing: AtomicBool::new(false),
             handshakes: AtomicUsize::new(0),
         }
     }
@@ -249,6 +252,11 @@ impl Bridge {
         wire::remove_discovery(&self.dir, &self.discovery.token);
         self.shared.interrupt_reads();
         self.shared.wake.notify_all();
+        // A write completes whatever happens (it holds the case lock), so it is not cut off: its agent must learn that
+        // it landed, or a retry would record it twice. Writes are short; a stalled send gives up after `SEND_STALL`.
+        while self.shared.writing.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         // The interrupted request normally answers within milliseconds (the close message). One still running after
         // a second is stuck sending to a CLI that stopped reading: break its connection.
         let waited = Instant::now();
@@ -354,6 +362,8 @@ struct WorkerExit(Arc<Shared>);
 impl Drop for WorkerExit {
     fn drop(&mut self) {
         self.0.stopping.store(true, Ordering::SeqCst);
+        // A write cut short by a panic is over: a stop must not wait for it.
+        self.0.writing.store(false, Ordering::SeqCst);
         // A request cut short by a panic gets its connection closed, so its CLI sees the end at once.
         if let Some(s) = lock(&self.0.current).take() {
             let _ = s.shutdown(std::net::Shutdown::Both);
@@ -389,6 +399,7 @@ impl Worker {
             *lock(&shared.current) = job.stream.try_clone().ok();
             self.serve(&shared, &mut job);
             *lock(&shared.current) = None;
+            shared.writing.store(false, Ordering::SeqCst);
             drop(job.reader);
         }
     }
@@ -663,6 +674,8 @@ impl Worker {
             write_ok: true,
             reading: None,
         });
+        // From here the write runs to the end and answers; a stop waits for it (cleared once the answer is sent).
+        shared.writing.store(true, Ordering::SeqCst);
         // A command that panics must not take the worker down with the app's case lock held.
         let code = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             sparrow_cli::run(args, io, source)

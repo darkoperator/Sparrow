@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 struct Host {
     state: AppState,
     events: Mutex<Vec<(String, Value)>>,
+    /// An event whose emit panics (a host failure outside the command).
+    panic_on: Mutex<Option<&'static str>>,
 }
 
 impl BridgeHost for Host {
@@ -23,6 +25,9 @@ impl BridgeHost for Host {
         &self.state
     }
     fn emit(&self, event: &str, payload: Value) {
+        if *self.panic_on.lock().unwrap() == Some(event) {
+            panic!("emit {event} failed");
+        }
         self.events
             .lock()
             .unwrap()
@@ -133,6 +138,7 @@ fn fixture(analyst: Option<&str>) -> Fixture {
     let host = Arc::new(Host {
         state: AppState::default(),
         events: Mutex::new(Vec::new()),
+        panic_on: Mutex::new(None),
     });
     *host.state.settings_dir.lock().unwrap() = Some(settings);
     if let Some(a) = analyst {
@@ -576,6 +582,7 @@ fn a_real_case_through_the_bridge() {
     let host = Arc::new(Host {
         state: AppState::default(),
         events: Mutex::new(Vec::new()),
+        panic_on: Mutex::new(None),
     });
     *host.state.settings_dir.lock().unwrap() = Some(settings);
     settings_set_analyst(&host.state, "Carol").unwrap();
@@ -706,4 +713,86 @@ fn tenant_settings_are_refused_through_the_bridge() {
     // Listing them is a read and still works.
     let (code, _, err) = f.ask(&["tenant", "domains", "list", "--case", &f.case_arg()]);
     assert_ne!(code, 4, "{err}");
+}
+
+#[test]
+fn an_import_starting_during_a_write_lets_it_answer() {
+    use sparrow_app::cmd::ingest::{Emit, IngestState, ingest_profile};
+    use sparrow_core::case::audit::test_hooks::{delayed_appends, set_append_delay};
+    let f = fixture(Some("Carol"));
+    let d = f.discovery();
+    // A write still running past the stop's one-second grace when the import claims the case.
+    set_append_delay(Some(("agent:slow-writer", 2000)));
+    let case = f.case_arg();
+    let before = delayed_appends();
+    let client = std::thread::spawn(move || {
+        let args = [
+            "mark",
+            "tag",
+            "--case",
+            &case,
+            "--row",
+            "ual_events:u2",
+            "--tag",
+            "ai:slow",
+            "--agent",
+            "slow-writer",
+        ];
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let r = send(&d, &request(&args, BTreeMap::new()), &mut out, &mut err);
+        (
+            r.map_err(|e| e.to_string()),
+            String::from_utf8_lossy(&err).into_owned(),
+        )
+    });
+    // The write holds the case lock and is in its slow append before the import claims the case.
+    let waited = Instant::now();
+    while delayed_appends() == before {
+        assert!(
+            waited.elapsed() < Duration::from_secs(10),
+            "the write never started"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let emit: Emit = Arc::new(|_| {});
+    let _ = ingest_profile(f.state(), &IngestState::default(), "slow-1", &emit);
+    let (answer, err) = client.join().unwrap();
+    set_append_delay(None);
+    // The write completed under the case lock, so the agent is told so (a retry would duplicate it).
+    assert_eq!(answer, Ok(0), "{err}");
+    assert_eq!(
+        tags(&f).iter().filter(|t| t.0 == "ai:slow").count(),
+        1,
+        "the write landed once"
+    );
+}
+
+#[test]
+fn a_worker_that_dies_during_a_write_never_blocks_a_close() {
+    let f = fixture(Some("Carol"));
+    // The write lands, then the host fails emitting its change: the worker unwinds mid-request.
+    *f.host.panic_on.lock().unwrap() = Some("case-changed");
+    let d = f.discovery();
+    let args = [
+        "mark",
+        "tag",
+        "--case",
+        &f.case_arg(),
+        "--row",
+        "ual_events:u1",
+        "--tag",
+        "ai:x",
+        "--agent",
+        "claude",
+    ];
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let _ = send(&d, &request(&args, BTreeMap::new()), &mut out, &mut err);
+    let host = f.host.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || tx.send(case_close(&host.state).is_ok()).unwrap());
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(5)),
+        Ok(true),
+        "the close returns"
+    );
 }

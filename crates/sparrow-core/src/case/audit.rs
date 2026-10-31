@@ -540,6 +540,8 @@ pub fn append_at(
     after: Option<&Value>,
     reason: Option<&str>,
 ) -> Result<AuditEntry> {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    test_hooks::append_delay(actor);
     let fp = ensure_intact(conn)?;
     let e = insert(
         conn,
@@ -655,5 +657,31 @@ pub mod test_hooks {
     /// this thread so far.
     pub fn full_walks() -> usize {
         FULL_WALKS.with(std::cell::Cell::get)
+    }
+
+    static APPEND_DELAY: std::sync::Mutex<Option<(String, u64)>> = std::sync::Mutex::new(None);
+    static DELAYED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    /// Delayed appends begun so far (a test waits for its slow write to be under way).
+    pub fn delayed_appends() -> usize {
+        DELAYED.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Make every append by `actor`, on any thread, wait `ms` first (`None`: no wait): a slow write for tests that
+    /// stop the agent bridge while one runs. Keyed by actor so tests running alongside are not slowed.
+    pub fn set_append_delay(delay: Option<(&str, u64)>) {
+        *APPEND_DELAY.lock().unwrap_or_else(|p| p.into_inner()) =
+            delay.map(|(a, ms)| (a.to_string(), ms));
+    }
+
+    pub(super) fn append_delay(actor: &str) {
+        let ms = match &*APPEND_DELAY.lock().unwrap_or_else(|p| p.into_inner()) {
+            Some((a, ms)) if a == actor => *ms,
+            _ => 0,
+        };
+        if ms > 0 {
+            DELAYED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
     }
 }
