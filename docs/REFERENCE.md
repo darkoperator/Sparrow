@@ -790,7 +790,8 @@ lists as "Malicious".
   ad-hoc values, as if flagged malicious and accepted, case-wide (`--account` still limits the report; a value that is
   not an address, network or id of its kind is refused, exit 1). Ad-hoc values are bound parameters, never SQL text.
   Every item and scope value then carries `basis` (`accepted`, `pending` or `adhoc`; the strongest wins when several
-  match), and when any is not `accepted` the report is a preview: `"preview": true` in JSON, a first line `PREVIEW:
+  match; a message seen several times is listed as its accepted sighting when it has one, so a preview's accepted
+  items are exactly the reviewed report's), and when any is not `accepted` the report is a preview: `"preview": true` in JSON, a first line `PREVIEW:
   includes pending or ad-hoc scope; not the reviewed report` in the text, the CSV message and the Markdown, scope lines
   prefixed `PENDING` / `AD-HOC`, and the CSV's last column `basis`. Without these options (and in the app's export
   menu) the report is the reviewed one.
