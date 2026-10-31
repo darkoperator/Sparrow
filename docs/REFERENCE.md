@@ -752,7 +752,7 @@ succeeds, and is refused when it is the case file, its `.wal`, or inside the tes
 ## Access report
 
 `sparrow access --case C [--account UPN] [--include-pending] [--ip IP] [--prefix CIDR] [--session ID] [--device ID]
-[--csv FILE | --markdown] [--json]` answers "what did the attacker get?" per
+[--brief | --category CAT [--limit N] [--offset N]] [--csv FILE | --markdown] [--json]` answers "what did the attacker get?" per
 compromised account: mail read and sent, attachments, SharePoint/OneDrive files, Teams, Copilot and other apps.
 Read-only; no audit entry. `--csv` is refused (exit 5) when it names the case or its `.wal`, and is written through a
 temp file; `--json` cannot be combined with `--csv` or `--markdown`. In the app, an account tab has an Access section (scope chips,
@@ -798,6 +798,13 @@ lists as "Malicious".
   partial when the account's mailbox (`mailboxes`) has an audit bypass or does not audit the action for its owner. Every account lists the gaps
   Microsoft never logs (Teams app reads, Outlook-synced mail, attachments opened in Outlook/OWA, Exchange searches
   without Audit Premium).
+- **Compact output** (for agents). `--brief`: per account the tiles and the scope values with only their windows
+  `count`, `first` and `last` time; no items. `--category CAT` (`mail_read`, `mail_sent`, `attachment`, `file`,
+  `teams`, `copilot`, `other`): per account `{account, category, total, items}`, the items of that category only, at
+  most `--limit` (default 100) after `--offset` (an offset past the end gives no items and the right `total`). In
+  JSON the four gaps Microsoft never logs are listed once, as the report's `never_logged` (each account's `gaps` hold
+  its own coverage reasons), and every item has `row`, `<source_table>:<record_key>`, the exact argument of
+  `sparrow mark flag --row`, `note add` and `timeline-entry propose --evidence`.
 - **Exports.** `--csv` writes one row per item (columns `account, category, attribution, accessed_utc, action, item,
   location, from, to, size_bytes, item_time_utc, app, ip, session_id, owner, note, source, record_id, basis`; UTF-8 with a BOM,
   ISO 8601 UTC, formula-like cells prefixed with `'`). `--markdown` prints a table (one row per account, a cell per

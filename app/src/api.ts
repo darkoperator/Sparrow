@@ -409,6 +409,8 @@ export interface AccessItem {
   source_table: string;
   record_key: string;
   basis: Basis;
+  /** `<source_table>:<record_key>`, as `sparrow mark flag --row` takes it. */
+  row: string;
 }
 
 /** `case::access::CategoryCoverage`: an `evidence_availability` status, or `none`. */
@@ -460,6 +462,8 @@ export interface AccessReport {
   pending_flags: number;
   /** An item or scope value rests on a pending flag or a what-if value: not the reviewed answer. */
   preview: boolean;
+  /** What Microsoft never logs, the same for every account (the accounts' `gaps` hold their own reasons only). */
+  never_logged: string[];
 }
 
 /**

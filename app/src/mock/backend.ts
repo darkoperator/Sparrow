@@ -455,11 +455,8 @@ const handlers: Record<string, (a: Args) => unknown> = {
       items: [],
       gaps: [] as string[],
     };
-    // The coverage reason of each category, then the gaps Microsoft never logs (the last four of any account's).
-    empty.gaps = [
-      ...empty.tiles.map((t) => `${ACCESS_TITLES[t.category]}: ${t.coverage.reason}`),
-      ...r.accounts[0].gaps.slice(-4),
-    ];
+    // The coverage reason of each category (what Microsoft never logs is the report's `never_logged`).
+    empty.gaps = empty.tiles.map((t) => `${ACCESS_TITLES[t.category]}: ${t.coverage.reason}`);
     return { ...r, accounts: [hit ?? empty] };
   },
   access_accounts: () => fx.accessReport().accounts.map((x) => x.account),

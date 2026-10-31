@@ -42,6 +42,9 @@ pub struct Item {
     pub record_key: String,
     /// What ties the record to the attacker: an accepted flag, a pending one, or an ad-hoc value.
     pub basis: Basis,
+    /// `<source_table>:<record_key>`: the argument `sparrow mark flag --row`, `note add` and `timeline-entry propose
+    /// --evidence` take.
+    pub row: String,
 }
 
 /// `attributed a` joined to its UAL record `u` in `access_ual` (see [`stage_ual`]).
@@ -295,9 +298,13 @@ pub fn items_with(
             source_table: r.get(17)?,
             record_key: r.get(18)?,
             basis: Basis::from_rank(r.get(19)?),
+            row: String::new(),
         })
     })?;
-    let out: Vec<Item> = rows.collect::<std::result::Result<_, _>>()?;
+    let mut out: Vec<Item> = rows.collect::<std::result::Result<_, _>>()?;
+    for i in &mut out {
+        i.row = format!("{}:{}", i.source_table, i.record_key);
+    }
     // The staged AuditData is only needed for this query: free it.
     conn.execute_batch("DROP TABLE IF EXISTS access_ual")?;
     Ok(out)

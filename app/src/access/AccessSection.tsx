@@ -144,7 +144,7 @@ type Notice = { kind: "error" | "info"; text: string; for: string };
 
 export default function AccessSection({ account }: { account: string }) {
   // Keyed by the account it was read for: another account's answer is "loading" until its own arrives.
-  type Loaded = { for: string; acc?: AccessAccount; pending?: number; error?: string };
+  type Loaded = { for: string; acc?: AccessAccount; pending?: number; never?: string[]; error?: string };
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const dataVersion = useDataVersion();
@@ -162,7 +162,7 @@ export default function AccessSection({ account }: { account: string }) {
     let live = true;
     const args: PreviewArgs | null = JSON.parse(previewKey);
     accessReport(account, args).then(
-      (r) => live && setLoaded({ for: loadKey, acc: r.accounts[0], pending: r.pending_flags }),
+      (r) => live && setLoaded({ for: loadKey, acc: r.accounts[0], pending: r.pending_flags, never: r.never_logged }),
       (e: unknown) => live && setLoaded({ for: loadKey, error: isCmdError(e) ? e.message : String(e) }),
     );
     return () => {
@@ -171,7 +171,7 @@ export default function AccessSection({ account }: { account: string }) {
   }, [account, previewKey, loadKey, dataVersion]);
   const current = loaded?.for === loadKey ? loaded : null;
   const error = current?.error ?? null;
-  const data = current?.acc ? { acc: current.acc, pending: current.pending ?? 0 } : null;
+  const data = current?.acc ? { acc: current.acc, pending: current.pending ?? 0, never: current.never ?? [] } : null;
 
   // The notice belongs to the account whose export it reports: switching tabs mid-export must not show it on another.
   const exportCsv = async () => {
@@ -269,7 +269,7 @@ export default function AccessSection({ account }: { account: string }) {
         <p className="entity-empty">Loading…</p>
       </section>
     );
-  const { acc, pending } = data;
+  const { acc, pending, never } = data;
   const noScope = acc.scope.length === 0 && acc.items.length === 0;
   const byCategory = (c: AccessCategory) => acc.items.filter((i) => i.category === c);
   return (
@@ -323,7 +323,8 @@ export default function AccessSection({ account }: { account: string }) {
           ))}
         </p>
         <ul>
-          {acc.gaps.map((g) => (
+          {/* The account's own gaps, then what Microsoft never logs (listed once by the report). */}
+          {[...acc.gaps, ...never.filter((g) => !acc.gaps.includes(g))].map((g) => (
             <li key={g}>{displaySafe(g)}</li>
           ))}
         </ul>

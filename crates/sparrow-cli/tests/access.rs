@@ -201,3 +201,125 @@ fn access_preview_prints_the_banner_and_chips() {
     assert_eq!(r.code, 1);
     assert!(r.err.contains("not an IP"), "{}", r.err);
 }
+
+#[test]
+fn access_brief_has_no_items() {
+    let (_tmp, path) = setup();
+    let v = json(&[
+        "access",
+        "--case",
+        path.to_str().unwrap(),
+        "--brief",
+        "--json",
+    ]);
+    let a = &v["accounts"][0];
+    assert_eq!(a["account"], "jdoe@contoso.example");
+    assert!(a.get("items").is_none(), "{a}");
+    assert_eq!(a["tiles"].as_array().unwrap().len(), 7);
+    let w = &a["scope"][0]["windows"];
+    assert_eq!(w["count"], 1);
+    assert!(w["first"].is_string() && w["last"].is_string(), "{w}");
+    assert_eq!(v["never_logged"].as_array().unwrap().len(), 4);
+    // The text says the same, one line per scope value.
+    let r = run(&["access", "--case", path.to_str().unwrap(), "--brief"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(
+        r.out
+            .lines()
+            .any(|l| l.starts_with("  scope  ip 203.0.113.45  1 window  ")),
+        "{}",
+        r.out
+    );
+}
+
+#[test]
+fn access_category_pages() {
+    let (_tmp, path) = setup();
+    let p = path.to_str().unwrap();
+    let all = json(&["access", "--case", p, "--category", "other", "--json"]);
+    let a = &all["accounts"][0];
+    assert_eq!(a["category"], "other");
+    assert_eq!(a["total"], 2);
+    let items = a["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert!(
+        items
+            .iter()
+            .all(|i| i["category"] == "other" && i["row"].as_str().unwrap().contains(':'))
+    );
+    let page = json(&[
+        "access",
+        "--case",
+        p,
+        "--category",
+        "other",
+        "--limit",
+        "1",
+        "--offset",
+        "1",
+        "--json",
+    ]);
+    let a = &page["accounts"][0];
+    assert_eq!(a["total"], 2);
+    assert_eq!(a["items"].as_array().unwrap().len(), 1);
+    assert_eq!(a["items"][0]["row"], items[1]["row"]);
+    let r = run(&["access", "--case", p, "--category", "nope"]);
+    assert_eq!(r.code, 1);
+    assert!(r.err.contains("mail_read"), "{}", r.err);
+}
+
+#[test]
+fn paging_past_the_end() {
+    let (_tmp, path) = setup();
+    let v = json(&[
+        "access",
+        "--case",
+        path.to_str().unwrap(),
+        "--category",
+        "other",
+        "--offset",
+        "50",
+        "--json",
+    ]);
+    let a = &v["accounts"][0];
+    assert_eq!(a["total"], 2);
+    assert_eq!(a["items"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn compact_text_keeps_the_preview_marks_and_the_context() {
+    let (_tmp, path) = setup();
+    let p = path.to_str().unwrap();
+    let r = run(&[
+        "access",
+        "--case",
+        p,
+        "--category",
+        "other",
+        "--ip",
+        "192.0.2.9",
+    ]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let head = r
+        .out
+        .lines()
+        .find(|l| l.starts_with("other@contoso.example  other"))
+        .unwrap_or_else(|| panic!("{}", r.out));
+    assert!(head.contains("AD-HOC 1"), "{head}");
+    assert!(
+        r.out.lines().any(|l| l.starts_with("never logged  ")),
+        "{}",
+        r.out
+    );
+    // An empty report still says what Microsoft never logs.
+    let tmp = tempfile::tempdir().unwrap();
+    let empty = tmp.path().join("empty.duckdb");
+    events_common::build(&empty);
+    let r = run(&["access", "--case", empty.to_str().unwrap()]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(
+        r.out.lines().any(|l| l.starts_with("never logged  ")),
+        "{}",
+        r.out
+    );
+}

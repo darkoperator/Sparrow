@@ -1604,14 +1604,18 @@ fn zero_is_never_none_seen_without_coverage() {
 }
 
 #[test]
-fn never_logged_gaps_are_always_listed() {
+fn never_logged_is_listed_once_per_report() {
     let case = Case::in_memory().unwrap();
     vflag(&case, "account", JDOE, None, State::Accepted);
+    vflag(&case, "account", BOB, None, State::Accepted);
     let r = access::report(case.conn(), None).unwrap();
-    for (_, gap) in NEVER_LOGGED {
-        assert!(r.accounts[0].gaps.iter().any(|g| g == gap), "{gap}");
-    }
+    let want: Vec<String> = NEVER_LOGGED.iter().map(|(_, g)| g.to_string()).collect();
+    assert_eq!(r.never_logged, want);
     assert_eq!(NEVER_LOGGED.len(), 4);
+    // Each account keeps only its own coverage reasons.
+    for a in &r.accounts {
+        assert!(a.gaps.iter().all(|g| !want.contains(g)), "{:?}", a.gaps);
+    }
 }
 
 #[test]
@@ -2508,4 +2512,62 @@ fn the_reviewed_report_carries_no_preview_marks() {
                 .all(|t| t["pending"] == 0 && t["adhoc"] == 0)
         );
     }
+}
+
+#[test]
+fn items_carry_their_row_ref() {
+    let case = preview_case();
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let r = access::report(case.conn(), Some(JDOE)).unwrap();
+    let i = &r.accounts[0].items[0];
+    assert_eq!(i.row, format!("ual_events:{R1}"));
+    // The exact argument `mark flag --row`, `note add` and `timeline-entry propose --evidence` take.
+    let e = sparrow_core::case::timeline_entries::EvidenceRef::parse(&i.row).unwrap();
+    assert_eq!(
+        (e.source_table.as_str(), e.record_key.as_str()),
+        ("ual_events", R1)
+    );
+}
+
+#[test]
+fn every_emitted_row_is_one_mark_flag_accepts() {
+    let case = preview_case();
+    // A legacy mailbox audit record, filed under `other`.
+    put(
+        &case,
+        &Ev {
+            table: "mailbox_audit_legacy",
+            ip: Some(IP),
+            operation: Some("UpdateInboxRules"),
+            at: 30,
+            ..ual("L1")
+        },
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let r = access::report(case.conn(), Some(JDOE)).unwrap();
+    let rows: Vec<sparrow_core::case::marks::RowRef> = r.accounts[0]
+        .items
+        .iter()
+        .map(|i| {
+            let e = sparrow_core::case::timeline_entries::EvidenceRef::parse(&i.row).unwrap();
+            sparrow_core::case::marks::RowRef::new(&e.source_table, &e.record_key)
+        })
+        .collect();
+    assert!(
+        rows.iter()
+            .any(|r| r.source_table == "mailbox_audit_legacy"),
+        "{rows:?}"
+    );
+    assert!(
+        rows.iter().any(|r| r.source_table == "ual_events"),
+        "{rows:?}"
+    );
+    let actor = sparrow_core::case::actor::Actor::agent("t", None).unwrap();
+    sparrow_core::case::marks::flag_rows(
+        case.conn(),
+        &actor,
+        &rows,
+        Some(sparrow_core::case::marks::FlagLevel::Suspicious),
+    )
+    .expect("every emitted row is an event of the case");
 }

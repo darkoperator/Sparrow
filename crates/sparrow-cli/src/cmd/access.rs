@@ -7,7 +7,10 @@ use super::export::{atomic, check_out};
 use crate::{open_read, print_json};
 use anyhow::{Context, Result};
 use clap::Args;
-use sparrow_core::case::access::{AccountAccess, Basis, ScopeSource, Tile, report_with};
+use serde::Serialize;
+use sparrow_core::case::access::{
+    AccessReport, AccountAccess, Basis, Category, Item, ScopeSource, Tile, report_with,
+};
 use sparrow_core::case::marks::ValueKind;
 use sparrow_core::case::text::display_safe_line as safe;
 use sparrow_core::export::access::{write_csv, write_summary};
@@ -44,6 +47,103 @@ pub struct AccessArgs {
     /// An ad-hoc device id (repeatable)
     #[arg(long = "device", value_name = "ID")]
     pub devices: Vec<String>,
+    /// Per account only the tiles and the scope values (their window count, first and last time); no items
+    #[arg(long, conflicts_with_all = ["csv", "markdown", "category"])]
+    pub brief: bool,
+    /// Only the items of one category (mail_read, mail_sent, attachment, file, teams, copilot, other), paged
+    #[arg(long, value_name = "CAT", conflicts_with_all = ["csv", "markdown"])]
+    pub category: Option<String>,
+    /// With --category: at most this many items per account
+    #[arg(long, default_value_t = 100, requires = "category")]
+    pub limit: usize,
+    /// With --category: skip this many items of each account first
+    #[arg(long, default_value_t = 0, requires = "category")]
+    pub offset: usize,
+}
+
+/// `--brief`: an account's windows as a count and a span.
+#[derive(Serialize)]
+struct BriefWindows {
+    count: usize,
+    first: Option<chrono::DateTime<chrono::Utc>>,
+    last: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Serialize)]
+struct BriefScope<'a> {
+    kind: &'a str,
+    value: &'a str,
+    basis: Basis,
+    windows: BriefWindows,
+}
+
+#[derive(Serialize)]
+struct BriefAccount<'a> {
+    account: &'a str,
+    tenant_key: Option<&'a str>,
+    scope: Vec<BriefScope<'a>>,
+    tiles: &'a [Tile],
+    gaps: &'a [String],
+}
+
+/// `--category`: one page of one category's items of an account, and how many there are.
+#[derive(Serialize)]
+struct CategoryPage<'a> {
+    account: &'a str,
+    category: Category,
+    total: usize,
+    items: Vec<&'a Item>,
+}
+
+/// `--brief` and `--category` output: the report's own top-level fields around the accounts.
+#[derive(Serialize)]
+struct Compact<T: Serialize> {
+    accounts: Vec<T>,
+    pending_flags: u64,
+    preview: bool,
+    never_logged: Vec<String>,
+}
+
+fn compact<T: Serialize>(r: &AccessReport, accounts: Vec<T>) -> Compact<T> {
+    Compact {
+        accounts,
+        pending_flags: r.pending_flags,
+        preview: r.preview,
+        never_logged: r.never_logged.clone(),
+    }
+}
+
+fn brief(a: &AccountAccess) -> BriefAccount<'_> {
+    BriefAccount {
+        account: &a.account,
+        tenant_key: a.tenant_key.as_deref(),
+        scope: a
+            .scope
+            .iter()
+            .map(|s| BriefScope {
+                kind: &s.kind,
+                value: &s.value,
+                basis: s.basis,
+                windows: BriefWindows {
+                    count: s.windows.len(),
+                    first: s.windows.first().map(|w| w.start),
+                    last: s.windows.last().map(|w| w.end),
+                },
+            })
+            .collect(),
+        tiles: &a.tiles,
+        gaps: &a.gaps,
+    }
+}
+
+fn page(a: &AccountAccess, c: Category, offset: usize, limit: usize) -> CategoryPage<'_> {
+    let of: Vec<&Item> = a.items.iter().filter(|i| i.category == c).collect();
+    CategoryPage {
+        account: &a.account,
+        category: c,
+        total: of.len(),
+        items: of.into_iter().skip(offset).take(limit).collect(),
+    }
 }
 
 /// The first line of every preview.
@@ -119,7 +219,7 @@ fn tile_line(t: &Tile) -> String {
     .to_string()
 }
 
-fn print_account(a: &AccountAccess) {
+fn print_account(a: &AccountAccess, brief: bool) {
     outln!(
         "{}  tenant {}",
         safe(&a.account),
@@ -129,11 +229,23 @@ fn print_account(a: &AccountAccess) {
             .unwrap_or_else(|| "unknown".into())
     );
     for s in &a.scope {
-        let w: Vec<String> = s
-            .windows
-            .iter()
-            .map(|w| format!("{}..{}", iso(&w.start), iso(&w.end)))
-            .collect();
+        let w: Vec<String> = if brief {
+            let n = s.windows.len();
+            match (s.windows.first(), s.windows.last()) {
+                (Some(f), Some(l)) => vec![format!(
+                    "{n} window{}  {}..{}",
+                    if n == 1 { "" } else { "s" },
+                    iso(&f.start),
+                    iso(&l.end)
+                )],
+                _ => vec!["0 windows".to_string()],
+            }
+        } else {
+            s.windows
+                .iter()
+                .map(|w| format!("{}..{}", iso(&w.start), iso(&w.end)))
+                .collect()
+        };
         outln!(
             "  scope  {}{} {}  {}",
             basis_chip(s.basis),
@@ -158,8 +270,72 @@ pub fn run(a: AccessArgs, json: bool) -> Result<ExitCode> {
         check_out(path, &a.case)?;
     }
     let src = a.scope_source()?;
+    let category = match &a.category {
+        Some(c) => Some(Category::parse(c).ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown category {c:?}: mail_read, mail_sent, attachment, file, teams, copilot or other"
+            )
+        })?),
+        None => None,
+    };
     let c = open_read(&a.case)?;
     let r = report_with(c.conn(), a.account.as_deref(), &src)?;
+    if let Some(cat) = category {
+        let pages: Vec<CategoryPage> = r
+            .accounts
+            .iter()
+            .map(|acc| page(acc, cat, a.offset, a.limit))
+            .collect();
+        if json {
+            print_json(&compact(&r, pages))?;
+            return Ok(ExitCode::SUCCESS);
+        }
+        if r.preview {
+            outln!("{PREVIEW_BANNER}");
+        }
+        for (p, acc) in pages.iter().zip(&r.accounts) {
+            // The page header counts the whole category: it says how much of it a preview added.
+            let of = |b: Basis| {
+                acc.items
+                    .iter()
+                    .filter(|i| i.category == p.category && i.basis == b)
+                    .count()
+            };
+            let marks = [
+                ("PENDING", of(Basis::Pending)),
+                ("AD-HOC", of(Basis::Adhoc)),
+            ]
+            .iter()
+            .filter(|(_, n)| *n > 0)
+            .map(|(l, n)| format!("  {l} {n}"))
+            .collect::<String>();
+            outln!(
+                "{}  {}  {} of {} (from {}){marks}",
+                safe(p.account),
+                p.category.as_str(),
+                p.items.len(),
+                p.total,
+                a.offset
+            );
+            for i in &p.items {
+                outln!(
+                    "  {}  {}{}  {}  {}",
+                    iso(&i.accessed),
+                    basis_chip(i.basis),
+                    safe(&i.action),
+                    i.item.as_deref().map(safe).unwrap_or_default(),
+                    safe(&i.row)
+                );
+            }
+        }
+        print_context(&r, &src);
+        return Ok(ExitCode::SUCCESS);
+    }
+    if a.brief && json {
+        let accounts: Vec<BriefAccount> = r.accounts.iter().map(brief).collect();
+        print_json(&compact(&r, accounts))?;
+        return Ok(ExitCode::SUCCESS);
+    }
     if json {
         print_json(&r)?;
         return Ok(ExitCode::SUCCESS);
@@ -192,12 +368,22 @@ pub fn run(a: AccessArgs, json: bool) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     for acc in &r.accounts {
-        print_account(acc);
+        print_account(acc, a.brief);
     }
     if r.accounts.is_empty() {
         outln!(
             "no accounts with accepted malicious flags; flag the attacker's sessions or IPs first"
         );
+    }
+    print_context(&r, &src);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// What every text report ends with: the gaps Microsoft never logs (also for an empty report) and the flags still
+/// waiting for review.
+fn print_context(r: &AccessReport, src: &ScopeSource) {
+    for g in &r.never_logged {
+        outln!("never logged  {}", safe(g));
     }
     if r.pending_flags > 0 {
         let how = if src.include_pending {
@@ -210,5 +396,4 @@ pub fn run(a: AccessArgs, json: bool) -> Result<ExitCode> {
             r.pending_flags
         );
     }
-    Ok(ExitCode::SUCCESS)
 }

@@ -162,7 +162,7 @@ impl Category {
         }
     }
 
-    pub(crate) fn parse(s: &str) -> Option<Category> {
+    pub fn parse(s: &str) -> Option<Category> {
         Self::ALL.into_iter().find(|c| c.as_str() == s)
     }
 }
@@ -200,7 +200,8 @@ pub struct AccountAccess {
     /// One per category, in [`Category::ALL`] order.
     pub tiles: Vec<Tile>,
     pub items: Vec<Item>,
-    /// Coverage reasons of the categories whose source was not collected, then [`NEVER_LOGGED`].
+    /// Coverage reasons of the categories whose source was not collected (the report's `never_logged` lists, once,
+    /// what Microsoft never logs).
     pub gaps: Vec<String>,
 }
 
@@ -211,6 +212,8 @@ pub struct AccessReport {
     pub pending_flags: u64,
     /// True when an item or scope value comes from a pending flag or an ad-hoc value: not the reviewed report.
     pub preview: bool,
+    /// What Microsoft never logs ([`NEVER_LOGGED`]), for every account alike.
+    pub never_logged: Vec<String>,
 }
 
 /// The accounts on the report: those with a direct attribution or an accepted malicious account flag, sorted.
@@ -378,7 +381,6 @@ fn account_access(
             adhoc,
         });
     }
-    gaps.extend(NEVER_LOGGED.iter().map(|(_, g)| g.to_string()));
     Ok(AccountAccess {
         scope: scope::scope_with(conn, &account, src)?,
         account,
@@ -424,5 +426,6 @@ pub fn report_with(
         accounts: out,
         pending_flags: pending_flags(conn)?,
         preview,
+        never_logged: NEVER_LOGGED.iter().map(|(_, g)| g.to_string()).collect(),
     })
 }

@@ -87,9 +87,14 @@ report is a PREVIEW (`"preview": true`, every item and scope value has `basis` `
 quote it.
 
 ```bash
-sparrow access --case case.duckdb --account alice@contoso.example --include-pending --json
-sparrow access --case case.duckdb --ip 203.0.113.7 --json
+sparrow access --case case.duckdb --account alice@contoso.example --include-pending --brief --json
+sparrow access --case case.duckdb --ip 203.0.113.7 --brief --json
+sparrow access --case case.duckdb --account alice@contoso.example --category mail_read --limit 50 --json
 ```
+
+Start with `--brief` (tiles and scope, no items), then page the one category you need with `--category`
+(`total` says how many there are; `--offset` for the next page). Each item's `row` is what `mark flag --row` and
+`note add` take. The gaps Microsoft never logs are listed once, as `never_logged`.
 
 ## Events, entities, marks
 

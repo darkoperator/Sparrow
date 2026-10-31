@@ -459,7 +459,7 @@ const BASES: Basis[] = ["accepted", "pending", "adhoc"];
 /** The recorded access report, checked against the Rust shape (keys, tile order, enum values). */
 export function accessReport(): AccessReport {
   const v: unknown = clone(accessReportJson);
-  need("access_report", v, ["accounts", "pending_flags", "preview"]);
+  need("access_report", v, ["accounts", "pending_flags", "preview", "never_logged"]);
   if (typeof v.pending_flags !== "number") throw new Error("fixture access_report: pending_flags is not a number");
   if (!Array.isArray(v.accounts) || v.accounts.length === 0) throw new Error("fixture access_report: no accounts");
   v.accounts.forEach((a: unknown, i) => {
@@ -481,7 +481,7 @@ export function accessReport(): AccessReport {
         throw new Error(`fixture access_report.accounts[${i}].items[${j}]: unknown category or attribution`);
       if (!BASES.includes(t.basis as Basis)) throw new Error(`fixture access_report.accounts[${i}].items[${j}]: unknown basis`);
     });
-    (a.items as unknown[]).forEach((t, j) => need(`access_report.accounts[${i}].items[${j}]`, t, ["account", "category", "attribution", "accessed", "action", "item", "location", "from", "to", "size_bytes", "item_time", "app", "ip", "session_id", "owner", "note", "source", "source_table", "record_key", "basis"]));
+    (a.items as unknown[]).forEach((t, j) => need(`access_report.accounts[${i}].items[${j}]`, t, ["account", "category", "attribution", "accessed", "action", "item", "location", "from", "to", "size_bytes", "item_time", "app", "ip", "session_id", "owner", "note", "source", "source_table", "record_key", "basis", "row"]));
   });
   return v as unknown as AccessReport;
 }

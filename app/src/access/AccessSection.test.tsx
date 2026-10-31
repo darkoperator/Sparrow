@@ -15,6 +15,7 @@ import * as api from "../api";
 import AccessSection from "./AccessSection";
 
 const A = "jdoe@contoso.example";
+const NEVER = ["Teams chats read in the Teams app are not audited (only Graph reads are)"];
 const ORDER: AccessCategory[] = ["mail_read", "mail_sent", "attachment", "file", "teams", "copilot", "other"];
 
 function tile(category: AccessCategory, over: Partial<AccessTile> = {}): AccessTile {
@@ -36,7 +37,7 @@ function item(over: Partial<AccessItem>): AccessItem {
     account: A, category: "mail_read", attribution: "ip", accessed: "2026-10-23T16:42:18Z", action: "read",
     item: "Q3 invoices", location: "\\Inbox", from: "ap@vendor.example", to: A, size_bytes: 10, item_time: null,
     app: null, ip: "203.0.113.45", session_id: null, owner: null, note: null, source: "ual_events:MailItemsAccessed",
-    source_table: "ual_events", record_key: "r1", basis: "accepted", ...over,
+    source_table: "ual_events", record_key: "r1", basis: "accepted", row: "ual_events:r1", ...over,
   };
 }
 
@@ -47,13 +48,13 @@ function account(over: Partial<AccessAccount> = {}): AccessAccount {
     scope: [{ kind: "ip", value: "203.0.113.45", basis: "accepted", windows: [{ start: "2026-10-23T16:38:51Z", end: "2026-10-23T17:45:09Z" }] }],
     tiles: ORDER.map((c) => tile(c)),
     items: [],
-    gaps: ["Teams chats read in the Teams app are not audited (only Graph reads are)"],
+    gaps: [],
     ...over,
   };
 }
 
 function load(a: AccessAccount, pending = 0) {
-  const r: AccessReport = { accounts: [a], pending_flags: pending, preview: false };
+  const r: AccessReport = { accounts: [a], pending_flags: pending, preview: false, never_logged: NEVER };
   vi.mocked(api.accessReport).mockResolvedValue(r);
 }
 
@@ -69,7 +70,9 @@ function loadWithPreview() {
     tiles: ORDER.map((c) => tile(c, c === "mail_read" ? { direct: 3, pending: 1, adhoc: 1 } : {})),
   });
   vi.mocked(api.accessReport).mockImplementation(async (_a, p) =>
-    p ? { accounts: [preview], pending_flags: 1, preview: true } : { accounts: [reviewed], pending_flags: 1, preview: false },
+    p
+      ? { accounts: [preview], pending_flags: 1, preview: true, never_logged: NEVER }
+      : { accounts: [reviewed], pending_flags: 1, preview: false, never_logged: NEVER },
   );
 }
 
@@ -112,7 +115,7 @@ describe("AccessSection", () => {
     tiles[4] = tile("teams", { none_seen: false, coverage: { status: "partial", reason: "UAL partial: Teams operations of this account may not have been collected", remediation: null } });
     tiles[5] = tile("copilot", { none_seen: false, coverage: { status: "not_licensed", reason: "no licence", remediation: null } });
     // As the core: a reason line per category whose source was not collected, then the never-logged gaps.
-    load(account({ tiles, gaps: ["Teams: UAL partial: Teams operations of this account may not have been collected", "Copilot: no licence", "Teams chats read in the Teams app are not audited (only Graph reads are)"] }));
+    load(account({ tiles, gaps: ["Teams: UAL partial: Teams operations of this account may not have been collected", "Copilot: no licence"] }));
     render(<AccessSection account={A} />);
     const grid = await screen.findByRole("list", { name: "What the attacker reached" });
     const card = (n: string) => within(grid).getByRole("listitem", { name: n });
@@ -284,5 +287,13 @@ describe("AccessSection", () => {
     expect(screen.getByRole("checkbox", { name: "Include pending agent flags" })).not.toBeChecked();
     expect(screen.queryByText(/^PREVIEW/)).toBeNull();
     expect(api.accessReport).toHaveBeenLastCalledWith(A, null);
+  });
+
+  it("shows_the_never_logged_gaps_from_the_report", async () => {
+    load(account({ gaps: ["Copilot: no licence"] }));
+    render(<AccessSection account={A} />);
+    const coverage = await screen.findByRole("region", { name: "Coverage" });
+    const lines = within(coverage).getAllByRole("listitem").map((l) => l.textContent);
+    expect(lines).toEqual(["Copilot: no licence", NEVER[0]]);
   });
 });
