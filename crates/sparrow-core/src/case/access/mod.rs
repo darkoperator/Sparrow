@@ -91,6 +91,9 @@ impl Basis {
 pub struct ScopeSource {
     pub include_pending: bool,
     pub adhoc: Vec<(ValueKind, String)>,
+    /// Only records of `[from, to)` are attributed (`investigate`'s window): items, and the coverage limits read from
+    /// them, are of the window; scope values and their windows are not limited.
+    pub window: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
 }
 
 impl ScopeSource {

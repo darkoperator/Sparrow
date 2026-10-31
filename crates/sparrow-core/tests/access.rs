@@ -2301,6 +2301,7 @@ fn accepted_wins_over_pending_and_adhoc() {
     let src = ScopeSource {
         include_pending: true,
         adhoc: vec![(ValueKind::Ip, IP.to_string())],
+        ..ScopeSource::accepted()
     };
     let r = report_with(case.conn(), Some(JDOE), &src).unwrap();
     let a = &r.accounts[0];

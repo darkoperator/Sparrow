@@ -169,6 +169,7 @@ impl AccessArgs {
         Ok(ScopeSource {
             include_pending: self.include_pending,
             adhoc,
+            ..ScopeSource::accepted()
         })
     }
 }

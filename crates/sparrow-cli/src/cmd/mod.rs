@@ -8,6 +8,7 @@ pub mod entity;
 pub mod events;
 pub mod export;
 pub mod finding;
+pub mod investigate;
 pub mod mark;
 pub mod note;
 pub mod read;

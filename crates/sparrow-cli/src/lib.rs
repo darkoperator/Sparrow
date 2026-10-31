@@ -60,7 +60,7 @@ struct Cli {
     /// a private copy, deleted afterwards; also SPARROW_SNAPSHOT=1. Writes never use a copy
     #[arg(long, global = true)]
     snapshot: bool,
-    /// Per-phase durations on stderr (and `timings` in --json): access, entity, detect and export
+    /// Per-phase durations on stderr (and `timings` in --json): access, investigate, entity, detect and export
     #[arg(long, global = true)]
     timings: bool,
     #[command(subcommand)]
@@ -221,6 +221,9 @@ enum Command {
     Events(cmd::events::EventsArgs),
     /// One account, IP, device or Entra session: tiles, pivot tables and findings
     Entity(cmd::entity::EntityArgs),
+    /// One account in one window (the customer's dates): its sessions and what each reached, the mail around it,
+    /// its configuration changes and its findings' times, with the next commands. Read-only
+    Investigate(cmd::investigate::InvestigateArgs),
     /// The evidence timeline (every event record), filtered; capped by --limit
     Timeline(cmd::read::TimelineArgs),
     /// Everything the case knows about an IP or a user, section by section (each capped)
@@ -1030,6 +1033,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Some(Command::Mark { command }) => cmd::mark::run(command, json),
         Some(Command::Events(a)) => cmd::events::run(a, json),
         Some(Command::Entity(a)) => cmd::entity::run(a, json),
+        Some(Command::Investigate(a)) => cmd::investigate::run(a, json),
         Some(Command::Timeline(a)) => cmd::read::timeline(a, json),
         Some(Command::Pivot { command }) => cmd::read::pivot(command, json),
         Some(Command::Query { sql, case, limit }) => cmd::read::query(&case, &sql, limit, json),
@@ -1622,7 +1626,7 @@ fn cmd_capabilities(case_path: &Path, json: bool) -> Result<ExitCode> {
 /// format character (anything `display_safe_line` would escape) cannot be one printable line inside single
 /// quotes, so it is written as an ANSI-C `$'...'` word with octal / `\u` escapes (bash, zsh and ksh): the
 /// command stays on one line and never carries a raw control character.
-fn shell_quote(s: &str) -> String {
+pub(crate) fn shell_quote(s: &str) -> String {
     use sparrow_core::case::text::display_safe_line;
     if display_safe_line(s) == s && !s.chars().any(char::is_control) {
         return format!("'{}'", s.replace('\'', "'\\''"));

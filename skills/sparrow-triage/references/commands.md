@@ -73,6 +73,20 @@ it gives `rows`, `first`, `last`, `days` and `sampled` (rows from a capped expor
 lists what to ask for, one per account and source with gaps, with `console` (admin portal), `hawk` and `invictus`
 (Microsoft-Extractor-Suite) commands filled in with the user and dates; `null` means that collector has no command for it.
 
+## Investigate one account
+
+When the analyst names an account and a date ("phished on the 23rd"), start here: one call for its sessions (what
+each reached), the mail around the window (the lure the day before), config changes and findings' times. The window
+is required; widen it with `--pad` or move it as the evidence says.
+
+```bash
+sparrow investigate --case case.duckdb --user alice@contoso.example --on 2026-08-21 --pad 12h --json
+sparrow investigate --case case.duckdb --user alice@contoso.example --from 2026-08-21T06:00:00Z --to 2026-08-22T00:00:00Z --json
+```
+
+Read `sessions[].ips[].new_for_account`, `reach` and `findings`; `next` holds the flag and access commands per
+session. Facts only: you decide which session is the attacker's.
+
 ## Access report
 
 `sparrow access` is read-only. From the accepted malicious flags (pending agent flags do not count until accepted) it

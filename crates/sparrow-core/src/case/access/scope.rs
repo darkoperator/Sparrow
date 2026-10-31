@@ -92,7 +92,17 @@ const SCOPE: &str = "(vf.scope_kind IS NULL \
 /// The attribution's CTEs for the flags `src` puts in play, with the parameters they bind (first in the statement:
 /// a caller's own `?` come after them).
 pub(crate) fn ctes(src: &ScopeSource) -> (String, Vec<Value>) {
-    let (flagv, params) = flag_values(src);
+    let (flagv, mut params) = flag_values(src);
+    // A window (`investigate`) keeps the records of `[from, to)` before anything is made of them: a message's
+    // sighting outside the window can then never stand in for one inside it. Bound last: it ends the CTEs' text.
+    let window = match src.window {
+        Some((from, to)) => {
+            params.push(Value::BigInt(from.timestamp_micros()));
+            params.push(Value::BigInt(to.timestamp_micros()));
+            "WHERE epoch_us(event_time) >= ? AND epoch_us(event_time) < ?"
+        }
+        None => "",
+    };
     let hit = |rank: u8, kind: &str, col: &str| {
         format!(
             "SELECT e.source_table, e.record_key, {rank} AS rank, vf.kind, vf.value, vf.basis FROM events e \
@@ -161,7 +171,8 @@ pub(crate) fn ctes(src: &ScopeSource) -> (String, Vec<Value>) {
              min(w.basis) AS basis \
              FROM cand c JOIN windows w ON w.account = c.account AND c.t BETWEEN w.start AND w.\"end\" \
              WHERE (c.source_table, c.record_key) NOT IN (SELECT source_table, record_key FROM dir) GROUP BY ALL), \
-         attributed AS MATERIALIZED (SELECT * FROM dir UNION ALL SELECT * FROM timed)"
+         attributed AS MATERIALIZED (SELECT * FROM (SELECT * FROM dir UNION ALL SELECT * FROM timed) \
+             {window})"
     );
     (sql, params)
 }

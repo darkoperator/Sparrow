@@ -404,7 +404,8 @@ sparrow export workbook --format xlsx --out FILE --case case.duckdb
 Add `--json` to any command for machine-readable output. More options work on every command: `--no-bridge`
 (never send the command to the app, see [Agent bridge](#agent-bridge)), `--snapshot`, and `--timings`: per-phase
 durations on stderr (`timing  <phase>  <seconds> s`) and `"timings": [{"phase", "ms"}]` in `--json`, for `access`
-(`accounts`, `attribution`, `items`, `coverage`), `entity` (`open`, `summary`, `pivots`, `findings`), `detect`
+(`accounts`, `attribution`, `items`, `coverage`), `investigate` (`open`, `investigate`), `entity` (`open`, `summary`,
+`pivots`, `findings`), `detect`
 (`open`, `detect`) and `export` (`open`, `write`); other commands record none.
 
 **`--snapshot`** (or `SPARROW_SNAPSHOT=1`) lets a read-only command read a case another program holds (the review
@@ -816,6 +817,29 @@ lists as "Malicious".
   ISO 8601 UTC, formula-like cells prefixed with `'`). `--markdown` prints a table (one row per account, a cell per
   category: `48`, `48 (+3 by time)`, `0 (1 folder synced)`, `0 none seen` or `0 (<status>)`), the coverage gaps
   per account, and once the gaps Microsoft never logs.
+
+## Investigate one account
+
+`sparrow investigate --case C --user UPN (--from T --to T | --on YYYY-MM-DD [--pad 1d|12h|30m]) [--json]` answers
+"what happened to this account in this window" in one call; read-only. The window comes from you (the customer's
+dates; `--on` is that UTC day, widened by `--pad` on both sides; `--to` is exclusive), never from the command: widen
+or move it as evidence comes in. It reports facts, no verdict:
+
+- **Sessions**: one per Entra session id of the account's events in the window, else per UAL Exchange `SessionId`
+  (`exchange:<id>`; a UAL record whose Exchange session also appears on a record of an Entra session, with no IP of its
+  own or one of that record's, belongs to the Entra session, as in the access report), else per IP (`ip:<address>`).
+  Each has its first and last event, the IPs with ASN, country and kind, and whether each IP or ASN is new for the
+  account (the account has events before the window, none from it), devices, user agents, sign-in result codes,
+  value flags on the session, its IPs or devices, the findings whose evidence includes one of its events, and
+  `reach`: what it reached, the access report's items per category with that session (or IP) as ad-hoc scope,
+  limited to the window, so the numbers match `sparrow access --session ID` / `--ip IP` over that window.
+- **Mail**: message trace to the account from 24 hours before the window to its end (a lure is in view), and mail it
+  sent in the window, at most 200 each (`mail_truncated`).
+- **Config changes**: the account's `config_change` events in the window, with their `row`.
+- **Findings**: every finding of the account with its first and last time, also when the window holds no event (then
+  the text says so and these times help to move it).
+- **Next**: ready commands per session (`sparrow access ... --brief`, `sparrow mark flag --value session=...|ip=...
+  --level malicious`), with the case path quoted for a POSIX shell.
 
 ## Synthetic data
 
