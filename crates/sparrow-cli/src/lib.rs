@@ -60,6 +60,9 @@ struct Cli {
     /// a private copy, deleted afterwards; also SPARROW_SNAPSHOT=1. Writes never use a copy
     #[arg(long, global = true)]
     snapshot: bool,
+    /// Per-phase durations on stderr (and `timings` in --json): access, entity, detect and export
+    #[arg(long, global = true)]
+    timings: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -770,7 +773,14 @@ pub fn run(args: Vec<OsString>, io: CliIo, cases: Rc<dyn CaseSource>) -> u8 {
         }
     };
     let json = cli.json;
-    match dispatch(cli) {
+    let result = dispatch(cli);
+    // `--timings`: the phases, on stderr, whatever the outcome.
+    for line in cx::with_cx(|cx| cx.and_then(|cx| cx.timings.as_ref().map(|t| t.lines())))
+        .unwrap_or_default()
+    {
+        errln!("timing  {line}");
+    }
+    match result {
         Ok(code) => {
             let code = exit_number(code);
             if code == 0 && cx::output_failed() {
@@ -918,6 +928,9 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
     cx::with_cx(|cx| {
         if let Some(cx) = cx {
             cx.snapshot_allowed = snapshot;
+            if cli.timings {
+                cx.timings = Some(sparrow_core::timings::Timings::new());
+            }
         }
     });
     if matches!(
@@ -1115,6 +1128,44 @@ pub(crate) fn file_to_read(case: &Case, path: &Path) -> PathBuf {
         .unwrap_or_else(|| path.to_path_buf())
 }
 
+/// Run `f` as the timed phase `name` when `--timings` asked for it (else just run it).
+pub(crate) fn timed<T>(name: &'static str, f: impl FnOnce() -> T) -> T {
+    let on = cx::with_cx(|cx| cx.is_some_and(|cx| cx.timings.is_some()));
+    if !on {
+        return f();
+    }
+    let start = std::time::Instant::now();
+    let out = f();
+    let d = start.elapsed();
+    cx::with_cx(|cx| {
+        if let Some(t) = cx.and_then(|cx| cx.timings.as_mut()) {
+            t.add(name, d);
+        }
+    });
+    out
+}
+
+/// Run `f` with this run's timings recorder, when `--timings` asked for one.
+pub(crate) fn with_timings<T>(
+    f: impl FnOnce(Option<&mut sparrow_core::timings::Timings>) -> T,
+) -> T {
+    /// Puts the recorder back when `f` returns or panics, so no earlier phase is lost.
+    struct Restore(Option<sparrow_core::timings::Timings>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            if let Some(t) = self.0.take() {
+                cx::with_cx(|cx| {
+                    if let Some(cx) = cx {
+                        cx.timings = Some(t);
+                    }
+                });
+            }
+        }
+    }
+    let mut held = Restore(cx::with_cx(|cx| cx.and_then(|cx| cx.timings.take())));
+    f(held.0.as_mut())
+}
+
 /// Keep `w` (once) for the `warnings` key of this run's JSON output.
 pub(crate) fn add_warning(w: &str) {
     cx::with_cx(|cx| {
@@ -1130,11 +1181,18 @@ pub(crate) fn add_warning(w: &str) {
 /// is not an object is wrapped as `{"result": value, "warnings": [...]}`.
 pub(crate) fn with_warnings<T: Serialize>(value: &T) -> Result<serde_json::Value> {
     let mut v = serde_json::to_value(value)?;
-    let (warnings, snapshot) = cx::with_cx(|cx| {
-        cx.map(|cx| (cx.warnings.clone(), cx.snapshot_json.clone()))
-            .unwrap_or_default()
+    let (warnings, snapshot, timings) = cx::with_cx(|cx| {
+        cx.map(|cx| {
+            (
+                cx.warnings.clone(),
+                cx.snapshot_json.clone(),
+                cx.timings.as_ref().map(serde_json::to_value).transpose(),
+            )
+        })
+        .unwrap_or((Vec::new(), None, Ok(None)))
     });
-    if warnings.is_empty() && snapshot.is_none() {
+    let timings = timings?;
+    if warnings.is_empty() && snapshot.is_none() && timings.is_none() {
         return Ok(v);
     }
     if !v.is_object() {
@@ -1146,6 +1204,9 @@ pub(crate) fn with_warnings<T: Serialize>(value: &T) -> Result<serde_json::Value
         }
         if let Some(s) = snapshot {
             o.insert("snapshot".into(), s);
+        }
+        if let Some(t) = timings {
+            o.insert("timings".into(), t);
         }
     }
     Ok(v)
@@ -2193,16 +2254,18 @@ fn cmd_detect(
     dirs: DataDirs,
     json: bool,
 ) -> Result<ExitCode> {
-    let mut case = open_case_for_write(case_path)?;
-    let report = sparrow_core::detect::run::run_with_dirs(
-        &mut case,
-        &dirs,
-        &sparrow_core::detect::DetectOptions {
-            rule_ids,
-            tags,
-            now: None,
-        },
-    )?;
+    let mut case = timed("open", || open_case_for_write(case_path))?;
+    let report = timed("detect", || {
+        sparrow_core::detect::run::run_with_dirs(
+            &mut case,
+            &dirs,
+            &sparrow_core::detect::DetectOptions {
+                rule_ids,
+                tags,
+                now: None,
+            },
+        )
+    })?;
     if json {
         print_json(&report)?;
     } else {

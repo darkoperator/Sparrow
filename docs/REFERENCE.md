@@ -371,6 +371,9 @@ sparrow mark flag --row TABLE:KEY... --level suspicious|malicious|clear --case c
                                                   # (KIND ip|ip_prefix|account|asn|device|session; scope kinds
                                                   # account|ip|device|session); [--agent ID] [--analyst NAME]
 sparrow mark tag --row TABLE:KEY... --tag NAME [--remove] --case case.duckdb   # an agent's new tag starts `ai:`
+sparrow mark list --case case.duckdb             # [--pending] [--kind flag|tag] [--agent ID]: value flags (not
+                                                  # removed), row flags and tags, with level or tag, scope, who
+                                                  # decided and when, review state; read-only (`{"marks": [...]}`)
 sparrow accounts --case case.duckdb              # [--tenant T --limit N]: the accounts with findings, worst first, with
                                                   # stages and the addresses worth a look (the roll-up detection builds)
 sparrow coverage --case case.duckdb              # [--tenant T --user UPN... --rules DIR...]: per account, the rows and dates each
@@ -398,8 +401,11 @@ sparrow export timeline --format csv [--scope verified|all --from T --to T --use
 sparrow export workbook --format xlsx --out FILE --case case.duckdb
 ```
 
-Add `--json` to any command for machine-readable output. Two more options work on every command: `--no-bridge`
-(never send the command to the app, see [Agent bridge](#agent-bridge)) and `--snapshot`.
+Add `--json` to any command for machine-readable output. More options work on every command: `--no-bridge`
+(never send the command to the app, see [Agent bridge](#agent-bridge)), `--snapshot`, and `--timings`: per-phase
+durations on stderr (`timing  <phase>  <seconds> s`) and `"timings": [{"phase", "ms"}]` in `--json`, for `access`
+(`accounts`, `attribution`, `items`, `coverage`), `entity` (`open`, `summary`, `pivots`, `findings`), `detect`
+(`open`, `detect`) and `export` (`open`, `write`); other commands record none.
 
 **`--snapshot`** (or `SPARROW_SNAPSHOT=1`) lets a read-only command read a case another program holds (the review
 app, when its agent bridge cannot serve: it is importing, an older build, or not answering). Without it such a read

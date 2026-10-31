@@ -164,6 +164,10 @@ pub(crate) fn check_out(out: &Path, case: &Path) -> Result<()> {
 /// A temp file beside `path`, renamed over it when `f` succeeds and removed when it fails: a failed export never
 /// leaves a partial `--out` file.
 pub(crate) fn atomic<T>(path: &Path, f: impl FnOnce(&Path) -> Result<T>) -> Result<T> {
+    crate::timed("write", || atomic_untimed(path, f))
+}
+
+fn atomic_untimed<T>(path: &Path, f: impl FnOnce(&Path) -> Result<T>) -> Result<T> {
     let dir = match path.parent() {
         Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
         _ => PathBuf::from("."),
@@ -206,11 +210,14 @@ fn with_sink<T>(
             if json {
                 bail!("--json needs --out (the export itself goes to stdout)");
             }
-            crate::cx::with_out(|out| {
-                let mut w = BufWriter::new(out);
-                let v = f(&mut w)?;
-                w.flush()?;
-                Ok(v)
+            // Timed around (not inside) the stdout borrow: the recorder lives in the same run context.
+            crate::timed("write", || {
+                crate::cx::with_out(|out| {
+                    let mut w = BufWriter::new(out);
+                    let v = f(&mut w)?;
+                    w.flush()?;
+                    Ok(v)
+                })
             })
         }
     }
@@ -245,7 +252,7 @@ pub fn run(command: ExportCommand, json: bool) -> Result<ExitCode> {
             if let Some(o) = &out {
                 check_out(o, &case)?;
             }
-            let c = crate::open_read(&case)?;
+            let c = crate::timed("open", || crate::open_read(&case))?;
             let opts = ReportOpts {
                 reviewed_only,
                 generated_at,
@@ -283,7 +290,7 @@ pub fn run(command: ExportCommand, json: bool) -> Result<ExitCode> {
             if let Some(o) = &out {
                 check_out(o, &case)?;
             }
-            let c = crate::open_read(&case)?;
+            let c = crate::timed("open", || crate::open_read(&case))?;
             let n = with_sink(out.as_deref(), json, |w| {
                 Ok(timeline_csv::write(c.conn(), w, &opts)?)
             })?;
@@ -298,7 +305,7 @@ pub fn run(command: ExportCommand, json: bool) -> Result<ExitCode> {
             let sightings_path = out.join("device-sightings.csv");
             check_out(&devices_path, &case)?;
             check_out(&sightings_path, &case)?;
-            let c = crate::open_read(&case)?;
+            let c = crate::timed("open", || crate::open_read(&case))?;
             let devices = with_sink(Some(&devices_path), json, |w| {
                 Ok(devices_csv::write_devices(c.conn(), w)?)
             })?;
@@ -336,7 +343,7 @@ pub fn run(command: ExportCommand, json: bool) -> Result<ExitCode> {
             };
             check_out(&out, &case)?;
             let dirs = crate::data_dirs(data, rules);
-            let c = crate::open_read(&case)?;
+            let c = crate::timed("open", || crate::open_read(&case))?;
             atomic(&out, |tmp| {
                 Ok(workbook_xlsx::write(c.conn(), tmp, generated_at, &dirs)?)
             })?;

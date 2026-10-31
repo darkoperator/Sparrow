@@ -9,12 +9,13 @@ mod items;
 mod scope;
 
 pub use coverage::NEVER_LOGGED;
-pub use items::{Item, items, items_with};
+pub use items::{Item, items, items_timed, items_with};
 pub use scope::{
     Attributed, ScopeValue, Window, attributed, attributed_with, pending_flags, scope, scope_with,
 };
 
 use crate::case::marks::ValueKind;
+use crate::timings::{Timings, time};
 use crate::{Error, Result};
 use duckdb::Connection;
 use duckdb::types::Value;
@@ -404,20 +405,40 @@ pub fn report_with(
     account: Option<&str>,
     src: &ScopeSource,
 ) -> Result<AccessReport> {
+    report_timed(conn, account, src, None)
+}
+
+/// [`report_with`], timing its phases into `timings`: `accounts` (who is on the report), `attribution`, `items`, and
+/// `coverage` (tiles, coverage and scope windows of every account).
+pub fn report_timed(
+    conn: &Connection,
+    account: Option<&str>,
+    src: &ScopeSource,
+    mut timings: Option<&mut Timings>,
+) -> Result<AccessReport> {
     src.check()?;
     let accounts = match account {
         Some(a) => vec![a.to_lowercase()],
-        None => flagged_accounts_with(conn, src)?,
+        None => time(&mut timings, "accounts", || {
+            flagged_accounts_with(conn, src)
+        })?,
     };
     let mut by: BTreeMap<String, Vec<Item>> = BTreeMap::new();
-    for i in items_with(conn, account, src)? {
+    for i in items_timed(conn, account, src, timings.as_deref_mut())? {
         by.entry(i.account.clone()).or_default().push(i);
     }
-    let mut out = Vec::new();
-    for a in accounts {
-        let its = by.remove(&a).unwrap_or_default();
-        out.push(account_access(conn, a, its, src)?);
-    }
+    let out = time(
+        &mut timings,
+        "coverage",
+        || -> Result<Vec<AccountAccess>> {
+            let mut out = Vec::new();
+            for a in accounts {
+                let its = by.remove(&a).unwrap_or_default();
+                out.push(account_access(conn, a, its, src)?);
+            }
+            Ok(out)
+        },
+    )?;
     let preview = out.iter().any(|a| {
         a.items.iter().any(|i| i.basis != Basis::Accepted)
             || a.scope.iter().any(|s| s.basis != Basis::Accepted)

@@ -6,6 +6,7 @@
 use super::scope::{Attributed, attributed_with, ctes};
 use super::{Attribution, Basis, Category, ScopeSource};
 use crate::Result;
+use crate::timings::{Timings, time};
 use chrono::{DateTime, Utc};
 use duckdb::Connection;
 use serde::Serialize;
@@ -259,6 +260,16 @@ pub fn items_with(
     account: Option<&str>,
     src: &ScopeSource,
 ) -> Result<Vec<Item>> {
+    items_timed(conn, account, src, None)
+}
+
+/// [`items_with`], timing its `attribution` (the attributed records, staged) and `items` (the item query) phases.
+pub fn items_timed(
+    conn: &Connection,
+    account: Option<&str>,
+    src: &ScopeSource,
+    mut timings: Option<&mut Timings>,
+) -> Result<Vec<Item>> {
     let (ctes, mut params) = ctes(src);
     let sql = format!(
         "WITH {ctes}, {}, {} SELECT * FROM (SELECT * FROM mail UNION ALL SELECT * FROM rest) \
@@ -266,8 +277,11 @@ pub fn items_with(
         mail_sql(),
         rest_sql()
     );
-    let attributed = attributed_with(conn, account, src)?;
-    stage_ual(conn, &attributed)?;
+    time(&mut timings, "attribution", || -> Result<()> {
+        let attributed = attributed_with(conn, account, src)?;
+        stage_ual(conn, &attributed)
+    })?;
+    let started = std::time::Instant::now();
     let acc = account.map_or(duckdb::types::Value::Null, |a| {
         duckdb::types::Value::Text(a.to_string())
     });
@@ -304,6 +318,9 @@ pub fn items_with(
     let mut out: Vec<Item> = rows.collect::<std::result::Result<_, _>>()?;
     for i in &mut out {
         i.row = format!("{}:{}", i.source_table, i.record_key);
+    }
+    if let Some(t) = timings {
+        t.add("items", started.elapsed());
     }
     // The staged AuditData is only needed for this query: free it.
     conn.execute_batch("DROP TABLE IF EXISTS access_ual")?;

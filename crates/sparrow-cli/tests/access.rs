@@ -323,3 +323,98 @@ fn compact_text_keeps_the_preview_marks_and_the_context() {
         r.out
     );
 }
+
+#[test]
+fn access_timings_lists_the_phases() {
+    let (_tmp, path) = setup();
+    let v = json(&[
+        "access",
+        "--case",
+        path.to_str().unwrap(),
+        "--timings",
+        "--json",
+    ]);
+    let phases: Vec<&str> = v["timings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["phase"].as_str().unwrap())
+        .collect();
+    for want in ["attribution", "items", "coverage"] {
+        assert!(phases.contains(&want), "{phases:?}");
+    }
+    let r = run(&["access", "--case", path.to_str().unwrap(), "--timings"]);
+    assert!(
+        r.err
+            .lines()
+            .any(|l| l.starts_with("timing  attribution  ")),
+        "{}",
+        r.err
+    );
+}
+
+#[test]
+fn entity_and_export_timings_list_their_phases() {
+    let (tmp, path) = setup();
+    let p = path.to_str().unwrap();
+    let v = json(&[
+        "entity",
+        "--case",
+        p,
+        "--user",
+        "jdoe@contoso.example",
+        "--timings",
+        "--json",
+    ]);
+    let phases: Vec<&str> = v["timings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["phase"].as_str().unwrap())
+        .collect();
+    assert_eq!(phases, ["open", "summary", "pivots", "findings"]);
+    let out = tmp.path().join("t.csv");
+    let r = run(&[
+        "export",
+        "timeline",
+        "--format",
+        "csv",
+        "--out",
+        out.to_str().unwrap(),
+        "--case",
+        p,
+        "--timings",
+    ]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(
+        r.err.lines().any(|l| l.starts_with("timing  write  ")),
+        "{}",
+        r.err
+    );
+    let v = json(&[
+        "export",
+        "timeline",
+        "--format",
+        "csv",
+        "--out",
+        out.to_str().unwrap(),
+        "--case",
+        p,
+        "--timings",
+        "--json",
+    ]);
+    let phases: Vec<&str> = v["timings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["phase"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        phases,
+        ["open", "write"],
+        "the JSON has every phase stderr has"
+    );
+    // Without the flag: nothing.
+    let r = run(&["entity", "--case", p, "--user", "jdoe@contoso.example"]);
+    assert!(!r.err.contains("timing  "), "{}", r.err);
+}

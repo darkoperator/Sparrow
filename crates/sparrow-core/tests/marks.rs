@@ -2523,3 +2523,113 @@ fn marks_timing_on_kept_case() {
         format!("{} audit rows", done.len())
     });
 }
+
+// ---- list_marks ----
+
+use sparrow_core::case::marks::{MarkFilter, list_marks};
+
+#[test]
+fn list_marks_shows_flags_and_tags_with_their_review_state() {
+    let case = events_case();
+    let c = case.conn();
+    flag_value(
+        c,
+        &agent(),
+        ValueKind::Ip,
+        "203.0.113.45",
+        None,
+        Some(FlagLevel::Malicious),
+    )
+    .unwrap();
+    flag_rows(
+        c,
+        &analyst(),
+        &[r("ual_events", "u1")],
+        Some(FlagLevel::Suspicious),
+    )
+    .unwrap();
+    tag_rows(c, &agent(), &[r("ual_events", "u1")], "ai:lure", true).unwrap();
+    // A removed value flag is not listed.
+    flag_value(
+        c,
+        &analyst(),
+        ValueKind::Ip,
+        "198.51.100.7",
+        None,
+        Some(FlagLevel::Suspicious),
+    )
+    .unwrap();
+    flag_value(c, &analyst(), ValueKind::Ip, "198.51.100.7", None, None).unwrap();
+    let all = list_marks(c, &MarkFilter::default()).unwrap();
+    let got: Vec<_> = all
+        .iter()
+        .map(|m| {
+            (
+                m.mark.as_str(),
+                m.level_or_tag.as_str(),
+                m.review_state.as_str(),
+                m.decided_by.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("value_flag", "malicious", "pending_review", "agent:triage"),
+            ("row_flag", "suspicious", "accepted", "analyst:carlos"),
+            ("tag", "ai:lure", "pending_review", "agent:triage"),
+        ]
+    );
+    assert_eq!(all[0].kind.as_deref(), Some("ip"));
+    assert_eq!(all[0].value.as_deref(), Some("203.0.113.45"));
+    assert_eq!(all[1].row.as_deref(), Some("ual_events:u1"));
+    let pending = list_marks(
+        c,
+        &MarkFilter {
+            pending_only: true,
+            ..MarkFilter::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(pending.len(), 2);
+    let tags = list_marks(
+        c,
+        &MarkFilter {
+            kind: Some("tag".into()),
+            ..MarkFilter::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        tags.iter().map(|m| m.mark.as_str()).collect::<Vec<_>>(),
+        ["tag"]
+    );
+    let flags = list_marks(
+        c,
+        &MarkFilter {
+            kind: Some("flag".into()),
+            ..MarkFilter::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(flags.len(), 2);
+    let mine = list_marks(
+        c,
+        &MarkFilter {
+            agent: Some("triage".into()),
+            ..MarkFilter::default()
+        },
+    )
+    .unwrap();
+    assert!(mine.iter().all(|m| m.decided_by == "agent:triage") && mine.len() == 2);
+    assert!(
+        list_marks(
+            c,
+            &MarkFilter {
+                kind: Some("nope".into()),
+                ..MarkFilter::default()
+            }
+        )
+        .is_err()
+    );
+}

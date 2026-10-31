@@ -18,6 +18,7 @@ pub mod parsers;
 pub mod profile;
 pub mod readers;
 pub mod summary;
+pub mod timings;
 pub mod verify;
 
 pub use db::Case;

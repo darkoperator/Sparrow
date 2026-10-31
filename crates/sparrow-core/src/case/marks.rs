@@ -1508,3 +1508,82 @@ pub fn flag_sources(
     out.sort_by_key(|s| std::cmp::Reverse(s.level));
     Ok(out)
 }
+
+/// One mark as `sparrow mark list` shows it: a standing value flag (not removed), a row flag, or a row's tag.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MarkRow {
+    /// `value_flag`, `row_flag` or `tag`.
+    pub mark: String,
+    /// A value flag's kind and value.
+    pub kind: Option<String>,
+    pub value: Option<String>,
+    /// A row flag's or tag's row, `<source_table>:<record_key>`.
+    pub row: Option<String>,
+    /// The flag level, or the tag name.
+    pub level_or_tag: String,
+    /// A value flag's scope, `KIND=VALUE`.
+    pub scope: Option<String>,
+    pub decided_by: String,
+    pub decided_at: chrono::DateTime<chrono::Utc>,
+    pub review_state: String,
+}
+
+/// Which marks [`list_marks`] returns: all by default.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MarkFilter {
+    /// Only those waiting for review.
+    pub pending_only: bool,
+    /// `flag` (value and row flags) or `tag`.
+    pub kind: Option<String>,
+    /// Only those this agent made (`agent:<id>`).
+    pub agent: Option<String>,
+}
+
+/// The case's marks: value flags (removed ones left out), then row flags, then tags, each by decision time. Read-only.
+pub fn list_marks(conn: &Connection, f: &MarkFilter) -> Result<Vec<MarkRow>> {
+    let marks: Option<&[&str]> = match f.kind.as_deref() {
+        None => None,
+        Some("flag") => Some(&["value_flag", "row_flag"]),
+        Some("tag") => Some(&["tag"]),
+        Some(other) => {
+            return Err(Error::Invalid(format!(
+                "unknown mark kind {other:?} (flag or tag)"
+            )));
+        }
+    };
+    let sql = "SELECT mark, kind, value, \"row\", level_or_tag, scope, decided_by, decided_at, review_state FROM ( \
+         SELECT 'value_flag' AS mark, 1 AS o, kind::VARCHAR AS kind, value, NULL::VARCHAR AS \"row\", \
+             level::VARCHAR AS level_or_tag, \
+             CASE WHEN scope_kind IS NULL THEN NULL ELSE scope_kind || '=' || scope_value END AS scope, \
+             decided_by, epoch_us(decided_at) AS decided_at, review_state::VARCHAR AS review_state \
+           FROM value_flags WHERE removed_at IS NULL \
+         UNION ALL \
+         SELECT 'row_flag', 2, NULL, NULL, source_table || ':' || record_key, level::VARCHAR, NULL, decided_by, \
+             epoch_us(decided_at), review_state::VARCHAR FROM event_flags \
+         UNION ALL \
+         SELECT 'tag', 3, NULL, NULL, et.source_table || ':' || et.record_key, t.name, NULL, et.decided_by, \
+             epoch_us(et.decided_at), et.review_state::VARCHAR FROM event_tags et JOIN tags t USING (tag_id)) m \
+         WHERE (NOT ? OR review_state = 'pending_review') \
+           AND (? IS NULL OR list_contains(string_split(?, ','), mark)) \
+           AND (? IS NULL OR decided_by = 'agent:' || ?) \
+         ORDER BY o, decided_at, \"row\", kind, value, level_or_tag";
+    let marks = marks.map(|m| m.join(","));
+    let mut st = conn.prepare(sql)?;
+    let rows = st.query_map(
+        duckdb::params![f.pending_only, marks, marks, f.agent, f.agent],
+        |r| {
+            Ok(MarkRow {
+                mark: r.get(0)?,
+                kind: r.get(1)?,
+                value: r.get(2)?,
+                row: r.get(3)?,
+                level_or_tag: r.get(4)?,
+                scope: r.get(5)?,
+                decided_by: r.get(6)?,
+                decided_at: chrono::DateTime::from_timestamp_micros(r.get(7)?).unwrap_or_default(),
+                review_state: r.get(8)?,
+            })
+        },
+    )?;
+    Ok(rows.collect::<std::result::Result<_, _>>()?)
+}

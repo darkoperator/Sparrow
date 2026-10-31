@@ -139,9 +139,12 @@ sparrow mark flag --case case.duckdb --value ip_prefix=203.0.113.0/24 --scope ac
 sparrow mark flag --case case.duckdb --row ual_events:<RECORD_KEY> --level clear
 sparrow mark tag --case case.duckdb --row ual_events:<RECORD_KEY> --tag ai:forwarding-rule
 sparrow mark tag --case case.duckdb --row ual_events:<RECORD_KEY> --tag ai:forwarding-rule --remove
+sparrow mark list --case case.duckdb --pending --agent claude --json
 sparrow note add ual_events:<RECORD_KEY> --text "creates the rule 3 minutes after the sign-in" --case case.duckdb
 ```
 
+- `mark list --pending` lists what still waits for the analyst (`--agent ID` yours only, `--kind flag|tag`): end a
+  triage with it so the analyst knows what to review.
 - Use `--agent` / `--analyst` (or `$SPARROW_AGENT` / `$SPARROW_ANALYST`) as for every write. Marks are agent
   decisions: they show at once (`flag_ai`, tag `ai: true`) and wait for the analyst to confirm or remove them in
   the app. There is no CLI confirm.

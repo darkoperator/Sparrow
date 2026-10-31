@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use clap::Args;
 use serde::Serialize;
 use sparrow_core::case::access::{
-    AccessReport, AccountAccess, Basis, Category, Item, ScopeSource, Tile, report_with,
+    AccessReport, AccountAccess, Basis, Category, Item, ScopeSource, Tile, report_timed,
 };
 use sparrow_core::case::marks::ValueKind;
 use sparrow_core::case::text::display_safe_line as safe;
@@ -278,8 +278,8 @@ pub fn run(a: AccessArgs, json: bool) -> Result<ExitCode> {
         })?),
         None => None,
     };
-    let c = open_read(&a.case)?;
-    let r = report_with(c.conn(), a.account.as_deref(), &src)?;
+    let c = crate::timed("open", || open_read(&a.case))?;
+    let r = crate::with_timings(|t| report_timed(c.conn(), a.account.as_deref(), &src, t))?;
     if let Some(cat) = category {
         let pages: Vec<CategoryPage> = r
             .accounts

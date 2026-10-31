@@ -176,23 +176,28 @@ pub fn run(a: EntityArgs, json: bool) -> Result<ExitCode> {
         .ok_or_else(|| Error::Invalid("name one of --user, --ip, --device or --session".into()))?;
     let from = a.from.as_deref().map(|s| time("--from", s)).transpose()?;
     let to = a.to.as_deref().map(|s| time("--to", s)).transpose()?;
-    let c = open_read(&a.case)?;
-    let summary = entity::summary(c.conn(), &e, from, to)?;
-    let mut pivots = BTreeMap::new();
-    for of in entity::pivots_of(&summary.entity) {
-        pivots.insert(
-            pivot_name(of),
-            entity::pivot(
-                c.conn(),
-                &summary.entity,
-                of,
-                from,
-                to,
-                Some(PIVOT_DEFAULT_LIMIT),
-            )?,
-        );
-    }
-    let findings = entity::findings(c.conn(), &summary.entity, from, to)?;
+    let c = crate::timed("open", || open_read(&a.case))?;
+    let summary = crate::timed("summary", || entity::summary(c.conn(), &e, from, to))?;
+    let pivots = crate::timed("pivots", || -> Result<BTreeMap<_, _>> {
+        let mut pivots = BTreeMap::new();
+        for of in entity::pivots_of(&summary.entity) {
+            pivots.insert(
+                pivot_name(of),
+                entity::pivot(
+                    c.conn(),
+                    &summary.entity,
+                    of,
+                    from,
+                    to,
+                    Some(PIVOT_DEFAULT_LIMIT),
+                )?,
+            );
+        }
+        Ok(pivots)
+    })?;
+    let findings = crate::timed("findings", || {
+        entity::findings(c.conn(), &summary.entity, from, to)
+    })?;
     let rep = EntityReport {
         summary,
         pivots,

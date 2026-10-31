@@ -117,6 +117,8 @@ pub(crate) struct Cx {
     /// The copy this run read (`"snapshot"` in its JSON), and the copies themselves, deleted when the run ends.
     pub snapshot_json: Option<serde_json::Value>,
     pub snapshots: Vec<crate::snapshot::Snapshot>,
+    /// `--timings`: the phases timed so far (printed to stderr when the run ends, `timings` in its JSON).
+    pub timings: Option<sparrow_core::timings::Timings>,
 }
 
 thread_local! {
@@ -138,6 +140,7 @@ impl Installed {
                 snapshot_allowed: false,
                 snapshot_json: None,
                 snapshots: Vec::new(),
+                timings: None,
             })
         });
         Installed

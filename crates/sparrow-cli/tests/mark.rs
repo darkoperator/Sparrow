@@ -520,3 +520,77 @@ fn mark_on_a_read_only_file_refuses_without_audit_row() {
         Some("total 0  showing 0 from offset 0")
     );
 }
+
+#[test]
+fn mark_list_shows_pending_agent_marks() {
+    let (_tmp, path) = setup();
+    let case = path.to_str().unwrap();
+    let r = run(&[
+        "mark",
+        "flag",
+        "--case",
+        case,
+        "--value",
+        "ip=203.0.113.45",
+        "--level",
+        "malicious",
+        "--agent",
+        "claude",
+    ]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let r = run(&[
+        "mark",
+        "tag",
+        "--case",
+        case,
+        "--row",
+        "ual_events:u1",
+        "--tag",
+        "ai:lure",
+        "--agent",
+        "claude",
+    ]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let v = json(&["mark", "list", "--case", case, "--pending", "--json"]);
+    let marks = v["marks"].as_array().unwrap();
+    assert_eq!(marks.len(), 2, "{v}");
+    assert!(
+        marks
+            .iter()
+            .all(|m| m["decided_by"] == "agent:claude" && m["review_state"] == "pending_review")
+    );
+    let only_flags = json(&[
+        "mark", "list", "--case", case, "--kind", "flag", "--agent", "claude", "--json",
+    ]);
+    assert_eq!(only_flags["marks"].as_array().unwrap().len(), 1);
+    let r = run(&["mark", "list", "--case", case]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(
+        r.out.contains("ai:lure") && r.out.contains("pending_review"),
+        "{}",
+        r.out
+    );
+}
+
+#[test]
+fn mark_list_excludes_removed() {
+    let (_tmp, path) = setup();
+    let case = path.to_str().unwrap();
+    for level in ["malicious", "clear"] {
+        let r = run(&[
+            "mark",
+            "flag",
+            "--case",
+            case,
+            "--value",
+            "ip=203.0.113.45",
+            "--level",
+            level,
+            "--agent",
+            "claude",
+        ]);
+        assert_eq!(r.code, 0, "{}", r.err);
+    }
+    let v = json(&["mark", "list", "--case", case, "--json"]);
+    assert_eq!(v["marks"].as_array().unwrap().len(), 0, "{v}");
+}

@@ -8,6 +8,7 @@ use clap::Subcommand;
 use sparrow_core::Error;
 use sparrow_core::case::events::Entity;
 use sparrow_core::case::marks::{self, FlagLevel, RowRef, ValueKind};
+use sparrow_core::case::text::display_safe_line as safe;
 use sparrow_core::case::timeline_entries::EvidenceRef;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -52,6 +53,22 @@ pub enum MarkCommand {
         case: PathBuf,
         #[command(flatten)]
         actor: ActorArgs,
+    },
+    /// List the marks: value flags (not removed), row flags and tags, who decided them and their review state.
+    /// Read-only
+    List {
+        /// Case database file
+        #[arg(long)]
+        case: PathBuf,
+        /// Only those waiting for review (an agent's marks until an analyst confirms or removes them)
+        #[arg(long)]
+        pending: bool,
+        /// flag or tag
+        #[arg(long)]
+        kind: Option<String>,
+        /// Only this agent's marks
+        #[arg(long, value_name = "ID")]
+        agent: Option<String>,
     },
 }
 
@@ -101,6 +118,49 @@ fn level(s: &str) -> Result<Option<FlagLevel>> {
 
 pub fn run(command: MarkCommand, json: bool) -> Result<ExitCode> {
     match command {
+        MarkCommand::List {
+            case,
+            pending,
+            kind,
+            agent,
+        } => {
+            let c = crate::open_read(&case)?;
+            let marks = marks::list_marks(
+                c.conn(),
+                &marks::MarkFilter {
+                    pending_only: pending,
+                    kind,
+                    agent,
+                },
+            )?;
+            if json {
+                crate::print_json(&serde_json::json!({ "marks": marks }))?;
+            } else {
+                for m in &marks {
+                    let what = match (&m.kind, &m.value, &m.row) {
+                        (Some(k), Some(v), _) => format!("{k}={}", safe(v)),
+                        (_, _, Some(r)) => safe(r),
+                        _ => String::new(),
+                    };
+                    let scope = m
+                        .scope
+                        .as_deref()
+                        .map(|s| format!("  scope {}", safe(s)))
+                        .unwrap_or_default();
+                    outln!(
+                        "{}  {}  {what}{scope}  {}  {}  {}",
+                        m.mark,
+                        safe(&m.level_or_tag),
+                        safe(&m.decided_by),
+                        m.decided_at.format("%Y-%m-%dT%H:%M:%SZ"),
+                        m.review_state
+                    );
+                }
+                if marks.is_empty() {
+                    outln!("no marks");
+                }
+            }
+        }
         MarkCommand::Flag {
             rows: refs,
             value,
