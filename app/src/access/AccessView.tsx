@@ -1,13 +1,17 @@
-// The Access section of an account tab: what the attacker reached through the account (case::access). Scope chips
-// (the accepted malicious flags seen for it and their windows), one tile per category with direct and time-attributed
-// counts, the coverage line (so a zero is never read as "nothing accessed" when the data was not there), and one
-// table per category. Everything shown is evidence text and goes through displaySafe.
+// An Access tab: what the attacker reached (case::access), for one account, for a device or IP as a what-if (that value
+// alone, as if it were the attacker, ignoring the case's other flags), or for the whole case. A tab that can span
+// accounts shows one merged list (merge.ts) with an Account column and an Account filter that narrows tiles, tables and
+// coverage together without asking the backend again. Scope chips (the malicious flags seen and their windows), one tile
+// per category with direct and time-attributed counts, the coverage line (so a zero is never read as "nothing
+// accessed" when the data was not there), and one table per category. Everything shown is evidence text and goes
+// through displaySafe.
 //
-// The preview (off by default, reset when the tab reopens): "Include pending agent flags" and a "What if" value (an IP,
-// prefix, session or device, as if flagged malicious). While either is on, a banner at the top of the section (inside
-// what a screenshot of it captures) says it is not the reviewed answer, and every row, tile part and scope chip that a
-// preview added says PENDING or WHAT-IF; the section's CSV then carries the basis column and a PREVIEW file name.
-import { useEffect, useState } from "react";
+// The preview of the account and case tabs (off by default, reset when the tab reopens): "Include pending agent flags"
+// and a "What if" value (an IP, prefix, session or device, as if flagged malicious). While either is on, or on a
+// what-if tab, a banner at the top (inside what a screenshot of it captures) says it is not the reviewed answer, and
+// every row, tile part and scope chip that a preview added says PENDING or WHAT-IF; the CSV then carries the basis
+// column and says PREVIEW or WHATIF in its file name. The CSV is the whole tab, never the filter.
+import { useEffect, useMemo, useState } from "react";
 import {
   ACCESS_TITLES,
   accessReport,
@@ -16,6 +20,7 @@ import {
   type AccessAccount,
   type AccessCategory,
   type AccessItem,
+  type AccessReport,
   type AccessTile,
   type Basis,
   type PreviewArgs,
@@ -24,6 +29,7 @@ import { save } from "../dialog";
 import { isoSeconds } from "../events/columns";
 import { displaySafe } from "../text";
 import "./access.css";
+import { mergeAccess, type MergedTile } from "./merge";
 import { useDataVersion } from "../shell/nav";
 
 const STATUS_LABELS: Record<string, string> = {
@@ -39,11 +45,16 @@ const statusLabel = (s: string) => STATUS_LABELS[s] ?? s;
 const exposed = (t: AccessTile) => t.direct + t.by_time > 0 || t.qualifier !== null;
 
 /** The line under a tile's count: its qualifier, "none seen", or why a zero proves nothing. */
-function tileNote(t: AccessTile): string {
+function tileNote(t: MergedTile): string {
   if (t.qualifier) return t.qualifier;
   if (t.direct + t.by_time > 0) return "";
-  return t.none_seen ? "none seen" : statusLabel(t.coverage.status);
+  if (t.none_seen) return "none seen";
+  return partly(t) ?? statusLabel(t.coverage.status);
 }
+
+/** On a merged tile whose accounts disagree: "not collected for 2 of 5 accounts". */
+const partly = (t: MergedTile) =>
+  t.of > 1 && t.notCollectedFor > 0 && t.notCollectedFor < t.of ? `not collected for ${t.notCollectedFor} of ${t.of} accounts` : null;
 
 function windowsText(ws: { start: string; end: string }[]): string {
   return ws.map((w) => `${isoSeconds(w.start)} to ${isoSeconds(w.end)}`).join(", ");
@@ -98,9 +109,15 @@ export const PAGE = 200;
 
 const MAIL: AccessCategory[] = ["mail_read", "mail_sent", "attachment"];
 
-function ItemTable({ category, items, preview }: { category: AccessCategory; items: AccessItem[]; preview: boolean }) {
+function ItemTable({ category, items, preview, showAccount }: { category: AccessCategory; items: AccessItem[]; preview: boolean; showAccount: boolean }) {
   const title = ACCESS_TITLES[category];
   const [shown, setShown] = useState(PAGE);
+  // Another list (the Account filter changed) starts again at the first page.
+  const [shownFor, setShownFor] = useState(items);
+  if (shownFor !== items) {
+    setShownFor(items);
+    setShown(PAGE);
+  }
   const mail = MAIL.includes(category);
   const hidden = items.length - shown;
   return (
@@ -114,6 +131,7 @@ function ItemTable({ category, items, preview }: { category: AccessCategory; ite
         <table aria-label={title}>
           <thead>
             <tr>
+              {showAccount && <th>Account</th>}
               <th>Accessed (UTC)</th>
               <th>Action</th>
               <th>Item</th>
@@ -129,6 +147,7 @@ function ItemTable({ category, items, preview }: { category: AccessCategory; ite
             {items.slice(0, shown).map((i, n) => (
               // The list never reorders; several items can share a record (Copilot resources), so the index is part of the key.
               <tr key={`${i.source_table}:${i.record_key}:${n}`} className={i.attribution === "time" ? "access-time" : undefined}>
+                {showAccount && <td>{displaySafe(i.account)}</td>}
                 <td className="mono">{isoSeconds(i.accessed)}</td>
                 <td>{displaySafe(i.action)}</td>
                 <td>
@@ -162,56 +181,97 @@ function ItemTable({ category, items, preview }: { category: AccessCategory; ite
 
 type Notice = { kind: "error" | "info"; text: string; for: string };
 
-export default function AccessSection({ account }: { account: string }) {
-  // Keyed by the account it was read for: another account's answer is "loading" until its own arrives.
-  type Loaded = { for: string; acc?: AccessAccount; pending?: number; never?: string[]; error?: string };
+/** What an Access tab is for: one account, a device or IP what-if, or the whole case. */
+export type AccessScope = { kind: "account"; value: string } | { kind: "ip" | "device"; value: string } | { kind: "case" };
+
+const KIND_NAME = { ip: "IP", device: "device" } as const;
+
+/** The account tab's one line: the counts per category, from the reviewed report. */
+export function accessSummary(acc: AccessAccount): string {
+  const hits = acc.tiles.filter((t) => t.direct + t.by_time > 0).map((t) => `${t.direct + t.by_time} ${ACCESS_TITLES[t.category]}`);
+  return hits.length > 0 ? hits.join(" · ") : "Nothing attributed yet";
+}
+
+/** The CSV's name: what the tab is, PREVIEW or WHATIF when it is not the reviewed answer, and the UTC day. */
+function csvName(scope: AccessScope, preview: boolean): string {
+  const day = new Date().toISOString().slice(0, 10);
+  const safe = (v: string) => v.replace(/[^A-Za-z0-9@._-]/g, "_");
+  if (scope.kind === "case") return preview ? `access-case-PREVIEW-${day}.csv` : `access-case-${day}.csv`;
+  if (scope.kind === "account") return `access-${safe(scope.value)}-${preview ? "PREVIEW-" : ""}${day}.csv`;
+  return `access-${scope.kind}-${safe(scope.value)}-WHATIF-${day}.csv`;
+}
+
+export default function AccessView({ scope }: { scope: AccessScope }) {
+  const whatIfTab = scope.kind === "ip" || scope.kind === "device";
+  const account = scope.kind === "account" ? scope.value : null;
+  const scopeKey = JSON.stringify(scope);
+  type Loaded = { for: string; report?: AccessReport; error?: string };
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [only, setOnly] = useState<string | null>(null);
   const dataVersion = useDataVersion();
   // The preview: component state, so it is off again whenever the tab is reopened.
   const [includePending, setIncludePending] = useState(false);
   const [whatIfKind, setWhatIfKind] = useState<WhatIfKind>("ip");
   const [whatIfText, setWhatIfText] = useState("");
   const [whatIf, setWhatIf] = useState<{ kind: WhatIfKind; value: string } | null>(null);
-  const preview: PreviewArgs | null =
-    includePending || whatIf ? { include_pending: includePending, adhoc: whatIf ? [whatIf] : [] } : null;
+  // A what-if tab asks for its own value alone; the others preview only when asked.
+  const preview: PreviewArgs | null = whatIfTab
+    ? { include_pending: false, adhoc: [{ kind: scope.kind, value: scope.value }], without_accepted: true }
+    : includePending || whatIf
+      ? { include_pending: includePending, adhoc: whatIf ? [whatIf] : [] }
+      : null;
   const previewKey = JSON.stringify(preview);
-  // Keyed by the account AND the preview it was read for: a reviewed answer never shows under a preview banner.
-  const loadKey = `${account}\u0000${previewKey}`;
+  // Keyed by the scope, the preview AND the data version it was read for: a reviewed answer never shows under a preview
+  // banner, and after a data change the old answer (and its Export) is gone until the new one arrives.
+  const loadKey = `${scopeKey}\u0000${previewKey}\u0000${dataVersion}`;
   useEffect(() => {
     let live = true;
     const args: PreviewArgs | null = JSON.parse(previewKey);
-    accessReport(account, args).then(
-      (r) => live && setLoaded({ for: loadKey, acc: r.accounts[0], pending: r.pending_flags, never: r.never_logged }),
+    const tab = JSON.parse(scopeKey) as AccessScope;
+    accessReport(tab.kind === "account" ? tab.value : null, args).then(
+      (r) => live && setLoaded({ for: loadKey, report: r }),
       (e: unknown) => live && setLoaded({ for: loadKey, error: isCmdError(e) ? e.message : String(e) }),
     );
     return () => {
       live = false;
     };
-  }, [account, previewKey, loadKey, dataVersion]);
+  }, [scopeKey, previewKey, loadKey, dataVersion]);
   const current = loaded?.for === loadKey ? loaded : null;
   const error = current?.error ?? null;
-  const data = current?.acc ? { acc: current.acc, pending: current.pending ?? 0, never: current.never ?? [] } : null;
+  const report = current?.report ?? null;
+  const filter = report && only !== null && report.accounts.some((a) => a.account === only) ? only : null;
+  // An account that is no longer in the answer drops the filter for good: it does not come back with the account.
+  if (report && only !== null && filter === null) setOnly(null);
+  const merged = useMemo(() => (report ? mergeAccess(report, filter) : null), [report, filter]);
+  // One list per category, kept while the answer and the filter are the same: a table's paging survives other renders.
+  const byCategory = useMemo(() => {
+    const by = new Map<AccessCategory, AccessItem[]>();
+    for (const i of merged?.items ?? []) {
+      const list = by.get(i.category);
+      if (list) list.push(i);
+      else by.set(i.category, [i]);
+    }
+    return by;
+  }, [merged]);
 
-  // The notice belongs to the account whose export it reports: switching tabs mid-export must not show it on another.
+  // The notice belongs to the tab whose export it reports: switching tabs mid-export must not show it on another.
   const exportCsv = async () => {
-    const forAccount = account;
+    const forTab = scopeKey;
     setNotice(null);
     try {
-      const day = new Date().toISOString().slice(0, 10);
-      const safeName = forAccount.replace(/[^A-Za-z0-9@._-]/g, "_");
-      const defaultPath = preview ? `access-${safeName}-PREVIEW-${day}.csv` : `access-${day}.csv`;
-      const path = await save({ defaultPath, filters: [{ name: "Access CSV", extensions: ["csv"] }] });
+      const path = await save({ defaultPath: csvName(scope, preview !== null), filters: [{ name: "Access CSV", extensions: ["csv"] }] });
       if (typeof path !== "string") return;
-      await exportAccessCsv(path, forAccount, preview);
-      setNotice({ kind: "info", text: `Access CSV written to ${path}`, for: forAccount });
+      await exportAccessCsv(path, account, preview);
+      setNotice({ kind: "info", text: `Access CSV written to ${path}`, for: forTab });
     } catch (e) {
-      setNotice({ kind: "error", text: isCmdError(e) ? e.message : String(e), for: forAccount });
+      setNotice({ kind: "error", text: isCmdError(e) ? e.message : String(e), for: forTab });
     }
   };
-  const shownNotice = notice?.for === account ? notice : null;
+  const shownNotice = notice?.for === scopeKey ? notice : null;
 
   const pendingLine = (n: number) =>
+    !whatIfTab &&
     n > 0 && (
       <p className="access-pending">
         {includePending
@@ -224,16 +284,22 @@ export default function AccessSection({ account }: { account: string }) {
     ...(includePending ? ["pending agent flags"] : []),
     ...(whatIf ? [`what-if ${whatIf.kind} ${whatIf.value}`] : []),
   ];
-  const banner = preview && (
+  const banner = whatIfTab ? (
     <p role="note" className="access-preview-banner">
-      {displaySafe(`PREVIEW: includes ${bannerParts.join(" and ")}; not the reviewed answer`)}
+      {displaySafe(`WHAT-IF: what ${KIND_NAME[scope.kind]} ${scope.value} would have reached if it were the attacker; not the reviewed report`)}
     </p>
+  ) : (
+    preview && (
+      <p role="note" className="access-preview-banner">
+        {displaySafe(`PREVIEW: includes ${bannerParts.join(" and ")}; not the reviewed answer`)}
+      </p>
+    )
   );
   const applyWhatIf = () => {
     const v = whatIfText.trim();
     setWhatIf(v === "" ? null : { kind: whatIfKind, value: v });
   };
-  const controls = (
+  const controls = !whatIfTab && (
     <div className="access-preview-controls">
       <label>
         <input type="checkbox" checked={includePending} onChange={(e) => setIncludePending(e.target.checked)} />
@@ -281,7 +347,7 @@ export default function AccessSection({ account }: { account: string }) {
         <p role="alert">{displaySafe(error)}</p>
       </section>
     );
-  if (!data)
+  if (!report || !merged)
     return (
       <section className="access card" aria-label="Access">
         {banner}
@@ -289,22 +355,37 @@ export default function AccessSection({ account }: { account: string }) {
         <p className="entity-empty">Loading…</p>
       </section>
     );
-  const { acc, pending, never } = data;
-  const noScope = acc.scope.length === 0 && acc.items.length === 0;
-  const byCategory = (c: AccessCategory) => acc.items.filter((i) => i.category === c);
+  const several = report.accounts.length > 1;
+  const empty = merged.scope.length === 0 && merged.items.length === 0;
+  const emptyText =
+    scope.kind === "account"
+      ? "No malicious sessions or IPs are flagged for this account."
+      : scope.kind === "case"
+        ? "No malicious flags are accepted yet."
+        : `Nothing found for ${KIND_NAME[scope.kind]} ${scope.value}.`;
   return (
     <section className="access card" aria-label="Access">
       {banner}
       <header className="access-head">
         <h4>Access</h4>
         <ul className="access-scope" aria-label="Scope">
-          {acc.scope.map((s) => (
-            <li key={`${s.kind}:${s.value}`} className="access-chip" title={windowsText(s.windows)}>
+          {merged.scope.map((s) => (
+            <li key={`${s.kind}:${s.value}:${s.basis}`} className="access-chip" title={windowsText(s.windows)}>
               {`${BASIS_LABEL[s.basis] ? `${BASIS_LABEL[s.basis]} ` : ""}${s.kind} ${displaySafe(s.value)}`}
             </li>
           ))}
         </ul>
-        {!noScope && (
+        {several && (
+          <select aria-label="Account" className="access-account" value={filter ?? ""} onChange={(e) => setOnly(e.target.value === "" ? null : e.target.value)}>
+            <option value="">All accounts</option>
+            {merged.accounts.map((a) => (
+              <option key={a} value={a}>
+                {displaySafe(a)}
+              </option>
+            ))}
+          </select>
+        )}
+        {!empty && (
           <button type="button" className="btn btn-ghost" onClick={() => void exportCsv()}>
             Export CSV
           </button>
@@ -316,10 +397,10 @@ export default function AccessSection({ account }: { account: string }) {
           {displaySafe(shownNotice.text)}
         </p>
       )}
-      {noScope && <p className="entity-empty">No malicious sessions or IPs are flagged for this account.</p>}
-      {pendingLine(pending)}
+      {empty && <p className="entity-empty">{displaySafe(emptyText)}</p>}
+      {pendingLine(report.pending_flags)}
       <ul className="access-tiles" aria-label="What the attacker reached">
-        {acc.tiles.map((t) => (
+        {merged.tiles.map((t) => (
           <li key={t.category} aria-label={ACCESS_TITLES[t.category]} className={`access-tile card${exposed(t) ? " access-tile-hit" : ""}`}>
             <span className="access-tile-title">{ACCESS_TITLES[t.category]}</span>
             <span className="access-tile-count">
@@ -328,31 +409,33 @@ export default function AccessSection({ account }: { account: string }) {
               {t.pending > 0 && <span className="access-basis access-basis-pending">{` · ${t.pending} pending`}</span>}
               {t.adhoc > 0 && <span className="access-basis access-basis-adhoc">{` · ${t.adhoc} what-if`}</span>}
             </span>
-            <span className="access-tile-note">{displaySafe(tileNote(t))}</span>
+            <span className="access-tile-note" title={displaySafe(tileNote(t))}>
+              {displaySafe(tileNote(t))}
+            </span>
           </li>
         ))}
       </ul>
       <section className="access-coverage" aria-label="Coverage">
         <p>
           <strong>Coverage:</strong>{" "}
-          {acc.tiles.map((t, i) => (
+          {merged.tiles.map((t, i) => (
             <span key={t.category} title={displaySafe(t.coverage.reason)}>
               {i > 0 ? " · " : ""}
-              {`${ACCESS_TITLES[t.category]} ${t.coverage.status === "collected" ? "✓" : statusLabel(t.coverage.status)}`}
+              {`${ACCESS_TITLES[t.category]} ${t.coverage.status === "collected" ? "✓" : (partly(t) ?? statusLabel(t.coverage.status))}`}
             </span>
           ))}
         </p>
         <ul>
-          {/* The account's own gaps, then what Microsoft never logs (listed once by the report). */}
-          {[...acc.gaps, ...never.filter((g) => !acc.gaps.includes(g))].map((g) => (
+          {/* Each account's own gaps, then what Microsoft never logs (listed once by the report). */}
+          {merged.gaps.map((g) => (
             <li key={g}>{displaySafe(g)}</li>
           ))}
         </ul>
       </section>
-      {acc.tiles
-        .filter((t) => byCategory(t.category).length > 0)
+      {merged.tiles
+        .filter((t) => byCategory.has(t.category))
         .map((t) => (
-          <ItemTable key={t.category} category={t.category} items={byCategory(t.category)} preview={preview !== null} />
+          <ItemTable key={t.category} category={t.category} items={byCategory.get(t.category)!} preview={preview !== null} showAccount={several} />
         ))}
     </section>
   );

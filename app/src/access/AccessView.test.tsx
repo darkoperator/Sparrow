@@ -1,7 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AccessAccount, AccessCategory, AccessItem, AccessReport, AccessTile } from "../api";
+import type { AccessAccount, AccessReport } from "../api";
 
 vi.mock("../api", async (orig) => ({
   ...(await orig<typeof import("../api")>()),
@@ -12,46 +12,8 @@ const dialogSave = vi.fn();
 vi.mock("@tauri-apps/plugin-dialog", () => ({ save: (...a: unknown[]) => dialogSave(...a) }));
 
 import * as api from "../api";
-import AccessSection from "./AccessSection";
-
-const A = "jdoe@contoso.example";
-const NEVER = ["Teams chats read in the Teams app are not audited (only Graph reads are)"];
-const ORDER: AccessCategory[] = ["mail_read", "mail_sent", "attachment", "file", "teams", "copilot", "other"];
-
-function tile(category: AccessCategory, over: Partial<AccessTile> = {}): AccessTile {
-  return {
-    category,
-    direct: 0,
-    by_time: 0,
-    qualifier: null,
-    coverage: { status: "collected", reason: "collected", remediation: null },
-    none_seen: true,
-    pending: 0,
-    adhoc: 0,
-    ...over,
-  };
-}
-
-function item(over: Partial<AccessItem>): AccessItem {
-  return {
-    account: A, category: "mail_read", attribution: "ip", accessed: "2026-10-23T16:42:18Z", action: "read",
-    item: "Q3 invoices", location: "\\Inbox", from: "ap@vendor.example", to: A, size_bytes: 10, item_time: null,
-    app: null, ip: "203.0.113.45", session_id: null, owner: null, note: null, source: "ual_events:MailItemsAccessed",
-    source_table: "ual_events", record_key: "r1", basis: "accepted", row: "ual_events:r1", ...over,
-  };
-}
-
-function account(over: Partial<AccessAccount> = {}): AccessAccount {
-  return {
-    account: A,
-    tenant_key: "contoso",
-    scope: [{ kind: "ip", value: "203.0.113.45", basis: "accepted", windows: [{ start: "2026-10-23T16:38:51Z", end: "2026-10-23T17:45:09Z" }] }],
-    tiles: ORDER.map((c) => tile(c)),
-    items: [],
-    gaps: [],
-    ...over,
-  };
-}
+import AccessView from "./AccessView";
+import { A, account, item, NEVER, ORDER, tile } from "./testData";
 
 function load(a: AccessAccount, pending = 0) {
   const r: AccessReport = { accounts: [a], pending_flags: pending, preview: false, never_logged: NEVER };
@@ -82,12 +44,12 @@ beforeEach(() => {
   dialogSave.mockReset();
 });
 
-describe("AccessSection", () => {
+describe("AccessView for an account", () => {
   it("shows_seven_tiles_with_counts", async () => {
     const tiles = ORDER.map((c) => tile(c));
     tiles[0] = tile("mail_read", { direct: 48, by_time: 3, qualifier: "3 folders · 4.1 MB", none_seen: false });
     load(account({ tiles }));
-    render(<AccessSection account={A} />);
+    render(<AccessView scope={{ kind: "account", value: A }} />);
     const grid = await screen.findByRole("list", { name: "What the attacker reached" });
     const cards = within(grid).getAllByRole("listitem");
     expect(cards.map((c) => c.getAttribute("aria-label"))).toEqual([
@@ -102,7 +64,7 @@ describe("AccessSection", () => {
 
   it("marks_time_rows", async () => {
     load(account({ items: [item({ record_key: "r1" }), item({ record_key: "r2", attribution: "time", item: "Board" })] }));
-    render(<AccessSection account={A} />);
+    render(<AccessView scope={{ kind: "account", value: A }} />);
     const table = await screen.findByRole("table", { name: "Emails read" });
     const rows = within(table).getAllByRole("row").slice(1);
     expect(rows).toHaveLength(2);
@@ -116,7 +78,7 @@ describe("AccessSection", () => {
     tiles[5] = tile("copilot", { none_seen: false, coverage: { status: "not_licensed", reason: "no licence", remediation: null } });
     // As the core: a reason line per category whose source was not collected, then the never-logged gaps.
     load(account({ tiles, gaps: ["Teams: UAL partial: Teams operations of this account may not have been collected", "Copilot: no licence"] }));
-    render(<AccessSection account={A} />);
+    render(<AccessView scope={{ kind: "account", value: A }} />);
     const grid = await screen.findByRole("list", { name: "What the attacker reached" });
     const card = (n: string) => within(grid).getByRole("listitem", { name: n });
     expect(card("Emails sent")).toHaveTextContent("none seen");
@@ -130,14 +92,14 @@ describe("AccessSection", () => {
 
   it("shows_the_note_for_other_peoples_data", async () => {
     load(account({ items: [item({ category: "mail_sent", action: "sent as", owner: "ceo@contoso.example", note: "sent as ceo@contoso.example" })] }));
-    render(<AccessSection account={A} />);
+    render(<AccessView scope={{ kind: "account", value: A }} />);
     const table = await screen.findByRole("table", { name: "Emails sent" });
     expect(table).toHaveTextContent("sent as ceo@contoso.example");
   });
 
   it("no_scope_shows_the_message", async () => {
     load(account({ scope: [], items: [] }), 2);
-    render(<AccessSection account={A} />);
+    render(<AccessView scope={{ kind: "account", value: A }} />);
     expect(await screen.findByText("No malicious sessions or IPs are flagged for this account.")).toBeInTheDocument();
     expect(screen.getByText("2 malicious flags are waiting for review; they count once accepted.")).toBeInTheDocument();
   });
@@ -146,8 +108,9 @@ describe("AccessSection", () => {
     const user = userEvent.setup();
     load(account({ items: [item({})] }));
     dialogSave.mockResolvedValue("/out/jdoe-access.csv");
-    render(<AccessSection account={A} />);
+    render(<AccessView scope={{ kind: "account", value: A }} />);
     await user.click(await screen.findByRole("button", { name: "Export CSV" }));
+    expect((dialogSave.mock.calls[0][0] as { defaultPath: string }).defaultPath).toMatch(new RegExp(`^access-${A}-\\d{4}-\\d{2}-\\d{2}\\.csv$`));
     expect(api.exportAccessCsv).toHaveBeenCalledWith("/out/jdoe-access.csv", A, null);
     expect(await screen.findByRole("status")).toHaveTextContent("/out/jdoe-access.csv");
   });
@@ -155,7 +118,7 @@ describe("AccessSection", () => {
   it("renders_duplicate_looking_rows_each", async () => {
     const twin = item({ category: "copilot", record_key: "c1", item: "Q3.docx", location: null, action: "Read" });
     load(account({ items: [twin, { ...twin }] }));
-    render(<AccessSection account={A} />);
+    render(<AccessView scope={{ kind: "account", value: A }} />);
     const table = await screen.findByRole("table", { name: "Copilot" });
     expect(within(table).getAllByRole("row").slice(1)).toHaveLength(2);
   });
@@ -164,7 +127,7 @@ describe("AccessSection", () => {
     const user = userEvent.setup();
     const many = Array.from({ length: 450 }, (_, n) => item({ record_key: `r${n}` }));
     load(account({ items: many }));
-    render(<AccessSection account={A} />);
+    render(<AccessView scope={{ kind: "account", value: A }} />);
     const table = await screen.findByRole("table", { name: "Emails read" });
     expect(within(table).getAllByRole("row").slice(1)).toHaveLength(200);
     await user.click(screen.getByRole("button", { name: "Show 200 more of Emails read (250 hidden)" }));
@@ -178,7 +141,7 @@ describe("AccessSection", () => {
     const user = userEvent.setup();
     const to = Array.from({ length: 500 }, (_, n) => `staff${n}@contoso.example`).join("; ");
     load(account({ items: [item({ to })] }));
-    render(<AccessSection account={A} />);
+    render(<AccessView scope={{ kind: "account", value: A }} />);
     const table = await screen.findByRole("table", { name: "Emails read" });
     expect(table).toHaveTextContent("staff0@contoso.example; staff1@contoso.example; staff2@contoso.example");
     expect(table).not.toHaveTextContent("staff3@contoso.example");
@@ -191,7 +154,7 @@ describe("AccessSection", () => {
   it("recipients_split_only_on_the_cores_separator", async () => {
     // The core joins with "; "; a bare ";" inside one value is evidence text, not a separator.
     load(account({ items: [item({ to: "a@x.example; b;c@x.example; d@x.example; e@x.example" })] }));
-    render(<AccessSection account={A} />);
+    render(<AccessView scope={{ kind: "account", value: A }} />);
     const table = await screen.findByRole("table", { name: "Emails read" });
     expect(table).toHaveTextContent("a@x.example; b;c@x.example; d@x.example");
     expect(within(table).getByRole("button", { name: "+1 more recipients" })).toBeInTheDocument();
@@ -199,7 +162,7 @@ describe("AccessSection", () => {
 
   it("a_short_recipient_list_has_no_toggle", async () => {
     load(account({ items: [item({ to: "a@contoso.example; b@contoso.example; c@contoso.example" })] }));
-    render(<AccessSection account={A} />);
+    render(<AccessView scope={{ kind: "account", value: A }} />);
     const table = await screen.findByRole("table", { name: "Emails read" });
     expect(table).toHaveTextContent("a@contoso.example; b@contoso.example; c@contoso.example");
     expect(within(table).queryByRole("button", { name: /recipients/ })).toBeNull();
@@ -208,7 +171,7 @@ describe("AccessSection", () => {
   it("no_scope_still_shows_tiles_and_coverage", async () => {
     const tiles = ORDER.map((c) => tile(c, { none_seen: false, coverage: { status: "available_not_collected", reason: "run a Purview export", remediation: null } }));
     load(account({ scope: [], items: [], tiles, gaps: ["Emails read: run a Purview export"] }));
-    render(<AccessSection account={A} />);
+    render(<AccessView scope={{ kind: "account", value: A }} />);
     expect(await screen.findByText("No malicious sessions or IPs are flagged for this account.")).toBeInTheDocument();
     const grid = screen.getByRole("list", { name: "What the attacker reached" });
     expect(within(grid).getByRole("listitem", { name: "Emails read" })).toHaveTextContent("not collected");
@@ -217,7 +180,7 @@ describe("AccessSection", () => {
 
   it("mail_tables_show_sent_time_and_size", async () => {
     load(account({ items: [item({ item_time: "2026-10-21T16:17:57Z", size_bytes: 93862 })] }));
-    render(<AccessSection account={A} />);
+    render(<AccessView scope={{ kind: "account", value: A }} />);
     const table = await screen.findByRole("table", { name: "Emails read" });
     expect(within(table).getByRole("columnheader", { name: "Sent (UTC)" })).toBeInTheDocument();
     expect(table).toHaveTextContent("2026-10-21T16:17:57Z");
@@ -228,7 +191,7 @@ describe("AccessSection", () => {
     const tiles = ORDER.map((c) => tile(c));
     tiles[0] = tile("mail_read", { qualifier: "1 folder synced", none_seen: false });
     load(account({ tiles }));
-    render(<AccessSection account={A} />);
+    render(<AccessView scope={{ kind: "account", value: A }} />);
     const grid = await screen.findByRole("list", { name: "What the attacker reached" });
     expect(within(grid).getByRole("listitem", { name: "Emails read" })).toHaveClass("access-tile-hit");
   });
@@ -238,10 +201,10 @@ describe("AccessSection", () => {
     load(account({ items: [item({})] }));
     let resolve!: (p: string) => void;
     dialogSave.mockReturnValue(new Promise<string>((r) => (resolve = r)));
-    const view = render(<AccessSection account={A} />);
+    const view = render(<AccessView scope={{ kind: "account", value: A }} />);
     await user.click(await screen.findByRole("button", { name: "Export CSV" }));
     load(account({ account: "bob@contoso.example", items: [item({})] }));
-    view.rerender(<AccessSection account="bob@contoso.example" />);
+    view.rerender(<AccessView scope={{ kind: "account", value: "bob@contoso.example" }} />);
     resolve("/out/a.csv");
     await screen.findByRole("button", { name: "Export CSV" });
     await new Promise((r) => setTimeout(r, 0));
@@ -251,7 +214,7 @@ describe("AccessSection", () => {
   it("preview_toggle_shows_the_banner_and_labels", async () => {
     loadWithPreview();
     const user = userEvent.setup();
-    render(<AccessSection account={A} />);
+    render(<AccessView scope={{ kind: "account", value: A }} />);
     await screen.findByRole("table", { name: "Emails read" });
     expect(screen.queryByText(/^PREVIEW/)).toBeNull();
     await user.click(screen.getByRole("checkbox", { name: "Include pending agent flags" }));
@@ -278,7 +241,7 @@ describe("AccessSection", () => {
   it("what_if_value_requests_the_preview", async () => {
     loadWithPreview();
     const user = userEvent.setup();
-    render(<AccessSection account={A} />);
+    render(<AccessView scope={{ kind: "account", value: A }} />);
     await screen.findByRole("table", { name: "Emails read" });
     await user.selectOptions(screen.getByRole("combobox", { name: "What-if kind" }), "session");
     await user.type(screen.getByRole("textbox", { name: "What if" }), "4f1c8d3e-1111-4222-8333-444455559a2e{Enter}");
@@ -295,7 +258,7 @@ describe("AccessSection", () => {
     loadWithPreview();
     dialogSave.mockResolvedValue("/out/p.csv");
     const user = userEvent.setup();
-    render(<AccessSection account={A} />);
+    render(<AccessView scope={{ kind: "account", value: A }} />);
     await screen.findByRole("table", { name: "Emails read" });
     await user.click(screen.getByRole("checkbox", { name: "Include pending agent flags" }));
     await screen.findByText(/^PREVIEW/);
@@ -308,12 +271,12 @@ describe("AccessSection", () => {
   it("preview_is_off_when_the_tab_reopens", async () => {
     loadWithPreview();
     const user = userEvent.setup();
-    const { unmount } = render(<AccessSection account={A} />);
+    const { unmount } = render(<AccessView scope={{ kind: "account", value: A }} />);
     await screen.findByRole("table", { name: "Emails read" });
     await user.click(screen.getByRole("checkbox", { name: "Include pending agent flags" }));
     await screen.findByText(/^PREVIEW/);
     unmount();
-    render(<AccessSection account={A} />);
+    render(<AccessView scope={{ kind: "account", value: A }} />);
     await screen.findByRole("table", { name: "Emails read" });
     expect(screen.getByRole("checkbox", { name: "Include pending agent flags" })).not.toBeChecked();
     expect(screen.queryByText(/^PREVIEW/)).toBeNull();
@@ -322,7 +285,7 @@ describe("AccessSection", () => {
 
   it("shows_the_never_logged_gaps_from_the_report", async () => {
     load(account({ gaps: ["Copilot: no licence"] }));
-    render(<AccessSection account={A} />);
+    render(<AccessView scope={{ kind: "account", value: A }} />);
     const coverage = await screen.findByRole("region", { name: "Coverage" });
     const lines = within(coverage).getAllByRole("listitem").map((l) => l.textContent);
     expect(lines).toEqual(["Copilot: no licence", NEVER[0]]);
