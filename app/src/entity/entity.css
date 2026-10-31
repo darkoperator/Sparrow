@@ -84,3 +84,6 @@
 .entity-flagged-sus { color: var(--sus); }
 /* The IPs card's ASN / kind: capped so the Count column is in view in a 380px card (the full text is the title). */
 .entity-pivot th.entity-col-narrow, .entity-pivot td.entity-col-narrow { max-width: 110px; }
+.entity-access { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0; padding: 8px 12px; }
+.entity-access-line { min-width: 0; overflow-wrap: anywhere; }
+.entity-access .btn { margin-left: auto; }

@@ -551,6 +551,12 @@ Indicators from a case made before the audit trail get one reviewable `legacy_de
 `events` and `entity` read the `events` table (one row per event record of every event table, rebuilt with `ip_intel`
 by `profile`); they open the case read-only. `mark` writes. Times are ISO 8601 UTC (`2026-09-01T10:00:00Z`).
 
+In the app, the Events window's From and To boxes are UTC and inclusive. Type ISO 8601 (`2026-10-23`,
+`2026-10-23T14:30`, `…:36Z`) or US month/day/year (`10/23/2026`, `10/23/2026 14:30`), or pick a date and an optional
+minute with the calendar beside each box. A date alone covers the whole day; a To with minutes and no seconds covers
+its whole minute (`14:30` runs to `14:30:59.999999Z`). Applying the calendar unchanged leaves the box as it was, so a
+range with seconds (a pivot's, the histogram's) is not rounded.
+
 **`sparrow events`** lists the events that match all the options: an entity (`--user` for the actor or mailbox owner,
 `--ip`, `--device` for a device id or directory object id (not a name), or `--session`; at most one), `--where FIELD=TEXT`
 (repeatable; FIELD `source`, `operation`, `account`, `ip`, `country`, `asn`, `device`, `session`, `tag` or `rule`),
@@ -773,10 +779,14 @@ succeeds, and is refused when it is the case file, its `.wal`, or inside the tes
 [--brief | --category CAT [--limit N] [--offset N]] [--csv FILE | --markdown] [--json]` answers "what did the attacker get?" per
 compromised account: mail read and sent, attachments, SharePoint/OneDrive files, Teams, Copilot and other apps.
 Read-only; no audit entry. `--csv` is refused (exit 5) when it names the case or its `.wal`, and is written through a
-temp file; `--json` cannot be combined with `--csv` or `--markdown`. In the app, an account tab has an Access section (scope chips,
-the seven tiles, the coverage line and a table per category, with "Export CSV" for that account), the export menu
-has "Access CSV (all accounts)" and "Access summary (Markdown)", and the account list badges accounts the report
-lists as "Malicious".
+temp file; `--json` cannot be combined with `--csv` or `--markdown`. In the app, Access opens in its own tab (scope chips,
+the seven tiles, the coverage line and a table per category, with "Export CSV" for what the tab shows): from an account
+tab's one-line summary ("Open access"); from a device or IP tab as a what-if ("Access (what-if)": what that value alone
+would have reached if it were the attacker, ignoring the case's other flags, `--ip`/`--device` with the accepted flags
+left out); and from the Events window for the whole case ("Access (all malicious)", whatever Events is filtered to). A
+tab that spans accounts shows one list with an Account column and an Account filter; its CSV is the whole tab. The
+export menu has "Access CSV (all accounts)" and "Access summary (Markdown)", and the account list badges accounts the
+report lists as "Malicious".
 
 - **Scope.** Only accepted (or analyst-made), not removed, malicious flags count; pending agent flags are counted
   (`pending_flags`) and attribute nothing. A record is attributed `session` (a flagged Entra session on the record or

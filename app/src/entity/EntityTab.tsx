@@ -1,8 +1,10 @@
 // An entity tab: the header, the summary tiles, the pivot tables, the findings that involve the entity and the Events
-// grid scoped to it. The tiles, pivots and findings follow the range of the tab's own histogram, and nothing outside
+// grid scoped to it. What the attacker reached opens in its own Access tab: an account's from its one-line summary, a
+// device's or IP's as a what-if from the header. The tiles, pivots and findings follow the range of the tab's own histogram, and nothing outside
 // the tab does. The coverage strip sits under the tiles and follows the same range.
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  accessReport,
   entityCoverage,
   entityFindings,
   entityPivot,
@@ -28,7 +30,7 @@ import { displaySafe } from "../text";
 import AddToTimelineDialog from "../marks/AddToTimelineDialog";
 import CellMenu, { type MenuItem } from "../grid/CellMenu";
 import { AnalystPill, AnalystStatusDialog, analystStatusItem, clearAnalystStatus } from "../devices/analystStatus";
-import AccessView from "../access/AccessView";
+import { accessSummary } from "../access/AccessView";
 import CoverageStrip from "./CoverageStrip";
 import PivotTable, { PIVOTS } from "./PivotTable";
 import Tiles from "./Tiles";
@@ -36,6 +38,33 @@ import "./entity.css";
 
 export const KIND_NAME: Record<EntityKind, string> = { account: "User", ip: "IP", device: "Device", session: "Entra session" };
 const ICON: Record<EntityKind, IconName> = { account: "user", ip: "globe", device: "monitor", session: "key" };
+
+/** The account's access in one line (the reviewed report's counts) and the way into its Access tab. */
+function AccessLine({ account }: { account: string }) {
+  const nav = useNav();
+  const dataVersion = useDataVersion();
+  const [line, setLine] = useState<{ for: string; text: string } | null>(null);
+  const key = `${account}\u0000${dataVersion}`;
+  useEffect(() => {
+    let live = true;
+    accessReport(account, null).then(
+      (r) => live && setLine({ for: key, text: r.accounts[0] ? accessSummary(r.accounts[0]) : "Nothing attributed yet" }),
+      (e: unknown) => live && setLine({ for: key, text: isCmdError(e) ? e.message : String(e) }),
+    );
+    return () => {
+      live = false;
+    };
+  }, [account, key]);
+  return (
+    <div className="entity-access card" aria-label="Access">
+      <span className="entity-kind">Access</span>
+      <span className="entity-access-line">{line?.for === key ? displaySafe(line.text) : "Loading…"}</span>
+      <button type="button" className="btn btn-ghost" onClick={() => nav?.openAccess({ access: "account", value: account })} disabled={!nav}>
+        Open access
+      </button>
+    </div>
+  );
+}
 
 export interface EntityTabProps {
   entity: EntityRef;
@@ -219,6 +248,11 @@ export default function EntityTab({ entity }: EntityTabProps) {
           <button type="button" className="btn btn-ghost" onClick={() => nav?.showInEvents(entity)} disabled={!nav}>
             Show in Events
           </button>
+          {(kind === "ip" || kind === "device") && (
+            <button type="button" className="btn btn-ghost" onClick={() => nav?.openAccess({ access: kind, value })} disabled={!nav}>
+              Access (what-if)
+            </button>
+          )}
           <button type="button" className="btn btn-ghost" onClick={() => void copy()}>
             Copy
           </button>
@@ -234,7 +268,7 @@ export default function EntityTab({ entity }: EntityTabProps) {
       )}
       {data.error && <p role="alert" className="entity-error">{displaySafe(data.error)}</p>}
       {summary ? <Tiles kind={kind} summary={summary} /> : !data.error && <p className="entity-empty">Loading…</p>}
-      {kind === "account" && <AccessView scope={{ kind: "account", value }} />}
+      {kind === "account" && <AccessLine account={value} />}
       <div className="entity-coverage">
         <CoverageStrip coverage={data.coverage} />
       </div>

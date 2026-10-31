@@ -345,6 +345,23 @@ describe("EventsView", () => {
     expect(await screen.findByText("To is before From")).toBeInTheDocument();
   });
 
+  it("events_opens_the_case_access", async () => {
+    const user = userEvent.setup();
+    const { nav: n } = view();
+    await shown(81, 81);
+    await user.type(box("From (UTC)"), "2026-09-10");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    await user.click(screen.getByRole("button", { name: "Access (all malicious)" }));
+    // The whole case, whatever Events is filtered to.
+    expect(n.openAccess).toHaveBeenCalledWith({ access: "case", value: "" });
+  });
+
+  it("an_entity_tabs_grid_has_no_case_access", async () => {
+    view(<EventsView entity={{ kind: "ip", value: "192.0.2.19" }} />);
+    await screen.findByRole("button", { name: /Export CSV/ });
+    expect(screen.queryByRole("button", { name: "Access (all malicious)" })).toBeNull();
+  });
+
   it("a_one_minute_range_is_valid", async () => {
     const user = userEvent.setup();
     view();

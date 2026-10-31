@@ -684,6 +684,13 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
             Cancel export
           </button>
         )}
+        {/* The Events window only (not an entity tab's grid): the whole case, whatever the filters here. */}
+        {!entity && (
+          <button type="button" className="btn" disabled={!nav} onClick={() => nav?.openAccess({ access: "case", value: "" })}>
+            <Icon name="flag" size={13} />
+            Access (all malicious)
+          </button>
+        )}
       </div>
       <div className="ev-main">
         <div className="ev-grid" ref={gridBox}>

@@ -186,9 +186,14 @@ export type AccessScope = { kind: "account"; value: string } | { kind: "ip" | "d
 
 const KIND_NAME = { ip: "IP", device: "device" } as const;
 
-/** The account tab's one line: the counts per category, from the reviewed report. */
+/**
+ * The account tab's one line, from the reviewed report: the count per category, or its qualifier when exposure has no
+ * count (a folder synced as a whole), so such an account never reads as "Nothing attributed yet".
+ */
 export function accessSummary(acc: AccessAccount): string {
-  const hits = acc.tiles.filter((t) => t.direct + t.by_time > 0).map((t) => `${t.direct + t.by_time} ${ACCESS_TITLES[t.category]}`);
+  const hits = acc.tiles
+    .filter(exposed)
+    .map((t) => (t.direct + t.by_time > 0 ? `${t.direct + t.by_time} ${ACCESS_TITLES[t.category]}` : `${ACCESS_TITLES[t.category]}: ${t.qualifier}`));
   return hits.length > 0 ? hits.join(" · ") : "Nothing attributed yet";
 }
 
