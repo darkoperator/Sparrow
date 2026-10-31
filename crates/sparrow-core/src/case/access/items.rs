@@ -53,7 +53,8 @@ const UAL: &str = "attributed_ual a JOIN access_ual u ON u.record_id = a.rid";
 
 /// The item columns, in [`Item`] order after `category`: account, category, attribution, accessed (epoch us), action,
 /// item, location, from, to, size_bytes, item_time (epoch us), app, ip, session_id, owner, note, source, source_table,
-/// record_key, basis (rank; a message kept once takes the strongest basis of all its sightings).
+/// record_key, basis (rank). A message is kept once, as its sighting with the strongest basis (the earliest of those), so a
+/// preview's accepted items are exactly the reviewed report's.
 fn mail_sql() -> String {
     format!(
         "attributed_ual AS MATERIALIZED (SELECT *, TRY_CAST(record_key AS UUID) AS rid FROM attributed \
@@ -84,9 +85,7 @@ fn mail_sql() -> String {
            SELECT * EXCLUDE (rn) FROM ( \
              SELECT *, CASE WHEN imid IS NULL OR access = 'sync' THEN 1 ELSE row_number() OVER ( \
                PARTITION BY account, imid, access = 'sync' \
-               ORDER BY attribution = 'time', event_time, source_table, record_key, ord) END AS rn, \
-               CASE WHEN imid IS NULL OR access = 'sync' THEN basis ELSE min(basis) OVER ( \
-               PARTITION BY account, imid, access = 'sync') END AS gbasis \
+               ORDER BY basis, attribution = 'time', event_time, source_table, record_key, ord) END AS rn \
              FROM reads_raw) WHERE rn = 1), \
          sent_raw AS ( \
            SELECT a.account, a.attribution, a.event_time, u.operation AS op, \
@@ -109,8 +108,7 @@ fn mail_sql() -> String {
          sent AS ( \
            SELECT * EXCLUDE (rn) FROM ( \
              SELECT *, CASE WHEN imid IS NULL THEN 1 ELSE row_number() OVER (PARTITION BY account, imid \
-               ORDER BY attribution = 'time', event_time, source_table, record_key) END AS rn, \
-               CASE WHEN imid IS NULL THEN basis ELSE min(basis) OVER (PARTITION BY account, imid) END AS gbasis \
+               ORDER BY basis, attribution = 'time', event_time, source_table, record_key) END AS rn \
                FROM sent_raw) \
            WHERE rn = 1), \
          trace AS ( \
@@ -126,7 +124,7 @@ fn mail_sql() -> String {
                t.sender AS \"from\", t.rcpts AS \"to\", r.size_bytes, epoch_us(t.received) AS item_time, r.app, r.ip, \
                r.session_id, CASE WHEN r.mailbox <> r.account THEN r.mailbox END AS owner, \
                CASE WHEN r.mailbox <> r.account THEN 'in mailbox ' || r.mailbox END AS note, r.source, \
-               r.source_table, r.record_key, r.gbasis AS basis \
+               r.source_table, r.record_key, r.basis \
              FROM reads r LEFT JOIN trace t ON t.imid = r.imid AND r.access <> 'sync' \
            UNION ALL \
            SELECT s.account, 'mail_sent', s.attribution, epoch_us(s.event_time), \
@@ -137,7 +135,7 @@ fn mail_sql() -> String {
                CASE WHEN s.mailbox <> s.account THEN \
                  CASE s.op WHEN 'SendAs' THEN 'sent as ' WHEN 'SendOnBehalf' THEN 'sent on behalf of ' \
                    ELSE 'in mailbox ' END || s.mailbox END, \
-               s.source, s.source_table, s.record_key, s.gbasis \
+               s.source, s.source_table, s.record_key, s.basis \
              FROM sent s LEFT JOIN trace t ON t.imid = s.imid)"
     )
 }

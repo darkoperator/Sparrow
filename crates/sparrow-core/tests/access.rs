@@ -2442,22 +2442,30 @@ fn a_message_seen_several_times_takes_the_strongest_basis() {
     );
     vflag(&case, "ip", IP, None, State::Pending);
     vflag(&case, "ip", "198.51.100.77", None, State::Accepted);
-    let r = report_with(case.conn(), Some(JDOE), &pending()).unwrap();
-    let a = &r.accounts[0];
-    let mail: Vec<_> = a
-        .items
-        .iter()
-        .filter(|i| matches!(i.category, Category::MailRead | Category::MailSent))
-        .map(|i| (i.category, i.record_key.as_str(), i.basis))
-        .collect();
-    // The earliest sighting stays the item (as before); its basis is the strongest of the message's sightings.
+    let mail = |src: &ScopeSource| -> Vec<(Category, String, Option<String>, Basis)> {
+        report_with(case.conn(), Some(JDOE), src).unwrap().accounts[0]
+            .items
+            .iter()
+            .filter(|i| matches!(i.category, Category::MailRead | Category::MailSent))
+            .map(|i| (i.category, i.record_key.clone(), i.ip.clone(), i.basis))
+            .collect()
+    };
+    // The item is the accepted sighting (the strongest basis first, then the earliest), not the earlier pending one:
+    // a row, time and IP labelled accepted are the ones the reviewed report shows.
+    let other = Some("198.51.100.77".to_string());
     assert_eq!(
-        mail,
+        mail(&pending()),
         vec![
-            (Category::MailRead, R1, Basis::Accepted),
-            (Category::MailSent, R3, Basis::Accepted)
+            (
+                Category::MailRead,
+                R2.to_string(),
+                other.clone(),
+                Basis::Accepted
+            ),
+            (Category::MailSent, R4.to_string(), other, Basis::Accepted)
         ]
     );
+    assert_eq!(mail(&pending()), mail(&ScopeSource::accepted()));
 }
 
 #[test]
