@@ -10,7 +10,7 @@ import {
   type NewEntryArgs,
   type TimelineEntry,
 } from "../api";
-import { useRefreshBadges } from "../shell/nav";
+import { useDataVersion, useRefreshBadges } from "../shell/nav";
 import { displaySafe } from "../text";
 import Icon from "../ui/Icon";
 import { EntryEditor, PHASES, phaseLabel } from "./EntryEditor";
@@ -41,6 +41,7 @@ export function Timeline({ readOnly = false }: { readOnly?: boolean }) {
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const dataVersion = useDataVersion();
 
   useEffect(() => {
     let live = true;
@@ -55,7 +56,7 @@ export function Timeline({ readOnly = false }: { readOnly?: boolean }) {
     return () => {
       live = false;
     };
-  }, [version]);
+  }, [version, dataVersion]);
 
   const refreshBadges = useRefreshBadges();
   const reload = () => {

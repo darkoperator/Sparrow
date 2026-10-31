@@ -1,6 +1,6 @@
 // Navigation the shell offers to any screen or grid below it. Absent (null) outside a shell, e.g. in a unit test:
 // components then simply do not offer the actions.
-import { createContext, useContext } from "react";
+import { createContext, useContext, useEffect, useRef } from "react";
 import type { Filter } from "../api";
 import type { EntityRef } from "./tabs";
 
@@ -47,3 +47,26 @@ export function writeBlockedReason(readOnlyReason: string | null, analyst: strin
 export const FocusAnalystContext = createContext<(() => void) | null>(null);
 
 export const useFocusAnalyst = () => useContext(FocusAnalystContext);
+
+/**
+ * Bumped by the shell each time the case's data changed under the screens (an agent wrote through the agent bridge).
+ * Screens read their data again on a change, keeping their filters, range and selection.
+ */
+export const DataVersionContext = createContext(0);
+
+export const useDataVersion = () => useContext(DataVersionContext);
+
+/** Calls `reload` each time the data version changes (not on mount: the screen's first load does that). */
+export function useOnDataChanged(reload: () => void) {
+  const version = useDataVersion();
+  const seen = useRef(version);
+  const latest = useRef(reload);
+  useEffect(() => {
+    latest.current = reload;
+  });
+  useEffect(() => {
+    if (seen.current === version) return;
+    seen.current = version;
+    latest.current();
+  }, [version]);
+}

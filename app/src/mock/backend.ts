@@ -1,7 +1,9 @@
 // DEV ONLY: a fake backend so the UI can be inspected in a plain browser (`npm run dev:mock`). Loaded by a dynamic
 // import behind `MOCK_BACKEND`, so a production build holds none of it. All data is synthetic.
 import type {
+  AgentActivity,
   AuditEntry,
+  CaseChanged,
   CaseInfo,
   CmdError,
   CmdErrorKind,
@@ -214,6 +216,23 @@ export const mockOnIngestClosing = (f: () => void): (() => void) => {
   closingListeners.add(f);
   return () => void closingListeners.delete(f);
 };
+// The agent bridge's events: the mock has no bridge; `mockAgentWrote` plays one request (dev tools, tests).
+const changedListeners = new Set<(c: CaseChanged) => void>();
+const activityListeners = new Set<(a: AgentActivity) => void>();
+export const mockOnCaseChanged = (f: (c: CaseChanged) => void): (() => void) => {
+  changedListeners.add(f);
+  return () => void changedListeners.delete(f);
+};
+export const mockOnAgentActivity = (f: (a: AgentActivity) => void): (() => void) => {
+  activityListeners.add(f);
+  return () => void activityListeners.delete(f);
+};
+/** As if an agent had run `command` through the bridge and changed `kinds`. */
+export function mockAgentWrote(agent: string | null, command: string, kinds: string[]) {
+  const at = new Date().toISOString();
+  activityListeners.forEach((f) => f({ agent, command, at, running: false }));
+  if (kinds.length > 0) changedListeners.forEach((f) => f({ kinds }));
+}
 const emitIngest = (p: IngestProgress) => ingestListeners.forEach((f) => f(p));
 export const mockOnIngestProgress = (f: (p: IngestProgress) => void): (() => void) => {
   ingestListeners.add(f);

@@ -11,7 +11,7 @@ import {
   type Proposal,
   type QueueItem,
 } from "../api";
-import { useFocusAnalyst, useRefreshBadges, useWriteBlocked } from "../shell/nav";
+import { useFocusAnalyst, useOnDataChanged, useRefreshBadges, useWriteBlocked } from "../shell/nav";
 import { displaySafe } from "../text";
 import FindingDetail from "./FindingDetail";
 import QueueItemDetail, { findingIdOf } from "./QueueItemDetail";
@@ -65,6 +65,8 @@ export default function ReviewQueue({ canWrite, accountFilter = null, onClearFil
   const [loaded, setLoaded] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [comment, setComment] = useState("");
+  // The queue changed under the analyst (an agent's write) while they typed a comment; cleared by any reload.
+  const [stale, setStale] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const busy = useRef(false);
   const [working, setWorking] = useState(false);
@@ -106,6 +108,7 @@ export default function ReviewQueue({ canWrite, accountFilter = null, onClearFil
       itemsRef.current = next;
       setItems(next);
       setLoaded(true);
+      setStale(false);
       const cur = selectedRef.current;
       if (cur !== null && !keys.includes(cur)) {
         // The selected item is gone (decided, or changed under us): move to its neighbour.
@@ -119,6 +122,17 @@ export default function ReviewQueue({ canWrite, accountFilter = null, onClearFil
   const fail = useCallback((e: unknown) => setNotice({ kind: "error", text: errorText(e) }), []);
 
   const load = useCallback(() => reviewQueue().then(apply, fail), [apply, fail]);
+  // An agent wrote through the bridge: the queue again, keeping the selection. While the analyst types a comment the
+  // reload waits for them (it could move the selection and so drop the draft): a button offers it.
+  const commentRef = useRef("");
+  useEffect(() => {
+    commentRef.current = comment;
+  }, [comment]);
+  useOnDataChanged(() => {
+    if (commentRef.current.trim() !== "") setStale(true);
+    else void load();
+  });
+  const reloadStale = () => void load();
 
   useEffect(() => {
     let live = true;
@@ -258,6 +272,14 @@ export default function ReviewQueue({ canWrite, accountFilter = null, onClearFil
           </div>
         )}
         {notice && <div role={notice.kind === "error" ? "alert" : "status"}>{displaySafe(notice.text)}</div>}
+        {stale && (
+          <div role="status">
+            An agent changed the queue while you were typing.{" "}
+            <button className="btn" onClick={reloadStale}>
+              Reload the queue
+            </button>
+          </div>
+        )}
         {bundleAnalysts.length > 0 && (
           <div className="bundles">
             {bundleAnalysts.map((a) => (

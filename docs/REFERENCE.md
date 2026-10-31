@@ -514,6 +514,9 @@ Indicators from a case made before the audit trail get one reviewable `legacy_de
 | `SPARROW_ANALYST` | every write | Default for `--analyst NAME` |
 | `SPARROW_INGEST_CHECKPOINT` | ingest | DuckDB's `checkpoint_threshold` while the files load. Unset: the case's `memory_limit` / 8 (500 MB under the default 4 GB cap, see `SPARROW_MEMORY_LIMIT`), at most 1 GB, never below DuckDB's own 16 MiB (a limit that cannot be read keeps 16 MiB). A size (`256MB`, `1GiB`, ...) sets it; `default` keeps DuckDB's own value. Anything else stops the ingest before a file is loaded (exit 1). The previous threshold is restored afterwards, and one `CHECKPOINT` runs at the end. A bigger threshold avoids repeated checkpoints inside the per-file commits (180 s → 104 s on a 1M-row tree) and costs memory: the WAL's changes stay in memory until the checkpoint |
 | `SPARROW_MEMORY_LIMIT` | every command that opens a case, and the app | DuckDB's `memory_limit` on every instance Sparrow opens on a case (the writer, read-only opens, the detection rule instance, the locked `query` instance). Unset: 4 GB, or DuckDB's own 80% of RAM when that is smaller. A size (`2GB`, `8GiB`, ...) sets it; `default` keeps DuckDB's own. Anything else fails the open (exit 1). Above the limit DuckDB spills to disk (beside the case file, or a private directory under the system temp directory for the in-memory rule and query instances, removed when they close). Uncapped, DuckDB's cache grows toward 80% of RAM: `detect` on a 3.47M-event case peaked at 17 GB, 6.2 GB capped; the ingest's checkpoint threshold follows the limit (`memory_limit` / 8: 500 MB) |
+| `SPARROW_BRIDGE` | every command that opens a case | `off`: never use the app's [agent bridge](#agent-bridge) (as `--no-bridge`) |
+| `SPARROW_BRIDGE_DIR` | the CLI and the app (macOS, Linux) | Directory of the bridge's discovery file instead of `Sparrow/` in the per-user local data directory |
+| `SPARROW_BRIDGE_TIMEOUT` | reads through the bridge | Seconds a read may run in the app before it is stopped (default 120, at most 86400) |
 | `SPARROW_INGEST_PROFILE` | ingest | `1`: print stage spans and per-file timings to stderr (off by default; the output on stdout is unchanged) |
 
 ## Events, entities and marks
@@ -581,7 +584,8 @@ a `--where` the grammar refuses, or `--csv` together with `--offset` or `--limit
 ## Agent workflow
 
 The CLI is the AI agent's tool. An agent (any program that can run a command and read JSON) drives a case from
-evidence to deliverables with `--json` on every command; nothing else is needed, and there is no server.
+evidence to deliverables with `--json` on every command; nothing else is needed. When the analyst has the case open in
+the review app, the same commands run through the app ([Agent bridge](#agent-bridge)).
 
 ```bash
 sparrow ingest /evidence --case case.duckdb --json          # ingest, profile and detect (exit 2: some file failed; 6: only collector-lost records)
@@ -645,6 +649,44 @@ the same items. A bundle says what the other analyst concluded, not how; their t
 entry). It holds one entry per state-changing write and per review; a write that changes nothing (removing an
 inactive indicator) adds none, and detection and exports add none. `audit verify` reports the first bad `seq`
 (exit 3); a break blocks writes until `audit verify --acknowledge` records it.
+
+### Agent bridge
+
+While a case is open in the review app, the app serves it to `sparrow` commands on the same computer: an agent works
+on the case the analyst is looking at, without copying it and without the "case is open by another writer" error
+(exit 4). Nothing changes in how commands are typed: before opening a case, the CLI reads the app's discovery file
+and, when the app is alive and has that same case open, sends the whole command to the app and prints what comes back
+(output and exit code identical to a direct run). Otherwise it opens the file as before. `--no-bridge` (or
+`SPARROW_BRIDGE=off`) always opens the file directly.
+
+- **Reads** (`summary`, `accounts`, `events`, `entity`, `access`, `query`, exports, ...) run on a second connection
+  to the app's database, so the analyst's screen stays usable; a read stops at its time limit
+  (`SPARROW_BRIDGE_TIMEOUT` seconds, default 120, at most a day) with exit 1.
+- **Writes** (`mark`, `note`, `finding set-status|assign|ack-rule-update`, `ioc`, `timeline-entry`, `tenant domains`)
+  wait for the app's own case lock (at most 30 s: "the app is busy", exit 4), so they queue with the analyst's
+  actions. They stay agent decisions (`--agent`, pending review), always on behalf of the app's analyst: a different
+  `--analyst` or `SPARROW_ANALYST` is replaced, with a note on stderr, and with no analyst name set in the app a
+  write is refused (exit 5). The app refreshes the screen it shows (keeping filters, range and selection) and the
+  header shows an Agent chip with the last request.
+- **Refused through the bridge** (exit 4, "run it from the app, or with the case closed in the app"): `ingest`,
+  `profile`, `detect`, `upgrade`, `synth` and `audit verify --acknowledge`, which hold the case for minutes.
+- Requests run one at a time. Closing or switching the case, or starting an import, stops the running request at
+  once: the CLI gets exit 4, "the analyst closed the case (or started an import) while this ran; nothing was
+  written".
+- A CLI and an app of different versions refuse ("update the CLI or the app", exit 4).
+
+How it is reached: the app listens on `127.0.0.1` on a port the OS picks, only while a case is open, and writes
+`bridge.json` (port, a random per-session token, the case, the app's process id, version) to `Sparrow/` in the
+per-user local data directory: `~/Library/Application Support/Sparrow` on macOS, `$XDG_DATA_HOME/Sparrow` or
+`~/.local/share/Sparrow` on Linux, `%LOCALAPPDATA%\Sparrow` on Windows (`SPARROW_BRIDGE_DIR` overrides it on macOS
+and Linux). The file is readable by your account only (0600), and every request must start with its token, so only
+your own programs can use the bridge; a request with a wrong token gets no answer. The file is deleted when the case
+closes; one left by an app that crashed (its process is gone) is ignored.
+
+An agent in a sandbox (Claude Code's on macOS and Linux) needs two allowances: network access to `localhost` /
+`127.0.0.1` (any port), and read access to the discovery directory above. Without the first the CLI says it "may not
+connect to its agent bridge"; without the second it notes that it "cannot read" the discovery file and opens the case
+directly (exit 4 while the app holds it). Either way, `--snapshot` reads a copy instead (reads only).
 
 Limits you should know about:
 

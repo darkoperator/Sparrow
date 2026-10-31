@@ -8,9 +8,12 @@ import {
   ingestProfile,
   ingestUnprofiled,
   isCmdError,
+  onAgentActivity,
+  onCaseChanged,
   reviewQueue,
   settingsGet,
   timelineList,
+  type AgentActivity,
   type CaseInfo,
   type Filter,
   type Settings,
@@ -21,9 +24,17 @@ import Tables, { type TableRequest } from "../tables/Tables";
 import ReviewQueue from "../review/ReviewQueue";
 import { displaySafe } from "../text";
 import Icon, { BrandMark } from "../ui/Icon";
+import AgentChip from "./AgentChip";
 import AnalystPrompt from "./AnalystPrompt";
 import ExportMenu from "./ExportMenu";
-import { FocusAnalystContext, NavContext, RefreshBadgesContext, WriteBlockedContext, writeBlockedReason } from "./nav";
+import {
+  DataVersionContext,
+  FocusAnalystContext,
+  NavContext,
+  RefreshBadgesContext,
+  WriteBlockedContext,
+  writeBlockedReason,
+} from "./nav";
 import ImportDialog, { type ImportMode } from "./ImportDialog";
 import OpenCase, { type UpgradePrompt } from "./OpenCase";
 import ReadOnlyBanner from "./ReadOnlyBanner";
@@ -105,6 +116,10 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
   // Collections an import loaded but never profiled (it was killed): the banner offers to run the profile.
   const [unprofiled, setUnprofiled] = useState(0);
   const [profiling, setProfiling] = useState(false);
+  // The agent bridge: a write bumps `dataVersion` (screens read their data again, keeping their state); the chip
+  // shows the last request.
+  const [dataVersion, setDataVersion] = useState(0);
+  const [agentOf, setAgentOf] = useState<{ caseId: string; activity: AgentActivity } | null>(null);
 
   const refreshSettings = useCallback(async () => {
     try {
@@ -151,6 +166,24 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
     };
   }, [caseId, activeKey, badgeTick]);
 
+  const agent = agentOf !== null && agentOf.caseId === caseId ? agentOf.activity : null;
+  useEffect(() => {
+    if (caseId === undefined) return;
+    let live = true;
+    const offs: Promise<() => void>[] = [
+      onCaseChanged(() => {
+        if (!live) return;
+        setDataVersion((n) => n + 1);
+        refreshBadges();
+      }),
+      onAgentActivity((activity) => live && setAgentOf({ caseId, activity })),
+    ];
+    return () => {
+      live = false;
+      for (const off of offs) void off.then((f) => f(), () => {});
+    };
+  }, [caseId, refreshBadges]);
+
   const readOnly = info?.read_only_reason !== null && info !== null;
   useEffect(() => {
     if (caseId === undefined || readOnly) return;
@@ -186,6 +219,8 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
       const opened = await caseOpen(path, allowUpgrade);
       setTabs(loadTabs(opened.case_id));
       setInfo(opened);
+      // A new bridge session: no request of the previous one shows.
+      setAgentOf(null);
       setAccountFilter(null);
       setEventsEntity(null);
       setFindingReq(null);
@@ -209,6 +244,7 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
       setError(isCmdError(e) ? e.message : String(e));
     }
     setInfo(null);
+    setAgentOf(null);
     setTabs(initialTabs());
     setEventsEntity(null);
     setFindingReq(null);
@@ -347,6 +383,7 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
           {displaySafe(info.case_id)}
         </span>
         <span className="titlebar-spacer" />
+        <AgentChip activity={agent} />
         {settings.analyst && (
           <span className="analyst-chip" title={displaySafe(settings.analyst)}>
             <span className="analyst-initials" aria-hidden="true">
@@ -400,6 +437,7 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
             <RefreshBadgesContext.Provider value={refreshBadges}>
             <WriteBlockedContext.Provider value={writeBlockedReason(info.read_only_reason, settings.analyst)}>
             <FocusAnalystContext.Provider value={focusAnalyst}>
+            <DataVersionContext.Provider value={dataVersion}>
             <main key={dataEpoch}>
               {screen !== "highlights" && <HighlightsError />}
               {body}
@@ -414,6 +452,7 @@ export default function Shell({ screens = {}, entityTab }: ShellProps) {
                 </section>
               ))}
             </main>
+            </DataVersionContext.Provider>
             </FocusAnalystContext.Provider>
             </WriteBlockedContext.Provider>
             </RefreshBadgesContext.Provider>

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useEffect, useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,6 +22,8 @@ vi.mock("../api", async (orig) => ({
   onIngestClosing: vi.fn(async () => () => {}),
   ingestUnprofiled: vi.fn(async () => []),
   ingestProfile: vi.fn(),
+  onCaseChanged: vi.fn(async () => () => {}),
+  onAgentActivity: vi.fn(async () => () => {}),
 }));
 const dialogOpen = vi.fn();
 const dialogSave = vi.fn();
@@ -59,7 +61,7 @@ vi.mock("./ExportMenu", () => ({ default: () => <button>Export</button> }));
 
 import * as api from "../api";
 import Grid from "../grid/Grid";
-import { useFocusAnalyst, useNav, useRefreshBadges, useWriteBlocked, writeBlockedReason } from "./nav";
+import { useFocusAnalyst, useNav, useOnDataChanged, useRefreshBadges, useWriteBlocked, writeBlockedReason } from "./nav";
 import Shell from "./Shell";
 import type { EntityRef } from "./tabs";
 
@@ -958,5 +960,57 @@ describe("Shell import", () => {
     await openViaDialog();
     expect(screen.queryByText(/was not profiled/)).not.toBeInTheDocument();
     expect(api.ingestUnprofiled).not.toHaveBeenCalled();
+  });
+
+  it("refreshes_on_case_changed_keeping_filters", async () => {
+    let changed: ((c: api.CaseChanged) => void) | null = null;
+    vi.mocked(api.onCaseChanged).mockImplementation(async (h) => {
+      changed = h;
+      return () => {};
+    });
+    let reloads = 0;
+    function Screen() {
+      const [text, setText] = useState("");
+      useOnDataChanged(() => {
+        reloads += 1;
+      });
+      return (
+        <label>
+          filter
+          <input value={text} onChange={(ev) => setText(ev.target.value)} />
+        </label>
+      );
+    }
+    dialogOpen.mockResolvedValue("/synthetic/case-a.duckdb");
+    const user = userEvent.setup();
+    render(<Shell screens={{ accounts: () => <Screen /> }} />);
+    await user.click(await screen.findByRole("button", { name: "Open a case" }));
+    await user.click(screen.getByRole("tab", { name: "Accounts" }));
+    await user.type(screen.getByRole("textbox", { name: "filter" }), "jdoe");
+    await waitFor(() => expect(changed).not.toBeNull());
+    const queueReads = vi.mocked(api.reviewQueue).mock.calls.length;
+    act(() => changed!({ kinds: ["marks"] }));
+    await waitFor(() => expect(reloads).toBe(1));
+    // The same screen, not a remount: what the analyst typed is still there.
+    expect(screen.getByRole("textbox", { name: "filter" })).toHaveValue("jdoe");
+    await waitFor(() => expect(vi.mocked(api.reviewQueue).mock.calls.length).toBeGreaterThan(queueReads));
+  });
+
+  it("shows the agent chip after a bridge request", async () => {
+    let activity: ((a: api.AgentActivity) => void) | null = null;
+    vi.mocked(api.onAgentActivity).mockImplementation(async (h) => {
+      activity = h;
+      return () => {};
+    });
+    await openViaDialog();
+    expect(screen.queryByRole("status", { name: /^Agent/ })).toBeNull();
+    await waitFor(() => expect(activity).not.toBeNull());
+    act(() => activity!({ agent: "claude", command: "mark tag", at: new Date().toISOString(), running: false }));
+    expect(await screen.findByRole("status", { name: "Agent claude" })).toBeInTheDocument();
+    // A new session of the same case starts without the old request.
+    await userEvent.setup().click(screen.getByRole("button", { name: "Close case" }));
+    await userEvent.setup().click(await screen.findByRole("button", { name: "/synthetic/case-a.duckdb" }));
+    await screen.findByRole("tab", { name: /^Review/ });
+    expect(screen.queryByRole("status", { name: /^Agent/ })).toBeNull();
   });
 });

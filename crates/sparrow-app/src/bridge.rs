@@ -413,6 +413,8 @@ impl Worker {
             .filter(|(k, _)| k.starts_with("SPARROW_"))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
+        let mut env = env;
+        wire::absolutize_env(&mut env, &req.cwd);
         let agent = seen
             .agent
             .clone()

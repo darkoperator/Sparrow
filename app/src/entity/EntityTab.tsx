@@ -22,7 +22,7 @@ import { isoSeconds } from "../events/columns";
 import Icon, { type IconName } from "../ui/Icon";
 import EventsView, { indicatorNote } from "../events/EventsView";
 import { flagValueMessage, pivotMenu, type ValueMenuContext } from "../marks/rowMenu";
-import { useFocusAnalyst, useNav, useRefreshBadges, useWriteBlocked } from "../shell/nav";
+import { useDataVersion, useFocusAnalyst, useNav, useRefreshBadges, useWriteBlocked } from "../shell/nav";
 import type { EntityRef } from "../shell/tabs";
 import { displaySafe } from "../text";
 import AddToTimelineDialog from "../marks/AddToTimelineDialog";
@@ -88,6 +88,7 @@ export default function EntityTab({ entity }: EntityTabProps) {
 
   // Tiles, pivots and findings: again whenever the range changes. A late answer to an earlier range is dropped.
   const { from, to } = range;
+  const dataVersion = useDataVersion();
   useEffect(() => {
     const mine = ++token.current;
     const live = () => mine === token.current;
@@ -110,7 +111,7 @@ export default function EntityTab({ entity }: EntityTabProps) {
         (e: unknown) => live() && setData((d) => ({ ...d, pivotErrors: { ...d.pivotErrors, [of]: errorText(e) } })),
       );
     }
-  }, [kind, value, from, to, reloadN]);
+  }, [kind, value, from, to, reloadN, dataVersion]);
 
   const copy = async () => {
     try {

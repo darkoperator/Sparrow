@@ -29,6 +29,7 @@ use std::rc::Rc;
 #[macro_use]
 pub mod cx;
 pub mod bridge;
+pub mod bridge_client;
 mod cmd;
 
 pub use cx::{CaseSource, CliIo, FileSource, SharedBuf};
@@ -50,6 +51,10 @@ struct Cli {
     /// Emit machine-readable JSON
     #[arg(long, global = true)]
     json: bool,
+    /// Open the case file here even when the app has it open (by default the command then runs through the app's
+    /// agent bridge); also SPARROW_BRIDGE=off
+    #[arg(long, global = true)]
+    no_bridge: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -644,13 +649,85 @@ enum DomainCommand {
     },
 }
 
-/// The `sparrow` binary: [`run`] on the process's arguments, stdout and stderr, opening case files directly.
+/// The `sparrow` binary: the command goes to the app when it has the case open ([`bridge_client::route`]), else
+/// [`run`] on the process's arguments, stdout and stderr, opening case files directly.
 pub fn main() -> ExitCode {
-    ExitCode::from(run(
-        std::env::args_os().collect(),
-        CliIo::std(),
-        Rc::new(FileSource),
-    ))
+    let args: Vec<OsString> = std::env::args_os().collect();
+    let dir = bridge::discovery_dir();
+    if let Some(code) = bridge_client::route(
+        &args,
+        dir.as_deref(),
+        &mut std::io::stdout(),
+        &mut std::io::stderr(),
+    ) {
+        return ExitCode::from(code);
+    }
+    ExitCode::from(run(args, CliIo::std(), Rc::new(FileSource)))
+}
+
+/// `args` with the value of every path option (`--case`, `--out`, `--csv`, …) made absolute against `cwd`, so the
+/// command means the same files when the app runs it.
+pub fn absolutize_paths(args: &[OsString], cwd: &Path) -> Vec<OsString> {
+    let words: Vec<String> = inspect(args)
+        .command
+        .split(' ')
+        .filter(|w| !w.is_empty())
+        .map(String::from)
+        .collect();
+    let root = Cli::command();
+    let mut chain = vec![&root];
+    for w in &words {
+        match chain.last().and_then(|c| c.find_subcommand(w)) {
+            Some(c) => chain.push(c),
+            None => break,
+        }
+    }
+    let path_type = clap::builder::ValueParser::path_buf().type_id();
+    let longs: std::collections::BTreeSet<String> = chain
+        .iter()
+        .flat_map(|c| c.get_arguments())
+        .filter(|a| a.get_value_parser().type_id() == path_type)
+        .filter_map(|a| a.get_long().map(String::from))
+        .collect();
+    let abs = |v: &OsString| -> OsString {
+        let p = Path::new(v);
+        if p.is_absolute() || v.is_empty() {
+            v.clone()
+        } else {
+            cwd.join(p).into_os_string()
+        }
+    };
+    let mut out = Vec::with_capacity(args.len());
+    let mut it = args.iter();
+    if let Some(program) = it.next() {
+        out.push(program.clone());
+    }
+    while let Some(a) = it.next() {
+        if a == "--" {
+            out.push(a.clone());
+            out.extend(it.cloned());
+            break;
+        }
+        let text = a.to_str().unwrap_or("");
+        if let Some(long) = text.strip_prefix("--") {
+            if let Some((name, value)) = long.split_once('=') {
+                if longs.contains(name) {
+                    let mut joined = OsString::from(format!("--{name}="));
+                    joined.push(abs(&OsString::from(value)));
+                    out.push(joined);
+                    continue;
+                }
+            } else if longs.contains(long) {
+                out.push(a.clone());
+                if let Some(v) = it.next() {
+                    out.push(abs(v));
+                }
+                continue;
+            }
+        }
+        out.push(a.clone());
+    }
+    out
 }
 
 /// Run one `sparrow` command line (`args[0]` is the program name) with its output in `io` and its cases from

@@ -37,7 +37,7 @@ import NoteDialog from "../marks/NoteDialog";
 import ReviewMarksDialog from "../marks/ReviewMarksDialog";
 import { rowMenu, type RowMenuActions } from "../marks/rowMenu";
 import { NewTagDialog } from "../marks/TagMenu";
-import { useFocusAnalyst, useNav, useRefreshBadges, useWriteBlocked } from "../shell/nav";
+import { useFocusAnalyst, useNav, useOnDataChanged, useRefreshBadges, useWriteBlocked } from "../shell/nav";
 import type { EntityRef } from "../shell/tabs";
 import { displaySafe } from "../text";
 import Icon from "../ui/Icon";
@@ -427,6 +427,12 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
     },
     [refreshBadges, loadTags, reload],
   );
+  // An agent wrote through the bridge: read again like after the analyst's own write, keeping filters and range.
+  useOnDataChanged(() => {
+    setDetailVersion((v) => v + 1);
+    loadTags();
+    void reload();
+  });
   // The host asks for a re-read (not on mount: the first run loads).
   const seenToken = useRef(reloadToken);
   useEffect(() => {

@@ -17,6 +17,7 @@ import { save } from "../dialog";
 import { isoSeconds } from "../events/columns";
 import { displaySafe } from "../text";
 import "./access.css";
+import { useDataVersion } from "../shell/nav";
 
 const STATUS_LABELS: Record<string, string> = {
   none: "no coverage data",
@@ -118,6 +119,7 @@ export default function AccessSection({ account }: { account: string }) {
   type Loaded = { for: string; acc?: AccessAccount; pending?: number; error?: string };
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const dataVersion = useDataVersion();
   useEffect(() => {
     let live = true;
     accessReport(account).then(
@@ -127,7 +129,7 @@ export default function AccessSection({ account }: { account: string }) {
     return () => {
       live = false;
     };
-  }, [account]);
+  }, [account, dataVersion]);
   const current = loaded?.for === account ? loaded : null;
   const error = current?.error ?? null;
   const data = current?.acc ? { acc: current.acc, pending: current.pending ?? 0 } : null;

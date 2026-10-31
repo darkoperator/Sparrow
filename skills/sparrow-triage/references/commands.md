@@ -4,6 +4,18 @@ Every command takes `--case case.duckdb` and `--json`. One command per call. Rep
 `<TABLE>`, `<RECORD_KEY>` with real values. All SQL below was run against a synthetic case; column names come from
 `sparrow schema` (see [tables.md](tables.md)). Timestamps print as UTC text.
 
+## Agent bridge (the app has the case open)
+
+Nothing to do: every command that names the case the app has open runs in the app and prints the same output and
+exit code. Writes are signed on behalf of the app's analyst (your `--analyst` is replaced, with a note on stderr) and
+stay pending review; with no analyst name set in the app they are refused (exit 5). `ingest`, `profile`, `detect`,
+`upgrade`, `synth` and `audit verify --acknowledge` are refused (exit 4). A read stops after
+`SPARROW_BRIDGE_TIMEOUT` seconds (default 120). `--no-bridge` opens the file directly (exit 4 while the app holds it).
+
+A sandboxed agent needs, once: network access to `localhost` (any port), and read access to the app's
+discovery directory: `~/Library/Application Support/Sparrow` (macOS), `~/.local/share/Sparrow` or
+`$XDG_DATA_HOME/Sparrow` (Linux), `%LOCALAPPDATA%\Sparrow` (Windows). The error names which one is missing.
+
 ## Output shapes
 
 `query` returns rows as arrays aligned with `columns`:

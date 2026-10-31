@@ -3724,6 +3724,7 @@ dependencies = [
  "csv",
  "dirs",
  "duckdb",
+ "libc",
  "predicates",
  "serde",
  "serde_json",

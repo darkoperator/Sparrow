@@ -511,3 +511,144 @@ fn a_huge_time_limit_is_bounded() {
     let (code, _, err) = f.ask(&["events", "--case", &f.case_arg()]);
     assert_eq!(code, 0, "the bridge still serves: {err}");
 }
+
+#[test]
+fn mark_flag_through_the_bridge_lands_pending() {
+    let f = fixture(Some("Carol"));
+    let args: Vec<std::ffi::OsString> = [
+        "sparrow",
+        "mark",
+        "flag",
+        "--case",
+        &f.case_arg(),
+        "--row",
+        "ual_events:u2",
+        "--level",
+        "malicious",
+        "--agent",
+        "claude",
+    ]
+    .iter()
+    .map(Into::into)
+    .collect();
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    // The CLI's own routing: the app holds the case, so the command goes through the bridge.
+    let code = sparrow_cli::bridge_client::route(&args, Some(&f.dir), &mut out, &mut err);
+    assert_eq!(code, Some(0), "{}", String::from_utf8_lossy(&err));
+    let flags: Vec<(String, String, String)> = with_case(f.state(), f.state().ticket(), |open| {
+        let mut stmt = open
+            .case
+            .conn()
+            .prepare(
+                "SELECT record_key, decided_by, CAST(review_state AS VARCHAR) FROM event_flags ORDER BY record_key",
+            )
+            .unwrap();
+        Ok(stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap())
+    })
+    .unwrap();
+    assert_eq!(
+        flags,
+        vec![(
+            "u2".to_string(),
+            "agent:claude".to_string(),
+            "pending_review".to_string()
+        )]
+    );
+    assert_eq!(f.events("case-changed").len(), 1);
+}
+
+/// A real case through the bridge, the way an agent uses it: `SPARROW_BRIDGE_REAL_CASE` names a SCRATCH COPY (the
+/// test writes an `ai:` tag into it). Prints timings and counts only.
+#[test]
+#[ignore = "needs SPARROW_BRIDGE_REAL_CASE (a scratch copy of a real case)"]
+fn a_real_case_through_the_bridge() {
+    let Some(case) = std::env::var_os("SPARROW_BRIDGE_REAL_CASE").map(PathBuf::from) else {
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let settings = tmp.path().join("settings");
+    std::fs::create_dir_all(&settings).unwrap();
+    let dir = tmp.path().join("bridge");
+    let host = Arc::new(Host {
+        state: AppState::default(),
+        events: Mutex::new(Vec::new()),
+    });
+    *host.state.settings_dir.lock().unwrap() = Some(settings);
+    settings_set_analyst(&host.state, "Carol").unwrap();
+    bridge::enable(&host.state, host.clone(), dir.clone());
+    case_open(&host.state, &case, false).unwrap();
+    let f = Fixture {
+        _tmp: tmp,
+        host,
+        case,
+        dir,
+    };
+    let c = f.case_arg();
+    let timed = |args: &[&str]| {
+        let t = Instant::now();
+        let (code, out, err) = f.ask(args);
+        eprintln!(
+            "{:<40} exit {code}  {:>7.2?}  {} bytes",
+            args[0..2].join(" "),
+            t.elapsed(),
+            out.len()
+        );
+        assert_eq!(code, 0, "{args:?}: {err}");
+        out
+    };
+    timed(&["summary", "--case", &c, "--json"]);
+    timed(&["accounts", "--case", &c, "--json"]);
+    timed(&["access", "--case", &c, "--json"]);
+    // The analyst keeps reading on the app's own connection while a bridge read runs.
+    std::thread::scope(|s| {
+        s.spawn(|| timed(&["events", "--case", &c, "--json", "--limit", "500"]));
+        let t = Instant::now();
+        with_case(f.state(), f.state().ticket(), |open| {
+            let n: i64 = open
+                .case
+                .conn()
+                .query_row("SELECT count(*) FROM events", [], |r| r.get(0))
+                .unwrap();
+            eprintln!("app read meanwhile: {n} events in {:.2?}", t.elapsed());
+            Ok(())
+        })
+        .unwrap();
+    });
+    let row: String = with_case(f.state(), f.state().ticket(), |open| {
+        Ok(open
+            .case
+            .conn()
+            .query_row(
+                "SELECT source_table || ':' || record_key FROM events ORDER BY event_time, record_key LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap())
+    })
+    .unwrap();
+    let before = tags(&f).len();
+    timed(&[
+        "mark",
+        "tag",
+        "--case",
+        &c,
+        "--row",
+        &row,
+        "--tag",
+        "ai:bridge-test",
+        "--agent",
+        "claude",
+    ]);
+    let after = tags(&f);
+    assert_eq!(after.len(), before + 1);
+    assert!(
+        after
+            .iter()
+            .any(|t| t.0 == "ai:bridge-test" && t.3 == "pending_review")
+    );
+    assert_eq!(f.events("case-changed").len(), 1);
+}

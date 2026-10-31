@@ -131,6 +131,21 @@ fn private_file(path: &Path) -> io::Result<std::fs::File> {
         .open(path)
 }
 
+/// The path variables (`SPARROW_DATA`, the `SPARROW_RULES` list) of `env` made absolute against `cwd`, the CLI's
+/// directory: the app resolves them in its own.
+pub fn absolutize_env(env: &mut BTreeMap<String, String>, cwd: &Path) {
+    let abs = |p: PathBuf| if p.is_absolute() { p } else { cwd.join(p) };
+    if let Some(d) = env.get_mut("SPARROW_DATA").filter(|d| !d.is_empty()) {
+        *d = abs(PathBuf::from(&*d)).display().to_string();
+    }
+    if let Some(r) = env.get_mut("SPARROW_RULES").filter(|r| !r.is_empty()) {
+        let joined = std::env::join_paths(std::env::split_paths(&*r).map(abs));
+        if let Some(j) = joined.ok().and_then(|j| j.into_string().ok()) {
+            *r = j;
+        }
+    }
+}
+
 /// Compare two tokens in time that does not depend on where they differ.
 pub fn token_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
@@ -237,17 +252,23 @@ pub fn send(
     stream.write_all(&line)?;
     stream.flush()?;
     let mut r = io::BufReader::new(stream);
+    // A failed write of our own output (a closed pipe) is not success, whatever the app answered.
+    let mut out_failed = false;
     loop {
         match read_frame(&mut r)? {
             Some((OUT, b)) => {
-                let _ = out.write_all(&b);
-                let _ = out.flush();
+                if !out_failed && (out.write_all(&b).is_err() || out.flush().is_err()) {
+                    out_failed = true;
+                }
             }
             Some((ERR, b)) => {
                 let _ = err.write_all(&b);
                 let _ = err.flush();
             }
-            Some((EXIT, b)) => return Ok(b.first().copied().unwrap_or(1)),
+            Some((EXIT, b)) => {
+                let code = b.first().copied().unwrap_or(1);
+                return Ok(if out_failed && code == 0 { 1 } else { code });
+            }
             Some(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -299,6 +320,67 @@ mod tests {
         assert!(w.write(b"a").is_err());
         assert!(w.write(b"b").is_err());
         assert_eq!(w.inner.0, 1, "no second send after a failure");
+    }
+
+    #[test]
+    fn env_paths_are_made_absolute_against_the_cli_directory() {
+        let cwd = Path::new("/work/here");
+        let rules = std::env::join_paths(["rules-a", "/abs/rules-b"]).unwrap();
+        let mut env: BTreeMap<String, String> = [
+            ("SPARROW_DATA".to_string(), "data".to_string()),
+            ("SPARROW_RULES".to_string(), rules.into_string().unwrap()),
+            ("SPARROW_AGENT".to_string(), "claude".to_string()),
+        ]
+        .into();
+        absolutize_env(&mut env, cwd);
+        assert_eq!(env["SPARROW_DATA"], cwd.join("data").display().to_string());
+        let got: Vec<PathBuf> = std::env::split_paths(&env["SPARROW_RULES"]).collect();
+        assert_eq!(
+            got,
+            vec![cwd.join("rules-a"), PathBuf::from("/abs/rules-b")]
+        );
+        assert_eq!(env["SPARROW_AGENT"], "claude");
+    }
+
+    #[test]
+    fn a_failed_local_write_is_not_success() {
+        struct Broken;
+        impl Write for Broken {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut r = io::BufReader::new(s.try_clone().unwrap());
+            let mut line = String::new();
+            r.read_line(&mut line).unwrap();
+            r.read_line(&mut line).unwrap();
+            write_frame(&mut s, OUT, b"answer\n").unwrap();
+            write_frame(&mut s, EXIT, &[0]).unwrap();
+        });
+        let d = Discovery {
+            port,
+            token: "t".into(),
+            case: "/c".into(),
+            pid: 1,
+            version: VERSION.into(),
+            started: Utc::now(),
+        };
+        let req = Request {
+            version: VERSION.into(),
+            args: vec![],
+            cwd: "/".into(),
+            env: BTreeMap::new(),
+            out_is_terminal: false,
+        };
+        let code = send(&d, &req, &mut Broken, &mut Vec::new()).unwrap();
+        assert_eq!(code, 1);
     }
 
     #[test]

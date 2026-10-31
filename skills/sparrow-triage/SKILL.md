@@ -104,7 +104,7 @@ text: `WHERE ip = '203.0.113.7'`. Times are UTC. Other tables: [references/table
 ## References (load only when the fast path is not enough)
 
 - [references/commands.md](references/commands.md): question to exact command, output shapes and ready SQL
-  (persistence sweep, one user, one address, sessions, spray, connectors).
+  (persistence sweep, one user, one address, sessions, spray, connectors); the app's agent bridge (case open in the app).
 - [references/tables.md](references/tables.md): the key tables and their columns.
 - [references/notes.md](references/notes.md): reading `capabilities` and `summary`, traps, source verification,
   recording decisions.

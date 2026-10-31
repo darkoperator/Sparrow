@@ -1223,3 +1223,28 @@ export async function onIngestProgress(handler: (p: IngestProgress) => void): Pr
   if (__SPARROW_MOCK__) return (await import("./mock/backend")).mockOnIngestProgress(handler);
   return listen<IngestProgress>("ingest-progress", (e) => handler(e.payload));
 }
+
+/** An agent's request through the app's agent bridge (`sparrow` CLI commands run on the open case). */
+export interface AgentActivity {
+  /** The CLI's `--agent` id, when it gave one. */
+  agent: string | null;
+  /** The command words, e.g. `mark tag`. */
+  command: string;
+  /** When it started (`running`) or ended. */
+  at: string;
+  running: boolean;
+}
+/** The agent bridge wrote to the case: what changed (`marks`, `notes`, `findings`, `indicators`, `timeline`, `tenant`). */
+export interface CaseChanged {
+  kinds: string[];
+}
+/** Calls `handler` after each write through the agent bridge, until the returned function is called. */
+export async function onCaseChanged(handler: (c: CaseChanged) => void): Promise<() => void> {
+  if (__SPARROW_MOCK__) return (await import("./mock/backend")).mockOnCaseChanged(handler);
+  return listen<CaseChanged>("case-changed", (e) => handler(e.payload));
+}
+/** Calls `handler` when an agent's bridge request starts and ends, until the returned function is called. */
+export async function onAgentActivity(handler: (a: AgentActivity) => void): Promise<() => void> {
+  if (__SPARROW_MOCK__) return (await import("./mock/backend")).mockOnAgentActivity(handler);
+  return listen<AgentActivity>("agent-activity", (e) => handler(e.payload));
+}

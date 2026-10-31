@@ -1,4 +1,5 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { findingDetail as detailFixture, queue as queueFixture } from "../test/fixtures";
@@ -16,7 +17,14 @@ vi.mock("../api", async (orig) => ({
 }));
 
 import * as api from "../api";
-import { FocusAnalystContext, NavContext, RefreshBadgesContext, WriteBlockedContext, writeBlockedReason } from "../shell/nav";
+import {
+  DataVersionContext,
+  FocusAnalystContext,
+  NavContext,
+  RefreshBadgesContext,
+  WriteBlockedContext,
+  writeBlockedReason,
+} from "../shell/nav";
 import ReviewQueue from "./ReviewQueue";
 
 // The recorded queue: three agent decisions on one account (finding set_status, indicator add_ioc, timeline
@@ -570,5 +578,34 @@ describe("ReviewQueue tells the shell to refresh its badges", () => {
     await user.click(screen.getByTestId(FINDING));
     await user.click(screen.getByRole("button", { name: "Accept" }));
     await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+  });
+
+  it("an agent write reloads the queue but never discards a comment being typed", async () => {
+    let bump: () => void = () => {};
+    function Host() {
+      const [v, setV] = useState(0);
+      bump = () => setV((n) => n + 1);
+      return (
+        <DataVersionContext.Provider value={v}>
+          <ReviewQueue canWrite />
+        </DataVersionContext.Provider>
+      );
+    }
+    const user = userEvent.setup();
+    render(<Host />);
+    await user.click(await screen.findByTestId(FINDING));
+    const reads = m.queue.mock.calls.length;
+    // No draft: the queue is read again at once.
+    act(() => bump());
+    await waitFor(() => expect(m.queue.mock.calls.length).toBe(reads + 1));
+    // A draft: the selected item disappears in the agent's write, but the queue waits for the analyst.
+    await user.type(screen.getByLabelText("Comment"), "half typed");
+    queue = queue.filter((q) => q.source !== "decision" || !FINDING.includes(q.object_id));
+    act(() => bump());
+    const reload = await screen.findByRole("button", { name: /reload/i });
+    expect(m.queue.mock.calls.length).toBe(reads + 1);
+    expect(screen.getByLabelText("Comment")).toHaveValue("half typed");
+    await user.click(reload);
+    await waitFor(() => expect(m.queue.mock.calls.length).toBe(reads + 2));
   });
 });
