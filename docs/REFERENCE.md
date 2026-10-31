@@ -708,11 +708,15 @@ per-user local data directory: `~/Library/Application Support/Sparrow` on macOS,
 `~/.local/share/Sparrow` on Linux, `%LOCALAPPDATA%\Sparrow` on Windows (`SPARROW_BRIDGE_DIR` overrides it on macOS
 and Linux). The file is readable by your account only (0600), and every request must start with its token, so only
 your own programs can use the bridge; a request with a wrong token gets no answer. The file is deleted when the case
-closes; one left by an app that crashed (its process is gone) is ignored.
+closes, when the app quits and when the bridge itself fails; one left by an app that crashed (its process is gone) is
+ignored. When the file names a process that is running but nothing answers on its port (the bridge is gone, or the pid
+was reused), the CLI notes "refused the connection" on stderr and runs the command itself: a free case is read
+directly, and a case the app holds exits 4 as without the bridge, naming `--snapshot`.
 
 An agent in a sandbox (Claude Code's on macOS and Linux) needs two allowances: network access to `localhost` /
 `127.0.0.1` (any port), and read access to the discovery directory above. Without the first the CLI says it "may not
-connect to its agent bridge"; without the second it notes that it "cannot read" the discovery file and opens the case
+connect to its agent bridge" (or notes the bridge "refused the connection" and opens the case directly); without
+the second it notes that it "cannot read" the discovery file and opens the case
 directly (exit 4 while the app holds it). Either way, `--snapshot` reads a copy instead (reads only).
 
 Limits you should know about:

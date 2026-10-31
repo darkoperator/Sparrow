@@ -70,8 +70,17 @@ pub fn route(
     };
     match bridge::send(&d, &req, out, err) {
         Ok(code) => Some(code),
-        // Without a process check (Windows), a refused connection is a dead app: the file is free to open here.
-        Err(e) if !cfg!(unix) && e.kind() == std::io::ErrorKind::ConnectionRefused => None,
+        // Nothing listens: the app is gone (its pid reused) or its bridge is (a crash, an import). Run here: when the app
+        // really holds the case, the direct open says so and names --snapshot.
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+            let _ = writeln!(
+                err,
+                "note: the app's agent bridge on 127.0.0.1:{} refused the connection ({e}); running here instead (an \
+                 agent in a sandbox that blocks localhost sees this too: see the sparrow-triage skill)",
+                d.port
+            );
+            None
+        }
         // A read that asked for a snapshot reads a copy here instead.
         Err(e) if seen.kind == Kind::Read && wants_snapshot => {
             let _ = writeln!(
@@ -108,13 +117,6 @@ fn unreachable(d: &Discovery, e: &std::io::Error, kind: &Kind) -> String {
         return format!(
             "the app has this case open, but this process may not connect to its agent bridge on 127.0.0.1:{} \
              ({e}): an agent in a sandbox needs network access to localhost (see the sparrow-triage skill).{reads}",
-            d.port
-        );
-    }
-    if e.kind() == std::io::ErrorKind::ConnectionRefused {
-        return format!(
-            "the app has this case open, but its agent bridge did not answer on 127.0.0.1:{} ({e}): the app may be \
-             importing (it serves no requests then), or a sandbox blocks localhost.{reads}",
             d.port
         );
     }

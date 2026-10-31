@@ -126,6 +126,11 @@ pub(crate) fn stop(state: &AppState) {
     }
 }
 
+/// Stop the bridge as the app quits, so no discovery file outlives it.
+pub fn shutdown(state: &AppState) {
+    stop(state);
+}
+
 /// Start the bridge again for the case open now, at the end of an import (while `importing` is still set, so no
 /// close, switch or second import runs meanwhile).
 pub(crate) fn restart(state: &AppState) {
@@ -216,6 +221,7 @@ impl Bridge {
             case,
             ticket,
             read_base,
+            discovery: (bridge.dir.clone(), bridge.discovery.token.clone()),
         };
         let shared = bridge.shared.clone();
         match std::thread::Builder::new()
@@ -354,13 +360,18 @@ struct Worker {
     ticket: state::Ticket,
     /// The second connection reads are cloned from.
     read_base: Case,
+    /// The discovery file's directory and token, removed when the worker ends.
+    discovery: (PathBuf, String),
 }
 
-/// Ends the bridge when its worker ends, also by a panic: the listener stops and every queued request is answered.
-struct WorkerExit(Arc<Shared>);
+/// Ends the bridge when its worker ends, also by a panic: the discovery file goes, the listener stops and every queued
+/// request is answered.
+struct WorkerExit(Arc<Shared>, PathBuf, String);
 
 impl Drop for WorkerExit {
     fn drop(&mut self) {
+        // First, so a CLI that sees its request end finds no bridge and runs on its own.
+        wire::remove_discovery(&self.1, &self.2);
         self.0.stopping.store(true, Ordering::SeqCst);
         // A write cut short by a panic is over: a stop must not wait for it.
         self.0.writing.store(false, Ordering::SeqCst);
@@ -377,7 +388,8 @@ impl Drop for WorkerExit {
 
 impl Worker {
     fn run(self, shared: Arc<Shared>) {
-        let _exit = WorkerExit(shared.clone());
+        let (dir, token) = self.discovery.clone();
+        let _exit = WorkerExit(shared.clone(), dir, token);
         loop {
             let job = {
                 let mut queue = lock(&shared.queue);

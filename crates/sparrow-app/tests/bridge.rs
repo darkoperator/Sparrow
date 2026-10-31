@@ -787,6 +787,11 @@ fn a_worker_that_dies_during_a_write_never_blocks_a_close() {
     ];
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let _ = send(&d, &request(&args, BTreeMap::new()), &mut out, &mut err);
+    // The bridge is gone: its discovery file goes with it, so a later CLI runs on its own instead of being refused.
+    assert!(
+        read_discovery(&f.dir).is_none(),
+        "the dead bridge's discovery file is removed"
+    );
     let host = f.host.clone();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || tx.send(case_close(&host.state).is_ok()).unwrap());
@@ -795,4 +800,12 @@ fn a_worker_that_dies_during_a_write_never_blocks_a_close() {
         Ok(true),
         "the close returns"
     );
+}
+
+#[test]
+fn quitting_the_app_removes_the_discovery_file() {
+    let f = fixture(Some("Carol"));
+    assert!(read_discovery(&f.dir).is_some());
+    bridge::shutdown(f.state());
+    assert!(read_discovery(&f.dir).is_none());
 }

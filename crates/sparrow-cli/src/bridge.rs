@@ -165,6 +165,16 @@ pub fn write_frame(w: &mut dyn Write, kind: u8, bytes: &[u8]) -> io::Result<()> 
     w.flush()
 }
 
+/// An error after the request was sent. `ConnectionRefused` is kept for the connect alone (nothing listens: the CLI
+/// may run the command itself); here it becomes `ConnectionAborted`, since the app may already have run it.
+fn sent(e: io::Error) -> io::Error {
+    if e.kind() == io::ErrorKind::ConnectionRefused {
+        io::Error::new(io::ErrorKind::ConnectionAborted, e)
+    } else {
+        e
+    }
+}
+
 /// The largest frame a client accepts.
 pub const MAX_FRAME: u32 = 64 << 20;
 
@@ -254,17 +264,28 @@ pub fn answer_timeout(env: &BTreeMap<String, String>) -> std::time::Duration {
 }
 
 /// Send `req` to the bridge described by `d` and stream its answer into `out` and `err`; the exit code it ends
-/// with. An answer that ends without an exit code (the app refused the token, or went away) is an error.
+/// with. An answer that ends without an exit code (the app refused the token, or went away) is an error. Only a
+/// connection that could not be made is `ConnectionRefused` (see [`sent`]).
 pub fn send(
     d: &Discovery,
     req: &Request,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> io::Result<u8> {
-    let mut stream = std::net::TcpStream::connect(("127.0.0.1", d.port))?;
+    let stream = std::net::TcpStream::connect(("127.0.0.1", d.port))?;
+    exchange(stream, &d.token, req, out, err).map_err(sent)
+}
+
+fn exchange(
+    mut stream: std::net::TcpStream,
+    token: &str,
+    req: &Request,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> io::Result<u8> {
     let _ = stream.set_nodelay(true);
     stream.set_read_timeout(Some(answer_timeout(&req.env)))?;
-    let mut line = d.token.clone().into_bytes();
+    let mut line = token.as_bytes().to_vec();
     line.push(b'\n');
     line.extend(serde_json::to_vec(req).map_err(io::Error::other)?);
     line.push(b'\n');
@@ -360,6 +381,18 @@ mod tests {
             got.extend(bytes);
         }
         assert!(got == line, "the frames carry the output unchanged");
+    }
+
+    #[test]
+    fn only_the_connect_can_be_refused() {
+        // A refusal means nothing listens, so the CLI may run the command itself; once the request is sent the same
+        // error kind must not say so (a write would run twice).
+        let after = sent(io::ErrorKind::ConnectionRefused.into());
+        assert_ne!(after.kind(), io::ErrorKind::ConnectionRefused);
+        assert_eq!(
+            sent(io::ErrorKind::TimedOut.into()).kind(),
+            io::ErrorKind::TimedOut
+        );
     }
 
     #[test]

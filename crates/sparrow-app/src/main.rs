@@ -124,6 +124,12 @@ fn main() {
             cmd::ingest::commands::ingest_unprofiled,
             cmd::ingest::commands::ingest_profile,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running the Sparrow review app");
+        .build(tauri::generate_context!())
+        .expect("error while building the Sparrow review app")
+        .run(|app, event| {
+            // A normal quit takes the agent bridge's discovery file with it.
+            if let tauri::RunEvent::Exit = event {
+                bridge::shutdown(&app.state::<AppState>());
+            }
+        });
 }

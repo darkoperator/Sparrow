@@ -194,31 +194,63 @@ fn a_version_mismatch_refuses() {
     assert!(err.contains("update the CLI or the app"), "{err}");
 }
 
+/// A listener that accepts each connection and closes it without answering (an app whose bridge is wedged).
+fn mute_app() -> u16 {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for s in listener.incoming() {
+            drop(s);
+        }
+    });
+    port
+}
+
 #[test]
-fn an_app_that_does_not_answer_is_explained() {
+fn a_refused_connection_runs_here() {
     let (_tmp, case, dir) = setup();
-    // A port nothing listens on.
+    // A live pid (a reused one, or an app whose bridge is gone) but nothing listening: no bridge, so the file decides.
     let port = TcpListener::bind(("127.0.0.1", 0))
         .unwrap()
         .local_addr()
         .unwrap()
         .port();
     write_discovery(&dir, &discovery(&case, port, std::process::id(), VERSION)).unwrap();
+    let (code, out, err) = sparrow(
+        &dir,
+        &["events", "--case", case.to_str().unwrap(), "--json"],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("\"rows\""), "ran here: {out}");
+    // A sandbox that blocks localhost also refuses: the note keeps that hint.
+    assert!(
+        err.contains("refused") && err.contains("localhost"),
+        "{err}"
+    );
+}
+
+#[test]
+fn an_app_that_does_not_answer_is_explained() {
+    let (_tmp, case, dir) = setup();
+    write_discovery(
+        &dir,
+        &discovery(&case, mute_app(), std::process::id(), VERSION),
+    )
+    .unwrap();
     let (code, _, err) = sparrow(&dir, &["events", "--case", case.to_str().unwrap()]);
     assert_eq!(code, 4, "{err}");
     assert!(err.contains("--snapshot"), "{err}");
-    assert!(err.contains("localhost"), "{err}");
+    assert!(err.contains("gave no answer"), "{err}");
 }
 
 #[test]
 fn an_unreachable_app_falls_back_to_the_snapshot_when_asked() {
     let (_tmp, case, dir) = setup();
-    let port = TcpListener::bind(("127.0.0.1", 0))
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    write_discovery(&dir, &discovery(&case, port, std::process::id(), VERSION)).unwrap();
+    write_discovery(
+        &dir,
+        &discovery(&case, mute_app(), std::process::id(), VERSION),
+    )
+    .unwrap();
     let (code, out, err) = sparrow(
         &dir,
         &[
