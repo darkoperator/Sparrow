@@ -13,6 +13,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+# Lets an agent drive the window through the Tauri MCP server; registered in debug builds only (main.rs).
+tauri-plugin-mcp-bridge = "0.13"
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
