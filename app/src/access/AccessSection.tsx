@@ -2,6 +2,11 @@
 // (the accepted malicious flags seen for it and their windows), one tile per category with direct and time-attributed
 // counts, the coverage line (so a zero is never read as "nothing accessed" when the data was not there), and one
 // table per category. Everything shown is evidence text and goes through displaySafe.
+//
+// The preview (off by default, reset when the tab reopens): "Include pending agent flags" and a "What if" value (an IP,
+// prefix, session or device, as if flagged malicious). While either is on, a banner at the top of the section (inside
+// what a screenshot of it captures) says it is not the reviewed answer, and every row, tile part and scope chip that a
+// preview added says PENDING or WHAT-IF; the section's CSV then carries the basis column and a PREVIEW file name.
 import { useEffect, useState } from "react";
 import {
   ACCESS_TITLES,
@@ -12,6 +17,8 @@ import {
   type AccessCategory,
   type AccessItem,
   type AccessTile,
+  type Basis,
+  type PreviewArgs,
 } from "../api";
 import { save } from "../dialog";
 import { isoSeconds } from "../events/columns";
@@ -44,6 +51,22 @@ function windowsText(ws: { start: string; end: string }[]): string {
 
 const cell = (v: string | null) => (v === null || v === "" ? "—" : displaySafe(v));
 
+/** The label of what a preview added; nothing for the reviewed answer. */
+const BASIS_LABEL: Record<Basis, string | null> = { accepted: null, pending: "PENDING", adhoc: "WHAT-IF" };
+
+function BasisChip({ basis }: { basis: Basis }) {
+  const label = BASIS_LABEL[basis];
+  return label ? <span className={`access-basis access-basis-${basis}`}>{label}</span> : null;
+}
+
+type WhatIfKind = PreviewArgs["adhoc"][number]["kind"];
+const WHAT_IF_KINDS: { kind: WhatIfKind; label: string }[] = [
+  { kind: "ip", label: "IP" },
+  { kind: "ip_prefix", label: "Prefix" },
+  { kind: "session", label: "Session" },
+  { kind: "device", label: "Device" },
+];
+
 /** Bytes as `512 B`, `91.7 KB`, `4.1 MB` (1024-based). */
 export function sizeText(n: number | null): string {
   if (n === null) return "—";
@@ -57,7 +80,7 @@ export const PAGE = 200;
 
 const MAIL: AccessCategory[] = ["mail_read", "mail_sent", "attachment"];
 
-function ItemTable({ category, items }: { category: AccessCategory; items: AccessItem[] }) {
+function ItemTable({ category, items, preview }: { category: AccessCategory; items: AccessItem[]; preview: boolean }) {
   const title = ACCESS_TITLES[category];
   const [shown, setShown] = useState(PAGE);
   const mail = MAIL.includes(category);
@@ -66,6 +89,8 @@ function ItemTable({ category, items }: { category: AccessCategory; items: Acces
     <section className="access-table card">
       <h5>
         {title} ({items.length})
+        {/* A table seen on its own, scrolled past the banner, still says it is not the reviewed answer. */}
+        {preview && <span className="access-basis"> · PREVIEW, not the reviewed answer</span>}
       </h5>
       <div className="table-scroll">
         <table aria-label={title}>
@@ -97,7 +122,10 @@ function ItemTable({ category, items }: { category: AccessCategory; items: Acces
                 <td>{cell(i.to)}</td>
                 {mail && <td className="mono">{i.item_time ? isoSeconds(i.item_time) : "—"}</td>}
                 {mail && <td>{sizeText(i.size_bytes)}</td>}
-                <td>{i.attribution === "time" ? <span className="access-bytime">by time</span> : i.attribution}</td>
+                <td>
+                  {i.attribution === "time" ? <span className="access-bytime">by time</span> : i.attribution}{" "}
+                  <BasisChip basis={i.basis} />
+                </td>
               </tr>
             ))}
           </tbody>
@@ -120,17 +148,28 @@ export default function AccessSection({ account }: { account: string }) {
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const dataVersion = useDataVersion();
+  // The preview: component state, so it is off again whenever the tab is reopened.
+  const [includePending, setIncludePending] = useState(false);
+  const [whatIfKind, setWhatIfKind] = useState<WhatIfKind>("ip");
+  const [whatIfText, setWhatIfText] = useState("");
+  const [whatIf, setWhatIf] = useState<{ kind: WhatIfKind; value: string } | null>(null);
+  const preview: PreviewArgs | null =
+    includePending || whatIf ? { include_pending: includePending, adhoc: whatIf ? [whatIf] : [] } : null;
+  const previewKey = JSON.stringify(preview);
+  // Keyed by the account AND the preview it was read for: a reviewed answer never shows under a preview banner.
+  const loadKey = `${account}\u0000${previewKey}`;
   useEffect(() => {
     let live = true;
-    accessReport(account).then(
-      (r) => live && setLoaded({ for: account, acc: r.accounts[0], pending: r.pending_flags }),
-      (e: unknown) => live && setLoaded({ for: account, error: isCmdError(e) ? e.message : String(e) }),
+    const args: PreviewArgs | null = JSON.parse(previewKey);
+    accessReport(account, args).then(
+      (r) => live && setLoaded({ for: loadKey, acc: r.accounts[0], pending: r.pending_flags }),
+      (e: unknown) => live && setLoaded({ for: loadKey, error: isCmdError(e) ? e.message : String(e) }),
     );
     return () => {
       live = false;
     };
-  }, [account, dataVersion]);
-  const current = loaded?.for === account ? loaded : null;
+  }, [account, previewKey, loadKey, dataVersion]);
+  const current = loaded?.for === loadKey ? loaded : null;
   const error = current?.error ?? null;
   const data = current?.acc ? { acc: current.acc, pending: current.pending ?? 0 } : null;
 
@@ -140,9 +179,11 @@ export default function AccessSection({ account }: { account: string }) {
     setNotice(null);
     try {
       const day = new Date().toISOString().slice(0, 10);
-      const path = await save({ defaultPath: `access-${day}.csv`, filters: [{ name: "Access CSV", extensions: ["csv"] }] });
+      const safeName = forAccount.replace(/[^A-Za-z0-9@._-]/g, "_");
+      const defaultPath = preview ? `access-${safeName}-PREVIEW-${day}.csv` : `access-${day}.csv`;
+      const path = await save({ defaultPath, filters: [{ name: "Access CSV", extensions: ["csv"] }] });
       if (typeof path !== "string") return;
-      await exportAccessCsv(path, forAccount);
+      await exportAccessCsv(path, forAccount, preview);
       setNotice({ kind: "info", text: `Access CSV written to ${path}`, for: forAccount });
     } catch (e) {
       setNotice({ kind: "error", text: isCmdError(e) ? e.message : String(e), for: forAccount });
@@ -151,21 +192,95 @@ export default function AccessSection({ account }: { account: string }) {
   const shownNotice = notice?.for === account ? notice : null;
 
   const pendingLine = (n: number) =>
-    n > 0 && <p className="access-pending">{`${n} malicious flags are waiting for review; they count once accepted.`}</p>;
+    n > 0 && (
+      <p className="access-pending">
+        {includePending
+          ? `${n} malicious flags are waiting for review; counted here as PENDING.`
+          : `${n} malicious flags are waiting for review; they count once accepted.`}
+      </p>
+    );
 
-  if (error) return <section className="access card" aria-label="Access"><p role="alert">{displaySafe(error)}</p></section>;
-  if (!data) return <section className="access card" aria-label="Access"><p className="entity-empty">Loading…</p></section>;
+  const bannerParts = [
+    ...(includePending ? ["pending agent flags"] : []),
+    ...(whatIf ? [`what-if ${whatIf.kind} ${whatIf.value}`] : []),
+  ];
+  const banner = preview && (
+    <p role="note" className="access-preview-banner">
+      {displaySafe(`PREVIEW: includes ${bannerParts.join(" and ")}; not the reviewed answer`)}
+    </p>
+  );
+  const applyWhatIf = () => {
+    const v = whatIfText.trim();
+    setWhatIf(v === "" ? null : { kind: whatIfKind, value: v });
+  };
+  const controls = (
+    <div className="access-preview-controls">
+      <label>
+        <input type="checkbox" checked={includePending} onChange={(e) => setIncludePending(e.target.checked)} />
+        Include pending agent flags
+      </label>
+      <select aria-label="What-if kind" value={whatIfKind} onChange={(e) => setWhatIfKind(e.target.value as WhatIfKind)}>
+        {WHAT_IF_KINDS.map((k) => (
+          <option key={k.kind} value={k.kind}>
+            {k.label}
+          </option>
+        ))}
+      </select>
+      <input
+        aria-label="What if"
+        placeholder="What if… (an IP, prefix, session or device)"
+        value={whatIfText}
+        onChange={(e) => setWhatIfText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") applyWhatIf();
+        }}
+      />
+      <button type="button" className="btn btn-ghost" onClick={applyWhatIf}>
+        Try
+      </button>
+      {whatIf && (
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={() => {
+            setWhatIf(null);
+            setWhatIfText("");
+          }}
+        >
+          Clear what-if
+        </button>
+      )}
+    </div>
+  );
+
+  if (error)
+    return (
+      <section className="access card" aria-label="Access">
+        {banner}
+        {controls}
+        <p role="alert">{displaySafe(error)}</p>
+      </section>
+    );
+  if (!data)
+    return (
+      <section className="access card" aria-label="Access">
+        {banner}
+        {controls}
+        <p className="entity-empty">Loading…</p>
+      </section>
+    );
   const { acc, pending } = data;
   const noScope = acc.scope.length === 0 && acc.items.length === 0;
   const byCategory = (c: AccessCategory) => acc.items.filter((i) => i.category === c);
   return (
     <section className="access card" aria-label="Access">
+      {banner}
       <header className="access-head">
         <h4>Access</h4>
         <ul className="access-scope" aria-label="Scope">
           {acc.scope.map((s) => (
             <li key={`${s.kind}:${s.value}`} className="access-chip" title={windowsText(s.windows)}>
-              {`${s.kind} ${displaySafe(s.value)}`}
+              {`${BASIS_LABEL[s.basis] ? `${BASIS_LABEL[s.basis]} ` : ""}${s.kind} ${displaySafe(s.value)}`}
             </li>
           ))}
         </ul>
@@ -175,6 +290,7 @@ export default function AccessSection({ account }: { account: string }) {
           </button>
         )}
       </header>
+      {controls}
       {shownNotice && (
         <p role={shownNotice.kind === "error" ? "alert" : "status"} className="access-notice">
           {displaySafe(shownNotice.text)}
@@ -189,6 +305,8 @@ export default function AccessSection({ account }: { account: string }) {
             <span className="access-tile-count">
               {t.direct}
               {t.by_time > 0 && <span className="access-tile-time">{` · ${t.by_time} by time`}</span>}
+              {t.pending > 0 && <span className="access-basis access-basis-pending">{` · ${t.pending} pending`}</span>}
+              {t.adhoc > 0 && <span className="access-basis access-basis-adhoc">{` · ${t.adhoc} what-if`}</span>}
             </span>
             <span className="access-tile-note">{displaySafe(tileNote(t))}</span>
           </li>
@@ -213,7 +331,7 @@ export default function AccessSection({ account }: { account: string }) {
       {acc.tiles
         .filter((t) => byCategory(t.category).length > 0)
         .map((t) => (
-          <ItemTable key={t.category} category={t.category} items={byCategory(t.category)} />
+          <ItemTable key={t.category} category={t.category} items={byCategory(t.category)} preview={preview !== null} />
         ))}
     </section>
   );

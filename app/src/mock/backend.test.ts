@@ -226,6 +226,15 @@ describe("access_report", () => {
     expect(a.gaps.slice(7)).toEqual(fx.accessReport().accounts[0].gaps.slice(-4));
     expect(a.gaps.some((g) => g.startsWith("Teams chats read in the Teams app"))).toBe(true);
   });
+
+  it("a preview that matches nothing in the fixture changes nothing, like the core", async () => {
+    const preview = { include_pending: true, adhoc: [{ kind: "ip", value: "192.0.2.250" }] };
+    const r = await mockCall<AccessReport>("access_report", { account: null, preview });
+    expect(r.preview).toBe(false);
+    expect(r.accounts.flatMap((a) => a.scope).every((s) => s.basis === "accepted")).toBe(true);
+    expect(r.accounts.flatMap((a) => a.items).every((i) => i.basis === "accepted")).toBe(true);
+    expect(r).toEqual(fx.accessReport());
+  });
 });
 
 describe("every command, valid arguments", () => {

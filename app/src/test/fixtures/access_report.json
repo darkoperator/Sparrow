@@ -12,7 +12,8 @@
               "start": "2026-08-23T23:10:00Z",
               "end": "2026-08-24T00:40:00Z"
             }
-          ]
+          ],
+          "basis": "accepted"
         }
       ],
       "tiles": [
@@ -26,7 +27,9 @@
             "reason": "1503 rows; Microsoft Learn contradicts itself on the licence (Audit Standard since 2024 vs E5).",
             "remediation": null
           },
-          "none_seen": true
+          "none_seen": true,
+          "pending": 0,
+          "adhoc": 0
         },
         {
           "category": "mail_sent",
@@ -38,7 +41,9 @@
             "reason": "1214 rows",
             "remediation": null
           },
-          "none_seen": true
+          "none_seen": true,
+          "pending": 0,
+          "adhoc": 0
         },
         {
           "category": "attachment",
@@ -50,7 +55,9 @@
             "reason": "5901 rows",
             "remediation": null
           },
-          "none_seen": true
+          "none_seen": true,
+          "pending": 0,
+          "adhoc": 0
         },
         {
           "category": "file",
@@ -62,7 +69,9 @@
             "reason": "5901 rows",
             "remediation": null
           },
-          "none_seen": true
+          "none_seen": true,
+          "pending": 0,
+          "adhoc": 0
         },
         {
           "category": "teams",
@@ -74,7 +83,9 @@
             "reason": "5901 rows",
             "remediation": null
           },
-          "none_seen": true
+          "none_seen": true,
+          "pending": 0,
+          "adhoc": 0
         },
         {
           "category": "copilot",
@@ -86,7 +97,9 @@
             "reason": "5901 rows",
             "remediation": null
           },
-          "none_seen": true
+          "none_seen": true,
+          "pending": 0,
+          "adhoc": 0
         },
         {
           "category": "other",
@@ -98,7 +111,9 @@
             "reason": "5901 rows",
             "remediation": null
           },
-          "none_seen": false
+          "none_seen": false,
+          "pending": 0,
+          "adhoc": 0
         }
       ],
       "items": [
@@ -121,7 +136,8 @@
           "note": null,
           "source": "ual_events:Add-MailboxPermission",
           "source_table": "ual_events",
-          "record_key": "255563fa-ae96-4776-b7da-1bf06e549bef"
+          "record_key": "255563fa-ae96-4776-b7da-1bf06e549bef",
+          "basis": "accepted"
         },
         {
           "account": "admin@contoso.example",
@@ -142,7 +158,8 @@
           "note": null,
           "source": "ual_events:Add-RecipientPermission",
           "source_table": "ual_events",
-          "record_key": "a93f774e-4e7f-4584-a681-bcbf8e864eb1"
+          "record_key": "a93f774e-4e7f-4584-a681-bcbf8e864eb1",
+          "basis": "accepted"
         },
         {
           "account": "admin@contoso.example",
@@ -163,7 +180,8 @@
           "note": null,
           "source": "ual_events:New-TransportRule",
           "source_table": "ual_events",
-          "record_key": "07fc1822-1635-4af8-8d36-674a3a737550"
+          "record_key": "07fc1822-1635-4af8-8d36-674a3a737550",
+          "basis": "accepted"
         }
       ],
       "gaps": [
@@ -189,7 +207,8 @@
               "start": "2026-08-21T14:12:00Z",
               "end": "2026-08-21T15:12:00Z"
             }
-          ]
+          ],
+          "basis": "accepted"
         }
       ],
       "tiles": [
@@ -203,7 +222,9 @@
             "reason": "1503 rows; Microsoft Learn contradicts itself on the licence (Audit Standard since 2024 vs E5).",
             "remediation": null
           },
-          "none_seen": true
+          "none_seen": true,
+          "pending": 0,
+          "adhoc": 0
         },
         {
           "category": "mail_sent",
@@ -215,7 +236,9 @@
             "reason": "1214 rows",
             "remediation": null
           },
-          "none_seen": false
+          "none_seen": false,
+          "pending": 0,
+          "adhoc": 0
         },
         {
           "category": "attachment",
@@ -227,7 +250,9 @@
             "reason": "5901 rows",
             "remediation": null
           },
-          "none_seen": true
+          "none_seen": true,
+          "pending": 0,
+          "adhoc": 0
         },
         {
           "category": "file",
@@ -239,7 +264,9 @@
             "reason": "5901 rows",
             "remediation": null
           },
-          "none_seen": true
+          "none_seen": true,
+          "pending": 0,
+          "adhoc": 0
         },
         {
           "category": "teams",
@@ -251,7 +278,9 @@
             "reason": "5901 rows",
             "remediation": null
           },
-          "none_seen": true
+          "none_seen": true,
+          "pending": 0,
+          "adhoc": 0
         },
         {
           "category": "copilot",
@@ -263,7 +292,9 @@
             "reason": "5901 rows",
             "remediation": null
           },
-          "none_seen": true
+          "none_seen": true,
+          "pending": 0,
+          "adhoc": 0
         },
         {
           "category": "other",
@@ -275,7 +306,9 @@
             "reason": "5901 rows",
             "remediation": null
           },
-          "none_seen": false
+          "none_seen": false,
+          "pending": 0,
+          "adhoc": 0
         }
       ],
       "items": [
@@ -298,7 +331,8 @@
           "note": "in mailbox marlowe.rhodes@contoso.example",
           "source": "mailbox_audit_legacy:Send",
           "source_table": "mailbox_audit_legacy",
-          "record_key": "18813f5aa4f9c55dfc92c01d2d37ecd0563099d812709fe1d43e12777b9e5017"
+          "record_key": "18813f5aa4f9c55dfc92c01d2d37ecd0563099d812709fe1d43e12777b9e5017",
+          "basis": "accepted"
         },
         {
           "account": "marlowe rhodes",
@@ -319,7 +353,8 @@
           "note": null,
           "source": "mailbox_audit_legacy:UpdateInboxRules",
           "source_table": "mailbox_audit_legacy",
-          "record_key": "384b8252f1dde5525f4b464237a26d0ed0a18ca4239322a06d1787fbfb1ee3e5"
+          "record_key": "384b8252f1dde5525f4b464237a26d0ed0a18ca4239322a06d1787fbfb1ee3e5",
+          "basis": "accepted"
         }
       ],
       "gaps": [
@@ -341,31 +376,24 @@
               "start": "2026-08-21T09:15:00Z",
               "end": "2026-08-21T13:12:00Z"
             }
-          ]
-        },
-        {
-          "kind": "session",
-          "value": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "windows": [
-            {
-              "start": "2026-08-21T10:12:00Z",
-              "end": "2026-08-21T11:21:10Z"
-            }
-          ]
+          ],
+          "basis": "accepted"
         }
       ],
       "tiles": [
         {
           "category": "mail_read",
-          "direct": 55,
+          "direct": 0,
           "by_time": 0,
-          "qualifier": "2 folders · 6.0 MB",
+          "qualifier": null,
           "coverage": {
             "status": "collected",
             "reason": "1503 rows; Microsoft Learn contradicts itself on the licence (Audit Standard since 2024 vs E5).",
             "remediation": null
           },
-          "none_seen": false
+          "none_seen": true,
+          "pending": 0,
+          "adhoc": 0
         },
         {
           "category": "mail_sent",
@@ -377,7 +405,9 @@
             "reason": "1214 rows",
             "remediation": null
           },
-          "none_seen": false
+          "none_seen": false,
+          "pending": 0,
+          "adhoc": 0
         },
         {
           "category": "attachment",
@@ -389,7 +419,9 @@
             "reason": "5901 rows",
             "remediation": null
           },
-          "none_seen": true
+          "none_seen": true,
+          "pending": 0,
+          "adhoc": 0
         },
         {
           "category": "file",
@@ -401,7 +433,9 @@
             "reason": "5901 rows",
             "remediation": null
           },
-          "none_seen": false
+          "none_seen": false,
+          "pending": 0,
+          "adhoc": 0
         },
         {
           "category": "teams",
@@ -413,7 +447,9 @@
             "reason": "5901 rows",
             "remediation": null
           },
-          "none_seen": true
+          "none_seen": true,
+          "pending": 0,
+          "adhoc": 0
         },
         {
           "category": "copilot",
@@ -425,7 +461,9 @@
             "reason": "5901 rows",
             "remediation": null
           },
-          "none_seen": true
+          "none_seen": true,
+          "pending": 0,
+          "adhoc": 0
         },
         {
           "category": "other",
@@ -437,7 +475,9 @@
             "reason": "5901 rows",
             "remediation": null
           },
-          "none_seen": false
+          "none_seen": false,
+          "pending": 0,
+          "adhoc": 0
         }
       ],
       "items": [
@@ -460,7 +500,8 @@
           "note": null,
           "source": "directory_audits:Update user",
           "source_table": "directory_audits",
-          "record_key": "directory_1de73547-9999-4288-9682-b3e4ed4914ad_slkoh_34310107"
+          "record_key": "directory_1de73547-9999-4288-9682-b3e4ed4914ad_slkoh_34310107",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -481,7 +522,8 @@
           "note": null,
           "source": "directory_audits:User registered security info",
           "source_table": "directory_audits",
-          "record_key": "directory_a6326ec7-54f4-48e5-bcfa-e4168bff5166_oukbo_75369439"
+          "record_key": "directory_a6326ec7-54f4-48e5-bcfa-e4168bff5166_oukbo_75369439",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -502,7 +544,8 @@
           "note": null,
           "source": "ual_events:Update user.",
           "source_table": "ual_events",
-          "record_key": "088bcca4-a877-4ffc-a796-42619d717af4"
+          "record_key": "088bcca4-a877-4ffc-a796-42619d717af4",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -523,7 +566,8 @@
           "note": null,
           "source": "ual_events:New-InboxRule",
           "source_table": "ual_events",
-          "record_key": "4d75bb52-f616-430e-b482-5240e43756ae"
+          "record_key": "4d75bb52-f616-430e-b482-5240e43756ae",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -544,7 +588,8 @@
           "note": null,
           "source": "ual_events:New-InboxRule",
           "source_table": "ual_events",
-          "record_key": "02a13335-5a42-4ce8-9f05-5b5f0f489146"
+          "record_key": "02a13335-5a42-4ce8-9f05-5b5f0f489146",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -565,7 +610,8 @@
           "note": null,
           "source": "directory_audits:Add delegated permission grant",
           "source_table": "directory_audits",
-          "record_key": "directory_2ec83e83-8b7b-4dd5-b11c-6730c37ebb7d_itbhq_44470978"
+          "record_key": "directory_2ec83e83-8b7b-4dd5-b11c-6730c37ebb7d_itbhq_44470978",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -586,7 +632,8 @@
           "note": null,
           "source": "directory_audits:Consent to application",
           "source_table": "directory_audits",
-          "record_key": "directory_54922f7a-b64a-476e-a576-ba8e25db0789_noton_66597244"
+          "record_key": "directory_54922f7a-b64a-476e-a576-ba8e25db0789_noton_66597244",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -607,7 +654,8 @@
           "note": null,
           "source": "directory_audits:Add service principal",
           "source_table": "directory_audits",
-          "record_key": "directory_bf812908-3043-4a0c-b6c1-91349f4832f6_nwvps_63862861"
+          "record_key": "directory_bf812908-3043-4a0c-b6c1-91349f4832f6_nwvps_63862861",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -628,7 +676,8 @@
           "note": null,
           "source": "ual_events:Consent to application.",
           "source_table": "ual_events",
-          "record_key": "2331e15f-d0e7-498b-88e2-a502ac44ddb9"
+          "record_key": "2331e15f-d0e7-498b-88e2-a502ac44ddb9",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -649,7 +698,8 @@
           "note": null,
           "source": "ual_events:Add delegated permission grant.",
           "source_table": "ual_events",
-          "record_key": "3d4960b8-e929-420c-b970-a4f3629240b1"
+          "record_key": "3d4960b8-e929-420c-b970-a4f3629240b1",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -670,7 +720,8 @@
           "note": null,
           "source": "ual_events:Add service principal.",
           "source_table": "ual_events",
-          "record_key": "6b8bf096-bd99-48cf-87c8-b730f51711be"
+          "record_key": "6b8bf096-bd99-48cf-87c8-b730f51711be",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -691,1120 +742,8 @@
           "note": null,
           "source": "ual_events:Set-Mailbox",
           "source_table": "ual_events",
-          "record_key": "ac1595dc-5806-4ed6-a023-9e8e1b508b74"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:00Z",
-          "action": "read",
-          "item": "Invoice for September",
-          "location": "\\Inbox",
-          "from": "billing@fabrikam-supplies.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 8641,
-          "item_time": "2026-08-14T15:18:20Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "180762e9-bc7c-446e-bf9d-68770bee1dbd"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:00Z",
-          "action": "read",
-          "item": "Lunch on Friday?",
-          "location": "\\Inbox",
-          "from": "ollie.carter@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 176415,
-          "item_time": "2026-08-14T08:25:16Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "180762e9-bc7c-446e-bf9d-68770bee1dbd"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:00Z",
-          "action": "read",
-          "item": "Meeting request: product demo",
-          "location": "\\Inbox",
-          "from": "events@litware.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 17109,
-          "item_time": "2026-08-13T19:18:26Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "180762e9-bc7c-446e-bf9d-68770bee1dbd"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:00Z",
-          "action": "read",
-          "item": "Meeting request: product demo",
-          "location": "\\Inbox",
-          "from": "events@litware.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 104269,
-          "item_time": "2026-08-14T15:28:55Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "180762e9-bc7c-446e-bf9d-68770bee1dbd"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:00Z",
-          "action": "read",
-          "item": "Newsletter: industry roundup",
-          "location": "\\Inbox",
-          "from": "news@newsdigest.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 139141,
-          "item_time": "2026-08-13T20:18:32Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "180762e9-bc7c-446e-bf9d-68770bee1dbd"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:00Z",
-          "action": "read",
-          "item": "Newsletter: industry roundup",
-          "location": "\\Inbox",
-          "from": "news@newsdigest.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 82237,
-          "item_time": "2026-08-14T18:06:02Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "180762e9-bc7c-446e-bf9d-68770bee1dbd"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:00Z",
-          "action": "read",
-          "item": "Newsletter: industry roundup",
-          "location": "\\Inbox",
-          "from": "news@newsdigest.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 80597,
-          "item_time": "2026-08-13T23:07:36Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "180762e9-bc7c-446e-bf9d-68770bee1dbd"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:00Z",
-          "action": "read",
-          "item": "Re: Budget review",
-          "location": "\\Inbox",
-          "from": "vance.ingram@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 83282,
-          "item_time": "2026-08-13T07:43:12Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "180762e9-bc7c-446e-bf9d-68770bee1dbd"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:00Z",
-          "action": "read",
-          "item": "Re: Café supplies",
-          "location": "\\Inbox",
-          "from": "gale.yates@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 129481,
-          "item_time": "2026-08-13T06:42:44Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "180762e9-bc7c-446e-bf9d-68770bee1dbd"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:00Z",
-          "action": "read",
-          "item": "Re: Café supplies",
-          "location": "\\Inbox",
-          "from": "ollie.carter@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 239008,
-          "item_time": "2026-08-14T07:18:15Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "180762e9-bc7c-446e-bf9d-68770bee1dbd"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:00Z",
-          "action": "read",
-          "item": "Your order has shipped",
-          "location": "\\Inbox",
-          "from": "orders@northwind.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 216871,
-          "item_time": "2026-08-14T15:34:16Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "180762e9-bc7c-446e-bf9d-68770bee1dbd"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:50Z",
-          "action": "read",
-          "item": "Meeting request: product demo",
-          "location": "\\Inbox",
-          "from": "events@litware.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 168215,
-          "item_time": "2026-08-11T22:51:17Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "83ca6c77-bf02-43c2-a82f-f3f7a89941dc"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:50Z",
-          "action": "read",
-          "item": "Meeting request: product demo",
-          "location": "\\Inbox",
-          "from": "events@litware.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 18060,
-          "item_time": "2026-08-11T19:32:55Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "83ca6c77-bf02-43c2-a82f-f3f7a89941dc"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:50Z",
-          "action": "read",
-          "item": "Newsletter: industry roundup",
-          "location": "\\Inbox",
-          "from": "news@newsdigest.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 65122,
-          "item_time": "2026-08-12T17:12:45Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "83ca6c77-bf02-43c2-a82f-f3f7a89941dc"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:50Z",
-          "action": "read",
-          "item": "Project update",
-          "location": "\\Finance",
-          "from": "gale.yates@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 224700,
-          "item_time": "2026-08-21T01:39:58Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "83ca6c77-bf02-43c2-a82f-f3f7a89941dc"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:50Z",
-          "action": "read",
-          "item": "Project update",
-          "location": "\\Finance",
-          "from": "admin@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 134812,
-          "item_time": "2026-08-19T17:23:49Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "83ca6c77-bf02-43c2-a82f-f3f7a89941dc"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:50Z",
-          "action": "read",
-          "item": "Re: Budget review",
-          "location": "\\Inbox",
-          "from": "wren.underwood@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 36530,
-          "item_time": "2026-08-11T16:39:16Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "83ca6c77-bf02-43c2-a82f-f3f7a89941dc"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:50Z",
-          "action": "read",
-          "item": "Re: Café supplies",
-          "location": "\\Inbox",
-          "from": "vance.ingram@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 73296,
-          "item_time": "2026-08-11T09:49:54Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "83ca6c77-bf02-43c2-a82f-f3f7a89941dc"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:50Z",
-          "action": "read",
-          "item": "Re: Café supplies",
-          "location": "\\Finance",
-          "from": "rowan.chambers@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 128980,
-          "item_time": "2026-08-07T09:57:52Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "83ca6c77-bf02-43c2-a82f-f3f7a89941dc"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:50Z",
-          "action": "read",
-          "item": "Re: Q3 planning",
-          "location": "\\Finance",
-          "from": "frances.rourke@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 160754,
-          "item_time": "2026-08-21T07:38:18Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "83ca6c77-bf02-43c2-a82f-f3f7a89941dc"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:50Z",
-          "action": "read",
-          "item": "Re: Q3 planning",
-          "location": "\\Inbox",
-          "from": "cameron.tucker@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 43415,
-          "item_time": "2026-08-12T08:47:07Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "83ca6c77-bf02-43c2-a82f-f3f7a89941dc"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:50Z",
-          "action": "read",
-          "item": "Re: Q3 planning",
-          "location": "\\Finance",
-          "from": "vance.ingram@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 114418,
-          "item_time": "2026-08-20T14:10:26Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "83ca6c77-bf02-43c2-a82f-f3f7a89941dc"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:50Z",
-          "action": "read",
-          "item": "Re: Q3 planning",
-          "location": "\\Finance",
-          "from": "xander.irwin@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 65120,
-          "item_time": "2026-08-07T07:29:27Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "83ca6c77-bf02-43c2-a82f-f3f7a89941dc"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:50Z",
-          "action": "read",
-          "item": "Updated slides",
-          "location": "\\Inbox",
-          "from": "vance.ingram@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 240696,
-          "item_time": "2026-08-12T09:45:09Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "83ca6c77-bf02-43c2-a82f-f3f7a89941dc"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:50Z",
-          "action": "read",
-          "item": "Updated slides",
-          "location": "\\Inbox",
-          "from": "ocean.vincent@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 184673,
-          "item_time": "2026-08-12T06:26:09Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "83ca6c77-bf02-43c2-a82f-f3f7a89941dc"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:50Z",
-          "action": "read",
-          "item": "Updated slides",
-          "location": "\\Inbox",
-          "from": "ollie.carter@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 246742,
-          "item_time": "2026-08-11T04:57:03Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "83ca6c77-bf02-43c2-a82f-f3f7a89941dc"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:50Z",
-          "action": "read",
-          "item": "Urgent: wire transfer approval needed today",
-          "location": "\\Finance",
-          "from": "bounce@spoof-mail.test",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 4135,
-          "item_time": "2026-08-20T15:00:00Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "83ca6c77-bf02-43c2-a82f-f3f7a89941dc"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:50Z",
-          "action": "read",
-          "item": "Weekly sync notes",
-          "location": "\\Finance",
-          "from": "xander.irwin@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 9075,
-          "item_time": "2026-08-20T13:43:21Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "83ca6c77-bf02-43c2-a82f-f3f7a89941dc"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:50Z",
-          "action": "read",
-          "item": "Your order has shipped",
-          "location": "\\Inbox",
-          "from": "orders@northwind.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 124999,
-          "item_time": "2026-08-11T18:14:40Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "83ca6c77-bf02-43c2-a82f-f3f7a89941dc"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:50Z",
-          "action": "read",
-          "item": "Your order has shipped",
-          "location": "\\Inbox",
-          "from": "orders@northwind.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 134751,
-          "item_time": "2026-08-12T16:36:45Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "83ca6c77-bf02-43c2-a82f-f3f7a89941dc"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:50Z",
-          "action": "read",
-          "item": "Your support case was updated",
-          "location": "\\Finance",
-          "from": "support@tailwind-traders.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 108237,
-          "item_time": "2026-08-20T23:24:18Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "83ca6c77-bf02-43c2-a82f-f3f7a89941dc"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:50Z",
-          "action": "read",
-          "item": "Your support case was updated",
-          "location": "\\Inbox",
-          "from": "support@tailwind-traders.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 192780,
-          "item_time": "2026-08-12T15:32:03Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "83ca6c77-bf02-43c2-a82f-f3f7a89941dc"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:12:50Z",
-          "action": "read",
-          "item": "Your support case was updated",
-          "location": "\\Finance",
-          "from": "support@tailwind-traders.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 91168,
-          "item_time": "2026-08-19T15:54:27Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "83ca6c77-bf02-43c2-a82f-f3f7a89941dc"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:13:40Z",
-          "action": "read",
-          "item": "Lunch on Friday?",
-          "location": "\\Finance",
-          "from": "admin@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 86675,
-          "item_time": "2026-08-18T15:39:58Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "e46d1d82-25fe-4ca0-a9ec-962cb3719008"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:13:40Z",
-          "action": "read",
-          "item": "Meeting request: product demo",
-          "location": "\\Finance",
-          "from": "events@litware.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 187560,
-          "item_time": "2026-08-07T21:42:52Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "e46d1d82-25fe-4ca0-a9ec-962cb3719008"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:13:40Z",
-          "action": "read",
-          "item": "Newsletter: industry roundup",
-          "location": "\\Inbox",
-          "from": "news@newsdigest.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 104999,
-          "item_time": "2026-08-09T16:54:26Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "e46d1d82-25fe-4ca0-a9ec-962cb3719008"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:13:40Z",
-          "action": "read",
-          "item": "Project update",
-          "location": "\\Finance",
-          "from": "admin@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 229965,
-          "item_time": "2026-08-07T18:10:15Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "e46d1d82-25fe-4ca0-a9ec-962cb3719008"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:13:40Z",
-          "action": "read",
-          "item": "Re: Q3 planning",
-          "location": "\\Inbox",
-          "from": "xander.irwin@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 55008,
-          "item_time": "2026-08-08T13:17:14Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "e46d1d82-25fe-4ca0-a9ec-962cb3719008"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:13:40Z",
-          "action": "read",
-          "item": "Re: Q3 planning",
-          "location": "\\Inbox",
-          "from": "drew.vincent@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 146139,
-          "item_time": "2026-08-10T11:19:13Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "e46d1d82-25fe-4ca0-a9ec-962cb3719008"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:13:40Z",
-          "action": "read",
-          "item": "Updated slides",
-          "location": "\\Finance",
-          "from": "admin@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 64613,
-          "item_time": "2026-08-18T22:12:47Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "e46d1d82-25fe-4ca0-a9ec-962cb3719008"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:13:40Z",
-          "action": "read",
-          "item": "Updated slides",
-          "location": "\\Finance",
-          "from": "kai.ingram@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 241844,
-          "item_time": "2026-08-19T10:24:20Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "e46d1d82-25fe-4ca0-a9ec-962cb3719008"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:13:40Z",
-          "action": "read",
-          "item": "Updated slides",
-          "location": "\\Finance",
-          "from": "vance.ingram@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 14711,
-          "item_time": "2026-08-18T13:18:02Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "e46d1d82-25fe-4ca0-a9ec-962cb3719008"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:13:40Z",
-          "action": "read",
-          "item": "Your order has shipped",
-          "location": "\\Inbox",
-          "from": "orders@northwind.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 53950,
-          "item_time": "2026-08-10T15:41:53Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "e46d1d82-25fe-4ca0-a9ec-962cb3719008"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:13:40Z",
-          "action": "read",
-          "item": "Your order has shipped",
-          "location": "\\Inbox",
-          "from": "orders@northwind.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 75356,
-          "item_time": "2026-08-10T23:20:56Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "e46d1d82-25fe-4ca0-a9ec-962cb3719008"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:13:40Z",
-          "action": "read",
-          "item": "Your support case was updated",
-          "location": "\\Finance",
-          "from": "support@tailwind-traders.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 231488,
-          "item_time": "2026-08-07T18:07:13Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "e46d1d82-25fe-4ca0-a9ec-962cb3719008"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:14:30Z",
-          "action": "read",
-          "item": "Updated slides",
-          "location": "\\Inbox",
-          "from": "ollie.carter@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 134033,
-          "item_time": "2026-08-17T08:35:50Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "6d8b198a-0d49-44b3-8441-2158f927304c"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:14:30Z",
-          "action": "read",
-          "item": "Weekly sync notes",
-          "location": "\\Inbox",
-          "from": "frances.rourke@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 27556,
-          "item_time": "2026-08-17T02:37:09Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "6d8b198a-0d49-44b3-8441-2158f927304c"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:17:00Z",
-          "action": "read",
-          "item": "Invoice for September",
-          "location": "\\Inbox",
-          "from": "billing@fabrikam-supplies.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 110513,
-          "item_time": "2026-08-17T19:16:28Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "05c4204c-b25c-437d-9cc2-7d560018725e"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:17:00Z",
-          "action": "read",
-          "item": "Meeting request: product demo",
-          "location": "\\Inbox",
-          "from": "events@litware.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 158623,
-          "item_time": "2026-08-17T21:13:07Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "05c4204c-b25c-437d-9cc2-7d560018725e"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:17:00Z",
-          "action": "read",
-          "item": "Project update",
-          "location": "\\Inbox",
-          "from": "vance.ingram@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 27201,
-          "item_time": "2026-08-18T11:45:34Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "05c4204c-b25c-437d-9cc2-7d560018725e"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:17:00Z",
-          "action": "read",
-          "item": "Project update",
-          "location": "\\Inbox",
-          "from": "frances.rourke@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 5442,
-          "item_time": "2026-08-18T07:04:30Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "05c4204c-b25c-437d-9cc2-7d560018725e"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:17:00Z",
-          "action": "read",
-          "item": "Re: Budget review",
-          "location": "\\Inbox",
-          "from": "xander.irwin@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 84575,
-          "item_time": "2026-08-17T10:04:12Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "05c4204c-b25c-437d-9cc2-7d560018725e"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:17:00Z",
-          "action": "read",
-          "item": "Re: Café supplies",
-          "location": "\\Inbox",
-          "from": "kai.ingram@contoso.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 148125,
-          "item_time": "2026-08-18T09:39:54Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "05c4204c-b25c-437d-9cc2-7d560018725e"
+          "record_key": "ac1595dc-5806-4ed6-a023-9e8e1b508b74",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -1825,49 +764,8 @@
           "note": null,
           "source": "ual_events:SearchQueryInitiatedExchange",
           "source_table": "ual_events",
-          "record_key": "f2071dc6-acb1-4d4e-9429-ada118ff9469"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:17:50Z",
-          "action": "read",
-          "item": "Invoice for September",
-          "location": "\\Finance",
-          "from": "billing@fabrikam-supplies.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 60785,
-          "item_time": "2026-08-07T23:09:28Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "052d0b00-8469-41d1-a4bd-77dbb65648f0"
-        },
-        {
-          "account": "marlowe.rhodes@contoso.example",
-          "category": "mail_read",
-          "attribution": "session",
-          "accessed": "2026-08-21T10:17:50Z",
-          "action": "read",
-          "item": "Invoice for September",
-          "location": "\\Finance",
-          "from": "billing@fabrikam-supplies.example",
-          "to": "marlowe.rhodes@contoso.example",
-          "size_bytes": 154986,
-          "item_time": "2026-08-07T23:45:32Z",
-          "app": null,
-          "ip": "203.0.113.4",
-          "session_id": "0d1b6fc3-8287-4f81-9c3a-914b06989114",
-          "owner": null,
-          "note": null,
-          "source": "ual_events:MailItemsAccessed",
-          "source_table": "ual_events",
-          "record_key": "052d0b00-8469-41d1-a4bd-77dbb65648f0"
+          "record_key": "f2071dc6-acb1-4d4e-9429-ada118ff9469",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -1888,7 +786,8 @@
           "note": null,
           "source": "ual_events:SearchQueryInitiatedSharePoint",
           "source_table": "ual_events",
-          "record_key": "539d6f48-f0ba-4651-9a03-790b3a240cfa"
+          "record_key": "539d6f48-f0ba-4651-9a03-790b3a240cfa",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -1909,7 +808,8 @@
           "note": null,
           "source": "ual_events:Send",
           "source_table": "ual_events",
-          "record_key": "7ecd4f72-7e3e-49bc-beb2-fb7f17378582"
+          "record_key": "7ecd4f72-7e3e-49bc-beb2-fb7f17378582",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -1930,7 +830,8 @@
           "note": null,
           "source": "directory_audits:Add service principal credentials",
           "source_table": "directory_audits",
-          "record_key": "directory_a054fb53-423b-47dd-9cea-7aa64fd62652_pjjpa_45591286"
+          "record_key": "directory_a054fb53-423b-47dd-9cea-7aa64fd62652_pjjpa_45591286",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -1951,7 +852,8 @@
           "note": null,
           "source": "ual_events:Update service principal.",
           "source_table": "ual_events",
-          "record_key": "308ed651-ea69-47d2-817f-a8b5e40a9081"
+          "record_key": "308ed651-ea69-47d2-817f-a8b5e40a9081",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -1972,7 +874,8 @@
           "note": null,
           "source": "ual_events:Add service principal credentials.",
           "source_table": "ual_events",
-          "record_key": "6835a55b-a6b8-4cca-b954-dfce17385682"
+          "record_key": "6835a55b-a6b8-4cca-b954-dfce17385682",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -1993,7 +896,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "c85dc587-ad01-4f8d-a42a-4fd3173c9156"
+          "record_key": "c85dc587-ad01-4f8d-a42a-4fd3173c9156",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2014,7 +918,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "e7b291cf-11da-4d73-9370-3e336228225c"
+          "record_key": "e7b291cf-11da-4d73-9370-3e336228225c",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2035,7 +940,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "cbdedbfd-2e57-4e1b-bad2-032c58b51ca0"
+          "record_key": "cbdedbfd-2e57-4e1b-bad2-032c58b51ca0",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2056,7 +962,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "df13a786-c7a6-48ad-8b58-d67c6324b29e"
+          "record_key": "df13a786-c7a6-48ad-8b58-d67c6324b29e",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2077,7 +984,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "fb55bf34-9153-438d-a569-c9f99026dbb2"
+          "record_key": "fb55bf34-9153-438d-a569-c9f99026dbb2",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2098,7 +1006,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "b7d158f4-b4bd-42d0-840c-9bcde7ef7326"
+          "record_key": "b7d158f4-b4bd-42d0-840c-9bcde7ef7326",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2119,7 +1028,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "b45c7cd9-712d-40b1-86e4-a4d5b7211561"
+          "record_key": "b45c7cd9-712d-40b1-86e4-a4d5b7211561",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2140,7 +1050,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "11b4c8dc-5e55-408c-8511-0a0bfdfe828f"
+          "record_key": "11b4c8dc-5e55-408c-8511-0a0bfdfe828f",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2161,7 +1072,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "e02d9a45-534a-4ade-9968-51aa9bb5fca3"
+          "record_key": "e02d9a45-534a-4ade-9968-51aa9bb5fca3",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2182,7 +1094,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "196b5696-9d20-49a4-95a5-21d94f86973f"
+          "record_key": "196b5696-9d20-49a4-95a5-21d94f86973f",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2203,7 +1116,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "c22b1f1e-dc4a-41b5-8ada-794b08867dbe"
+          "record_key": "c22b1f1e-dc4a-41b5-8ada-794b08867dbe",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2224,7 +1138,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "7cff7487-c270-4150-8fb7-7cc889983853"
+          "record_key": "7cff7487-c270-4150-8fb7-7cc889983853",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2245,7 +1160,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "561780b5-eec1-4762-8ec2-ec8759ce7797"
+          "record_key": "561780b5-eec1-4762-8ec2-ec8759ce7797",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2266,7 +1182,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "74136334-ee08-496c-b38c-cdb499e00a43"
+          "record_key": "74136334-ee08-496c-b38c-cdb499e00a43",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2287,7 +1204,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "7014b74a-328a-4654-8c42-54f0e43cbf68"
+          "record_key": "7014b74a-328a-4654-8c42-54f0e43cbf68",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2308,7 +1226,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "0e26fdae-26a4-40e7-94fc-0bf8d93d2371"
+          "record_key": "0e26fdae-26a4-40e7-94fc-0bf8d93d2371",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2329,7 +1248,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "06ac714f-7534-4011-bdf2-2df713a8562d"
+          "record_key": "06ac714f-7534-4011-bdf2-2df713a8562d",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2350,7 +1270,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "7d9ab40b-99c3-4ca9-8fa4-0716e3cb8e34"
+          "record_key": "7d9ab40b-99c3-4ca9-8fa4-0716e3cb8e34",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2371,7 +1292,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "0b0e1313-8d4d-469c-b452-c05bd3ea4bad"
+          "record_key": "0b0e1313-8d4d-469c-b452-c05bd3ea4bad",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2392,7 +1314,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "bc245ade-6b04-4b40-8968-c6a5e865a224"
+          "record_key": "bc245ade-6b04-4b40-8968-c6a5e865a224",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2413,7 +1336,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "448036a5-abfa-4197-8f1a-0673421f5619"
+          "record_key": "448036a5-abfa-4197-8f1a-0673421f5619",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2434,7 +1358,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "620d96af-df5b-4809-8138-779a1be314ee"
+          "record_key": "620d96af-df5b-4809-8138-779a1be314ee",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2455,7 +1380,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "e00c5f61-d2ae-4111-b81f-65c627e91f9b"
+          "record_key": "e00c5f61-d2ae-4111-b81f-65c627e91f9b",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2476,7 +1402,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "7b87ada9-b90d-4bf9-b9c9-64309dcaec34"
+          "record_key": "7b87ada9-b90d-4bf9-b9c9-64309dcaec34",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2497,7 +1424,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "f9f6f1d7-2102-4845-8dda-dbbfb7473a0e"
+          "record_key": "f9f6f1d7-2102-4845-8dda-dbbfb7473a0e",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2518,7 +1446,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "712d1b16-fd82-4d57-8672-f919c815eff0"
+          "record_key": "712d1b16-fd82-4d57-8672-f919c815eff0",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2539,7 +1468,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "5224aef8-0cc3-40e9-80de-3f5a7f906fc4"
+          "record_key": "5224aef8-0cc3-40e9-80de-3f5a7f906fc4",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2560,7 +1490,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "9e4028e7-5701-4146-91a8-b993d3e3b370"
+          "record_key": "9e4028e7-5701-4146-91a8-b993d3e3b370",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2581,7 +1512,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "4f759675-d932-46ea-b017-3ed80fb91ec0"
+          "record_key": "4f759675-d932-46ea-b017-3ed80fb91ec0",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2602,7 +1534,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "f579ee90-3b60-4c15-b35f-7ed9773e5258"
+          "record_key": "f579ee90-3b60-4c15-b35f-7ed9773e5258",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2623,7 +1556,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "5b6a6741-4325-46be-a54d-07cd2381939c"
+          "record_key": "5b6a6741-4325-46be-a54d-07cd2381939c",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2644,7 +1578,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "f04e9e4e-23bc-43b4-a684-fc35ace65f16"
+          "record_key": "f04e9e4e-23bc-43b4-a684-fc35ace65f16",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2665,7 +1600,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "3eaacaba-129a-4e2c-b2ec-343e08988527"
+          "record_key": "3eaacaba-129a-4e2c-b2ec-343e08988527",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2686,7 +1622,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "a0d693d1-1031-4937-8b4e-d86a67fb2fa0"
+          "record_key": "a0d693d1-1031-4937-8b4e-d86a67fb2fa0",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2707,7 +1644,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "84cad154-dc72-46ed-a112-39f2bee0d5bc"
+          "record_key": "84cad154-dc72-46ed-a112-39f2bee0d5bc",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2728,7 +1666,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "93cc452a-789d-4715-a7af-0fc55449c498"
+          "record_key": "93cc452a-789d-4715-a7af-0fc55449c498",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2749,7 +1688,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "eb1a99ef-a2db-4b61-9e33-0986be8f4455"
+          "record_key": "eb1a99ef-a2db-4b61-9e33-0986be8f4455",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2770,7 +1710,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "ac3c21b5-fb37-40e5-b2bb-d19c640bb94f"
+          "record_key": "ac3c21b5-fb37-40e5-b2bb-d19c640bb94f",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2791,7 +1732,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "f29836b9-d568-41f6-9235-930ca85e6a56"
+          "record_key": "f29836b9-d568-41f6-9235-930ca85e6a56",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2812,7 +1754,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "53024089-456c-4bd5-a507-7a343b79ca3b"
+          "record_key": "53024089-456c-4bd5-a507-7a343b79ca3b",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2833,7 +1776,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "710b62be-cfa5-4ee8-9aaf-52a583a143fd"
+          "record_key": "710b62be-cfa5-4ee8-9aaf-52a583a143fd",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2854,7 +1798,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "38a97cb0-577f-4144-8c3f-5ea653323731"
+          "record_key": "38a97cb0-577f-4144-8c3f-5ea653323731",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2875,7 +1820,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "eab5b0ca-a092-4414-8d1a-c913729242c9"
+          "record_key": "eab5b0ca-a092-4414-8d1a-c913729242c9",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2896,7 +1842,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "bd9f8e6d-af65-4e5c-a680-30e531d47359"
+          "record_key": "bd9f8e6d-af65-4e5c-a680-30e531d47359",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2917,7 +1864,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "68d52fca-831b-44c7-9f2e-e296504c5153"
+          "record_key": "68d52fca-831b-44c7-9f2e-e296504c5153",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2938,7 +1886,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "eb958f28-456d-4264-a2b2-9a9556d9c022"
+          "record_key": "eb958f28-456d-4264-a2b2-9a9556d9c022",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2959,7 +1908,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "1e900088-a2c2-445a-b53f-7289fa91a678"
+          "record_key": "1e900088-a2c2-445a-b53f-7289fa91a678",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -2980,7 +1930,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "20112d42-a7a7-429a-99ef-7ba33303e322"
+          "record_key": "20112d42-a7a7-429a-99ef-7ba33303e322",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -3001,7 +1952,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "3cf3ad59-b4f0-4ead-b4a4-2bec03763442"
+          "record_key": "3cf3ad59-b4f0-4ead-b4a4-2bec03763442",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -3022,7 +1974,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "74b84a36-05de-404b-b8a4-3e47c3de207f"
+          "record_key": "74b84a36-05de-404b-b8a4-3e47c3de207f",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -3043,7 +1996,8 @@
           "note": "shared with someone",
           "source": "ual_events:AnonymousLinkCreated",
           "source_table": "ual_events",
-          "record_key": "866eb1b8-d8cd-4cdf-a139-db53ab0d6765"
+          "record_key": "866eb1b8-d8cd-4cdf-a139-db53ab0d6765",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -3064,7 +2018,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "a35f35f1-c3d0-4a71-926a-1f62bf262b71"
+          "record_key": "a35f35f1-c3d0-4a71-926a-1f62bf262b71",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -3085,7 +2040,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "a541fcb8-8c9d-43b5-a9dd-e34e4f03a88b"
+          "record_key": "a541fcb8-8c9d-43b5-a9dd-e34e4f03a88b",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -3106,7 +2062,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "663b5a87-6544-4a23-90af-8dd026b7210d"
+          "record_key": "663b5a87-6544-4a23-90af-8dd026b7210d",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -3127,7 +2084,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "e0b46e09-d5fd-4004-8c15-04dfb0d422e1"
+          "record_key": "e0b46e09-d5fd-4004-8c15-04dfb0d422e1",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -3148,7 +2106,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "392a530a-2e10-4ea5-8df0-bc4a37ccd59f"
+          "record_key": "392a530a-2e10-4ea5-8df0-bc4a37ccd59f",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -3169,7 +2128,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "faf6abd8-5e4a-4dd2-b57a-0766908a8e6e"
+          "record_key": "faf6abd8-5e4a-4dd2-b57a-0766908a8e6e",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -3190,7 +2150,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "1fae1fdf-0bc7-4f3a-8131-93fd24cf66ca"
+          "record_key": "1fae1fdf-0bc7-4f3a-8131-93fd24cf66ca",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -3211,7 +2172,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "89f51d12-5e13-440d-8f8b-3430da03e777"
+          "record_key": "89f51d12-5e13-440d-8f8b-3430da03e777",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -3232,7 +2194,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "971d6361-76f5-4344-b2c3-7854a05ee218"
+          "record_key": "971d6361-76f5-4344-b2c3-7854a05ee218",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -3253,7 +2216,8 @@
           "note": null,
           "source": "ual_events:FileDownloaded",
           "source_table": "ual_events",
-          "record_key": "3d8528bd-e9a1-4ac8-85bd-fba1a4ef4bd1"
+          "record_key": "3d8528bd-e9a1-4ac8-85bd-fba1a4ef4bd1",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -3274,7 +2238,8 @@
           "note": null,
           "source": "ual_events:FileUploaded",
           "source_table": "ual_events",
-          "record_key": "9025ecf1-89ae-41e2-a0ed-dc7026889c51"
+          "record_key": "9025ecf1-89ae-41e2-a0ed-dc7026889c51",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -3295,7 +2260,8 @@
           "note": null,
           "source": "ual_events:FileUploaded",
           "source_table": "ual_events",
-          "record_key": "61f10dd9-a5bf-4a51-9bfa-b740461cbd3e"
+          "record_key": "61f10dd9-a5bf-4a51-9bfa-b740461cbd3e",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -3316,7 +2282,8 @@
           "note": "shared with someone",
           "source": "ual_events:CompanyLinkCreated",
           "source_table": "ual_events",
-          "record_key": "f6d16aa1-f2d0-435c-a7aa-a855e7cc204a"
+          "record_key": "f6d16aa1-f2d0-435c-a7aa-a855e7cc204a",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -3337,7 +2304,8 @@
           "note": "shared with accounts@partner-payments.example (external)",
           "source": "ual_events:SharingInvitationCreated",
           "source_table": "ual_events",
-          "record_key": "fd70b160-29b1-44e6-832f-b1eb9ee02ece"
+          "record_key": "fd70b160-29b1-44e6-832f-b1eb9ee02ece",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -3358,7 +2326,8 @@
           "note": null,
           "source": "ual_events:Set-MailboxAutoReplyConfiguration",
           "source_table": "ual_events",
-          "record_key": "50a0f3ef-315c-49a9-9126-be5c36e59a4b"
+          "record_key": "50a0f3ef-315c-49a9-9126-be5c36e59a4b",
+          "basis": "accepted"
         },
         {
           "account": "marlowe.rhodes@contoso.example",
@@ -3379,7 +2348,8 @@
           "note": null,
           "source": "ual_events:UpdateInboxRules",
           "source_table": "ual_events",
-          "record_key": "38f3aef6-68f9-4842-ace1-4d564480e6f8"
+          "record_key": "38f3aef6-68f9-4842-ace1-4d564480e6f8",
+          "basis": "accepted"
         }
       ],
       "gaps": [
@@ -3390,5 +2360,6 @@
       ]
     }
   ],
-  "pending_flags": 0
+  "pending_flags": 0,
+  "preview": false
 }

@@ -25,3 +25,33 @@
 .access-time { background: var(--sus-bg); }
 .access-bytime { color: var(--sus); font-weight: 600; }
 .access-more { margin-top: 6px; }
+
+/* The preview: a banner a screenshot of the section always carries, and labels on what the preview added. */
+/* Sticky: it stays in view while the section scrolls under it. */
+.access-preview-banner {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--warn-bg, #4a3b12);
+  color: var(--warn-fg, #ffd479);
+  font-weight: 600;
+}
+.access-preview-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 6px 0;
+  font-size: 12px;
+}
+.access-preview-controls input[aria-label="What if"] {
+  min-width: 220px;
+}
+.access-basis {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--warn-fg, #ffd479);
+}

@@ -861,7 +861,7 @@ fn record_fixtures() {
     }
     // Last: the flag it needs would change the fixtures above.
     flag_attacker_ip(&state);
-    let access = access_report(&state, None).unwrap();
+    let access = access_report(&state, None, None).unwrap();
     assert!(
         !access.accounts.is_empty(),
         "the flagged IP attributes activity"
@@ -5226,23 +5226,28 @@ fn flag_attacker_ip(state: &AppState) -> String {
 fn access_report_and_exports() {
     let tmp = tempfile::tempdir().unwrap();
     let (state, _) = open_seeded(tmp.path());
-    assert!(access_report(&state, None).unwrap().accounts.is_empty());
+    assert!(
+        access_report(&state, None, None)
+            .unwrap()
+            .accounts
+            .is_empty()
+    );
     let ip = flag_attacker_ip(&state);
     let accounts = access_accounts(&state).unwrap();
     assert!(!accounts.is_empty(), "{ip}");
-    let r = access_report(&state, Some(&accounts[0])).unwrap();
+    let r = access_report(&state, Some(&accounts[0]), None).unwrap();
     assert_eq!(r.accounts.len(), 1);
     assert_eq!(r.accounts[0].tiles.len(), 7);
     assert!(r.accounts[0].scope.iter().any(|s| s.value == ip));
     let csv = tmp.path().join("access.csv");
-    export_access_csv(&state, &csv, None).unwrap();
+    export_access_csv(&state, &csv, None, None).unwrap();
     assert!(
         std::fs::read_to_string(&csv)
             .unwrap()
             .starts_with("\u{feff}account,category,")
     );
     let one = tmp.path().join("one.csv");
-    export_access_csv(&state, &one, Some(&accounts[0])).unwrap();
+    export_access_csv(&state, &one, Some(&accounts[0]), None).unwrap();
     let md = tmp.path().join("access.md");
     export_access_summary(&state, &md).unwrap();
     assert!(
@@ -5254,10 +5259,95 @@ fn access_report_and_exports() {
 }
 
 #[test]
+fn access_preview_includes_pending_and_adhoc() {
+    use sparrow_app::cmd::access::{AdhocArg, PreviewArgs};
+    use sparrow_core::case::access::Basis;
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, _) = open_seeded(tmp.path());
+    // The attacker's IP, as an agent's pending flag: nothing in the reviewed report, all of it in the preview.
+    let ip: String = with_case(&state, |open| {
+        Ok(open
+            .case
+            .conn()
+            .query_row(
+                "SELECT e.ip FROM finding_evidence fe JOIN events e USING (source_table, record_key) \
+                 WHERE e.ip IS NOT NULL GROUP BY 1 ORDER BY count(*) DESC, 1 LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap())
+    })
+    .unwrap();
+    with_writable(&state, |open| {
+        sparrow_core::case::marks::flag_value(
+            open.case.conn(),
+            &Actor::agent("triage", Some("carlos")).unwrap(),
+            sparrow_core::case::marks::ValueKind::Ip,
+            &ip,
+            None,
+            Some(sparrow_core::case::marks::FlagLevel::Malicious),
+        )
+        .unwrap();
+        Ok(())
+    })
+    .unwrap();
+    assert!(
+        access_report(&state, None, None)
+            .unwrap()
+            .accounts
+            .is_empty()
+    );
+    let pending = PreviewArgs {
+        include_pending: true,
+        adhoc: vec![],
+    };
+    let r = access_report(&state, None, Some(&pending)).unwrap();
+    assert!(r.preview);
+    let items: Vec<_> = r.accounts.iter().flat_map(|a| &a.items).collect();
+    assert!(!items.is_empty());
+    assert!(items.iter().all(|i| i.basis == Basis::Pending));
+    // The same address as a what-if value: ad-hoc.
+    let what_if = PreviewArgs {
+        include_pending: false,
+        adhoc: vec![AdhocArg {
+            kind: "ip".into(),
+            value: ip.clone(),
+        }],
+    };
+    let r = access_report(&state, None, Some(&what_if)).unwrap();
+    assert!(r.preview);
+    assert!(
+        r.accounts
+            .iter()
+            .flat_map(|a| &a.items)
+            .all(|i| i.basis == Basis::Adhoc)
+    );
+    // An unknown kind, or a value that is not one, is refused.
+    let bad = PreviewArgs {
+        include_pending: false,
+        adhoc: vec![AdhocArg {
+            kind: "account".into(),
+            value: "x".into(),
+        }],
+    };
+    assert_eq!(
+        access_report(&state, None, Some(&bad)).unwrap_err().kind,
+        "invalid"
+    );
+    // The section's preview CSV carries the basis; the export menu's never previews.
+    let csv = tmp.path().join("preview.csv");
+    let account = r.accounts[0].account.clone();
+    export_access_csv(&state, &csv, Some(&account), Some(&what_if)).unwrap();
+    let text = std::fs::read_to_string(&csv).unwrap();
+    assert!(text.lines().next().unwrap().ends_with(",basis"));
+    assert!(text.lines().skip(1).all(|l| l.ends_with(",adhoc")));
+}
+
+#[test]
 fn access_unknown_account_and_exports_over_the_case_are_refused() {
     let tmp = tempfile::tempdir().unwrap();
     let (state, s) = open_seeded(tmp.path());
-    let r = access_report(&state, Some("Nobody@Contoso.example")).unwrap();
+    let r = access_report(&state, Some("Nobody@Contoso.example"), None).unwrap();
     assert_eq!(r.accounts[0].account, "nobody@contoso.example");
     assert!(r.accounts[0].items.is_empty());
     assert_eq!(r.accounts[0].tiles.len(), 7);
@@ -5266,7 +5356,9 @@ fn access_unknown_account_and_exports_over_the_case_are_refused() {
     wal.push(".wal");
     for target in [s.path.clone(), PathBuf::from(wal)] {
         assert_eq!(
-            export_access_csv(&state, &target, None).unwrap_err().kind,
+            export_access_csv(&state, &target, None, None)
+                .unwrap_err()
+                .kind,
             "invalid"
         );
         assert_eq!(

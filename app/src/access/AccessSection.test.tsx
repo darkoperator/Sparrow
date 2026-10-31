@@ -25,6 +25,8 @@ function tile(category: AccessCategory, over: Partial<AccessTile> = {}): AccessT
     qualifier: null,
     coverage: { status: "collected", reason: "collected", remediation: null },
     none_seen: true,
+    pending: 0,
+    adhoc: 0,
     ...over,
   };
 }
@@ -34,7 +36,7 @@ function item(over: Partial<AccessItem>): AccessItem {
     account: A, category: "mail_read", attribution: "ip", accessed: "2026-10-23T16:42:18Z", action: "read",
     item: "Q3 invoices", location: "\\Inbox", from: "ap@vendor.example", to: A, size_bytes: 10, item_time: null,
     app: null, ip: "203.0.113.45", session_id: null, owner: null, note: null, source: "ual_events:MailItemsAccessed",
-    source_table: "ual_events", record_key: "r1", ...over,
+    source_table: "ual_events", record_key: "r1", basis: "accepted", ...over,
   };
 }
 
@@ -42,7 +44,7 @@ function account(over: Partial<AccessAccount> = {}): AccessAccount {
   return {
     account: A,
     tenant_key: "contoso",
-    scope: [{ kind: "ip", value: "203.0.113.45", windows: [{ start: "2026-10-23T16:38:51Z", end: "2026-10-23T17:45:09Z" }] }],
+    scope: [{ kind: "ip", value: "203.0.113.45", basis: "accepted", windows: [{ start: "2026-10-23T16:38:51Z", end: "2026-10-23T17:45:09Z" }] }],
     tiles: ORDER.map((c) => tile(c)),
     items: [],
     gaps: ["Teams chats read in the Teams app are not audited (only Graph reads are)"],
@@ -51,8 +53,24 @@ function account(over: Partial<AccessAccount> = {}): AccessAccount {
 }
 
 function load(a: AccessAccount, pending = 0) {
-  const r: AccessReport = { accounts: [a], pending_flags: pending };
+  const r: AccessReport = { accounts: [a], pending_flags: pending, preview: false };
   vi.mocked(api.accessReport).mockResolvedValue(r);
+}
+
+/** The reviewed answer for the plain request, a preview (one pending item, one what-if scope value) otherwise. */
+function loadWithPreview() {
+  const reviewed = account({ items: [item({})], tiles: ORDER.map((c) => tile(c, c === "mail_read" ? { direct: 1 } : {})) });
+  const preview = account({
+    scope: [
+      ...reviewed.scope,
+      { kind: "ip", value: "198.51.100.7", basis: "adhoc", windows: [{ start: "2026-10-23T18:00:00Z", end: "2026-10-23T19:00:00Z" }] },
+    ],
+    items: [item({}), item({ record_key: "r2", basis: "pending", item: "Payroll" }), item({ record_key: "r3", basis: "adhoc", item: "Wire" })],
+    tiles: ORDER.map((c) => tile(c, c === "mail_read" ? { direct: 3, pending: 1, adhoc: 1 } : {})),
+  });
+  vi.mocked(api.accessReport).mockImplementation(async (_a, p) =>
+    p ? { accounts: [preview], pending_flags: 1, preview: true } : { accounts: [reviewed], pending_flags: 1, preview: false },
+  );
 }
 
 beforeEach(() => {
@@ -75,7 +93,7 @@ describe("AccessSection", () => {
     expect(cards[0]).toHaveTextContent("48");
     expect(cards[0]).toHaveTextContent("· 3 by time");
     expect(cards[0]).toHaveTextContent("3 folders · 4.1 MB");
-    expect(api.accessReport).toHaveBeenCalledWith(A);
+    expect(api.accessReport).toHaveBeenCalledWith(A, null);
     expect(screen.getByText("ip 203.0.113.45")).toHaveAttribute("title", "2026-10-23T16:38:51Z to 2026-10-23T17:45:09Z");
   });
 
@@ -127,7 +145,7 @@ describe("AccessSection", () => {
     dialogSave.mockResolvedValue("/out/jdoe-access.csv");
     render(<AccessSection account={A} />);
     await user.click(await screen.findByRole("button", { name: "Export CSV" }));
-    expect(api.exportAccessCsv).toHaveBeenCalledWith("/out/jdoe-access.csv", A);
+    expect(api.exportAccessCsv).toHaveBeenCalledWith("/out/jdoe-access.csv", A, null);
     expect(await screen.findByRole("status")).toHaveTextContent("/out/jdoe-access.csv");
   });
 
@@ -194,5 +212,77 @@ describe("AccessSection", () => {
     await screen.findByRole("button", { name: "Export CSV" });
     await new Promise((r) => setTimeout(r, 0));
     expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("preview_toggle_shows_the_banner_and_labels", async () => {
+    loadWithPreview();
+    const user = userEvent.setup();
+    render(<AccessSection account={A} />);
+    await screen.findByRole("table", { name: "Emails read" });
+    expect(screen.queryByText(/^PREVIEW/)).toBeNull();
+    await user.click(screen.getByRole("checkbox", { name: "Include pending agent flags" }));
+    expect(api.accessReport).toHaveBeenLastCalledWith(A, { include_pending: true, adhoc: [] });
+    const banner = await screen.findByText(/^PREVIEW: includes pending agent flags; not the reviewed answer/);
+    // Inside the section, so a screenshot of it carries the banner.
+    expect(screen.getByRole("region", { name: "Access" })).toContainElement(banner);
+    const rows = within(screen.getByRole("table", { name: "Emails read" })).getAllByRole("row");
+    expect(rows[2]).toHaveTextContent("PENDING");
+    expect(rows[3]).toHaveTextContent("WHAT-IF");
+    expect(rows[1]).not.toHaveTextContent(/PENDING|WHAT-IF/);
+    expect(screen.getByRole("listitem", { name: "Emails read" })).toHaveTextContent("1 pending");
+    expect(screen.getByRole("listitem", { name: "Emails read" })).toHaveTextContent("1 what-if");
+    expect(within(screen.getByRole("list", { name: "Scope" })).getByText(/WHAT-IF ip 198\.51\.100\.7/)).toBeInTheDocument();
+    // A table seen on its own (scrolled past the banner) still says so in its heading.
+    expect(screen.getByRole("heading", { name: /Emails read \(3\)/ })).toHaveTextContent("PREVIEW");
+    // Off again: the reviewed answer, no banner.
+    await user.click(screen.getByRole("checkbox", { name: "Include pending agent flags" }));
+    expect(api.accessReport).toHaveBeenLastCalledWith(A, null);
+    await screen.findByRole("table", { name: "Emails read" });
+    expect(screen.queryByText(/^PREVIEW/)).toBeNull();
+  });
+
+  it("what_if_value_requests_the_preview", async () => {
+    loadWithPreview();
+    const user = userEvent.setup();
+    render(<AccessSection account={A} />);
+    await screen.findByRole("table", { name: "Emails read" });
+    await user.selectOptions(screen.getByRole("combobox", { name: "What-if kind" }), "session");
+    await user.type(screen.getByRole("textbox", { name: "What if" }), "4f1c8d3e-1111-4222-8333-444455559a2e{Enter}");
+    expect(api.accessReport).toHaveBeenLastCalledWith(A, {
+      include_pending: false,
+      adhoc: [{ kind: "session", value: "4f1c8d3e-1111-4222-8333-444455559a2e" }],
+    });
+    expect(await screen.findByText(/^PREVIEW: includes what-if session 4f1c8d3e/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Clear what-if" }));
+    expect(api.accessReport).toHaveBeenLastCalledWith(A, null);
+  });
+
+  it("preview_export_names_the_file_preview", async () => {
+    loadWithPreview();
+    dialogSave.mockResolvedValue("/out/p.csv");
+    const user = userEvent.setup();
+    render(<AccessSection account={A} />);
+    await screen.findByRole("table", { name: "Emails read" });
+    await user.click(screen.getByRole("checkbox", { name: "Include pending agent flags" }));
+    await screen.findByText(/^PREVIEW/);
+    await user.click(screen.getByRole("button", { name: "Export CSV" }));
+    const opts = dialogSave.mock.calls[0][0] as { defaultPath: string };
+    expect(opts.defaultPath).toMatch(new RegExp(`^access-${A}-PREVIEW-\\d{4}-\\d{2}-\\d{2}\\.csv$`));
+    expect(api.exportAccessCsv).toHaveBeenCalledWith("/out/p.csv", A, { include_pending: true, adhoc: [] });
+  });
+
+  it("preview_is_off_when_the_tab_reopens", async () => {
+    loadWithPreview();
+    const user = userEvent.setup();
+    const { unmount } = render(<AccessSection account={A} />);
+    await screen.findByRole("table", { name: "Emails read" });
+    await user.click(screen.getByRole("checkbox", { name: "Include pending agent flags" }));
+    await screen.findByText(/^PREVIEW/);
+    unmount();
+    render(<AccessSection account={A} />);
+    await screen.findByRole("table", { name: "Emails read" });
+    expect(screen.getByRole("checkbox", { name: "Include pending agent flags" })).not.toBeChecked();
+    expect(screen.queryByText(/^PREVIEW/)).toBeNull();
+    expect(api.accessReport).toHaveBeenLastCalledWith(A, null);
   });
 });

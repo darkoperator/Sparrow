@@ -433,6 +433,8 @@ const handlers: Record<string, (a: Args) => unknown> = {
   export_timeline_csv: () => null,
   export_workbook: () => null,
   access_report: (a) => {
+    // The recorded case has no pending flags, and the mock attributes nothing to a what-if value (it would need the
+    // core's attribution): a preview answers the reviewed report, as the core does when nothing new matches.
     const r = fx.accessReport();
     const want = typeof a?.account === "string" ? a.account.toLowerCase() : null;
     if (want === null) return r;

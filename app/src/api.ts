@@ -377,6 +377,15 @@ export const ACCESS_TITLES: Record<AccessCategory, string> = {
   other: "Other apps",
 };
 
+/** What puts a record or scope value in the access report: an accepted flag, a pending agent flag, or a what-if value. */
+export type Basis = "accepted" | "pending" | "adhoc";
+
+/** The Access section's preview: pending agent flags too, and what-if values (as if flagged malicious and accepted). */
+export interface PreviewArgs {
+  include_pending: boolean;
+  adhoc: { kind: "ip" | "ip_prefix" | "session" | "device"; value: string }[];
+}
+
 /** `case::access::Item`: one thing the attacker reached; times are RFC 3339 UTC. */
 export interface AccessItem {
   account: string;
@@ -399,6 +408,7 @@ export interface AccessItem {
   source: string;
   source_table: string;
   record_key: string;
+  basis: Basis;
 }
 
 /** `case::access::CategoryCoverage`: an `evidence_availability` status, or `none`. */
@@ -416,6 +426,9 @@ export interface AccessTile {
   qualifier: string | null;
   coverage: AccessCoverage;
   none_seen: boolean;
+  /** Of the counts, how many a preview added (pending flags, what-if values); 0 in the reviewed report. */
+  pending: number;
+  adhoc: number;
 }
 
 export interface AccessWindow {
@@ -428,6 +441,7 @@ export interface ScopeValue {
   kind: string;
   value: string;
   windows: AccessWindow[];
+  basis: Basis;
 }
 
 /** `case::access::AccountAccess`: `tiles` has one entry per category, in tile order. */
@@ -442,17 +456,23 @@ export interface AccessAccount {
 
 export interface AccessReport {
   accounts: AccessAccount[];
-  /** Malicious flags waiting for review: they attribute nothing until accepted. */
+  /** Malicious flags waiting for review: they attribute nothing until accepted (unless the preview includes them). */
   pending_flags: number;
+  /** An item or scope value rests on a pending flag or a what-if value: not the reviewed answer. */
+  preview: boolean;
 }
 
-/** What the attacker reached through `account` (any case), or through every account with accepted malicious flags. */
-export const accessReport = (account?: string | null) => call<AccessReport>("access_report", { account: account ?? null });
+/**
+ * What the attacker reached through `account` (any case), or through every account with accepted malicious flags; with
+ * `preview`, also through pending agent flags and what-if values.
+ */
+export const accessReport = (account?: string | null, preview?: PreviewArgs | null) =>
+  call<AccessReport>("access_report", { account: account ?? null, preview: preview ?? null });
 /** The accounts the access report lists. */
 export const accessAccounts = () => call<string[]>("access_accounts");
 /** The access CSV (one row per item) of every account, or of `account`. */
-export const exportAccessCsv = (path: string, account?: string | null) =>
-  call<null>("export_access_csv", { path, account: account ?? null });
+export const exportAccessCsv = (path: string, account?: string | null, preview?: PreviewArgs | null) =>
+  call<null>("export_access_csv", { path, account: account ?? null, preview: preview ?? null });
 /** The access summary (Markdown) of every account. */
 export const exportAccessSummary = (path: string) => call<null>("export_access_summary", { path });
 

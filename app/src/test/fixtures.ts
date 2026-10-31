@@ -30,6 +30,7 @@ import type {
   AccessCategory,
   AccessReport,
   Attribution,
+  Basis,
   AccountPage,
   ActiveIndicator,
   BrowsePage,
@@ -453,30 +454,34 @@ export function timelineAdded(): EventsAdded {
 
 const ACCESS_ORDER: AccessCategory[] = ["mail_read", "mail_sent", "attachment", "file", "teams", "copilot", "other"];
 const ATTRIBUTIONS: Attribution[] = ["session", "row", "device", "ip", "time"];
+const BASES: Basis[] = ["accepted", "pending", "adhoc"];
 
 /** The recorded access report, checked against the Rust shape (keys, tile order, enum values). */
 export function accessReport(): AccessReport {
   const v: unknown = clone(accessReportJson);
-  need("access_report", v, ["accounts", "pending_flags"]);
+  need("access_report", v, ["accounts", "pending_flags", "preview"]);
   if (typeof v.pending_flags !== "number") throw new Error("fixture access_report: pending_flags is not a number");
   if (!Array.isArray(v.accounts) || v.accounts.length === 0) throw new Error("fixture access_report: no accounts");
   v.accounts.forEach((a: unknown, i) => {
     need(`access_report.accounts[${i}]`, a, ["account", "tenant_key", "scope", "tiles", "items", "gaps"]);
     if ((a.tiles as unknown[]).length !== 7) throw new Error(`fixture access_report.accounts[${i}]: not 7 tiles`);
     (a.tiles as unknown[]).forEach((t, j) => {
-      need(`access_report.accounts[${i}].tiles[${j}]`, t, ["category", "direct", "by_time", "qualifier", "coverage", "none_seen"]);
+      need(`access_report.accounts[${i}].tiles[${j}]`, t, ["category", "direct", "by_time", "qualifier", "coverage", "none_seen", "pending", "adhoc"]);
+      if (typeof t.pending !== "number" || typeof t.adhoc !== "number") throw new Error(`fixture access_report: tile ${j} preview counts`);
       need(`access_report.accounts[${i}].tiles[${j}].coverage`, t.coverage, ["status", "reason", "remediation"]);
       if (t.category !== ACCESS_ORDER[j]) throw new Error(`fixture access_report: tile ${j} is ${String(t.category)}`);
     });
     (a.scope as unknown[]).forEach((s, j) => {
-      need(`access_report.accounts[${i}].scope[${j}]`, s, ["kind", "value", "windows"]);
+      need(`access_report.accounts[${i}].scope[${j}]`, s, ["kind", "value", "windows", "basis"]);
+      if (!BASES.includes(s.basis as Basis)) throw new Error(`fixture access_report.accounts[${i}].scope[${j}]: unknown basis`);
       (s.windows as unknown[]).forEach((w, k) => need(`access_report.accounts[${i}].scope[${j}].windows[${k}]`, w, ["start", "end"]));
     });
     (a.items as Record<string, unknown>[]).forEach((t, j) => {
       if (!ACCESS_ORDER.includes(t.category as AccessCategory) || !ATTRIBUTIONS.includes(t.attribution as Attribution))
         throw new Error(`fixture access_report.accounts[${i}].items[${j}]: unknown category or attribution`);
+      if (!BASES.includes(t.basis as Basis)) throw new Error(`fixture access_report.accounts[${i}].items[${j}]: unknown basis`);
     });
-    (a.items as unknown[]).forEach((t, j) => need(`access_report.accounts[${i}].items[${j}]`, t, ["account", "category", "attribution", "accessed", "action", "item", "location", "from", "to", "size_bytes", "item_time", "app", "ip", "session_id", "owner", "note", "source", "source_table", "record_key"]));
+    (a.items as unknown[]).forEach((t, j) => need(`access_report.accounts[${i}].items[${j}]`, t, ["account", "category", "attribution", "accessed", "action", "item", "location", "from", "to", "size_bytes", "item_time", "app", "ip", "session_id", "owner", "note", "source", "source_table", "record_key", "basis"]));
   });
   return v as unknown as AccessReport;
 }
