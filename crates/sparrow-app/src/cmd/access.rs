@@ -13,13 +13,16 @@ use sparrow_core::export::access::{write_csv, write_summary};
 use std::path::Path;
 use tauri::State;
 
-/// The Access section's preview: pending agent flags too, and what-if values (as if flagged malicious and accepted).
+/// An Access tab's preview: pending agent flags too, and what-if values (as if flagged malicious and accepted). With
+/// `without_accepted`, the case's accepted flags are left out: a device or IP tab's what-if counts its value alone.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct PreviewArgs {
     #[serde(default)]
     pub include_pending: bool,
     #[serde(default)]
     pub adhoc: Vec<AdhocArg>,
+    #[serde(default)]
+    pub without_accepted: bool,
 }
 
 /// One what-if value: `kind` is ip, ip_prefix, session or device.
@@ -53,6 +56,7 @@ impl PreviewArgs {
         Ok(ScopeSource {
             include_pending: self.include_pending,
             adhoc,
+            without_accepted: self.without_accepted,
             ..ScopeSource::accepted()
         })
     }

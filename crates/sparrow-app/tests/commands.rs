@@ -5300,6 +5300,7 @@ fn access_preview_includes_pending_and_adhoc() {
     let pending = PreviewArgs {
         include_pending: true,
         adhoc: vec![],
+        without_accepted: false,
     };
     let r = access_report(&state, None, Some(&pending)).unwrap();
     assert!(r.preview);
@@ -5313,6 +5314,7 @@ fn access_preview_includes_pending_and_adhoc() {
             kind: "ip".into(),
             value: ip.clone(),
         }],
+        without_accepted: false,
     };
     let r = access_report(&state, None, Some(&what_if)).unwrap();
     assert!(r.preview);
@@ -5329,6 +5331,7 @@ fn access_preview_includes_pending_and_adhoc() {
             kind: "account".into(),
             value: "x".into(),
         }],
+        without_accepted: false,
     };
     assert_eq!(
         access_report(&state, None, Some(&bad)).unwrap_err().kind,
@@ -5340,6 +5343,147 @@ fn access_preview_includes_pending_and_adhoc() {
     export_access_csv(&state, &csv, Some(&account), Some(&what_if)).unwrap();
     let text = std::fs::read_to_string(&csv).unwrap();
     assert!(text.lines().next().unwrap().ends_with(",basis"));
+    assert!(text.lines().skip(1).all(|l| l.ends_with(",adhoc")));
+}
+
+#[test]
+fn access_what_if_without_accepted_ignores_the_cases_flags() {
+    use sparrow_app::cmd::access::{AdhocArg, PreviewArgs};
+    use sparrow_core::case::access::Basis;
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, _) = open_seeded(tmp.path());
+    // Two evidence IPs: B, the busiest (it reaches mail), only asked about; A flagged malicious by the analyst
+    // (accepted), seen for other accounts.
+    let ips: Vec<String> = with_case(&state, |open| {
+        let mut st = open
+            .case
+            .conn()
+            .prepare(
+                "SELECT e.ip FROM finding_evidence fe JOIN events e USING (source_table, record_key) \
+                 WHERE e.ip IS NOT NULL GROUP BY 1 ORDER BY count(*) DESC, 1 LIMIT 2",
+            )
+            .unwrap();
+        let rows = st.query_map([], |r| r.get(0)).unwrap();
+        Ok(rows.map(|r| r.unwrap()).collect())
+    })
+    .unwrap();
+    assert_eq!(ips.len(), 2);
+    let (b, a) = (ips[0].clone(), ips[1].clone());
+    with_writable(&state, |open| {
+        sparrow_core::case::marks::flag_value(
+            open.case.conn(),
+            &Actor::analyst("carlos").unwrap(),
+            sparrow_core::case::marks::ValueKind::Ip,
+            &a,
+            None,
+            Some(sparrow_core::case::marks::FlagLevel::Malicious),
+        )
+        .unwrap();
+        Ok(())
+    })
+    .unwrap();
+    let ask = |without_accepted| PreviewArgs {
+        include_pending: false,
+        adhoc: vec![AdhocArg {
+            kind: "ip".into(),
+            value: b.clone(),
+        }],
+        without_accepted,
+    };
+    let only_b = ask(true);
+    let r = access_report(&state, None, Some(&only_b)).unwrap();
+    let items: Vec<_> = r.accounts.iter().flat_map(|x| &x.items).collect();
+    assert!(!items.is_empty());
+    assert!(items.iter().all(|i| i.basis == Basis::Adhoc));
+    assert!(
+        r.accounts
+            .iter()
+            .flat_map(|x| &x.scope)
+            .all(|s| s.value != a)
+    );
+    // With the case's flags in play, A is part of the answer: the flag changes it.
+    let r = access_report(&state, None, Some(&ask(false))).unwrap();
+    assert!(
+        r.accounts
+            .iter()
+            .flat_map(|x| &x.scope)
+            .any(|s| s.value == a)
+    );
+    // Accepted row and account flags are the case's flags too: adding them leaves the what-if as it was.
+    let key = |r: &sparrow_core::case::access::AccessReport| {
+        let mut k: Vec<_> = r
+            .accounts
+            .iter()
+            .flat_map(|x| &x.items)
+            .map(|i| (i.account.clone(), i.row.clone(), format!("{:?}", i.basis)))
+            .collect();
+        k.sort();
+        k
+    };
+    let before = key(&access_report(&state, None, Some(&only_b)).unwrap());
+    let row: (String, String) = with_case(&state, |open| {
+        Ok(open
+            .case
+            .conn()
+            .query_row(
+                "SELECT source_table, record_key FROM events WHERE source_table = 'ual_events' \
+                 AND operation = 'MailItemsAccessed' AND (ip IS NULL OR ip <> ?) ORDER BY 1, 2 LIMIT 1",
+                [&b],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap())
+    })
+    .unwrap();
+    with_writable(&state, |open| {
+        let analyst = Actor::analyst("carlos").unwrap();
+        sparrow_core::case::marks::flag_rows(
+            open.case.conn(),
+            &analyst,
+            &[sparrow_core::case::marks::RowRef::new(&row.0, &row.1)],
+            Some(sparrow_core::case::marks::FlagLevel::Malicious),
+        )
+        .unwrap();
+        sparrow_core::case::marks::flag_value(
+            open.case.conn(),
+            &analyst,
+            sparrow_core::case::marks::ValueKind::Account,
+            "admin@contoso.example",
+            None,
+            Some(sparrow_core::case::marks::FlagLevel::Malicious),
+        )
+        .unwrap();
+        Ok(())
+    })
+    .unwrap();
+    assert!(
+        access_report(&state, None, None)
+            .unwrap()
+            .accounts
+            .iter()
+            .any(|x| x
+                .items
+                .iter()
+                .any(|i| i.row == format!("{}:{}", row.0, row.1)))
+    );
+    assert_eq!(
+        key(&access_report(&state, None, Some(&only_b)).unwrap()),
+        before
+    );
+    // Nothing asked: nothing reported, not the whole case.
+    let nothing = PreviewArgs {
+        without_accepted: true,
+        ..PreviewArgs::default()
+    };
+    assert!(
+        access_report(&state, None, Some(&nothing))
+            .unwrap()
+            .accounts
+            .is_empty()
+    );
+    let csv = tmp.path().join("what-if.csv");
+    export_access_csv(&state, &csv, None, Some(&only_b)).unwrap();
+    let text = std::fs::read_to_string(&csv).unwrap();
+    assert!(text.lines().count() > 1);
     assert!(text.lines().skip(1).all(|l| l.ends_with(",adhoc")));
 }
 
