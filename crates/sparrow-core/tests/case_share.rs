@@ -347,7 +347,7 @@ fn bundle_rejects_unknown_fields() {
 #[test]
 fn migration_21_creates_imported_proposals() {
     let c = Case::in_memory().unwrap();
-    assert_eq!(c.schema_version().unwrap(), 28);
+    assert_eq!(c.schema_version().unwrap(), 29);
     assert_eq!(count(&c, "SELECT count(*) FROM imported_proposals"), 0);
 }
 

@@ -79,6 +79,8 @@ fn fresh_case_has_provenance_tables() {
             "message_trace_events",
             "mfa_registration",
             "mobile_devices",
+            "notebook_queries",
+            "notebooks",
             "oauth_grants",
             "operation_catalog",
             "parse_errors",
@@ -572,9 +574,9 @@ fn upgrading_a_v20_case_keeps_decisions_and_adds_imported_proposals() {
         .unwrap();
     }
     let (from, to) = Case::upgrade(&path).unwrap();
-    assert_eq!((from, to), (20, 28));
+    assert_eq!((from, to), (20, 29));
     let case = Case::open_read_only(&path).unwrap();
-    assert_eq!(case.schema_version().unwrap(), 28);
+    assert_eq!(case.schema_version().unwrap(), 29);
     let kept: (String, String, String, String) = case
         .conn()
         .query_row(
@@ -644,7 +646,7 @@ fn upgrading_a_v21_case_keeps_directory_audits_and_adds_completeness() {
         .unwrap();
     }
     let (from, to) = Case::upgrade(&path).unwrap();
-    assert_eq!((from, to), (21, 28));
+    assert_eq!((from, to), (21, 29));
     let case = Case::open_read_only(&path).unwrap();
     let kept: (String, String, String, String, Option<String>) = case
         .conn()
@@ -715,7 +717,7 @@ fn upgrading_a_v22_case_keeps_account_rollup_and_adds_the_signin_window() {
         .unwrap();
     }
     let (from, to) = Case::upgrade(&path).unwrap();
-    assert_eq!((from, to), (22, 28));
+    assert_eq!((from, to), (22, 29));
     let case = Case::open_read_only(&path).unwrap();
     let kept: (String, String, i64, String, String, i64, Option<String>, Option<String>) = case
         .conn()
@@ -808,7 +810,7 @@ fn upgrading_a_v23_case_keeps_message_trace_and_adds_an_empty_events_table() {
         .unwrap();
     }
     let (from, to) = Case::upgrade(&path).unwrap();
-    assert_eq!((from, to), (23, 28));
+    assert_eq!((from, to), (23, 29));
     let case = Case::open_read_only(&path).unwrap();
     let kept: (String, String, String, String, String) = case
         .conn()
@@ -862,7 +864,7 @@ fn describe_lists_views_with_their_kind() {
 #[test]
 fn state_table_specs_match_the_schema() {
     let case = Case::in_memory().unwrap();
-    assert_eq!(case.schema_version().unwrap(), 28);
+    assert_eq!(case.schema_version().unwrap(), 29);
     for spec in ALL {
         for common in [
             "record_key",
@@ -1196,7 +1198,7 @@ fn upgrading_a_v27_case_keeps_value_flags_and_adds_the_device_analyst_status_tab
         .unwrap();
     }
     let (from, to) = Case::upgrade(&path).unwrap();
-    assert_eq!((from, to), (27, 28));
+    assert_eq!((from, to), (27, 29));
     {
         let case = Case::open_read_only(&path).unwrap();
         let kept: (String, String) = case
@@ -1245,5 +1247,31 @@ fn upgrading_a_v27_case_keeps_value_flags_and_adds_the_device_analyst_status_tab
         current(case.conn(), "d1").unwrap().unwrap().status,
         AnalystStatus::Removed
     );
+    assert!(sparrow_core::case::audit::verify(case.conn()).unwrap().ok);
+}
+
+#[test]
+fn upgrading_a_v28_case_adds_empty_notebook_tables_that_take_writes() {
+    use sparrow_core::case::actor::Actor;
+    use sparrow_core::case::notebooks;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v28.duckdb");
+    {
+        let conn = v27_conn(&path);
+        let m = MIGRATIONS.iter().find(|m| m.version == 28).unwrap();
+        conn.execute_batch(m.sql).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
+            duckdb::params![m.version as i64, m.name],
+        )
+        .unwrap();
+    }
+    let (from, to) = Case::upgrade(&path).unwrap();
+    assert_eq!((from, to), (28, 29));
+    let case = Case::create_or_open(&path).unwrap();
+    assert_eq!(notebooks::list(case.conn()).unwrap().len(), 1);
+    let a = Actor::analyst("carlos").unwrap();
+    let (nb, _) = notebooks::create_notebook(case.conn(), &a, "Triage").unwrap();
+    notebooks::add_query(case.conn(), &a, &nb, "SELECT 1").unwrap();
     assert!(sparrow_core::case::audit::verify(case.conn()).unwrap().ok);
 }

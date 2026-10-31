@@ -150,6 +150,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "device_analyst_status",
         sql: include_str!("../../migrations/0028_device_analyst_status.sql"),
     },
+    Migration {
+        version: 29,
+        name: "notebooks",
+        sql: include_str!("../../migrations/0029_notebooks.sql"),
+    },
 ];
 
 /// The migration that adds the Phase 7 analyst tables and the audit trail.

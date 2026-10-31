@@ -14,6 +14,7 @@ pub mod events;
 pub mod indicators;
 pub mod investigate;
 pub mod marks;
+pub mod notebooks;
 pub mod notes;
 pub mod query;
 pub mod read;
