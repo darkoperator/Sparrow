@@ -72,7 +72,7 @@ describe("mergeAccess", () => {
     const a = account({ items: [item({})], gaps: ["Mail: x"], tiles: ORDER.map((c) => tile(c, c === "file" ? { direct: 2, qualifier: "q" } : {})) });
     const m = mergeAccess(report([a]), null);
     expect(m.items).toEqual(a.items);
-    expect(m.tiles.map(({ notCollectedFor: _n, of: _o, ...t }) => t)).toEqual(a.tiles);
+    expect(m.tiles.map((t) => Object.fromEntries(Object.entries(t).filter(([k]) => k !== "notCollectedFor" && k !== "of")))).toEqual(a.tiles);
     expect(m.gaps).toEqual(["Mail: x", ...NEVER]);
   });
 
