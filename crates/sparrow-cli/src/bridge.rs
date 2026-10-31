@@ -235,6 +235,19 @@ pub fn read_line_limited(r: &mut dyn BufRead, max: usize) -> io::Result<Option<S
     Ok(String::from_utf8(buf).ok())
 }
 
+/// How long the CLI waits for the app's answer: the read time limit the request asks for (`SPARROW_BRIDGE_TIMEOUT`,
+/// as the app reads it: default 120 s, at most a day), the 30 s a write may wait for the app's lock, and 30 s more. An
+/// app that answers nothing by then is given up on, so the CLI never hangs.
+pub fn answer_timeout(env: &BTreeMap<String, String>) -> std::time::Duration {
+    let limit = env
+        .get("SPARROW_BRIDGE_TIMEOUT")
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|s| *s > 0)
+        .unwrap_or(120)
+        .min(86_400);
+    std::time::Duration::from_secs(limit + 30 + 30)
+}
+
 /// Send `req` to the bridge described by `d` and stream its answer into `out` and `err`; the exit code it ends
 /// with. An answer that ends without an exit code (the app refused the token, or went away) is an error.
 pub fn send(
@@ -245,6 +258,7 @@ pub fn send(
 ) -> io::Result<u8> {
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", d.port))?;
     let _ = stream.set_nodelay(true);
+    stream.set_read_timeout(Some(answer_timeout(&req.env)))?;
     let mut line = d.token.clone().into_bytes();
     line.push(b'\n');
     line.extend(serde_json::to_vec(req).map_err(io::Error::other)?);
@@ -381,6 +395,27 @@ mod tests {
         };
         let code = send(&d, &req, &mut Broken, &mut Vec::new()).unwrap();
         assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn the_client_waits_for_the_read_limit_and_the_write_wait() {
+        let env = |v: &str| BTreeMap::from([("SPARROW_BRIDGE_TIMEOUT".to_string(), v.to_string())]);
+        assert_eq!(
+            answer_timeout(&BTreeMap::new()),
+            std::time::Duration::from_secs(120 + 30 + 30)
+        );
+        assert_eq!(
+            answer_timeout(&env("5")),
+            std::time::Duration::from_secs(5 + 30 + 30)
+        );
+        assert_eq!(
+            answer_timeout(&env("junk")),
+            std::time::Duration::from_secs(120 + 30 + 30)
+        );
+        assert_eq!(
+            answer_timeout(&env("999999999")),
+            std::time::Duration::from_secs(86_400 + 30 + 30)
+        );
     }
 
     #[test]

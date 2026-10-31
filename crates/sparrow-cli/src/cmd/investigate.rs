@@ -39,7 +39,11 @@ pub struct InvestigateArgs {
 fn duration(s: &str) -> Result<Duration> {
     let bad = || anyhow::anyhow!("--pad is a number with d, h or m (1d, 12h, 30m), got {s:?}");
     let s = s.trim();
-    let (n, unit) = s.split_at(s.len().saturating_sub(1));
+    // Split before the last character (any width), never inside one.
+    let Some((at, _)) = s.char_indices().last() else {
+        return Err(bad());
+    };
+    let (n, unit) = s.split_at(at);
     let n: i64 = n.parse().map_err(|_| bad())?;
     // At most a year: a window is days, and chrono's arithmetic must never overflow.
     if !(0..=366 * 24 * 60).contains(&n) {
@@ -164,7 +168,7 @@ fn print(inv: &Investigation) {
                 .iter()
                 .map(|x| format!("{} {}", x.category.as_str(), x.items))
                 .collect();
-            outln!("    reached {}", r.join("  "));
+            outln!("    would reach if flagged {}", r.join("  "));
         }
     }
     outln!(
@@ -271,5 +275,11 @@ mod tests {
         assert!(duration("367d").is_err());
         assert!(duration("99999999999999h").is_err());
         assert!(duration("-1h").is_err());
+        assert!(
+            duration("1é").is_err(),
+            "a multi-byte last character is an error, not a panic"
+        );
+        assert!(duration("é").is_err());
+        assert!(duration("").is_err());
     }
 }

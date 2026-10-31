@@ -94,6 +94,9 @@ pub struct ScopeSource {
     /// Only records of `[from, to)` are attributed (`investigate`'s window): items, and the coverage limits read from
     /// them, are of the window; scope values and their windows are not limited.
     pub window: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
+    /// Leave the accepted flags out: only the ad-hoc values (and pending flags, if included) attribute. `investigate`
+    /// asks "what did this session reach", which the case's accepted flags must not answer for it.
+    pub without_accepted: bool,
 }
 
 impl ScopeSource {

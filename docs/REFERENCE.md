@@ -683,7 +683,7 @@ and, when the app is alive and has that same case open, sends the whole command 
 - **Reads** (`summary`, `accounts`, `events`, `entity`, `access`, `query`, exports, ...) run on a second connection
   to the app's database, so the analyst's screen stays usable; a read stops at its time limit
   (`SPARROW_BRIDGE_TIMEOUT` seconds, default 120, at most a day) with exit 1.
-- **Writes** (`mark`, `note`, `finding set-status|assign|ack-rule-update`, `ioc`, `timeline-entry`, `tenant domains`)
+- **Writes** (`mark`, `note`, `finding set-status|assign|ack-rule-update`, `ioc`, `timeline-entry`)
   wait for the app's own case lock (at most 30 s: "the app is busy", exit 4), so they queue with the analyst's
   actions. They stay agent decisions (`--agent`, pending review), always on behalf of the app's analyst: a different
   `--analyst` or `SPARROW_ANALYST` is replaced, with a note on stderr, and with no analyst name set in the app a
@@ -691,6 +691,7 @@ and, when the app is alive and has that same case open, sends the whole command 
   header shows an Agent chip with the last request.
 - **Refused through the bridge** (exit 4, "run it from the app, or with the case closed in the app"): `ingest`,
   `profile`, `detect`, `upgrade`, `synth` and `audit verify --acknowledge`, which hold the case for minutes.
+  `tenant domains add|remove` too (exit 4): it is signed as an analyst, not as an agent, so it is the analyst's to make.
 - Requests run one at a time. Closing or switching the case, or starting an import, stops the running request at
   once: the CLI gets exit 4, "the analyst closed the case (or started an import) while this ran; nothing was
   written".
@@ -829,10 +830,11 @@ or move it as evidence comes in. It reports facts, no verdict:
   (`exchange:<id>`; a UAL record whose Exchange session also appears on a record of an Entra session, with no IP of its
   own or one of that record's, belongs to the Entra session, as in the access report), else per IP (`ip:<address>`).
   Each has its first and last event, the IPs with ASN, country and kind, and whether each IP or ASN is new for the
-  account (the account has events before the window, none from it), devices, user agents, sign-in result codes,
-  value flags on the session, its IPs or devices, the findings whose evidence includes one of its events, and
-  `reach`: what it reached, the access report's items per category with that session (or IP) as ad-hoc scope,
-  limited to the window, so the numbers match `sparrow access --session ID` / `--ip IP` over that window.
+  account (first seen after the account's first day, in any of its events: the entity pivots' `is_new` rule, so an
+  address that appeared yesterday is still new today), devices, user agents, sign-in result codes, value flags on the
+  session, its IPs or devices (where the flag's scope holds), the findings whose evidence includes one of its events,
+  and `reach`: what the session would reach if it were flagged, the access report's items per category with that
+  session (or IP) as the only scope (the case's accepted flags left out), limited to the window.
 - **Mail**: message trace to the account from 24 hours before the window to its end (a lure is in view), and mail it
   sent in the window, at most 200 each (`mail_truncated`).
 - **Config changes**: the account's `config_change` events in the window, with their `row`.

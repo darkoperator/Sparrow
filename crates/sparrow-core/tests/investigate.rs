@@ -486,3 +486,23 @@ fn new_follows_the_entity_pivot_rule() {
     let inv = investigate(case.conn(), JDOE, at(3, 0), at(4, 0)).unwrap();
     assert!(inv.sessions[0].ips[0].new_for_account);
 }
+
+#[test]
+fn reach_is_the_session_alone_even_with_accepted_flags() {
+    // An accepted flag on the attacker's address must not show up in every session's reach.
+    let case = case();
+    case.conn()
+        .execute_batch(&format!(
+            "INSERT INTO value_flags (flag_id, kind, value, level, decided_by, decided_at, review_state) VALUES \
+             ('vf1', 'ip', '{ATTACK_IP}', 'malicious', 'analyst:c', now(), 'accepted')"
+        ))
+        .unwrap();
+    let inv = investigate(case.conn(), JDOE, at(2, 0), at(3, 0)).unwrap();
+    let old = inv
+        .sessions
+        .iter()
+        .find(|s| s.key == format!("ip:{OLD_IP}"))
+        .unwrap();
+    let total: u64 = old.reach.iter().map(|r| r.items).sum();
+    assert_eq!(total, 1, "only the old address's own read: {:?}", old.reach);
+}

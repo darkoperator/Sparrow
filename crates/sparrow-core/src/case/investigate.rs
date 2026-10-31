@@ -23,13 +23,15 @@ pub struct IpInfo {
     pub asn_org: Option<String>,
     pub country: Option<String>,
     pub kind: Option<String>,
-    /// The account has events before the window, none of them from this address.
+    /// The address was first seen (in any of the account's events, of any time) after the account's first day: the
+    /// entity pivots' `is_new` rule.
     pub new_for_account: bool,
     /// Likewise for the address's ASN.
     pub asn_new_for_account: bool,
 }
 
-/// What a session reached: the access report's items of one category, in the window.
+/// What a session reached: the access report's items of one category in the window, with the session (or its IP) as
+/// the only scope (the case's accepted flags left out): what it would reach if it were the attacker's.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Reach {
     pub category: Category,
@@ -464,6 +466,7 @@ fn reach(
     let src = ScopeSource {
         adhoc: vec![value],
         window: Some((from, to)),
+        without_accepted: true,
         ..ScopeSource::accepted()
     };
     let mut by: BTreeMap<Category, u64> = BTreeMap::new();

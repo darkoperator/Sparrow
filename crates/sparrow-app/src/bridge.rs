@@ -444,6 +444,16 @@ impl Worker {
                     4,
                 );
             }
+            // Tenant settings are signed as an analyst (`analyst:<name>`), not as an agent: through the bridge they
+            // would carry the app's analyst's name on an agent's decision.
+            Kind::Write("tenant") => {
+                return refuse(
+                    &mut job.stream,
+                    "a tenant domain setting is the analyst's decision, not an agent's: make it in the app, or with \
+                     the case closed in the app (sparrow tenant domains ... --analyst NAME)",
+                    4,
+                );
+            }
             Kind::Read | Kind::Write(_) => {}
         }
         if let Err(msg) = self.check_case(&seen, &req.cwd) {
@@ -534,24 +544,13 @@ impl Worker {
         });
         // The handles are registered by `ViewSource` as it opens connections; the watchdog interrupts them at the
         // limit or when the bridge stops.
-        let done = AtomicBool::new(false);
         let timed_out = AtomicBool::new(false);
-        let code = std::thread::scope(|s| {
-            s.spawn(|| {
-                let deadline = Instant::now().checked_add(limit);
-                while !done.load(Ordering::SeqCst) {
-                    if shared.stopping.load(Ordering::SeqCst) {
-                        shared.interrupt_reads();
-                    } else if deadline.is_some_and(|d| Instant::now() >= d) {
-                        timed_out.store(true, Ordering::SeqCst);
-                        shared.interrupt_reads();
-                    }
-                    std::thread::sleep(Duration::from_millis(50));
-                }
-            });
-            let code = sparrow_cli::run(args, io, source);
-            done.store(true, Ordering::SeqCst);
-            code
+        let code = guarded_run(shared, limit, &timed_out, || {
+            sparrow_cli::run(args, io, source)
+        })
+        .unwrap_or_else(|| {
+            let _ = wire::write_frame(&mut job.stream, ERR, PANIC_MESSAGE.as_bytes());
+            PANICKED
         });
         lock(&shared.reading).clear();
         if shared.stopping.load(Ordering::SeqCst) {
@@ -664,10 +663,55 @@ impl Worker {
             write_ok: true,
             reading: None,
         });
-        let code = sparrow_cli::run(args, io, source);
+        // A command that panics must not take the worker down with the app's case lock held.
+        let code = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            sparrow_cli::run(args, io, source)
+        }));
         drop(slot);
-        Some(code)
+        Some(code.unwrap_or_else(|_| {
+            let _ = wire::write_frame(&mut job.stream, ERR, PANIC_MESSAGE.as_bytes());
+            PANICKED
+        }))
     }
+}
+
+/// The exit code of a command that panicked in the bridge.
+const PANICKED: u8 = 1;
+const PANIC_MESSAGE: &str =
+    "error: the command failed inside the app (an internal error); the app is unaffected\n";
+
+/// Run `f` (a read) with a watchdog that interrupts its connections at `limit` or when the bridge stops. A panic in
+/// `f` is caught (`None`) and the watchdog always ends with it: a drop guard says `f` is done on every
+/// path, so the worker is never left waiting on a scope that cannot close.
+fn guarded_run(
+    shared: &Shared,
+    limit: Duration,
+    timed_out: &AtomicBool,
+    f: impl FnOnce() -> u8,
+) -> Option<u8> {
+    struct Done<'a>(&'a AtomicBool);
+    impl Drop for Done<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    let done = AtomicBool::new(false);
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            let deadline = Instant::now().checked_add(limit);
+            while !done.load(Ordering::SeqCst) {
+                if shared.stopping.load(Ordering::SeqCst) {
+                    shared.interrupt_reads();
+                } else if deadline.is_some_and(|d| Instant::now() >= d) {
+                    timed_out.store(true, Ordering::SeqCst);
+                    shared.interrupt_reads();
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let _done = Done(&done);
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok()
+    })
 }
 
 /// Remove `--analyst X` and `--analyst=X` (the app's analyst signs instead).
@@ -713,5 +757,28 @@ impl CaseSource for ViewSource {
 
     fn heavy_allowed(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_panicking_read_answers_and_frees_the_worker() {
+        let shared = Shared::new();
+        let timed_out = AtomicBool::new(false);
+        let started = Instant::now();
+        let code = guarded_run(&shared, Duration::from_secs(60), &timed_out, || -> u8 {
+            panic!("a command bug")
+        });
+        assert_eq!(code, None);
+        let fine = guarded_run(&shared, Duration::from_secs(60), &timed_out, || 1);
+        assert_eq!(fine, Some(1), "an ordinary exit 1 is not a panic");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the watchdog ended with the command"
+        );
+        assert!(!timed_out.load(Ordering::SeqCst));
     }
 }

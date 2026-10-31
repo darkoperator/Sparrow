@@ -39,7 +39,10 @@ fn flag_values(src: &ScopeSource) -> (String, Vec<Value>) {
              FROM value_flags WHERE removed_at IS NULL AND level = 'malicious' AND review_state = '{state}'"
         )
     };
-    let mut arms = vec![of("accepted", 1)];
+    let mut arms = Vec::new();
+    if !src.without_accepted {
+        arms.push(of("accepted", 1));
+    }
     if src.include_pending {
         arms.push(of("pending_review", 2));
     }
@@ -47,12 +50,20 @@ fn flag_values(src: &ScopeSource) -> (String, Vec<Value>) {
     if !src.adhoc.is_empty() {
         let rows = vec!["(CAST(? AS VARCHAR), CAST(? AS VARCHAR))"; src.adhoc.len()].join(", ");
         arms.push(format!(
-            "SELECT k, v, NULL::VARCHAR, NULL::VARCHAR, 3 FROM (VALUES {rows}) adhoc(k, v)"
+            "SELECT k AS kind, v AS value, NULL::VARCHAR AS scope_kind, NULL::VARCHAR AS scope_value, 3 AS basis \
+             FROM (VALUES {rows}) adhoc(k, v)"
         ));
         for (kind, value) in &src.adhoc {
             params.push(Value::Text(kind.as_str().to_string()));
             params.push(Value::Text(adhoc_value(*kind, value)));
         }
+    }
+    if arms.is_empty() {
+        arms.push(
+            "SELECT NULL::VARCHAR AS kind, NULL::VARCHAR AS value, NULL::VARCHAR AS scope_kind, \
+             NULL::VARCHAR AS scope_value, 1 AS basis WHERE FALSE"
+                .to_string(),
+        );
     }
     (format!("flagv AS ({})", arms.join(" UNION ALL ")), params)
 }
@@ -109,10 +120,11 @@ pub(crate) fn ctes(src: &ScopeSource) -> (String, Vec<Value>) {
              JOIN flagv vf ON vf.kind = '{kind}' AND vf.value = {col} AND {SCOPE}"
         )
     };
-    let row_states = if src.include_pending {
-        "('accepted', 'pending_review')"
-    } else {
-        "('accepted')"
+    let row_states = match (src.without_accepted, src.include_pending) {
+        (false, true) => "ef.review_state IN ('accepted', 'pending_review')",
+        (false, false) => "ef.review_state = 'accepted'",
+        (true, true) => "ef.review_state = 'pending_review'",
+        (true, false) => "FALSE",
     };
     let hits = [
         hit(1, "session", "e.entra_session_id"),
@@ -123,7 +135,7 @@ pub(crate) fn ctes(src: &ScopeSource) -> (String, Vec<Value>) {
         format!(
             "SELECT ef.source_table, ef.record_key, 2, 'row', 'flagged rows', \
              CASE WHEN ef.review_state = 'accepted' THEN 1 ELSE 2 END FROM event_flags ef \
-             WHERE ef.level = 'malicious' AND ef.review_state IN {row_states}"
+             WHERE ef.level = 'malicious' AND {row_states}"
         ),
         hit(3, "device", "e.device_id"),
         hit(3, "device", "e.device_object_id"),

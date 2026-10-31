@@ -652,3 +652,58 @@ fn a_real_case_through_the_bridge() {
     );
     assert_eq!(f.events("case-changed").len(), 1);
 }
+
+#[test]
+fn a_failing_command_never_wedges_the_bridge() {
+    // `--pad 1é` once panicked inside the command: the request must answer and the case still close at once.
+    let f = fixture(Some("Carol"));
+    let (code, _, _) = f.ask(&[
+        "investigate",
+        "--case",
+        &f.case_arg(),
+        "--user",
+        "jdoe@contoso.example",
+        "--on",
+        "2026-09-01",
+        "--pad",
+        "1é",
+    ]);
+    assert_ne!(code, 0);
+    let (code, _, err) = f.ask(&["events", "--case", &f.case_arg()]);
+    assert_eq!(code, 0, "the bridge still serves: {err}");
+    let started = Instant::now();
+    case_close(f.state()).unwrap();
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn tenant_settings_are_refused_through_the_bridge() {
+    // `tenant domains add|remove` signs as an analyst, not as an agent: through the bridge it would put the app's
+    // analyst's name on the agent's decision.
+    let f = fixture(Some("Carol"));
+    let audit = || -> i64 {
+        with_case(f.state(), f.state().ticket(), |open| {
+            Ok(open
+                .case
+                .conn()
+                .query_row("SELECT count(*) FROM audit_trail", [], |r| r.get(0))
+                .unwrap())
+        })
+        .unwrap()
+    };
+    let before = audit();
+    let (code, _, err) = f.ask(&[
+        "tenant",
+        "domains",
+        "add",
+        "x.example",
+        "--case",
+        &f.case_arg(),
+    ]);
+    assert_eq!(code, 4, "{err}");
+    assert!(err.contains("analyst's decision"), "{err}");
+    assert_eq!(audit(), before, "nothing was written");
+    // Listing them is a read and still works.
+    let (code, _, err) = f.ask(&["tenant", "domains", "list", "--case", &f.case_arg()]);
+    assert_ne!(code, 4, "{err}");
+}

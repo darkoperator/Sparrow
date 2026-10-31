@@ -853,8 +853,8 @@ fn error_exit_code(e: &anyhow::Error) -> u8 {
 pub enum Kind {
     /// Reads the case.
     Read,
-    /// A short write (an agent decision or a tenant setting); the label names what changes (`marks`, `notes`,
-    /// `findings`, `indicators`, `timeline`, `tenant`).
+    /// A short write (an agent decision, or a tenant setting, which the app's bridge refuses: it is signed as an
+    /// analyst); the label names what changes (`marks`, `notes`, `findings`, `indicators`, `timeline`, `tenant`).
     Write(&'static str),
     /// Holds the case for minutes: ingest, profile, detect, upgrade, synth, audit verify --acknowledge.
     Heavy,
