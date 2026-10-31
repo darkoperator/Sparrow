@@ -97,7 +97,7 @@ export default function Filters({ draft, errors, onChange, onApply, onClear }: P
             className="mono"
             value={draft.from}
             placeholder="From (UTC)"
-            title="From (UTC), inclusive: 2026-09-10 or 2026-09-10T00:00:00Z"
+            title="From (UTC), inclusive: 2026-09-10, 2026-09-10T00:00:00Z or 9/10/2026 00:00"
             spellCheck={false}
             aria-invalid={errors.from ? true : undefined}
             onChange={(e) => onChange({ from: e.target.value })}
@@ -115,7 +115,7 @@ export default function Filters({ draft, errors, onChange, onApply, onClear }: P
             className="mono"
             value={draft.to}
             placeholder="To (UTC)"
-            title="To (UTC), inclusive: 2026-09-11 or 2026-09-11T00:00:00Z"
+            title="To (UTC), inclusive: 2026-09-11, 2026-09-11T23:59 (the whole minute) or 9/11/2026 23:59"
             spellCheck={false}
             aria-invalid={errors.to ? true : undefined}
             onChange={(e) => onChange({ to: e.target.value })}

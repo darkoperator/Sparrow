@@ -328,7 +328,7 @@ describe("EventsView", () => {
     const before = callsOf("events_page").length;
     await user.type(box("From (UTC)"), "2026-09-10T01:00:00+02:00");
     await user.click(screen.getByRole("button", { name: "Search" }));
-    expect(await screen.findByText(/not an ISO 8601 UTC time/)).toHaveAttribute("role", "alert");
+    expect(await screen.findByText(/is not a UTC time/)).toHaveAttribute("role", "alert");
     expect(callsOf("events_page")).toHaveLength(before);
     await user.clear(box("From (UTC)"));
     await user.type(box("From (UTC)"), "2026-09-10");
@@ -343,6 +343,18 @@ describe("EventsView", () => {
     await user.type(box("To (UTC)"), "2026-09-09");
     await user.click(screen.getByRole("button", { name: "Search" }));
     expect(await screen.findByText("To is before From")).toBeInTheDocument();
+  });
+
+  it("a_one_minute_range_is_valid", async () => {
+    const user = userEvent.setup();
+    view();
+    await shown(81, 81);
+    await user.type(box("From (UTC)"), "2026-10-23 14:30");
+    await user.type(box("To (UTC)"), "2026-10-23 14:30");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    await waitFor(() => expect(lastQuery().from).toBe("2026-10-23T14:30:00Z"));
+    expect(lastQuery().to).toBe("2026-10-23T14:30:59.999999Z");
+    expect(screen.queryByText("To is before From")).not.toBeInTheDocument();
   });
 
   it("sorting_reloads_only_the_page_and_keeps_the_applied_query", async () => {
@@ -794,10 +806,26 @@ describe("parseUtc", () => {
     ["2026-09-10 01:55", "from", "2026-09-10T01:55:00Z"],
     ["2026-09-10T01:55:36Z", "to", "2026-09-10T01:55:36Z"],
     ["2026-09-10T01:55:36.250", "from", "2026-09-10T01:55:36.250Z"],
+    ["2026-09-10 01:55", "to", "2026-09-10T01:55:59.999999Z"],
+    ["2026-09-10T23:59", "to", "2026-09-10T23:59:59.999999Z"],
+    ["2026-09-10T01:55Z", "to", "2026-09-10T01:55:59.999999Z"],
+    ["10/23/2026", "from", "2026-10-23T00:00:00Z"],
+    ["10/23/2026", "to", "2026-10-23T23:59:59.999999Z"],
+    ["1/5/2026", "from", "2026-01-05T00:00:00Z"],
+    ["10/23/2026 14:30", "from", "2026-10-23T14:30:00Z"],
+    ["10/23/2026 14:30", "to", "2026-10-23T14:30:59.999999Z"],
   ] as const)("reads %j (%s) as %j", (text, end, want) => {
     expect(parseUtc(text, end)).toEqual({ ok: true, value: want });
   });
-  it.each(["2026-09-10T01:55:36+02:00", "2026-13-01", "2026-02-30", "2026-09-10T24:00", "yesterday", "2026-09-10T01"])("refuses %j", (text) => {
+  it.each(["2026-09-10T01:55:36+02:00", "2026-13-01", "2026-02-30", "2026-09-10T24:00", "yesterday", "2026-09-10T01", "23/10/2026", "10/23/26", "2/30/2026", "10/23/2026T14:30"])("refuses %j", (text) => {
     expect(parseUtc(text, "from")).toMatchObject({ ok: false });
+  });
+  it("names_both_accepted_forms", () => {
+    const r = parseUtc("23/10/2026", "from");
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.message).toContain("2026-09-10T01:55:00Z");
+      expect(r.message).toContain("10/23/2026");
+    }
   });
 });
