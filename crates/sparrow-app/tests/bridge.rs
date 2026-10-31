@@ -809,3 +809,30 @@ fn quitting_the_app_removes_the_discovery_file() {
     bridge::shutdown(f.state());
     assert!(read_discovery(&f.dir).is_none());
 }
+
+#[test]
+fn an_agent_notebook_add_through_the_bridge_emits_notebooks() {
+    let f = fixture(Some("Carol"));
+    let (code, out, err) = f.ask(&[
+        "notebook",
+        "add",
+        "--case",
+        &f.case_arg(),
+        "--notebook",
+        "Triage",
+        "--create",
+        "--sql",
+        "-- T\nSELECT 1",
+        "--agent",
+        "claude",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("added to Triage"), "{out}");
+    let changed = f.events("case-changed");
+    assert_eq!(changed.len(), 1);
+    assert_eq!(changed[0]["kinds"], serde_json::json!(["notebooks"]));
+    let l = sparrow_app::cmd::notebooks::notebook_list(f.state()).unwrap();
+    let q = &l[1].queries[0];
+    assert_eq!(q.decided_by.as_deref(), Some("agent:claude"));
+    assert_eq!(q.on_behalf_of.as_deref(), Some("analyst:Carol"));
+}

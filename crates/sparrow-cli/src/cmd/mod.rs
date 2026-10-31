@@ -11,5 +11,6 @@ pub mod finding;
 pub mod investigate;
 pub mod mark;
 pub mod note;
+pub mod notebook;
 pub mod read;
 pub mod timeline_entry;

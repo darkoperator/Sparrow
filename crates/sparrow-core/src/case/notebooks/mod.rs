@@ -13,6 +13,6 @@ pub use leak::{CaseValueHit, case_values_in};
 pub use placeholder::{placeholders, refuse_placeholders};
 pub use store::{
     BUILTIN_ID, BUILTIN_NAME, NotebookSummary, QuerySummary, SavedQuery, add_query,
-    create_notebook, delete_notebook, delete_query, export_text, find_query, import_text, list,
-    move_query, notebook_queries, rename_notebook,
+    add_query_creating, create_notebook, delete_notebook, delete_query, export_text, find_query,
+    import_text, list, move_query, notebook_queries, rename_notebook,
 };

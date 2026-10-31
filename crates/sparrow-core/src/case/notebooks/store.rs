@@ -590,3 +590,53 @@ pub fn import_text(conn: &Connection, actor: &Actor, text: &str) -> Result<(Stri
         Ok((id, e))
     })
 }
+
+/// Adds `sql` to the case notebook named `notebook` (id or name), creating it first when `create` and there is none:
+/// one transaction, so a refused query leaves no new notebook behind. `(notebook_id, query_id, the query's entry)`.
+pub fn add_query_creating(
+    conn: &Connection,
+    actor: &Actor,
+    notebook: &str,
+    sql: &str,
+    create: bool,
+) -> Result<(String, String, AuditEntry)> {
+    refuse_builtin(notebook)?;
+    check_query_sql(sql)?;
+    in_tx(conn, |tx| {
+        let ts = audit::now();
+        let notebook_id = match resolve_notebook(tx, notebook) {
+            Ok((id, _)) => id,
+            Err(_) if create => {
+                check_name(tx, notebook, None)?;
+                let id = insert_notebook(tx, actor, notebook, ts)?;
+                let after = json!({ "name": notebook.trim() });
+                audit_entry(
+                    tx,
+                    ts,
+                    actor,
+                    "create_notebook",
+                    "notebook",
+                    &id,
+                    None,
+                    Some(&after),
+                )?;
+                id
+            }
+            Err(e) => return Err(e),
+        };
+        refuse_builtin(&notebook_id)?;
+        let (id, position) = insert_query(tx, actor, &notebook_id, sql, ts)?;
+        let after = json!({ "notebook_id": notebook_id, "position": position, "sql": sql });
+        let e = audit_entry(
+            tx,
+            ts,
+            actor,
+            "add_notebook_query",
+            "notebook_query",
+            &id,
+            None,
+            Some(&after),
+        )?;
+        Ok((notebook_id, id, e))
+    })
+}

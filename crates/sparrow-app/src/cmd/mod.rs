@@ -13,6 +13,7 @@ pub mod highlights;
 pub mod indicators;
 pub mod ingest;
 pub mod marks;
+pub mod notebooks;
 pub mod review;
 pub mod share;
 pub mod sql;

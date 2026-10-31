@@ -43,11 +43,18 @@ pub fn sql_run_page(
 ) -> CmdResult<QueryResult> {
     let ticket = state.ticket();
     check_size(sql)?;
+    check_filled(sql)?;
     let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let offset = offset.unwrap_or(0);
     with_cancellable(state, ticket, query_id, |open| {
         Ok(query::run_on(&open.case, sql, limit, offset)?)
     })
+}
+
+/// A query that still holds `[placeholders]` is refused before it reaches DuckDB, naming them.
+fn check_filled(sql: &str) -> CmdResult<()> {
+    sparrow_core::case::notebooks::refuse_placeholders(sql)
+        .map_err(|e| CmdError::new("invalid", e.to_string()))
 }
 
 fn check_size(sql: &str) -> CmdResult<()> {
@@ -91,6 +98,7 @@ pub fn sql_export_csv_capped(
 ) -> CmdResult<Exported> {
     let ticket = state.ticket();
     check_size(sql)?;
+    check_filled(sql)?;
     with_cancellable_commit(state, ticket, query_id, |open, commit| {
         let mut exported = None;
         atomic_then(

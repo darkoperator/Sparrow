@@ -217,6 +217,12 @@ enum Command {
         #[command(subcommand)]
         command: cmd::note::NoteCommand,
     },
+    /// SQL notebooks: list, show and run saved queries (the built-in triage notebook included), add queries and
+    /// import or export notebook files
+    Notebook {
+        #[command(subcommand)]
+        command: cmd::notebook::NotebookCommand,
+    },
     /// The Events grid: every event record with account, IP, device and Entra session, filtered like the app's grid
     Events(cmd::events::EventsArgs),
     /// One account, IP, device or Entra session: tiles, pivot tables and findings
@@ -912,6 +918,7 @@ pub fn inspect(args: &[OsString]) -> Inspected {
         {
             Kind::Heavy
         }
+        ["notebook", "add" | "import", ..] => Kind::Write("notebooks"),
         [_, ..] if reads_only => Kind::Read,
         ["mark", ..] => Kind::Write("marks"),
         ["note", ..] => Kind::Write("notes"),
@@ -1030,6 +1037,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Some(Command::Finding { command }) => cmd::finding::run(command, json),
         Some(Command::TimelineEntry { command }) => cmd::timeline_entry::run(command, json),
         Some(Command::Note { command }) => cmd::note::run(command, json),
+        Some(Command::Notebook { command }) => cmd::notebook::run(command, json),
         Some(Command::Mark { command }) => cmd::mark::run(command, json),
         Some(Command::Events(a)) => cmd::events::run(a, json),
         Some(Command::Entity(a)) => cmd::entity::run(a, json),

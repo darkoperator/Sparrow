@@ -5531,3 +5531,127 @@ fn access_unknown_account_and_exports_over_the_case_are_refused() {
     assert_eq!(std::fs::metadata(&s.path).unwrap().len(), before);
     assert!(leftovers(tmp.path()).is_empty());
 }
+
+mod notebook_commands {
+    use super::*;
+    use sparrow_app::cmd::notebooks::*;
+
+    #[test]
+    fn notebook_commands_save_list_and_load() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (state, _) = open_seeded(tmp.path());
+        let id = notebook_create(&state, "Triage").unwrap();
+        notebook_add_query(&state, &id, "-- A\nSELECT 1").unwrap();
+        let l = notebook_list(&state).unwrap();
+        assert_eq!(l.len(), 2);
+        assert!(l[0].builtin);
+        let q = notebook_query(&state, "Triage", "1").unwrap();
+        assert_eq!(q.sql, "-- A\nSELECT 1");
+        assert_eq!(q.summary.decided_by.as_deref(), Some("analyst:carlos"));
+        let qid = q.summary.query_id.clone();
+        notebook_add_query(&state, &id, "SELECT 2").unwrap();
+        notebook_move_query(&state, &qid, 2).unwrap();
+        assert_eq!(
+            notebook_query(&state, "Triage", "2")
+                .unwrap()
+                .summary
+                .query_id,
+            qid
+        );
+        notebook_delete_query(&state, &qid).unwrap();
+        notebook_rename(&state, &id, "Renamed").unwrap();
+        assert_eq!(notebook_list(&state).unwrap()[1].name, "Renamed");
+        notebook_delete(&state, &id).unwrap();
+        assert_eq!(notebook_list(&state).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_notebook_write_needs_the_analyst_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = seeded_case(tmp.path());
+        let state = state_with_settings(&tmp.path().join("settings"));
+        case_open(&state, &s.path, false).unwrap();
+        let e = notebook_create(&state, "Triage").unwrap_err();
+        assert!(e.message.contains("analyst name"), "{e:?}");
+    }
+
+    #[test]
+    fn sql_run_refuses_placeholders() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (state, _) = open_seeded(tmp.path());
+        let e = sql_run(&state, "SELECT '[ip]'", None).unwrap_err();
+        assert_eq!(e.kind, "invalid", "{e:?}");
+        assert_eq!(e.message, "Fill in [ip] first");
+        let out = tmp.path().join("out.csv");
+        let e =
+            sparrow_app::cmd::sql::sql_export_csv(&state, "SELECT '[ip]'", &out, "x").unwrap_err();
+        assert_eq!(e.message, "Fill in [ip] first");
+        assert!(!out.exists());
+        assert_eq!(
+            sql_run(&state, "SELECT [1, 2] AS l", None)
+                .unwrap()
+                .rows
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn notebook_writes_on_a_read_only_case_are_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = seeded_case(tmp.path());
+        {
+            let case = Case::create_or_open(&s.path).unwrap();
+            case.conn()
+                .execute_batch("UPDATE audit_trail SET reason = 'x' WHERE seq = 1")
+                .unwrap();
+        }
+        let state = state_with_settings(&tmp.path().join("settings"));
+        settings_set_analyst(&state, "carlos").unwrap();
+        assert!(
+            case_open(&state, &s.path, false)
+                .unwrap()
+                .read_only_reason
+                .is_some()
+        );
+        assert_eq!(notebook_list(&state).unwrap().len(), 1);
+        assert!(notebook_query(&state, "builtin", "1").is_ok());
+        assert_eq!(
+            notebook_create(&state, "Triage").unwrap_err().kind,
+            "read_only"
+        );
+        let f = tmp.path().join("in.sql");
+        std::fs::write(&f, "-- sparrow notebook: x\n-- ==== query ====\nSELECT 1\n").unwrap();
+        assert_eq!(notebook_import(&state, &f).unwrap_err().kind, "read_only");
+    }
+
+    #[test]
+    fn export_and_import_through_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (state, _) = open_seeded(tmp.path());
+        let id = notebook_create(&state, "Triage").unwrap();
+        notebook_add_query(&state, &id, "SELECT 1").unwrap();
+        assert!(notebook_case_values(&state, &id).unwrap().is_empty());
+        let out = tmp.path().join("triage.sql");
+        notebook_export(&state, &id, &out).unwrap();
+        assert!(
+            std::fs::read_to_string(&out)
+                .unwrap()
+                .starts_with("-- sparrow notebook: Triage\n")
+        );
+        let new = notebook_import(&state, &out).unwrap();
+        let l = notebook_list(&state).unwrap();
+        assert_eq!(
+            l.iter().find(|n| n.notebook_id == new).unwrap().name,
+            "Triage (2)"
+        );
+        let big = tmp.path().join("big.sql");
+        std::fs::write(&big, vec![b'x'; 4 * 1024 * 1024 + 1]).unwrap();
+        assert!(
+            notebook_import(&state, &big)
+                .unwrap_err()
+                .message
+                .contains("4 MiB")
+        );
+    }
+}
