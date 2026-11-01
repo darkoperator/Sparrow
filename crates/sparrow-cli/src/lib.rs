@@ -239,7 +239,8 @@ enum Command {
     },
     /// Run one read-only SELECT on a locked-down connection (exit 1 when refused)
     Query {
-        /// The SELECT (or WITH ... SELECT) statement
+        /// The SELECT (or WITH ... SELECT) statement; it may start with a -- comment (a notebook query does)
+        #[arg(allow_hyphen_values = true)]
         sql: String,
         /// Case database file
         #[arg(long)]
