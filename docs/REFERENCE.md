@@ -912,7 +912,9 @@ marked `edited` once its text changes. Save as adds the editor's text as a new q
 built-in one), or to a new notebook named there (created with its first query in one write, so a refused query makes
 no notebook); it never overwrites a query. A case notebook's queries move up and
 down and are deleted with an inline confirmation; the notebook is renamed or deleted (with its queries) from the
-picker row. The list reloads when an agent writes through the bridge, keeping the chosen notebook and the editor.
+picker row. A notebook just made (New notebook… or Save as) is chosen at once, before the list reloads with it;
+until then it shows Loading… and offers no rename, delete or export. The list reloads when an agent writes through
+the bridge, keeping the chosen notebook and the editor.
 
 **Files.** Export writes one notebook (the built-in one too) as a readable `.sql` file:
 

@@ -1,6 +1,6 @@
 # Sparrow
 
-Sparrow turns Microsoft 365 evidence for a business-email-compromise investigation into one queryable DuckDB case file. It ingests Hawk 3.x/4.x, Microsoft-Extractor-Suite (Invictus), and portal exports; keeps the original file and line provenance of each record; profiles the tenant and its evidence gaps; runs 34 detection rules; and gives an investigator a CLI for findings, timelines, indicators, notes, audited decisions, and exports.
+Sparrow turns Microsoft 365 evidence for a business-email-compromise investigation into one queryable DuckDB case file. It ingests Hawk 3.x/4.x, Microsoft-Extractor-Suite (Invictus), and portal exports; keeps the original file and line provenance of each record; profiles the tenant and its evidence gaps; runs 34 detection rules; and gives an investigator a CLI for findings, timelines, indicators, notes, audited decisions, and exports, plus a desktop review app for working the case on screen.
 
 One case can contain multiple collections and tenants. Sparrow does not collect evidence from Microsoft 365 itself: give it collector output you are authorized to examine. Its local CLI needs no network connection at runtime.
 
@@ -15,8 +15,11 @@ flowchart LR
     C --> T[Tenant profile and availability]
     C --> F[Findings and evidence links]
     C --> U[Decisions and hash-chained audit]
-    C --> D[CLI / investigator / AI agent]
+    C --> D[CLI / AI agent]
+    C --> R[Review app / analyst]
+    D <-->|agent bridge| R
     D --> X[Markdown report / timeline CSV / XLSX]
+    R --> X
 ```
 
 ## Requirements
@@ -43,6 +46,26 @@ cargo build -p sparrow-cli
 
 For a release build, use `cargo build --release -p sparrow-cli` (or `scripts/release.sh --cli`; `scripts/release.sh` alone also builds the review app) and run `./target/release/sparrow`. All examples below assume `sparrow` is on your `PATH`; substitute `./target/debug/sparrow` if it is not.
 
+## The review app
+
+The review app is a desktop app (Tauri) for the analyst. It opens a case file, or builds a new case from a collector folder, and shows the same case the CLI works on. Build it with `scripts/release.sh` (the CLI and the app; `--app` for the app alone). On macOS it produces `target/release/bundle/macos/Sparrow.app`. See [developer notes](docs/DEVELOPING.md#review-app) for running it from source.
+
+![The Events window: every event record with a timeline chart, filters, and flagged rows](docs/images/app-events.jpg)
+
+- **Events**: every event record in one grid, with a timeline chart, text search, field filters (`source`, `operation`, `account`, `ip`, `country`, `asn`, `device`, `session`, `tag`, `rule`), a time range, and suspicious/malicious flags. A row opens a detail panel with its flags, tags, and notes.
+- **Accounts, IPs, devices and sessions** open in their own tabs: tiles, the evidence coverage for the range, pivot tables, and findings, with links onward.
+- **Access** opens from an account tab, from an IP or device tab as a what-if, or from Events for the whole case, and answers "what did the attacker get?", with an Export CSV.
+- **Review** is the queue of agent decisions waiting for the analyst. **Timeline** holds the case's investigation timeline entries (proposed, verified, rejected); **Tables** browses any evidence table with filters; **Highlights** colours rows that match the analyst's rules; **Share** exports your work as a bundle for another analyst and imports theirs (preview first, then confirm). The header's **Export** writes the report, the timeline CSV, the workbook, and the access report of the accounts with malicious activity (CSV, or a Markdown summary).
+- **SQL** runs read-only queries, with the built-in and case notebooks beside the editor.
+
+![An IP tab: tiles, evidence coverage, the accounts that used it, and its findings](docs/images/app-ip.jpg)
+
+![Access as a what-if for one IP: what it would have reached if it were the attacker](docs/images/app-access.jpg)
+
+![The SQL screen with an agent's notebook: saved queries with placeholders, and the result of one](docs/images/app-sql-notebooks.jpg)
+
+While the app has a case open, `sparrow` commands on the same computer that open that same case run through it (the [agent bridge](docs/REFERENCE.md#agent-bridge)): an agent works on the case the analyst is looking at, without the "case is open by another writer" error, and the analyst's screen refreshes as the agent writes. Commands that hold the case for minutes (`ingest`, `profile`, `detect`, `upgrade`) are refused through the bridge (exit 4): run them with the case closed in the app. `--no-bridge` (or `SPARROW_BRIDGE=off`) opens the file directly instead.
+
 ## From collector output to a case
 
 ```bash
@@ -62,11 +85,12 @@ Hawk 3.x/4.x, Invictus 4.x, and portal exports can be combined in one case. Spar
 ```bash
 sparrow capabilities --case case.duckdb --json
 sparrow summary --case case.duckdb --json
+sparrow coverage --case case.duckdb --user user@contoso.example
 sparrow schema --case case.duckdb --table signins
 sparrow verify ual_events RECORD_KEY --case case.duckdb
 ```
 
-Availability distinguishes evidence that was collected, partial, not licensed, not enabled, outside retention, available but not collected, or unknown. Its reason and suggested collector command help you avoid treating a gap as a clean result. `verify` checks a record against its original file and location; if the evidence tree moved, pass `--root NEW_COLLECTION_ROOT`. `schema` describes the tables and views `query` can read, with each column's type and description (`--table` for one).
+Availability distinguishes evidence that was collected, partial, not licensed, not enabled, outside retention, available but not collected, or unknown. Its reason and suggested collector command help you avoid treating a gap as a clean result. `coverage` goes one level down, per account: the rows and dates each source holds, the days it does not cover, and what to request next with the admin portal, Hawk, or Microsoft-Extractor-Suite (default: every account with findings; see [Use](docs/REFERENCE.md#use)). `verify` checks a record against its original file and location; if the evidence tree moved, pass `--root NEW_COLLECTION_ROOT`. `schema` describes the tables and views `query` can read, with each column's type and description (`--table` for one).
 
 ## Triage detections and investigate events
 
@@ -86,6 +110,18 @@ sparrow pivot user analyst@contoso.example --case case.duckdb --cap 20 --json
 
 The 34 rules run per tenant. Each rule attempt is recorded as `ran`, `not_applicable` with a reason, or `error`; a missing capability, unavailable evidence, or absent GeoIP is not silently counted as a negative. Findings retain their evidence across re-runs, and re-running detection never overwrites an analyst's status, assignment, or disposition. `finding list` filters combine: `--severity` is a minimum, `--rule` repeats, `--user` ignores case, and `--limit` reports what it left out. `finding show` includes guidance, evidence references, notes, and decision history (`--all` removes the default 50-evidence-row cap in plain output; JSON already includes all evidence); it takes up to 50 ids at once and lists the unknown ones (exit 2). `timeline` filters by user, IP, category, time, or finding. `pivot` returns capped sections about one IP or user and reports truncation. Use `--limit` or `--cap` deliberately when sending results to an agent.
 
+To work one account, IP, device or session, and to answer "what did the attacker get?":
+
+```bash
+sparrow investigate --case case.duckdb --user user@contoso.example --on 2026-08-21 --pad 12h
+sparrow events --case case.duckdb --ip 203.0.113.2 --where source=ual --limit 50 --json
+sparrow entity --case case.duckdb --ip 203.0.113.2 --json
+sparrow mark flag --value ip=203.0.113.2 --level malicious --case case.duckdb --agent triage --analyst reviewer
+sparrow access --case case.duckdb --account user@contoso.example --include-pending --brief
+```
+
+`investigate` takes the window from you (the customer's dates: `--on` a UTC day widened by `--pad`, or `--from`/`--to`) and reports the account's sessions with their IPs and what each reached, the mail around them, its configuration changes, and its findings' times, with the next commands to run; it states facts, not a verdict. `events` is the app's Events grid as a command: every event record with account, IP, device and Entra session, filtered by one of `--user`, `--ip`, `--device` or `--session` plus repeatable `--where FIELD=TEXT`, `--search`, a time range and `--flag`. `entity` is one account, IP, device or session as tiles, pivot tables and findings. `mark flag` sets a standing suspicious or malicious flag on a value (`ip`, `ip_prefix`, `account`, `asn`, `device`, `session`, also covering evidence ingested later) or on event rows; `mark tag` tags rows, and `mark list` lists both. An agent's marks stay pending until the analyst confirms them in the app's Events grid. `access` lists, per compromised account, the mail read and sent, attachments, SharePoint/OneDrive files, Teams, Copilot, and other apps the attacker reached, with the evidence gaps that limit the answer. By default it counts only reviewed malicious flags; `--include-pending`, or ad-hoc `--ip`, `--prefix`, `--session` and `--device` values, make it a clearly labelled preview. See [Events, entities and marks](docs/REFERENCE.md#events-entities-and-marks), [Investigate one account](docs/REFERENCE.md#investigate-one-account), and [Access report](docs/REFERENCE.md#access-report).
+
 For a targeted read-only SQL question:
 
 ```bash
@@ -93,6 +129,18 @@ sparrow query "SELECT category, count(*) AS events FROM timeline GROUP BY catego
 ```
 
 `query` accepts one `SELECT` or `WITH … SELECT`, caps returned rows (default 1,000), and runs on a locked-down, read-only connection with no external file, network, or environment access. It cannot change case data or settings. An invalid or forbidden query exits 1. It can see all case tables, including `case_meta`; do not treat its output as a tenant-scoped view unless your SQL filters by tenant.
+
+Queries worth keeping go in **notebooks**: named lists of commented, saved queries. Sparrow ships a built-in triage notebook (twelve queries: sign-ins by country and network, IPs shared by accounts, hosting-provider sign-ins, inbox rules, OAuth grants, MFA changes, and more), and each case holds its own:
+
+```bash
+sparrow notebook list --case case.duckdb
+sparrow notebook run builtin 2 --case case.duckdb --limit 20
+sparrow notebook add --notebook "BEC follow-ups" --create --file query.sql --case case.duckdb --agent triage
+sparrow notebook export "BEC follow-ups" --out followups.sql --case case.duckdb
+sparrow notebook import --file followups.sql --case other-case.duckdb --agent triage
+```
+
+A query should open with a `--` comment block: its first line is the query's title (without one, the first line of SQL is). A value that differs per case is written as a `[name]` placeholder (`ip = '[ip]'`) and filled in before running; a query that still holds one is refused. A notebook exports to a readable `.sql` file to share with other cases, and the export is refused (exit 5) while its queries hold values from this case (accounts, IPs, devices, sessions, the tenant's domains, IP ranges), unless `--force`. Adding and importing are agent decisions; renaming, reordering, and deleting are the analyst's, in the app. See [SQL notebooks](docs/REFERENCE.md#sql-notebooks).
 
 ## Why one DuckDB case helps an AI agent
 
@@ -160,7 +208,7 @@ The caveats:
 
 ## Agent workflow: record decisions, then review them
 
-Every CLI write is an **agent decision**, even when a person typed the command. Pass `--agent ID` (or set `SPARROW_AGENT`; default `unnamed`) and optionally `--analyst NAME` (or `SPARROW_ANALYST`) on finding, IOC, timeline-entry, and note writes:
+Every CLI write is an **agent decision**, even when a person typed the command. Pass `--agent ID` (or set `SPARROW_AGENT`; default `unnamed`) and optionally `--analyst NAME` (or `SPARROW_ANALYST`) on finding, IOC, timeline-entry, note, mark, and notebook writes:
 
 ```bash
 sparrow finding set-status FINDING_ID confirmed --reason "evidence reviewed" --case case.duckdb --agent triage --analyst reviewer
@@ -171,9 +219,11 @@ sparrow note add finding:FINDING_ID --text "Check the original header" --case ca
 sparrow audit verify --case case.duckdb --json
 ```
 
-Also available: `finding ack-rule-update`, `ioc set-verdict|remove|list`, `timeline-entry verify|reject|edit|list`, `tenant domains add|remove|list`, and `audit log`. An IOC can be tenant-scoped with `--tenant KEY`; without it, it applies case-wide. Removed IOCs are retained but no longer read by rules. A new decision takes effect immediately and is tagged `pending_review`; `--analyst` names the intended reviewer, not an authenticated identity. **Review itself happens outside the CLI.** The CLI cannot prove who ran it. Exports distinguish unreviewed AI decisions, and `export report --reviewed-only` includes accepted decisions only.
+Also available: `finding ack-rule-update`, `ioc set-verdict|remove|list`, `timeline-entry verify|reject|edit|list`, `tenant domains add|remove|list`, and `audit log`. An IOC can be tenant-scoped with `--tenant KEY`; without it, it applies case-wide. Removed IOCs are retained but no longer read by rules. A new decision takes effect immediately and is tagged `pending_review` (a notebook write is audited and records who made it, but asserts nothing about the case, so it is never pending review); `--analyst` names the intended reviewer, not an authenticated identity. **Review itself happens outside the CLI**, in the review app: findings, indicators, and timeline entries in its Review queue, and an agent's flags and tags in the Events grid (tick the events, then Confirm AI marks or Remove AI marks). The CLI cannot prove who ran it. Exports distinguish unreviewed AI decisions, and `export report --reviewed-only` includes accepted decisions only.
 
 The audit trail is SHA-256 hash-chained. `audit verify` reports the first broken sequence and its head hash; a break blocks writes until `audit verify --acknowledge` records it. Keep the head hash outside the case to detect replacement of the whole case file or a rewrite of its own audit bookkeeping. See [developer notes](docs/DEVELOPING.md) for the precise provenance and review behavior.
+
+![The Review queue: an agent's indicator waiting for the analyst to accept or discard it](docs/images/app-review.jpg)
 
 ## Export deliverables
 
@@ -196,15 +246,15 @@ Add `--json` to any command for machine-readable output; errors are JSON on stdo
 | 1 | Other error, including an invalid option or a refused `query`. |
 | 2 | Ingest completed with file/record/reconciliation problems; `verify` mismatch; or a synthetic coverage/conformance gap. |
 | 3 | Broken audit chain (`audit verify` or a write it blocks). |
-| 4 | Case open by another writer. |
-| 5 | Invalid agent decision, or an export path that would overwrite the case. Nothing was written. |
+| 4 | Case open by another writer; through the agent bridge, the app is busy or the command must be run from the app. |
+| 5 | Invalid agent decision, an export path that would overwrite the case, or a notebook export holding values from this case (without `--force`). Nothing was written. |
 | 6 | Ingest completed and the only records not loaded are ones the collector lost (it wrote placeholder or error rows instead of data). A real problem anywhere makes it 2. |
 
 DuckDB permits one writer process for a case file. A reader can also be refused while a writer holds it. If an ingest exits 2 or 6, inspect its per-file errors (plain output notes "N records rejected (M lost by the collector)"; `--json` has `records_error` and `records_collector_lost`) and evidence-availability report; the case may still contain usable evidence.
 
 ## For developers
 
-[Reference](docs/REFERENCE.md) retains the detailed collector and table map, profile/enrichment behavior, detection and finding semantics, and synthetic-data guide. [Developer notes](docs/DEVELOPING.md) cover build, test, golden, cache, and safety practices. [Rule authoring](rules/README.md) covers the rule format, inline tests, lists, and custom directories. [Synthetic-data documentation](crates/sparrow-synth/README.md) covers scenarios, manifests, coverage, conformance, and generator options.
+[Reference](docs/REFERENCE.md) retains the detailed collector and table map, profile/enrichment behavior, detection and finding semantics, and synthetic-data guide. [Developer notes](docs/DEVELOPING.md) cover build, test, golden, cache, and safety practices. [Rule authoring](rules/README.md) covers the rule format, inline tests, lists, and custom directories; `sparrow rules list|lint|test` lists the rules, checks them and the coverage matrix, and runs their inline tests. [Synthetic-data documentation](crates/sparrow-synth/README.md) covers scenarios, manifests, coverage, conformance, and generator options.
 
 ## License
 
