@@ -581,10 +581,13 @@ pub fn import_text(conn: &Connection, actor: &Actor, text: &str) -> Result<(Stri
         check_name(tx, &name, None)?;
         let ts = audit::now();
         let id = insert_notebook(tx, actor, &name, ts)?;
+        // The entry holds every query it added, as add_notebook_query's entries do: the trail alone shows what came in.
+        let mut queries = Vec::with_capacity(file.queries.len());
         for sql in &file.queries {
-            insert_query(tx, actor, &id, sql, ts)?;
+            let (query_id, position) = insert_query(tx, actor, &id, sql, ts)?;
+            queries.push(json!({ "query_id": query_id, "position": position, "sql": sql }));
         }
-        let after = json!({ "name": name, "queries": file.queries.len(), "file_name": file.name });
+        let after = json!({ "name": name, "queries": queries, "file_name": file.name });
         let e = audit_entry(
             tx,
             ts,

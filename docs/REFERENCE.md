@@ -888,7 +888,9 @@ is written as a `[name]` placeholder (`actor_upn = lower('[account]')`) and repl
   any case: a name always means one notebook); a notebook holds at most 200 queries of at most 64 KiB each. Each saved
   query records who saved it (`decided_by`, `decided_at`, `on_behalf_of`); it asserts nothing about the case, so it is
   never pending review. Every change is one audit-trail entry (`create_notebook`, `add_notebook_query`,
-  `rename_notebook`, `delete_notebook`, `delete_notebook_query`, `move_notebook_query`, `import_notebook`).
+  `rename_notebook`, `delete_notebook`, `delete_notebook_query`, `move_notebook_query`, `import_notebook`). An
+  import's entry holds each query it added (`query_id`, `position`, `sql`) as well as the notebook's and the file's
+  names, so the trail alone shows what came in.
 - **Who may change what.** An agent may create a notebook, add queries and import a notebook file. Renaming,
   reordering and deleting are the analyst's, in the app (an agent is refused: "only the analyst can ...").
 

@@ -392,3 +392,23 @@ fn the_builtin_id_is_reserved_as_a_name() {
         "builtin (copy)"
     );
 }
+
+#[test]
+fn the_import_entry_records_each_query_it_added() {
+    let (_d, c) = case();
+    let text = format!(
+        "-- sparrow notebook: Shared\n{m}\n-- One\nSELECT 1\n{m}\nSELECT 2\n",
+        m = notebooks::MARKER
+    );
+    let (id, e) = notebooks::import_text(c.conn(), &agent(), &text).unwrap();
+    let (_, _, qs) = notebooks::notebook_queries(c.conn(), &id).unwrap();
+    let after = e.after.unwrap();
+    assert_eq!(after["name"], "Shared");
+    assert_eq!(
+        after["queries"],
+        serde_json::json!([
+            { "query_id": qs[0].summary.query_id, "position": 1, "sql": "-- One\nSELECT 1" },
+            { "query_id": qs[1].summary.query_id, "position": 2, "sql": "SELECT 2" },
+        ])
+    );
+}
