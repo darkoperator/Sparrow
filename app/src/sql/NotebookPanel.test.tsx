@@ -145,6 +145,30 @@ describe("NotebookPanel", () => {
     expect(m.add).not.toHaveBeenCalled();
   });
 
+  it("a_created_notebook_is_shown_before_the_list_reloads", async () => {
+    const { user } = setup();
+    await row(/Sign-ins per account/);
+    await user.selectOptions(picker(), "New notebook…");
+    await user.type(screen.getByRole("textbox", { name: "New notebook name" }), "Mine");
+    m.list.mockImplementation(() => new Promise(() => {}));
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect((picker() as HTMLSelectElement).value).toBe("nb2"));
+    expect(screen.getByRole("button", { name: "Rename notebook" })).toBeTruthy();
+    expect(screen.queryByText("Sign-ins per account")).toBeNull();
+  });
+
+  it("a_notebook_made_by_save_as_is_shown_before_the_list_reloads", async () => {
+    const { user } = setup("SELECT 7");
+    await user.click(await screen.findByRole("button", { name: "Save as…" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Save to" }), "New notebook…");
+    await user.type(screen.getByRole("textbox", { name: "New notebook name" }), "Mine");
+    m.list.mockImplementation(() => new Promise(() => {}));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect((picker() as HTMLSelectElement).value).toBe("nb2"));
+    expect(screen.getByRole("button", { name: "Rename notebook" })).toBeTruthy();
+    expect(screen.queryByText("Sign-ins per account")).toBeNull();
+  });
+
   it("save_as_is_disabled_for_an_empty_editor", async () => {
     setup("  ");
     expect(((await screen.findByRole("button", { name: "Save as…" })) as HTMLButtonElement).disabled).toBe(true);

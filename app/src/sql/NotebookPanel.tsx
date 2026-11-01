@@ -97,6 +97,14 @@ export default function NotebookPanel({ editorText, onLoad }: Props) {
     setPending((p) => (p && present(p.query_id) ? p : null));
   }, []);
 
+  /** Shows a notebook a write just made, before the list reloads with it: its queries arrive with that reload. */
+  const showMade = (id: string, name: string) => {
+    setList((l) =>
+      l.some((n) => n.notebook_id === id) ? l : [...l, { notebook_id: id, name, builtin: false, queries: [] }],
+    );
+    setChosen(id);
+  };
+
   useEffect(() => {
     let live = true;
     notebookList().then(
@@ -173,7 +181,7 @@ export default function NotebookPanel({ editorText, onLoad }: Props) {
     }, `Created ${name}`);
     if (ok) {
       setCreating(null);
-      setChosen(id);
+      showMade(id, name);
     }
   };
 
@@ -196,7 +204,8 @@ export default function NotebookPanel({ editorText, onLoad }: Props) {
     const name = target === saving.target ? (list.find((n) => n.notebook_id === target)?.name ?? "") : newName;
     setNote(`Saved to ${name}`);
     setSaving(null);
-    setChosen(target);
+    if (target === saving.target) setChosen(target);
+    else showMade(target, name);
     setLoaded({ queryId, sql: text });
   };
 
