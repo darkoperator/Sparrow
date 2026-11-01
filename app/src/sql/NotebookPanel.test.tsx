@@ -293,6 +293,37 @@ describe("NotebookPanel", () => {
     await waitFor(() => expect((picker() as HTMLSelectElement).value).toBe("builtin"));
   });
 
+  it("a_list_load_error_clears_when_the_list_next_loads", async () => {
+    m.list.mockRejectedValueOnce({ kind: "internal", message: "the case is busy" });
+    const { rerender } = setup();
+    expect((await screen.findByRole("alert")).textContent).toContain("the case is busy");
+    rerender("", 1);
+    await row(/Sign-ins per account/);
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  });
+
+  it("a_list_load_error_clears_when_an_import_loads_the_list", async () => {
+    m.list.mockRejectedValueOnce({ kind: "internal", message: "the case is busy" });
+    const { user } = setup();
+    await screen.findByRole("alert");
+    list = notebooksFixture();
+    list.push({ notebook_id: "nb3", name: "Shared", builtin: false, queries: [] });
+    await user.click(screen.getByRole("button", { name: "Import…" }));
+    await screen.findByText("Imported as Shared");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("a_refused_write_stays_shown_when_the_list_reloads", async () => {
+    m.add.mockRejectedValue({ kind: "read_only", message: "the case is read-only (mock)" });
+    const { user, rerender } = setup("SELECT 7");
+    await user.click(await screen.findByRole("button", { name: "Save as…" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByRole("alert");
+    rerender("SELECT 7", 1);
+    await waitFor(() => expect(m.list).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("alert").textContent).toContain("the case is read-only (mock)");
+  });
+
   it("shows_a_refused_write_as_the_backend_words_it", async () => {
     m.add.mockRejectedValue({ kind: "read_only", message: "the case is read-only (mock)" });
     const { user } = setup("SELECT 7");

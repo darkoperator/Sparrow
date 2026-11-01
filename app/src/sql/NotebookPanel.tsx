@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   isCmdError,
   notebookAddQuery,
@@ -56,6 +56,8 @@ export default function NotebookPanel({ editorText, onLoad }: Props) {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<{ queryId: string; title: string } | "notebook" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Why the list did not load: kept apart from a write's error, as the next load that succeeds clears only this one.
+  const [listError, setListError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   // The case values an export of one notebook found, waiting for Export anyway or Cancel.
@@ -83,25 +85,28 @@ export default function NotebookPanel({ editorText, onLoad }: Props) {
     };
   }, []);
 
+  /** Shows a freshly loaded list: whatever loaded it, the list did load. */
+  const showList = useCallback((l: NotebookSummary[]) => {
+    setListError(null);
+    setList(l);
+    setChosen((c) => (l.some((n) => n.notebook_id === c) ? c : BUILTIN));
+    // A deleted query saves the editor's text nowhere any more: it is unsaved work again, and a Replace waiting on it
+    // has nothing to load.
+    const present = (id: string) => l.some((n) => n.queries.some((x) => x.query_id === id));
+    setLoaded((q) => (q && present(q.queryId) ? q : null));
+    setPending((p) => (p && present(p.query_id) ? p : null));
+  }, []);
+
   useEffect(() => {
     let live = true;
     notebookList().then(
-      (l) => {
-        if (!live) return;
-        setList(l);
-        setChosen((c) => (l.some((n) => n.notebook_id === c) ? c : BUILTIN));
-        // A deleted query saves the editor's text nowhere any more: it is unsaved work again, and a Replace waiting
-        // on it has nothing to load.
-        const present = (id: string) => l.some((n) => n.queries.some((x) => x.query_id === id));
-        setLoaded((q) => (q && present(q.queryId) ? q : null));
-        setPending((p) => (p && present(p.query_id) ? p : null));
-      },
-      (e: unknown) => live && setError(message(e)),
+      (l) => live && showList(l),
+      (e: unknown) => live && setListError(message(e)),
     );
     return () => {
       live = false;
     };
-  }, [dataVersion, writeTick, reload]);
+  }, [dataVersion, writeTick, reload, showList]);
 
   const notebook = list.find((n) => n.notebook_id === chosen) ?? list[0];
   const caseNotebooks = list.filter((n) => !n.builtin);
@@ -263,7 +268,7 @@ export default function NotebookPanel({ editorText, onLoad }: Props) {
       return;
     }
     if (!mounted.current) return;
-    setList(fresh);
+    showList(fresh);
     setChosen(id);
     setNote(`Imported as ${fresh.find((n) => n.notebook_id === id)?.name ?? "a new notebook"}`);
   };
@@ -394,10 +399,13 @@ export default function NotebookPanel({ editorText, onLoad }: Props) {
         </div>
       )}
 
-      {error !== null && (
-        <p role="alert" className="notebook-error">
-          {displaySafe(error)}
-        </p>
+      {[listError, error].map(
+        (e, i) =>
+          e !== null && (
+            <p key={i} role="alert" className="notebook-error">
+              {displaySafe(e)}
+            </p>
+          ),
       )}
       {note !== null && <p className="notebook-note">{displaySafe(note)}</p>}
 
