@@ -896,7 +896,9 @@ the SQL, inside string literals and quoted identifiers too, but not in `--` or `
 can name them). All of DuckDB's string forms are read as strings: `'…'`, `E'…'` (backslash escapes) and dollar quotes
 (`$$…$$`, `$tag$…$tag$`). DuckDB list syntax (`[1, 2]`, `arr[1]`) is not a placeholder; a string literal that happens to look
 like `'[abc]'` is, and the refusal names it. Running a query that still holds one is refused before DuckDB sees it,
-naming each: "Fill in [account] and [ip] first". The SQL screen's Run and CSV export refuse it (`invalid`), as does
+naming each: "Fill in [account] and [ip] first". When one is inside a string literal the refusal adds how to keep it
+as text: split the string after the bracket, so a query that really looks for `subject LIKE '%[EXTERNAL]%'` writes
+`subject LIKE '%[' || 'EXTERNAL]%'`. The SQL screen's Run and CSV export refuse it (`invalid`), as does
 `sparrow notebook run` (exit 1); `sparrow query` runs any SELECT as given.
 
 **The SQL screen.** The side has two tabs, Notebook (first) and Schema. Notebook has a picker (the built-in notebook,

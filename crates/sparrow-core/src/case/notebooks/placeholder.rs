@@ -22,22 +22,30 @@ enum State {
 
 /// The placeholder names in `sql` (without brackets), each once, in order of first appearance.
 pub fn placeholders(sql: &str) -> Vec<String> {
-    scan(sql).0
+    scan(sql).names
 }
 
 /// Whether `sql` ends inside a string literal, a quoted identifier or a `/* */` comment: a file query cut there was
 /// split by a separator line inside its text.
 pub(crate) fn ends_open(sql: &str) -> bool {
     matches!(
-        scan(sql).1,
+        scan(sql).end,
         State::Str | State::EStr | State::Dollar(..) | State::Ident | State::Block
     )
 }
 
-/// The placeholders and the state the scanner ends in.
-fn scan(sql: &str) -> (Vec<String>, State) {
+struct Scan {
+    names: Vec<String>,
+    /// The names seen inside a string literal at least once, in order.
+    in_strings: Vec<String>,
+    /// The state the scanner ends in.
+    end: State,
+}
+
+fn scan(sql: &str) -> Scan {
     let b = sql.as_bytes();
     let mut out: Vec<String> = Vec::new();
+    let mut in_strings: Vec<String> = Vec::new();
     let mut state = State::Code;
     let mut i = 0;
     while i < b.len() {
@@ -61,6 +69,11 @@ fn scan(sql: &str) -> (Vec<String>, State) {
                         let name = &sql[i + 1..i + len - 1];
                         if !out.iter().any(|n| n == name) {
                             out.push(name.to_string());
+                        }
+                        let in_string =
+                            matches!(state, State::Str | State::EStr | State::Dollar(..));
+                        if in_string && !in_strings.iter().any(|n| n == name) {
+                            in_strings.push(name.to_string());
                         }
                         i += len;
                         continue;
@@ -107,7 +120,11 @@ fn scan(sql: &str) -> (Vec<String>, State) {
         }
         i += 1;
     }
-    (out, state)
+    Scan {
+        names: out,
+        in_strings,
+        end: state,
+    }
 }
 
 /// The byte length of a placeholder starting at `b[0] == b'['`, if one does.
@@ -126,7 +143,9 @@ fn placeholder_at(b: &[u8]) -> Option<usize> {
 /// starting at `b[0] == b'$'`, if one does. `$1` and `$name` are parameters, not delimiters.
 fn dollar_tag_at(b: &[u8]) -> Option<usize> {
     let mut j = 1;
-    if b.get(1).is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_') {
+    if b.get(1)
+        .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_')
+    {
         while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
             j += 1;
         }
@@ -135,15 +154,20 @@ fn dollar_tag_at(b: &[u8]) -> Option<usize> {
 }
 
 /// Refuses (Error::Decision) a query that still holds placeholders, naming each: `Fill in [a] first`,
-/// `Fill in [a] and [b] first`, `Fill in [a], [b] and [c] first`.
+/// `Fill in [a] and [b] first`, `Fill in [a], [b] and [c] first`; when one is inside a string, how to keep the first
+/// such as text (a query that really looks for `'%[EXTERNAL]%'` writes it `'%[' || 'EXTERNAL]%'`).
 pub fn refuse_placeholders(sql: &str) -> Result<()> {
-    let names: Vec<String> = placeholders(sql).iter().map(|n| format!("[{n}]")).collect();
+    let found = scan(sql);
+    let names: Vec<String> = found.names.iter().map(|n| format!("[{n}]")).collect();
     let list = match names.as_slice() {
         [] => return Ok(()),
         [one] => one.clone(),
         [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     };
-    Err(Error::Decision(format!("Fill in {list} first")))
+    let hint = found.in_strings.first().map_or(String::new(), |n| {
+        format!(" (to keep [{n}] as text in a string, split the string after the bracket: '[' || '{n}]')")
+    });
+    Err(Error::Decision(format!("Fill in {list} first{hint}")))
 }
 
 #[cfg(test)]
@@ -192,8 +216,25 @@ mod tests {
     fn refusal_names_every_placeholder() {
         assert!(refuse_placeholders("SELECT 1").is_ok());
         let msg = |s| refuse_placeholders(s).unwrap_err().to_string();
-        assert!(msg("'[a]'").ends_with("Fill in [a] first"));
-        assert!(msg("'[a]' '[b]'").ends_with("Fill in [a] and [b] first"));
-        assert!(msg("'[a]' '[b]' '[c]'").ends_with("Fill in [a], [b] and [c] first"));
+        let hint = |n: &str| {
+            format!(
+                " (to keep [{n}] as text in a string, split the string after the bracket: '[' || '{n}]')"
+            )
+        };
+        assert!(msg("'[a]'").ends_with(&format!("Fill in [a] first{}", hint("a"))));
+        assert!(msg("'[a]' '[b]'").ends_with(&format!("Fill in [a] and [b] first{}", hint("a"))));
+        assert!(
+            msg("'[a]' '[b]' '[c]'")
+                .ends_with(&format!("Fill in [a], [b] and [c] first{}", hint("a")))
+        );
+        // The hint names the first placeholder in a string, and is left out when none is in one.
+        assert!(
+            msg("SELECT \"[col]\", '[ip]'")
+                .ends_with(&format!("Fill in [col] and [ip] first{}", hint("ip")))
+        );
+        assert!(msg("SELECT \"[col]\" FROM [t]").ends_with("Fill in [col] and [t] first"));
+        assert!(msg("SELECT $$[a]$$, E'[b]'").ends_with(&format!("first{}", hint("a"))));
+        // The hint's own spelling holds no placeholder.
+        assert!(placeholders("SELECT '[' || 'a]'").is_empty());
     }
 }

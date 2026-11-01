@@ -5581,11 +5581,11 @@ mod notebook_commands {
         let (state, _) = open_seeded(tmp.path());
         let e = sql_run(&state, "SELECT '[ip]'", None).unwrap_err();
         assert_eq!(e.kind, "invalid", "{e:?}");
-        assert_eq!(e.message, "Fill in [ip] first");
+        assert!(e.message.starts_with("Fill in [ip] first"), "{}", e.message);
         let out = tmp.path().join("out.csv");
         let e =
             sparrow_app::cmd::sql::sql_export_csv(&state, "SELECT '[ip]'", &out, "x").unwrap_err();
-        assert_eq!(e.message, "Fill in [ip] first");
+        assert!(e.message.starts_with("Fill in [ip] first"), "{}", e.message);
         assert!(!out.exists());
         assert_eq!(
             sql_run(&state, "SELECT [1, 2] AS l", None)
