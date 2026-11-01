@@ -135,9 +135,16 @@ pub fn list(conn: &Connection) -> Result<Vec<NotebookSummary>> {
     Ok(out)
 }
 
+/// Whether `name` names the built-in notebook (its name or its id, ignoring case and surrounding space): no case
+/// notebook may take it, so a name always means one notebook.
+fn reserved(name: &str) -> bool {
+    let name = name.trim();
+    name.eq_ignore_ascii_case(BUILTIN_NAME) || name.eq_ignore_ascii_case(BUILTIN_ID)
+}
+
 /// `(notebook_id, name)` of the notebook named by id or by exact name (ignoring case).
 pub(crate) fn resolve_notebook(conn: &Connection, notebook: &str) -> Result<(String, String)> {
-    if notebook == BUILTIN_ID || notebook.eq_ignore_ascii_case(BUILTIN_NAME) {
+    if reserved(notebook) {
         return Ok((BUILTIN_ID.into(), BUILTIN_NAME.into()));
     }
     conn.query_row(
@@ -188,10 +195,7 @@ fn new_id(parts: &[&str], actor: &Actor, ts: &DateTime<Utc>) -> String {
 
 /// Refuses a write naming the built-in notebook: its id, its name, or a `builtin:` query id.
 fn refuse_builtin(notebook_id: &str) -> Result<()> {
-    if notebook_id == BUILTIN_ID
-        || notebook_id.starts_with("builtin:")
-        || notebook_id.trim().eq_ignore_ascii_case(BUILTIN_NAME)
-    {
+    if notebook_id.starts_with("builtin:") || reserved(notebook_id) {
         return Err(Error::Decision(
             "the built-in notebook cannot be changed".into(),
         ));
@@ -217,9 +221,10 @@ fn check_name(conn: &Connection, name: &str, except: Option<&str>) -> Result<()>
         ));
     }
     crate::case::text::check_title(name)?;
-    if name.trim().eq_ignore_ascii_case(BUILTIN_NAME) {
+    if reserved(name) {
         return Err(Error::Decision(format!(
-            "the name {BUILTIN_NAME} is reserved: the built-in notebook cannot be changed"
+            "the name {} is reserved: the built-in notebook cannot be changed",
+            name.trim()
         )));
     }
     if name_taken(conn, name, except)? {
@@ -540,10 +545,13 @@ pub fn export_text(conn: &Connection, notebook: &str, version: &str) -> Result<S
     ))
 }
 
-/// The name an import takes: the file's, `Built-in (copy)` for the built-in's, then ` (2)`, ` (3)`... until free.
+/// The name an import takes: the file's, `Built-in (copy)` for the built-in's (`builtin (copy)` for a file named by
+/// its id), then ` (2)`, ` (3)`... until free.
 fn import_name(conn: &Connection, name: &str) -> Result<String> {
     let base = if name.trim().eq_ignore_ascii_case(BUILTIN_NAME) {
         format!("{BUILTIN_NAME} (copy)")
+    } else if reserved(name) {
+        format!("{} (copy)", name.trim())
     } else {
         name.trim().to_string()
     };

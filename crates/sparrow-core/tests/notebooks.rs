@@ -366,3 +366,29 @@ fn a_new_notebook_with_a_refused_query_is_not_created() {
     ));
     assert!(m.contains("already exists"), "{m}");
 }
+
+#[test]
+fn the_builtin_id_is_reserved_as_a_name() {
+    let (_d, c) = case();
+    let a = analyst();
+    for name in ["builtin", "BuiltIn", " builtin "] {
+        let m = err(notebooks::create_notebook(c.conn(), &a, name));
+        assert!(m.contains("is reserved"), "{name}: {m}");
+    }
+    let (nb, _) = notebooks::create_notebook(c.conn(), &a, "Triage").unwrap();
+    let m = err(notebooks::rename_notebook(c.conn(), &a, &nb, "BUILTIN"));
+    assert!(m.contains("is reserved"), "{m}");
+    // A name means one notebook: any spelling of builtin is the built-in one.
+    let (id, _, _) = notebooks::notebook_queries(c.conn(), "BUILTIN").unwrap();
+    assert_eq!(id, BUILTIN_ID);
+    // A shared file named builtin imports as a copy, as one named Built-in does.
+    let text = format!(
+        "-- sparrow notebook: builtin\n{}\nSELECT 1\n",
+        notebooks::MARKER
+    );
+    let (id, _) = notebooks::import_text(c.conn(), &a, &text).unwrap();
+    assert_eq!(
+        notebooks::notebook_queries(c.conn(), &id).unwrap().1,
+        "builtin (copy)"
+    );
+}

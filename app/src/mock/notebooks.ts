@@ -1,5 +1,5 @@
 // DEV ONLY: the mock backend's SQL notebooks, kept in memory: the built-in notebook (read-only) and the case's, as
-// the core keeps them (positions 1..n, unique names, Built-in reserved). All data is synthetic.
+// the core keeps them (positions 1..n, unique names, Built-in and builtin reserved). All data is synthetic.
 import type { CaseValueHit, CmdErrorKind, NotebookSummary, QuerySummary, SavedQuery } from "../api";
 import * as fx from "../test/fixtures";
 
@@ -114,10 +114,14 @@ const summary = (nb: Stored): NotebookSummary => ({
 export function notebookHandlers(deps: Deps): Record<string, (a: Record<string, unknown> | undefined) => unknown> {
   const str = (a: Record<string, unknown> | undefined, k: string) => (typeof a?.[k] === "string" ? (a[k] as string) : "");
   const all = () => [builtin(), ...[...notebooks].sort((x, y) => x.name.toLowerCase().localeCompare(y.name.toLowerCase()))];
+  /** The built-in notebook's name or id, in any case and with any surrounding space, as the core reserves them. */
+  const reserved = (key: string) => ["built-in", "builtin"].includes(key.trim().toLowerCase());
   const find = (key: string) =>
-    all().find((n) => n.id === key || n.name.toLowerCase() === key.toLowerCase()) ?? deps.fail("decision", `unknown notebook ${key}`);
+    (reserved(key) ? builtin() : undefined) ??
+    all().find((n) => n.id === key || n.name.toLowerCase() === key.toLowerCase()) ??
+    deps.fail("decision", `unknown notebook ${key}`);
   const own = (id: string) => {
-    if (id === "builtin" || id.startsWith("builtin:") || id.toLowerCase() === "built-in")
+    if (id.startsWith("builtin:") || reserved(id))
       deps.fail("decision", "the built-in notebook cannot be changed");
     return notebooks.find((n) => n.id === id) ?? deps.fail("decision", `unknown notebook ${id}`);
   };
@@ -125,7 +129,8 @@ export function notebookHandlers(deps: Deps): Record<string, (a: Record<string, 
     notebooks.find((n) => n.queries.some((q) => q.query_id === queryId)) ?? own(queryId);
   const checkName = (name: string, except?: string) => {
     if (name.trim() === "") deps.fail("decision", "a notebook name must be one line of text");
-    if (name.trim().toLowerCase() === "built-in") deps.fail("decision", "the name Built-in is reserved: the built-in notebook cannot be changed");
+    if (reserved(name))
+      deps.fail("decision", `the name ${name.trim()} is reserved: the built-in notebook cannot be changed`);
     if (notebooks.some((n) => n.id !== except && n.name.toLowerCase() === name.trim().toLowerCase()))
       deps.fail("decision", `a notebook named ${name.trim()} already exists`);
   };

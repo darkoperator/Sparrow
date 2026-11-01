@@ -884,7 +884,8 @@ is written as a `[name]` placeholder (`actor_upn = lower('[account]')`) and repl
   deleting it, or naming a case notebook `Built-in` is refused ("the built-in notebook cannot be changed"). Each runs
   on a case that lacks the tables it reads (an empty result, not an error).
 - **Case notebooks** are stored in the case (migration 29: `notebooks`, `notebook_queries`). Names are unique ignoring
-  case, one line, at most 500 characters; a notebook holds at most 200 queries of at most 64 KiB each. Each saved
+  case, one line, at most 500 characters, and never `Built-in` or `builtin` (the built-in notebook's name and id, in
+  any case: a name always means one notebook); a notebook holds at most 200 queries of at most 64 KiB each. Each saved
   query records who saved it (`decided_by`, `decided_at`, `on_behalf_of`); it asserts nothing about the case, so it is
   never pending review. Every change is one audit-trail entry (`create_notebook`, `add_notebook_query`,
   `rename_notebook`, `delete_notebook`, `delete_notebook_query`, `move_notebook_query`, `import_notebook`).
@@ -924,7 +925,7 @@ picker row. The list reloads when an agent writes through the bridge, keeping th
 
 A query's trailing blank lines and trailing whitespace are dropped on the way; a query cannot hold the line
 `-- ==== query ====`. Import reads such a file (at most 4 MiB, UTF-8, CRLF accepted) into the open case as a new
-notebook, never merged into another: it takes the file's name, `Built-in (copy)` for the built-in one, and then
+notebook, never merged into another: it takes the file's name, `Built-in (copy)` for the built-in one (`builtin (copy)` for one named `builtin`), and then
 ` (2)`, ` (3)`... until free (the name is shortened to keep within 500 characters). A file that does not start with the
 header line, has SQL before the first separator, holds no query, has a query that ends inside a string or comment (a
 separator inside a query's text), or breaks a cap is refused with the line it failed on, and nothing is written.

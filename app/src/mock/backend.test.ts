@@ -837,6 +837,17 @@ describe("mock notebooks", () => {
     expect(placeholders("SELECT $1, $name, name'x' -- [x]")).toEqual([]);
   });
 
+  it("reserves the built-in notebook's name and id", async () => {
+    const m = await fresh();
+    await m.mockCall("settings_set_analyst", { name: "dana" });
+    for (const name of ["Built-in", "BUILTIN"])
+      await expect(m.mockCall("notebook_create", { name })).rejects.toMatchObject({ kind: "decision", message: expect.stringContaining("is reserved") });
+    // Any spelling names the built-in notebook: it reads, and it refuses a change as the built-in.
+    for (const notebook of ["BUILTIN", " builtin ", "built-in"])
+      expect(await m.mockCall<{ notebook_id: string }>("notebook_query", { notebook, query: "1" })).toMatchObject({ notebook_id: "builtin" });
+    await expect(m.mockCall("notebook_rename", { notebookId: "BUILTIN", name: "x" })).rejects.toMatchObject({ message: "the built-in notebook cannot be changed" });
+  });
+
   it("warns only about values the mock case holds", async () => {
     const m = await fresh();
     await m.mockCall("settings_set_analyst", { name: "dana" });
