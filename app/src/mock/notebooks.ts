@@ -19,10 +19,12 @@ const builtin = (): Stored => {
 const notebooks: Stored[] = [];
 let seq = 0;
 
-/** `[name]` placeholders as the core finds them: in code, strings and quoted identifiers, never in comments. */
+/** `[name]` placeholders as the core finds them: in code, strings (`'…'`, `E'…'`, `$tag$…$tag$`) and quoted
+ * identifiers, never in comments. */
 export function placeholders(sql: string): string[] {
   const out: string[] = [];
-  let state: "code" | "str" | "ident" | "line" | "block" = "code";
+  let state: "code" | "str" | "estr" | "dollar" | "ident" | "line" | "block" = "code";
+  let close = "";
   for (let i = 0; i < sql.length; i++) {
     const c = sql[i];
     const next = sql[i + 1];
@@ -45,8 +47,17 @@ export function placeholders(sql: string): string[] {
         continue;
       }
     }
+    const afterWord = i > 0 && /[A-Za-z0-9_]/.test(sql[i - 1]);
     if (state === "code") {
-      if (c === "'") state = "str";
+      const tag = c === "$" && !afterWord ? /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i)) : null;
+      if ((c === "E" || c === "e") && next === "'" && !afterWord) {
+        state = "estr";
+        i++;
+      } else if (tag) {
+        state = "dollar";
+        close = tag[0];
+        i += close.length - 1;
+      } else if (c === "'") state = "str";
       else if (c === '"') state = "ident";
       else if (c === "-" && next === "-") {
         state = "line";
@@ -58,6 +69,12 @@ export function placeholders(sql: string): string[] {
     } else if (state === "str" && c === "'") {
       if (next === "'") i++;
       else state = "code";
+    } else if (state === "estr") {
+      if ((c === "\\" && (next === "'" || next === "\\")) || (c === "'" && next === "'")) i++;
+      else if (c === "'") state = "code";
+    } else if (state === "dollar" && sql.startsWith(close, i)) {
+      state = "code";
+      i += close.length - 1;
     } else if (state === "ident" && c === '"') {
       if (next === '"') i++;
       else state = "code";

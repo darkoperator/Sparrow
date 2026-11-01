@@ -829,6 +829,12 @@ describe("mock notebooks", () => {
     expect(placeholders("-- [account]\nSELECT 1 /* [ip] */")).toEqual([]);
     expect(placeholders("SELECT 'a--[ip]'")).toEqual(["ip"]);
     expect(placeholders("SELECT 'it''s [ip]'")).toEqual(["ip"]);
+    expect(placeholders("SELECT E'don\\'t' -- fill [x] later")).toEqual([]);
+    expect(placeholders("SELECT E'\\[ip]'")).toEqual(["ip"]);
+    expect(placeholders("SELECT $$it's$$ -- [x]")).toEqual([]);
+    expect(placeholders("SELECT $q$ a $$ b's $q$ -- [x]")).toEqual([]);
+    expect(placeholders("SELECT $$-- [ip]$$")).toEqual(["ip"]);
+    expect(placeholders("SELECT $1, $name, name'x' -- [x]")).toEqual([]);
   });
 
   it("warns only about values the mock case holds", async () => {

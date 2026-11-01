@@ -176,6 +176,13 @@ mod tests {
     }
 
     #[test]
+    fn escape_and_dollar_strings_round_trip() {
+        let queries = ["SELECT E'don\\'t'", "SELECT $$it's -- [x]$$", "SELECT $q$ a $$ b $q$"];
+        let text = write_file("x", "0.1.0", "2026-10-31T12:00:00Z", &queries);
+        assert_eq!(parse_file(&text).unwrap().queries, queries);
+    }
+
+    #[test]
     fn bad_files_are_refused_with_the_line() {
         assert!(
             parse_file("SELECT 1")

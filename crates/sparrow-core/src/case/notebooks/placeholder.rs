@@ -2,6 +2,8 @@
 //! letters, digits or `_`, then `]`, with no spaces. It is found anywhere in the SQL, inside string literals and
 //! quoted identifiers too (the built-in queries write `'[account]'`), but never in `--` or `/* */` comments, so a
 //! query's comment block can say "replace [account]". DuckDB list syntax (`[1, 2]`, `arr[1]`) does not match.
+//! The scanner knows DuckDB's string forms: `'…'` (`''` escapes a quote), `E'…'` (a backslash escapes the next
+//! character) and dollar quotes `$$…$$` / `$tag$…$tag$` (nothing escapes; quotes and `--` inside are text).
 
 use crate::{Error, Result};
 
@@ -9,6 +11,10 @@ use crate::{Error, Result};
 enum State {
     Code,
     Str,
+    /// An `E'…'` string.
+    EStr,
+    /// A dollar-quoted string; its closing delimiter is `sql[open..close]`.
+    Dollar(usize, usize),
     Ident,
     Line,
     Block,
@@ -22,7 +28,10 @@ pub fn placeholders(sql: &str) -> Vec<String> {
 /// Whether `sql` ends inside a string literal, a quoted identifier or a `/* */` comment: a file query cut there was
 /// split by a separator line inside its text.
 pub(crate) fn ends_open(sql: &str) -> bool {
-    matches!(scan(sql).1, State::Str | State::Ident | State::Block)
+    matches!(
+        scan(sql).1,
+        State::Str | State::EStr | State::Dollar(..) | State::Ident | State::Block
+    )
 }
 
 /// The placeholders and the state the scanner ends in.
@@ -46,7 +55,7 @@ fn scan(sql: &str) -> (Vec<String>, State) {
                     i += 1;
                 }
             }
-            State::Code | State::Str | State::Ident => {
+            State::Code | State::Str | State::EStr | State::Dollar(..) | State::Ident => {
                 if c == b'[' {
                     if let Some(len) = placeholder_at(&b[i..]) {
                         let name = &sql[i + 1..i + len - 1];
@@ -57,7 +66,18 @@ fn scan(sql: &str) -> (Vec<String>, State) {
                         continue;
                     }
                 }
+                let after_word = i > 0 && (b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
                 match (state, c) {
+                    (State::Code, b'E' | b'e') if next == Some(b'\'') && !after_word => {
+                        state = State::EStr;
+                        i += 1;
+                    }
+                    (State::Code, b'$') if !after_word => {
+                        if let Some(len) = dollar_tag_at(&b[i..]) {
+                            state = State::Dollar(i, i + len);
+                            i += len - 1;
+                        }
+                    }
                     (State::Code, b'\'') => state = State::Str,
                     (State::Code, b'"') => state = State::Ident,
                     (State::Code, b'-') if next == Some(b'-') => {
@@ -71,6 +91,14 @@ fn scan(sql: &str) -> (Vec<String>, State) {
                     // A doubled quote is an escaped quote and stays in the literal.
                     (State::Str, b'\'') if next == Some(b'\'') => i += 1,
                     (State::Str, b'\'') => state = State::Code,
+                    // Only an escaped quote or backslash can change the state; `\[` is still scanned.
+                    (State::EStr, b'\\') if matches!(next, Some(b'\'' | b'\\')) => i += 1,
+                    (State::EStr, b'\'') if next == Some(b'\'') => i += 1,
+                    (State::EStr, b'\'') => state = State::Code,
+                    (State::Dollar(open, close), b'$') if b[i..].starts_with(&b[open..close]) => {
+                        state = State::Code;
+                        i += close - open - 1;
+                    }
                     (State::Ident, b'"') if next == Some(b'"') => i += 1,
                     (State::Ident, b'"') => state = State::Code,
                     _ => {}
@@ -92,6 +120,18 @@ fn placeholder_at(b: &[u8]) -> Option<usize> {
         j += 1;
     }
     (b.get(j) == Some(&b']')).then_some(j + 1)
+}
+
+/// The byte length of a dollar-quote delimiter (`$$` or `$tag$`, the tag a letter or `_` then letters, digits or `_`)
+/// starting at `b[0] == b'$'`, if one does. `$1` and `$name` are parameters, not delimiters.
+fn dollar_tag_at(b: &[u8]) -> Option<usize> {
+    let mut j = 1;
+    if b.get(1).is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_') {
+        while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
+            j += 1;
+        }
+    }
+    (b.get(j) == Some(&b'$')).then_some(j + 1)
 }
 
 /// Refuses (Error::Decision) a query that still holds placeholders, naming each: `Fill in [a] first`,
@@ -122,6 +162,30 @@ mod tests {
         assert_eq!(placeholders("SELECT 'it''s [ip]'"), ["ip"]);
         assert!(placeholders("SELECT '[ not one ]', '[1x]'").is_empty());
         assert_eq!(placeholders("SELECT \"[col_2]\""), ["col_2"]);
+    }
+
+    #[test]
+    fn escape_strings_end_at_their_closing_quote() {
+        assert!(placeholders("SELECT E'don\\'t' -- fill [x] later").is_empty());
+        assert_eq!(placeholders("SELECT e'a\\\\', '[ip]'"), ["ip"]);
+        assert!(!ends_open("SELECT E'don\\'t'"));
+        assert!(ends_open("SELECT E'don\\'"));
+        // An escaped bracket is still a bracket.
+        assert_eq!(placeholders("SELECT E'\\[ip]'"), ["ip"]);
+        // A name ending in e is not an escape string's prefix.
+        assert!(placeholders("SELECT name'x' -- [x]").is_empty());
+    }
+
+    #[test]
+    fn dollar_quoted_strings_hold_quotes_and_dashes() {
+        assert!(placeholders("SELECT $$it's$$ -- [x]").is_empty());
+        assert_eq!(placeholders("SELECT $$-- [ip]$$"), ["ip"]);
+        assert!(placeholders("SELECT $q$ a $$ b's $q$ -- [x]").is_empty());
+        assert!(!ends_open("SELECT $q$ it's $q$"));
+        assert!(ends_open("SELECT $q$ it's $$"));
+        // A parameter is not a dollar quote.
+        assert!(placeholders("SELECT $1, $name -- [x]").is_empty());
+        assert!(!ends_open("SELECT $1 || 'a'"));
     }
 
     #[test]

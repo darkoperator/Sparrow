@@ -893,7 +893,8 @@ is written as a `[name]` placeholder (`actor_upn = lower('[account]')`) and repl
 
 **Placeholders.** `[` then a letter, then letters, digits or `_`, then `]`, with no spaces. They are found anywhere in
 the SQL, inside string literals and quoted identifiers too, but not in `--` or `/* */` comments (so the comment block
-can name them). DuckDB list syntax (`[1, 2]`, `arr[1]`) is not a placeholder; a string literal that happens to look
+can name them). All of DuckDB's string forms are read as strings: `'…'`, `E'…'` (backslash escapes) and dollar quotes
+(`$$…$$`, `$tag$…$tag$`). DuckDB list syntax (`[1, 2]`, `arr[1]`) is not a placeholder; a string literal that happens to look
 like `'[abc]'` is, and the refusal names it. Running a query that still holds one is refused before DuckDB sees it,
 naming each: "Fill in [account] and [ip] first". The SQL screen's Run and CSV export refuse it (`invalid`), as does
 `sparrow notebook run` (exit 1); `sparrow query` runs any SELECT as given.
