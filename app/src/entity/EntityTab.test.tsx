@@ -526,7 +526,7 @@ describe("EntityTab", () => {
     expect(callsOf("entity_coverage")[0].args).toMatchObject({ entity: ACCOUNT });
     expect(callsOf("entity_coverage")[0].args!.from).toBeUndefined();
     expect(within(strip).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
-      "Unified audit log in this range is sampled (capped export)",
+      "Unified audit log in this range is sampled (capped export) for 1 of 2 accounts",
       "MailItemsAccessed in this range has no data",
       "Mailbox audit log (legacy) in this range has no data",
     ]);
@@ -568,11 +568,11 @@ describe("EntityTab", () => {
     await user.click(screen.getByRole("button", { name: "Search" }));
     await waitFor(() => expect(callsOf("entity_coverage")).toHaveLength(2));
     expect(callsOf("entity_coverage")[1].args).toMatchObject({ entity: ACCOUNT, from: "2026-08-15T00:00:00Z" });
-    await screen.findByText("Unified audit log in this range is sampled (capped export)");
+    await screen.findByText("Unified audit log in this range is sampled (capped export) for 1 of 2 accounts");
     release(null);
     await new Promise((r) => setTimeout(r, 20));
     expect(screen.queryByText("STALE in this range has no data")).not.toBeInTheDocument();
-    expect(screen.getByText("Unified audit log in this range is sampled (capped export)")).toBeInTheDocument();
+    expect(screen.getByText("Unified audit log in this range is sampled (capped export) for 1 of 2 accounts")).toBeInTheDocument();
     // A range with none of the entity's events: the strip is still there, for those days.
     await user.clear(filterBox("From (UTC)"));
     await user.type(filterBox("From (UTC)"), "2027-01-01T00:00:00Z");
@@ -581,7 +581,7 @@ describe("EntityTab", () => {
     await waitFor(() => expect(tileTexts()).toContain("Events: 0"));
     const strip = await screen.findByRole("region", { name: "Coverage warning" });
     expect(within(strip).getByText("Evidence coverage 2027-01-01 to 2027-01-01 (UTC days)")).toBeInTheDocument();
-    expect(within(strip).getByText("Unified audit log in this range is sampled (capped export)")).toBeInTheDocument();
+    expect(within(strip).getByText("Unified audit log in this range is sampled (capped export) for 1 of 2 accounts")).toBeInTheDocument();
   });
 
   it("hostile_values_render_as_text", async () => {

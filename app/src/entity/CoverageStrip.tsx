@@ -7,9 +7,12 @@ import { displaySafe } from "../text";
 
 export const CLOSING_LINE = "Absence of an action here is not proof it didn't happen.";
 
-/** One sentence for a source that is not covered. */
+/** One sentence for a source that is not covered; when only some of the accounts judged are in that state, how many. */
 export function sentence(s: CoverageSource): string {
-  return s.state === "sampled" ? `${s.title} in this range is sampled (capped export)` : `${s.title} in this range has no data`;
+  const text = s.state === "sampled" ? `${s.title} in this range is sampled (capped export)` : `${s.title} in this range has no data`;
+  const total = Object.values(s.accounts_by_state).reduce((n, list) => n + list.length, 0);
+  const some = s.accounts_by_state[s.state]?.length ?? 0;
+  return some > 0 && some < total ? `${text} for ${some} of ${total} accounts` : text;
 }
 
 const STATES: CoverageState[] = ["absent", "sampled", "covered"];

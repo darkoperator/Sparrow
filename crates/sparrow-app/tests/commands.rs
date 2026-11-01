@@ -5083,14 +5083,18 @@ fn entity_coverage_judges_the_accounts_in_the_entitys_events_per_tenant() {
         chrono::NaiveDate::parse_from_str(cov.to.as_deref().unwrap(), "%Y-%m-%d").unwrap(),
     );
     for t in &cov.tenants {
-        // The accounts of this tenant's events (actor and owner), the account itself among them.
+        // The accounts of this tenant's events (actor and owner) on the tenant's domains or named by its own events
+        // other than message trace, the account itself among them.
         assert!(t.accounts.contains(&p.account), "{t:?}");
         let want: i64 = rows(
             &state,
             &format!(
                 "SELECT count(DISTINCT a) FROM (SELECT actor_upn AS a FROM events WHERE tenant_key = '{0}' \
                  AND (actor_upn = '{1}' OR owner_upn = '{1}') UNION ALL SELECT owner_upn FROM events \
-                 WHERE tenant_key = '{0}' AND (actor_upn = '{1}' OR owner_upn = '{1}'))",
+                 WHERE tenant_key = '{0}' AND (actor_upn = '{1}' OR owner_upn = '{1}')) \
+                 WHERE lower(split_part(a, '@', 2)) IN (SELECT domain FROM tenant_domains WHERE tenant_key = '{0}') \
+                 OR a IN (SELECT actor_upn FROM events WHERE tenant_key = '{0}' AND source_table NOT IN ('message_trace', 'message_trace_events') \
+                          UNION SELECT owner_upn FROM events WHERE tenant_key = '{0}' AND source_table NOT IN ('message_trace', 'message_trace_events'))",
                 t.tenant_key, p.account
             ),
         );
@@ -5180,7 +5184,10 @@ fn entity_coverage_of_an_ip_judges_the_accounts_seen_from_it() {
             &state,
             &format!(
                 "SELECT count(DISTINCT a) FROM (SELECT actor_upn AS a FROM events WHERE ip = '{0}' AND tenant_key = '{1}' \
-                 UNION ALL SELECT owner_upn FROM events WHERE ip = '{0}' AND tenant_key = '{1}') WHERE a IS NOT NULL",
+                 UNION ALL SELECT owner_upn FROM events WHERE ip = '{0}' AND tenant_key = '{1}') WHERE a IS NOT NULL \
+                 AND (lower(split_part(a, '@', 2)) IN (SELECT domain FROM tenant_domains WHERE tenant_key = '{1}') \
+                      OR a IN (SELECT actor_upn FROM events WHERE tenant_key = '{1}' AND source_table NOT IN ('message_trace', 'message_trace_events') \
+                               UNION SELECT owner_upn FROM events WHERE tenant_key = '{1}' AND source_table NOT IN ('message_trace', 'message_trace_events')))",
                 p.ip, t.tenant_key
             ),
         );

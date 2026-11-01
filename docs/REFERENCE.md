@@ -603,6 +603,15 @@ the pivots `devices`, `ips`, `sessions`; an IP `accounts`, `devices`, `sessions`
 `ips`, `sessions`; a session `accounts`, `devices`, `ips`. The spelling of the value does not matter (case, IPv6
 form): `Jdoe@Contoso.example` and `jdoe@contoso.example` are one entity.
 
+**Evidence coverage on an entity tab.** In the app, an account, IP, device or session tab warns, for its range in whole
+UTC days, which evidence sources are sampled (a capped export) or absent for the accounts in its events: one line per
+source with the worst state, "for N of M accounts" when only some are in it, and a hover listing the accounts per state.
+Message trace and directory audits are judged for the whole tenant. An account tab's own account is always judged. An
+outside mail correspondent is not: once the tenant has domains recorded (`tenant_domains`), an account on none of them
+that no event of that tenant other than message trace (either feed) names (as actor or mailbox owner) is left out, as its audit log
+can never be in this tenant's evidence. An account on a domain the list lacks but seen in the tenant's own sign-ins,
+audit logs or directory events is still judged; with no domains recorded every account is.
+
 **`sparrow mark flag`** flags rows (`--row TABLE:KEY`, repeatable) or every event with a value (`--value KIND=V`,
 KIND `ip`, `ip_prefix`, `account`, `asn`, `device` or `session`; a standing flag that also covers events ingested
 later; `--scope KIND=V` with KIND `account`, `ip`, `device` or `session` limits it to that entity's events) to

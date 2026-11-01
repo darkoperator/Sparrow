@@ -814,13 +814,31 @@ pub struct CoverageScope {
     pub tenants: BTreeMap<String, Vec<String>>,
 }
 
-/// The tenants and accounts of the entity's events matched by `w`.
+/// The tenants and accounts of the entity's events matched by `w`. An outside mail correspondent is left out: its
+/// audit log is never in the tenant's evidence, so judging it would always read as missing. Outside means the tenant
+/// has domains recorded (`tenant_domains`), the account is on none of them, and none of that tenant's events other
+/// than message trace (either feed) names it (as actor or mailbox owner). A tenant with no domains recorded lists every account.
 fn tenant_accounts(conn: &Connection, w: &Where) -> Result<BTreeMap<String, Vec<String>>> {
     let mut tenants: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut stmt = conn.prepare(&format!(
-        "WITH s AS (SELECT e.tenant_key, e.actor_upn, e.owner_upn FROM events e{} AND e.tenant_key IS NOT NULL) \
-         SELECT DISTINCT tenant_key, a FROM (SELECT tenant_key, actor_upn AS a FROM s \
-                                             UNION ALL SELECT tenant_key, owner_upn FROM s) ORDER BY 1, 2",
+        // `off`: accounts on none of the tenant's recorded domains; only those are looked up in the tenant's other
+        // events (`seen`), so the extra pass over `events` probes a handful of values, not every account.
+        "WITH s AS (SELECT e.tenant_key, e.actor_upn, e.owner_upn FROM events e{} AND e.tenant_key IS NOT NULL), \
+              x AS (SELECT DISTINCT tenant_key, a FROM (SELECT tenant_key, actor_upn AS a FROM s \
+                                                       UNION ALL SELECT tenant_key, owner_upn FROM s)), \
+              off AS (SELECT x.tenant_key, x.a FROM x \
+                      WHERE EXISTS (SELECT 1 FROM tenant_domains d WHERE d.tenant_key = x.tenant_key) \
+                        AND NOT EXISTS (SELECT 1 FROM tenant_domains d WHERE d.tenant_key = x.tenant_key \
+                                        AND d.domain = lower(split_part(x.a, '@', 2)))), \
+              seen AS (SELECT o.tenant_key, o.actor_upn AS a FROM events o \
+                       JOIN off ON o.tenant_key = off.tenant_key AND o.actor_upn = off.a \
+                       WHERE o.source_table NOT IN ('message_trace', 'message_trace_events') \
+                       UNION SELECT o.tenant_key, o.owner_upn FROM events o \
+                       JOIN off ON o.tenant_key = off.tenant_key AND o.owner_upn = off.a \
+                       WHERE o.source_table NOT IN ('message_trace', 'message_trace_events')) \
+         SELECT x.tenant_key, CASE WHEN off.a IS NULL OR seen.a IS NOT NULL THEN x.a END \
+         FROM x LEFT JOIN off USING (tenant_key, a) LEFT JOIN seen USING (tenant_key, a) \
+         ORDER BY 1, 2",
         w.sql()
     ))?;
     let mut rows = stmt.query(params_from_iter(bound(w)))?;

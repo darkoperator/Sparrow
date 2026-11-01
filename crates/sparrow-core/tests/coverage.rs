@@ -1205,3 +1205,105 @@ fn the_scope_follows_the_range_and_falls_back_to_the_whole_case() {
     let none = coverage_scope(case.conn(), &Entity::Ip("203.0.113.9".into()), None, None).unwrap();
     assert!(none.first.is_none() && none.tenants.is_empty());
 }
+
+#[test]
+fn the_scope_leaves_out_accounts_outside_the_tenants_domains() {
+    use sparrow_core::case::entity::coverage_scope;
+    use sparrow_core::case::events::{Entity, rebuild};
+    let case = case();
+    let id = |sql: &str| -> i64 { case.conn().query_row(sql, [], |r| r.get(0)).unwrap() };
+    let c1 = id("SELECT collection_id FROM collections WHERE tenant_key = 't1'");
+    let ok = id("SELECT file_id FROM source_files WHERE rel_path = 'ual-ok.csv'");
+    // An outside sender writes to carol: its audit log is never in this tenant's evidence.
+    trace(
+        &case,
+        c1,
+        ok,
+        "m8",
+        "2026-06-12 10:00:00",
+        "billing@partner.example",
+        CAROL,
+    );
+    rebuild(case.conn()).unwrap();
+    let who = Entity::Account(CAROL.into());
+    let t1 = |case: &Case| {
+        coverage_scope(case.conn(), &who, None, None)
+            .unwrap()
+            .tenants
+            .remove("t1")
+            .unwrap()
+    };
+    // No domains recorded for t1: every account in the events is judged, as before.
+    assert!(t1(&case).contains(&"billing@partner.example".to_string()));
+    case.conn()
+        .execute(
+            "INSERT INTO tenant_domains (tenant_key, domain, source, rows_seen) VALUES ('t1', 'contoso.example', 'derived_upn', 1)",
+            [],
+        )
+        .unwrap();
+    // With the tenant's domains known, an outside correspondent is not judged; carol stays.
+    let accounts = t1(&case);
+    assert!(!accounts.contains(&"billing@partner.example".to_string()));
+    assert!(accounts.contains(&CAROL.to_string()));
+    // Two tenants: ops@subsidiary.example acts in t2's own evidence (a UAL row there) and writes to carol in t2. Its
+    // profile identity may be assigned to t1 (the tenant with more of its observations); t2's domains lack its
+    // domain. It is still judged in t2, from t2's own events.
+    let c2 = id("SELECT collection_id FROM collections WHERE tenant_key = 't2'");
+    let f2 = id("SELECT file_id FROM source_files WHERE rel_path = 'ual-t2.csv'");
+    ual(
+        &case,
+        c2,
+        f2,
+        90,
+        "2026-08-02 09:00:00",
+        "MailItemsAccessed",
+        "ops@subsidiary.example",
+    );
+    trace(
+        &case,
+        c2,
+        f2,
+        "m9",
+        "2026-08-02 10:00:00",
+        "ops@subsidiary.example",
+        CAROL,
+    );
+    // And a mail-only outside sender in t2, in both trace feeds (message trace and its event detail).
+    trace(
+        &case,
+        c2,
+        f2,
+        "m10",
+        "2026-08-02 11:00:00",
+        "billing@partner.example",
+        CAROL,
+    );
+    case.conn()
+        .execute(
+            "INSERT INTO message_trace_events (record_key, collection_id, event_time, event_id, sender, recipients) \
+             VALUES ('e10', ?, CAST('2026-08-02 11:00:01+00' AS TIMESTAMPTZ), 'RECEIVE', 'billing@partner.example', \
+                     CAST('[\"carol@contoso.example\"]' AS JSON))",
+            params![c2],
+        )
+        .unwrap();
+    sighted(&case, "message_trace_events", "e10", f2);
+    rebuild(case.conn()).unwrap();
+    case.conn()
+        .execute_batch(
+            "INSERT INTO tenant_domains (tenant_key, domain, source, rows_seen) VALUES ('t2', 'contoso.example', 'derived_upn', 1); \
+             INSERT INTO identities (identity_id, tenant_key, kind, upn, aliases) VALUES ('upn:ops@subsidiary.example', 't1', 'external', 'ops@subsidiary.example', 1); \
+             INSERT INTO identity_aliases (alias_type, alias, identity_id) VALUES ('upn', 'ops@subsidiary.example', 'upn:ops@subsidiary.example');",
+        )
+        .unwrap();
+    let t2 = coverage_scope(case.conn(), &who, None, None)
+        .unwrap()
+        .tenants
+        .remove("t2")
+        .unwrap();
+    assert!(t2.contains(&"ops@subsidiary.example".to_string()), "{t2:?}");
+    assert!(
+        !t2.contains(&"billing@partner.example".to_string()),
+        "{t2:?}"
+    );
+    assert!(t2.contains(&CAROL.to_string()));
+}

@@ -38,7 +38,7 @@ describe("CoverageStrip", () => {
     // One chip per source that is not covered, in the order the backend gave; covered sources have none.
     const chips = within(strip).getAllByRole("listitem").map((li) => li.textContent);
     expect(chips).toEqual([
-      "Unified audit log in this range is sampled (capped export)",
+      "Unified audit log in this range is sampled (capped export) for 1 of 2 accounts",
       "MailItemsAccessed in this range has no data",
       "Mailbox audit log (legacy) in this range has no data",
     ]);
@@ -46,7 +46,7 @@ describe("CoverageStrip", () => {
     expect(within(strip).getAllByText(CLOSING_LINE)).toHaveLength(1);
     expect(CLOSING_LINE).toBe("Absence of an action here is not proof it didn't happen.");
     // Hover: the accounts per state, and that days are UTC days.
-    expect(screen.getByText("Unified audit log in this range is sampled (capped export)")).toHaveAttribute(
+    expect(screen.getByText("Unified audit log in this range is sampled (capped export) for 1 of 2 accounts")).toHaveAttribute(
       "title",
       `Sampled: ${B}\nCovered: ${A}\nDays are UTC days, 2026-08-01 to 2026-09-09, both included.`,
     );
@@ -54,6 +54,25 @@ describe("CoverageStrip", () => {
       "title",
       `Absent: ${A}, ${B}\nDays are UTC days, 2026-08-01 to 2026-09-09, both included.`,
     );
+  });
+
+  it("a_source_missing_for_some_accounts_says_how_many", () => {
+    const C = "zion.osborn@contoso.example";
+    render(
+      <CoverageStrip
+        coverage={cov({
+          tenant_key: "t1",
+          accounts: [A, B, C],
+          sources: [
+            src("ual", "Unified audit log", "absent", { absent: [A], covered: [B, C] }),
+            src("mailbox_audit", "Mailbox audit log (legacy)", "absent", { absent: [A, B, C] }),
+          ],
+        })}
+      />,
+    );
+    const chips = screen.getAllByRole("listitem").map((li) => li.textContent);
+    // Missing for one account of three is not "no data"; missing for all of them is.
+    expect(chips).toEqual(["Unified audit log in this range has no data for 1 of 3 accounts", "Mailbox audit log (legacy) in this range has no data"]);
   });
 
   it("a_tenant_wide_source_says_so_and_lists_no_accounts", () => {
