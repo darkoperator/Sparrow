@@ -153,7 +153,10 @@ export default function NotebookPanel({ editorText, onLoad }: Props) {
     setLeaks(null);
     setPending(null);
     if (value === NEW) setCreating("");
-    else setChosen(value);
+    else {
+      setCreating(null);
+      setChosen(value);
+    }
   };
 
   const create = async () => {

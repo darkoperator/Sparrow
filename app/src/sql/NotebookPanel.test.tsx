@@ -242,6 +242,17 @@ describe("NotebookPanel", () => {
     expect(onLoad).not.toHaveBeenCalled();
   });
 
+  it("choosing_a_notebook_while_creating_one_leaves_the_new_notebook_form", async () => {
+    const { user } = setup();
+    await row(/Sign-ins per account/);
+    await user.selectOptions(picker(), "__new__");
+    expect(screen.getByRole("textbox", { name: "New notebook name" })).toBeTruthy();
+    await user.selectOptions(picker(), "nb1");
+    expect((picker() as HTMLSelectElement).value).toBe("nb1");
+    expect(screen.queryByRole("textbox", { name: "New notebook name" })).toBeNull();
+    expect(await row(/^Hosts/)).toBeTruthy();
+  });
+
   it("a_case_notebook_can_be_renamed_and_deleted", async () => {
     const { user } = setup();
     await row(/Sign-ins per account/);
