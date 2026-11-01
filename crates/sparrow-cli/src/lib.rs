@@ -192,6 +192,12 @@ enum Command {
         #[command(subcommand)]
         command: RulesCommand,
     },
+    /// Install the agent skills (sparrow-triage, bec-triage) for Claude Code, Codex/OpenCode and Pi, matching this
+    /// binary, or say where they are installed and whether each copy is current
+    Skills {
+        #[command(subcommand)]
+        command: cmd::skills::SkillsCommand,
+    },
     /// Case indicators (ip, upn, ...) that rules read through @list:case_iocs.<type>; add, set-verdict and remove are agent decisions
     Ioc {
         #[command(subcommand)]
@@ -865,7 +871,7 @@ pub enum Kind {
     Write(&'static str),
     /// Holds the case for minutes: ingest, profile, detect, upgrade, synth, audit verify --acknowledge.
     Heavy,
-    /// Opens no case (discover, rules, help, version), or does not parse: runs where it is typed.
+    /// Opens no case (discover, rules, skills, help, version), or does not parse: runs where it is typed.
     Local,
 }
 
@@ -907,7 +913,7 @@ pub fn inspect(args: &[OsString]) -> Inspected {
     let w: Vec<&str> = words.iter().map(String::as_str).collect();
     let reads_only = matches!(w.last(), Some(&"list" | &"show"));
     out.kind = match w.as_slice() {
-        [] | ["discover", ..] | ["rules", ..] => Kind::Local,
+        [] | ["discover", ..] | ["rules", ..] | ["skills", ..] => Kind::Local,
         ["ingest" | "profile" | "detect" | "upgrade" | "synth", ..] => Kind::Heavy,
         ["audit", "verify"]
             if leaf
@@ -1034,6 +1040,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             rules,
         }) => cmd_detect(&case, rule, tag, crate::data_dirs(data, rules), json),
         Some(Command::Rules { command }) => cmd_rules(command, json),
+        Some(Command::Skills { command }) => cmd::skills::run(command, json),
         Some(Command::Ioc { command }) => cmd_ioc(command, json),
         Some(Command::Finding { command }) => cmd::finding::run(command, json),
         Some(Command::TimelineEntry { command }) => cmd::timeline_entry::run(command, json),

@@ -359,6 +359,8 @@ sparrow verify ual_events <record-id> --case case.duckdb [--root /moved/Hawk_fol
 sparrow detect --case case.duckdb                 # run the rules (also the last step of ingest/profile;
                                                   # --rule ID / --tag TAG to narrow, --no-detect to skip
 sparrow rules lint | test | list                   # check, test and list the rules in rules/
+sparrow skills install | status                   # the agent skills built into this binary: install them for Claude Code,
+                                                  # Codex/OpenCode and Pi ([--agent A] [--project DIR] [--force]), or check them
 sparrow ioc list --case case.duckdb               # also add|set-verdict|remove [--agent ID] [--analyst NAME];
                                                   # --include-removed lists removed ones too
 sparrow finding set-status ID STATUS [--reason R] --case case.duckdb   # also assign ID NAME, ack-rule-update ID

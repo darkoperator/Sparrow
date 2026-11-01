@@ -13,4 +13,5 @@ pub mod mark;
 pub mod note;
 pub mod notebook;
 pub mod read;
+pub mod skills;
 pub mod timeline_entry;
