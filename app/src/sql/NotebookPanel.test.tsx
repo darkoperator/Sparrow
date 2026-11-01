@@ -153,7 +153,6 @@ describe("NotebookPanel", () => {
     m.list.mockImplementation(() => new Promise(() => {}));
     await user.click(screen.getByRole("button", { name: "Create" }));
     await waitFor(() => expect((picker() as HTMLSelectElement).value).toBe("nb2"));
-    expect(screen.getByRole("button", { name: "Rename notebook" })).toBeTruthy();
     expect(screen.queryByText("Sign-ins per account")).toBeNull();
   });
 
@@ -165,8 +164,28 @@ describe("NotebookPanel", () => {
     m.list.mockImplementation(() => new Promise(() => {}));
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect((picker() as HTMLSelectElement).value).toBe("nb2"));
-    expect(screen.getByRole("button", { name: "Rename notebook" })).toBeTruthy();
     expect(screen.queryByText("Sign-ins per account")).toBeNull();
+  });
+
+  it("a_notebook_shown_before_the_list_holds_it_offers_nothing_to_act_on", async () => {
+    const { user } = setup("SELECT 7");
+    await user.click(await screen.findByRole("button", { name: "Save as…" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Save to" }), "New notebook…");
+    await user.type(screen.getByRole("textbox", { name: "New notebook name" }), "Mine");
+    let release: (l: NotebookSummary[]) => void = () => {};
+    m.list.mockImplementation(() => new Promise((r) => (release = r)));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect((picker() as HTMLSelectElement).value).toBe("nb2"));
+    expect(screen.getByText("Loading…")).toBeTruthy();
+    expect(screen.queryByText(/No queries yet/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete notebook" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Rename notebook" })).toBeNull();
+    expect((screen.getByRole("button", { name: "Export…" }) as HTMLButtonElement).disabled).toBe(true);
+    const mine = { notebook_id: "nb2", name: "Mine", builtin: false, queries: [{ ...list[1].queries[0], query_id: "q9", title: "My query" }] };
+    release([...list, mine]);
+    expect(await row(/^My query/)).toBeTruthy();
+    expect(screen.queryByText("Loading…")).toBeNull();
+    expect(screen.getByRole("button", { name: "Delete notebook" })).toBeTruthy();
   });
 
   it("save_as_is_disabled_for_an_empty_editor", async () => {

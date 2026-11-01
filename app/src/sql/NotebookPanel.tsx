@@ -53,6 +53,9 @@ export default function NotebookPanel({ editorText, onLoad }: Props) {
   const [pending, setPending] = useState<SavedQuery | null>(null);
   const [saving, setSaving] = useState<{ target: string; name: string } | null>(null);
   const [creating, setCreating] = useState<string | null>(null);
+  // A notebook a write just made, shown before the list holds it: its queries are not known yet, so it offers nothing
+  // to act on until the list loads.
+  const [unlisted, setUnlisted] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<{ queryId: string; title: string } | "notebook" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -74,6 +77,8 @@ export default function NotebookPanel({ editorText, onLoad }: Props) {
     chosenNow.current = chosen;
   });
   const seq = useRef(0);
+  // Bumped by each write that succeeds: a list asked for before it may lack what the write made, and is not shown.
+  const listGen = useRef(0);
   const dataVersion = useDataVersion();
   const writeTick = useWriteTick();
   const caseAt = `${dataVersion}.${writeTick}`;
@@ -88,6 +93,7 @@ export default function NotebookPanel({ editorText, onLoad }: Props) {
   /** Shows a freshly loaded list: whatever loaded it, the list did load. */
   const showList = useCallback((l: NotebookSummary[]) => {
     setListError(null);
+    setUnlisted(null);
     setList(l);
     setChosen((c) => (l.some((n) => n.notebook_id === c) ? c : BUILTIN));
     // A deleted query saves the editor's text nowhere any more: it is unsaved work again, and a Replace waiting on it
@@ -103,13 +109,16 @@ export default function NotebookPanel({ editorText, onLoad }: Props) {
       l.some((n) => n.notebook_id === id) ? l : [...l, { notebook_id: id, name, builtin: false, queries: [] }],
     );
     setChosen(id);
+    setUnlisted(id);
   };
 
   useEffect(() => {
     let live = true;
+    const at = listGen.current;
+    const current = () => live && at === listGen.current;
     notebookList().then(
-      (l) => live && showList(l),
-      (e: unknown) => live && setListError(message(e)),
+      (l) => current() && showList(l),
+      (e: unknown) => current() && setListError(message(e)),
     );
     return () => {
       live = false;
@@ -118,6 +127,7 @@ export default function NotebookPanel({ editorText, onLoad }: Props) {
 
   const notebook = list.find((n) => n.notebook_id === chosen) ?? list[0];
   const caseNotebooks = list.filter((n) => !n.builtin);
+  const waiting = notebook !== undefined && notebook.notebook_id === unlisted;
   /** Whether `text` is work that loading would lose: anything but the loaded query as loaded (an empty editor is not). */
   const isUnsaved = (text: string, base: { sql: string } | null) => (base ? text !== base.sql : text.trim() !== "");
 
@@ -131,6 +141,7 @@ export default function NotebookPanel({ editorText, onLoad }: Props) {
       if (mounted.current) setError(message(e));
       return false;
     }
+    listGen.current++;
     if (!mounted.current) return false;
     if (done) setNote(done);
     setReload((n) => n + 1);
@@ -271,6 +282,7 @@ export default function NotebookPanel({ editorText, onLoad }: Props) {
     let fresh: NotebookSummary[];
     try {
       id = await notebookImport(path);
+      listGen.current++;
       fresh = await notebookList();
     } catch (e) {
       if (mounted.current) setError(message(e));
@@ -301,7 +313,7 @@ export default function NotebookPanel({ editorText, onLoad }: Props) {
           ))}
           <option value={NEW}>New notebook…</option>
         </select>
-        {notebook && !notebook.builtin && creating === null && (
+        {notebook && !notebook.builtin && !waiting && creating === null && (
           <>
             <button type="button" className="btn btn-ghost btn-small" onClick={() => setRenaming(notebook.name)}>
               Rename notebook
@@ -475,12 +487,17 @@ export default function NotebookPanel({ editorText, onLoad }: Props) {
           );
         })}
       </ol>
-      {notebook && notebook.queries.length === 0 && (
-        <p className="notebook-empty">No queries yet. Write one in the editor and use Save as.</p>
+      {waiting ? (
+        <p className="notebook-empty">Loading…</p>
+      ) : (
+        notebook &&
+        notebook.queries.length === 0 && (
+          <p className="notebook-empty">No queries yet. Write one in the editor and use Save as.</p>
+        )
       )}
 
       <div className="notebook-files">
-        <button type="button" className="btn btn-ghost btn-small" disabled={!notebook} onClick={() => void exportNotebook()}>
+        <button type="button" className="btn btn-ghost btn-small" disabled={!notebook || waiting} onClick={() => void exportNotebook()}>
           Export…
         </button>
         <button type="button" className="btn btn-ghost btn-small" onClick={() => void importNotebook()}>
