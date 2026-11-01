@@ -144,17 +144,23 @@ fn reserved(name: &str) -> bool {
 
 /// `(notebook_id, name)` of the notebook named by id or by exact name (ignoring case).
 pub(crate) fn resolve_notebook(conn: &Connection, notebook: &str) -> Result<(String, String)> {
+    find_notebook(conn, notebook)?
+        .ok_or_else(|| Error::Decision(format!("unknown notebook {notebook}")))
+}
+
+/// As [`resolve_notebook`], `None` when no notebook has that id or name (a failed lookup stays an error).
+fn find_notebook(conn: &Connection, notebook: &str) -> Result<Option<(String, String)>> {
     if reserved(notebook) {
-        return Ok((BUILTIN_ID.into(), BUILTIN_NAME.into()));
+        return Ok(Some((BUILTIN_ID.into(), BUILTIN_NAME.into())));
     }
-    conn.query_row(
-        "SELECT notebook_id, name FROM notebooks WHERE notebook_id = ? OR lower(name) = lower(?) \
-         ORDER BY notebook_id = ? DESC LIMIT 1",
-        params![notebook, notebook, notebook],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )
-    .optional()?
-    .ok_or_else(|| Error::Decision(format!("unknown notebook {notebook}")))
+    Ok(conn
+        .query_row(
+            "SELECT notebook_id, name FROM notebooks WHERE notebook_id = ? OR lower(name) = lower(?) \
+             ORDER BY notebook_id = ? DESC LIMIT 1",
+            params![notebook, notebook, notebook],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?)
 }
 
 /// The queries of a notebook named by id or name, in order (the built-in one included).
@@ -615,9 +621,10 @@ pub fn add_query_creating(
     check_query_sql(sql)?;
     in_tx(conn, |tx| {
         let ts = audit::now();
-        let notebook_id = match resolve_notebook(tx, notebook) {
-            Ok((id, _)) => id,
-            Err(_) if create => {
+        // Only a notebook that does not exist is created; any other failure of the lookup is reported as it is.
+        let notebook_id = match find_notebook(tx, notebook)? {
+            Some((id, _)) => id,
+            None if create => {
                 check_name(tx, notebook, None)?;
                 let id = insert_notebook(tx, actor, notebook, ts)?;
                 let after = json!({ "name": notebook.trim() });
@@ -633,7 +640,7 @@ pub fn add_query_creating(
                 )?;
                 id
             }
-            Err(e) => return Err(e),
+            None => return Err(Error::Decision(format!("unknown notebook {notebook}"))),
         };
         refuse_builtin(&notebook_id)?;
         let (id, position) = insert_query(tx, actor, &notebook_id, sql, ts)?;
