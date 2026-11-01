@@ -68,6 +68,8 @@ While the app has a case open, `sparrow` commands on the same computer that open
 
 ## From collector output to a case
 
+Planning the collection? [What to collect, by licence](docs/COLLECTION.md) lists what each Microsoft 365 licence level makes available, how long it lasts, and which collector command pulls it, starting with what expires first.
+
 ```bash
 sparrow discover /evidence
 sparrow ingest /evidence --case case.duckdb
