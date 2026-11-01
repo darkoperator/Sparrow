@@ -640,3 +640,43 @@ pub fn add_query_creating(
         Ok((notebook_id, id, e))
     })
 }
+
+/// Creates a case notebook named `name` holding `sql` as its first query, in one transaction: a refused query or name
+/// leaves nothing behind. `(notebook_id, query_id, the query's entry)`.
+pub fn create_notebook_with_query(
+    conn: &Connection,
+    actor: &Actor,
+    name: &str,
+    sql: &str,
+) -> Result<(String, String, AuditEntry)> {
+    check_query_sql(sql)?;
+    in_tx(conn, |tx| {
+        check_name(tx, name, None)?;
+        let ts = audit::now();
+        let notebook_id = insert_notebook(tx, actor, name, ts)?;
+        let after = json!({ "name": name.trim() });
+        audit_entry(
+            tx,
+            ts,
+            actor,
+            "create_notebook",
+            "notebook",
+            &notebook_id,
+            None,
+            Some(&after),
+        )?;
+        let (id, position) = insert_query(tx, actor, &notebook_id, sql, ts)?;
+        let after = json!({ "notebook_id": notebook_id, "position": position, "sql": sql });
+        let e = audit_entry(
+            tx,
+            ts,
+            actor,
+            "add_notebook_query",
+            "notebook_query",
+            &id,
+            None,
+            Some(&after),
+        )?;
+        Ok((notebook_id, id, e))
+    })
+}

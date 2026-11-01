@@ -342,3 +342,27 @@ fn an_ip_merely_in_a_case_range_is_not_a_hit() {
     let ids: Vec<&str> = hits.iter().map(|h| h.query_id.as_str()).collect();
     assert_eq!(ids, ["cidr", "v6p", "exact6"], "{hits:?}");
 }
+
+#[test]
+fn a_new_notebook_with_a_refused_query_is_not_created() {
+    let (_d, c) = case();
+    let before = audit::log(c.conn(), None).unwrap().len();
+    let big = "x".repeat(65_537);
+    assert!(notebooks::create_notebook_with_query(c.conn(), &analyst(), "Mine", &big).is_err());
+    assert_eq!(names(&c), ["Built-in"]);
+    assert_eq!(audit::log(c.conn(), None).unwrap().len(), before);
+    let (nb, q, _) =
+        notebooks::create_notebook_with_query(c.conn(), &analyst(), "Mine", "SELECT 1").unwrap();
+    assert_eq!(
+        notebooks::find_query(c.conn(), &nb, &q).unwrap().sql,
+        "SELECT 1"
+    );
+    // An existing name is refused, not added to.
+    let m = err(notebooks::create_notebook_with_query(
+        c.conn(),
+        &analyst(),
+        "mine",
+        "SELECT 2",
+    ));
+    assert!(m.contains("already exists"), "{m}");
+}

@@ -46,6 +46,7 @@ truncated} ]}`.
 | What did the attacker read, send or open through each compromised account? | `sparrow access --case case.duckdb --json` |
 | Which tables and columns exist? | `sparrow schema --case case.duckdb --json` |
 | Columns of one table? | `sparrow schema --case case.duckdb --table signins --json` |
+| Ready-made triage queries? | `sparrow notebook list --case case.duckdb --json`, then `sparrow notebook run builtin N --case case.duckdb --json` |
 
 ```bash
 sparrow capabilities --case case.duckdb --json
@@ -382,3 +383,18 @@ sparrow verify --case case.duckdb <TABLE> <RECORD_KEY> --json
 
 Use the `source_table` and `record_key` of a finding's evidence row. The answer shows whether the original file
 lines still match the stored record.
+
+## Notebooks
+
+The built-in notebook holds twelve triage queries (sign-ins by country, IPs shared by accounts, hosting sign-ins,
+forwarding rules, risky OAuth grants, new MFA methods and roles, what one IP touched, ...). `run` refuses a query that
+still holds a `[placeholder]` (exit 1): read it with `show`, fill the value in and run the SQL with `sparrow query`. A
+query worth keeping for the analyst goes into a case notebook with `add` (an agent decision, never pending review);
+agents cannot rename, reorder or delete.
+
+```bash
+sparrow notebook list --case case.duckdb --json
+sparrow notebook run builtin 8 --case case.duckdb --json --limit 100
+sparrow notebook show builtin 12 --case case.duckdb
+sparrow notebook add --case case.duckdb --notebook "Agent queries" --create --file query.sql --agent claude
+```

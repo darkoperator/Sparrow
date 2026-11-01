@@ -116,6 +116,7 @@ fn main() {
             cmd::notebooks::commands::notebook_query,
             cmd::notebooks::commands::notebook_create,
             cmd::notebooks::commands::notebook_add_query,
+            cmd::notebooks::commands::notebook_save_new,
             cmd::notebooks::commands::notebook_rename,
             cmd::notebooks::commands::notebook_delete,
             cmd::notebooks::commands::notebook_delete_query,

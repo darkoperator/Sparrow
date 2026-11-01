@@ -39,6 +39,27 @@ pub fn notebook_add_query(state: &AppState, notebook_id: &str, sql: &str) -> Cmd
     })
 }
 
+/// What [`notebook_save_new`] made.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SavedNew {
+    pub notebook_id: String,
+    pub query_id: String,
+}
+
+/// Save as into a new notebook: the notebook and its first query in one write.
+pub fn notebook_save_new(state: &AppState, name: &str, sql: &str) -> CmdResult<SavedNew> {
+    let ticket = state.ticket();
+    with_writable(state, ticket, |open| {
+        let actor = analyst(state)?.as_actor();
+        let (notebook_id, query_id, _) =
+            notebooks::create_notebook_with_query(open.case.conn(), &actor, name, sql)?;
+        Ok(SavedNew {
+            notebook_id,
+            query_id,
+        })
+    })
+}
+
 pub fn notebook_rename(state: &AppState, notebook_id: &str, name: &str) -> CmdResult<()> {
     let ticket = state.ticket();
     with_writable(state, ticket, |open| {
@@ -162,6 +183,15 @@ pub mod commands {
         sql: String,
     ) -> CmdResult<String> {
         super::notebook_add_query(&state, &notebook_id, &sql)
+    }
+
+    #[tauri::command(async)]
+    pub fn notebook_save_new(
+        state: State<'_, AppState>,
+        name: String,
+        sql: String,
+    ) -> CmdResult<SavedNew> {
+        super::notebook_save_new(&state, &name, &sql)
     }
 
     #[tauri::command(async)]

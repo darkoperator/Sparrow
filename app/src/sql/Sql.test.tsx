@@ -5,7 +5,7 @@ import { EditorState } from "@codemirror/state";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { schema as schemaFixture, sqlResult as sqlResultFixture } from "../test/fixtures";
+import { notebooks as notebooksFixture, savedQuery, schema as schemaFixture, sqlResult as sqlResultFixture } from "../test/fixtures";
 import type { QueryResult } from "../api";
 
 vi.mock("../api", async (orig) => ({
@@ -15,6 +15,8 @@ vi.mock("../api", async (orig) => ({
   queryCancel: vi.fn(),
   sqlCheck: vi.fn(),
   sqlExportCsv: vi.fn(),
+  notebookList: vi.fn(),
+  notebookQuery: vi.fn(),
 }));
 vi.mock("../dialog", () => ({ save: vi.fn(), open: vi.fn() }));
 
@@ -30,6 +32,8 @@ const m = {
   check: vi.mocked(api.sqlCheck),
   exportCsv: vi.mocked(api.sqlExportCsv),
   save: vi.mocked(dialog.save),
+  notebooks: vi.mocked(api.notebookList),
+  notebookQuery: vi.mocked(api.notebookQuery),
 };
 let result: QueryResult;
 
@@ -41,11 +45,15 @@ beforeEach(() => {
   m.cancel.mockResolvedValue(null);
   m.check.mockResolvedValue({ ok: true });
   m.save.mockResolvedValue("/out/q.csv");
+  m.notebooks.mockResolvedValue(notebooksFixture());
+  m.notebookQuery.mockImplementation(async (nb, q) => savedQuery(nb, q));
 });
 
+/** The screen with the Schema tab shown (the side opens on Notebook). */
 async function setup() {
   const user = userEvent.setup();
   render(<Sql />);
+  await user.click(screen.getByRole("tab", { name: "Schema" }));
   await screen.findByRole("button", { name: "signins" });
   return user;
 }
@@ -142,6 +150,7 @@ describe("Sql", () => {
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     const user = userEvent.setup();
     const view = render(<Sql />);
+    await user.click(screen.getByRole("tab", { name: "Schema" }));
     await screen.findByRole("button", { name: "signins" });
     expect(screen.getByText("Leaving this screen cancels a running query.")).toBeInTheDocument();
     await typeSql("SELECT count(*) FROM range(10000000000)");
@@ -227,6 +236,7 @@ describe("Sql", () => {
   it("a schema error is shown, and the editor still works", async () => {
     m.schema.mockRejectedValue({ kind: "read_only", message: "SQL needs a writable case" });
     render(<Sql />);
+    fireEvent.click(screen.getByRole("tab", { name: "Schema" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("SQL needs a writable case");
     await typeSql("SELECT 1");
     expect(screen.getByRole("button", { name: "Run" })).toBeEnabled();
@@ -589,6 +599,7 @@ describe("Sql", () => {
       m.exportCsv.mockImplementation(() => new Promise((rs) => (finish = rs)));
       const user = userEvent.setup();
       const view_ = render(<Sql />);
+      await user.click(screen.getByRole("tab", { name: "Schema" }));
       await screen.findByRole("button", { name: "signins" });
       await typeSql("SELECT 1");
       await user.click(screen.getByRole("button", { name: "Export CSV…" }));
@@ -635,5 +646,43 @@ describe("Sql", () => {
       await user.click(screen.getByRole("button", { name: "Export CSV…" }));
       expect(await screen.findByRole("alert")).toHaveTextContent("not a SELECT");
     });
+  });
+});
+
+describe("notebooks in the SQL screen", () => {
+  it("opens_on_the_notebook_tab_and_loads_a_query_into_the_editor", async () => {
+    const user = userEvent.setup();
+    render(<Sql />);
+    expect(screen.getByRole("tab", { name: "Notebook" }).getAttribute("aria-selected")).toBe("true");
+    await user.click(await screen.findByRole("button", { name: /^Every operation/ }));
+    await waitFor(() => expect(text()).toBe("-- Every operation by workload, rarest first\nSELECT 1"));
+    expect(m.run).not.toHaveBeenCalled();
+  });
+
+  it("a_placeholder_run_shows_the_backend_refusal", async () => {
+    m.run.mockRejectedValue({ kind: "invalid", message: "Fill in [ip] first" });
+    const user = await setup();
+    typeSql("SELECT '[ip]'");
+    await user.click(screen.getByRole("button", { name: "Run" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Fill in [ip] first");
+  });
+
+  it("the_side_tabs_move_with_the_arrow_keys", async () => {
+    const user = userEvent.setup();
+    render(<Sql />);
+    const notebook = screen.getByRole("tab", { name: "Notebook" });
+    const schemaTab = screen.getByRole("tab", { name: "Schema" });
+    expect(notebook.getAttribute("tabindex")).toBe("0");
+    expect(schemaTab.getAttribute("tabindex")).toBe("-1");
+    notebook.focus();
+    await user.keyboard("{ArrowRight}");
+    expect(document.activeElement).toBe(schemaTab);
+    expect(schemaTab.getAttribute("aria-selected")).toBe("true");
+    await user.keyboard("{Home}");
+    expect(document.activeElement).toBe(notebook);
+    await user.keyboard("{End}");
+    expect(document.activeElement).toBe(schemaTab);
+    await user.keyboard("{ArrowLeft}");
+    expect(notebook.getAttribute("aria-selected")).toBe("true");
   });
 });

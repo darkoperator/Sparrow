@@ -15,6 +15,8 @@ export interface SqlEditorHandle {
   insert: (text: string) => void;
   /** Close the completion popup, if open. */
   closeCompletion: () => void;
+  /** Replace the whole text (a saved query loaded), cursor at the start; `onChange` sees it. */
+  setText: (text: string) => void;
 }
 
 /** What the check says outside the editor: the check itself refused, or an error with no position to mark. */
@@ -96,6 +98,12 @@ const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(props, r
   useImperativeHandle(ref, () => ({
     closeCompletion() {
       if (view.current) closeCompletion(view.current);
+    },
+    setText(text) {
+      const v = view.current;
+      if (!v) return;
+      v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: text }, selection: { anchor: 0 }, scrollIntoView: true });
+      v.focus();
     },
     insert(text) {
       const v = view.current;

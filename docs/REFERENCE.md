@@ -393,6 +393,11 @@ sparrow entity --case case.duckdb --user|--ip|--device|--session V   # [--from T
 sparrow timeline-entry list --case case.duckdb    # [--status --review-state]
 sparrow pivot ip|user VALUE --case case.duckdb    # every section capped by --cap 50, truncation reported
 sparrow query "SELECT ..." --case case.duckdb     # one read-only SELECT, --limit 1000
+sparrow notebook list --case case.duckdb          # SQL notebooks: the built-in one, then the case's, with [placeholders]
+sparrow notebook show|run NOTEBOOK QUERY --case case.duckdb   # a saved query's text, or run it (--limit 1000)
+sparrow notebook add --notebook NAME --sql TEXT|--file F [--create] --case case.duckdb   # agent decision
+sparrow notebook import --file F --case case.duckdb             # a notebook file as a new case notebook
+sparrow notebook export NOTEBOOK --out F [--force] --case case.duckdb  # exit 5 when it holds case values
 sparrow audit verify --case case.duckdb           # check the audit chain (exit 3 when broken;
                                                   # --acknowledge [--agent ID] records a break)
 sparrow audit log --case case.duckdb              # the audit trail; --object TYPE:ID for one object
@@ -695,7 +700,8 @@ and, when the app is alive and has that same case open, sends the whole command 
 - **Reads** (`summary`, `accounts`, `events`, `entity`, `access`, `query`, exports, ...) run on a second connection
   to the app's database, so the analyst's screen stays usable; a read stops at its time limit
   (`SPARROW_BRIDGE_TIMEOUT` seconds, default 120, at most a day) with exit 1.
-- **Writes** (`mark`, `note`, `finding set-status|assign|ack-rule-update`, `ioc`, `timeline-entry`)
+- **Writes** (`mark`, `note`, `finding set-status|assign|ack-rule-update`, `ioc`, `timeline-entry`,
+  `notebook add|import`)
   wait for the app's own case lock (at most 30 s: "the app is busy", exit 4), so they queue with the analyst's
   actions. They stay agent decisions (`--agent`, pending review), always on behalf of the app's analyst: a different
   `--analyst` or `SPARROW_ANALYST` is replaced, with a note on stderr, and with no analyst name set in the app a
@@ -863,6 +869,80 @@ or move it as evidence comes in. It reports facts, no verdict:
   the text says so and these times help to move it).
 - **Next**: ready commands per session (`sparrow access ... --brief`, `sparrow mark flag --value session=...|ip=...
   --level malicious`), with the case path quoted for a POSIX shell.
+
+## SQL notebooks
+
+A notebook is a named list of saved queries. Each query is plain DuckDB SQL that opens with a `--` comment block: its
+first line is the query's title in lists, the rest says what it finds and how to use it. A value that differs per case
+is written as a `[name]` placeholder (`actor_upn = lower('[account]')`) and replaced by hand before running.
+
+- **The built-in notebook** ships with Sparrow: twelve triage queries (sign-ins by country and network, IPs shared by
+  accounts, sign-in results per day, hosting-provider sign-ins, first use of each client and device, mail read per
+  mailbox, every operation rarest first, forwarding and hiding inbox rules, OAuth grants with mail or offline access,
+  new MFA methods, credentials and roles, values flagged malicious, everything one IP touched). It is not stored in the
+  case, so every case shows the current release's queries, and nothing writes to it: saving into it, renaming or
+  deleting it, or naming a case notebook `Built-in` is refused ("the built-in notebook cannot be changed"). Each runs
+  on a case that lacks the tables it reads (an empty result, not an error).
+- **Case notebooks** are stored in the case (migration 29: `notebooks`, `notebook_queries`). Names are unique ignoring
+  case, one line, at most 500 characters; a notebook holds at most 200 queries of at most 64 KiB each. Each saved
+  query records who saved it (`decided_by`, `decided_at`, `on_behalf_of`); it asserts nothing about the case, so it is
+  never pending review. Every change is one audit-trail entry (`create_notebook`, `add_notebook_query`,
+  `rename_notebook`, `delete_notebook`, `delete_notebook_query`, `move_notebook_query`, `import_notebook`).
+- **Who may change what.** An agent may create a notebook, add queries and import a notebook file. Renaming,
+  reordering and deleting are the analyst's, in the app (an agent is refused: "only the analyst can ...").
+
+**Placeholders.** `[` then a letter, then letters, digits or `_`, then `]`, with no spaces. They are found anywhere in
+the SQL, inside string literals and quoted identifiers too, but not in `--` or `/* */` comments (so the comment block
+can name them). DuckDB list syntax (`[1, 2]`, `arr[1]`) is not a placeholder; a string literal that happens to look
+like `'[abc]'` is, and the refusal names it. Running a query that still holds one is refused before DuckDB sees it,
+naming each: "Fill in [account] and [ip] first". The SQL screen's Run and CSV export refuse it (`invalid`), as does
+`sparrow notebook run` (exit 1); `sparrow query` runs any SELECT as given.
+
+**The SQL screen.** The side has two tabs, Notebook (first) and Schema. Notebook has a picker (the built-in notebook,
+then the case's, and New notebook…), the chosen notebook's queries with their placeholders (`[ip]`) and, for an
+agent's query, `by <agent>`, and Export…, Import… and Save as…. Clicking a query puts its text in the editor; it does
+not run. When the editor holds other unsaved text, a bar asks "Replace the editor's text?" first. The loaded query is
+marked `edited` once its text changes. Save as adds the editor's text as a new query to a case notebook (never the
+built-in one), or to a new notebook named there (created with its first query in one write, so a refused query makes
+no notebook); it never overwrites a query. A case notebook's queries move up and
+down and are deleted with an inline confirmation; the notebook is renamed or deleted (with its queries) from the
+picker row. The list reloads when an agent writes through the bridge, keeping the chosen notebook and the editor.
+
+**Files.** Export writes one notebook (the built-in one too) as a readable `.sql` file:
+
+```text
+-- sparrow notebook: <name>
+-- exported by Sparrow <version> at <time>
+-- ==== query ====
+<query 1>
+-- ==== query ====
+<query 2>
+```
+
+A query's trailing blank lines and trailing whitespace are dropped on the way; a query cannot hold the line
+`-- ==== query ====`. Import reads such a file (at most 4 MiB, UTF-8, CRLF accepted) into the open case as a new
+notebook, never merged into another: it takes the file's name, `Built-in (copy)` for the built-in one, and then
+` (2)`, ` (3)`... until free (the name is shortened to keep within 500 characters). A file that does not start with the
+header line, has SQL before the first separator, holds no query, has a query that ends inside a string or comment (a
+separator inside a query's text), or breaks a cap is refused with the line it failed on, and nothing is written.
+
+**The export check.** Before writing, the queries' text (comments included) is checked against the case: account
+UPNs, IPs, device ids and Entra session ids as the Events grid holds them (ignoring case), the tenant's own domains
+(`tenant_domains`, as a whole name), and IP ranges written as a prefix (`'203.0.113.%'`) or a CIDR
+(`'203.0.113.0/24'`, `/48` for IPv6) that the case's `events.ip_prefix` holds. A complete address is matched only
+exactly. The app lists each query's values and asks to Export anyway or Cancel; `sparrow notebook export` prints them
+on stderr and exits 5 with nothing written, unless `--force` (then they are warnings). The check never warns about a
+value the case does not hold, and the built-in queries hold none.
+
+**CLI.** `notebook list` shows each notebook (`builtin` or its id, name, query count) and its queries (`N. title
+[placeholders] (by agent:<id>)`); `--json` is `{"notebooks": [...]}`. `notebook show NOTEBOOK QUERY` prints the text
+(escaped like other agent text; `--json` adds the summary fields), NOTEBOOK being an id or a name (`builtin` for the
+built-in one) and QUERY a query id or its position (1, 2, ...). `notebook run` runs it exactly as `sparrow query`
+would. `notebook add` (`--sql` or `--file`, `--create` to make the notebook in the same transaction) and `notebook
+import --file` are agent decisions (`--agent`, `--analyst`), sent through the app's bridge while it has the case open
+(the screen's list updates: `case-changed` with `notebooks`). An unknown notebook without `--create`, a refused query,
+or a file whose content is refused (a bad header, a cap, a separator inside a query) is exit 5; a file that cannot be
+read, is not UTF-8 or is over 4 MiB is exit 1.
 
 ## Synthetic data
 

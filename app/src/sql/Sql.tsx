@@ -15,6 +15,7 @@ import Grid from "../grid/Grid";
 import { displaySafe, displaySafeMultiline } from "../text";
 import Icon from "../ui/Icon";
 import { identifier } from "./completion";
+import NotebookPanel from "./NotebookPanel";
 import SchemaSidebar from "./SchemaSidebar";
 import SqlEditor, { type CheckNote, type SqlEditorHandle } from "./SqlEditor";
 import "./sql.css";
@@ -40,6 +41,9 @@ interface Loaded {
 
 type Outcome = { kind: "result"; loaded: Loaded } | { kind: "error"; message: string } | { kind: "cancelled" };
 
+const SIDE_TABS = ["notebook", "schema"] as const;
+type Side = (typeof SIDE_TABS)[number];
+
 const rowCount = (n: number) => (n === 1 ? "1 row" : `${n.toLocaleString("en-US")} rows`);
 const message = (e: unknown) => (isCmdError(e) ? e.message : String(e));
 const interrupted = (e: unknown) => isCmdError(e) && e.kind === "interrupted";
@@ -60,6 +64,21 @@ export default function Sql() {
   const [pageNote, setPageNote] = useState<{ alert: boolean; text: string } | null>(null);
   const [exportNote, setExportNote] = useState<{ alert: boolean; text: string } | null>(null);
   const [cancelError, setCancelError] = useState<string | null>(null);
+  const [side, setSide] = useState<Side>("notebook");
+  // The side tabs as a tab list: arrows, Home and End move between them (and select), Tab leaves the list.
+  const sideKey = (e: React.KeyboardEvent<HTMLButtonElement>) => {
+    const i = SIDE_TABS.indexOf(side);
+    const to =
+      e.key === "ArrowRight" ? (i + 1) % SIDE_TABS.length
+      : e.key === "ArrowLeft" ? (i + SIDE_TABS.length - 1) % SIDE_TABS.length
+      : e.key === "Home" ? 0
+      : e.key === "End" ? SIDE_TABS.length - 1
+      : null;
+    if (to === null) return;
+    e.preventDefault();
+    setSide(SIDE_TABS[to]);
+    document.getElementById(`sql-tab-${SIDE_TABS[to]}`)?.focus();
+  };
   const editor = useRef<SqlEditorHandle>(null);
   // A query still running when the screen goes away is cancelled, and its late outcome ignored: the backend holds
   // the case for it, and nothing would show its result.
@@ -211,9 +230,32 @@ export default function Sql() {
   return (
     <div className="sql-screen">
       <div className="sql-side">
-        <div className="label sql-side-head">Schema · read-only</div>
-        {schemaError !== null && <p role="alert">{displaySafe(schemaError)}</p>}
-        <SchemaSidebar tables={tables} onInsert={(name) => editor.current?.insert(identifier(name))} />
+        <div className="sql-side-tabs" role="tablist" aria-label="Side panel">
+          {SIDE_TABS.map((t) => (
+            <button
+              key={t}
+              type="button"
+              role="tab"
+              id={`sql-tab-${t}`}
+              aria-selected={side === t}
+              aria-controls={`sql-panel-${t}`}
+              tabIndex={side === t ? 0 : -1}
+              className={side === t ? "sql-side-tab is-active" : "sql-side-tab"}
+              onClick={() => setSide(t)}
+              onKeyDown={sideKey}
+            >
+              {t === "notebook" ? "Notebook" : "Schema"}
+            </button>
+          ))}
+        </div>
+        <div role="tabpanel" id="sql-panel-notebook" aria-labelledby="sql-tab-notebook" hidden={side !== "notebook"}>
+          <NotebookPanel editorText={sql} onLoad={(text) => editor.current?.setText(text)} />
+        </div>
+        <div role="tabpanel" id="sql-panel-schema" aria-labelledby="sql-tab-schema" hidden={side !== "schema"}>
+          <div className="label sql-side-head">Schema · read-only</div>
+          {schemaError !== null && <p role="alert">{displaySafe(schemaError)}</p>}
+          <SchemaSidebar tables={tables} onInsert={(name) => editor.current?.insert(identifier(name))} />
+        </div>
       </div>
       <section className="sql-main">
         <SqlEditor

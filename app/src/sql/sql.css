@@ -54,3 +54,47 @@
 .sql-count { margin: 4px 0 8px; color: var(--muted); font-size: 12px; opacity: 1; }
 .sql-main [role="alert"].prose, .sql-main [role="status"] { margin: 6px 0; }
 .sql-main [role="status"] { padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--raised); }
+
+/* The side's two tabs: the notebooks (saved queries) and the schema. */
+.sql-side-tabs { display: flex; gap: 2px; margin: 0 0 10px; border-bottom: 1px solid var(--line); }
+.sql-side-tab { padding: 4px 10px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--muted); font-size: 12px; }
+.sql-side-tab:hover { color: var(--text); }
+.sql-side-tab.is-active { border-bottom-color: var(--accent); color: var(--text); }
+
+.notebook-panel { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+.notebook-picker { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.notebook-picker select { flex: 1 1 100%; min-width: 0; }
+.notebook-form, .notebook-confirm { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.notebook-form .input { flex: 1 1 100%; min-width: 0; }
+.notebook-confirm { padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--raised); }
+.notebook-confirm > span { flex-basis: 100%; color: var(--text); }
+.notebook-error, .notebook-note, .notebook-empty { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
+.notebook-error { color: var(--danger-text, var(--text)); }
+.notebook-queries { max-height: calc(100vh - 260px); margin: 0; padding: 0; overflow: auto; list-style: none; }
+.notebook-row { display: flex; flex-wrap: wrap; gap: 2px 4px; align-items: center; padding: 2px 0; border-radius: 4px; }
+.notebook-row.is-loaded { background: var(--raised); }
+.notebook-load {
+  flex: 1 1 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: baseline;
+  min-width: 0;
+  padding: 3px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+}
+.notebook-load:hover { background: var(--raised); color: var(--accent-text); }
+.notebook-title { min-width: 0; overflow-wrap: anywhere; }
+.notebook-placeholder { font-size: 10px; }
+.notebook-meta { display: flex; gap: 6px; padding: 0 4px; color: var(--faint); font-size: 10px; }
+.notebook-edited { color: var(--accent-text); }
+.notebook-row-actions { display: flex; gap: 0; margin-left: auto; }
+.notebook-row-actions .btn { padding: 0 5px; }
+.notebook-save { padding-top: 6px; border-top: 1px solid var(--line); }
+.notebook-files { display: flex; gap: 4px; }
+.notebook-leaks { flex-basis: 100%; margin: 0; padding-left: 16px; color: var(--text-2); overflow-wrap: anywhere; }

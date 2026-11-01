@@ -666,6 +666,63 @@ export const sqlCheck = (sql: string) => call<SqlCheck>("sql_check", { sql });
  */
 export const sqlExportCsv = (sql: string, path: string, queryId: string) =>
   call<SqlExported>("sql_export_csv", { sql, path, queryId });
+/** A saved query as a notebook list shows it (`decided_*` are null for a built-in query). */
+export interface QuerySummary {
+  query_id: string;
+  /** 1-based place in the notebook. */
+  position: number;
+  /** The first `--` comment line (else the first line). */
+  title: string;
+  /** `[name]` placeholders still to fill in, without brackets, in order. */
+  placeholders: string[];
+  /** `agent:<id>` or `analyst:<name>`. */
+  decided_by: string | null;
+  on_behalf_of: string | null;
+  decided_at: string | null;
+}
+
+export interface NotebookSummary {
+  /** `builtin` for the built-in notebook. */
+  notebook_id: string;
+  name: string;
+  /** Read-only: never saved to, renamed or deleted. */
+  builtin: boolean;
+  queries: QuerySummary[];
+}
+
+export interface SavedQuery extends QuerySummary {
+  notebook_id: string;
+  sql: string;
+}
+
+/** Values from this case in one query of a notebook about to be exported. */
+export interface CaseValueHit {
+  query_id: string;
+  title: string;
+  values: string[];
+}
+
+/** The built-in notebook first, then the case's by name. */
+export const notebookList = () => call<NotebookSummary[]>("notebook_list");
+/** `notebook` an id or a name, `query` an id or a 1-based position. */
+export const notebookQuery = (notebook: string, query: string) => call<SavedQuery>("notebook_query", { notebook, query });
+/** Creates an empty case notebook (the analyst's); its id. */
+export const notebookCreate = (name: string) => call<string>("notebook_create", { name });
+/** Adds `sql` as the last query of a case notebook; the new query's id. */
+export const notebookAddQuery = (notebookId: string, sql: string) => call<string>("notebook_add_query", { notebookId, sql });
+/** Save as into a new notebook: the notebook and its first query in one write (a refused query creates nothing). */
+export const notebookSaveNew = (name: string, sql: string) =>
+  call<{ notebook_id: string; query_id: string }>("notebook_save_new", { name, sql });
+export const notebookRename = (notebookId: string, name: string) => call<null>("notebook_rename", { notebookId, name });
+export const notebookDelete = (notebookId: string) => call<null>("notebook_delete", { notebookId });
+export const notebookDeleteQuery = (queryId: string) => call<null>("notebook_delete_query", { queryId });
+/** Moves a case query to `position` (1-based, clamped). */
+export const notebookMoveQuery = (queryId: string, position: number) => call<null>("notebook_move_query", { queryId, position });
+/** What an export of this notebook would carry out of the case. */
+export const notebookCaseValues = (notebookId: string) => call<CaseValueHit[]>("notebook_case_values", { notebookId });
+export const notebookExport = (notebookId: string, path: string) => call<null>("notebook_export", { notebookId, path });
+/** Imports a notebook file as a new case notebook; its id. */
+export const notebookImport = (path: string) => call<string>("notebook_import", { path });
 export const shareExport = (path: string) => call<ShareExported>("share_export", { path });
 export const sharePreview = (path: string) => call<SharePreview>("share_preview", { path });
 /** Refused (`invalid`) when the file's SHA-256 is no longer `sha256`, the one its preview showed. */

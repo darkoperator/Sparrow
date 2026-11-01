@@ -5654,4 +5654,16 @@ mod notebook_commands {
                 .contains("4 MiB")
         );
     }
+
+    #[test]
+    fn save_new_is_one_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (state, _) = open_seeded(tmp.path());
+        let marker = format!("SELECT 1\n{}\n", sparrow_core::case::notebooks::MARKER);
+        assert!(notebook_save_new(&state, "Mine", &marker).is_err());
+        assert_eq!(notebook_list(&state).unwrap().len(), 1);
+        let saved = notebook_save_new(&state, "Mine", "SELECT 1").unwrap();
+        let q = notebook_query(&state, &saved.notebook_id, &saved.query_id).unwrap();
+        assert_eq!(q.sql, "SELECT 1");
+    }
 }

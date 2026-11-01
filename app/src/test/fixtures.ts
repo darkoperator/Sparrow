@@ -28,6 +28,8 @@ import marksTagsJson from "./fixtures/marks_tags.json";
 import timelineAddedJson from "./fixtures/timeline_added.json";
 import type {
   AccessCategory,
+  NotebookSummary,
+  SavedQuery,
   AccessReport,
   Attribution,
   Basis,
@@ -484,4 +486,46 @@ export function accessReport(): AccessReport {
     (a.items as unknown[]).forEach((t, j) => need(`access_report.accounts[${i}].items[${j}]`, t, ["account", "category", "attribution", "accessed", "action", "item", "location", "from", "to", "size_bytes", "item_time", "app", "ip", "session_id", "owner", "note", "source", "source_table", "record_key", "basis", "row"]));
   });
   return v as unknown as AccessReport;
+}
+
+/** The built-in notebook (two of its queries) and one case notebook with an analyst's and an agent's query. */
+export function notebooks(): NotebookSummary[] {
+  const q = (id: string, position: number, title: string, placeholders: string[], by: string | null = null) => ({
+    query_id: id,
+    position,
+    title,
+    placeholders,
+    decided_by: by,
+    on_behalf_of: by?.startsWith("agent:") ? "analyst:carlos" : null,
+    decided_at: by ? "2026-10-31T12:00:00.000000Z" : null,
+  });
+  return [
+    {
+      notebook_id: "builtin",
+      name: "Built-in",
+      builtin: true,
+      queries: [
+        q("builtin:signins-by-country", 1, "Sign-ins per account by country and network", ["account"]),
+        q("builtin:operations-by-workload", 2, "Every operation by workload, rarest first", []),
+      ],
+    },
+    {
+      notebook_id: "nb1",
+      name: "Triage",
+      builtin: false,
+      queries: [
+        q("q1", 1, "Hosts", ["ip"], "analyst:carlos"),
+        q("q2", 2, "Agent query", [], "agent:claude"),
+        q("q3", 3, "Third", [], "analyst:carlos"),
+      ],
+    },
+  ];
+}
+
+/** The text of a query in [notebooks]: its title as the comment line, then a SELECT. */
+export function savedQuery(notebookId: string, queryId: string): SavedQuery {
+  const nb = notebooks().find((n) => n.notebook_id === notebookId)!;
+  const s = nb.queries.find((x) => x.query_id === queryId)!;
+  const ph = s.placeholders.map((p) => ` WHERE x = '[${p}]'`).join("");
+  return { ...s, notebook_id: notebookId, sql: `-- ${s.title}\nSELECT 1${ph}` };
 }

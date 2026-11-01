@@ -177,6 +177,18 @@ const TABLE: { cmd: string; args?: Obj; check: (r: unknown) => void }[] = [
   { cmd: "export_access_summary", args: { path: "/a.md" }, check: (r) => expect(r).toBeNull() },
   { cmd: "export_timeline_csv", args: { path: "/o.csv" }, check: (r) => expect(r).toBeNull() },
   { cmd: "export_workbook", args: { path: "/o.xlsx" }, check: (r) => expect(r).toBeNull() },
+  { cmd: "notebook_list", check: (r) => { arrOf(r, ["notebook_id", "name", "builtin", "queries"]); expect((r as Obj[])[0].builtin).toBe(true); arrOf((r as Obj[])[0].queries, ["query_id", "position", "title", "placeholders", "decided_by", "on_behalf_of", "decided_at"]); } },
+  { cmd: "notebook_query", args: { notebook: "builtin", query: "1" }, check: (r) => keys(r, [...["query_id", "position", "title", "placeholders", "decided_by", "on_behalf_of", "decided_at"], "notebook_id", "sql"]) },
+  { cmd: "notebook_create", args: { name: "Mine" }, check: (r) => expect(typeof r).toBe("string") },
+  { cmd: "notebook_add_query", args: { notebookId: "NEW_NOTEBOOK", sql: "-- T\nSELECT 1" }, check: (r) => expect(typeof r).toBe("string") },
+  { cmd: "notebook_save_new", args: { name: "Fresh", sql: "SELECT 1" }, check: (r) => keys(r, ["notebook_id", "query_id"]) },
+  { cmd: "notebook_rename", args: { notebookId: "NEW_NOTEBOOK", name: "Other" }, check: (r) => expect(r).toBeNull() },
+  { cmd: "notebook_delete", args: { notebookId: "NEW_NOTEBOOK" }, check: (r) => expect(r).toBeNull() },
+  { cmd: "notebook_delete_query", args: { queryId: "NEW_QUERY" }, check: (r) => expect(r).toBeNull() },
+  { cmd: "notebook_move_query", args: { queryId: "NEW_QUERY", position: 1 }, check: (r) => expect(r).toBeNull() },
+  { cmd: "notebook_case_values", args: { notebookId: "builtin" }, check: (r) => expect(r).toEqual([]) },
+  { cmd: "notebook_export", args: { notebookId: "builtin", path: "/n.sql" }, check: (r) => expect(r).toBeNull() },
+  { cmd: "notebook_import", args: { path: "/n.sql" }, check: (r) => expect(typeof r).toBe("string") },
   { cmd: "highlights_get", args: { caseId: "c" }, check: (r) => expect(r).toEqual([]) },
   { cmd: "highlights_set", args: { caseId: "c", sets: [{ name: "s", rules: [] }] }, check: (r) => expect(r).toEqual([{ name: "s", rules: [] }]) },
   { cmd: "highlights_clear", args: { caseId: "c" }, check: (r) => expect(r).toBeNull() },
@@ -250,6 +262,13 @@ describe("every command, valid arguments", () => {
       const p = (await m.mockCall<QueueItem[]>("review_queue")).find((q) => q.source === "proposal");
       if (!p || p.source !== "proposal") throw new Error("no proposal in the queue");
       args = { ...t.args, bundleSha256: p.bundle_sha256, itemKey: p.item_key };
+    }
+    // Notebook writes act on a case notebook (and query) made first.
+    if (args && Object.values(args).some((v) => v === "NEW_NOTEBOOK" || v === "NEW_QUERY")) {
+      await m.mockCall("settings_set_analyst", { name: "dana" });
+      const nb = await m.mockCall<string>("notebook_create", { name: "Scratch" });
+      const q = await m.mockCall<string>("notebook_add_query", { notebookId: nb, sql: "SELECT 1" });
+      args = Object.fromEntries(Object.entries(args).map(([k, v]) => [k, v === "NEW_NOTEBOOK" ? nb : v === "NEW_QUERY" ? q : v]));
     }
     // Row arguments name real events of the recorded list: two of them, or two carrying an agent mark.
     if (args && ("rows" in args || "recordKey" in args || (isObj(args.args) && "rows" in args.args))) {
@@ -799,5 +818,26 @@ describe("events mock: marks and add to timeline", () => {
     await expect(bad({ rows: refs, mode: "group", phase: "bogus" })).rejects.toMatchObject({ kind: "invalid" });
     await expect(bad({ query: { ...Q, fields: [["source", "none"]] }, mode: "group" })).rejects.toMatchObject({ kind: "invalid" });
     await expect(bad({ rows: [{ source_table: refs[0].source_table, record_key: "ghost" }], mode: "each" })).rejects.toMatchObject({ kind: "decision" });
+  });
+});
+
+describe("mock notebooks", () => {
+  it("finds placeholders as the core does", async () => {
+    const { placeholders } = await import("./notebooks");
+    expect(placeholders("WHERE a = '[account]' AND b = '[ip]' OR a = '[account]'")).toEqual(["account", "ip"]);
+    expect(placeholders("SELECT [1, 2], arr[1]")).toEqual([]);
+    expect(placeholders("-- [account]\nSELECT 1 /* [ip] */")).toEqual([]);
+    expect(placeholders("SELECT 'a--[ip]'")).toEqual(["ip"]);
+    expect(placeholders("SELECT 'it''s [ip]'")).toEqual(["ip"]);
+  });
+
+  it("warns only about values the mock case holds", async () => {
+    const m = await fresh();
+    await m.mockCall("settings_set_analyst", { name: "dana" });
+    const ip = fx.eventsList().find((r) => r.ip)!.ip!;
+    const made = await m.mockCall<{ notebook_id: string }>("notebook_save_new", { name: "Leaky", sql: `SELECT 1 WHERE ip = '${ip}' OR ip = '198.51.100.250'` });
+    const hits = await m.mockCall<{ values: string[] }[]>("notebook_case_values", { notebookId: made.notebook_id });
+    expect(hits).toHaveLength(1);
+    expect(hits[0].values).toEqual([ip]);
   });
 });

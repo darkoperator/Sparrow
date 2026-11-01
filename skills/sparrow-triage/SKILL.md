@@ -67,7 +67,7 @@ sparrow pivot ip <IP> --case case.duckdb --json
 ```
 
    `events` / `entity` list an entity's rows; `mark` flags or tags them (commands.md, "Events, entities, marks").
-6. **SQL only for what no finding shows.** Look up columns first; never `SELECT *` to discover them:
+6. **SQL only for what no finding shows.** Built-in queries first (commands.md, Notebooks); never `SELECT *`:
 
 ```bash
 sparrow schema --case case.duckdb --table inbox_rules --json
