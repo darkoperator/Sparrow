@@ -261,7 +261,9 @@ fn show_escapes_terminal_controls() {
 #[test]
 fn a_shown_query_runs_with_sparrow_query_after_filling_in() {
     let (_t, case) = setup();
-    let v = json(&["--json", "notebook", "show", "builtin", "12", "--case", &case]);
+    let v = json(&[
+        "--json", "notebook", "show", "builtin", "12", "--case", &case,
+    ]);
     let sql = v["sql"].as_str().unwrap().replace("[ip]", "203.0.113.7");
     assert!(sql.starts_with("--"));
     let r = run(&["query", &sql, "--case", &case]);
