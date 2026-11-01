@@ -138,6 +138,8 @@ sparrow entity --case case.duckdb --ip 203.0.113.7 --from 2026-08-21T00:00:00Z -
   `""` is one quote): `--where 'operation="a,b"'`. A lone `!`, `,,` or an unclosed quote is refused (exit 1), never
   read as "everything".
   Without `*` a value matches exactly. `message_trace_event` rows are left out unless `source` names them.
+- `--user`, `--ip`, `--device` and `--session` take one entity per call (two are refused, exit 1): narrow by a second
+  one with `--where`, e.g. `--user alice@contoso.example --where ip=203.0.113.7`.
 - `--csv PATH` writes every matching row (not a page) and prints the row count.
 - `entity --json` returns `{"summary": {entity, first_seen, last_seen, events, distinct, open_findings, roles_matched,
   ip_intel, device}, "pivots": {"ips": {rows, total}, ...}, "findings": [...]}`. An account has the `ips`, `devices`
@@ -162,7 +164,8 @@ sparrow note add ual_events:<RECORD_KEY> --text "creates the rule 3 minutes afte
   triage with it so the analyst knows what to review.
 - Use `--agent` / `--analyst` (or `$SPARROW_AGENT` / `$SPARROW_ANALYST`) as for every write. Marks are agent
   decisions: they show at once (`flag_ai`, tag `ai: true`) and wait for the analyst to confirm or remove them in
-  the app. There is no CLI confirm.
+  the app. There is no CLI confirm. Tell the analyst where: flags and tags in the Events grid (tick the rows, then
+  Confirm AI marks or Remove AI marks); the indicator a malicious `ip` or `account` flag adds, in the Review queue.
 - **Flag** a row or value when it is the attacker's, or you cannot rule it out: `suspicious` for a lead, `malicious`
   for a confirmed attacker IP or account (a malicious `ip` or `account` flag also adds a pending indicator). `--value`
   flags every event with that value, also ones ingested later; `--scope KIND=VALUE` (account, ip, device, session)
@@ -391,6 +394,12 @@ forwarding rules, risky OAuth grants, new MFA methods and roles, what one IP tou
 still holds a `[placeholder]` (exit 1): read it with `show`, fill the value in and run the SQL with `sparrow query`. A
 query worth keeping for the analyst goes into a case notebook with `add` (an agent decision, never pending review);
 agents cannot rename, reorder or delete.
+
+- Open it with a `--` comment block: the first line is its title in the analyst's list, the rest says what it finds.
+- Write case values as placeholders (`actor_upn = lower('[account]')`, `ip = '[ip]'`), not this case's UPNs and IPs:
+  the query then serves other cases, and `notebook export` refuses (exit 5) a notebook holding this case's values.
+- Bracket text the SQL really looks for reads as a placeholder (`LIKE '%[EXTERNAL]%'` is saved, then refused on run):
+  split the string after the bracket, `LIKE '%[' || 'EXTERNAL]%'`. The refusal says so too.
 
 ```bash
 sparrow notebook list --case case.duckdb --json

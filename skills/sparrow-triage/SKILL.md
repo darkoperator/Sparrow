@@ -98,13 +98,13 @@ sparrow mark list --case case.duckdb --pending --agent <YOUR_AGENT_ID> --json
 - **mailboxes**: upn, primary_smtp_address, forwarding_smtp_address, forwarding_address, deliver_and_forward (no `forward_to`).
 - **oauth_grants**: client_id, client_name, permission, consent_type, principal_upn, principal_name, publisher,
   verified_publisher, risk_category, created. (NOT `app_id` / `app_name`.)
+- **timeline**: event_time (NOT `time`), category, operation, actor_upn, target, ip, ip_asn_org, user_agent, summary.
 
 Arrays (`[]`) are lists: `forward_to IS NOT NULL`, `list_contains(forward_to, 'x@example.com')`. `ip` columns are
 text: `WHERE ip = '203.0.113.7'`. Times are UTC. Other tables: [references/tables.md](references/tables.md).
 
 ## References (load only when the fast path is not enough)
 
-- [references/commands.md](references/commands.md): question to exact command, output shapes and ready SQL
-  (persistence sweep, one user, one address, sessions, spray, connectors); the app's agent bridge (case open in the app).
+- [references/commands.md](references/commands.md): question to exact command, output shapes, ready SQL, the agent bridge.
 - [references/tables.md](references/tables.md): the key tables and their columns.
 - [references/notes.md](references/notes.md): `capabilities`, `summary`, traps, verification, decisions.
