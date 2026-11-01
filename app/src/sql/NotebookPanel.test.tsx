@@ -177,6 +177,71 @@ describe("NotebookPanel", () => {
     await waitFor(() => expect(m.delQuery).toHaveBeenCalledWith("q1"));
   });
 
+  it("the_text_of_a_deleted_loaded_query_is_unsaved_work", async () => {
+    const { user, rerender } = setup();
+    await row(/Sign-ins per account/);
+    await user.selectOptions(picker(), "nb1");
+    await user.click(await row(/^Hosts/));
+    await waitFor(() => expect(onLoad).toHaveBeenCalledTimes(1));
+    const text = onLoad.mock.calls[0][0] as string;
+    rerender(text);
+    list = notebooksFixture();
+    list[1].queries = list[1].queries.filter((q) => q.query_id !== "q1");
+    await user.click(screen.getByRole("button", { name: 'Delete "Hosts"' }));
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /^Hosts/ })).toBeNull());
+    // The editor's text is now saved nowhere: loading another query asks first.
+    await user.click(await row(/^Third/));
+    expect(await screen.findByText("Replace the editor's text?")).toBeTruthy();
+    expect(onLoad).toHaveBeenCalledTimes(1);
+  });
+
+  it("a_deleted_loaded_query_is_unsaved_before_the_list_reloads", async () => {
+    const { user, rerender } = setup();
+    await row(/Sign-ins per account/);
+    await user.selectOptions(picker(), "nb1");
+    await user.click(await row(/^Hosts/));
+    await waitFor(() => expect(onLoad).toHaveBeenCalledTimes(1));
+    rerender(onLoad.mock.calls[0][0] as string);
+    m.list.mockImplementation(() => new Promise(() => {}));
+    await user.click(screen.getByRole("button", { name: 'Delete "Hosts"' }));
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(m.delQuery).toHaveBeenCalledWith("q1"));
+    await user.click(await row(/^Third/));
+    expect(await screen.findByText("Replace the editor's text?")).toBeTruthy();
+    expect(onLoad).toHaveBeenCalledTimes(1);
+  });
+
+  it("deleting_the_loaded_querys_notebook_makes_its_text_unsaved", async () => {
+    const { user, rerender } = setup();
+    await row(/Sign-ins per account/);
+    await user.selectOptions(picker(), "nb1");
+    await user.click(await row(/^Hosts/));
+    await waitFor(() => expect(onLoad).toHaveBeenCalledTimes(1));
+    rerender(onLoad.mock.calls[0][0] as string);
+    m.list.mockImplementation(() => new Promise(() => {}));
+    await user.click(screen.getByRole("button", { name: "Delete notebook" }));
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(m.del).toHaveBeenCalledWith("nb1"));
+    await user.selectOptions(picker(), "builtin");
+    await user.click(await row(/Every operation/));
+    expect(await screen.findByText("Replace the editor's text?")).toBeTruthy();
+    expect(onLoad).toHaveBeenCalledTimes(1);
+  });
+
+  it("a_waiting_replace_is_dropped_when_its_query_vanishes", async () => {
+    const { user, rerender } = setup("SELECT 9");
+    await row(/Sign-ins per account/);
+    await user.selectOptions(picker(), "nb1");
+    await user.click(await row(/^Hosts/));
+    await screen.findByText("Replace the editor's text?");
+    list = notebooksFixture();
+    list[1].queries = list[1].queries.filter((q) => q.query_id !== "q1");
+    rerender("SELECT 9", 1);
+    await waitFor(() => expect(screen.queryByText("Replace the editor's text?")).toBeNull());
+    expect(onLoad).not.toHaveBeenCalled();
+  });
+
   it("a_case_notebook_can_be_renamed_and_deleted", async () => {
     const { user } = setup();
     await row(/Sign-ins per account/);

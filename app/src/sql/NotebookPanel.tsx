@@ -90,6 +90,11 @@ export default function NotebookPanel({ editorText, onLoad }: Props) {
         if (!live) return;
         setList(l);
         setChosen((c) => (l.some((n) => n.notebook_id === c) ? c : BUILTIN));
+        // A deleted query saves the editor's text nowhere any more: it is unsaved work again, and a Replace waiting
+        // on it has nothing to load.
+        const present = (id: string) => l.some((n) => n.queries.some((x) => x.query_id === id));
+        setLoaded((q) => (q && present(q.queryId) ? q : null));
+        setPending((p) => (p && present(p.query_id) ? p : null));
       },
       (e: unknown) => live && setError(message(e)),
     );
@@ -200,11 +205,16 @@ export default function NotebookPanel({ editorText, onLoad }: Props) {
 
   const confirmDelete = async () => {
     if (!notebook || deleting === null) return;
+    const gone = deleting === "notebook" ? notebook.queries.map((q) => q.query_id) : [deleting.queryId];
     const ok =
       deleting === "notebook"
         ? await write(() => notebookDelete(notebook.notebook_id), `Deleted ${notebook.name}`)
         : await write(() => notebookDeleteQuery(deleting.queryId));
-    if (ok) setDeleting(null);
+    if (!ok) return;
+    setDeleting(null);
+    // Known gone now, before the list reloads: the editor's text is unsaved work again.
+    setLoaded((q) => (q && gone.includes(q.queryId) ? null : q));
+    setPending((p) => (p && gone.includes(p.query_id) ? null : p));
   };
 
   /** Writes the file; `accepted` are the case values the analyst saw and accepted (the backend refuses any other). */
