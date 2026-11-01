@@ -231,7 +231,7 @@ describe("NotebookPanel", () => {
       await row(/Sign-ins per account/);
       await user.selectOptions(picker(), "nb1");
       await user.click(screen.getByRole("button", { name: "Export…" }));
-      await waitFor(() => expect(m.exportNb).toHaveBeenCalledWith("nb1", "/out/Triage.sql"));
+      await waitFor(() => expect(m.exportNb).toHaveBeenCalledWith("nb1", "/out/Triage.sql", []));
       expect(m.caseValues).toHaveBeenCalledWith("nb1");
       expect(m.save).toHaveBeenCalledWith({ defaultPath: "Triage.sql", filters: [{ name: "SQL notebook", extensions: ["sql"] }] });
       expect(await screen.findByText("Exported Triage to /out/Triage.sql")).toBeTruthy();
@@ -251,7 +251,7 @@ describe("NotebookPanel", () => {
       expect(m.exportNb).not.toHaveBeenCalled();
       await user.click(screen.getByRole("button", { name: "Export…" }));
       await user.click(await screen.findByRole("button", { name: "Export anyway" }));
-      await waitFor(() => expect(m.exportNb).toHaveBeenCalledWith("nb1", "/out/Triage.sql"));
+      await waitFor(() => expect(m.exportNb).toHaveBeenCalledWith("nb1", "/out/Triage.sql", ["203.0.113.7", "contoso.example"]));
     });
 
     it("a_cancelled_save_dialog_writes_nothing", async () => {

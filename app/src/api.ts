@@ -720,7 +720,12 @@ export const notebookDeleteQuery = (queryId: string) => call<null>("notebook_del
 export const notebookMoveQuery = (queryId: string, position: number) => call<null>("notebook_move_query", { queryId, position });
 /** What an export of this notebook would carry out of the case. */
 export const notebookCaseValues = (notebookId: string) => call<CaseValueHit[]>("notebook_case_values", { notebookId });
-export const notebookExport = (notebookId: string, path: string) => call<null>("notebook_export", { notebookId, path });
+/**
+ * Writes the file. The case values are checked again at the write: one not in `accepted` (the values the warning
+ * showed; [] when it showed none) is refused (`invalid`), so a query an agent added meanwhile never leaves unseen.
+ */
+export const notebookExport = (notebookId: string, path: string, accepted: string[]) =>
+  call<null>("notebook_export", { notebookId, path, accepted });
 /** Imports a notebook file as a new case notebook; its id. */
 export const notebookImport = (path: string) => call<string>("notebook_import", { path });
 export const shareExport = (path: string) => call<ShareExported>("share_export", { path });

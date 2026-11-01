@@ -187,7 +187,7 @@ const TABLE: { cmd: string; args?: Obj; check: (r: unknown) => void }[] = [
   { cmd: "notebook_delete_query", args: { queryId: "NEW_QUERY" }, check: (r) => expect(r).toBeNull() },
   { cmd: "notebook_move_query", args: { queryId: "NEW_QUERY", position: 1 }, check: (r) => expect(r).toBeNull() },
   { cmd: "notebook_case_values", args: { notebookId: "builtin" }, check: (r) => expect(r).toEqual([]) },
-  { cmd: "notebook_export", args: { notebookId: "builtin", path: "/n.sql" }, check: (r) => expect(r).toBeNull() },
+  { cmd: "notebook_export", args: { notebookId: "builtin", path: "/n.sql", accepted: [] }, check: (r) => expect(r).toBeNull() },
   { cmd: "notebook_import", args: { path: "/n.sql" }, check: (r) => expect(typeof r).toBe("string") },
   { cmd: "highlights_get", args: { caseId: "c" }, check: (r) => expect(r).toEqual([]) },
   { cmd: "highlights_set", args: { caseId: "c", sets: [{ name: "s", rules: [] }] }, check: (r) => expect(r).toEqual([{ name: "s", rules: [] }]) },

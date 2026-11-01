@@ -134,7 +134,7 @@ export function notebookHandlers(deps: Deps): Record<string, (a: Record<string, 
     nb.queries.push(q);
     return q.query_id;
   };
-  return {
+  const handlers: Record<string, (a: Record<string, unknown> | undefined) => unknown> = {
     notebook_list: () => all().map(summary),
     notebook_query: (a) => {
       const nb = find(str(a, "notebook"));
@@ -198,6 +198,9 @@ export function notebookHandlers(deps: Deps): Record<string, (a: Record<string, 
     },
     notebook_export: (a) => {
       find(str(a, "notebookId"));
+      const accepted = Array.isArray(a?.accepted) ? (a.accepted as string[]) : [];
+      const hits = (handlers.notebook_case_values(a) as CaseValueHit[]).flatMap((h) => h.values).filter((v) => !accepted.includes(v));
+      if (hits.length) deps.fail("invalid", `the notebook now holds values from this case that were not shown: ${hits.join(", ")}; nothing was written (export again to review them)`);
       if (!str(a, "path")) deps.fail("invalid", "no path (mock)");
       return null;
     },
@@ -211,4 +214,5 @@ export function notebookHandlers(deps: Deps): Record<string, (a: Record<string, 
       return nb.id;
     },
   };
+  return handlers;
 }

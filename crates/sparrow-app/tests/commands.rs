@@ -5633,7 +5633,7 @@ mod notebook_commands {
         notebook_add_query(&state, &id, "SELECT 1").unwrap();
         assert!(notebook_case_values(&state, &id).unwrap().is_empty());
         let out = tmp.path().join("triage.sql");
-        notebook_export(&state, &id, &out).unwrap();
+        notebook_export(&state, &id, &out, &[]).unwrap();
         assert!(
             std::fs::read_to_string(&out)
                 .unwrap()
@@ -5665,5 +5665,31 @@ mod notebook_commands {
         let saved = notebook_save_new(&state, "Mine", "SELECT 1").unwrap();
         let q = notebook_query(&state, &saved.notebook_id, &saved.query_id).unwrap();
         assert_eq!(q.sql, "SELECT 1");
+    }
+
+    #[test]
+    fn export_refuses_case_values_the_analyst_did_not_see() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (state, _) = open_seeded(tmp.path());
+        let ip: String = with_case(&state, |open| {
+            Ok(open
+                .case
+                .conn()
+                .query_row(
+                    "SELECT ip FROM events WHERE ip IS NOT NULL LIMIT 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap())
+        })
+        .unwrap();
+        let id = notebook_create(&state, "Triage").unwrap();
+        notebook_add_query(&state, &id, &format!("SELECT 1 WHERE ip = '{ip}'")).unwrap();
+        let out = tmp.path().join("t.sql");
+        let e = notebook_export(&state, &id, &out, &[]).unwrap_err();
+        assert!(e.message.contains(&ip), "{e:?}");
+        assert!(!out.exists());
+        notebook_export(&state, &id, &out, std::slice::from_ref(&ip)).unwrap();
+        assert!(out.exists());
     }
 }

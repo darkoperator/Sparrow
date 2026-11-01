@@ -207,11 +207,12 @@ export default function NotebookPanel({ editorText, onLoad }: Props) {
     if (ok) setDeleting(null);
   };
 
-  const writeFile = async (nb: NotebookSummary) => {
+  /** Writes the file; `accepted` are the case values the analyst saw and accepted (the backend refuses any other). */
+  const writeFile = async (nb: NotebookSummary, accepted: string[]) => {
     setLeaks(null);
     const path = await save({ defaultPath: fileName(nb.name), filters: FILES });
     if (!path || !mounted.current) return;
-    await write(() => notebookExport(nb.notebook_id, path), `Exported ${nb.name} to ${path}`);
+    await write(() => notebookExport(nb.notebook_id, path, accepted), `Exported ${nb.name} to ${path}`);
   };
 
   const exportNotebook = async () => {
@@ -231,7 +232,7 @@ export default function NotebookPanel({ editorText, onLoad }: Props) {
     // A newer action or another notebook chosen meanwhile: this check is for what is no longer shown.
     if (!mounted.current || mine !== seq.current || chosenNow.current !== id) return;
     if (hits.length > 0) setLeaks({ notebookId: id, hits, at: caseAt });
-    else await writeFile(notebook);
+    else await writeFile(notebook, []);
   };
 
   const importNotebook = async () => {
@@ -371,7 +372,7 @@ export default function NotebookPanel({ editorText, onLoad }: Props) {
               <li key={h.query_id}>{displaySafe(`${h.title}: ${h.values.join(", ")}`)}</li>
             ))}
           </ul>
-          <button type="button" className="btn btn-small" onClick={() => void writeFile(notebook)}>
+          <button type="button" className="btn btn-small" onClick={() => void writeFile(notebook, [...new Set(leaks.hits.flatMap((h) => h.values))])}>
             Export anyway
           </button>
           <button type="button" className="btn btn-ghost btn-small" onClick={() => setLeaks(null)}>

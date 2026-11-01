@@ -111,11 +111,38 @@ pub fn notebook_case_values(state: &AppState, notebook_id: &str) -> CmdResult<Ve
     })
 }
 
-/// Write a notebook file at `path` (renamed into place when complete; the case and its WAL are refused).
-pub fn notebook_export(state: &AppState, notebook_id: &str, path: &Path) -> CmdResult<()> {
+/// Write a notebook file at `path` (renamed into place when complete; the case and its WAL are refused). The case
+/// values are checked again here, at the write: one the analyst did not accept (`accepted`, the values the warning
+/// showed) is refused, naming it, so a query an agent added while the save dialog was open never leaves unseen.
+pub fn notebook_export(
+    state: &AppState,
+    notebook_id: &str,
+    path: &Path,
+    accepted: &[String],
+) -> CmdResult<()> {
     let ticket = state.ticket();
     with_case(state, ticket, |open| {
-        let text = notebooks::export_text(open.case.conn(), notebook_id, sparrow_core::VERSION)?;
+        let conn = open.case.conn();
+        let (_, _, qs) = notebooks::notebook_queries(conn, notebook_id)?;
+        let pairs: Vec<(String, String)> = qs
+            .into_iter()
+            .map(|q| (q.summary.query_id, q.sql))
+            .collect();
+        let unseen: Vec<String> = notebooks::case_values_in(conn, &pairs)?
+            .into_iter()
+            .flat_map(|h| h.values)
+            .filter(|v| !accepted.contains(v))
+            .collect();
+        if !unseen.is_empty() {
+            return Err(CmdError::new(
+                "invalid",
+                format!(
+                    "the notebook now holds values from this case that were not shown: {}; nothing was written (export again to review them)",
+                    unseen.join(", ")
+                ),
+            ));
+        }
+        let text = notebooks::export_text(conn, notebook_id, sparrow_core::VERSION)?;
         atomic(open, path, |tmp| {
             std::fs::write(tmp, &text)
                 .map_err(|e| CmdError::new("io", format!("could not write {}: {e}", tmp.display())))
@@ -235,8 +262,9 @@ pub mod commands {
         state: State<'_, AppState>,
         notebook_id: String,
         path: String,
+        accepted: Vec<String>,
     ) -> CmdResult<()> {
-        super::notebook_export(&state, &notebook_id, Path::new(&path))
+        super::notebook_export(&state, &notebook_id, Path::new(&path), &accepted)
     }
 
     #[tauri::command(async)]
