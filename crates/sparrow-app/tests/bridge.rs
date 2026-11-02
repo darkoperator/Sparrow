@@ -475,6 +475,16 @@ fn requests_run_one_at_a_time() {
 }
 
 #[test]
+fn output_far_larger_than_the_socket_buffers_arrives_whole() {
+    let f = fixture(Some("Carol"));
+    let case = f.case_arg();
+    let sql = "SELECT repeat('x', 100000) AS big FROM range(200)";
+    let (code, out, err) = f.ask(&["query", "--case", &case, sql, "--limit", "200", "--json"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out.matches('x').count(), 200 * 100_000);
+}
+
+#[test]
 fn a_client_that_stops_reading_does_not_hold_up_the_close() {
     let f = fixture(Some("Carol"));
     let d = f.discovery();

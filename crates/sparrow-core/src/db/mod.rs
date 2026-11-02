@@ -183,10 +183,14 @@ fn another_writer(path: &Path, detail: &str) -> Error {
 }
 
 /// DuckDB's error opening or attaching `path`: its file-lock conflict (another process holds the case as writer)
-/// becomes `Error::WriterBusy`; any other error stays a database error.
+/// becomes `Error::WriterBusy`; any other error stays a database error. On Windows the conflict reads "File is already
+/// open in", DuckDB's own words (the system's sentence before them is in the system's language).
 pub(crate) fn lock_error(path: &Path, e: duckdb::Error) -> Error {
     let msg = e.to_string();
-    if msg.contains("Could not set lock") || msg.contains("Conflicting lock") {
+    if msg.contains("Could not set lock")
+        || msg.contains("Conflicting lock")
+        || msg.contains("File is already open in")
+    {
         another_writer(path, &msg)
     } else {
         e.into()
@@ -956,6 +960,9 @@ mod tests {
         assert!(err.to_string().contains("Out of Memory"), "{err}");
         let conn = Connection::open_in_memory().unwrap();
         cap_memory_using(&conn, true, Some("256MB")).unwrap();
+        // Each thread of the sort pins its own blocks: on a machine with many cores they alone exceed so low a limit,
+        // spilling or not.
+        conn.execute_batch("SET threads = 4").unwrap();
         let spill: String = conn
             .query_row("SELECT current_setting('temp_directory')", [], |r| r.get(0))
             .unwrap();

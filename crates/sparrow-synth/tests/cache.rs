@@ -26,16 +26,31 @@ fn small() -> Scenario {
 /// Make everything under `path` writable again (directories too) so a test can tamper with an
 /// entry or a temp directory holding read-only entries can be removed. Best effort.
 fn unlock(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
     if path.is_dir() {
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
+        set_writable(path, 0o755);
         if let Ok(rd) = std::fs::read_dir(path) {
             for e in rd.flatten() {
                 unlock(&e.path());
             }
         }
     } else {
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644));
+        set_writable(path, 0o644);
+    }
+}
+
+#[cfg(unix)]
+fn set_writable(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+}
+
+#[cfg(not(unix))]
+#[allow(clippy::permissions_set_readonly_false)] // Windows has only the read-only attribute: nothing widens here.
+fn set_writable(path: &Path, _mode: u32) {
+    if let Ok(meta) = std::fs::metadata(path) {
+        let mut perm = meta.permissions();
+        perm.set_readonly(false);
+        let _ = std::fs::set_permissions(path, perm);
     }
 }
 
@@ -512,7 +527,11 @@ fn the_bypass_stores_nothing_and_ingests_in_memory() {
 use sparrow_synth::cache::{EntryLock, prune_other_builds};
 
 fn dead_pid() -> u32 {
-    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let mut quick = std::process::Command::new(if cfg!(windows) { "cmd" } else { "true" });
+    if cfg!(windows) {
+        quick.args(["/C", "exit"]);
+    }
+    let mut child = quick.spawn().unwrap();
     let pid = child.id();
     child.wait().unwrap();
     pid
@@ -620,6 +639,23 @@ fn cold_builders_in_separate_processes_build_each_entry_once() {
     );
 }
 
+/// A directory opened so that its times can be set.
+fn open_dir(path: &Path) -> std::fs::File {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_WRITE_ATTRIBUTES: u32 = 0x100;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        std::fs::OpenOptions::new()
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+            .unwrap()
+    }
+    #[cfg(not(windows))]
+    std::fs::File::open(path).unwrap()
+}
+
 #[test]
 fn only_the_current_builds_cache_is_kept() {
     let tmp = tmpdir();
@@ -639,10 +675,7 @@ fn only_the_current_builds_cache_is_kept() {
     write(t, "synth-old/x", "x");
     write(t, "synth-new/x", "x");
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
-    std::fs::File::open(t.join("synth-old"))
-        .unwrap()
-        .set_modified(old)
-        .ok();
+    open_dir(&t.join("synth-old")).set_modified(old).ok();
     prune_other_builds(t, &keep);
     assert!(!stale.root().exists(), "another build's cache is removed");
     assert!(current.root().join("trees").is_dir());
@@ -898,7 +931,6 @@ fn a_case_file_changed_behind_the_cache_is_rebuilt() {
 
 #[test]
 fn private_directories_of_dead_processes_are_removed_and_live_ones_kept() {
-    use std::os::unix::fs::PermissionsExt;
     let tmp = tmpdir();
     let fp = "1".repeat(64);
     let root = tmp.path().join("sparrow-cache").join(&fp[..16]);
@@ -914,11 +946,15 @@ fn private_directories_of_dead_processes_are_removed_and_live_ones_kept() {
         write(&root, &format!("{sub}/{name}/inner/file"), "x");
     }
     // A read-only dead directory (a half-published entry) goes too.
-    std::fs::set_permissions(
-        root.join(format!("tmp/abc-{dead}-3/inner")),
-        std::fs::Permissions::from_mode(0o555),
-    )
-    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            root.join(format!("tmp/abc-{dead}-3/inner")),
+            std::fs::Permissions::from_mode(0o555),
+        )
+        .unwrap();
+    }
     let _ = Cache::always(tmp.path(), &fp);
     for (sub, name) in [
         ("runs", format!("case-{dead}-0")),

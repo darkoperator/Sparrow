@@ -152,9 +152,9 @@ pub(crate) fn take_with(
         let _ = std::fs::remove_file(&copy_wal);
         snap.taken_at = Utc::now();
         if before.0.is_some() {
-            std::fs::copy(&wal, &copy_wal).with_context(|| format!("copying {}", wal.display()))?;
+            copy(&wal, &copy_wal)?;
         }
-        std::fs::copy(&case, &snap.case).with_context(|| format!("copying {}", case.display()))?;
+        copy(&case, &snap.case)?;
         let after = (stamp(&wal)?, stamp(&case)?);
         if before != after {
             continue;
@@ -171,6 +171,23 @@ pub(crate) fn take_with(
         "the case changed while it was being copied ({ATTEMPTS} attempts): the app is writing to it; try again"
     ))
     .into())
+}
+
+/// Copy `from` to `to`. Windows lets no one read a file DuckDB holds for writing (a sharing violation): refused, as a
+/// held case is without the option.
+fn copy(from: &Path, to: &Path) -> Result<()> {
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    match std::fs::copy(from, to) {
+        Ok(_) => Ok(()),
+        Err(e) if cfg!(windows) && e.raw_os_error() == Some(ERROR_SHARING_VIOLATION) => {
+            Err(crate::Refused(format!(
+                "a case held by another program cannot be copied on Windows: close it there and run this again ({})",
+                from.display()
+            ))
+            .into())
+        }
+        Err(e) => Err(e).with_context(|| format!("copying {}", from.display())),
+    }
 }
 
 /// Where copies of `case` go, in order: beside the case, else the system temp directory.
@@ -416,6 +433,7 @@ mod tests {
 
     /// A copy left beside `case` by process `pid`, holding `files` and, when `marked_for` is given, the marker a
     /// snapshot writes (naming that case and `pid`).
+    #[cfg(unix)]
     fn leftover(case: &Path, pid: u64, marked_for: Option<&Path>, files: &[&str]) -> PathBuf {
         let dir = case
             .parent()
@@ -433,6 +451,7 @@ mod tests {
         dir
     }
 
+    #[cfg(unix)]
     fn canon(dir: &Path) -> PathBuf {
         std::fs::canonicalize(dir.parent().unwrap())
             .unwrap()

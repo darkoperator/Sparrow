@@ -29,15 +29,47 @@ fn invalid(msg: String) -> CmdError {
     CmdError::new("invalid", msg)
 }
 
-#[cfg(unix)]
-fn same_file(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    a.dev() == b.dev() && a.ino() == b.ino()
+/// Whether both paths reach one file, by identity: a hard link is another name for it.
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (file_id(a), file_id(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
-#[cfg(not(unix))]
-fn same_file(_: &std::fs::Metadata, _: &std::fs::Metadata) -> bool {
-    false
+#[cfg(unix)]
+fn file_id(path: &Path) -> std::io::Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(path)?;
+    Ok((meta.dev(), meta.ino()))
+}
+
+#[cfg(windows)]
+fn file_id(path: &Path) -> std::io::Result<(u32, u32, u32)> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, GetFileInformationByHandle,
+    };
+    // No access rights asked for: this reads attributes only, which DuckDB's lock on an open case does not refuse.
+    let file = std::fs::OpenOptions::new()
+        .access_mode(0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    // SAFETY: the handle is open for the whole call and `info` is a valid place for the answer; the all-zero bit
+    // pattern is valid for this plain struct of integers.
+    let info = unsafe {
+        let mut info: BY_HANDLE_FILE_INFORMATION = std::mem::zeroed();
+        if GetFileInformationByHandle(file.as_raw_handle(), &mut info) == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        info
+    };
+    Ok((
+        info.dwVolumeSerialNumber,
+        info.nFileIndexHigh,
+        info.nFileIndexLow,
+    ))
 }
 
 /// The target must be a file name in a folder that exists, and must not be, or alias, the open case or its
@@ -74,13 +106,11 @@ fn check_target(open: &OpenCase, target: &Target) -> CmdResult<()> {
             let mut wal = case.clone().into_os_string();
             wal.push(".wal");
             for protected in [case.as_path(), Path::new(&wal)] {
-                if let Ok(p) = std::fs::metadata(protected) {
-                    if same_file(&meta, &p) {
-                        return Err(invalid(format!(
-                            "refusing to write the export over the case ({}); choose another file",
-                            path.display()
-                        )));
-                    }
+                if same_file(&path, protected) {
+                    return Err(invalid(format!(
+                        "refusing to write the export over the case ({}); choose another file",
+                        path.display()
+                    )));
                 }
             }
         }

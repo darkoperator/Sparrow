@@ -21,6 +21,9 @@ thiserror.workspace = true
 uuid.workspace = true
 zip.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 [build-dependencies]
 sha2.workspace = true
 

@@ -1,11 +1,14 @@
 use sparrow_core::fixtures;
 use sparrow_core::fixtures::{hawk4, portal, ual};
-use sparrow_core::ingest::context::ParseContext;
-use sparrow_core::ingest::parser::{ArtifactParser, ParserRegistry};
+use sparrow_core::ingest::parser::ParserRegistry;
 use sparrow_core::ingest::{IngestOptions, ingest_path};
-use sparrow_core::readers::text::line_spans;
 use sparrow_core::verify::{source_ref, verify_record};
-use sparrow_core::{Case, Error, Result};
+use sparrow_core::{Case, Error};
+#[cfg(unix)]
+use sparrow_core::{
+    Result, ingest::context::ParseContext, ingest::parser::ArtifactParser,
+    readers::text::line_spans,
+};
 use std::path::PathBuf;
 
 fn setup() -> (tempfile::TempDir, PathBuf, Case, String) {
@@ -127,7 +130,9 @@ fn source_ref_formats_single_and_multi_line() {
 }
 
 /// Test parser: every physical line becomes a record in table "test_lines".
+#[cfg(unix)]
 struct LinesParser;
+#[cfg(unix)]
 impl ArtifactParser for LinesParser {
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
         for (n, span) in line_spans(&ctx.text.text).into_iter().enumerate() {

@@ -2599,6 +2599,7 @@ mod tests {
     }
 
     /// What the shell reads back from `printf %s <word>`.
+    #[cfg(unix)]
     fn shell_reads(shell: &str, quoted: &str) -> Vec<u8> {
         let out = std::process::Command::new(shell)
             .arg("-c")
@@ -2613,6 +2614,7 @@ mod tests {
         out.stdout
     }
 
+    #[cfg(unix)]
     #[test]
     fn shell_quote_round_trips_through_a_posix_shell() {
         for s in [
@@ -2632,6 +2634,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn shell_quote_keeps_control_and_format_characters_on_one_line() {
         for s in [

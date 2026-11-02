@@ -14,5 +14,7 @@ export default defineConfig(({ command, mode }) => ({
   test: {
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
+    // The slowest tests take a few seconds: Vitest's default 5 s fails them when a build is using the CPU.
+    testTimeout: 20_000,
   },
 }));

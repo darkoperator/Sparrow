@@ -311,7 +311,8 @@ fn targets(agents: &[Agent], project: Option<&Path>) -> Result<Vec<(Agent, PathB
     let (base, in_project) = match project {
         Some(p) => (p.to_path_buf(), true),
         None => (
-            dirs::home_dir().context("no home folder: pass --project DIR")?,
+            // Not `dirs::home_dir`: on Windows it asks the system and ignores `%USERPROFILE%`.
+            std::env::home_dir().context("no home folder: pass --project DIR")?,
             false,
         ),
     };

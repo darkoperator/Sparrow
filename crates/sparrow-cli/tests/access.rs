@@ -127,6 +127,8 @@ fn access_json_conflicts_with_the_file_outputs() {
     assert!(!out.exists());
 }
 
+// Unix only: Windows does not allow a control character in a file name.
+#[cfg(unix)]
 #[test]
 fn access_csv_path_is_printed_terminal_safe() {
     let (tmp, path) = setup();

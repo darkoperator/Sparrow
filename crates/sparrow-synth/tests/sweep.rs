@@ -1,5 +1,7 @@
 //! scripts/sweep-target.sh: keeps the newest artifact per crate name in deps/, removes old
-//! incremental entries, leaves recent files alone, and `--dry-run` removes nothing.
+//! incremental entries, leaves recent files alone, and `--dry-run` removes nothing. Unix only: a bash script
+//! and `touch`.
+#![cfg(unix)]
 
 use chrono::{Duration, Utc};
 use std::path::Path;

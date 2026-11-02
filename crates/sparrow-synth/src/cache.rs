@@ -191,6 +191,7 @@ pub struct EntryLock {
 /// A lock this old is taken over whatever its owner is doing.
 const LOCK_MAX_AGE: Duration = Duration::from_secs(10 * 60);
 
+#[cfg(not(windows))]
 fn process_alive(pid: u32) -> bool {
     if !cfg!(unix) || pid == std::process::id() {
         return true;
@@ -202,6 +203,33 @@ fn process_alive(pid: u32) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(true)
+}
+
+/// Only the error for a process id nothing uses proves a process gone: any other failure to open it counts as alive,
+/// since a dead owner's cache is deleted. One that has exited may still be open through a handle someone kept, so its
+/// exit code decides.
+#[cfg(windows)]
+fn process_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_INVALID_PARAMETER, GetLastError, STILL_ACTIVE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    if pid == std::process::id() {
+        return true;
+    }
+    // SAFETY: the handle is checked before use and closed once; `code` outlives the call that writes it.
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return GetLastError() != ERROR_INVALID_PARAMETER;
+        }
+        let mut code = 0;
+        let read = GetExitCodeProcess(process, &mut code);
+        CloseHandle(process);
+        read == 0 || code == STILL_ACTIVE as u32
+    }
 }
 
 fn lock_is_stale(path: &Path) -> bool {

@@ -219,7 +219,9 @@ fn help_lists_accounts_first_among_the_read_commands_and_finding_list_points_to_
 }
 
 /// A case path with a space, a single quote and `;` (and one with a control character): the `next` command is
-/// shell-quoted so that running it executes `sparrow accounts` on that very case, in JSON and in plain output.
+/// shell-quoted so that running it executes `sparrow accounts` on that very case, in JSON and in plain output. Unix
+/// only: it runs the command through `sh`.
+#[cfg(unix)]
 #[test]
 fn the_next_command_is_shell_quoted_and_runs_on_an_odd_case_path() {
     let tmp = tempfile::tempdir().unwrap();

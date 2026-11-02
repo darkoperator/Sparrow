@@ -193,6 +193,8 @@ fn trees_are_deterministic_and_clean() {
     }
 }
 
+// Unix only: a file name cannot hold a backslash on Windows.
+#[cfg(unix)]
 #[test]
 fn non_windows_log_sits_beside_output_and_the_project_is_the_collection() {
     let mut o = opts(28);
@@ -214,6 +216,8 @@ fn non_windows_log_sits_beside_output_and_the_project_is_the_collection() {
     assert!(report.ok, "{:#?}", report.problems);
 }
 
+// Unix only: a file name cannot hold a backslash on Windows.
+#[cfg(unix)]
 #[test]
 fn non_windows_triage_folder_keeps_the_literal_backslash_name() {
     let mut o = opts(29);

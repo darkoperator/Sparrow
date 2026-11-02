@@ -43,6 +43,24 @@ fn held() -> (tempfile::TempDir, std::path::PathBuf, Case) {
     (tmp, path, case)
 }
 
+/// Windows lets no one read a file DuckDB holds for writing, so no copy can be taken: refused like a held case, saying
+/// why, and leaving nothing behind.
+#[cfg(windows)]
+#[test]
+fn snapshot_of_a_held_case_is_refused_on_windows() {
+    let (tmp, path, _held) = held();
+    let (code, _, err) = sparrow(
+        tmp.path(),
+        &["events", "--case", path.to_str().unwrap(), "--snapshot"],
+        &[],
+    );
+    assert_eq!(code, 4, "{err}");
+    assert!(err.contains("cannot be copied on Windows"), "{err}");
+    assert!(leftovers(tmp.path()).is_empty());
+}
+
+// Unix only: Windows lets no one read a file DuckDB holds for writing.
+#[cfg(unix)]
 #[test]
 fn snapshot_reads_a_case_held_by_a_writer() {
     let (tmp, path, _held) = held();

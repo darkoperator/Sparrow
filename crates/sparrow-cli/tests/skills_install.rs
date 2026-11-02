@@ -12,11 +12,13 @@ fn repo_skills() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills")
 }
 
-/// `sparrow skills ARGS --json` with HOME at `home`; the exit code and the JSON.
+/// `sparrow skills ARGS --json` with the home folder at `home` (`HOME`, or `USERPROFILE` on Windows); the exit code and
+/// the JSON.
 fn skills(home: &Path, args: &[&str]) -> (i32, Value) {
     let out = Command::cargo_bin("sparrow")
         .unwrap()
         .env("HOME", home)
+        .env("USERPROFILE", home)
         .env_remove("SPARROW_BRIDGE")
         .arg("skills")
         .args(args)
@@ -165,6 +167,7 @@ fn a_folder_sparrow_did_not_write_and_a_symlink_are_left_alone() {
     let dir = home.path().join(".agents/skills");
     std::fs::create_dir_all(dir.join("bec-triage")).unwrap();
     std::fs::write(dir.join("bec-triage/SKILL.md"), "someone else's").unwrap();
+    #[cfg(unix)]
     let checkout = tempfile::tempdir().unwrap();
     #[cfg(unix)]
     std::os::unix::fs::symlink(checkout.path(), dir.join("sparrow-triage")).unwrap();
@@ -179,6 +182,7 @@ fn a_folder_sparrow_did_not_write_and_a_symlink_are_left_alone() {
         "someone else's"
     );
     // --force replaces the foreign folder but never follows or replaces a symlink.
+    #[cfg_attr(not(unix), allow(unused_variables))]
     let (_, json) = skills(home.path(), &["install", "--agent", "agents", "--force"]);
     same_tree(&dir.join("bec-triage"), "bec-triage");
     #[cfg(unix)]

@@ -26,6 +26,10 @@ anyhow.workspace = true
 getrandom = "0.3"
 hex.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+# The file identity that tells a hard link to the open case (cmd/export.rs).
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 csv.workspace = true
 # The failure-injection hooks of core (a feature of the existing crate; no new dependency).

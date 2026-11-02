@@ -68,7 +68,8 @@ fn investigate_json_has_next_steps() {
     assert!(
         next.iter().all(|n| {
             let c = n["command"].as_str().unwrap();
-            c.starts_with("sparrow ") && c.ends_with(&format!("--case {p}"))
+            c.starts_with("sparrow ")
+                && (c.ends_with(&format!("--case {p}")) || c.ends_with(&format!("--case '{p}'")))
         }),
         "{v}"
     );

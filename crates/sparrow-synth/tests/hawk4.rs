@@ -142,6 +142,8 @@ fn simple_files_are_superseded_and_json_beats_csv() {
     }
 }
 
+// Unix only: a file name cannot hold a backslash on Windows.
+#[cfg(unix)]
 #[test]
 fn non_windows_writes_the_literal_backslash_tenant_folder() {
     let mut o = opts(35);

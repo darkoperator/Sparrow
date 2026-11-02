@@ -141,9 +141,52 @@ pub(crate) fn restart(state: &AppState) {
 }
 
 struct Job {
-    stream: TcpStream,
+    stream: Sender,
     reader: BufReader<TcpStream>,
     req: Request,
+}
+
+/// The sending end of a request's connection. Non-blocking underneath, so a stop can end a send to a CLI that stopped
+/// reading on every platform: Windows does not wake a blocked send when another thread shuts the socket down, and a
+/// socket whose send timed out cannot be used again there.
+struct Sender {
+    stream: TcpStream,
+    cut: Arc<AtomicBool>,
+}
+
+impl Sender {
+    fn new(stream: TcpStream, cut: Arc<AtomicBool>) -> std::io::Result<Sender> {
+        stream.set_nonblocking(true)?;
+        Ok(Sender { stream, cut })
+    }
+
+    fn try_clone(&self) -> std::io::Result<Sender> {
+        Sender::new(self.stream.try_clone()?, self.cut.clone())
+    }
+}
+
+impl Write for Sender {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let started = Instant::now();
+        loop {
+            match self.stream.write(buf) {
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if self.cut.load(Ordering::SeqCst) {
+                        return Err(std::io::ErrorKind::BrokenPipe.into());
+                    }
+                    if started.elapsed() >= SEND_STALL {
+                        return Err(std::io::ErrorKind::TimedOut.into());
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                done => return done,
+            }
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.stream.flush()
+    }
 }
 
 /// What the worker and the stopper share.
@@ -153,8 +196,10 @@ struct Shared {
     wake: Condvar,
     /// The interrupt handles of the read now running (every connection it opened); empty while a write runs.
     reading: Mutex<Vec<Arc<duckdb::InterruptHandle>>>,
-    /// The connection of the request now running, so a stop can break a send blocked on a CLI that stopped reading.
+    /// The connection of the request now running, so a stop can break it.
     current: Mutex<Option<TcpStream>>,
+    /// A stop gave up on the CLIs that stopped reading: a [`Sender`] with a full socket fails instead of waiting.
+    cut: Arc<AtomicBool>,
     /// A write is running (it holds the case lock) or sending its answer: a stop waits for it.
     writing: AtomicBool,
     handshakes: AtomicUsize,
@@ -174,6 +219,7 @@ impl Shared {
             wake: Condvar::new(),
             reading: Mutex::new(Vec::new()),
             current: Mutex::new(None),
+            cut: Arc::new(AtomicBool::new(false)),
             writing: AtomicBool::new(false),
             handshakes: AtomicUsize::new(0),
         }
@@ -269,6 +315,7 @@ impl Bridge {
         while lock(&self.shared.current).is_some() && waited.elapsed() < STOP_GRACE {
             std::thread::sleep(Duration::from_millis(20));
         }
+        self.shared.cut.store(true, Ordering::SeqCst);
         if let Some(s) = lock(&self.shared.current).as_ref() {
             let _ = s.shutdown(std::net::Shutdown::Both);
         }
@@ -329,8 +376,9 @@ fn handshake(stream: TcpStream, shared: &Shared, token: &str) {
     let Ok(req) = serde_json::from_str::<Request>(&req) else {
         return;
     };
-    let _ = stream.set_read_timeout(None);
-    let _ = stream.set_write_timeout(Some(SEND_STALL));
+    let Ok(stream) = Sender::new(stream, shared.cut.clone()) else {
+        return;
+    };
     let mut job = Job {
         stream,
         reader,
@@ -347,7 +395,7 @@ fn handshake(stream: TcpStream, shared: &Shared, token: &str) {
 }
 
 /// Answer with `msg` on stderr and exit code `code`.
-fn refuse(stream: &mut TcpStream, msg: &str, code: u8) {
+fn refuse(stream: &mut dyn Write, msg: &str, code: u8) {
     let _ = wire::write_frame(stream, ERR, format!("error: {msg}\n").as_bytes());
     let _ = wire::write_frame(stream, EXIT, &[code]);
 }
@@ -408,7 +456,7 @@ impl Worker {
                 }
             };
             let Some(mut job) = job else { break };
-            *lock(&shared.current) = job.stream.try_clone().ok();
+            *lock(&shared.current) = job.stream.stream.try_clone().ok();
             self.serve(&shared, &mut job);
             *lock(&shared.current) = None;
             shared.writing.store(false, Ordering::SeqCst);

@@ -989,7 +989,8 @@ fn discovery_marks_a_file_whose_size_cannot_be_read_and_one_over_the_limit() {
         .rel_path
         .clone();
     let p = sparrow_app::cmd::ingest::ingest_discover_with(&copy, &|path| {
-        if path.to_string_lossy().ends_with(&target) {
+        // `rel_path` is written with `/` on every platform.
+        if path.to_string_lossy().replace('\\', "/").ends_with(&target) {
             Err(std::io::Error::other("injected metadata failure"))
         } else {
             std::fs::metadata(path)

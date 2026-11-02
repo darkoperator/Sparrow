@@ -426,7 +426,8 @@ of the same case removes such a directory only when its marker file (`.sparrow-s
 this case and a process that has ended, you own it, and it holds nothing but the copy (and DuckDB's spill folder);
 it says so on stderr (`note: removed <dir>, ...`). A directory beside the case that may be a leftover but is not proven one is never deleted:
 a `warning: <dir> may be a snapshot copy left by an interrupted run; not removed (<why>)` line asks you to check it.
-(On Windows leftovers are neither removed nor reported: delete `.sparrow-snapshot-*` directories by hand.) Every
+On Windows a held file cannot be read at all, so `--snapshot` on a case another program holds exits 4 and asks you to
+close it there; leftovers are neither removed nor reported, so delete `.sparrow-snapshot-*` directories by hand. Every
 snapshot read says so: a stderr line `note: read a snapshot of <case> taken <time> ...` and, with `--json`,
 `"snapshot": {"case": …, "taken_at": …}`. Writes never use a copy: with the case held they still exit 4. A free
 case is read directly, as without the option.
@@ -439,7 +440,7 @@ Exit codes:
 | 1 | any other error, including a refused `query` (not a single SELECT, or one that tries to write or reach outside the case) and a bad option |
 | 2 | `ingest` completed but a file failed, a record could not be parsed, or a file's record counts did not reconcile; `verify`: a record no longer matches its source; `finding show` with several ids: one or more ids were not found (the others are shown, the unknown ones listed); `synth coverage` / `conformance`: a gap |
 | 3 | the audit chain is broken (`audit verify`, and any write refused because of it) |
-| 4 | the case is open by another writer (a write, and also a read or `audit verify` while a writer holds the case: `--snapshot` reads a copy instead); through the app's agent bridge: refused (a heavy command, another version), busy, or stopped by a close |
+| 4 | the case is open by another writer (a write, and also a read or `audit verify` while a writer holds the case: `--snapshot` reads a copy instead, except on Windows, where it exits 4 too); through the app's agent bridge: refused (a heavy command, another version), busy, or stopped by a close |
 | 5 | an invalid agent decision (a bad status, verdict, phase or time, a missing reason, an unknown object, an evidence reference not in the case, text over its cap: 16 KiB for notes, narratives, reasons and comments, 500 characters for titles) or an `export --out` that would overwrite the case; nothing was written |
 | 6 | `ingest` completed and the only records not loaded are ones the collector lost: it wrote placeholder or error rows instead of data (their `parse_errors` start `collector lost the record: `). Any file, parse or reconciliation problem makes it 2 instead. The plain line of such a file says `N records rejected (M lost by the collector)`, or `M records lost by the collector` when all are; `--json` has `records_error` and `records_collector_lost` per file |
 

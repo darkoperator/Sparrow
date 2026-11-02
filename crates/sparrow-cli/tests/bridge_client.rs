@@ -1,5 +1,9 @@
 //! The CLI's side of the agent bridge, through the binary: when it forwards a command to the app, and when it runs
 //! it here. A fake app (a loopback listener) stands in for the real one.
+//!
+//! Unix only: the fake app is found through `SPARROW_BRIDGE_DIR`, which Windows deliberately ignores (only the profile's
+//! own directory is trusted to keep the token private).
+#![cfg(unix)]
 
 #[allow(dead_code)]
 mod events_common;

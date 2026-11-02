@@ -39,15 +39,15 @@ static CACHE: LazyLock<Cache> = LazyLock::new(|| sparrow_synth::test_cache!());
 /// A private copy of the detected `bec-aitm` case as a file in `dir`.
 fn case_file(dir: &Path) -> PathBuf {
     let dest = dir.join("case.duckdb");
-    let got = CACHE.builtin_case(
-        "bec-aitm",
-        &GenerateOptions::new(Collector::Invictus, 17),
-        Stage::Detected,
-    );
+    let opts = GenerateOptions::new(Collector::Invictus, 17);
+    let got = CACHE.builtin_case("bec-aitm", &opts, Stage::Detected);
     match got.case.path() {
-        Some(src) => {
-            got.case.conn().execute_batch("CHECKPOINT").unwrap();
-            std::fs::copy(src, &dest).unwrap();
+        // From the closed, checkpointed cache entry: Windows refuses to read a file DuckDB holds open. The bytes, not
+        // `fs::copy`, which would carry over the entry's read-only attribute.
+        Some(_) => {
+            let scenario = sparrow_synth::scenario::load("bec-aitm").unwrap();
+            let entry = CACHE.case_entry(&scenario, &opts, Stage::Detected).unwrap();
+            std::fs::write(&dest, std::fs::read(entry.join("case.duckdb")).unwrap()).unwrap();
         }
         // SPARROW_NO_CACHE: the cache hands out an in-memory case; build the file the way the cache does.
         None => {
@@ -59,6 +59,37 @@ fn case_file(dir: &Path) -> PathBuf {
         }
     }
     dest
+}
+
+/// An open case's bytes, to show a refused export left them alone. On Windows, which lets nothing else read a file
+/// DuckDB holds open, the case closes for the read and opens again.
+fn open_case_bytes(state: &AppState, path: &Path) -> Vec<u8> {
+    if cfg!(windows) {
+        case_close(state).unwrap();
+        let bytes = std::fs::read(path).unwrap();
+        case_open(state, path, false).unwrap();
+        bytes
+    } else {
+        std::fs::read(path).unwrap()
+    }
+}
+
+/// Link `link` to the file `target`. False when Windows does not let this user make symbolic links (it takes Developer
+/// Mode or an elevated shell), so the test skips that part; elsewhere a failure is the test's.
+fn symlink_file(target: &Path, link: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link).unwrap();
+        true
+    }
+    #[cfg(windows)]
+    {
+        let made = std::os::windows::fs::symlink_file(target, link);
+        if let Err(e) = &made {
+            eprintln!("skipping the symbolic link checks: {e}");
+        }
+        made.is_ok()
+    }
 }
 
 fn state_with_settings(dir: &Path) -> AppState {
@@ -1427,10 +1458,12 @@ fn export_never_overwrites_the_case_and_a_failure_leaves_nothing() {
 fn a_partial_symlink_to_the_case_is_never_followed() {
     let tmp = tempfile::tempdir().unwrap();
     let (state, s) = open_seeded(tmp.path());
-    let before = std::fs::read(&s.path).unwrap();
+    let before = open_case_bytes(&state, &s.path);
     let out = tmp.path().join("report.md");
     let wal = PathBuf::from(format!("{}.wal", s.path.display()));
-    std::os::unix::fs::symlink(&s.path, tmp.path().join("report.md.partial")).unwrap();
+    if !symlink_file(&s.path, &tmp.path().join("report.md.partial")) {
+        return;
+    }
     export_report(&state, &out, true).unwrap();
     assert!(!std::fs::read_to_string(&out).unwrap().is_empty());
     // The link is still there, untouched, and the case is byte for byte what it was.
@@ -1440,13 +1473,14 @@ fn a_partial_symlink_to_the_case_is_never_followed() {
             .file_type()
             .is_symlink()
     );
-    assert_eq!(std::fs::read(&s.path).unwrap(), before);
+    assert_eq!(open_case_bytes(&state, &s.path), before);
     // The workbook writer gets a path of its own too, and a link to the WAL fares no better.
     let _ = std::fs::write(&wal, b"");
-    std::os::unix::fs::symlink(&wal, tmp.path().join("case.xlsx.partial")).unwrap();
+    assert!(symlink_file(&wal, &tmp.path().join("case.xlsx.partial")));
     export_workbook(&state, &tmp.path().join("case.xlsx")).unwrap();
-    assert_eq!(std::fs::read(&s.path).unwrap(), before);
+    // Checked first: closing the case, as `open_case_bytes` does on Windows, removes an empty WAL.
     assert_eq!(std::fs::metadata(&wal).unwrap().len(), 0);
+    assert_eq!(open_case_bytes(&state, &s.path), before);
     let _ = std::fs::remove_file(&wal);
     // The case still opens.
     let again = AppState::default();
@@ -1473,7 +1507,7 @@ fn a_pre_existing_partial_file_is_left_intact() {
 fn differently_cased_case_and_wal_names_are_refused() {
     let tmp = tempfile::tempdir().unwrap();
     let (state, s) = open_seeded(tmp.path());
-    let before = std::fs::read(&s.path).unwrap();
+    let before = open_case_bytes(&state, &s.path);
     let dir = s.path.parent().unwrap();
     for name in [
         "CASE.duckdb",
@@ -1486,28 +1520,38 @@ fn differently_cased_case_and_wal_names_are_refused() {
         let e = export_workbook(&state, &dir.join(name)).unwrap_err();
         assert_eq!(e.kind, "invalid", "{name}: {e:?}");
     }
-    assert_eq!(std::fs::read(&s.path).unwrap(), before);
+    assert_eq!(open_case_bytes(&state, &s.path), before);
     assert!(leftovers(tmp.path()).is_empty());
+}
+
+/// The same file by identity, under another name. Made before the case opens: Windows refuses to link a file DuckDB
+/// holds open.
+#[test]
+fn a_hard_link_to_the_case_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let s = seeded_case(tmp.path());
+    let hard = tmp.path().join("hard.md");
+    std::fs::hard_link(&s.path, &hard).unwrap();
+    let state = state_with_settings(&tmp.path().join("settings"));
+    case_open(&state, &s.path, false).unwrap();
+    assert_eq!(
+        export_report(&state, &hard, true).unwrap_err().kind,
+        "invalid"
+    );
+    assert_eq!(export_workbook(&state, &hard).unwrap_err().kind, "invalid");
 }
 
 #[test]
 fn a_symlink_target_is_refused_and_an_earlier_export_is_overwritten() {
     let tmp = tempfile::tempdir().unwrap();
     let (state, s) = open_seeded(tmp.path());
-    let before = std::fs::read(&s.path).unwrap();
+    let before = open_case_bytes(&state, &s.path);
     let link = tmp.path().join("link.md");
-    std::os::unix::fs::symlink(&s.path, &link).unwrap();
-    let e = export_report(&state, &link, true).unwrap_err();
-    assert_eq!(e.kind, "invalid", "{e:?}");
-    assert_eq!(std::fs::read(&s.path).unwrap(), before);
-    // A hard link to the case is the same file by identity.
-    let hard = tmp.path().join("hard.md");
-    std::fs::hard_link(&s.path, &hard).unwrap();
-    assert_eq!(
-        export_report(&state, &hard, true).unwrap_err().kind,
-        "invalid"
-    );
-    assert_eq!(std::fs::read(&s.path).unwrap(), before);
+    if symlink_file(&s.path, &link) {
+        let e = export_report(&state, &link, true).unwrap_err();
+        assert_eq!(e.kind, "invalid", "{e:?}");
+        assert_eq!(open_case_bytes(&state, &s.path), before);
+    }
     // An ordinary earlier export is replaced.
     let out = tmp.path().join("report.md");
     std::fs::write(&out, b"old").unwrap();
@@ -3045,7 +3089,7 @@ fn sql_export_csv_writes_the_whole_result_capped() {
 fn sql_export_csv_refuses_the_case_and_bad_queries_and_leaves_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let (state, s) = open_seeded(tmp.path());
-    let before = std::fs::read(&s.path).unwrap();
+    let before = open_case_bytes(&state, &s.path);
     let wal = PathBuf::from(format!("{}.wal", s.path.display()));
     let upper = s
         .path
@@ -3054,7 +3098,7 @@ fn sql_export_csv_refuses_the_case_and_bad_queries_and_leaves_nothing() {
         let e = sql_export_csv(&state, "SELECT 1", target, "x").unwrap_err();
         assert_eq!(e.kind, "invalid", "{target:?}: {e:?}");
     }
-    assert_eq!(std::fs::read(&s.path).unwrap(), before);
+    assert_eq!(open_case_bytes(&state, &s.path), before);
     let out = tmp.path().join("bad.csv");
     for bad in [
         "DELETE FROM findings",
@@ -3084,7 +3128,7 @@ fn sql_export_csv_refuses_the_case_and_bad_queries_and_leaves_nothing() {
         "invalid"
     );
     assert!(leftovers(tmp.path()).is_empty());
-    assert_eq!(std::fs::read(&s.path).unwrap(), before);
+    assert_eq!(open_case_bytes(&state, &s.path), before);
 }
 
 #[test]
