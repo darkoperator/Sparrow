@@ -48,7 +48,7 @@ For a release build, use `cargo build --release -p sparrow-cli` (or `scripts/rel
 
 ## The review app
 
-The review app is a desktop app (Tauri) for the analyst. It opens a case file, or builds a new case from a collector folder, and shows the same case the CLI works on. Build it with `scripts/release.sh` (the CLI and the app; `--app` for the app alone). On macOS it produces `target/release/bundle/macos/Sparrow.app`. See [developer notes](docs/DEVELOPING.md#review-app) for running it from source.
+The review app is a desktop app (Tauri) for the analyst. It opens a case file, or builds a new case from a collector folder, and shows the same case the CLI works on. Build it with `scripts/release.sh` (the CLI and the app; `--app` for the app alone). On macOS it produces `target/release/bundle/macos/Sparrow.app`; on Windows, from Git Bash, an installer in `target/release/bundle/nsis/`. See [developer notes](docs/DEVELOPING.md#review-app) for running it from source.
 
 ![The Events window: every event record with a timeline chart, filters, and flagged rows](docs/images/app-events.jpg)
 

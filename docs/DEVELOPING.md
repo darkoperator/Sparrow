@@ -60,7 +60,7 @@ Export and availability goldens live under `crates/sparrow-core/tests/golden/`. 
 
 The analyst's review app is a Tauri v2 desktop app: `crates/sparrow-app` is the backend (each command is a plain function over the app state, wrapped by a thin `#[tauri::command]`; all logic stays in `sparrow-core`), and `app/` is the React + TypeScript (Vite) frontend, which only renders and calls commands through `app/src/api.ts`. Untrusted text is rendered as text through `displaySafe` (`app/src/text.ts`, the same rule as the CLI's `display_safe_line`); ESLint fails on `dangerouslySetInnerHTML`.
 
-Prerequisites: Node 22 and npm, plus the platform's Tauri prerequisites (on macOS, the Xcode Command Line Tools). Dependencies are pinned by `Cargo.lock` and `app/package-lock.json`; install the frontend's from the lockfile:
+Prerequisites: Node 22 and npm, plus the platform's Tauri prerequisites (on macOS, the Xcode Command Line Tools; on Windows, the Visual Studio C++ build tools, a Windows SDK and the WebView2 runtime, with Git Bash for `scripts/release.sh`). Dependencies are pinned by `Cargo.lock` and `app/package-lock.json`; install the frontend's from the lockfile:
 
 ```bash
 npm --prefix app ci --offline            # or without --offline on a machine with an empty npm cache
@@ -71,7 +71,7 @@ The Tauri CLI finds `crates/sparrow-app/tauri.conf.json` and runs its `beforeDev
 
 ### Release builds
 
-`scripts/release.sh` builds both release binaries from any directory: `--cli` only the CLI (`target/release/sparrow`), `--app` only the review app (`target/release/sparrow-app`, plus `target/release/bundle/macos/Sparrow.app` on macOS, where it asks Tauri for the `.app` bundle that `tauri.conf.json` leaves off), neither flag both. It installs the front-end packages from the lockfile first when `app/node_modules` is missing (`NPM_OFFLINE=1` for `npm ci --offline`) and honours `CARGO_TARGET_DIR`.
+`scripts/release.sh` builds both release binaries from any directory: `--cli` only the CLI (`target/release/sparrow`), `--app` only the review app (`target/release/sparrow-app`, plus a bundle where the script asks Tauri for one, since `tauri.conf.json` leaves bundling off: `target/release/bundle/macos/Sparrow.app` on macOS, and the per-user NSIS installer `target/release/bundle/nsis/Sparrow_<version>_<arch>-setup.exe` on Windows), neither flag both. On Windows, run it from Git Bash; the binaries end in `.exe`, the first bundle downloads the NSIS tools, and the installer holds the app only, not the CLI. It installs the front-end packages from the lockfile first when `app/node_modules` is missing (`NPM_OFFLINE=1` for `npm ci --offline`) and honours `CARGO_TARGET_DIR`.
 
 ### UI debugging in a browser
 
