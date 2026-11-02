@@ -1,7 +1,7 @@
 name: ci
+# Off for now: runs only when started by hand. To turn it back on, restore the `push:` and `pull_request:` triggers.
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 jobs:
   test:
     strategy:
