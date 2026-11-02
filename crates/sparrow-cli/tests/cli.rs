@@ -26,7 +26,7 @@ fn prints_version() {
         .arg("--version")
         .assert()
         .success()
-        .stdout(contains("sparrow 0.1.0"));
+        .stdout(contains(format!("sparrow {}", env!("CARGO_PKG_VERSION"))));
 }
 
 #[test]

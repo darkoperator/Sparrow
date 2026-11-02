@@ -22,6 +22,10 @@ flowchart LR
     R --> X
 ```
 
+## Install a release
+
+Test builds are on the [Releases page](https://github.com/darkoperator/Sparrow/releases), and each release's notes give the steps for your platform. Install the app and the CLI from the same release; they refuse to talk to each other across versions. To build from source instead, read on.
+
 ## Requirements
 
 - A supported Rust toolchain (Rust 1.85.1 or newer), Cargo, and a C/C++ compiler to build the bundled DuckDB. The first build compiles DuckDB and can take several minutes.

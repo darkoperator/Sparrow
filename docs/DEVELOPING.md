@@ -73,6 +73,17 @@ The Tauri CLI finds `crates/sparrow-app/tauri.conf.json` and runs its `beforeDev
 
 `scripts/release.sh` builds both release binaries from any directory: `--cli` only the CLI (`target/release/sparrow`), `--app` only the review app (`target/release/sparrow-app`, plus a bundle where the script asks Tauri for one, since `tauri.conf.json` leaves bundling off: `target/release/bundle/macos/Sparrow.app` on macOS, and the per-user NSIS installer `target/release/bundle/nsis/Sparrow_<version>_<arch>-setup.exe` on Windows), neither flag both. On Windows, run it from Git Bash; the binaries end in `.exe`, the first bundle downloads the NSIS tools, and the installer holds the app only, not the CLI. It installs the front-end packages from the lockfile first when `app/node_modules` is missing (`NPM_OFFLINE=1` for `npm ci --offline`) and honours `CARGO_TARGET_DIR`.
 
+Windows release builds link the C runtime statically (`+crt-static`, set by the script alone), so they run without the Visual C++ redistributable. To confirm it, `dumpbin /dependents` must not list `MSVCP140.dll` or `VCRUNTIME140.dll`.
+
+### Publishing a release
+
+1. Set the version in `Cargo.toml` and `app/package.json`, and refresh the locks with `cargo update --workspace` and `npm --prefix app install --package-lock-only`. The tag is `v` plus that exact version.
+2. Write the notes in `docs/releases/<tag>.md`, then commit.
+3. On each platform, run `scripts/release.sh --package` from that commit. It leaves the uploads in `target/release/dist`: the app and the CLI, together because the two refuse to talk across versions, and a checksum file. Builds are unsigned. Install one and start it before uploading.
+4. Tag and push the commit, then create the GitHub release from the tag: mark it a pre-release, paste the notes, and attach every platform's files.
+
+A release on a private repository is visible only to people with access to the repository.
+
 ### UI debugging in a browser
 
 `npm --prefix app run dev:mock` starts Vite on :5173 in `mock` mode (which sets the compile-time constant `__SPARROW_MOCK__`; no env variable is read, and `npm run dev`, `vite build` in any mode and Vitest compile it to `false`); open <http://localhost:5173> in a normal browser to inspect every screen against a fake backend with no Tauri window and no case. `app/src/mock/backend.ts` answers every command in `app/src/api.ts` with the recorded test fixtures plus generated stress data (a 40-column, 5,000-row table with a 2 KB `raw` cell, long user agents and hostile strings for `browse_page`/`sql_run`, 200-row pivot sections); decisions, timeline edits and highlights live in memory and reset on reload. A SQL text containing `slow` waits 10 s (try Cancel), one containing `error` fails, a case path containing `readonly` opens read-only and one containing `upgrade` asks for the upgrade. A "MOCK BACKEND — synthetic data" badge stays in the corner. The mock is loaded by a dynamic import behind that constant, so a build contains none of it.
