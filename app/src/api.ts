@@ -403,7 +403,10 @@ export interface AccessItem {
   to: string | null;
   size_bytes: number | null;
   item_time: string | null;
+  /** The application id; on an "other" record with none, the client the record names. */
   app: string | null;
+  /** The name the case's sign-ins or identities give `app`. */
+  app_name: string | null;
   ip: string | null;
   session_id: string | null;
   /** The owner of the data when it is not the account (shared or delegated mailbox, send as). */

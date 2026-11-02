@@ -23,7 +23,7 @@ export function item(over: Partial<AccessItem>): AccessItem {
   return {
     account: A, category: "mail_read", attribution: "ip", accessed: "2026-10-23T16:42:18Z", action: "read",
     item: "Q3 invoices", location: "\\Inbox", from: "ap@vendor.example", to: A, size_bytes: 10, item_time: null,
-    app: null, ip: "203.0.113.45", session_id: null, owner: null, note: null, source: "ual_events:MailItemsAccessed",
+    app: null, app_name: null, ip: "203.0.113.45", session_id: null, owner: null, note: null, source: "ual_events:MailItemsAccessed",
     source_table: "ual_events", record_key: "r1", basis: "accepted", row: "ual_events:r1", ...over,
   };
 }

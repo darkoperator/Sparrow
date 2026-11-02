@@ -1,4 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import Icon from "../ui/Icon";
 
 export interface MenuItem {
@@ -257,7 +258,7 @@ function MenuList({
 }
 
 /**
- * A context menu at a fixed position. Items are plain buttons; Escape or a click elsewhere closes it, arrows move
+ * A context menu at a fixed position, on the document body so that no pane beside the table can cover it. Items are plain buttons; Escape or a click elsewhere closes it, arrows move
  * between items, and an item with `items` opens a submenu to its right. Labels must already be safe text (callers pass
  * them through `displaySafe`).
  */
@@ -282,7 +283,7 @@ export default function CellMenu({
     return () => document.removeEventListener("mousedown", away);
   }, [onClose]);
 
-  return (
+  return createPortal(
     <div
       ref={ref}
       className="cell-menu-root"
@@ -309,6 +310,7 @@ export default function CellMenu({
         }}
         onBack={undefined}
       />
-    </div>
+    </div>,
+    document.body,
   );
 }

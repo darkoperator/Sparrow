@@ -29,6 +29,7 @@ import {
   type TagInfo,
 } from "../api";
 import { save } from "../dialog";
+import DateRangeFilter from "../grid/DateRangeFilter";
 import Grid, { cellText } from "../grid/Grid";
 import { loadJson, removeJson, saveJson } from "../grid/gridLayout";
 import { useFillHeight } from "../grid/useFillHeight";
@@ -569,7 +570,23 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
   // A field filter in effect whose column is hidden still narrows the grid: say so, with a way out.
   const hiddenFiltered = FIELDS.filter((f) => draft.fields[f].trim() !== "" && !cols.some((c) => COLUMN_FIELD[c.id] === f));
 
+  const canonical = (text: string, end: "from" | "to") => {
+    const r = parseUtc(text, end);
+    return r.ok ? r.value : undefined;
+  };
   const headerPanel = (column: string, close: () => void) => {
+    if (column === "event_time") {
+      return (
+        <DateRangeFilter
+          key={column}
+          label="Time"
+          from={canonical(draft.from, "from")}
+          to={canonical(draft.to, "to")}
+          onApply={(from, to) => apply({ from: from ?? "", to: to ?? "" })}
+          onClose={close}
+        />
+      );
+    }
     const field = COLUMN_FIELD[column];
     if (!field) return null;
     const query = shown?.query ?? buildQuery(draft, scopeKind && scopeValue ? { kind: scopeKind, value: scopeValue } : undefined);
@@ -587,6 +604,7 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
     );
   };
   const headerBadge = (column: string) => {
+    if (column === "event_time") return draft.from !== "" || draft.to !== "" ? <FilterBadge label="Time" text={`${draft.from} to ${draft.to}`} /> : null;
     const field = COLUMN_FIELD[column];
     if (!field || (draft.fields[field].trim() === "" && !errors[field])) return null;
     return <FilterBadge label={COLUMN_BY_ID.get(column)?.label ?? FIELD_LABEL[field]} text={draft.fields[field]} error={errors[field]} />;
@@ -745,6 +763,7 @@ export default function EventsView({ entity, chip, onClearChip, onRangeChange, o
             cellItems={cellItems}
             headerPanel={headerPanel}
             headerBadge={headerBadge}
+            panelLabel={(c) => (c === "event_time" ? "Filter by date…" : "Filter this column…")}
           />
         </div>
       </div>

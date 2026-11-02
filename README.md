@@ -58,8 +58,9 @@ The review app is a desktop app (Tauri) for the analyst. It opens a case file, o
 
 - **Events**: every event record in one grid, with a timeline chart, text search, field filters (`source`, `operation`, `account`, `ip`, `country`, `asn`, `device`, `session`, `tag`, `rule`), a time range, and suspicious/malicious flags. A row opens a detail panel with its flags, tags, and notes.
 - **Accounts, IPs, devices and sessions** open in their own tabs: tiles, the evidence coverage for the range, pivot tables, and findings, with links onward.
-- **Access** opens from an account tab, from an IP or device tab as a what-if, or from Events for the whole case, and answers "what did the attacker get?", with an Export CSV.
+- **Access** opens from an account tab, from an IP or device tab as a what-if, or from Events for the whole case, and answers "what did the attacker get?", with an Export CSV. Not every item has an app name: the App column falls back to the application id or the client the record names (`Client=OWA;...`), or `—` when the record names none. See [Access report](docs/REFERENCE.md#access-report).
 - **Review** is the queue of agent decisions waiting for the analyst. **Timeline** holds the case's investigation timeline entries (proposed, verified, rejected); **Tables** browses any evidence table with filters; **Highlights** colours rows that match the analyst's rules; **Share** exports your work as a bundle for another analyst and imports theirs (preview first, then confirm). The header's **Export** writes the report, the timeline CSV, the workbook, and the access report of the accounts with malicious activity (CSV, or a Markdown summary).
+- Every table sorts by a click on a column's header and filters from a right-click on it: its values with counts, or From/To date pickers on a date column (a right-click on a cell in a grid offers the same). Events and Tables filter on the backend; the other tables filter the rows they have loaded.
 - **SQL** runs read-only queries, with the built-in and case notebooks beside the editor.
 
 ![An IP tab: tiles, evidence coverage, the accounts that used it, and its findings](docs/images/app-ip.jpg)

@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { findingDetail, isCmdError, type FindingDetail as Detail } from "../api";
 import Grid from "../grid/Grid";
 import { useNav } from "../shell/nav";
-import { displaySafe, displaySafeMultiline } from "../text";
+import { useColumnView, ViewNote, type ViewColumn } from "../grid/columnView";
+import { displaySafe, displaySafeMultiline, unwrapLines } from "../text";
 
 /** The pill colour for a severity; the severity text is always shown in it. */
 function sevTone(severity: string): string {
@@ -11,6 +12,7 @@ function sevTone(severity: string): string {
 }
 
 const EVIDENCE_COLUMNS = ["time", "table", "key", "role", "summary", "context"];
+const EVIDENCE_VIEW: ViewColumn<unknown[]>[] = EVIDENCE_COLUMNS.map((id, i) => ({ id, label: id, value: (r) => r[i] }));
 
 /** One finding in full: evidence rows, facts, rule guidance, notes and the audit history. All text is shown as text. */
 export default function FindingDetail({ findingId }: { findingId: string }) {
@@ -49,6 +51,8 @@ export default function FindingDetail({ findingId }: { findingId: string }) {
       ]),
     [detail],
   );
+
+  const evidence = useColumnView(rows, EVIDENCE_VIEW);
 
   if (error) return <div role="alert">{displaySafe(error)}</div>;
   if (!detail) return <p>Loading…</p>;
@@ -89,14 +93,25 @@ export default function FindingDetail({ findingId }: { findingId: string }) {
       </section>
       <section>
         <h4>Evidence ({detail.evidence.length})</h4>
-        <Grid columns={EVIDENCE_COLUMNS} rows={rows} layoutId="finding-evidence" height={220} />
+        <ViewNote view={evidence} />
+        <Grid
+          columns={EVIDENCE_COLUMNS}
+          rows={evidence.rows}
+          layoutId="finding-evidence"
+          height={220}
+          sort={evidence.sort}
+          onSort={evidence.onSort}
+          headerPanel={evidence.panel}
+          headerBadge={evidence.badge}
+          panelLabel={evidence.panelLabel}
+        />
       </section>
       <div className="fd-pair">
         {detail.analyst_guidance && (
           <section>
             <h4>Guidance</h4>
             <div className="card fd-card">
-              <p className="prose">{displaySafeMultiline(detail.analyst_guidance)}</p>
+              <p className="prose">{displaySafeMultiline(unwrapLines(detail.analyst_guidance))}</p>
             </div>
           </section>
         )}

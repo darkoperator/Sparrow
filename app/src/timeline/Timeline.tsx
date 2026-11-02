@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   isCmdError,
   timelineEdit,
@@ -10,6 +10,7 @@ import {
   type NewEntryArgs,
   type TimelineEntry,
 } from "../api";
+import { useColumnView, useViewHeaders, ViewNote, type ViewColumn } from "../grid/columnView";
 import { useDataVersion, useRefreshBadges } from "../shell/nav";
 import { displaySafe } from "../text";
 import Icon from "../ui/Icon";
@@ -26,6 +27,14 @@ function statusTone(e: TimelineEntry): string {
 const count = new Intl.NumberFormat("en-US");
 
 type Editing = TimelineEntry | "new" | null;
+
+const TIMELINE_COLUMNS: ViewColumn<TimelineEntry>[] = [
+  { id: "time", label: "Time (UTC)", value: (e) => e.event_time, kind: "date" },
+  { id: "title", label: "Title", value: (e) => e.title, kind: "text" },
+  { id: "status", label: "Status", value: (e) => e.status, kind: "text" },
+  { id: "evidence", label: "Evidence", value: (e) => e.event_count, kind: "number" },
+  { id: "by", label: "Decided by", value: (e) => e.decided_by, kind: "text" },
+];
 
 /**
  * The timeline screen: entries grouped by phase, in time order, with the analyst's add / edit / verify / reject.
@@ -110,16 +119,23 @@ export function Timeline({ readOnly = false }: { readOnly?: boolean }) {
     }
   }
 
-  const visible = (entries ?? []).filter((e) => {
-    if (clientView) return e.status === "verified";
-    return showSuperseded || e.status !== "superseded";
-  });
+  const visible = useMemo(
+    () =>
+      (entries ?? []).filter((e) => {
+        if (clientView) return e.status === "verified";
+        return showSuperseded || e.status !== "superseded";
+      }),
+    [entries, clientView, showSuperseded],
+  );
+  const view = useColumnView(visible, TIMELINE_COLUMNS);
+  const { header, popover } = useViewHeaders(view, TIMELINE_COLUMNS);
   // Core's timestamps are fixed-width UTC text, so text order is time order; the entry id breaks ties.
   const byTime = (a: TimelineEntry, b: TimelineEntry) =>
     a.event_time < b.event_time ? -1 : a.event_time > b.event_time ? 1 : a.entry_id < b.entry_id ? -1 : 1;
   const groups = PHASES.map((p) => ({
     phase: p,
-    entries: visible.filter((e) => e.phase === p).sort(byTime),
+    // In time order until the analyst sorts by a column.
+    entries: view.sort ? view.rows.filter((e) => e.phase === p) : view.rows.filter((e) => e.phase === p).sort(byTime),
   })).filter((g) => g.entries.length > 0);
 
   // The header's summary and the phase rail describe the entries on screen (after the view toggles).
@@ -189,6 +205,7 @@ export function Timeline({ readOnly = false }: { readOnly?: boolean }) {
         />
       )}
       {entries === null && !error && <p className="tl-empty">Loading…</p>}
+      <ViewNote view={view} />
       {entries !== null && groups.length === 0 && <p className="tl-empty">No timeline entries to show.</p>}
       {groups.map((g) => (
         <section key={g.phase} aria-label={phaseLabel(g.phase)} className="tl-group">
@@ -199,11 +216,7 @@ export function Timeline({ readOnly = false }: { readOnly?: boolean }) {
           <table className="tl-table">
             <thead>
               <tr>
-                <th>Time (UTC)</th>
-                <th>Title</th>
-                <th>Status</th>
-                <th>Evidence</th>
-                <th>Decided by</th>
+                {TIMELINE_COLUMNS.map((c) => header(c.id))}
                 <th>Actions</th>
               </tr>
             </thead>
@@ -316,6 +329,7 @@ export function Timeline({ readOnly = false }: { readOnly?: boolean }) {
           </div>
         </section>
       ))}
+      {popover}
     </section>
   );
 }

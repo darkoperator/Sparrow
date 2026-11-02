@@ -10,9 +10,14 @@ import {
   type Filter,
   type Sort,
 } from "../api";
+import { parseUtc } from "../events/time";
+import DateRangeFilter from "../grid/DateRangeFilter";
 import Grid, { ROW_HEIGHT, type Cell } from "../grid/Grid";
 import { useFillHeight } from "../grid/useFillHeight";
 import { displaySafe } from "../text";
+import Icon from "../ui/Icon";
+import { columnKind } from "./columnKind";
+import ColumnQuickFilter from "./ColumnQuickFilter";
 import FilterBuilder, { FilterChips } from "./FilterBuilder";
 import RowDetail from "./RowDetail";
 import "./tables.css";
@@ -23,6 +28,8 @@ export interface TableRequest {
 }
 
 const PAGE = 500;
+const OPEN_FROM = "0001-01-01T00:00:00Z";
+const OPEN_TO = "9999-12-31T23:59:59Z";
 /** Space kept under the grid: the screen's bottom padding. */
 const TABLES_BOTTOM_PAD = 20;
 
@@ -196,6 +203,53 @@ export default function Tables({ initial }: { initial?: TableRequest }) {
     else addFilter({ op: "eq", column, value });
   };
 
+  const clearColumn = (column: string) => spec && begin({ ...spec, filters: spec.filters.filter((f) => f.column !== column) });
+  /** A date range replaces the column's earlier range. An open end is the far end of the time the column can hold. */
+  const applyRange = (info: ColumnInfo, from: string | undefined, to: string | undefined) => {
+    if (!spec) return;
+    const rest = spec.filters.filter((f) => !(f.column === info.name && f.op === "between"));
+    if (!from && !to) return begin({ ...spec, filters: rest });
+    const low = from ?? OPEN_FROM;
+    const high = to ?? OPEN_TO;
+    const day = columnKind(info.type) === "date";
+    begin({ ...spec, filters: [...rest, { op: "between", column: info.name, low: day ? low.slice(0, 10) : low, high: day ? high.slice(0, 10) : high }] });
+  };
+  const headerPanel = (column: string, close: () => void) => {
+    const info = columnInfo.find((c) => c.name === column);
+    if (!info || !spec) return null;
+    const on = spec.filters.filter((f) => f.column === column);
+    const kind = columnKind(info.type);
+    if (kind !== "time" && kind !== "date") {
+      return <ColumnQuickFilter key={column} column={info} active={on.length > 0} onAdd={addFilter} onClear={() => clearColumn(column)} onClose={close} />;
+    }
+    const range = on.find((f) => f.op === "between");
+    const end = (v: unknown, which: "from" | "to", open: string) => {
+      if (typeof v !== "string" || v === open) return undefined;
+      const r = parseUtc(v, which);
+      return r.ok ? r.value : undefined;
+    };
+    return (
+      <DateRangeFilter
+        key={column}
+        label={column}
+        from={range && end(range.low, "from", OPEN_FROM)}
+        to={range && end(range.high, "to", OPEN_TO)}
+        onApply={(from, to) => applyRange(info, from, to)}
+        onClose={close}
+      />
+    );
+  };
+  const panelLabel = (column: string) => {
+    const kind = columnKind(columnInfo.find((c) => c.name === column)?.type ?? "");
+    return kind === "time" || kind === "date" ? "Filter by date…" : "Filter this column…";
+  };
+  const headerBadge = (column: string) =>
+    spec?.filters.some((f) => f.column === column) ? (
+      <span className="grid-badge colf-badge" role="img" aria-label={`${displaySafe(column)} is filtered`} title={`${displaySafe(column)} is filtered`}>
+        <Icon name="filter" size={12} />
+      </span>
+    ) : null;
+
   const gridBox = useRef<HTMLDivElement>(null);
   const gridHeight = useFillHeight(gridBox, TABLES_BOTTOM_PAD);
   const detailRow = selected === null ? undefined : rows[selected];
@@ -250,6 +304,9 @@ export default function Tables({ initial }: { initial?: TableRequest }) {
             onNearEnd={more ? loadMore : undefined}
             onRowClick={(_, i) => setSelected(i)}
             cellActions={{ onFilter: onFilterCell }}
+            headerPanel={headerPanel}
+            headerBadge={headerBadge}
+            panelLabel={panelLabel}
           />
           {detailRow && <RowDetail columns={columns} row={detailRow} maxHeight={gridHeight + ROW_HEIGHT} />}
         </div>

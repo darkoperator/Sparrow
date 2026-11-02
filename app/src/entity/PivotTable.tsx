@@ -1,10 +1,11 @@
 // One pivot table of an entity tab: the values the entity's events carry, with a count and when they were first and last
 // seen. A row opens that value's own tab. The device-changes table is a list of directory events, not values, so its
 // rows do not open anything.
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { EntityKind, FlaggedCounts, PivotFlag, PivotOf, PivotPage, PivotRow } from "../api";
 import { isoSeconds } from "../events/columns";
 import CellMenu, { type MenuItem } from "../grid/CellMenu";
+import { useColumnView, useViewHeaders, ViewNote, type ViewColumn } from "../grid/columnView";
 import type { EntityRef } from "../shell/tabs";
 import { shortValue } from "../shell/tabs";
 import { displaySafe } from "../text";
@@ -129,6 +130,8 @@ interface Open {
   opener: HTMLElement;
 }
 
+const NO_ROWS: PivotRow[] = [];
+
 export default function PivotTable({ of, page, error, onOpen, menu, tabNoun }: Props) {
   const [open, setOpen] = useState<Open | null>(null);
   const title = PIVOT_TITLE[of];
@@ -136,6 +139,17 @@ export default function PivotTable({ of, page, error, onOpen, menu, tabNoun }: P
   const cols = COLS[of];
   const isChanges = of === "device_changes";
   const top = page ? Math.max(1, ...page.rows.map((r) => r.count)) : 1;
+  const columns = useMemo<ViewColumn<PivotRow>[]>(
+    () => [
+      ...cols.map((c): ViewColumn<PivotRow> => ({ id: c.label, label: c.label, value: c.cell, kind: "text" })),
+      { id: "count", label: isChanges ? "Events" : "Count", value: (r) => r.count, kind: "number" },
+      { id: "first", label: isChanges ? "Time" : "First seen", value: (r) => r.first_seen, kind: "date" },
+      ...(isChanges ? [] : [{ id: "last", label: "Last seen", value: (r: PivotRow) => r.last_seen, kind: "date" as const }]),
+    ],
+    [cols, isChanges],
+  );
+  const view = useColumnView(page?.rows ?? NO_ROWS, columns);
+  const { header, popover } = useViewHeaders(view, columns);
   return (
     <section className="entity-pivot card" aria-label={title}>
       <h4>
@@ -152,19 +166,13 @@ export default function PivotTable({ of, page, error, onOpen, menu, tabNoun }: P
         <p className="entity-empty">None in this range.</p>
       ) : (
         <div className="entity-pivot-scroll">
+          <ViewNote view={view} />
           <table>
             <thead>
-              <tr>
-                {cols.map((c) => (
-                  <th key={c.label} className={c.narrow ? "entity-col-narrow" : undefined}>{c.label}</th>
-                ))}
-                <th>{isChanges ? "Events" : "Count"}</th>
-                <th>{isChanges ? "Time" : "First seen"}</th>
-                {!isChanges && <th>Last seen</th>}
-              </tr>
+              <tr>{columns.map((c) => header(c.id, { className: cols.find((x) => x.label === c.id)?.narrow ? "entity-col-narrow" : undefined }))}</tr>
             </thead>
             <tbody>
-              {page.rows.map((r, i) => {
+              {view.rows.map((r, i) => {
                 const go = opens ? () => onOpen({ kind: opens, value: r.value }) : undefined;
                 const items = menu ? menu(r) : [];
                 const pill = r.flag ? flagPill(r.flag, tabNoun) : null;
@@ -244,6 +252,7 @@ export default function PivotTable({ of, page, error, onOpen, menu, tabNoun }: P
           </table>
         </div>
       )}
+      {popover}
       {open && (
         <CellMenu
           x={open.x}

@@ -10,6 +10,7 @@ use crate::timings::{Timings, time};
 use chrono::{DateTime, Utc};
 use duckdb::Connection;
 use serde::Serialize;
+use std::collections::HashMap;
 
 /// One thing the attacker reached.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -31,7 +32,10 @@ pub struct Item {
     pub size_bytes: Option<i64>,
     /// When the message was sent or received (message trace).
     pub item_time: Option<DateTime<Utc>>,
+    /// The application id; on an `other` record with none, the client the record names (`Client=OWA;...`).
     pub app: Option<String>,
+    /// The name the case's sign-ins or identities give `app`, when it is an application id they know.
+    pub app_name: Option<String>,
     pub ip: Option<String>,
     pub session_id: Option<String>,
     /// The owner of the data when it is not the account (a shared or delegated mailbox, send as, ...).
@@ -200,7 +204,7 @@ fn rest_sql() -> String {
            UNION ALL \
            SELECT a.account, 'other', {common}, coalesce(e.operation, a.source_table), \
                coalesce(q.query_text, u.object_id, e.target), coalesce(e.workload, a.source_table), NULL, NULL, NULL, NULL, \
-               coalesce(u.app_id, e.app_id), e.ip, u.session_id, NULL, NULL, \
+               coalesce(u.app_id, e.app_id, e.user_agent), e.ip, u.session_id, NULL, NULL, \
                a.source_table || ':' || coalesce(e.operation, ''), a.source_table, a.record_key, a.basis \
              FROM attributed a JOIN events e USING (source_table, record_key) \
              LEFT JOIN attributed_ual au ON au.source_table = a.source_table AND au.record_key = a.record_key \
@@ -226,7 +230,8 @@ fn ts(us: Option<i64>) -> Option<DateTime<Utc>> {
 
 /// The attributed UAL records, copied into the connection's temp table `access_ual`. The item queries read their
 /// AuditData; joined straight to `ual_events`, DuckDB scans the whole AuditData column before the join filters it (a
-/// minute on a tenant-wide case), while a lookup by constant record ids uses the table's primary-key index.
+/// minute on a tenant-wide case), while a lookup by constant record ids uses the table's primary-key index. Exchange names
+/// the calling application in `AppId` or `ClientAppId`, so `app_id` is whichever the record has.
 fn stage_ual(conn: &Connection, attributed: &[Attributed]) -> Result<()> {
     conn.execute_batch(
         "CREATE OR REPLACE TEMP TABLE access_ual AS SELECT * FROM ual_events WHERE FALSE",
@@ -240,11 +245,27 @@ fn stage_ual(conn: &Connection, attributed: &[Attributed]) -> Result<()> {
     let ids: Vec<String> = ids.into_iter().map(|u| format!("'{u}'")).collect();
     for chunk in ids.chunks(1000) {
         conn.execute_batch(&format!(
-            "INSERT INTO access_ual SELECT * FROM ual_events WHERE record_id IN ({})",
+            "INSERT INTO access_ual SELECT * REPLACE (coalesce(app_id, client_app_id) AS app_id) \
+             FROM ual_events WHERE record_id IN ({})",
             chunk.join(", ")
         ))?;
     }
     Ok(())
+}
+
+/// The display name of each application id the case's sign-ins or identities give (identities hold only service
+/// principals' sign-ins), by lower-case id.
+fn app_names(conn: &Connection) -> Result<HashMap<String, String>> {
+    let mut st = conn.prepare(
+        "SELECT id, min(name) FROM ( \
+           SELECT lower(app_id) AS id, app_name AS name FROM signins \
+             WHERE app_id IS NOT NULL AND app_name IS NOT NULL \
+           UNION ALL \
+           SELECT lower(app_id), display_names[1] FROM identities \
+             WHERE app_id IS NOT NULL AND len(display_names) > 0) GROUP BY 1",
+    )?;
+    let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<std::result::Result<_, _>>()?)
 }
 
 /// Every item of one account (any case) or of every attributed account, by account, time, category and record.
@@ -302,6 +323,7 @@ pub fn items_timed(
             size_bytes: r.get(9)?,
             item_time: ts(r.get(10)?),
             app: r.get(11)?,
+            app_name: None,
             ip: r.get(12)?,
             session_id: r.get(13)?,
             owner: r.get(14)?,
@@ -314,8 +336,13 @@ pub fn items_timed(
         })
     })?;
     let mut out: Vec<Item> = rows.collect::<std::result::Result<_, _>>()?;
+    let names = app_names(conn)?;
     for i in &mut out {
         i.row = format!("{}:{}", i.source_table, i.record_key);
+        i.app_name = i
+            .app
+            .as_ref()
+            .and_then(|a| names.get(&a.to_lowercase()).cloned());
     }
     if let Some(t) = timings {
         t.add("items", started.elapsed());

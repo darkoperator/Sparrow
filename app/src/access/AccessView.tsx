@@ -26,6 +26,7 @@ import {
 } from "../api";
 import { save } from "../dialog";
 import { isoSeconds } from "../events/columns";
+import { useColumnView, useViewHeaders, ViewNote, type ViewColumn } from "../grid/columnView";
 import { displaySafe } from "../text";
 import "./access.css";
 import { mergeAccess, type MergedTile } from "./merge";
@@ -117,17 +118,43 @@ export const PAGE = 200;
 
 const MAIL: AccessCategory[] = ["mail_read", "mail_sent", "attachment"];
 
+/** The application an item came through: its name when the case knows it, else what the record says (an id, a client). */
+const appText = (i: AccessItem) => i.app_name ?? i.app;
+
+const ACCESS_COLUMNS: Record<string, ViewColumn<AccessItem>> = {
+  account: { id: "account", label: "Account", value: (i) => i.account },
+  accessed: { id: "accessed", label: "Accessed (UTC)", value: (i) => i.accessed, kind: "date" },
+  action: { id: "action", label: "Action", value: (i) => i.action },
+  app: { id: "app", label: "App", value: appText },
+  item: { id: "item", label: "Item", value: (i) => i.item },
+  location: { id: "location", label: "Location", value: (i) => i.location },
+  from: { id: "from", label: "From", value: (i) => i.from },
+  to: { id: "to", label: "To", value: (i) => i.to },
+  sent: { id: "sent", label: "Sent (UTC)", value: (i) => i.item_time, kind: "date" },
+  size: { id: "size", label: "Size", value: (i) => i.size_bytes, kind: "number" },
+  tied: { id: "tied", label: "Tied by", value: (i) => (i.attribution === "time" ? "by time" : i.attribution) },
+};
+
 function ItemTable({ category, items, preview, showAccount }: { category: AccessCategory; items: AccessItem[]; preview: boolean; showAccount: boolean }) {
   const title = ACCESS_TITLES[category];
+  const mail = MAIL.includes(category);
+  const columns = useMemo(
+    () =>
+      ["account", "accessed", "action", "app", "item", "location", "from", "to", "sent", "size", "tied"]
+        .filter((c) => (c !== "account" || showAccount) && ((c !== "sent" && c !== "size") || mail))
+        .map((c) => ACCESS_COLUMNS[c]),
+    [showAccount, mail],
+  );
+  const view = useColumnView(items, columns);
+  const { header, popover } = useViewHeaders(view, columns);
   const [shown, setShown] = useState(PAGE);
-  // Another list (the Account filter changed) starts again at the first page.
-  const [shownFor, setShownFor] = useState(items);
-  if (shownFor !== items) {
-    setShownFor(items);
+  // Another list (the Account filter, a column's sort or filter) starts again at the first page.
+  const [shownFor, setShownFor] = useState(view.rows);
+  if (shownFor !== view.rows) {
+    setShownFor(view.rows);
     setShown(PAGE);
   }
-  const mail = MAIL.includes(category);
-  const hidden = items.length - shown;
+  const hidden = view.rows.length - shown;
   return (
     <section className="access-table card">
       <h5>
@@ -135,29 +162,20 @@ function ItemTable({ category, items, preview, showAccount }: { category: Access
         {/* A table seen on its own, scrolled past the banner, still says it is not the reviewed answer. */}
         {preview && <span className="access-basis"> · PREVIEW, not the reviewed answer</span>}
       </h5>
+      <ViewNote view={view} />
       <div className="table-scroll">
         <table aria-label={title}>
           <thead>
-            <tr>
-              {showAccount && <th>Account</th>}
-              <th>Accessed (UTC)</th>
-              <th>Action</th>
-              <th>Item</th>
-              <th>Location</th>
-              <th>From</th>
-              <th>To</th>
-              {mail && <th>Sent (UTC)</th>}
-              {mail && <th>Size</th>}
-              <th>Tied by</th>
-            </tr>
+            <tr>{columns.map((c) => header(c.id))}</tr>
           </thead>
           <tbody>
-            {items.slice(0, shown).map((i, n) => (
-              // The list never reorders; several items can share a record (Copilot resources), so the index is part of the key.
+            {view.rows.slice(0, shown).map((i, n) => (
+              // Several items can share a record (Copilot resources), so the index is part of the key.
               <tr key={`${i.source_table}:${i.record_key}:${n}`} className={i.attribution === "time" ? "access-time" : undefined}>
                 {showAccount && <td>{displaySafe(i.account)}</td>}
                 <td className="mono">{isoSeconds(i.accessed)}</td>
                 <td>{displaySafe(i.action)}</td>
+                <td title={i.app_name && i.app ? displaySafe(i.app) : undefined}>{cell(appText(i))}</td>
                 <td>
                   {cell(i.item)}
                   {i.note && <div className="meta">{displaySafe(i.note)}</div>}
@@ -183,6 +201,7 @@ function ItemTable({ category, items, preview, showAccount }: { category: Access
           {`Show ${Math.min(PAGE, hidden)} more of ${title} (${hidden} hidden)`}
         </button>
       )}
+      {popover}
     </section>
   );
 }

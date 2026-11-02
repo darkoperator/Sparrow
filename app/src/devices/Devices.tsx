@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   devicesList,
   evidenceFilter,
@@ -9,6 +9,7 @@ import {
   type SuspectDevice,
 } from "../api";
 import CellMenu, { type MenuItem } from "../grid/CellMenu";
+import { useColumnView, useViewHeaders, ViewNote, type ViewColumn } from "../grid/columnView";
 import { useNav, useWriteBlocked } from "../shell/nav";
 import { displaySafe } from "../text";
 import Icon from "../ui/Icon";
@@ -142,6 +143,15 @@ function Detail({ device }: { device: SuspectDevice }) {
  * The devices to contain: every device seen on a malicious IP, with its lifecycle. The list keeps the backend's order
  * (status, confidence, last active). Selecting a device shows every sighting, each opening its evidence row.
  */
+const DEVICE_COLUMNS: ViewColumn<SuspectDevice>[] = [
+  { id: "status", label: "Status", value: (d) => STATUS_LABELS[d.lifecycle.status], kind: "text" },
+  { id: "analyst", label: "Analyst", value: (d) => d.analyst?.status ?? null, kind: "text" },
+  { id: "device", label: "Device", value: (d) => d.display_name ?? d.device_id, kind: "text" },
+  { id: "last", label: "Last active", value: (d) => d.lifecycle.last_active?.at ?? null, kind: "date" },
+  { id: "users", label: "Users", value: (d) => d.users.join("; "), kind: "text" },
+  { id: "ips", label: "Malicious IPs", value: (d) => d.malicious_ips.join("; "), kind: "text" },
+];
+
 export default function Devices() {
   const writeBlocked = useWriteBlocked();
   const [list, setList] = useState<SuspectDevice[] | null>(null);
@@ -184,8 +194,10 @@ export default function Devices() {
   ];
 
   const lowCount = list?.filter((d) => d.confidence === "low").length ?? 0;
-  const shown = list?.filter((d) => showLow || d.confidence !== "low") ?? [];
+  const shown = useMemo(() => list?.filter((d) => showLow || d.confidence !== "low") ?? [], [list, showLow]);
   const current = shown.find((d) => keyOf(d) === selected) ?? null;
+  const view = useColumnView(shown, DEVICE_COLUMNS);
+  const { header, popover } = useViewHeaders(view, DEVICE_COLUMNS);
 
   return (
     <section className="devices">
@@ -216,19 +228,19 @@ export default function Devices() {
       )}
       {shown.length > 0 && (
         <div className="table-scroll card dev-card">
+          <ViewNote view={view} />
           <table className="dev-table" aria-label="Devices to contain">
             <thead>
               <tr>
-                <th>Status</th>
-                <th title="What you recorded about the device (right-click a row to set it); Status is what the logs show">Analyst</th>
-                <th>Device</th>
-                <th>Last active</th>
-                <th>Users</th>
-                <th>Malicious IPs</th>
+                {DEVICE_COLUMNS.map((c) =>
+                  header(c.id, {
+                    title: c.id === "analyst" ? "What you recorded about the device (right-click a row to set it); Status is what the logs show" : undefined,
+                  }),
+                )}
               </tr>
             </thead>
             <tbody>
-              {shown.map((d) => {
+              {view.rows.map((d) => {
                 const status = d.lifecycle.status;
                 const note = NOTES[status];
                 return (
@@ -322,6 +334,7 @@ export default function Devices() {
           onClose={() => setSetting(null)}
         />
       )}
+      {popover}
     </section>
   );
 }

@@ -55,6 +55,21 @@ export function displaySafe(s: string): string {
  * [`displaySafe`] for multi-line prose (rule guidance, notes): line breaks are kept (render with `white-space:
  * pre-wrap`), every other control or format character is escaped.
  */
+/**
+ * Text written with hard line breaks (a rule's YAML guidance) as flowing text the box can wrap: a single line break
+ * becomes a space. Blank lines stay as paragraph breaks, and a line that starts a list item keeps its own line.
+ */
+export function unwrapLines(s: string): string {
+  const out: string[] = [];
+  for (const raw of s.trim().split(/\r?\n/)) {
+    const line = raw.trim();
+    const last = out.length - 1;
+    if (line === "" || last < 0 || out[last] === "" || /^(?:[-*]|\d+[.)]) /.test(line)) out.push(line);
+    else out[last] += ` ${line}`;
+  }
+  return out.join("\n").replace(/\n{3,}/g, "\n\n");
+}
+
 export function displaySafeMultiline(s: string): string {
   return s.split(/\r?\n/).map(displaySafe).join("\n");
 }

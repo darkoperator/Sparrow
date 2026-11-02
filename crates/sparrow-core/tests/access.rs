@@ -1323,6 +1323,58 @@ fn other_catches_everything_else_but_sign_ins() {
 }
 
 #[test]
+fn other_items_name_their_application() {
+    let case = Case::in_memory().unwrap();
+    // A known application id: its name comes from the identities.
+    ual_w(
+        &case,
+        R1,
+        "Exchange",
+        "Update",
+        Some(IP),
+        0,
+        "other",
+        json!({}),
+    );
+    case.conn()
+        .execute_batch(
+            "INSERT INTO identities (identity_id, tenant_key, kind, app_id, display_names, aliases) \
+             VALUES ('app:app-9', 'contoso', 'app', 'APP-9', ['Outlook Web'], 1)",
+        )
+        .unwrap();
+    // No AppId: Exchange's ClientAppId stands in for it.
+    insert_row(
+        &case,
+        "ual_events",
+        "contoso",
+        json!({"record_id": R4, "user_upn": JDOE, "operation": "Move", "workload": "Exchange", "client_ip": IP,
+               "event_time": ts(t0() + Duration::seconds(1)), "audit_data": "{}", "client_app_id": "client-7"}),
+    );
+    put(
+        &case,
+        &Ev {
+            ip: Some(IP),
+            workload: Some("Exchange"),
+            operation: Some("Move"),
+            category: Some("other"),
+            at: 1,
+            ..ual(R4)
+        },
+    );
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let other = items_of(&case, Category::Other);
+    let apps: Vec<_> = other
+        .iter()
+        .map(|i| (i.action.as_str(), i.app.as_deref(), i.app_name.as_deref()))
+        .collect();
+    assert!(
+        apps.contains(&("Update", Some("app-9"), Some("Outlook Web"))),
+        "{apps:?}"
+    );
+    assert!(apps.contains(&("Move", Some("client-7"), None)), "{apps:?}");
+}
+
+#[test]
 fn no_record_lands_in_two_categories() {
     let case = Case::in_memory().unwrap();
     ual_w(

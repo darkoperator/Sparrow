@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { accessAccounts, accountsList, isCmdError, type AccountPage, type AccountRow } from "../api";
+import { useColumnView, useViewHeaders, ViewNote, type ViewColumn } from "../grid/columnView";
 import { useNav } from "../shell/nav";
 import { displaySafe } from "../text";
 import Icon from "../ui/Icon";
@@ -48,6 +49,18 @@ function addressText(a: AccountRow["addresses"][number]): string {
   return a.reasons.length > 0 ? `${a.ip} (${a.reasons.join(", ")})` : a.ip;
 }
 
+const SEVERITY_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
+const NO_ACCOUNTS: AccountRow[] = [];
+
+const ACCOUNT_COLUMNS: ViewColumn<AccountRow>[] = [
+  { id: "account", label: "Account", value: (a) => a.upn },
+  { id: "severity", label: "Worst severity", value: (a) => a.worst_severity, kind: "text", sortBy: (a) => SEVERITY_RANK[a.worst_severity.toLowerCase()] ?? -1 },
+  { id: "findings", label: "Findings", value: (a) => a.finding_count, kind: "number" },
+  { id: "stages", label: "Stages", value: (a) => a.stages.map(stageLabel).join(", "), kind: "text" },
+  { id: "first", label: "First suspicious", value: (a) => a.first_suspicious, kind: "date" },
+  { id: "addresses", label: "Addresses", value: (a) => a.addresses.map((x) => x.ip).join(", "), kind: "text" },
+];
+
 /**
  * The account roll-up, the analyst's starting point. Clicking an account hands its UPN to the shell, which filters
  * the review queue to it. A roll-up that is not current arrives with warnings: they are shown above the table.
@@ -81,6 +94,9 @@ export default function Accounts({ onSelect }: { onSelect: (upn: string) => void
     };
   }, []);
 
+  const view = useColumnView(page?.accounts ?? NO_ACCOUNTS, ACCOUNT_COLUMNS);
+  const { header, popover } = useViewHeaders(view, ACCOUNT_COLUMNS);
+
   return (
     <section className="accounts">
       <header className="acc-head">
@@ -101,19 +117,13 @@ export default function Accounts({ onSelect }: { onSelect: (upn: string) => void
       )}
       {page && page.accounts.length > 0 && (
         <div className="table-scroll card acc-card">
+        <ViewNote view={view} />
         <table className="acc-table">
           <thead>
-            <tr>
-              <th>Account</th>
-              <th>Worst severity</th>
-              <th className="acc-num">Findings</th>
-              <th>Stages</th>
-              <th>First suspicious</th>
-              <th>Addresses</th>
-            </tr>
+            <tr>{ACCOUNT_COLUMNS.map((c) => header(c.id, { className: c.id === "findings" ? "acc-num" : undefined }))}</tr>
           </thead>
           <tbody>
-            {page.accounts.map((a) => (
+            {view.rows.map((a) => (
               <tr key={`${a.tenant_key}/${a.upn}`} className={`acc-row ${sevClass(a.worst_severity)}`}>
                 <td>
                   <div className="acc-account">
@@ -204,6 +214,8 @@ export default function Accounts({ onSelect }: { onSelect: (upn: string) => void
         </table>
         </div>
       )}
+      {popover}
+      {popover}
     </section>
   );
 }

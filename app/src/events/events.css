@@ -149,6 +149,9 @@
 .colf-problem { color: var(--mal); overflow-wrap: anywhere; }
 .colf-switch { display: flex; align-items: center; gap: 6px; color: var(--text-2); font-size: 12px; }
 .colf-pattern { width: 100%; padding: 6px 8px; background: var(--bg); font-size: 11px; }
+.colf-date { display: grid; grid-template-columns: 1fr 72px; gap: 4px 6px; color: var(--faint); font-size: 11px; }
+.colf-date label { grid-column: 1 / -1; }
+.colf-date input { min-width: 0; font-size: 12px; }
 .colf-actions { display: flex; gap: 6px; }
 .colf-actions .btn { padding: 6px 12px; }
 .colf-badge { color: var(--accent-text); }

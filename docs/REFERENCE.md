@@ -835,6 +835,13 @@ report lists as "Malicious".
   `copilot` (one item per `CopilotEventData.AccessedResources` entry, or one `prompt`), `other` (everything else but
   sign-ins and mail flow). Someone else's data reached through the account (a delegated or shared mailbox, send as)
   stays under the account, with `owner` and a `note` ("in mailbox ...", "sent as ...").
+- **App.** Not every item has an app name, and a blank or an id does not mean no app was involved. The App column shows,
+  in order: the name the case's sign-ins or identities give the application id (hover it for the id); the id itself
+  (`AppId`, else Exchange's `ClientAppId`) when the case holds no name for it, which is common for an app that has no
+  sign-in in the capture; on an `other` item with no id, the client the record names (`Client=OWA;...`, which says how
+  the mailbox was reached, not which app); otherwise `—`, because the record names none. Collecting the tenant's
+  sign-in logs for the same period gives more ids a name. In JSON the name is `app_name` and `app` holds the id or client
+  text; the CSV's `app` column holds the id or client text only.
 - **Reads without a message id** (a Bind item or legacy MessageBind that names none) are `read (no message id)`
   items, counted apart from the messages (the tile qualifier says how many).
 - **Coverage.** Each tile carries its source's `evidence_availability` status for the account's tenant

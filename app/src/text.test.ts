@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { displaySafe, displaySafeMultiline } from "./text";
+import { displaySafe, displaySafeMultiline, unwrapLines } from "./text";
 
 describe("displaySafe", () => {
   it("escapes control and bidi characters", () => {
@@ -15,5 +15,11 @@ describe("displaySafe", () => {
 describe("displaySafeMultiline", () => {
   it("keeps line breaks and escapes everything else", () => {
     expect(displaySafeMultiline("a\r\nb‮c\nd\u0000")).toBe("a\nb\\u{202E}c\nd\\u{0000}");
+  });
+});
+
+describe("unwrapLines", () => {
+  it("joins hard-wrapped lines and keeps blank lines and list items", () => {
+    expect(unwrapLines("one\ntwo\n\nthree\r\nfour\n- a\n- b\n")).toBe("one two\n\nthree four\n- a\n- b");
   });
 });

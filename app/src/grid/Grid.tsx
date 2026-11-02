@@ -3,7 +3,7 @@
 // sections, the table browser and SQL results.
 import { createColumnHelper, flexRender, getCoreRowModel, useReactTable } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { HIGHLIGHT_COLOURS, type HighlightRule, type Sort } from "../api";
 import { useHighlights } from "../highlights/useHighlights";
 import { useNav } from "../shell/nav";
@@ -12,6 +12,7 @@ import { entityKindFor, rawText } from "../value";
 import CellMenu, { type MenuItem } from "./CellMenu";
 import { useGridLayout } from "./gridLayout";
 import "./grid.css";
+import HeaderPopover from "./HeaderPopover";
 import ValueViewer from "./ValueViewer";
 
 export type Cell = unknown;
@@ -81,6 +82,8 @@ export interface GridProps {
    * on the header opens it above the column items (move, reset); `close` closes the popover. `null`: the plain menu.
    */
   headerPanel?: (column: string, close: () => void) => ReactNode | null;
+  /** What a cell's menu calls the column's `headerPanel`, opened at the pointer ("Filter by date…"). */
+  panelLabel?: (column: string) => string;
   /** Shown in a column's header after its title (a filter icon); the host passes safe nodes only. */
   headerBadge?: (column: string) => ReactNode | null;
   /** Height of the scrolling body in px. */
@@ -112,84 +115,6 @@ function ruleMatches(rule: HighlightRule, columns: string[], row: Cell[]): boole
   if (rule.column === null) return row.some(test);
   const at = columns.indexOf(rule.column);
   return at >= 0 && test(row[at]);
-}
-
-/**
- * A header's popover: the host's panel above the column items, at a fixed position kept inside the window. Escape or a
- * click elsewhere closes it; the panel takes the focus itself.
- */
-function HeaderPopover({
-  x,
-  y,
-  label,
-  panel,
-  items,
-  onClose,
-}: {
-  x: number;
-  y: number;
-  label: string;
-  panel: ReactNode;
-  items: MenuItem[];
-  onClose: () => void;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [at, setAt] = useState({ x, y });
-  useEffect(() => {
-    const away = (e: Event) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    };
-    document.addEventListener("mousedown", away);
-    return () => document.removeEventListener("mousedown", away);
-  }, [onClose]);
-  // Kept inside the window, again whenever the panel changes size (its list loads after it opens).
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const fit = () => {
-      const r = el.getBoundingClientRect();
-      if (r.width === 0) return;
-      const nx = Math.max(4, Math.min(x, window.innerWidth - r.width - 4));
-      const ny = Math.max(4, Math.min(y, window.innerHeight - r.height - 4));
-      setAt((at) => (at.x === nx && at.y === ny ? at : { x: nx, y: ny }));
-    };
-    fit();
-    if (typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(fit);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [x, y]);
-  return (
-    <div
-      ref={ref}
-      role="dialog"
-      aria-label={label}
-      className="grid-header-pop"
-      style={{ position: "fixed", left: at.x, top: at.y }}
-      onKeyDown={(e) => {
-        if (e.key !== "Escape") return;
-        e.stopPropagation();
-        onClose();
-      }}
-    >
-      {panel}
-      <div role="menu" aria-label="Column" className="grid-header-pop-items">
-        {items.map((it) => (
-          <button
-            key={it.label}
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              it.run?.();
-              onClose();
-            }}
-          >
-            {it.label}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
 }
 
 interface MenuAt {
@@ -225,6 +150,7 @@ export default function Grid({
   onResetColumns,
   headerPanel,
   headerBadge,
+  panelLabel,
   height = 320,
 }: GridProps) {
   const nav = useNav();
@@ -291,6 +217,9 @@ export default function Grid({
     const column = columns[m.col];
     const out: MenuItem[] = [{ label: "Copy", run: () => void navigator.clipboard.writeText(rawText(value)) }];
     out.push({ label: "Show full value", run: () => openViewer(opener.current ?? document.body, m.row, m.col) });
+    if (m.col >= off && headerPanel?.(column, closeHeaderMenu)) {
+      out.push({ label: panelLabel?.(column) ?? "Filter this column…", run: () => setHeaderMenu({ x: m.x, y: m.y, col: m.col }) });
+    }
     if (cellItems) {
       if (onHighlight) out.push({ label: "Highlight this value", run: () => onHighlight(column, value) });
       return [...out, ...cellItems({ column, value, row: m.row })];

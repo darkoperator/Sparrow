@@ -231,9 +231,20 @@ describe("column filters in the Events grid", () => {
   it("columns without a filter field keep the plain column menu", async () => {
     events();
     await shown(81, 81);
-    fireEvent.contextMenu(header("Time"));
+    fireEvent.contextMenu(header("Target"));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Reset columns" })).toBeInTheDocument();
+  });
+
+  it("the Time column's right-click picks dates, which set the grid's range", async () => {
+    events();
+    await shown(81, 81);
+    fireEvent.contextMenu(header("Time"));
+    const panel = screen.getByRole("group", { name: "Filter Time" });
+    expect(within(panel).getByLabelText("From date (UTC)")).toHaveAttribute("type", "date");
+    fireEvent.change(within(panel).getByLabelText("From date (UTC)"), { target: { value: "2026-09-10" } });
+    fireEvent.click(within(panel).getByRole("button", { name: "Apply" }));
+    expect(await screen.findByRole("img", { name: /Time filter/ })).toBeInTheDocument();
   });
 
   it("the column items stay below the filter, and Escape closes the popover back to the title", async () => {

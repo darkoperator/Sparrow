@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   isCmdError,
   newQueryId,
@@ -11,6 +11,7 @@ import {
   type TableInfo,
 } from "../api";
 import { save } from "../dialog";
+import { useColumnView, ViewNote, type ViewColumn } from "../grid/columnView";
 import Grid from "../grid/Grid";
 import { displaySafe, displaySafeMultiline } from "../text";
 import Icon from "../ui/Icon";
@@ -340,10 +341,31 @@ export default function Sql() {
               ) : (
                 <p role="status">{displaySafe(pageNote.text)}</p>
               ))}
-            <Grid columns={loaded.columns} rows={loaded.rows} height={420} />
+            <LoadedGrid key={loaded.sql} columns={loaded.columns} rows={loaded.rows} />
           </>
         )}
       </section>
     </div>
+  );
+}
+
+/** The results so far, sorted and filtered by column in memory; the query itself is untouched. */
+function LoadedGrid({ columns, rows }: { columns: string[]; rows: unknown[][] }) {
+  const defs = useMemo<ViewColumn<unknown[]>[]>(() => columns.map((id, i) => ({ id, label: id, value: (r) => r[i] })), [columns]);
+  const view = useColumnView(rows, defs);
+  return (
+    <>
+      <ViewNote view={view} />
+      <Grid
+        columns={columns}
+        rows={view.rows}
+        height={420}
+        sort={view.sort}
+        onSort={view.onSort}
+        headerPanel={view.panel}
+        headerBadge={view.badge}
+        panelLabel={view.panelLabel}
+      />
+    </>
   );
 }

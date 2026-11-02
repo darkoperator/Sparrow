@@ -46,7 +46,7 @@
 .grid-row.ev-selected { background: var(--accent-soft); outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* Cell menu: a dark popover. */
-.cell-menu-root { position: relative; z-index: 10; }
+.cell-menu-root { position: relative; z-index: 50; }
 .cell-menu-row { position: relative; display: flex; flex-direction: column; }
 .cell-menu {
   z-index: 10;
@@ -91,7 +91,7 @@
 
 /* Header popover: a host panel (the Events column filter) above the column items. */
 .grid-header-pop {
-  z-index: 10;
+  z-index: 50;
   display: flex;
   flex-direction: column;
   width: 300px;
@@ -106,3 +106,5 @@
 .grid-header-pop-items button { text-align: left; background: none; border: 0; padding: 6px 8px; border-radius: 6px; color: var(--text-2); font-size: 12px; }
 .grid-header-pop-items button:hover, .grid-header-pop-items button:focus { background: var(--raised); color: var(--text); }
 .grid-header .grid-badge { display: inline-flex; align-items: center; margin-left: 4px; vertical-align: middle; }
+.view-note { margin: 0 0 6px; }
+.table-scroll th .grid-badge, .entity-pivot th .grid-badge { display: inline-flex; margin-left: 4px; vertical-align: middle; }
