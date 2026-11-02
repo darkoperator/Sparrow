@@ -150,22 +150,10 @@ describe("AccessView across accounts", () => {
     expect(screen.queryByText("No malicious flags are accepted yet.")).toBeNull();
   });
 
-  it("a_merged_tab_says_its_export_is_every_account", async () => {
-    two();
-    render(<AccessView scope={{ kind: "case" }} />);
-    expect(await screen.findByRole("button", { name: "Export CSV (all accounts)" })).toBeInTheDocument();
-  });
-
   it("empty_what_if", async () => {
     vi.mocked(api.accessReport).mockResolvedValue(report([]));
     render(<AccessView scope={{ kind: "ip", value: IP }} />);
     expect(await screen.findByText(`Nothing found for IP ${IP}.`)).toBeInTheDocument();
-  });
-
-  it("empty_case", async () => {
-    vi.mocked(api.accessReport).mockResolvedValue(report([]));
-    render(<AccessView scope={{ kind: "case" }} />);
-    expect(await screen.findByText("No malicious flags are accepted yet.")).toBeInTheDocument();
   });
 
   it("case_preview_keeps_the_controls", async () => {

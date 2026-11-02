@@ -732,33 +732,6 @@ fn lint_cross_checks_the_coverage_matrix() {
 }
 
 #[test]
-fn output_columns_name_real_columns() {
-    // Also asserted in-module; here through the public table.
-    let case = Case::in_memory().unwrap();
-    let schema = CaseSchema::of(case.conn()).unwrap();
-    for o in sparrow_core::detect::compile::OUTPUT_COLUMNS {
-        let cols = &schema.tables[o.table];
-        for c in [o.time_col, o.key_col]
-            .into_iter()
-            .chain(o.actor)
-            .chain(o.ip)
-        {
-            let cols = if o.via_ual {
-                &schema.tables["ual_events"]
-            } else {
-                cols
-            };
-            let key_cols = &schema.tables[o.table];
-            assert!(
-                cols.contains_key(c) || key_cols.contains_key(c),
-                "{}: {c}",
-                o.table
-            );
-        }
-    }
-}
-
-#[test]
 fn builtin_rules_lint_clean() {
     let case = Case::in_memory().unwrap();
     let schema = CaseSchema::of(case.conn()).unwrap();

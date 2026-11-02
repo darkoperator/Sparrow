@@ -593,39 +593,6 @@ fn timeline_counts_findings_per_record() {
     );
 }
 
-/// The Task 4 view is 0008's definition plus the finding join, and its comments are re-issued.
-#[test]
-fn timeline_view_is_the_phase_5_definition_plus_findings() {
-    let view = |sql: &str, from: &str| -> String {
-        let start = sql.rfind(from).unwrap();
-        let end = start + sql[start..].find(";\n").unwrap();
-        sql[start..end].to_string()
-    };
-    let m8 = include_str!("../migrations/0008_synth_parsers.sql");
-    let m9 = include_str!("../migrations/0009_detection.sql");
-    let old = view(m8, "CREATE OR REPLACE VIEW timeline AS");
-    let new = view(m9, "CREATE OR REPLACE VIEW timeline AS");
-    let stripped = new
-        .replace(
-            ",\n       coalesce(f.finding_count, 0) AS finding_count, coalesce(f.finding_ids, CAST([] AS VARCHAR[])) AS finding_ids",
-            "",
-        )
-        .replace(
-            "\nLEFT JOIN (SELECT source_table, record_key, CAST(count(DISTINCT finding_id) AS INTEGER) AS finding_count, list(DISTINCT finding_id ORDER BY finding_id) AS finding_ids FROM finding_evidence GROUP BY source_table, record_key) f\n       ON f.source_table = ev.source_table AND f.record_key = ev.record_key",
-            "",
-        );
-    assert_eq!(stripped, old);
-    assert_ne!(new, old);
-    // Every comment 0008 issued for the view is issued again.
-    for line in m8
-        .lines()
-        .filter(|l| l.starts_with("COMMENT ON COLUMN timeline."))
-    {
-        let target = line.split(" IS ").next().unwrap();
-        assert!(m9.contains(target), "{target} not re-issued");
-    }
-}
-
 /// `auth_events` must never contradict itself: `succeeded` and `result` come from one
 /// classification, so a row is a success exactly when its result is 'success'. The rows that
 /// broke it are the ones the classification used to miss: a `UserLoggedIn` whose `ResultStatus`

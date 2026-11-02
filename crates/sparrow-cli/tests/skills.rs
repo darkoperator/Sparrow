@@ -308,65 +308,6 @@ fn substitute(word: &str) -> String {
     out
 }
 
-/// Options that take a value, to count a command's positionals.
-const VALUE_FLAGS: &[&str] = &[
-    "--case",
-    "--data",
-    "--rules",
-    "--limit",
-    "--cap",
-    "--severity",
-    "--user",
-    "--rule",
-    "--status",
-    "--tenant",
-    "--table",
-    "--from",
-    "--to",
-    "--ip",
-    "--category",
-    "--finding",
-    "--type",
-    "--value",
-    "--verdict",
-    "--note",
-    "--reason",
-    "--agent",
-    "--analyst",
-    "--root",
-    "--text",
-    "--review-state",
-    "--rule-updated",
-];
-
-/// The commands cli-agent-aids adds (not in this CLI yet): `schema --table`, `finding show` with several ids,
-/// `finding list` with a repeated `--rule`. Their lines are checked by the ignored test below.
-fn uses_new_command(w: &[String]) -> bool {
-    let positionals = |from: usize| {
-        let mut n = 0;
-        let mut i = from;
-        while i < w.len() {
-            if w[i].starts_with("--") {
-                i += if VALUE_FLAGS.contains(&w[i].as_str()) {
-                    2
-                } else {
-                    1
-                };
-            } else {
-                n += 1;
-                i += 1;
-            }
-        }
-        n
-    };
-    match (w.get(1).map(String::as_str), w.get(2).map(String::as_str)) {
-        (Some("schema"), _) => w.iter().any(|x| x == "--table"),
-        (Some("finding"), Some("show")) => positionals(3) >= 2,
-        (Some("finding"), Some("list")) => w.iter().filter(|x| *x == "--rule").count() >= 2,
-        _ => false,
-    }
-}
-
 /// Run `sparrow <words after the first> --help`: the parser accepts the subcommand, every option and every
 /// value, or exits with a usage error (code 2).
 fn parses(line: &str) -> Result<(), String> {
@@ -408,16 +349,10 @@ fn check(lines: Vec<(PathBuf, String)>) -> usize {
 
 #[test]
 fn the_skills_commands_still_parse_against_the_cli() {
-    let (new, current): (Vec<_>, Vec<_>) = command_lines()
-        .into_iter()
-        .partition(|(_, l)| uses_new_command(&words(l)));
-    // Not vacuous: the skills carry many commands, and the three new commands are the ones set aside.
-    assert!(current.len() >= 40, "only {} commands found", current.len());
-    assert!(
-        !new.is_empty(),
-        "no line uses a new command: the ignored test would check nothing"
-    );
-    check(current);
+    let lines = command_lines();
+    // Not vacuous: the skills carry many commands.
+    assert!(lines.len() >= 43, "only {} commands found", lines.len());
+    check(lines);
 }
 
 /// The drift test covers `sparrow accounts`: the skill shows it (in the fast path and in the recipes), the fast path
@@ -431,7 +366,6 @@ fn the_fast_path_starts_from_sparrow_accounts() {
         .cloned()
         .collect();
     assert!(accounts.len() >= 3, "{} accounts lines", accounts.len());
-    assert!(accounts.iter().all(|(_, l)| !uses_new_command(&words(l))));
     check(accounts);
     let skill = std::fs::read_to_string(skills_root().join("sparrow-triage/SKILL.md")).unwrap();
     let at = |needle: &str| {
@@ -450,31 +384,9 @@ fn the_fast_path_starts_from_sparrow_accounts() {
     );
 }
 
-/// The lines that use the three commands cli-agent-aids added (schema --table, finding show with several ids,
-/// a repeated finding list --rule).
+/// The check above splits each line as a shell would: a quoted query stays one word.
 #[test]
-fn the_skills_lines_using_the_new_commands_parse_against_the_cli() {
-    let new: Vec<_> = command_lines()
-        .into_iter()
-        .filter(|(_, l)| uses_new_command(&words(l)))
-        .collect();
-    assert!(new.len() >= 3, "{}", new.len());
-    check(new);
-}
-
-/// The classification itself: it sets aside exactly the new forms.
-#[test]
-fn the_new_command_classifier_is_exact() {
-    let c = |s: &str| uses_new_command(&words(s));
-    assert!(c("sparrow schema --case c.duckdb --table signins --json"));
-    assert!(!c("sparrow schema --case c.duckdb --json"));
-    assert!(c("sparrow finding show --case c.duckdb a b --json"));
-    assert!(!c("sparrow finding show --case c.duckdb a --json"));
-    assert!(c("sparrow finding list --case c.duckdb --rule A --rule B"));
-    assert!(!c(
-        "sparrow finding list --case c.duckdb --rule A --user x@contoso.example"
-    ));
-    assert!(!c("sparrow query --case c.duckdb --json \"SELECT 1\""));
+fn a_quoted_query_is_one_word() {
     assert_eq!(
         words("sparrow query --case c \"SELECT a, b FROM t WHERE x = 'y'\""),
         vec![

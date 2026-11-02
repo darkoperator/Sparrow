@@ -367,14 +367,6 @@ describe("NotebookPanel", () => {
     expect(screen.getByRole("alert").textContent).toContain("the case is read-only (mock)");
   });
 
-  it("shows_a_refused_write_as_the_backend_words_it", async () => {
-    m.add.mockRejectedValue({ kind: "read_only", message: "the case is read-only (mock)" });
-    const { user } = setup("SELECT 7");
-    await user.click(await screen.findByRole("button", { name: "Save as…" }));
-    await user.click(screen.getByRole("button", { name: "Save" }));
-    expect((await screen.findByRole("alert")).textContent).toContain("the case is read-only (mock)");
-  });
-
   describe("export and import", () => {
     it("export_without_case_values_goes_straight_to_the_save_dialog", async () => {
       const { user } = setup();

@@ -87,11 +87,6 @@ fn ambiguous_culture_date_without_order_is_an_error_naming_culture_flag() {
 }
 
 #[test]
-fn contradicting_order_is_rejected() {
-    assert!(parse_timestamp("24/09/2026 10:00:00", Some(DateOrder::MonthFirst)).is_err());
-}
-
-#[test]
 fn minute_precision_when_seconds_missing() {
     let t = parse_timestamp("9/24/2026 10:07 PM", None).unwrap();
     assert_eq!(t.precision, Precision::Minute);

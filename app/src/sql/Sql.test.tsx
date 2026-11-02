@@ -659,14 +659,6 @@ describe("notebooks in the SQL screen", () => {
     expect(m.run).not.toHaveBeenCalled();
   });
 
-  it("a_placeholder_run_shows_the_backend_refusal", async () => {
-    m.run.mockRejectedValue({ kind: "invalid", message: "Fill in [ip] first" });
-    const user = await setup();
-    typeSql("SELECT '[ip]'");
-    await user.click(screen.getByRole("button", { name: "Run" }));
-    expect((await screen.findByRole("alert")).textContent).toContain("Fill in [ip] first");
-  });
-
   it("the_side_tabs_move_with_the_arrow_keys", async () => {
     const user = userEvent.setup();
     render(<Sql />);

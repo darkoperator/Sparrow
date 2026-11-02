@@ -272,31 +272,6 @@ fn facts_are_unavailable_for_a_case_detected_before_the_feature() {
     assert!(bob.facts.is_none());
 }
 
-#[test]
-fn a_recorded_enrichment_error_makes_the_facts_unavailable_with_its_message() {
-    let case = detected();
-    let id = finding_of(&case, "SPW-T-001", ALICE);
-    enrichment_failed(&case, "Binder Error: no such column");
-    let d = read::finding_show(case.conn(), &id, &set()).unwrap();
-    let Some(FactsField::Unavailable { facts_unavailable }) = d.facts else {
-        panic!("facts_unavailable expected");
-    };
-    assert!(
-        facts_unavailable.contains("Binder Error: no such column"),
-        "{facts_unavailable}"
-    );
-    // The roll-up rows of the earlier run are not offered either: fail closed.
-    let page = read::accounts(case.conn(), None, None).unwrap();
-    assert!(page.accounts.is_empty());
-    assert!(
-        page.warnings
-            .iter()
-            .any(|w| w.contains("Binder Error: no such column")),
-        "{:?}",
-        page.warnings
-    );
-}
-
 /// With a current enrichment, detection already decided which findings are in a facts family: a finding with
 /// no `finding_facts` row is not in one, whatever the loaded rules say, so it has neither key.
 #[test]

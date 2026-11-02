@@ -809,23 +809,28 @@ fn counts_of_file_open(state: &AppState) -> Vec<(String, i64)> {
 #[test]
 fn a_case_switched_before_the_import_takes_the_lock_is_refused_not_written() {
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::default();
-    open_blank(dir.path(), &state);
-    // The request saw this generation; a switch that slips in changes it.
-    let first = state.generation.load(Ordering::SeqCst);
-    state.generation.fetch_add(1, Ordering::SeqCst);
-    assert_ne!(first, state.generation.load(Ordering::SeqCst));
-    // (A switch during the run itself is refused busy, above; here the run starts after the switch and so takes the
-    // new case: its own ticket is read at its start.)
-    let r = run(
-        &state,
-        &IngestState::default(),
-        &Target::Open,
-        false,
-        &quiet(),
-    )
-    .unwrap();
+    let state = Arc::new(AppState::default());
+    let path = open_blank(dir.path(), &state);
+    let before = counts_of_file_open(&state);
+    let ing = IngestState::default();
+    // The run has read its generation and not yet taken the lock when it announces discovery: a switch lands there.
+    let emit: Emit = {
+        let state = state.clone();
+        Arc::new(move |e: &ProgressEvent| {
+            if matches!(e, ProgressEvent::Discover) {
+                state.generation.fetch_add(1, Ordering::SeqCst);
+            }
+        })
+    };
+    let e = run(&state, &ing, &Target::Open, false, &emit).unwrap_err();
+    assert_eq!(e.kind, "no_case", "{e:?}");
+    assert!(e.message.contains("the case changed"), "{}", e.message);
+    assert_eq!(counts_of_file_open(&state), before, "nothing was written");
+    // The refusal leaves no run behind: the next import, which sees the new generation, loads.
+    let r = run(&state, &ing, &Target::Open, false, &quiet()).unwrap();
     assert!(r.files_loaded > 0);
+    case_close(&state).unwrap();
+    assert_ne!(counts_of_file(&path), before);
 }
 
 #[test]

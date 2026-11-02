@@ -77,24 +77,6 @@ fn a_custom_rule_replaces_the_builtin_with_a_warning() {
 }
 
 #[test]
-fn editing_a_referenced_list_changes_the_rule_hash() {
-    // A rule referencing @list:hiding_folders changes sha when the list changes.
-    let set = load_rules(&DataDirs::default()).unwrap();
-    let r = set
-        .rules
-        .iter()
-        .find(|r| r.rule.id == "SPW-HAWK-011")
-        .unwrap();
-    let mut lists = set.lists.clone();
-    let meta = set.list_meta.clone();
-    let before = sparrow_core::detect::load::rule_sha256(&r.rule, &lists, &meta);
-    lists.get_mut("hiding_folders").unwrap().push("Zzz".into());
-    let after = sparrow_core::detect::load::rule_sha256(&r.rule, &lists, &meta);
-    // SPW-HAWK-011 does not reference hiding_folders: unchanged. (Task 8's SPW-MAIL-003 test asserts the change.)
-    assert_eq!(before, after);
-}
-
-#[test]
 fn editing_hiding_folders_changes_the_rule_hash() {
     // SPW-MAIL-003 references @list:hiding_folders (and finance_keywords), so editing either list
     // is a rule change: the hash moves. A rule that does not reference the list is unaffected.

@@ -345,13 +345,6 @@ fn bundle_rejects_unknown_fields() {
 }
 
 #[test]
-fn migration_21_creates_imported_proposals() {
-    let c = Case::in_memory().unwrap();
-    assert_eq!(c.schema_version().unwrap(), 29);
-    assert_eq!(count(&c, "SELECT count(*) FROM imported_proposals"), 0);
-}
-
-#[test]
 fn to_bytes_refuses_a_bundle_over_the_limit() {
     let bundle = |text: String| share::Bundle {
         format: share::FORMAT,

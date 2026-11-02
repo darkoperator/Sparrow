@@ -1,5 +1,5 @@
-//! Task 26 equivalence: the set-based MailItemsAccessed matching must land exactly as the
-//! per-row version, and the grouped availability pass must return the same rows.
+//! The set-based MailItemsAccessed matching at volume, and the availability rows of three scenarios against their
+//! goldens.
 
 #[path = "common/synth.rs"]
 mod synth;
@@ -34,16 +34,15 @@ fn mia_exports_match_raw_records_at_volume() {
     check_green(&g);
 }
 
-/// The grouped availability pass returns the same rows as the per-evidence queries did.
+/// The availability rows are exactly the recorded ones; `profile_availability` and the `check` gate only assert the
+/// statuses a row may have.
 #[test]
-#[ignore = "heavy: run with cargo test --workspace -- --ignored"]
-fn availability_is_unchanged_by_the_grouped_pass() {
+fn availability_matches_the_goldens() {
     for name in ["bec-aitm", "bec-e3-audit-gaps", "audit-tamper"] {
         let g = builtin(name, PsEdition::Ps7);
         let as_of = g.manifest.collected_at + Duration::days(1);
         let rows = compute(g.case.conn(), as_of).unwrap();
         let golden = serde_json::to_string_pretty(&rows).unwrap();
-        // Recorded before the change (Step 2) under tests/golden/availability_<name>.json.
         let path = format!(
             "{}/tests/golden/availability_{name}.json",
             env!("CARGO_MANIFEST_DIR")

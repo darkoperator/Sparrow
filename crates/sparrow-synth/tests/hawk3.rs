@@ -27,30 +27,21 @@ fn green(name: &str, o: &GenerateOptions) -> sparrow_synth::manifest::Manifest {
     got.tree.manifest.clone()
 }
 
-/// Every built-in scenario but `volume`.
-const MATRIX: &[&str] = &[
-    "audit-tamper",
-    "bec-aitm",
-    "bec-e3-audit-gaps",
-    "bec-o365-no-p1",
-    "business-basic",
-    "hawk-investigate",
-    "password-spray",
-];
-
+/// The tests below run every built-in scenario but `volume`.
 #[test]
 fn the_matrix_covers_every_builtin_but_volume() {
-    let builtins: Vec<&str> = builtin_names()
+    let builtins: std::collections::BTreeSet<&str> = builtin_names()
         .iter()
         .copied()
         .filter(|n| *n != "volume")
         .collect();
-    assert_eq!(builtins, MATRIX);
+    assert_eq!(builtins, MATRIX_SCENARIOS.iter().copied().collect());
 }
 
 /// One test per scenario × (edition, culture), so the harness runs them in parallel.
 macro_rules! green_matrix {
     ($($test:ident: $scenario:literal, $ps:expr, $culture:expr;)+) => {
+        const MATRIX_SCENARIOS: &[&str] = &[$($scenario),+];
         $(
             #[test]
             fn $test() {

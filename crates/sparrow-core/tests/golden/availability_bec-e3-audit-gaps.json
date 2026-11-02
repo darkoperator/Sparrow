@@ -86,6 +86,15 @@
   },
   {
     "tenant_key": "f63aa0f8-9ead-4253-97e6-1a7acb7c4203",
+    "evidence": "message_trace_events",
+    "title": "Exchange Online message trace events (detail report)",
+    "status": "available_not_collected",
+    "reason": "not in the case; it can still be collected",
+    "remediation": "portal: Exchange admin center > Mail flow > Message trace > Start a trace > Report type Extended",
+    "rows": 0
+  },
+  {
+    "tenant_key": "f63aa0f8-9ead-4253-97e6-1a7acb7c4203",
     "evidence": "mailbox_audit_legacy",
     "title": "Mailbox audit log (Search-MailboxAuditLog)",
     "status": "collected",
