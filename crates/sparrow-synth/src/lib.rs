@@ -4,6 +4,7 @@
 //! reserved or synthetic; nothing comes from a real capture.
 
 pub mod baseline;
+pub mod big_file;
 pub mod cache;
 pub mod case_dump;
 pub mod check;
