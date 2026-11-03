@@ -33,3 +33,4 @@ build/
 /app/node_modules/
 /app/dist/
 /crates/sparrow-app/gen/
+/.superpowers/
