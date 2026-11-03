@@ -24,8 +24,9 @@ fn db<T>(r: std::result::Result<T, duckdb::Error>) -> Result<T> {
 }
 
 /// Every table of `case` (less [`CASE_META_TABLES`]) mapped to its rows, each rendered as one
-/// string (`NULL` is `\N`, columns joined by the unit separator U+001F), sorted. `record_sources`, `parse_errors` and `source_files` are always
-/// present; other tables appear too (empty when nothing was ingested into them).
+/// string (`NULL` is `\N`, columns joined by the unit separator U+001F), sorted.
+/// `record_sources`, `parse_errors` and `source_files` are always present; other tables appear
+/// too (empty when nothing was ingested into them).
 pub fn dump_case(case: &Case) -> Result<BTreeMap<String, Vec<String>>> {
     let conn = case.conn();
     let mut tables: Vec<String> = Vec::new();
