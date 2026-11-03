@@ -437,7 +437,7 @@ pub mod fault {
 /// perf tree the per-file commits took 89 of 180 s. With 1 GB the ingest took 104 s and the case was identical, but
 /// peak memory grew by 1-2 GB on a 32 GB machine (docs: reports/ingest-profile.md, experiment E2; with no threshold
 /// at all, by 4.5 GB for no further gain). Each file still commits its own transaction to the WAL. Under the case's
-/// default memory cap ([`crate::db::DEFAULT_MEMORY_LIMIT`], 4 GB) the threshold is 500 MB, below this maximum.
+/// default memory cap ([`crate::db::DEFAULT_MEMORY_LIMIT`], 2 GB) the threshold is 250 MB, below this maximum.
 pub const INGEST_CHECKPOINT_MAX: u64 = 1_000_000_000;
 
 /// The ingest threshold is the writer's `memory_limit` divided by this, capped at [`INGEST_CHECKPOINT_MAX`]: the
@@ -1490,11 +1490,10 @@ mod tests {
         let auto = |limit: &str| ingest_checkpoint_threshold(limit, None).unwrap();
         // memory_limit / 8, at most 1 GB (DuckDB's 1GB: 10^9 bytes).
         assert_eq!(auto("32 GiB"), Some(INGEST_CHECKPOINT_MAX));
-        // The case's default cap (crate::db::DEFAULT_MEMORY_LIMIT, 4 GB, which DuckDB prints as 3.7 GiB) gives
-        // about 500 MB, not the 1 GB maximum.
+        // The case's default cap (crate::db::DEFAULT_MEMORY_LIMIT, 2 GB) gives 250 MB, not the 1 GB maximum.
         assert_eq!(
             auto(&format!("{} bytes", crate::db::DEFAULT_MEMORY_LIMIT)),
-            Some(500_000_000)
+            Some(250_000_000)
         );
         assert_eq!(auto("3.7 GiB"), Some(496_605_593));
         assert_eq!(auto("29.8 GiB"), Some(INGEST_CHECKPOINT_MAX));

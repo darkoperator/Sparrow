@@ -48,11 +48,13 @@ pub(crate) fn parse_size(text: &str) -> Option<u64> {
 /// 80% of RAM).
 pub const MEMORY_LIMIT_ENV: &str = "SPARROW_MEMORY_LIMIT";
 
-/// The cap without an override (DuckDB's `4GB`), never above DuckDB's own default. Uncapped, DuckDB's cache grows
+/// The cap without an override (DuckDB's `2GB`), never above DuckDB's own default. Uncapped, DuckDB's cache grows
 /// toward 80% of RAM: on the 3.47M-event jbeets case `detect` peaked at 17.0 GB RSS and 4.0 GB brought it to 6.2 GB
-/// (20 s -> 24 s); a 1.13M-row ingest in 23 files went from 8.2 GB to 6.5 GB RSS for 4% more time (2 GB: 5.0 GB,
-/// 23% more). Measured 2026-10-29 (docs: reports/ingest-memory.md).
-pub const DEFAULT_MEMORY_LIMIT: u64 = 4_000_000_000;
+/// (20 s -> 24 s); a 1.13M-row ingest in 23 files went from 8.2 GB to 6.5 GB RSS for 4% more time at 4 GB, 5.0 GB
+/// for 23% more at 2 GB (2026-10-29, docs: reports/ingest-memory.md). The profile step on jbeets: 5.7 GB / 87 s at
+/// 4 GB, 3.9 GB / 95 s at 2 GB (2026-11-03). 2 GB chosen (user, 2026-11-03): memory over speed;
+/// `SPARROW_MEMORY_LIMIT=4GB` buys the speed back.
+pub const DEFAULT_MEMORY_LIMIT: u64 = 2_000_000_000;
 
 /// The `memory_limit` (bytes) to set on an instance whose current limit is `current`, or `None` to keep it. Without
 /// an override: [`DEFAULT_MEMORY_LIMIT`] when `current` is above it or does not parse, else `None` (a smaller
@@ -853,8 +855,10 @@ mod tests {
         let target = |cur: &str, o: Option<&str>| memory_limit_target(cur, o).unwrap();
         // DuckDB's 80% of a 32 GB machine is lowered to the cap; a smaller limit is kept.
         assert_eq!(target("25.5 GiB", None), Some(DEFAULT_MEMORY_LIMIT));
-        assert_eq!(target("3.0 GiB", None), None);
-        assert_eq!(target("4GB", None), None);
+        assert_eq!(target("3.0 GiB", None), Some(DEFAULT_MEMORY_LIMIT));
+        assert_eq!(target("1.5 GiB", None), None);
+        assert_eq!(target("2GB", None), None);
+        assert_eq!(target("4GB", None), Some(DEFAULT_MEMORY_LIMIT));
         assert_eq!(target("not a size", None), Some(DEFAULT_MEMORY_LIMIT));
         assert_eq!(target("1 GiB", Some("8GB")), Some(8 * gb));
         assert_eq!(target("25.5 GiB", Some(" Default ")), None);
