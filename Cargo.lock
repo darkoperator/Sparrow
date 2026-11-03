@@ -4053,6 +4053,7 @@ dependencies = [
  "calamine",
  "chrono",
  "csv",
+ "csv-core",
  "duckdb",
  "encoding_rs",
  "hex",

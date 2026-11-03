@@ -720,3 +720,148 @@ fn floor_boundary(s: &str, mut i: usize) -> usize {
     }
     i
 }
+
+/// One step of a [`Scan`]: an event, a request for more text (keeping the text from an absolute decoded offset),
+/// or the end of the scan.
+pub(crate) enum Step<E> {
+    Event(E),
+    More(usize),
+    End,
+}
+
+/// A record scanner that runs the same way over a whole text and over a [`TextStream`]'s window.
+pub(crate) trait Scan {
+    type Event;
+
+    /// The next step over `text`, the decoded text from absolute offset `base`; `last` says no text follows it.
+    /// With `last` false it returns no event whose span reaches the end of `text` (the record may go on, and an
+    /// empty span there cannot be sighted yet), and `More(keep)` has `base <= keep <= base + text.len()`, a char
+    /// boundary.
+    fn next(&mut self, text: &str, base: usize, last: bool) -> Step<Self::Event>;
+}
+
+/// Run `scan` over the whole `text`, handing each event to `sink` until it returns false.
+pub(crate) fn scan_whole<S: Scan>(
+    scan: &mut S,
+    text: &str,
+    mut sink: impl FnMut(&S, S::Event) -> bool,
+) {
+    while let Step::Event(e) = scan.next(text, 0, true) {
+        if !sink(scan, e) {
+            break;
+        }
+    }
+}
+
+/// Run `scan` over `stream`, handing each event to `sink` while its record is still in the window (so the sink can
+/// [`sight`](TextStream::sight) it), until the sink returns false or the text ends. A read error, or `on_read`
+/// asking to stop (`ErrorKind::Interrupted`), ends the scan with that error.
+pub(crate) fn scan_stream<S: Scan>(
+    scan: &mut S,
+    stream: &mut TextStream,
+    on_read: OnRead,
+    mut sink: impl FnMut(&S, S::Event, &mut TextStream) -> bool,
+) -> io::Result<()> {
+    loop {
+        match scan.next(stream.window(), stream.base(), stream.at_eof()) {
+            Step::Event(e) => {
+                if !sink(scan, e, stream) {
+                    return Ok(());
+                }
+            }
+            Step::End => return Ok(()),
+            Step::More(_) if stream.at_eof() => {
+                // A scanner never asks for more at the end of the text; fail rather than loop.
+                return Err(io::Error::other("scanner asked for text past the end"));
+            }
+            Step::More(keep) => {
+                stream.consume(keep);
+                // Grow the window to at least twice the text kept, so a record larger than a chunk is rescanned a
+                // logarithmic number of times rather than once per chunk.
+                let kept = stream.window().len();
+                loop {
+                    stream.fill(&mut *on_read)?;
+                    if stream.at_eof() || stream.window().len() >= 2 * kept {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn admitted(raw: &[u8], encoding: TextEncoding, bom_len: u64) -> Admitted {
+        Admitted {
+            path: PathBuf::new(),
+            raw_len: raw.len() as u64,
+            modified: None,
+            sha256: sha256_hex(raw),
+            blank: false,
+            head: raw[..raw.len().min(SNIFF_BYTES)].to_vec(),
+            encoding,
+            bom_len,
+            lossy: false,
+        }
+    }
+
+    /// Stream `raw` with full consumes after every fill: the kept decoded text and raw bytes stay within a chunk
+    /// plus a checkpoint interval (`raw_per_char` raw bytes per ASCII char) however long the input.
+    fn assert_bounded(raw: Vec<u8>, encoding: TextEncoding, bom_len: u64, raw_per_char: usize) {
+        let chunk = 4096;
+        let margin = 1024;
+        let a = admitted(&raw, encoding, bom_len);
+        let mut s = TextStream::from_bytes(raw.clone(), &a, chunk);
+        let (mut max_text, mut max_raw) = (0, 0);
+        while s.fill(&mut |_| true).unwrap() {
+            max_text = max_text.max(s.text.len());
+            max_raw = max_raw.max(s.raw.len());
+            let end = s.base() + s.window().len();
+            s.consume(end);
+        }
+        assert!(s.at_eof());
+        let streamed = s.base() + s.window().len();
+        assert_eq!(
+            streamed as u64 * raw_per_char as u64,
+            raw.len() as u64 - bom_len,
+            "the whole input was streamed"
+        );
+        assert!(
+            max_text <= chunk + CHECKPOINT_EVERY + margin,
+            "decoded text kept: {max_text}"
+        );
+        assert!(
+            max_raw <= chunk + CHECKPOINT_EVERY * raw_per_char + margin,
+            "raw bytes kept: {max_raw}"
+        );
+        assert!(
+            s.checkpoints.len() <= 3,
+            "{} checkpoints",
+            s.checkpoints.len()
+        );
+    }
+
+    fn ascii_rows(len: usize) -> String {
+        let mut s = String::new();
+        let mut i = 0;
+        while s.len() < len {
+            s.push_str(&format!("{i},user{i}@contoso.com,MailItemsAccessed\r\n"));
+            i += 1;
+        }
+        s
+    }
+
+    #[test]
+    fn full_consumes_keep_the_window_bounded() {
+        let text = ascii_rows(2 * 1024 * 1024);
+        assert_bounded(text.clone().into_bytes(), TextEncoding::Utf8, 0, 1);
+        let mut utf16 = vec![0xFF, 0xFE];
+        for u in text.encode_utf16() {
+            utf16.extend_from_slice(&u.to_le_bytes());
+        }
+        assert_bounded(utf16, TextEncoding::Utf16Le, 2, 2);
+    }
+}

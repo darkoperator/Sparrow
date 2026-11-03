@@ -2,8 +2,10 @@
 //! concatenated in one file (Hawk `-append`, Extractor Suite same-second pages, JSONL).
 //! Each record keeps the exact span of its source text.
 
+use crate::readers::stream::{OnRead, Scan, Step, TextStream, scan_stream, scan_whole};
 use crate::readers::text::Span;
 use serde_json::Value;
+use std::io;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JsonShape {
@@ -41,24 +43,57 @@ pub enum JsonEvent {
     Error(JsonRecordError),
 }
 
-struct Scanner<'t, F> {
-    text: &'t str,
-    ordinal: u64,
-    sink: F,
-    /// The sink asked to stop.
-    stopped: bool,
+/// Where [`Scanner`] is: between documents, in an array before a value (or its `]`), or in an array after a value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum At {
+    Top,
+    Item,
+    AfterItem,
+    Done,
 }
 
-impl<F: FnMut(JsonEvent) -> bool> Scanner<'_, F> {
-    fn emit(&mut self, event: JsonEvent) {
-        if !(self.sink)(event) {
-            self.stopped = true;
+const TRUNCATED_ARRAY: &str = "unexpected end of input inside array (truncated file?)";
+
+/// The scan behind [`scan_json_each`] and [`scan_json_stream`]. A step over a window that may go on stops short of
+/// any value that reaches the window's end, and of any failure (its span runs to the end of the text), asking for
+/// more text from where it stands; the state it keeps between steps is only what it had at that point, so the
+/// rescan over the longer window continues exactly as a scan of the whole text.
+struct Scanner {
+    at: At,
+    /// Absolute offset the next step starts at.
+    pos: usize,
+    docs: usize,
+    first_is_array: bool,
+    ordinal: u64,
+}
+
+impl Scanner {
+    fn new() -> Self {
+        Scanner {
+            at: At::Top,
+            pos: 0,
+            docs: 0,
+            first_is_array: false,
+            ordinal: 0,
         }
     }
 
-    fn push(&mut self, start: usize, end: usize) {
-        let span = Span { start, end };
-        let event = match serde_json::from_str::<Value>(&self.text[start..end]) {
+    fn shape(&self) -> JsonShape {
+        match self.docs {
+            0 => JsonShape::Empty,
+            1 if self.first_is_array => JsonShape::Array,
+            1 => JsonShape::SingleObject,
+            _ => JsonShape::Concatenated,
+        }
+    }
+
+    /// The record at `start..end` of the window.
+    fn push(&mut self, text: &str, base: usize, start: usize, end: usize) -> JsonEvent {
+        let span = Span {
+            start: base + start,
+            end: base + end,
+        };
+        let event = match serde_json::from_str::<Value>(&text[start..end]) {
             Ok(value) => JsonEvent::Record(JsonRecord {
                 ordinal: self.ordinal,
                 span,
@@ -71,21 +106,117 @@ impl<F: FnMut(JsonEvent) -> bool> Scanner<'_, F> {
             }),
         };
         self.ordinal += 1;
-        self.emit(event);
+        event
     }
 
-    fn fail(&mut self, start: usize, message: String) {
-        let span = Span {
-            start,
-            end: self.text.len(),
-        };
+    /// A failure from `start` of the window to the end of the text, which ends the scan.
+    fn fail(&mut self, text: &str, base: usize, start: usize, message: String) -> JsonEvent {
         let event = JsonEvent::Error(JsonRecordError {
             ordinal: self.ordinal,
-            span,
+            span: Span {
+                start: base + start,
+                end: base + text.len(),
+            },
             message,
         });
         self.ordinal += 1;
-        self.emit(event);
+        self.at = At::Done;
+        event
+    }
+}
+
+/// [`value_end`], or `None` when the value may go on past the window.
+fn window_value_end(b: &[u8], start: usize, last: bool) -> Option<Result<usize, String>> {
+    match value_end(b, start) {
+        Ok(end) if end < b.len() || last => Some(Ok(end)),
+        Err(msg) if last => Some(Err(msg)),
+        _ => None,
+    }
+}
+
+impl Scan for Scanner {
+    type Event = JsonEvent;
+
+    fn next(&mut self, text: &str, base: usize, last: bool) -> Step<JsonEvent> {
+        let b = text.as_bytes();
+        loop {
+            let commas = self.at == At::Top;
+            let p = skip(b, self.pos - base, commas);
+            self.pos = base + p;
+            match self.at {
+                At::Done => return Step::End,
+                At::Top => {
+                    if p >= b.len() {
+                        if last {
+                            self.at = At::Done;
+                            return Step::End;
+                        }
+                        return Step::More(self.pos);
+                    }
+                    if b[p] == b'[' {
+                        self.docs += 1;
+                        if self.docs == 1 {
+                            self.first_is_array = true;
+                        }
+                        self.pos += 1;
+                        self.at = At::Item;
+                        continue;
+                    }
+                    let Some(end) = window_value_end(b, p, last) else {
+                        return Step::More(self.pos);
+                    };
+                    self.docs += 1;
+                    return Step::Event(match end {
+                        Ok(end) => {
+                            self.pos = base + end;
+                            self.push(text, base, p, end)
+                        }
+                        Err(msg) => self.fail(text, base, p, msg),
+                    });
+                }
+                At::Item => {
+                    if p >= b.len() {
+                        if !last {
+                            return Step::More(self.pos);
+                        }
+                        return Step::Event(self.fail(text, base, p, TRUNCATED_ARRAY.into()));
+                    }
+                    if b[p] == b']' {
+                        self.pos += 1;
+                        self.at = At::Top;
+                        continue;
+                    }
+                    let Some(end) = window_value_end(b, p, last) else {
+                        return Step::More(self.pos);
+                    };
+                    return Step::Event(match end {
+                        Ok(end) => {
+                            self.pos = base + end;
+                            self.at = At::AfterItem;
+                            self.push(text, base, p, end)
+                        }
+                        Err(msg) => self.fail(text, base, p, msg),
+                    });
+                }
+                At::AfterItem => match b.get(p) {
+                    Some(b',') => {
+                        self.pos += 1;
+                        self.at = At::Item;
+                    }
+                    Some(b']') => {
+                        self.pos += 1;
+                        self.at = At::Top;
+                    }
+                    // A failure's span runs to the end of the text: wait for all of it.
+                    _ if !last => return Step::More(self.pos),
+                    Some(_) => {
+                        let msg = "expected ',' or ']' in array".into();
+                        return Step::Event(self.fail(text, base, p, msg));
+                    }
+                    None => return Step::Event(self.fail(text, base, p, TRUNCATED_ARRAY.into())),
+                },
+            }
+        }
     }
 }
 
@@ -108,98 +239,26 @@ pub fn scan_json(text: &str) -> JsonScan {
 
 /// [`scan_json`] without collecting: each record (parsed) or record error goes to `sink` in file order, so a caller
 /// can hold one record at a time. `sink` returns false to stop the scan; the shape is then that of the part read.
-pub fn scan_json_each(text: &str, sink: impl FnMut(JsonEvent) -> bool) -> JsonShape {
-    let b = text.as_bytes();
-    let mut sc = Scanner {
-        text,
-        ordinal: 0,
-        sink,
-        stopped: false,
-    };
-    let mut pos = 0usize;
-    let mut docs = 0usize;
-    let mut first_is_array = false;
+pub fn scan_json_each(text: &str, mut sink: impl FnMut(JsonEvent) -> bool) -> JsonShape {
+    let mut scan = Scanner::new();
+    scan_whole(&mut scan, text, |_, event| sink(event));
+    scan.shape()
+}
 
-    'docs: loop {
-        pos = skip(b, pos, true);
-        if pos >= b.len() || sc.stopped {
-            break;
-        }
-        docs += 1;
-        if b[pos] == b'[' {
-            if docs == 1 {
-                first_is_array = true;
-            }
-            pos += 1;
-            loop {
-                if sc.stopped {
-                    break 'docs;
-                }
-                pos = skip(b, pos, false);
-                if pos >= b.len() {
-                    sc.fail(
-                        pos,
-                        "unexpected end of input inside array (truncated file?)".into(),
-                    );
-                    break 'docs;
-                }
-                if b[pos] == b']' {
-                    pos += 1;
-                    break;
-                }
-                match value_end(b, pos) {
-                    Ok(end) => {
-                        sc.push(pos, end);
-                        pos = end;
-                    }
-                    Err(msg) => {
-                        sc.fail(pos, msg);
-                        break 'docs;
-                    }
-                }
-                if sc.stopped {
-                    break 'docs;
-                }
-                pos = skip(b, pos, false);
-                match b.get(pos) {
-                    Some(b',') => pos += 1,
-                    Some(b']') => {
-                        pos += 1;
-                        break;
-                    }
-                    Some(_) => {
-                        sc.fail(pos, "expected ',' or ']' in array".into());
-                        break 'docs;
-                    }
-                    None => {
-                        sc.fail(
-                            pos,
-                            "unexpected end of input inside array (truncated file?)".into(),
-                        );
-                        break 'docs;
-                    }
-                }
-            }
-        } else {
-            match value_end(b, pos) {
-                Ok(end) => {
-                    sc.push(pos, end);
-                    pos = end;
-                }
-                Err(msg) => {
-                    sc.fail(pos, msg);
-                    break;
-                }
-            }
-        }
-    }
-
-    match docs {
-        0 => JsonShape::Empty,
-        1 if first_is_array => JsonShape::Array,
-        1 => JsonShape::SingleObject,
-        _ => JsonShape::Concatenated,
-    }
+/// [`scan_json_each`] over a [`TextStream`]: the same events (spans absolute) and shape, each event handed to `sink`
+/// while its record is still in the window, so the sink can [`sight`](TextStream::sight) it. A read error, or
+/// `on_read` asking to stop, ends the scan with that error. A failure (truncated or malformed array) spans the rest
+/// of the file, so the window holds the rest of the file before it is reported.
+pub fn scan_json_stream(
+    stream: &mut TextStream,
+    on_read: OnRead,
+    mut sink: impl FnMut(JsonEvent, &mut TextStream) -> bool,
+) -> io::Result<JsonShape> {
+    let mut scan = Scanner::new();
+    scan_stream(&mut scan, stream, on_read, |_, event, stream| {
+        sink(event, stream)
+    })?;
+    Ok(scan.shape())
 }
 
 fn skip(b: &[u8], mut pos: usize, commas: bool) -> usize {

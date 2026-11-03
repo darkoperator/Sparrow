@@ -1,8 +1,10 @@
 //! CSV reader for PowerShell `Export-Csv` output that keeps each row's source span.
 
+use crate::readers::stream::{OnRead, Scan, Step, TextStream, scan_stream, scan_whole};
 use crate::readers::text::Span;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
+use std::io;
 
 #[derive(Debug, Clone)]
 pub struct CsvRow {
@@ -66,61 +68,173 @@ pub enum CsvEvent {
 /// [`read_csv`] without collecting: each row or row error goes to `sink` with the normalized headers, in file order,
 /// so a caller can hold one row at a time. `sink` returns false to stop. Returns the headers.
 pub fn read_csv_each(text: &str, mut sink: impl FnMut(&[String], CsvEvent) -> bool) -> Vec<String> {
-    let mut rdr = ::csv::ReaderBuilder::new()
-        .has_headers(false)
-        .flexible(true)
-        .from_reader(text.as_bytes());
-    let mut headers: Vec<String> = Vec::new();
-    let mut record = ::csv::StringRecord::new();
-    let mut ordinal = 0u64;
-    let mut have_header = false;
-    loop {
-        let before = rdr.position().byte() as usize;
-        match rdr.read_record(&mut record) {
-            Ok(false) => break,
-            Ok(true) => {
-                let end = trim_line_end(text, rdr.position().byte() as usize);
-                let start = skip_newlines(text, before, end);
-                if !have_header {
-                    let is_type_line = record.len() == 1
-                        && record
-                            .get(0)
-                            .is_some_and(|f| f.trim_start_matches('\u{feff}').starts_with("#TYPE"));
-                    if is_type_line {
-                        continue;
-                    }
-                    headers = normalize_headers(record.iter());
-                    have_header = true;
-                    continue;
-                }
-                let row = CsvRow {
-                    ordinal,
-                    span: Span { start, end },
-                    fields: record.iter().map(str::to_string).collect(),
-                };
-                ordinal += 1;
-                if !sink(&headers, CsvEvent::Row(row)) {
+    let mut scan = CsvScan::new();
+    scan_whole(&mut scan, text, |scan, event| sink(&scan.headers, event));
+    scan.headers
+}
+
+/// [`read_csv_each`] over a [`TextStream`]: the same events (spans absolute), each handed to `sink` while its row is
+/// still in the window, so the sink can [`sight`](TextStream::sight) it. A read error, or `on_read` asking to stop,
+/// ends the scan with that error. Returns the headers.
+pub fn read_csv_stream(
+    stream: &mut TextStream,
+    on_read: OnRead,
+    mut sink: impl FnMut(&[String], CsvEvent, &mut TextStream) -> bool,
+) -> io::Result<Vec<String>> {
+    let mut scan = CsvScan::new();
+    scan_stream(&mut scan, stream, on_read, |scan, event, stream| {
+        sink(&scan.headers, event, stream)
+    })?;
+    Ok(scan.headers)
+}
+
+/// The scan behind [`read_csv_each`] and [`read_csv_stream`]: the reader core of the `csv` crate (what
+/// `csv::Reader` runs, with the defaults `read_csv` has always used: comma, double quotes, CR/LF/CRLF terminators,
+/// flexible field counts), fed the text as it arrives. Its records do not depend on how the input is cut, so a
+/// window gives the same records as the whole text, and a record is only complete once its terminator (or the end
+/// of the text) is seen.
+struct CsvScan {
+    core: csv_core::Reader,
+    /// The current record's field bytes and field ends, filled `out` and `ends` deep.
+    fields: Vec<u8>,
+    field_ends: Vec<usize>,
+    out: usize,
+    ends: usize,
+    /// Absolute offset of the next byte to feed.
+    pos: usize,
+    /// Absolute offset where the record being read starts: just after the previous record's terminator.
+    before: usize,
+    fed: bool,
+    done: bool,
+    headers: Vec<String>,
+    have_header: bool,
+    ordinal: u64,
+}
+
+impl CsvScan {
+    fn new() -> Self {
+        CsvScan {
+            core: csv_core::Reader::new(),
+            fields: vec![0; 1024],
+            field_ends: vec![0; 16],
+            out: 0,
+            ends: 0,
+            pos: 0,
+            before: 0,
+            fed: false,
+            done: false,
+            headers: Vec::new(),
+            have_header: false,
+            ordinal: 0,
+        }
+    }
+
+    /// The `#TYPE` line, the header row, or a row or row error (`None` for the first two).
+    fn record(&mut self, text: &str, base: usize) -> Option<CsvEvent> {
+        self.out = 0;
+        let ends = std::mem::take(&mut self.ends);
+        let before = std::mem::replace(&mut self.before, self.pos);
+        let mut record = Vec::with_capacity(ends);
+        let mut invalid = None;
+        let mut from = 0;
+        for (i, &to) in self.field_ends[..ends].iter().enumerate() {
+            match std::str::from_utf8(&self.fields[from..to]) {
+                Ok(field) => record.push(field.to_string()),
+                Err(e) => {
+                    invalid = Some(format!("invalid UTF-8 in field {i}: {e}"));
                     break;
                 }
             }
-            Err(e) => {
-                let end = trim_line_end(text, rdr.position().byte() as usize).max(before);
-                let error = CsvRowError {
-                    ordinal,
-                    span: Span { start: before, end },
-                    message: e.to_string(),
-                };
-                ordinal += 1;
-                if !sink(&headers, CsvEvent::Error(error)) {
-                    break;
+            from = to;
+        }
+        // Fields of a `str` cut at ASCII bytes are UTF-8: this is the reader's error recovery, kept for safety.
+        if let Some(message) = invalid {
+            return Some(self.error(text, base, before, message));
+        }
+        let end = base + trim_line_end(text, self.pos - base);
+        let start = base + skip_newlines(text, before - base, end - base);
+        if !self.have_header {
+            let is_type_line = record.len() == 1
+                && record[0]
+                    .trim_start_matches('\u{feff}')
+                    .starts_with("#TYPE");
+            if !is_type_line {
+                self.headers = normalize_headers(record.iter().map(String::as_str));
+                self.have_header = true;
+            }
+            return None;
+        }
+        let row = CsvRow {
+            ordinal: self.ordinal,
+            span: Span { start, end },
+            fields: record,
+        };
+        self.ordinal += 1;
+        Some(CsvEvent::Row(row))
+    }
+
+    fn error(&mut self, text: &str, base: usize, before: usize, message: String) -> CsvEvent {
+        let end = (base + trim_line_end(text, self.pos - base)).max(before);
+        let error = CsvRowError {
+            ordinal: self.ordinal,
+            span: Span { start: before, end },
+            message,
+        };
+        self.ordinal += 1;
+        if self.pos <= before {
+            self.done = true;
+        }
+        CsvEvent::Error(error)
+    }
+}
+
+impl Scan for CsvScan {
+    type Event = CsvEvent;
+
+    fn next(&mut self, text: &str, base: usize, last: bool) -> Step<CsvEvent> {
+        use csv_core::ReadRecordResult as R;
+        loop {
+            if self.done {
+                return Step::End;
+            }
+            let input = &text.as_bytes()[self.pos - base..];
+            // An empty input tells the core the text has ended. Its first input must also be what the whole text
+            // would give it: it strips a UTF-8 BOM only when all three bytes are in its first input, and a first
+            // input of the BOM alone is then empty, the end.
+            if !last && (input.is_empty() || (!self.fed && input.len() <= 3)) {
+                return Step::More(self.before);
+            }
+            self.fed = true;
+            let (res, nin, nout, nend) = self.core.read_record(
+                input,
+                &mut self.fields[self.out..],
+                &mut self.field_ends[self.ends..],
+            );
+            self.pos += nin;
+            self.out += nout;
+            self.ends += nend;
+            match res {
+                R::InputEmpty => {}
+                R::OutputFull => {
+                    let n = (self.fields.len() * 2).max(4);
+                    self.fields.resize(n, 0);
                 }
-                if rdr.position().byte() as usize <= before {
-                    break;
+                R::OutputEndsFull => {
+                    let n = (self.field_ends.len() * 2).max(4);
+                    self.field_ends.resize(n, 0);
+                }
+                R::Record => {
+                    if let Some(event) = self.record(text, base) {
+                        return Step::Event(event);
+                    }
+                }
+                R::End => {
+                    self.done = true;
+                    return Step::End;
                 }
             }
         }
     }
-    headers
 }
 
 fn trim_line_end(text: &str, end: usize) -> usize {

@@ -9,6 +9,7 @@ license.workspace = true
 calamine.workspace = true
 chrono.workspace = true
 csv.workspace = true
+csv-core.workspace = true
 duckdb.workspace = true
 encoding_rs.workspace = true
 hex.workspace = true
