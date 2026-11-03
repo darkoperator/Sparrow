@@ -188,7 +188,7 @@ pub fn page(
     offset: usize,
     limit: usize,
 ) -> Result<EventsPage> {
-    let w = filter::build(q, false)?;
+    let w = filter::build(conn, q, false)?;
     let order = order_by(sort)?;
     let limit = limit.min(MAX_PAGE);
 
@@ -230,7 +230,7 @@ pub fn matching_rows(
     q: &EventQuery,
     cap: usize,
 ) -> Result<(Vec<marks::RowRef>, bool)> {
-    let w = filter::build(q, false)?;
+    let w = filter::build(conn, q, false)?;
     let mut stmt = conn.prepare(&format!(
         "SELECT e.source_table, e.record_key FROM events e{} \
          ORDER BY e.event_time ASC NULLS LAST, e.source_table, e.record_key LIMIT {}",
@@ -252,7 +252,7 @@ pub fn matching_rows(
 
 /// The summary bar: the total and the rows per source of what `q` matches.
 pub fn summary(conn: &Connection, q: &EventQuery) -> Result<EventsSummary> {
-    let w = filter::build(q, false)?;
+    let w = filter::build(conn, q, false)?;
     let mut by_source: BTreeMap<String, u64> = BTreeMap::new();
     {
         let mut stmt = conn.prepare(&format!(
@@ -275,7 +275,7 @@ pub fn summary(conn: &Connection, q: &EventQuery) -> Result<EventsSummary> {
     per_source.extend(by_source);
 
     let hidden_trace_events = if filter::hides_trace_events(q)? {
-        let mut all = filter::build(q, true)?;
+        let mut all = filter::build(conn, q, true)?;
         all.clauses
             .push(format!("e.source = '{}'", filter::HIDDEN_SOURCE));
         conn.query_row(
@@ -308,7 +308,7 @@ fn flag_counts(conn: &Connection, q: &EventQuery) -> Result<(u64, u64)> {
         return Ok((0, 0));
     }
     // The flagged rows of everything else the query selects, counted by their effective flag.
-    let w = filter::build_with(q, false, false)?;
+    let w = filter::build_with(Some(conn), q, false, false)?;
     let counts = conn.query_row(
         &format!(
             "WITH base AS (SELECT {} FROM events e{}) \
@@ -360,7 +360,7 @@ pub fn histogram_by(
     if max_buckets == 0 {
         return Err(Error::Invalid("a histogram needs at least 1 bucket".into()));
     }
-    let w = filter::build(q, false)?;
+    let w = filter::build(conn, q, false)?;
     let timed = format!(
         "{} {} e.event_time IS NOT NULL",
         w.sql(),
@@ -636,7 +636,7 @@ pub fn values(
     }
     let mut rest = q.clone();
     rest.fields.retain(|(f, _)| *f != field);
-    let w = filter::build(&rest, field == Field::Source)?;
+    let w = filter::build(conn, &rest, field == Field::Source)?;
     // One row per (event, value): `v` the value as stored.
     let per_event = match field {
         Field::Tag => format!(
@@ -740,7 +740,7 @@ fn csv_time(t: &DateTime<Utc>) -> String {
 /// million rows are never held. The file starts with a UTF-8 BOM. Text cells that a spreadsheet would read as a formula are prefixed with `'`, as in
 /// the timeline CSV.
 pub fn export_csv(conn: &Connection, q: &EventQuery, out: &Path) -> Result<u64> {
-    let w = filter::build(q, false)?;
+    let w = filter::build(conn, q, false)?;
     let order = order_by(None)?;
     let file = std::fs::File::create(out).map_err(|e| Error::io(out, e))?;
     let mut buf = std::io::BufWriter::new(file);

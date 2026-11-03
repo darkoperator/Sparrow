@@ -2241,3 +2241,130 @@ fn values_with_syntax_characters_filter_exactly_when_quoted() {
     }
     assert!(keys(&case, &field(Field::Operation, r#""a*""#)).is_empty());
 }
+
+#[test]
+fn a_repeated_search_sees_records_a_later_rebuild_added() {
+    let case = Case::in_memory().unwrap();
+    let ual = |id: &str, upn: &str, client: &str| {
+        insert_record(
+            &case,
+            T,
+            "ual_events",
+            &json!({"record_id": id, "event_time": "2026-09-01T10:00:00Z", "workload": "Exchange",
+                    "operation": "Send", "user_upn": upn,
+                    "audit_data": {"Operation": "Send", "ClientInfoString": client}}),
+            "search",
+        )
+        .unwrap();
+    };
+    ual(
+        "b0000001-0000-4000-8000-000000000001",
+        "alice@contoso.example",
+        "Client=Plain",
+    );
+    events::rebuild(case.conn()).unwrap();
+    let q = EventQuery {
+        search: Some("late-needle".into()),
+        ..EventQuery::default()
+    };
+    // Searched (and its hits kept) before the record exists.
+    assert!(keys(&case, &q).is_empty());
+    assert_eq!(events::summary(case.conn(), &q).unwrap().total, 0);
+    ual(
+        "b0000002-0000-4000-8000-000000000002",
+        "bob@contoso.example",
+        "Client=Late-Needle",
+    );
+    events::rebuild(case.conn()).unwrap();
+    assert_eq!(keys(&case, &q), ["b0000002-0000-4000-8000-000000000002"]);
+    assert_eq!(events::summary(case.conn(), &q).unwrap().total, 1);
+}
+
+#[test]
+fn a_search_narrowed_by_other_filters_reads_only_their_ual_records() {
+    let case = Case::in_memory().unwrap();
+    for (i, upn) in [
+        "alice@contoso.example",
+        "bob@contoso.example",
+        "carol@contoso.example",
+    ]
+    .iter()
+    .enumerate()
+    {
+        insert_record(
+            &case,
+            T,
+            "ual_events",
+            &json!({"record_id": format!("c000000{i}-0000-4000-8000-00000000000{i}"),
+                    "event_time": "2026-09-01T10:00:00Z", "workload": "Exchange", "operation": "Send",
+                    "user_upn": upn, "audit_data": {"Operation": "Send", "ClientInfoString": "Client=Narrow-Needle"}}),
+            "search",
+        )
+        .unwrap();
+    }
+    events::rebuild(case.conn()).unwrap();
+    let q = |upn: Option<&str>| EventQuery {
+        search: Some("narrow-needle".into()),
+        entity: upn.map(|u| Entity::Account(u.into())),
+        ..EventQuery::default()
+    };
+    assert_eq!(keys(&case, &q(None)).len(), 3);
+    assert_eq!(
+        keys(&case, &q(Some("bob@contoso.example"))),
+        ["c0000001-0000-4000-8000-000000000001"]
+    );
+    assert!(keys(&case, &q(Some("nobody@contoso.example"))).is_empty());
+    // The same search, unnarrowed again, still has all three (its own hits, not the narrowed ones).
+    assert_eq!(keys(&case, &q(None)).len(), 3);
+}
+
+#[test]
+fn a_repeated_search_follows_tags_and_rebuilt_columns() {
+    let case = Case::in_memory().unwrap();
+    for (i, upn) in ["alice@contoso.example", "bob@contoso.example"]
+        .iter()
+        .enumerate()
+    {
+        insert_record(
+            &case,
+            T,
+            "signins",
+            &json!({"record_key": format!("si-{i}"), "event_time": "2026-09-01T10:00:00Z", "event_type": "interactive",
+                    "user_upn": upn, "user_agent": "Tag-Needle/1"}),
+            "search",
+        )
+        .unwrap();
+    }
+    events::rebuild(case.conn()).unwrap();
+    let tagged = EventQuery {
+        search: Some("tag-needle".into()),
+        fields: vec![(Field::Tag, "watch".into())],
+        ..EventQuery::default()
+    };
+    assert!(keys(&case, &tagged).is_empty());
+    tag_rows(
+        case.conn(),
+        &Actor::analyst("carlos").unwrap(),
+        &[RowRef::new("signins", "si-1")],
+        "watch",
+        true,
+    )
+    .unwrap();
+    // The tag came after the search was cached; the tagged row still shows.
+    assert_eq!(keys(&case, &tagged), ["si-1"]);
+    // A narrowed (non-UAL) search after a rebuild that keeps the count sees the rebuilt rows.
+    let narrowed = EventQuery {
+        search: Some("tag-needle".into()),
+        from: Some(t0() - Duration::hours(1)),
+        ..EventQuery::default()
+    };
+    assert_eq!(keys(&case, &narrowed), ["si-0", "si-1"]);
+    case.conn()
+        .execute(
+            "UPDATE signins SET user_agent = 'Plain/1' WHERE record_key = 'si-0'",
+            [],
+        )
+        .unwrap();
+    events::rebuild(case.conn()).unwrap();
+    assert_eq!(keys(&case, &narrowed), ["si-1"]);
+}

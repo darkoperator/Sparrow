@@ -9,7 +9,7 @@ mod query;
 
 pub use crate::case::marks::{FlagLevel, TagRef};
 pub(crate) use build::prefix_of;
-pub(crate) use filter::{Where, build as scope_where, entity_columns, entity_predicate};
+pub(crate) use filter::{Where, build_unsearched as scope_where, entity_columns, entity_predicate};
 pub(crate) use marksql::{value_columns, value_flag_matches};
 pub use query::{
     CSV_COLUMNS, HISTOGRAM_TOP_OPERATIONS, MAX_HISTOGRAM_BUCKETS, MAX_VALUES, detail, export_csv,

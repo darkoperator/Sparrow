@@ -6,13 +6,14 @@ use crate::normalize::net::normalize_ip;
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
 use duckdb::types::Value;
+use duckdb::{Connection, OptionalExt, params_from_iter};
 use std::net::IpAddr;
 
 /// The one source that is hidden unless the Source field names it (there are many events per message).
 pub(super) const HIDDEN_SOURCE: &str = "message_trace_event";
 
 /// WHERE clauses over `events e`, ANDed, with their bound parameters in order.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct Where {
     pub clauses: Vec<String>,
     pub params: Vec<Value>,
@@ -434,40 +435,55 @@ pub(super) const SEARCH_TABLES: &[(&str, &str)] = &[
 
 /// The WHERE for `q` over `events e`. `show_hidden` keeps the `message_trace_event` rows even when `q` does not
 /// name them (the summary uses it to count what the default view hides).
-pub(crate) fn build(q: &EventQuery, show_hidden: bool) -> Result<Where> {
-    build_with(q, show_hidden, true)
+pub(crate) fn build(conn: &Connection, q: &EventQuery, show_hidden: bool) -> Result<Where> {
+    build_with(Some(conn), q, show_hidden, true)
+}
+
+/// [`build`] for a query without a search (an entity tab's scope), which needs no connection.
+pub(crate) fn build_unsearched(q: &EventQuery, show_hidden: bool) -> Result<Where> {
+    build_with(None, q, show_hidden, true)
 }
 
 /// [`build`] with the flag toggle optional: the summary counts the suspicious and malicious rows of everything else
 /// the query selects, whatever the toggle says.
-pub(crate) fn build_with(q: &EventQuery, show_hidden: bool, apply_flag: bool) -> Result<Where> {
+pub(crate) fn build_with(
+    conn: Option<&Connection>,
+    q: &EventQuery,
+    show_hidden: bool,
+    apply_flag: bool,
+) -> Result<Where> {
     let mut w = Where::default();
+    // What narrows the search (see `search_clause`): only clauses over the `events` row itself, which a rebuild alone
+    // changes. Tag and Rule read the analyst's tags and the findings, which change between two queries of one view, and
+    // the hidden source and the flags are left out so the page, the summary and the histogram share the hits.
+    let mut narrowing = Where::default();
     if let Some(e) = &q.entity {
         let (sql, p) = e.clone().normalized()?.clause();
+        narrowing.push(sql.clone(), p.clone());
         w.push(sql, p);
     }
     for (field, text) in &q.fields {
         if let Some((sql, p)) = field_clause(*field, text)? {
+            if !matches!(field, Field::Tag | Field::Rule) {
+                narrowing.push(format!("({sql})"), p.clone());
+            }
             w.push(format!("({sql})"), p);
+        }
+    }
+    for (bound, op) in [(&q.from, ">="), (&q.to, "<=")] {
+        if let Some(t) = bound {
+            let clause = format!("e.event_time {op} CAST(? AS TIMESTAMPTZ)");
+            narrowing.push(clause.clone(), vec![ts_param(t)]);
+            w.push(clause, vec![ts_param(t)]);
         }
     }
     if !show_hidden && hides_trace_events(q)? {
         w.push(format!("e.source <> '{HIDDEN_SOURCE}'"), vec![]);
     }
-    if let Some(from) = &q.from {
-        w.push(
-            "e.event_time >= CAST(? AS TIMESTAMPTZ)".into(),
-            vec![ts_param(from)],
-        );
-    }
-    if let Some(to) = &q.to {
-        w.push(
-            "e.event_time <= CAST(? AS TIMESTAMPTZ)".into(),
-            vec![ts_param(to)],
-        );
-    }
-    if let Some(search) = &q.search {
-        if let Some((sql, p)) = search_clause(search)? {
+    if let Some(search) = q.search.as_deref().filter(|s| !s.trim().is_empty()) {
+        let conn =
+            conn.ok_or_else(|| Error::Invalid("a search needs the case connection".into()))?;
+        if let Some((sql, p)) = search_clause(conn, &narrowing, search)? {
             w.push(sql, p);
         }
     }
@@ -506,12 +522,25 @@ pub(crate) fn build_with(q: &EventQuery, show_hidden: bool, apply_flag: bool) ->
     Ok(w)
 }
 
-/// A case-insensitive substring over each source row's raw JSON.
+/// A narrowed search reads at most this many UAL records by id (the primary-key index); more are scanned.
+const INDEX_LOOKUP_MAX: usize = 50_000;
+/// Hit rows a connection keeps across its cached searches; the oldest-used searches go first (the current one stays).
+const SEARCH_CACHE_ROWS: i64 = 2_000_000;
+
+/// A case-insensitive substring over each source row's raw JSON. Comma separates terms (OR), `*` is a wildcard.
 ///
-/// Slow on a big case (about 5 s for 1.4M events: every source table is scanned in full, whatever the other filters
-/// are). Two ways to speed it up if needed: restrict each scan to the keys that pass the other filters (a temp table of
-/// candidate keys), or keep a trigram / full-text side table. Comma separates terms (OR), `*` is a wildcard.
-fn search_clause(text: &str) -> Result<Option<(String, Vec<Value>)>> {
+/// The hits are computed once into the connection's temp table `events_search_hits`, keyed by the terms, the
+/// `narrowing` filters and the events generation (`case_meta.events_generation`, new on every rebuild, with the count
+/// for a case built before it existed), and the clause reads them: the page, its count, the summary and the histogram of one view share one scan. Reading the raw JSON is what
+/// costs (UAL AuditData: about 12 s for 3.4M records on an external drive), so a search narrowed by other filters reads
+/// only their records: none of a table they leave nothing of, UAL ones by id through the primary-key index in chunks of
+/// 1000 (a join, or one long IN list, scans the whole column first), the rest through a semi-join on their keys (they
+/// have no index).
+fn search_clause(
+    conn: &Connection,
+    narrowing: &Where,
+    text: &str,
+) -> Result<Option<(String, Vec<Value>)>> {
     if text.trim().is_empty() {
         return Ok(None);
     }
@@ -525,15 +554,174 @@ fn search_clause(text: &str) -> Result<Option<(String, Vec<Value>)>> {
         return Err(Error::Invalid("search: only commas, no term".into()));
     }
     let like = vec!["CAST(to_json(t) AS VARCHAR) ILIKE ? ESCAPE '\\'"; terms.len()].join(" OR ");
-    let mut parts = Vec::new();
-    let mut params = Vec::new();
-    for (table, key) in SEARCH_TABLES {
-        parts.push(format!(
-            "(e.source_table = '{table}' AND e.record_key IN (SELECT {key} FROM {table} t WHERE {like}))"
-        ));
-        params.extend(terms.iter().map(|t| Value::Text(t.clone())));
+    let events: String = conn.query_row(
+        "SELECT coalesce((SELECT value FROM case_meta WHERE key = 'events_generation'), '') || ':' || \
+                (SELECT count(*) FROM events)",
+        [],
+        |r| r.get(0),
+    )?;
+    let cache_key = {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        for part in [
+            format!("{terms:?}"),
+            format!("{:?}", narrowing.clauses),
+            format!("{:?}", narrowing.params),
+            events,
+        ] {
+            h.update(part.as_bytes());
+            h.update([0x1f]);
+        }
+        hex::encode(h.finalize())
+    };
+    // A search is a small id in the hits (a broad term can match millions of rows); `events_search_cache` maps the key
+    // to it, with when it was last used and how many hits it holds.
+    conn.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS events_search_hits (search_id BIGINT, source_table VARCHAR, record_key VARCHAR);
+         CREATE TEMP TABLE IF NOT EXISTS events_search_cache
+             (cache_key VARCHAR, search_id BIGINT, used BIGINT, hits BIGINT);",
+    )?;
+    let next_use = "(SELECT coalesce(max(used), 0) + 1 FROM events_search_cache)";
+    let id: Option<i64> = conn
+        .query_row(
+            "SELECT search_id FROM events_search_cache WHERE cache_key = ?",
+            [&cache_key],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let id = match id {
+        Some(id) => {
+            conn.execute(
+                &format!("UPDATE events_search_cache SET used = {next_use} WHERE search_id = ?"),
+                [id],
+            )?;
+            id
+        }
+        None => {
+            let id: i64 = conn.query_row(
+                "SELECT coalesce(max(search_id), 0) + 1 FROM \
+                 (SELECT search_id FROM events_search_cache UNION ALL SELECT search_id FROM events_search_hits)",
+                [],
+                |r| r.get(0),
+            )?;
+            // A fill cut short (an interrupted read) leaves rows under no cache entry: never trusted, and gone here.
+            conn.execute_batch(
+                "DELETE FROM events_search_hits WHERE search_id NOT IN (SELECT search_id FROM events_search_cache)",
+            )?;
+            fill_search_hits(conn, narrowing, &terms, &like, id)?;
+            conn.execute(
+                &format!(
+                    "INSERT INTO events_search_cache SELECT ?, ?, {next_use}, \
+                     (SELECT count(*) FROM events_search_hits WHERE search_id = ?)"
+                ),
+                duckdb::params![cache_key, id, id],
+            )?;
+            // Keep the most recently used searches within SEARCH_CACHE_ROWS hit rows; this one always stays.
+            conn.execute_batch(&format!(
+                "CREATE OR REPLACE TEMP TABLE events_search_evict AS
+                     SELECT search_id FROM (
+                         SELECT search_id, sum(hits) OVER (ORDER BY used DESC) AS kept FROM events_search_cache
+                     ) WHERE kept > {SEARCH_CACHE_ROWS} AND search_id <> {id};
+                 DELETE FROM events_search_hits WHERE search_id IN (SELECT search_id FROM events_search_evict);
+                 DELETE FROM events_search_cache WHERE search_id IN (SELECT search_id FROM events_search_evict);
+                 DROP TABLE events_search_evict;"
+            ))?;
+            id
+        }
+    };
+    Ok(Some((
+        "EXISTS (SELECT 1 FROM events_search_hits h WHERE h.search_id = ? AND h.source_table = e.source_table \
+         AND h.record_key = e.record_key)"
+            .into(),
+        vec![Value::BigInt(id)],
+    )))
+}
+
+/// Compute a search's hits into `events_search_hits` under `search_id` (see [`search_clause`]).
+fn fill_search_hits(
+    conn: &Connection,
+    narrowing: &Where,
+    terms: &[String],
+    like: &str,
+    search_id: i64,
+) -> Result<()> {
+    let term_params = || terms.iter().map(|t| Value::Text(t.clone()));
+    let key_param = || std::iter::once(Value::BigInt(search_id));
+    let narrowed = !narrowing.clauses.is_empty();
+    let base = narrowing.clauses.join(" AND ");
+    // How many records of each table the other filters leave: a table with none is not read at all.
+    let mut left: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    if narrowed {
+        let mut st = conn.prepare(&format!(
+            "SELECT e.source_table, count(*) FROM events e WHERE {base} GROUP BY 1"
+        ))?;
+        let mut rows = st.query(params_from_iter(narrowing.params.iter()))?;
+        while let Some(r) = rows.next()? {
+            left.insert(r.get(0)?, r.get(1)?);
+        }
     }
-    Ok(Some((format!("({})", parts.join(" OR ")), params)))
+    for (table, key) in SEARCH_TABLES {
+        if narrowed && left.get(*table).copied().unwrap_or(0) == 0 {
+            continue;
+        }
+        let candidates = format!(
+            "SELECT e.record_key FROM events e WHERE e.source_table = '{table}' AND {base}"
+        );
+        if !narrowed {
+            conn.execute(
+                &format!("INSERT INTO events_search_hits SELECT ?, '{table}', {key} FROM {table} t WHERE {like}"),
+                params_from_iter(key_param().chain(term_params())),
+            )?;
+            continue;
+        }
+        if *table == "ual_events" {
+            let mut ids = std::collections::BTreeSet::new();
+            let mut over = false;
+            {
+                let mut st =
+                    conn.prepare(&format!("{candidates} LIMIT {}", INDEX_LOOKUP_MAX + 1))?;
+                let mut rows = st.query(params_from_iter(narrowing.params.iter()))?;
+                let mut n = 0usize;
+                while let Some(r) = rows.next()? {
+                    n += 1;
+                    if n > INDEX_LOOKUP_MAX {
+                        over = true;
+                        break;
+                    }
+                    // A UAL key is its record id; anything else cannot be one (and is never inlined).
+                    if let Ok(id) = uuid::Uuid::parse_str(&r.get::<_, String>(0)?) {
+                        ids.insert(id);
+                    }
+                }
+            }
+            if !over {
+                let ids: Vec<String> = ids.into_iter().map(|u| format!("'{u}'")).collect();
+                for chunk in ids.chunks(1000) {
+                    conn.execute(
+                        &format!(
+                            "INSERT INTO events_search_hits SELECT ?, 'ual_events', {key} FROM ual_events t \
+                             WHERE t.record_id IN ({}) AND ({like})",
+                            chunk.join(", ")
+                        ),
+                        params_from_iter(key_param().chain(term_params())),
+                    )?;
+                }
+                continue;
+            }
+        }
+        conn.execute(
+            &format!(
+                "INSERT INTO events_search_hits SELECT ?, '{table}', {key} FROM {table} t \
+                 WHERE {key} IN ({candidates}) AND ({like})"
+            ),
+            params_from_iter(
+                key_param()
+                    .chain(narrowing.params.iter().cloned())
+                    .chain(term_params()),
+            ),
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

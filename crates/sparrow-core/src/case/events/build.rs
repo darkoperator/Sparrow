@@ -19,7 +19,9 @@ pub(super) fn rebuild(conn: &Connection) -> Result<u64> {
         rows += conn.execute(&insert_sql(&s), [])? as u64;
     }
     conn.execute_batch(
-        "DROP TABLE IF EXISTS events_ip_map; DROP TABLE IF EXISTS events_audit_device",
+        "DROP TABLE IF EXISTS events_ip_map; DROP TABLE IF EXISTS events_audit_device;
+         -- A new generation: a search's cached hits (any connection's) are of the rows before this rebuild.
+         INSERT OR REPLACE INTO case_meta VALUES ('events_generation', CAST(gen_random_uuid() AS VARCHAR));",
     )?;
     Ok(rows)
 }
