@@ -30,7 +30,7 @@ impl TextEncoding {
     }
 
     /// Number of raw bytes `c` occupies in this encoding.
-    fn encoded_len(self, c: char) -> u64 {
+    pub(crate) fn encoded_len(self, c: char) -> u64 {
         match self {
             TextEncoding::Utf8 | TextEncoding::Utf8Bom => c.len_utf8() as u64,
             TextEncoding::Utf16Le | TextEncoding::Utf16Be => (c.len_utf16() * 2) as u64,
@@ -135,7 +135,7 @@ fn windows_1252(bytes: &[u8], bom_len: u64) -> DecodedText<'_> {
     }
 }
 
-fn looks_like_bomless_utf16le(b: &[u8]) -> bool {
+pub(crate) fn looks_like_bomless_utf16le(b: &[u8]) -> bool {
     if b.len() < 4 || b.len() % 2 != 0 {
         return false;
     }

@@ -1,0 +1,722 @@
+//! Streamed reading of collector text files, for files too large to hold whole.
+//!
+//! [`admit`] reads a file once: its SHA-256, its head, whether it is blank, and the encoding decision
+//! [`decode`](super::text::decode) would make on the whole file (including the Windows-1252 fallback when the whole
+//! file is not valid UTF-8, and whether decoding is lossy). [`Admitted::open`] then starts a pass that decodes the
+//! file a chunk at a time into a [`TextStream`] window. Offsets in spans are absolute decoded offsets, the same
+//! numbers the whole-text path produces, and [`TextStream::sight`] gives the same [`SourcePos`] as
+//! [`locate`](super::text::locate) plus the hash of the record's raw bytes.
+
+use super::text::{SourcePos, Span, TextEncoding, is_blank_content, looks_like_bomless_utf16le};
+use crate::discovery::SNIFF_BYTES;
+use crate::hash::{Sha256Stream, sha256_hex};
+use encoding_rs::{CoderResult, Decoder};
+use std::fs::File;
+use std::io::{self, ErrorKind, Read};
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
+/// Raw bytes read per [`TextStream::fill`] (and per read of [`admit`]) in production.
+pub const CHUNK_BYTES: usize = 8 * 1024 * 1024;
+
+/// Called with raw bytes read since the last call; return false to stop (the read fails with ErrorKind::Interrupted).
+pub type OnRead<'a> = &'a mut dyn FnMut(u64) -> bool;
+
+/// Decoded bytes between two sighting checkpoints, as in `OffsetMapper`.
+const CHECKPOINT_EVERY: usize = 64 * 1024;
+
+/// Raw bytes the encoding decision looks at: a BOM in the first three, the bomless UTF-16LE test in the first 256.
+const DECIDE_BYTES: usize = 256;
+
+/// Longest `parse_errors.raw_snippet`, in chars.
+const SNIPPET_CHARS: usize = 500;
+
+/// A file read once by [`admit`]: what ingest records about it and how its text is decoded.
+#[derive(Debug, Clone)]
+pub struct Admitted {
+    pub path: PathBuf,
+    pub raw_len: u64,
+    pub modified: Option<SystemTime>,
+    pub sha256: String,
+    pub blank: bool,
+    /// First [`SNIFF_BYTES`] raw bytes.
+    pub head: Vec<u8>,
+    pub encoding: TextEncoding,
+    pub bom_len: u64,
+    pub lossy: bool,
+}
+
+/// Where a record lives in the original file and the SHA-256 of its raw bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sight {
+    pub pos: SourcePos,
+    pub raw_sha256: String,
+}
+
+fn interrupted() -> io::Error {
+    io::Error::new(ErrorKind::Interrupted, "read stopped")
+}
+
+fn changed() -> io::Error {
+    io::Error::new(
+        ErrorKind::InvalidData,
+        "file is no longer valid UTF-8: it changed since it was admitted",
+    )
+}
+
+/// Read until `buf` is full or the reader is exhausted, reporting each read to `on_read`. Fewer bytes than
+/// `buf.len()` means the end of the input was reached.
+fn read_chunk(r: &mut dyn Read, buf: &mut [u8], on_read: OnRead) -> io::Result<usize> {
+    let mut n = 0;
+    while n < buf.len() {
+        match r.read(&mut buf[n..]) {
+            Ok(0) => break,
+            Ok(k) => {
+                n += k;
+                if !on_read(k as u64) {
+                    return Err(interrupted());
+                }
+            }
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(n)
+}
+
+/// Length of the UTF-8 sequence a lead byte starts (1 for anything that is not a multi-byte lead).
+fn utf8_width(b: u8) -> usize {
+    match b {
+        0xC0..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF7 => 4,
+        _ => 1,
+    }
+}
+
+/// Incremental UTF-8 validation: an incomplete sequence at the end of one piece is completed by the next, so the
+/// pieces are valid exactly when their concatenation is.
+#[derive(Default)]
+struct Utf8Carry {
+    buf: [u8; 4],
+    len: usize,
+}
+
+impl Utf8Carry {
+    /// Validate `bytes`, passing each valid run to `push`. `Err` when the input is not UTF-8.
+    fn feed(&mut self, mut bytes: &[u8], mut push: impl FnMut(&str)) -> Result<(), ()> {
+        if self.len > 0 {
+            let need = utf8_width(self.buf[0]);
+            let take = (need - self.len).min(bytes.len());
+            self.buf[self.len..self.len + take].copy_from_slice(&bytes[..take]);
+            self.len += take;
+            bytes = &bytes[take..];
+            if self.len < need {
+                return Ok(());
+            }
+            push(std::str::from_utf8(&self.buf[..need]).map_err(|_| ())?);
+            self.len = 0;
+        }
+        // Hold back a multi-byte sequence the piece cuts off.
+        let mut cut = bytes.len();
+        for back in 1..=3.min(bytes.len()) {
+            let i = bytes.len() - back;
+            if bytes[i] & 0xC0 != 0x80 {
+                if i + utf8_width(bytes[i]) > bytes.len() {
+                    cut = i;
+                }
+                break;
+            }
+        }
+        push(std::str::from_utf8(&bytes[..cut]).map_err(|_| ())?);
+        let tail = &bytes[cut..];
+        self.buf[..tail.len()].copy_from_slice(tail);
+        self.len = tail.len();
+        Ok(())
+    }
+
+    /// True when no sequence is left incomplete.
+    fn complete(&self) -> bool {
+        self.len == 0
+    }
+}
+
+/// Whether an `encoding_rs` decode of all the bytes fed would report errors, without keeping its output.
+struct ErrorCheck {
+    decoder: Decoder,
+    scratch: Vec<u8>,
+    errors: bool,
+}
+
+impl ErrorCheck {
+    fn new(decoder: Decoder) -> Self {
+        ErrorCheck {
+            decoder,
+            scratch: vec![0; 64 * 1024],
+            errors: false,
+        }
+    }
+
+    fn feed(&mut self, mut src: &[u8], last: bool) {
+        loop {
+            let (res, read, _written, had_errors) =
+                self.decoder.decode_to_utf8(src, &mut self.scratch, last);
+            self.errors |= had_errors;
+            src = &src[read..];
+            if res == CoderResult::InputEmpty {
+                break;
+            }
+        }
+    }
+}
+
+/// [`is_blank_content`] over a file fed in pieces: decided once its first three bytes are known.
+#[derive(Default)]
+struct BlankCheck {
+    prefix: Vec<u8>,
+    utf16: Option<bool>,
+    blank: bool,
+}
+
+impl BlankCheck {
+    fn blank_byte(b: u8, utf16: bool) -> bool {
+        matches!(b, b' ' | b'\t' | b'\r' | b'\n') || (utf16 && b == 0)
+    }
+
+    fn feed(&mut self, mut bytes: &[u8]) {
+        if self.utf16.is_none() {
+            let take = (3 - self.prefix.len()).min(bytes.len());
+            self.prefix.extend_from_slice(&bytes[..take]);
+            bytes = &bytes[take..];
+            if self.prefix.len() < 3 {
+                return;
+            }
+            let (body, is16): (&[u8], bool) = match self.prefix.as_slice() {
+                [0xFF, 0xFE, r @ ..] | [0xFE, 0xFF, r @ ..] => (r, true),
+                [0xEF, 0xBB, 0xBF] => (&[], false),
+                p => (p, false),
+            };
+            self.utf16 = Some(is16);
+            self.blank = body.iter().all(|&b| Self::blank_byte(b, is16));
+        }
+        if self.blank {
+            let is16 = self.utf16.unwrap_or(false);
+            self.blank = bytes.iter().all(|&b| Self::blank_byte(b, is16));
+        }
+    }
+
+    fn finish(&self) -> bool {
+        match self.utf16 {
+            Some(_) => self.blank,
+            // Fewer than three bytes in all.
+            None => is_blank_content(&self.prefix),
+        }
+    }
+}
+
+/// The encoding decision of `decode`, made over a file fed in pieces. Created from the first [`DECIDE_BYTES`]
+/// bytes (or the whole file, when shorter) and fed every byte from the start.
+enum Analyzer {
+    /// `EF BB BF`: UTF-8 with BOM if the rest is valid UTF-8, else Windows-1252 after the BOM.
+    Utf8Signed(Utf8Carry, bool),
+    /// `FF FE` / `FE FF`: UTF-16 after the BOM; `skip` counts BOM bytes not yet passed.
+    Utf16Signed {
+        encoding: TextEncoding,
+        check: ErrorCheck,
+        skip: usize,
+    },
+    /// No BOM: bomless UTF-16LE if `candidate` (the zero-byte pattern held) and the length suits, else UTF-8 or
+    /// Windows-1252.
+    Unsigned {
+        utf8: Utf8Carry,
+        utf8_ok: bool,
+        candidate: Option<ErrorCheck>,
+        whole: bool,
+    },
+}
+
+impl Analyzer {
+    /// `first` is `min(DECIDE_BYTES, len)` bytes of the file; `whole` says it is the whole file.
+    fn new(first: &[u8], whole: bool) -> Self {
+        if first.starts_with(&[0xEF, 0xBB, 0xBF]) {
+            return Analyzer::Utf8Signed(Utf8Carry::default(), true);
+        }
+        let utf16 = |encoding: TextEncoding| {
+            let codec = if encoding == TextEncoding::Utf16Le {
+                encoding_rs::UTF_16LE
+            } else {
+                encoding_rs::UTF_16BE
+            };
+            Analyzer::Utf16Signed {
+                encoding,
+                check: ErrorCheck::new(codec.new_decoder_without_bom_handling()),
+                skip: 2,
+            }
+        };
+        if first.starts_with(&[0xFF, 0xFE]) {
+            return utf16(TextEncoding::Utf16Le);
+        }
+        if first.starts_with(&[0xFE, 0xFF]) {
+            return utf16(TextEncoding::Utf16Be);
+        }
+        // With the whole file this is `decode`'s test; with its first 256 bytes, the zero-byte pattern only (the
+        // length test is applied at the end).
+        let candidate = looks_like_bomless_utf16le(first)
+            .then(|| ErrorCheck::new(encoding_rs::UTF_16LE.new_decoder_without_bom_handling()));
+        Analyzer::Unsigned {
+            utf8: Utf8Carry::default(),
+            utf8_ok: true,
+            candidate,
+            whole,
+        }
+    }
+
+    fn feed(&mut self, bytes: &[u8]) {
+        match self {
+            Analyzer::Utf8Signed(carry, ok) => {
+                // The BOM is itself a complete UTF-8 character: the rest is valid exactly when all of it is.
+                if *ok {
+                    *ok = carry.feed(bytes, |_| ()).is_ok();
+                }
+            }
+            Analyzer::Utf16Signed { check, skip, .. } => {
+                let k = (*skip).min(bytes.len());
+                *skip -= k;
+                check.feed(&bytes[k..], false);
+            }
+            Analyzer::Unsigned {
+                utf8,
+                utf8_ok,
+                candidate,
+                ..
+            } => {
+                if *utf8_ok {
+                    *utf8_ok = utf8.feed(bytes, |_| ()).is_ok();
+                }
+                if let Some(c) = candidate {
+                    c.feed(bytes, false);
+                }
+            }
+        }
+    }
+
+    /// (encoding, bom_len, lossy) for a file of `raw_len` bytes.
+    fn finish(self, raw_len: u64) -> (TextEncoding, u64, bool) {
+        match self {
+            Analyzer::Utf8Signed(carry, ok) => {
+                if ok && carry.complete() {
+                    (TextEncoding::Utf8Bom, 3, false)
+                } else {
+                    (TextEncoding::Windows1252, 3, true)
+                }
+            }
+            Analyzer::Utf16Signed {
+                encoding,
+                mut check,
+                ..
+            } => {
+                check.feed(&[], true);
+                (encoding, 2, check.errors)
+            }
+            Analyzer::Unsigned {
+                utf8,
+                utf8_ok,
+                candidate,
+                whole,
+            } => {
+                if let Some(mut c) = candidate
+                    && (whole || raw_len % 2 == 0)
+                {
+                    c.feed(&[], true);
+                    return (TextEncoding::Utf16Le, 0, c.errors);
+                }
+                if utf8_ok && utf8.complete() {
+                    (TextEncoding::Utf8, 0, false)
+                } else {
+                    (TextEncoding::Windows1252, 0, true)
+                }
+            }
+        }
+    }
+}
+
+/// Read `path` once in reads of up to `chunk` bytes: hash, head, blank flag and the encoding decision `decode`
+/// would make on the whole file. Memory stays at a chunk plus the head whatever the file size.
+pub fn admit(path: &Path, chunk: usize, on_read: OnRead) -> io::Result<Admitted> {
+    let mut file = File::open(path)?;
+    let modified = file.metadata()?.modified().ok();
+    let mut buf = vec![0u8; chunk.max(1)];
+    let mut hash = Sha256Stream::new();
+    let mut blank = BlankCheck::default();
+    let mut head: Vec<u8> = Vec::new();
+    let mut analyzer: Option<Analyzer> = None;
+    let mut raw_len = 0u64;
+    loop {
+        let n = read_chunk(&mut file, &mut buf, &mut *on_read)?;
+        let bytes = &buf[..n];
+        hash.update(bytes);
+        blank.feed(bytes);
+        raw_len += n as u64;
+        let take = (SNIFF_BYTES - head.len().min(SNIFF_BYTES)).min(n);
+        head.extend_from_slice(&bytes[..take]);
+        match &mut analyzer {
+            Some(a) => a.feed(bytes),
+            None if head.len() >= DECIDE_BYTES => {
+                let mut a = Analyzer::new(&head[..DECIDE_BYTES], false);
+                // Every byte so far: those in the head, then any of this read past it.
+                a.feed(&head);
+                a.feed(&bytes[take..]);
+                analyzer = Some(a);
+            }
+            None => {}
+        }
+        if n < buf.len() {
+            break;
+        }
+    }
+    let analyzer = analyzer.unwrap_or_else(|| {
+        // The whole file is shorter than DECIDE_BYTES and sits in the head.
+        let mut a = Analyzer::new(&head, true);
+        a.feed(&head);
+        a
+    });
+    let (encoding, bom_len, lossy) = analyzer.finish(raw_len);
+    Ok(Admitted {
+        path: path.to_path_buf(),
+        raw_len,
+        modified,
+        sha256: hash.finish_hex(),
+        blank: blank.finish(),
+        head,
+        encoding,
+        bom_len,
+        lossy,
+    })
+}
+
+fn decoder_for(encoding: TextEncoding) -> Option<Decoder> {
+    let codec = match encoding {
+        TextEncoding::Utf8 | TextEncoding::Utf8Bom => return None,
+        TextEncoding::Utf16Le => encoding_rs::UTF_16LE,
+        TextEncoding::Utf16Be => encoding_rs::UTF_16BE,
+        TextEncoding::Windows1252 => encoding_rs::WINDOWS_1252,
+    };
+    Some(codec.new_decoder_without_bom_handling())
+}
+
+/// Decode `src` into `out` with `decoder`, `last` flushing what it holds back.
+fn decode_into(decoder: &mut Decoder, mut src: &[u8], out: &mut String, last: bool) {
+    loop {
+        let need = decoder
+            .max_utf8_buffer_length(src.len())
+            .unwrap_or(src.len() * 3 + 16);
+        out.reserve(need);
+        let (res, read, _had_errors) = decoder.decode_to_string(src, out, last);
+        src = &src[read..];
+        if res == CoderResult::InputEmpty {
+            break;
+        }
+    }
+}
+
+impl Admitted {
+    /// A new pass over the file from byte 0, reading `chunk` bytes per fill.
+    pub fn open(&self, chunk: usize) -> io::Result<TextStream> {
+        let file = File::open(&self.path)?;
+        Ok(TextStream::new(Box::new(file), self, chunk))
+    }
+
+    /// The head decoded with the admitted encoding, for sniffs. When the head is not the whole file, a character it
+    /// cuts off is dropped.
+    pub fn head_text(&self) -> String {
+        let whole = self.head.len() as u64 >= self.raw_len;
+        let body = &self.head[(self.bom_len as usize).min(self.head.len())..];
+        match decoder_for(self.encoding) {
+            None => match std::str::from_utf8(body) {
+                Ok(s) => s.to_string(),
+                Err(e) if !whole && e.error_len().is_none() => {
+                    String::from_utf8_lossy(&body[..e.valid_up_to()]).into_owned()
+                }
+                Err(_) => String::from_utf8_lossy(body).into_owned(),
+            },
+            Some(mut decoder) => {
+                let mut out = String::new();
+                decode_into(&mut decoder, body, &mut out, whole);
+                out
+            }
+        }
+    }
+
+    /// True when the file's size and modification time are still those seen at admission.
+    pub fn unchanged(&self) -> io::Result<bool> {
+        let m = std::fs::metadata(&self.path)?;
+        Ok(m.len() == self.raw_len && m.modified().ok() == self.modified)
+    }
+}
+
+/// A scan position: decoded offset, raw offset (unclamped), and `\n` count in the text before it.
+#[derive(Debug, Clone, Copy)]
+struct Mark {
+    dec: usize,
+    raw: u64,
+    nl: u64,
+}
+
+/// A pass over an admitted file: a window of decoded text that [`TextStream::fill`] extends at the end and
+/// [`TextStream::consume`] shrinks at the start. Spans are absolute decoded offsets.
+pub struct TextStream {
+    reader: Box<dyn Read>,
+    buf: Vec<u8>,
+    encoding: TextEncoding,
+    bom_len: u64,
+    raw_len: u64,
+    /// BOM bytes not yet passed.
+    skip: usize,
+    utf8: Utf8Carry,
+    decoder: Option<Decoder>,
+    eof: bool,
+    /// Decoded text from absolute offset `text_base`; the window is its part from `base`. Text before `base` is
+    /// kept only back to the first checkpoint, so sightings can rescan from it.
+    text: String,
+    text_base: usize,
+    base: usize,
+    /// Raw bytes read, from raw offset `raw_base` (the first checkpoint's).
+    raw: Vec<u8>,
+    raw_base: u64,
+    /// The last decoded char is `\n` (decides the line of the end-of-text offset, as `LineIndex` does).
+    ends_nl: bool,
+    cur: Mark,
+    /// Ascending; the first is at or before `base`.
+    checkpoints: Vec<Mark>,
+}
+
+impl TextStream {
+    fn new(reader: Box<dyn Read>, admitted: &Admitted, chunk: usize) -> TextStream {
+        let start = Mark {
+            dec: 0,
+            raw: admitted.bom_len,
+            nl: 0,
+        };
+        TextStream {
+            reader,
+            buf: vec![0; chunk.max(1)],
+            encoding: admitted.encoding,
+            bom_len: admitted.bom_len,
+            raw_len: admitted.raw_len,
+            skip: admitted.bom_len as usize,
+            utf8: Utf8Carry::default(),
+            decoder: decoder_for(admitted.encoding),
+            eof: false,
+            text: String::new(),
+            text_base: 0,
+            base: 0,
+            raw: Vec::new(),
+            raw_base: 0,
+            ends_nl: false,
+            cur: start,
+            checkpoints: vec![start],
+        }
+    }
+
+    /// A pass over `bytes` (the admitted file's content) held in memory; behaves exactly like [`Admitted::open`].
+    pub fn from_bytes(bytes: Vec<u8>, admitted: &Admitted, chunk: usize) -> TextStream {
+        TextStream::new(Box::new(io::Cursor::new(bytes)), admitted, chunk)
+    }
+
+    /// Decoded text starting at [`TextStream::base`].
+    pub fn window(&self) -> &str {
+        &self.text[self.base - self.text_base..]
+    }
+
+    /// Absolute decoded offset of `window()[0]`.
+    pub fn base(&self) -> usize {
+        self.base
+    }
+
+    /// True once the whole file has been read and decoded into the window.
+    pub fn at_eof(&self) -> bool {
+        self.eof
+    }
+
+    fn end(&self) -> usize {
+        self.text_base + self.text.len()
+    }
+
+    /// Append the next chunk (or everything left) to the window. `Ok(false)` only when nothing was left.
+    pub fn fill(&mut self, on_read: OnRead) -> io::Result<bool> {
+        if self.eof {
+            return Ok(false);
+        }
+        self.compact();
+        let n = read_chunk(&mut *self.reader, &mut self.buf, on_read)?;
+        let last = n < self.buf.len();
+        let before = self.text.len();
+        self.raw.extend_from_slice(&self.buf[..n]);
+        let mut bytes = &self.buf[..n];
+        let k = self.skip.min(bytes.len());
+        self.skip -= k;
+        bytes = &bytes[k..];
+        let text = &mut self.text;
+        match &mut self.decoder {
+            None => {
+                self.utf8
+                    .feed(bytes, |s| text.push_str(s))
+                    .map_err(|_| changed())?;
+                if last && !self.utf8.complete() {
+                    return Err(changed());
+                }
+            }
+            Some(decoder) => decode_into(decoder, bytes, text, last),
+        }
+        if self.text.len() > before {
+            self.ends_nl = self.text.ends_with('\n');
+        }
+        self.eof = last;
+        Ok(n > 0 || self.text.len() > before)
+    }
+
+    /// Drop the window's text before absolute decoded offset `upto` (clamped to the window; a char boundary).
+    pub fn consume(&mut self, upto: usize) {
+        self.base = upto.clamp(self.base, self.end());
+    }
+
+    /// Drop text and raw bytes no sighting can need any more: everything before the last checkpoint at or before
+    /// `base`, after moving the scan up to `base` so that checkpoint is close.
+    fn compact(&mut self) {
+        if self.cur.dec < self.base {
+            self.scan_to(self.base);
+        }
+        let i = self.checkpoints.partition_point(|c| c.dec <= self.base) - 1;
+        self.checkpoints.drain(..i);
+        let first = self.checkpoints[0];
+        if first.dec > self.text_base {
+            self.text.drain(..first.dec - self.text_base);
+            self.text_base = first.dec;
+        }
+        let raw_cut = first.raw.min(self.raw_base + self.raw.len() as u64);
+        if raw_cut > self.raw_base {
+            self.raw.drain(..(raw_cut - self.raw_base) as usize);
+            self.raw_base = raw_cut;
+        }
+    }
+
+    /// Move the scan to decoded offset `target` (a char boundary in the kept text), from the cursor or, going back,
+    /// from the nearest checkpoint before it.
+    fn scan_to(&mut self, target: usize) -> Mark {
+        if target < self.cur.dec {
+            let i = self.checkpoints.partition_point(|c| c.dec <= target) - 1;
+            self.cur = self.checkpoints[i];
+        }
+        let tb = self.text_base;
+        match self.encoding {
+            TextEncoding::Utf8 | TextEncoding::Utf8Bom => {
+                let bytes = self.text.as_bytes();
+                while self.cur.dec < target {
+                    let next = self.checkpoints.last().map_or(0, |c| c.dec) + CHECKPOINT_EVERY;
+                    let stop = if next > self.cur.dec && next < target {
+                        // A checkpoint is a char boundary (the kept text is cut there); `target` is one.
+                        let mut b = next;
+                        while !self.text.is_char_boundary(b - tb) {
+                            b += 1;
+                        }
+                        b
+                    } else {
+                        target
+                    };
+                    let nl = bytes[self.cur.dec - tb..stop - tb]
+                        .iter()
+                        .filter(|&&b| b == b'\n')
+                        .count();
+                    self.cur.nl += nl as u64;
+                    self.cur.dec = stop;
+                    self.cur.raw = self.bom_len + stop as u64;
+                    if stop >= next && stop > self.checkpoints.last().map_or(0, |c| c.dec) {
+                        self.checkpoints.push(self.cur);
+                    }
+                }
+            }
+            enc => {
+                let mut last = self.checkpoints.last().map_or(0, |c| c.dec);
+                for c in self.text[self.cur.dec - tb..target - tb].chars() {
+                    self.cur.raw += enc.encoded_len(c);
+                    self.cur.dec += c.len_utf8();
+                    self.cur.nl += (c == '\n') as u64;
+                    if self.cur.dec >= last + CHECKPOINT_EVERY {
+                        self.checkpoints.push(self.cur);
+                        last = self.cur.dec;
+                    }
+                }
+            }
+        }
+        self.cur
+    }
+
+    /// 1-based line of decoded offset `m.dec`, as `LineIndex::line_of` on the whole text.
+    fn line_of(&self, m: Mark) -> u32 {
+        // LineIndex starts no line at the very end of the text when it ends with `\n`.
+        let at_text_end = self.eof && m.dec == self.end();
+        let nl = if at_text_end && self.ends_nl {
+            m.nl - 1
+        } else {
+            m.nl
+        };
+        (nl + 1) as u32
+    }
+
+    /// Where `span` (absolute, inside the window) lives in the file: as `locate` on the whole text, and the
+    /// SHA-256 of those raw bytes.
+    pub fn sight(&mut self, span: Span) -> Sight {
+        assert!(
+            self.base <= span.start && span.start <= span.end && span.end <= self.end(),
+            "span {span:?} outside the window {}..{}",
+            self.base,
+            self.end()
+        );
+        let ms = self.scan_to(span.start);
+        let line_start = self.line_of(ms);
+        let me = self.scan_to(span.end);
+        let line_end = if span.end > span.start {
+            // Line of the span's last byte, `end - 1`, which is before the end of the text.
+            let last_is_nl = self.text.as_bytes()[span.end - 1 - self.text_base] == b'\n';
+            (me.nl - last_is_nl as u64 + 1) as u32
+        } else {
+            line_start
+        };
+        let raw_start = ms.raw.min(self.raw_len);
+        let raw_end = me.raw.min(self.raw_len);
+        // An empty span may sit before any raw byte is read (just after a BOM).
+        let from = (raw_start - self.raw_base) as usize;
+        let to = (raw_end - self.raw_base) as usize;
+        let raw: &[u8] = if to > from { &self.raw[from..to] } else { &[] };
+        Sight {
+            pos: SourcePos {
+                line_start,
+                line_end,
+                byte_offset: raw_start,
+                byte_length: raw_end - raw_start,
+            },
+            raw_sha256: sha256_hex(raw),
+        }
+    }
+
+    /// At most [`SNIPPET_CHARS`] chars of `span`'s text (clamped to the window, as `parse_error` clamps to the
+    /// text).
+    pub fn snippet(&self, span: Span) -> String {
+        let end = floor_boundary(
+            &self.text,
+            span.end.clamp(self.base, self.end()) - self.text_base,
+        );
+        let start = floor_boundary(
+            &self.text,
+            span.start.clamp(self.base, self.text_base + end) - self.text_base,
+        );
+        self.text[start..end].chars().take(SNIPPET_CHARS).collect()
+    }
+}
+
+fn floor_boundary(s: &str, mut i: usize) -> usize {
+    while !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
