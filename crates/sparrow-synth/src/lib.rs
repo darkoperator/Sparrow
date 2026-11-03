@@ -5,6 +5,7 @@
 
 pub mod baseline;
 pub mod cache;
+pub mod case_dump;
 pub mod check;
 pub mod conformance;
 pub mod coverage;
