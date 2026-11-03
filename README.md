@@ -4,7 +4,7 @@ Sparrow turns Microsoft 365 evidence for a business-email-compromise investigati
 
 One case can contain multiple collections and tenants. Sparrow does not collect evidence from Microsoft 365 itself: give it collector output you are authorized to examine. Its local CLI needs no network connection at runtime.
 
-For the full collector/artifact map, profile tables, detection semantics, and synthetic-data reference, see [Reference](docs/REFERENCE.md).
+For the full collector/artifact map, profile tables, detection semantics, and synthetic-data reference, see [Reference](docs/REFERENCE.md). Every built-in detection rule is described in [Detection rules](docs/RULES.md).
 
 ```mermaid
 flowchart LR

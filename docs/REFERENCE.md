@@ -156,7 +156,8 @@ After loading, `sparrow ingest` runs the profile step (again at any time with `s
 ## Detection
 
 `rules/` holds the detection rules; [`rules/README.md`](../rules/README.md) is the rule format (operators,
-`@list:`, the `sql:` contract, `threshold:`, `computed` and `baseline_allow`, custom rule directories). Detection runs
+`@list:`, the `sql:` contract, `threshold:`, `computed` and `baseline_allow`, custom rule directories) and
+[RULES.md](RULES.md) describes every built-in rule (logic, evidence, triage, false positives). Detection runs
 **automatically as the last step of `sparrow ingest` and `sparrow profile`**, and on demand with
 `sparrow detect`.
 

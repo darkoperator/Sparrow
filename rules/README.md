@@ -9,9 +9,10 @@ rules/
   identity/   SPW-ID-*, SPW-HAWK-008, SPW-HAWK-009, SPW-HAWK-012, SPW-HAWK-013
   apps/       SPW-APP-*, SPW-HAWK-006, SPW-HAWK-007
   config/     SPW-CFG-*, SPW-HAWK-004, SPW-HAWK-005
-  # files/ does not exist yet: the three SPW-FILE-* rules have no rule file.
+  files/      SPW-FILE-*
   hawk/       SPW-HAWK-001..003, SPW-HAWK-010, SPW-HAWK-011, SPW-HAWK-015
-  lists/      finance_keywords, hiding_folders, hosting_asns, risky_scopes, suspicious_user_agents
+  lists/      finance_keywords, hiding_folders, hosting_asns, risky_scopes, suspicious_user_agents,
+              credential_failure_codes, microsoft_first_party_apps, collection_hints
   schema/     rule.schema.json
   coverage.yaml   the rule ↔ storyline test matrix (embedded; `sparrow synth coverage`)
 ```
@@ -238,9 +239,9 @@ threshold:
 output columns `record_key`, `source_table`, `event_time`, `actor_upn`, `ip`. An empty
 `threshold.group_by` counts the whole case in one window.
 
-No built-in rule uses `threshold:` — the bursts that exist are written in `sql:` because they also
-correlate (see `rules/mail/SPW-MAIL-005.yaml`, the MailItemsAccessed burst). The compiler and its
-tests are complete; a future burst rule can use it.
+One built-in rule uses `threshold:`: `rules/files/SPW-FILE-001.yaml`, the mass file download (30
+downloads by one user within 15 minutes). Bursts that also correlate are written in `sql:` instead
+(see `rules/mail/SPW-MAIL-005.yaml`, the MailItemsAccessed burst).
 
 ### `group_by`
 
@@ -674,18 +675,16 @@ says so.
 
 Stated so nothing here reads as finished when it is not:
 
-- **27 of the 31 coverage entries have a rule file.** `SPW-ID-001`, `SPW-FILE-001`,
-  `SPW-FILE-002` and `SPW-FILE-003` have no rule file yet; `sparrow rules lint` reports each as
-  `coverage entry has no rule file yet`, and `sparrow synth check` counts their expectations as
-  unchecked.
-- **No built-in rule uses `threshold:`** or reads `@list:case_iocs.*`. Both are implemented and
-  tested; no shipped rule needs them yet.
+- **No built-in rule reads `@list:case_iocs.*`.** It is implemented and tested; no shipped rule
+  needs it yet.
 - The `sql` field's description in `rule.schema.json` still says a `sql:` rule "must reference
   `$tenant`". It does not: `$tenant` is available but optional, because the tenant scope is
   structural.
 
 ## See also
 
+- [`../docs/RULES.md`](../docs/RULES.md) — every built-in rule: logic, evidence, triage and false
+  positives.
 - [`../README.md`](../README.md) — the CLI, findings and the testing jobs.
 - [`../crates/sparrow-synth/README.md`](../crates/sparrow-synth/README.md) — the storyline
   coverage matrix, the detection gate and `sparrow synth conformance`.
