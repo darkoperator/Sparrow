@@ -126,6 +126,98 @@ pub fn resolve_tenants(conn: &Connection) -> Result<usize> {
         [],
     )?;
 
+    // Pass 3b: a collection with neither an id nor a name (a portal Entra audit download with no
+    // ActorHomeTenantId column) joins the tenant that owns most of the users its rows are about. A
+    // verified domain belongs to one Entra tenant, so a user's UPN says which tenant it is in. The
+    // domains a tenant owns are those its identified collections' users, mailboxes and home-tenant
+    // sign-ins carry, plus the analyst's added domains (less removed ones, an override on a name:
+    // key applying to the tenant that name now resolves to, as rebuild_domains does); a domain two
+    // tenants carry decides nothing. The vote is over DISTINCT subject UPNs: audit targets and the
+    // users of sign-ins, users and mailboxes rows. Actors do not vote: an MSP's technicians working
+    // a customer's tenant are not its users. Guest UPNs (#EXT#) are left out. The winner must own
+    // more than half of those UPNs, so an outside correspondent or a few guests never move it.
+    conn.execute_batch(
+        "CREATE OR REPLACE TEMP TABLE domain_joined AS
+             WITH known AS (
+                 SELECT c.tenant_key, lower(split_part(u.upn, '@', -1)) AS dom
+                 FROM users u JOIN collections c ON c.collection_id = u.collection_id
+                 WHERE c.tenant_key IS NOT NULL AND u.upn LIKE '%@%' AND lower(u.upn) NOT LIKE '%#ext#%'
+                       AND (u.user_type IS NULL OR lower(u.user_type) <> 'guest')
+                 UNION
+                 SELECT c.tenant_key, lower(split_part(m.upn, '@', -1))
+                 FROM mailboxes m JOIN collections c ON c.collection_id = m.collection_id
+                 WHERE c.tenant_key IS NOT NULL AND m.upn LIKE '%@%' AND lower(m.upn) NOT LIKE '%#ext#%'
+                 UNION
+                 SELECT c.tenant_key, lower(split_part(s.user_upn, '@', -1))
+                 FROM signins s JOIN collections c ON c.collection_id = s.collection_id
+                 WHERE c.tenant_key IS NOT NULL AND s.user_upn LIKE '%@%'
+                       AND lower(s.user_upn) NOT LIKE '%#ext#%' AND lower(s.home_tenant_id) = c.tenant_key
+             ),
+             overrides AS (
+                 SELECT tenant_key, dom, action FROM (
+                     SELECT CASE
+                                WHEN o.tenant_key IN (SELECT tenant_key FROM collections WHERE tenant_key IS NOT NULL)
+                                    THEN o.tenant_key
+                                WHEN o.tenant_key LIKE 'name:%' THEN
+                                    (SELECT min(c.tenant_key) FROM collections c
+                                     WHERE c.tenant_key IS NOT NULL AND c.tenant_name_reported IS NOT NULL
+                                           AND lower(trim(c.tenant_name_reported)) = substr(o.tenant_key, 6))
+                            END AS tenant_key,
+                            lower(trim(o.domain)) AS dom, o.action, o.changed_at, o.rowid AS r
+                     FROM tenant_domain_overrides o
+                 )
+                 WHERE tenant_key IS NOT NULL
+                 QUALIFY row_number() OVER (PARTITION BY tenant_key, dom ORDER BY changed_at DESC, r DESC) = 1
+             ),
+             owned AS (
+                 SELECT tenant_key, dom FROM known
+                 WHERE (tenant_key, dom) NOT IN (SELECT tenant_key, dom FROM overrides WHERE action = 'remove')
+                 UNION
+                 SELECT o.tenant_key, o.dom FROM overrides o WHERE o.action = 'add'
+             ),
+             owner AS (
+                 SELECT dom, min(tenant_key) AS tenant_key FROM owned
+                 GROUP BY dom HAVING count(DISTINCT tenant_key) = 1
+             ),
+             open AS (SELECT collection_id FROM collections WHERE tenant_key IS NULL),
+             upns AS (
+                 SELECT sf.collection_id,
+                        unnest(list_concat(json_extract_string(d.targets, '$[*].userPrincipalName'),
+                                           json_extract_string(d.targets, '$[*].UserPrincipalName'))) AS upn
+                 FROM record_sources rs
+                 JOIN source_files sf ON sf.file_id = rs.file_id
+                 JOIN directory_audits d ON rs.table_name = 'directory_audits' AND rs.record_key = d.record_key
+                 WHERE sf.collection_id IN (SELECT collection_id FROM open) AND json_type(d.targets) = 'ARRAY'
+                 UNION ALL
+                 SELECT sf.collection_id, s.user_upn
+                 FROM record_sources rs
+                 JOIN source_files sf ON sf.file_id = rs.file_id
+                 JOIN signins s ON rs.table_name = 'signins' AND rs.record_key = s.record_key
+                 WHERE sf.collection_id IN (SELECT collection_id FROM open)
+                 UNION ALL
+                 SELECT collection_id, upn FROM users WHERE collection_id IN (SELECT collection_id FROM open)
+                 UNION ALL
+                 SELECT collection_id, upn FROM mailboxes WHERE collection_id IN (SELECT collection_id FROM open)
+             ),
+             doms AS (
+                 SELECT DISTINCT collection_id, lower(trim(upn)) AS upn, lower(split_part(trim(upn), '@', -1)) AS dom
+                 FROM upns
+                 WHERE upn LIKE '%@%' AND lower(upn) NOT LIKE '%#ext#%'
+             ),
+             totals AS (SELECT collection_id, count(*) AS total FROM doms GROUP BY collection_id),
+             votes AS (
+                 SELECT d.collection_id, o.tenant_key, count(*) AS n
+                 FROM doms d JOIN owner o ON o.dom = d.dom
+                 GROUP BY ALL
+             )
+             SELECT v.collection_id, v.tenant_key, v.n AS upns, t.total
+             FROM votes v JOIN totals t ON t.collection_id = v.collection_id
+             WHERE v.n * 2 > t.total;
+         UPDATE collections c SET tenant_key = w.tenant_key
+         FROM domain_joined w
+         WHERE c.collection_id = w.collection_id AND c.tenant_key IS NULL;",
+    )?;
+
     // Pass 4: a collection with neither an id nor a name stands alone.
     conn.execute(
         "UPDATE collections SET tenant_key = 'collection:' || collection_id WHERE tenant_key IS NULL",
@@ -204,6 +296,38 @@ pub fn unidentified_collection_warnings(conn: &Connection) -> Result<Vec<String>
         out.push(format!(
             "collection {id} ({folder}) carries no tenant id or name; it is profiled as its own \
              tenant `collection:{id}`"
+        ));
+    }
+    Ok(out)
+}
+
+/// One `ProfileReport` warning per collection `resolve_tenants` pass 3b joined to a tenant by the UPN
+/// domains its rows name (it carried no tenant id or name), so the analyst can check the join.
+pub fn domain_joined_collection_warnings(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT c.collection_id, c.root_path, w.tenant_key, w.upns, w.total
+         FROM domain_joined w JOIN collections c ON c.collection_id = w.collection_id
+         WHERE c.tenant_key = w.tenant_key ORDER BY c.collection_id",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, i64>(3)?,
+            r.get::<_, i64>(4)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, root, key, upns, total) = row?;
+        let folder = std::path::Path::new(&root)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or(root);
+        out.push(format!(
+            "collection {id} ({folder}) carries no tenant id or name; it joined tenant {key} because \
+             {upns} of the {total} users its rows are about are on that tenant's domains"
         ));
     }
     Ok(out)

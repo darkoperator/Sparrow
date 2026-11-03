@@ -120,8 +120,13 @@ sparrow query "SELECT received, sender, recipient, subject, status FROM message_
 
 After loading, `sparrow ingest` runs the profile step (again at any time with `sparrow profile --case C`):
 - `tenant` / `collections.tenant_key`: tenants are told apart by the tenant id in the evidence (UAL
-  OrganizationId, sign-in resource tenant); one case may hold several. Org-level settings, transport rules
-  and remote domains are kept per collection and merged per tenant in `tenant_audit_config`,
+  OrganizationId, sign-in resource tenant, message trace detail tenant, else a portal Entra audit's
+  ActorHomeTenantId); one case may hold several. A collection with no tenant id joins a same-name collection's
+  tenant; one with neither an id nor a name (a portal Entra audit CSV without ActorHomeTenantId) joins the tenant
+  that owns more than half of the distinct users its rows are about (audit targets; actors don't count, so an MSP's
+  technicians don't pull a customer's audit into the MSP tenant; domains seen in two tenants and `#EXT#` guest names
+  don't count either), and the profile output says so. Otherwise it is profiled as its own `collection:<id>` tenant.
+  Org-level settings, transport rules and remote domains are kept per collection and merged per tenant in `tenant_audit_config`,
   `tenant_settings_current`, `transport_rules_current` and `remote_domains_current`.
 - `tenant_domains`: domains that count as internal, from user UPNs and message trace; change them with
   `sparrow tenant domains add|remove|list`.

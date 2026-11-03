@@ -766,3 +766,239 @@ fn guest_actor_rows_never_outvote_other_tenant_evidence_and_only_portal_files_co
     assert_eq!(key(only), T2);
     assert_eq!(key(hawk), format!("collection:{hawk}"));
 }
+
+/// A sign-in of `upn` in tenant `tenant` (home and resource), sighted in `file_id`.
+fn signin(case: &Case, c: i64, file_id: i64, key: &str, tenant: &str, upn: &str) {
+    case.conn()
+        .execute(
+            "INSERT INTO signins (record_key, collection_id, user_upn, home_tenant_id, resource_tenant_id)
+             VALUES (?, ?, ?, ?, ?)",
+            params![key, c, upn, tenant, tenant],
+        )
+        .unwrap();
+    case.conn()
+        .execute(
+            "INSERT INTO record_sources VALUES ('signins', ?, ?, 0, 1, 1, 0, 1, 'h')",
+            params![key, file_id],
+        )
+        .unwrap();
+}
+
+/// A portal-style `directory_audits` row with an actor UPN and target UPNs (no tenant id anywhere), sighted in
+/// `file_id`.
+fn audit_upns(case: &Case, file_id: i64, key: &str, actor: &str, targets: &[&str]) {
+    let targets: Vec<serde_json::Value> = targets
+        .iter()
+        .map(|t| serde_json::json!({ "type": "User", "userPrincipalName": t }))
+        .collect();
+    case.conn()
+        .execute(
+            "INSERT INTO directory_audits (record_key, collection_id, initiated_by_upn, targets, raw)
+             VALUES (?, 1, ?, CAST(? AS JSON), '{}')",
+            params![key, actor, serde_json::Value::Array(targets).to_string()],
+        )
+        .unwrap();
+    case.conn()
+        .execute(
+            "INSERT INTO record_sources VALUES ('directory_audits', ?, ?, 0, 1, 1, 0, 1, 'h')",
+            params![key, file_id],
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_collection_with_no_tenant_id_or_name_joins_the_tenant_that_owns_most_of_its_upn_domains() {
+    let mut case = Case::in_memory().unwrap();
+    // Two identified tenants; shared.example is seen in both, so it tells them apart from neither.
+    let t1 = collection(&case, "/t1", None, "2026-09-10 00:00:00+00");
+    let t1_f = file(&case, t1);
+    signin(&case, t1, t1_f, "s1", T1, "a@contoso.example");
+    signin(&case, t1, t1_f, "s2", T1, "x@shared.example");
+    let t2 = collection(&case, "/t2", None, "2026-09-10 00:00:00+00");
+    let t2_f = file(&case, t2);
+    signin(&case, t2, t2_f, "s3", T2, "b@fabrikam.example");
+    signin(&case, t2, t2_f, "s4", T2, "y@shared.example");
+
+    // Two of its three UPNs are on T1's domain (the actor's onmicrosoft domain is unknown): it joins T1.
+    let joins = collection(&case, "/joins", None, "2026-09-10 00:00:00+00");
+    let joins_f = file(&case, joins);
+    audit_upns(
+        &case,
+        joins_f,
+        "j1",
+        "admin@unknown.onmicrosoft.example",
+        &["Alice@Contoso.example"],
+    );
+    audit_upns(&case, joins_f, "j2", "", &["carol@contoso.example"]);
+    // Only one of its three users (the actor does not vote): no majority, so it stands alone.
+    let minority = collection(&case, "/minority", None, "2026-09-10 00:00:00+00");
+    let minority_f = file(&case, minority);
+    audit_upns(
+        &case,
+        minority_f,
+        "m1",
+        "admin@contoso.example",
+        &[
+            "alice@contoso.example",
+            "z@unknown.example",
+            "w@unknown.example",
+        ],
+    );
+    // Only the domain both tenants have: no tenant owns it.
+    let shared = collection(&case, "/shared", None, "2026-09-10 00:00:00+00");
+    let shared_f = file(&case, shared);
+    audit_upns(
+        &case,
+        shared_f,
+        "h1",
+        "p@shared.example",
+        &["q@shared.example"],
+    );
+    // Guests of T1 (#EXT# UPNs on T1's domain) say nothing about which tenant this is.
+    let guests = collection(&case, "/guests", None, "2026-09-10 00:00:00+00");
+    let guests_f = file(&case, guests);
+    audit_upns(
+        &case,
+        guests_f,
+        "g1",
+        "admin@unknown.example",
+        &[
+            "bob_fabrikam.example#EXT#@contoso.example",
+            "eve_x.example#EXT#@contoso.example",
+        ],
+    );
+
+    let report = refresh(&mut case, &ProfileOptions::default()).unwrap();
+    let joined: Vec<_> = report
+        .warnings
+        .iter()
+        .filter(|w| w.contains("it joined tenant"))
+        .collect();
+    assert_eq!(joined.len(), 1, "{:?}", report.warnings);
+    assert!(
+        joined[0].contains(&format!("collection {joins} (joins)"))
+            && joined[0].contains(&format!(
+                "tenant {T1} because 2 of the 2 users its rows are about"
+            )),
+        "{joined:?}"
+    );
+    let key = |c: i64| {
+        text(
+            &case,
+            &format!("SELECT tenant_key FROM collections WHERE collection_id = {c}"),
+        )
+    };
+    assert_eq!(key(t1), T1);
+    assert_eq!(key(t2), T2);
+    assert_eq!(key(joins), T1);
+    assert_eq!(key(minority), format!("collection:{minority}"));
+    assert_eq!(key(shared), format!("collection:{shared}"));
+    assert_eq!(key(guests), format!("collection:{guests}"));
+    assert_eq!(
+        count(
+            &case,
+            &format!("SELECT collections FROM tenant WHERE tenant_key = '{T1}'")
+        ),
+        2
+    );
+}
+
+#[test]
+fn a_collection_with_a_reported_name_is_not_joined_by_domain() {
+    let mut case = Case::in_memory().unwrap();
+    let t1 = collection(&case, "/t1", None, "2026-09-10 00:00:00+00");
+    let t1_f = file(&case, t1);
+    signin(&case, t1, t1_f, "s1", T1, "a@contoso.example");
+    let named = collection(&case, "/named", Some("Fabrikam"), "2026-09-10 00:00:00+00");
+    let named_f = file(&case, named);
+    audit_upns(
+        &case,
+        named_f,
+        "n1",
+        "a@contoso.example",
+        &["b@contoso.example"],
+    );
+    refresh(&mut case, &ProfileOptions::default()).unwrap();
+    assert_eq!(
+        text(
+            &case,
+            &format!("SELECT tenant_key FROM collections WHERE collection_id = {named}")
+        ),
+        "name:fabrikam"
+    );
+}
+
+/// An analyst domain override row, as `set_domain` writes it (on a key that may no longer name a tenant).
+fn domain_override(case: &Case, tenant_key: &str, domain: &str, action: &str) {
+    case.conn()
+        .execute(
+            "INSERT INTO tenant_domain_overrides (tenant_key, domain, action, actor) VALUES (?, ?, CAST(? AS domain_action), 'analyst:t')",
+            params![tenant_key, domain, action],
+        )
+        .unwrap();
+}
+
+#[test]
+fn the_domain_join_counts_distinct_users_not_actors_and_honours_domain_overrides() {
+    let mut case = Case::in_memory().unwrap();
+    // An MSP's own tenant (T1, msp.example) and a customer (T2) whose Hawk capture also reports its name.
+    let msp = collection(&case, "/msp", None, "2026-09-10 00:00:00+00");
+    let msp_f = file(&case, msp);
+    signin(&case, msp, msp_f, "s1", T1, "tech@msp.example");
+    let customer = collection(&case, "/cust", Some("Fabrikam"), "2026-09-10 00:00:00+00");
+    let cust_f = file(&case, customer);
+    signin(&case, customer, cust_f, "s2", T2, "x@fabrikam.example");
+
+    // The customer's audit download: MSP technicians acting on many rows, on one customer user.
+    let audit_c = collection(&case, "/audit", None, "2026-09-10 00:00:00+00");
+    let audit_f = file(&case, audit_c);
+    for i in 0..5 {
+        audit_upns(&case, audit_f, &format!("a{i}"), "tech@msp.example", &[]);
+    }
+    audit_upns(
+        &case,
+        audit_f,
+        "a9",
+        "tech@msp.example",
+        &["bob@fabrikam.example"],
+    );
+    // Exactly half (one user of two): not a majority.
+    let half = collection(&case, "/half", None, "2026-09-10 00:00:00+00");
+    let half_f = file(&case, half);
+    audit_upns(
+        &case,
+        half_f,
+        "h1",
+        "",
+        &["a@msp.example", "b@nowhere.example"],
+    );
+    // A domain the analyst added while the customer was still `name:fabrikam` counts for it now.
+    let added = collection(&case, "/added", None, "2026-09-10 00:00:00+00");
+    let added_f = file(&case, added);
+    audit_upns(&case, added_f, "d1", "", &["c@fabrikam-legacy.example"]);
+    domain_override(&case, "name:fabrikam", "fabrikam-legacy.example", "add");
+    // A domain the analyst removed from the MSP tenant decides nothing.
+    let removed = collection(&case, "/removed", None, "2026-09-10 00:00:00+00");
+    let removed_f = file(&case, removed);
+    audit_upns(&case, removed_f, "r1", "", &["d@msp.example"]);
+    domain_override(&case, T1, "msp.example", "remove");
+
+    for run in 0..2 {
+        refresh(&mut case, &ProfileOptions::default()).unwrap();
+        let key = |c: i64| {
+            text(
+                &case,
+                &format!("SELECT tenant_key FROM collections WHERE collection_id = {c}"),
+            )
+        };
+        assert_eq!(key(customer), T2, "run {run}");
+        assert_eq!(
+            key(audit_c),
+            T2,
+            "run {run}: the customer's user decides, not the MSP's technicians"
+        );
+        assert_eq!(key(half), format!("collection:{half}"), "run {run}");
+        assert_eq!(key(added), T2, "run {run}");
+        assert_eq!(key(removed), format!("collection:{removed}"), "run {run}");
+    }
+}
