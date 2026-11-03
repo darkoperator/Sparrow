@@ -963,3 +963,117 @@ fn rebuild_timing_on_kept_case() {
         count(&case, "SELECT count(*) FROM events")
     );
 }
+
+/// A Windows Hello for Business key change as the portal audit export has it: the row targets the USER, and the
+/// device is only inside the `searchableDeviceKey` value (a JSON list of keys, each with its `deviceId`).
+fn put_key_change(case: &Case, key: &str, activity: &str, old: &[&str], new: &[&str]) {
+    let keys = |ids: &[&str]| {
+        let list: Vec<Value> = ids
+            .iter()
+            .map(|d| json!({"usage": "NGC", "keyIdentifier": format!("k-{d}"), "deviceId": d}))
+            .collect();
+        Value::Array(list).to_string()
+    };
+    put(
+        case,
+        "directory_audits",
+        json!({"record_key": key, "event_time": "2026-09-01T10:04:00Z", "activity": activity,
+               "targets": json!([{"type": "User", "id": "11111111-1111-4111-8111-111111111111",
+                                  "userPrincipalName": "alice@contoso.example"}]).to_string(),
+               "modified_properties": json!([{"target": "alice@contoso.example", "property": "searchableDeviceKey",
+                                              "old": keys(old), "new": keys(new)}]).to_string()}),
+    );
+}
+
+#[test]
+fn a_windows_hello_key_change_is_about_the_device_whose_key_came_or_went() {
+    let case = Case::in_memory().unwrap();
+    let (a, b, c) = (
+        "aaaaaaaa-0000-4000-8000-00000000000a",
+        "BBBBBBBB-0000-4000-8000-00000000000B",
+        "cccccccc-0000-4000-8000-00000000000c",
+    );
+    // Deleted: the key of b is in the old list, not the new one.
+    put_key_change(
+        &case,
+        "whfb-del",
+        "Delete Windows Hello for Business credential",
+        &[a, b, c],
+        &[a, c],
+    );
+    // Added: c's key is new.
+    put_key_change(
+        &case,
+        "whfb-add",
+        "Add Windows Hello for Business key",
+        &[a],
+        &[a, c],
+    );
+    // The only key there is, changed in place.
+    put_key_change(&case, "whfb-one", "Update user", &[a], &[a]);
+    // Two keys came and went: which device it is about is not known.
+    put_key_change(&case, "whfb-two", "Update user", &[a], &[b, c]);
+    events::rebuild(case.conn()).unwrap();
+    let dev = |k: &str| cell(&case, "directory_audits", k, "device_id");
+    assert_eq!(dev("whfb-del").as_deref(), Some(b.to_lowercase().as_str()));
+    assert_eq!(dev("whfb-add").as_deref(), Some(c));
+    assert_eq!(dev("whfb-one").as_deref(), Some(a));
+    assert_eq!(dev("whfb-two"), None);
+}
+
+/// A `searchableDeviceKey` change with the old and new values given as written.
+fn put_raw_key_change(case: &Case, key: &str, old: &str, new: &str) {
+    put(
+        case,
+        "directory_audits",
+        json!({"record_key": key, "event_time": "2026-09-01T10:04:00Z", "activity": "Update user",
+               "targets": json!([{"type": "User", "id": "11111111-1111-4111-8111-111111111111"}]).to_string(),
+               "modified_properties": json!([{"target": "u", "property": "searchableDeviceKey",
+                                              "old": old, "new": new}]).to_string()}),
+    );
+}
+
+#[test]
+fn a_key_change_names_no_device_it_cannot_prove() {
+    let case = Case::in_memory().unwrap();
+    let a = "aaaaaaaa-0000-4000-8000-00000000000a";
+    let b = "bbbbbbbb-0000-4000-8000-00000000000b";
+    let zero = "00000000-0000-0000-0000-000000000000";
+    let key = |id: &str, dev: &str| json!({"keyIdentifier": id, "deviceId": dev});
+    let list = |ks: &[Value]| Value::Array(ks.to_vec()).to_string();
+    // A FIDO key (all-zero device id) added next to device a's Hello key: not about a.
+    put_raw_key_change(
+        &case,
+        "fido",
+        &list(&[key("k1", a)]),
+        &list(&[key("k1", a), key("f1", zero)]),
+    );
+    // Device a's second key deleted while device b has one too: it is a, whatever else the list holds.
+    put_raw_key_change(
+        &case,
+        "rotate",
+        &list(&[key("k1", a), key("k2", a), key("k3", b)]),
+        &list(&[key("k1", a), key("k3", b)]),
+    );
+    // An old value that is not a key list: nothing is proven.
+    put_raw_key_change(
+        &case,
+        "broken",
+        "[{\"keyIdentifier\": \"k1\", \"deviceId\"",
+        &list(&[key("k1", a)]),
+    );
+    // Double-encoded, as Graph writes it: still read.
+    let quoted = |ks: &[Value]| Value::String(list(ks)).to_string();
+    put_raw_key_change(
+        &case,
+        "quoted",
+        &quoted(&[key("k1", a), key("k2", b)]),
+        &quoted(&[key("k1", a)]),
+    );
+    events::rebuild(case.conn()).unwrap();
+    let dev = |k: &str| cell(&case, "directory_audits", k, "device_id");
+    assert_eq!(dev("fido"), None);
+    assert_eq!(dev("rotate").as_deref(), Some(a));
+    assert_eq!(dev("broken"), None);
+    assert_eq!(dev("quoted").as_deref(), Some(b));
+}

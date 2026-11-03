@@ -1041,6 +1041,7 @@ fn target_object_id(id: &str) -> String {
 }
 
 pub(crate) fn audit_device(props: Option<String>, targets: Option<String>) -> AuditDevice {
+    let key_device = key_change_device(props.as_deref(), targets.as_deref());
     let parts = audit_parts(props, targets);
     let mut distinct: BTreeMap<String, Option<String>> = BTreeMap::new();
     for (id, name) in parts.device_targets {
@@ -1060,11 +1061,94 @@ pub(crate) fn audit_device(props: Option<String>, targets: Option<String>) -> Au
     }
     let (object_id, name) = distinct.into_iter().next().unzip();
     AuditDevice {
-        device_id: device_id_of(&parts.plist),
+        device_id: device_id_of(&parts.plist).or(key_device),
         object_id,
         name: name.flatten(),
         ambiguous: false,
     }
+}
+
+/// The device a Windows Hello for Business (or FIDO) key change is about. Such a row targets the user, and the device is
+/// only inside the `searchableDeviceKey` property: a list of the user's keys, each naming its `deviceId`. The keys that
+/// came or went (by `keyIdentifier`, else the whole key) say which device: when every changed key names one and the
+/// same device, that device. A changed key with no device (a FIDO or passkey key has the all-zero id) or keys of
+/// several devices name none. When no key changed and every key is of one device, that device. A value that is there
+/// but is not a key list names none, rather than counting as empty.
+fn key_change_device(props: Option<&str>, targets: Option<&str>) -> Option<String> {
+    let mut pairs: Vec<(Option<String>, Option<String>)> = Vec::new();
+    for p in parse_array(props.map(str::to_string))
+        .iter()
+        .filter_map(Value::as_object)
+    {
+        if text_of(get_ci(p, "property"))
+            .is_some_and(|n| n.eq_ignore_ascii_case("searchableDeviceKey"))
+        {
+            pairs.push((text_of(get_ci(p, "old")), text_of(get_ci(p, "new"))));
+        }
+    }
+    for t in parse_array(targets.map(str::to_string))
+        .iter()
+        .filter_map(Value::as_object)
+    {
+        if let Some(Value::Array(ps)) = get_ci(t, "ModifiedProperties") {
+            for p in ps.iter().filter_map(Value::as_object) {
+                if text_of(get_ci(p, "DisplayName"))
+                    .is_some_and(|n| n.eq_ignore_ascii_case("searchableDeviceKey"))
+                {
+                    pairs.push((
+                        text_of(get_ci(p, "OldValue")),
+                        text_of(get_ci(p, "NewValue")),
+                    ));
+                }
+            }
+        }
+    }
+    let (old, new) = pairs.first()?;
+    let (old, new) = (key_list(old.as_deref())?, key_list(new.as_deref())?);
+    let changed: Vec<&Option<String>> = old
+        .iter()
+        .filter(|(k, _)| !new.contains_key(*k))
+        .chain(new.iter().filter(|(k, _)| !old.contains_key(*k)))
+        .map(|(_, d)| d)
+        .collect();
+    let one = |devices: Vec<&Option<String>>| -> Option<String> {
+        let mut set = BTreeSet::new();
+        for d in devices {
+            set.insert(d.clone()?);
+        }
+        (set.len() == 1).then(|| set.into_iter().next()).flatten()
+    };
+    if changed.is_empty() {
+        one(old.values().chain(new.values()).collect())
+    } else {
+        one(changed)
+    }
+}
+
+/// The keys a `searchableDeviceKey` value lists, keyed by `keyIdentifier` (else the whole key's JSON), each with its
+/// cleaned `deviceId` (`None` for a key with no device, as a FIDO key's all-zero id). The value is JSON, possibly
+/// JSON-quoted again as Graph writes it. An absent or empty value is no keys; `None` when it is not a key list.
+fn key_list(value: Option<&str>) -> Option<BTreeMap<String, Option<String>>> {
+    let mut out = BTreeMap::new();
+    let Some(text) = value.map(str::trim).filter(|v| !v.is_empty()) else {
+        return Some(out);
+    };
+    let mut v: Value = serde_json::from_str(text).ok()?;
+    if let Value::String(inner) = &v {
+        v = serde_json::from_str(inner.trim()).ok()?;
+    }
+    let keys = match v {
+        Value::Array(items) => items,
+        Value::Null => return Some(out),
+        _ => return None,
+    };
+    for k in keys {
+        let Value::Object(o) = &k else { return None };
+        let id = text_of(get_ci(o, "keyIdentifier")).unwrap_or_else(|| k.to_string());
+        let device = text_of(get_ci(o, "deviceId")).and_then(|d| clean_device_id(&d));
+        out.insert(id, device);
+    }
+    Some(out)
 }
 
 fn device_events(conn: &Connection, tenant: Option<&str>) -> Result<Vec<DeviceEvent>> {
