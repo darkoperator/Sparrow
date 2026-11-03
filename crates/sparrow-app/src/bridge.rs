@@ -57,6 +57,10 @@ const HANDSHAKE: Duration = Duration::from_secs(10);
 const SEND_STALL: Duration = Duration::from_secs(30);
 /// How long a stop lets the interrupted request answer before breaking its connection.
 const STOP_GRACE: Duration = Duration::from_secs(1);
+/// Once a stop has cut the CLIs that stopped reading, how long one send may make no progress before it gives up. A
+/// CLI that is reading drains its socket within milliseconds, so it is never cut; one that stopped reading would
+/// otherwise hold a quit for up to [`SEND_STALL`] per frame.
+const CUT_STALL: Duration = Duration::from_secs(1);
 /// Connections being read at once; more are closed at once.
 const MAX_HANDSHAKES: usize = 16;
 
@@ -171,7 +175,7 @@ impl Write for Sender {
         loop {
             match self.stream.write(buf) {
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    if self.cut.load(Ordering::SeqCst) {
+                    if self.cut.load(Ordering::SeqCst) && started.elapsed() >= CUT_STALL {
                         return Err(std::io::ErrorKind::BrokenPipe.into());
                     }
                     if started.elapsed() >= SEND_STALL {
@@ -304,11 +308,7 @@ impl Bridge {
         wire::remove_discovery(&self.dir, &self.discovery.token);
         self.shared.interrupt_reads();
         self.shared.wake.notify_all();
-        // A write completes whatever happens (it holds the case lock), so it is not cut off: its agent must learn that
-        // it landed, or a retry would record it twice. Writes are short; a stalled send gives up after `SEND_STALL`.
-        while self.shared.writing.load(Ordering::SeqCst) {
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        wait_for_write(&self.shared);
         // The interrupted request normally answers within milliseconds (the close message). One still running after
         // a second is stuck sending to a CLI that stopped reading: break its connection.
         let waited = Instant::now();
@@ -322,6 +322,17 @@ impl Bridge {
         for t in self.threads {
             let _ = t.join();
         }
+    }
+}
+
+/// Wait for a running write to finish. A write completes whatever happens (it holds the case lock), so it is not cut off:
+/// its agent must learn that it landed, or a retry would record it twice. Its answer still goes out to a CLI that is
+/// reading; one whose send makes no progress for [`CUT_STALL`] (a CLI that stopped reading) is given up on, instead of
+/// after [`SEND_STALL`] (the write has landed either way).
+fn wait_for_write(shared: &Shared) {
+    shared.cut.store(true, Ordering::SeqCst);
+    while shared.writing.load(Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -837,6 +848,72 @@ impl CaseSource for ViewSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stop_gives_up_on_a_write_answer_nobody_reads() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let shared = Arc::new(Shared::new());
+        shared.writing.store(true, Ordering::SeqCst);
+        let mut sender = Sender::new(server, shared.cut.clone()).unwrap();
+        let sending = {
+            let shared = shared.clone();
+            std::thread::spawn(move || {
+                // The write's answer, far larger than the socket buffers, to a CLI that never reads.
+                let r = sender.write_all(&vec![b'x'; 64 << 20]);
+                shared.writing.store(false, Ordering::SeqCst);
+                r.map_err(|e| e.kind())
+            })
+        };
+        let started = Instant::now();
+        wait_for_write(&shared);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the stop waited {:?} for a send nobody reads (SEND_STALL is {SEND_STALL:?})",
+            started.elapsed()
+        );
+        assert_eq!(sending.join().unwrap(), Err(std::io::ErrorKind::BrokenPipe));
+        drop(client);
+    }
+
+    #[test]
+    fn a_stop_lets_a_write_answer_a_cli_that_reads() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let shared = Arc::new(Shared::new());
+        shared.writing.store(true, Ordering::SeqCst);
+        let mut sender = Sender::new(server, shared.cut.clone()).unwrap();
+        const SIZE: usize = 16 << 20;
+        let sending = {
+            let shared = shared.clone();
+            std::thread::spawn(move || {
+                let r = sender
+                    .write_all(&vec![b'x'; SIZE])
+                    .and_then(|()| sender.flush());
+                drop(sender);
+                shared.writing.store(false, Ordering::SeqCst);
+                r.map_err(|e| e.kind())
+            })
+        };
+        // A CLI that reads, slowly: each pause is shorter than CUT_STALL.
+        let reader = std::thread::spawn(move || {
+            let mut got = 0usize;
+            let mut buf = vec![0u8; 1 << 20];
+            loop {
+                match std::io::Read::read(&mut client, &mut buf) {
+                    Ok(0) | Err(_) => break got,
+                    Ok(n) => got += n,
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        wait_for_write(&shared);
+        assert_eq!(sending.join().unwrap(), Ok(()), "the answer was not cut");
+        assert_eq!(reader.join().unwrap(), SIZE, "the CLI got the whole answer");
+    }
 
     #[test]
     fn a_panicking_read_answers_and_frees_the_worker() {

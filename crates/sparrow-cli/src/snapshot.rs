@@ -27,14 +27,55 @@ pub(crate) struct Snapshot {
     pub left: Vec<(PathBuf, String)>,
 }
 
-/// The file each snapshot directory holds from the start, naming the process and the case it copies: what proves a
-/// leftover directory is a copy of this case before it is removed.
-const MARKER: &str = ".sparrow-snapshot.json";
+/// The file each snapshot directory holds from the start, naming the computer, the process and the case it copies:
+/// what proves a leftover directory is a copy of this case before it is removed. Named `-v2` since it records the
+/// computer: a Sparrow that predates `host` reads only `.sparrow-snapshot.json`, so it finds no marker in a newer copy
+/// and leaves it alone, instead of judging another computer's run by a pid that means nothing there.
+const MARKER: &str = ".sparrow-snapshot-v2.json";
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Marker {
     pid: u64,
     source: PathBuf,
+    /// The computer the run was on. A pid means nothing on another computer (a case on a shared drive), so only a
+    /// marker naming this one can prove its run has ended. `None` in a marker written before the field existed.
+    #[serde(default)]
+    host: Option<String>,
+}
+
+/// A name that tells computers apart: not empty and not `localhost` (what containers and unconfigured machines
+/// report, so two such computers sharing a drive would look like one).
+fn named(name: &str) -> Option<String> {
+    let generic = name.is_empty()
+        || name.eq_ignore_ascii_case("localhost")
+        || name.to_ascii_lowercase().starts_with("localhost.");
+    (!generic).then(|| name.to_string())
+}
+
+/// This computer's name, as the markers record it; `None` when the system gives none that tells computers apart (a
+/// copy marked so is never removed, only reported).
+fn host_name() -> Option<String> {
+    #[cfg(unix)]
+    {
+        let mut buf = [0u8; 256];
+        // SAFETY: the buffer is valid for its length; gethostname writes at most that many bytes.
+        let r = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+        if r != 0 {
+            return None;
+        }
+        let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+        named(String::from_utf8_lossy(&buf[..end]).trim())
+    }
+    #[cfg(windows)]
+    {
+        std::env::var("COMPUTERNAME")
+            .ok()
+            .and_then(|n| named(n.trim()))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        None
+    }
 }
 
 impl Snapshot {
@@ -136,6 +177,7 @@ pub(crate) fn take_with(
     let marker = Marker {
         pid: std::process::id().into(),
         source: case.clone(),
+        host: host_name(),
     };
     std::fs::write(dir.path().join(MARKER), serde_json::to_vec(&marker)?)
         .with_context(|| format!("writing {}", dir.path().display()))?;
@@ -200,8 +242,8 @@ fn parents(case: &Path) -> Vec<PathBuf> {
 }
 
 /// Remove the copies of `case` that runs which ended without cleaning up (Ctrl-C, a kill) left in `parents`. A
-/// `.sparrow-snapshot-<pid>-<random>` directory is removed only when its marker names `case` and that pid, the pid is a
-/// valid process id of a process that has ended, this user owns it and it holds nothing but the marker and a copy of
+/// `.sparrow-snapshot-<pid>-<random>` directory is removed only when its marker names `case`, that pid and this
+/// computer, the pid is a valid process id of a process that has ended, this user owns it and it holds nothing but the marker and a copy of
 /// `name` (and its WAL). A run still going and another case's copy are left alone silently; anything else that may be
 /// a leftover beside the case is left and reported, never guessed at. Returns (removed, left with why).
 fn sweep(case: &Path, parents: &[PathBuf], name: &Path) -> (Vec<PathBuf>, Vec<(PathBuf, String)>) {
@@ -259,8 +301,22 @@ fn leftover_copy(
     valid_pid: bool,
     name: &Path,
 ) -> std::result::Result<(), String> {
-    if marker.is_none_or(|m| m.pid != pid) {
+    let Some(marker) = marker.filter(|m| m.pid == pid) else {
         return Err("it has no snapshot marker for this case".into());
+    };
+    match (&marker.host, host_name()) {
+        (Some(theirs), Some(ours)) if *theirs == ours => {}
+        (Some(theirs), Some(_)) => {
+            return Err(format!(
+                "it was made on another computer ({theirs}), where its run may still be going"
+            ));
+        }
+        (Some(_), None) => {
+            return Err("this computer has no name to compare with its marker's".into());
+        }
+        (None, _) => {
+            return Err("its marker names no computer".into());
+        }
     }
     if !valid_pid {
         return Err(format!("{pid} is not a valid process id"));
@@ -444,11 +500,86 @@ mod tests {
             std::fs::write(dir.join(f), b"copy").unwrap();
         }
         if let Some(source) = marked_for {
-            let m =
-                serde_json::json!({ "pid": pid, "source": std::fs::canonicalize(source).unwrap() });
+            let m = serde_json::json!({
+                "pid": pid,
+                "source": std::fs::canonicalize(source).unwrap(),
+                "host": host_name(),
+            });
             std::fs::write(dir.join(MARKER), m.to_string()).unwrap();
         }
         dir
+    }
+
+    /// Rewrite the marker of `dir` to name `host` (absent for `None`, as an older Sparrow wrote it).
+    #[cfg(unix)]
+    fn mark_host(dir: &Path, host: Option<&str>) {
+        let path = dir.join(MARKER);
+        let mut m: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        match host {
+            Some(h) => m["host"] = h.into(),
+            None => {
+                m.as_object_mut().unwrap().remove("host");
+            }
+        }
+        std::fs::write(path, m.to_string()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_from_another_computer_or_an_older_marker_is_reported_not_deleted() {
+        assert!(host_name().is_some(), "this computer has a name");
+        let (_tmp, case) = files();
+        // A dead pid here says nothing about a run on another computer sharing the drive.
+        let theirs = leftover(&case, dead_pid().into(), Some(&case), &["case.duckdb"]);
+        mark_host(&theirs, Some("some-other-computer"));
+        let older = leftover(
+            &case,
+            u64::from(dead_pid()) + 1_000_000,
+            Some(&case),
+            &["case.duckdb"],
+        );
+        mark_host(&older, None);
+        let snap = take(&case).unwrap();
+        assert!(theirs.exists() && older.exists());
+        assert!(snap.swept.is_empty(), "{:?}", snap.swept);
+        let why: std::collections::BTreeMap<_, _> = snap.left.iter().cloned().collect();
+        assert!(
+            why[&canon(&theirs)].contains("another computer (some-other-computer)"),
+            "{why:?}"
+        );
+        assert!(why[&canon(&older)].contains("names no computer"), "{why:?}");
+    }
+
+    #[test]
+    fn a_generic_host_name_tells_no_computer_apart() {
+        assert_eq!(named("localhost"), None);
+        assert_eq!(named("LOCALHOST.localdomain"), None);
+        assert_eq!(named(""), None);
+        assert_eq!(named("analyst-mbp").as_deref(), Some("analyst-mbp"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_marked_the_old_way_is_reported_not_deleted() {
+        let (_tmp, case) = files();
+        let old = leftover(&case, dead_pid().into(), None, &["case.duckdb"]);
+        let m = serde_json::json!({ "pid": dead_pid(), "source": std::fs::canonicalize(&case).unwrap() });
+        std::fs::write(old.join(".sparrow-snapshot.json"), m.to_string()).unwrap();
+        let snap = take(&case).unwrap();
+        assert!(old.exists());
+        assert!(snap.swept.is_empty());
+        assert_eq!(snap.left.len(), 1, "{:?}", snap.left);
+    }
+
+    #[test]
+    fn a_snapshot_marker_names_this_computer() {
+        let (_tmp, case) = files();
+        let snap = take(&case).unwrap();
+        let m: Marker =
+            serde_json::from_slice(&std::fs::read(snap.dir().join(MARKER)).unwrap()).unwrap();
+        assert_eq!(m.host, host_name());
+        assert_eq!(m.pid, u64::from(std::process::id()));
     }
 
     #[cfg(unix)]
