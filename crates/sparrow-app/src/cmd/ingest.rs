@@ -19,7 +19,7 @@ use sparrow_core::discovery::{
 };
 use sparrow_core::ingest::parser::ParserRegistry;
 use sparrow_core::ingest::{
-    DEFAULT_MAX_FILE_BYTES, FileReport, IngestOptions, IngestProgress, IngestReport,
+    FileReport, IngestOptions, IngestProgress, IngestReport, XLSX_MAX_BYTES,
     ingest_collections_partial, no_collections_error, release_lock_down, restore_lock_down,
 };
 use sparrow_core::profile::{ProfileOptions, refresh, unprofiled_collections};
@@ -153,7 +153,7 @@ pub fn ingest_discover_with(
         unrecognised: 0,
         too_large: 0,
         unreadable: 0,
-        max_file_bytes: DEFAULT_MAX_FILE_BYTES,
+        max_file_bytes: XLSX_MAX_BYTES,
     };
     for dc in discover_collections(path)? {
         let listing = list_collection_files(&dc.root, dc.shallow)?;
@@ -167,7 +167,7 @@ pub fn ingest_discover_with(
             let status = if meta_error.is_some() {
                 preview.unreadable += 1;
                 "unreadable"
-            } else if size > DEFAULT_MAX_FILE_BYTES {
+            } else if size > XLSX_MAX_BYTES {
                 preview.too_large += 1;
                 "too_large"
             } else if class.is_some() {

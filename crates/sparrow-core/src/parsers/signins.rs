@@ -513,7 +513,8 @@ fn parse_streamed(ctx: &mut ParseContext<'_>) -> Result<()> {
     // Once a portal record is seen the shape is settled; only the placeholder count can still change, and it is
     // not reported for a portal download or a JSON file, so the scan stops there.
     let count_placeholders = format == RecordFormat::Csv && !ctx.portal_export;
-    for_each_record(&ctx.input(), format, |event| {
+    // A shape pass: the records' sightings are not needed.
+    for_each_record(&ctx.input().with_sights(false), format, |event| {
         if let RecordEvent::Record(r) = event {
             let rec = Rec::new(&r.map, false);
             portal |= rec.has("Date (UTC)") && rec.has("Request ID");

@@ -383,7 +383,7 @@ fn a_read_only_case_cannot_import() {
 }
 
 #[test]
-fn cancel_stops_after_the_current_file_and_the_case_is_profiled() {
+fn cancel_stops_in_the_current_file_and_the_case_is_profiled() {
     let dir = tempfile::tempdir().unwrap();
     let case = dir.path().join("cut.duckdb");
     let ing = Arc::new(IngestState::default());
@@ -408,11 +408,12 @@ fn cancel_stops_after_the_current_file_and_the_case_is_profiled() {
     assert!(seen.load(Ordering::SeqCst));
     assert!(r.cancelled);
     assert!(!r.not_loaded.is_empty());
-    // The 4th file was the last one started: three finished before it, it finished too, then it stopped.
+    // The 4th file was the last one started: three finished before it; the cancel stopped it while it was read and
+    // rolled it back, so it is not in the report.
     let handled: usize = r.report.collections.iter().map(|c| c.files.len()).sum();
     assert_eq!(
         handled,
-        4,
+        3,
         "{:?}",
         r.report
             .collections
@@ -834,7 +835,7 @@ fn a_case_switched_before_the_import_takes_the_lock_is_refused_not_written() {
 }
 
 #[test]
-fn a_window_close_during_an_import_stops_it_after_the_file_and_profiles() {
+fn a_window_close_during_an_import_stops_it_in_the_file_and_profiles() {
     let dir = tempfile::tempdir().unwrap();
     let state = AppState::default();
     let path = open_blank(dir.path(), &state);
@@ -853,7 +854,8 @@ fn a_window_close_during_an_import_stops_it_after_the_file_and_profiles() {
         })
     };
     let r = run(&state, &ing, &Target::Open, true, &emit).unwrap();
-    // The close was held back, the third file finished, the profile ran, detection did not.
+    // The close was held back, the third file was stopped while it was read and rolled back, the profile ran,
+    // detection did not.
     assert_eq!(*held.lock().unwrap(), [true]);
     assert!(r.cancelled && r.detect.is_none() && r.profile_error.is_none());
     assert_eq!(
@@ -862,7 +864,7 @@ fn a_window_close_during_an_import_stops_it_after_the_file_and_profiles() {
             .iter()
             .map(|c| c.files.len())
             .sum::<usize>(),
-        3
+        2
     );
     wait_idle(&ing);
     assert!(
@@ -975,7 +977,7 @@ fn discovery_marks_a_file_whose_size_cannot_be_read_and_one_over_the_limit() {
     let big = victim.join("huge.csv");
     std::fs::File::create(&big)
         .unwrap()
-        .set_len(sparrow_core::ingest::DEFAULT_MAX_FILE_BYTES + 1)
+        .set_len(sparrow_core::ingest::XLSX_MAX_BYTES + 1)
         .unwrap();
     let whole = ingest_discover(&copy).unwrap();
     let all: Vec<_> = whole.collections.iter().flat_map(|c| &c.files).collect();
@@ -984,7 +986,7 @@ fn discovery_marks_a_file_whose_size_cannot_be_read_and_one_over_the_limit() {
         .find(|f| f.rel_path.ends_with("huge.csv"))
         .expect("huge.csv listed");
     assert_eq!(huge.status, "too_large");
-    assert_eq!(huge.size, sparrow_core::ingest::DEFAULT_MAX_FILE_BYTES + 1);
+    assert_eq!(huge.size, sparrow_core::ingest::XLSX_MAX_BYTES + 1);
     assert_eq!((whole.too_large, whole.unreadable), (1, 0));
     // A listed file whose metadata cannot be read (the seam fails it): unreadable, with the reason, never recognised.
     let target = all

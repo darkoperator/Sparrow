@@ -293,7 +293,8 @@ pub fn load_streamed(
         }
     }
     ctx.set_step(0);
-    for_each_record(&ctx.input(), format, |event| {
+    // The first pass reads only times: the records' sightings are not needed.
+    for_each_record(&ctx.input().with_sights(false), format, |event| {
         match event {
             RecordEvent::Error {
                 ordinal,
@@ -327,6 +328,7 @@ pub fn load_streamed(
             if rows.is_empty() {
                 return Ok(());
             }
+            ctx.check_cancelled()?;
             let (spec, columns) = tables[i];
             let out = load_rows_batch(
                 ctx.conn,

@@ -103,7 +103,7 @@ pub fn run_perf(scenario: &Scenario, opts: &GenerateOptions, dir: &Path) -> Resu
         // A 1M-row Invictus tree's merged UAL export exceeds the 1 GiB default file cap; a perf
         // run raises it so the whole tree ingests.
         &IngestOptions {
-            max_file_bytes: u64::MAX,
+            max_file_bytes: None,
             ..IngestOptions::default()
         },
     ))?;

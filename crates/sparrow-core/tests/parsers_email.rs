@@ -469,7 +469,7 @@ fn findings_fall_back_when_the_sibling_header_failed() {
         &ParserRegistry::builtin(),
         &IngestOptions {
             date_order: None,
-            max_file_bytes: 1024,
+            max_file_bytes: Some(1024),
             ..IngestOptions::default()
         },
     )

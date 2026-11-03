@@ -3,11 +3,12 @@
 use crate::Error;
 use crate::Result;
 use crate::hash::sha256_hex;
-use crate::ingest::IngestOptions;
+use crate::ingest::{HookedRead, IngestOptions, ReadPhase};
 use crate::readers::stream::{Admitted, CHUNK_BYTES, Sight, TextStream};
 use crate::readers::text::{DecodedText, LineIndex, OffsetMapper, SourcePos, Span, locate};
 use crate::readers::time::{DateOrder, DateOrderDetector};
 use duckdb::{Connection, params};
+use std::cell::Cell;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FileStats {
@@ -29,21 +30,42 @@ pub struct WholeText<'a> {
     pub index: &'a LineIndex,
 }
 
+/// A file being ingested from disk: what its record passes need besides the admitted file (the ingest's options, for
+/// the read size, the cancel check and the test read hook) and how many passes it has had.
+pub struct FileSource<'a> {
+    rel_path: &'a str,
+    options: &'a IngestOptions,
+    passes: Cell<usize>,
+}
+
+impl<'a> FileSource<'a> {
+    pub fn new(rel_path: &'a str, options: &'a IngestOptions) -> Self {
+        FileSource {
+            rel_path,
+            options,
+            passes: Cell::new(0),
+        }
+    }
+}
+
 /// Where a pass over a file's records reads its bytes.
 #[derive(Clone, Copy)]
 pub enum RecordSource<'a> {
-    /// The file's content, already read into memory.
+    /// The file's content, already in memory (tests that build a context by hand). Each pass copies it.
     Memory(&'a [u8]),
+    /// The admitted file on disk, opened again for each pass.
+    File(&'a FileSource<'a>),
 }
 
 /// What a pass over a file's records needs ([`crate::parsers::records::for_each_record`]): the admitted file, where
-/// its bytes come from and the parser step the pass belongs to. Taken from [`ParseContext::input`]; it does not
-/// borrow the context, so a pass can write through the context as it reads.
+/// its bytes come from, the parser step the pass belongs to and whether readable records are sighted. Taken from
+/// [`ParseContext::input`]; it does not borrow the context, so a pass can write through the context as it reads.
 #[derive(Clone, Copy)]
 pub struct RecordInput<'a> {
     admitted: &'a Admitted,
     source: RecordSource<'a>,
     step: usize,
+    sights: bool,
 }
 
 impl<'a> RecordInput<'a> {
@@ -56,10 +78,27 @@ impl<'a> RecordInput<'a> {
         self.step
     }
 
+    /// This input with readable records sighted (`true`, the default) or not. A pass that discards its records'
+    /// sightings and snippets (a shape or date pass) turns them off: the record's [`Sight`] is then empty and its
+    /// snippet blank. Unreadable records are sighted either way (they are written to `parse_errors`).
+    pub fn with_sights(mut self, on: bool) -> Self {
+        self.sights = on;
+        self
+    }
+
+    /// Whether readable records are sighted ([`Self::with_sights`]).
+    pub fn sights(&self) -> bool {
+        self.sights
+    }
+
     /// A new pass over the file's text from its first byte.
     pub(crate) fn open(&self) -> std::io::Result<TextStream> {
+        let chunk = match self.source {
+            RecordSource::Memory(_) => CHUNK_BYTES,
+            RecordSource::File(f) => f.options.chunk(),
+        };
         // Sightings do not depend on the read size; a small file needs no full-size buffer.
-        let chunk = CHUNK_BYTES.min(
+        let chunk = chunk.min(
             usize::try_from(self.admitted.raw_len)
                 .unwrap_or(usize::MAX)
                 .saturating_add(1),
@@ -68,12 +107,32 @@ impl<'a> RecordInput<'a> {
             RecordSource::Memory(raw) => {
                 Ok(TextStream::from_bytes(raw.to_vec(), self.admitted, chunk))
             }
+            RecordSource::File(f) => {
+                let pass = f.passes.get() + 1;
+                f.passes.set(pass);
+                let file = std::fs::File::open(&self.admitted.path)?;
+                let reader = HookedRead::open(
+                    file,
+                    f.options.read_hook.clone(),
+                    f.rel_path,
+                    ReadPhase::Pass(pass),
+                )?;
+                Ok(TextStream::from_reader(
+                    Box::new(reader),
+                    self.admitted,
+                    chunk,
+                ))
+            }
         }
     }
 
-    /// What a pass reports for the raw bytes it reads; false stops it. (Nothing to report to yet.)
+    /// What a pass reports for the raw bytes it reads; false stops it (the ingest was cancelled).
     pub(crate) fn on_read(&self) -> impl FnMut(u64) -> bool + use<> {
-        |_| true
+        let cancel = match self.source {
+            RecordSource::Memory(_) => None,
+            RecordSource::File(f) => f.options.cancel.clone(),
+        };
+        move |_| !cancel.as_ref().is_some_and(|c| c())
     }
 }
 
@@ -161,7 +220,17 @@ impl<'a> ParseContext<'a> {
             admitted: self.admitted,
             source: self.source,
             step: self.step,
+            sights: true,
         }
+    }
+
+    /// `Err(Error::Interrupted)` when the ingest was cancelled: the streaming parsers check it before loading each
+    /// batch, so a cancel stops a file between reads too.
+    pub fn check_cancelled(&self) -> Result<()> {
+        if self.options.cancelled() {
+            return Err(Error::Interrupted);
+        }
+        Ok(())
     }
 
     pub fn admitted(&self) -> &'a Admitted {

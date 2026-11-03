@@ -348,8 +348,8 @@ pub fn admit(path: &Path, chunk: usize, on_read: OnRead) -> io::Result<Admitted>
     admit_from(&mut file, path, modified, chunk, on_read)
 }
 
-/// [`admit`] reading the content from `reader`.
-fn admit_from(
+/// [`admit`] reading the content from `reader`; `modified` is the file's modification time when it was opened.
+pub fn admit_from(
     reader: &mut dyn Read,
     path: &Path,
     modified: Option<SystemTime>,
@@ -586,6 +586,12 @@ impl TextStream {
             #[cfg(test)]
             peak: (0, 0),
         }
+    }
+
+    /// A pass over the admitted file's content read from `reader` (from its first byte); behaves exactly like
+    /// [`Admitted::open`].
+    pub fn from_reader(reader: Box<dyn Read>, admitted: &Admitted, chunk: usize) -> TextStream {
+        TextStream::new(reader, admitted, chunk)
     }
 
     /// A pass over `bytes` (the admitted file's content) held in memory; behaves exactly like [`Admitted::open`].

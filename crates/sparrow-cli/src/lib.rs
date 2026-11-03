@@ -6,8 +6,7 @@ use sparrow_core::data::DataDirs;
 use sparrow_core::discovery::{Registry, discover_collections, list_collection_files};
 use sparrow_core::ingest::parser::ParserRegistry;
 use sparrow_core::ingest::{
-    DEFAULT_MAX_FILE_BYTES, FileReport, IngestOptions, IngestOutcome, ingest_collections,
-    no_collections_error,
+    FileReport, IngestOptions, IngestOutcome, ingest_collections, no_collections_error,
 };
 use sparrow_core::profile::availability::capabilities_report;
 use sparrow_core::profile::tenant::{
@@ -87,9 +86,9 @@ enum Command {
         /// Day/month order of culture-formatted dates: en-US, en-GB, mdy, dmy, ...
         #[arg(long)]
         culture: Option<String>,
-        /// Files larger than this many bytes are recorded as errors instead of loaded
-        #[arg(long, default_value_t = DEFAULT_MAX_FILE_BYTES)]
-        max_file_size: u64,
+        /// Refuse files larger than BYTES (no limit by default; XLSX files are always limited to 1 GiB)
+        #[arg(long, value_name = "BYTES")]
+        max_file_size: Option<u64>,
         /// Directory overriding the embedded data files (capabilities.yaml, ...); default $SPARROW_DATA
         #[arg(long)]
         data: Option<PathBuf>,
@@ -1340,7 +1339,7 @@ fn cmd_ingest(
     path: &Path,
     case_path: &Path,
     culture: Option<&str>,
-    max_file_size: u64,
+    max_file_size: Option<u64>,
     profile_opts: ProfileOptions,
     no_detect: bool,
     json: bool,

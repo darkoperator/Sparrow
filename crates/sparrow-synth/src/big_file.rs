@@ -289,7 +289,7 @@ mod tests {
             // The parser must load the rows, not reject them.
             let mut case = Case::in_memory().unwrap();
             let opts = IngestOptions {
-                max_file_bytes: u64::MAX,
+                max_file_bytes: None,
                 ..IngestOptions::default()
             };
             ingest_path(&mut case, dir.path(), &ParserRegistry::builtin(), &opts)

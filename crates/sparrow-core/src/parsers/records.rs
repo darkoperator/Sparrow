@@ -182,9 +182,25 @@ fn scan_records(
     format: RecordFormat,
     mut f: impl FnMut(Scanned) -> Result<bool>,
 ) -> Result<()> {
-    let io_err = |source: std::io::Error| crate::Error::Io {
-        path: input.admitted().path.display().to_string(),
-        source,
+    // A read stopped by the cancel check is the ingest's cancel, not a failure of the file.
+    let io_err = |source: std::io::Error| {
+        if source.kind() == std::io::ErrorKind::Interrupted {
+            crate::Error::Interrupted
+        } else {
+            crate::Error::Io {
+                path: input.admitted().path.display().to_string(),
+                source,
+            }
+        }
+    };
+    // A readable record's sighting and snippet, or empty ones on a pass that discards them.
+    let sights = input.sights();
+    let sighted = |s: &mut TextStream, span: Span| -> (Sight, String) {
+        if sights {
+            (s.sight(span), s.snippet(span))
+        } else {
+            (unsighted(), String::new())
+        }
     };
     let mut failed = None;
     let mut step = |event: Scanned| match f(event) {
@@ -205,13 +221,16 @@ fn scan_records(
     let scanned = match format {
         RecordFormat::Csv => {
             read_csv_stream(&mut stream, &mut on_read, |headers, event, s| match event {
-                CsvEvent::Row(row) => step(Scanned::Record(SourceRecord {
-                    ordinal: row.ordinal,
-                    sight: s.sight(row.span),
-                    snippet: s.snippet(row.span),
-                    map: fields_map(headers, row.fields),
-                    field_sights: Vec::new(),
-                })),
+                CsvEvent::Row(row) => {
+                    let (sight, snippet) = sighted(s, row.span);
+                    step(Scanned::Record(SourceRecord {
+                        ordinal: row.ordinal,
+                        sight,
+                        snippet,
+                        map: fields_map(headers, row.fields),
+                        field_sights: Vec::new(),
+                    }))
+                }
                 CsvEvent::Error(e) => {
                     step(Scanned::Error(unreadable(s, e.ordinal, e.span, e.message)))
                 }
@@ -220,13 +239,16 @@ fn scan_records(
         }
         RecordFormat::Json => scan_json_stream(&mut stream, &mut on_read, |event, s| match event {
             JsonEvent::Record(r) => match r.value {
-                Value::Object(map) => step(Scanned::Record(SourceRecord {
-                    ordinal: r.ordinal,
-                    sight: s.sight(r.span),
-                    snippet: s.snippet(r.span),
-                    map,
-                    field_sights: Vec::new(),
-                })),
+                Value::Object(map) => {
+                    let (sight, snippet) = sighted(s, r.span);
+                    step(Scanned::Record(SourceRecord {
+                        ordinal: r.ordinal,
+                        sight,
+                        snippet,
+                        map,
+                        field_sights: Vec::new(),
+                    }))
+                }
                 _ => step(Scanned::NotObject(unreadable(
                     s,
                     r.ordinal,
@@ -249,6 +271,19 @@ fn scan_records(
         return Err(e);
     }
     scanned.map_err(io_err)
+}
+
+/// The sighting of a readable record on a pass without sightings ([`RecordInput::with_sights`]): all zero, no hash.
+fn unsighted() -> Sight {
+    Sight {
+        pos: SourcePos {
+            line_start: 0,
+            line_end: 0,
+            byte_offset: 0,
+            byte_length: 0,
+        },
+        raw_sha256: String::new(),
+    }
 }
 
 /// Warning for CSV records that hold PowerShell placeholders: nested and multi-valued

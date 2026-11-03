@@ -10,15 +10,14 @@ pub mod timing;
 
 use crate::discovery::runs::run_dirs;
 use crate::discovery::{
-    Classification, CollectionFile, DiscoveredCollection, FileFormat, Registry, SNIFF_BYTES, Tool,
+    Classification, CollectionFile, DiscoveredCollection, FileFormat, Registry, Tool,
     canonical_root_string, discover_collections, format_from_path, list_collection_files,
 };
-use crate::hash::Sha256Stream;
-use crate::ingest::context::{FileStats, ParseContext, RecordSource, WholeText};
+use crate::ingest::context::{FileSource, FileStats, ParseContext, RecordSource, WholeText};
 use crate::ingest::parser::{InputMode, ParserRegistry};
 use crate::ingest::supersede::{Handled, processing_key, truncation_warning};
-use crate::readers::stream::Admitted;
-use crate::readers::text::{DecodedText, LineIndex, decode, is_blank_content, lossy_warning};
+use crate::readers::stream::{Admitted, CHUNK_BYTES};
+use crate::readers::text::{DecodedText, LineIndex, decode, lossy_warning};
 use crate::readers::time::{DateOrder, ParsedTime, parse_timestamp};
 use crate::{Case, Error, Result, VERSION};
 use duckdb::{Connection, OptionalExt, params};
@@ -26,7 +25,13 @@ use serde::Serialize;
 use std::path::Path;
 use std::sync::Arc;
 
-pub const DEFAULT_MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
+/// Largest XLSX workbook ingest reads: a workbook is a zip, read whole into memory. `--max-file-size`, when smaller,
+/// wins.
+pub const XLSX_MAX_BYTES: u64 = 1 << 30;
+
+/// Largest file a parser that reads its file whole (`InputMode::Whole`, a Format-List `.txt` file) is given: such a
+/// file is held in memory as bytes, text and line index. CSV and JSON files read as streams have no limit.
+pub const WHOLE_FILE_MAX_BYTES: u64 = 256 << 20;
 
 /// Warning on a file with no content (0 bytes, or a byte-order mark and whitespace only).
 pub const EMPTY_FILE_WARNING: &str = "file is empty: the collector ran and wrote no records";
@@ -97,14 +102,43 @@ pub enum IngestProgress {
 /// Called with each [`IngestProgress`], on the ingesting thread, so it must be quick.
 pub type ProgressFn = Arc<dyn Fn(&IngestProgress) + Send + Sync>;
 
-/// Asked before each collection and each file: true stops the ingest there. A file is never stopped midway (each
-/// commits on its own), so what was loaded stays loaded and the rest is not touched.
+/// Asked before each collection and each file, and while a file is read (each read and each loaded batch): true
+/// stops the ingest there. A file stopped midway is rolled back (it leaves no rows, as if it was never tried); the
+/// files loaded before it stay loaded and the rest are not touched.
 pub type CancelFn = Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// Which read of a file a [`ReadHook`] sees. Test seam.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadPhase {
+    /// The admission read (hash, head, encoding).
+    Admit,
+    /// The n-th record pass of the parser, counting from 1.
+    Pass(usize),
+}
+
+/// One read of a file, for a [`ReadHook`]. Test seam.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct ReadEvent<'a> {
+    pub rel_path: &'a str,
+    pub phase: ReadPhase,
+    /// Bytes this read returned; 0 when the read is opened, before its first byte.
+    pub bytes: u64,
+}
+
+/// Called when a streamed read of a file opens and after each read from it; an error fails that read with it (never
+/// `ErrorKind::Interrupted`, which readers retry). Test seam: cancel at a chosen point, inject a read error, change
+/// the file between passes.
+#[doc(hidden)]
+pub type ReadHook = Arc<dyn Fn(&ReadEvent) -> std::io::Result<()> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct IngestOptions {
     pub date_order: Option<DateOrder>,
-    pub max_file_bytes: u64,
+    /// Files larger than this are recorded as errors (`--max-file-size`); `None`, the default, sets no limit. XLSX
+    /// workbooks are always limited to [`XLSX_MAX_BYTES`], files read whole to [`WHOLE_FILE_MAX_BYTES`].
+    pub max_file_bytes: Option<u64>,
     pub progress: Option<ProgressFn>,
     pub cancel: Option<CancelFn>,
     /// When the writer was locked down (the review app's), leave it unlocked after the ingest for the caller's
@@ -114,6 +148,15 @@ pub struct IngestOptions {
     /// transaction ([`DEFAULT_BATCH_ROWS`]); such a file is never held whole as records. Tests set small values to
     /// cross batch boundaries.
     pub batch_rows: usize,
+    /// Raw bytes per read of a streamed file; `None` is [`CHUNK_BYTES`]. Tests set small values so small files span
+    /// many reads.
+    pub chunk_bytes: Option<usize>,
+    /// Test override of [`WHOLE_FILE_MAX_BYTES`].
+    #[doc(hidden)]
+    pub whole_max_bytes: Option<u64>,
+    /// Test seam: sees every streamed read of every file ([`ReadHook`]).
+    #[doc(hidden)]
+    pub read_hook: Option<ReadHook>,
 }
 
 /// Default [`IngestOptions::batch_rows`].
@@ -128,6 +171,9 @@ impl std::fmt::Debug for IngestOptions {
             .field("cancel", &self.cancel.as_ref().map(|_| "<fn>"))
             .field("keep_unlocked", &self.keep_unlocked)
             .field("batch_rows", &self.batch_rows)
+            .field("chunk_bytes", &self.chunk_bytes)
+            .field("whole_max_bytes", &self.whole_max_bytes)
+            .field("read_hook", &self.read_hook.as_ref().map(|_| "<fn>"))
             .finish()
     }
 }
@@ -136,11 +182,14 @@ impl Default for IngestOptions {
     fn default() -> Self {
         IngestOptions {
             date_order: None,
-            max_file_bytes: DEFAULT_MAX_FILE_BYTES,
+            max_file_bytes: None,
             progress: None,
             cancel: None,
             keep_unlocked: false,
             batch_rows: DEFAULT_BATCH_ROWS,
+            chunk_bytes: None,
+            whole_max_bytes: None,
+            read_hook: None,
         }
     }
 }
@@ -157,8 +206,13 @@ impl IngestOptions {
         self.cancelled()
     }
 
-    fn cancelled(&self) -> bool {
+    pub(crate) fn cancelled(&self) -> bool {
         self.cancel.as_ref().is_some_and(|f| f())
+    }
+
+    /// Raw bytes per read of a streamed file.
+    pub(crate) fn chunk(&self) -> usize {
+        self.chunk_bytes.unwrap_or(CHUNK_BYTES).max(1)
     }
 }
 
@@ -611,6 +665,8 @@ struct FileJob<'a> {
 enum Outcome {
     Done(FileReport, Vec<DateOrder>),
     Deferred,
+    /// The ingest was cancelled while the file was read; it was rolled back and left no rows.
+    Cancelled,
 }
 
 impl Outcome {
@@ -732,11 +788,23 @@ fn ingest_collection(
                     }));
                 }
             };
+            if matches!(outcome, Outcome::Cancelled) {
+                // Cancelled mid-file (rolled back): the ingest stops as a cancel between files does.
+                *stopped = true;
+                record_listing_errors(case, collection_id, &listing, &mut files)?;
+                return Ok(CollectionReport {
+                    collection_id,
+                    tool: dc.tool,
+                    root,
+                    files,
+                });
+            }
             match outcome {
                 Outcome::Deferred => {
                     handled.insert_failed(&f.rel);
                     deferred.push((f, derived, artifact));
                 }
+                Outcome::Cancelled => unreachable!("handled above"),
                 Outcome::Done(report, orders) => {
                     mark_handled(&mut handled, &f.rel, &report);
                     for o in orders {
@@ -810,11 +878,23 @@ fn ingest_collection(
                     }));
                 }
             };
+            if matches!(outcome, Outcome::Cancelled) {
+                // Cancelled mid-file (rolled back): the ingest stops as a cancel between files does.
+                *stopped = true;
+                record_listing_errors(case, collection_id, &listing, &mut files)?;
+                return Ok(CollectionReport {
+                    collection_id,
+                    tool: dc.tool,
+                    root,
+                    files,
+                });
+            }
             match outcome {
                 Outcome::Done(report, _) => {
                     mark_handled(&mut handled, &f.rel, &report);
                     files.push(report);
                 }
+                Outcome::Cancelled => unreachable!("handled above"),
                 Outcome::Deferred => {
                     return Err(Error::Invalid(format!(
                         "{} was deferred again on the retry pass",
@@ -1055,77 +1135,84 @@ fn with_pre(pre: &[String], warnings: Vec<String>) -> Vec<String> {
     pre.iter().cloned().chain(warnings).collect()
 }
 
-/// Read size of [`stream_file`].
-const STREAM_CHUNK: usize = 1024 * 1024;
-
-/// What a streamed file keeps: its SHA-256, its first [`SNIFF_BYTES`] and whether it is blank
-/// ([`is_blank_content`] of the whole file).
-struct Streamed {
-    sha256: String,
-    head: Vec<u8>,
-    blank: bool,
+/// A file read that reports to the test [`ReadHook`]: once when it opens (0 bytes) and after each read that returns
+/// bytes; a hook error fails the open or the read with it.
+pub(crate) struct HookedRead<R> {
+    inner: R,
+    hook: Option<ReadHook>,
+    rel_path: String,
+    phase: ReadPhase,
 }
 
-/// Hash `path` in reads of up to `chunk` bytes (no whole-file buffer), keeping the head and the blank flag. A
-/// byte-order mark is recognised from the file's first three bytes, gathered across reads, so any chunk size gives
-/// the same result as [`is_blank_content`] on the whole file.
-fn stream_file(path: &Path, chunk: usize) -> std::io::Result<Streamed> {
-    use std::io::Read;
-    let mut file = std::fs::File::open(path)?;
-    let mut hash = Sha256Stream::new();
-    let mut head: Vec<u8> = Vec::new();
-    let mut buf = vec![0u8; chunk.max(1)];
-    // Blank: whitespace only after an optional BOM; NULs count only after a UTF-16 BOM. Decided once the first
-    // three bytes (or the whole file, if shorter) are known.
-    let mut prefix: Vec<u8> = Vec::new();
-    let mut utf16: Option<bool> = None;
-    let mut blank = true;
-    let blank_byte =
-        |b: u8, utf16: bool| matches!(b, b' ' | b'\t' | b'\r' | b'\n') || (utf16 && b == 0);
-    loop {
-        let n = file.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        let bytes = &buf[..n];
-        hash.update(bytes);
-        if head.len() < SNIFF_BYTES {
-            let take = (SNIFF_BYTES - head.len()).min(n);
-            head.extend_from_slice(&bytes[..take]);
-        }
-        if !blank {
-            continue;
-        }
-        let mut rest = bytes;
-        if utf16.is_none() {
-            let take = (3 - prefix.len()).min(rest.len());
-            prefix.extend_from_slice(&rest[..take]);
-            rest = &rest[take..];
-            if prefix.len() < 3 {
-                continue;
-            }
-            let (body, is16): (&[u8], bool) = match prefix.as_slice() {
-                [0xFF, 0xFE, r @ ..] | [0xFE, 0xFF, r @ ..] => (r, true),
-                [0xEF, 0xBB, 0xBF] => (&[], false),
-                p => (p, false),
-            };
-            utf16 = Some(is16);
-            blank = body.iter().all(|&b| blank_byte(b, is16));
-        }
-        let is16 = utf16.unwrap_or(false);
-        blank = blank && rest.iter().all(|&b| blank_byte(b, is16));
+impl<R: std::io::Read> HookedRead<R> {
+    pub(crate) fn open(
+        inner: R,
+        hook: Option<ReadHook>,
+        rel_path: &str,
+        phase: ReadPhase,
+    ) -> std::io::Result<Self> {
+        let r = HookedRead {
+            inner,
+            hook,
+            rel_path: rel_path.to_string(),
+            phase,
+        };
+        r.report(0)?;
+        Ok(r)
     }
-    if utf16.is_none() {
-        // Fewer than three bytes in all.
-        blank = is_blank_content(&prefix);
+
+    fn report(&self, bytes: u64) -> std::io::Result<()> {
+        match &self.hook {
+            Some(h) => h(&ReadEvent {
+                rel_path: &self.rel_path,
+                phase: self.phase,
+                bytes,
+            }),
+            None => Ok(()),
+        }
     }
-    Ok(Streamed {
-        sha256: hash.finish_hex(),
-        head,
-        blank,
+}
+
+impl<R: std::io::Read> std::io::Read for HookedRead<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n > 0 {
+            self.report(n as u64)?;
+        }
+        Ok(n)
+    }
+}
+
+/// [`admit`](crate::readers::stream::admit) `abs` in reads of the ingest's chunk size, honouring its cancel check
+/// (a cancel fails the read with `ErrorKind::Interrupted`) and its test read hook.
+fn admit_file(abs: &Path, rel: &str, opts: &IngestOptions) -> std::io::Result<Admitted> {
+    let file = std::fs::File::open(abs)?;
+    let modified = file.metadata()?.modified().ok();
+    let mut reader = HookedRead::open(file, opts.read_hook.clone(), rel, ReadPhase::Admit)?;
+    crate::readers::stream::admit_from(&mut reader, abs, modified, opts.chunk(), &mut |_| {
+        !opts.cancelled()
     })
 }
 
+/// The size limit `size` breaks before the file is read, if any: `--max-file-size`, then the XLSX guard.
+fn size_guard(size: u64, format: FileFormat, opts: &IngestOptions) -> Option<String> {
+    if let Some(max) = opts.max_file_bytes
+        && size > max
+    {
+        return Some(format!(
+            "file is {size} bytes, above the {max} byte limit set by --max-file-size; raise --max-file-size to ingest it"
+        ));
+    }
+    if format == FileFormat::Xlsx && size > XLSX_MAX_BYTES {
+        return Some(format!(
+            "file is {size} bytes, above the {XLSX_MAX_BYTES} byte limit for XLSX workbooks (read whole into memory); export the data as CSV to ingest it"
+        ));
+    }
+    None
+}
+
+/// The warning of a file whose size or modification time changed between its admission and the end of its parse.
+pub const FILE_CHANGED_WARNING: &str = "file changed while it was read (its size or modification time differs from when it was admitted); nothing was loaded from it";
 /// [`ingest_file_inner`], timed per file when [`timing`] is on.
 fn ingest_file(
     case: &mut Case,
@@ -1151,6 +1238,7 @@ fn ingest_file(
             r.records_read,
         ),
         Ok(Outcome::Deferred) => ("deferred".to_string(), None, 0),
+        Ok(Outcome::Cancelled) => ("cancelled".to_string(), None, 0),
         Err(_) => ("failed".to_string(), None, 0),
     };
     timing::add(&format!("status: {status}"), elapsed);
@@ -1205,43 +1293,32 @@ fn ingest_file_inner(
     };
     drop(t_stat);
     nf.size = size;
-    if size > opts.max_file_bytes {
-        let msg = format!(
-            "file is {size} bytes, above the {} byte limit; raise --max-file-size to ingest it",
-            opts.max_file_bytes
-        );
+    // A copy the supersede rules already skip is never size-checked, decoded or parsed: it is only hashed (its stored
+    // sha256 is the same) for the duplicate checks, the 1.9 GB merged UAL export of a large Invictus tree included.
+    let superseded = job.superseded_by.is_some();
+    if !superseded && let Some(msg) = size_guard(size, nf.format, opts) {
         return record_simple(case, &nf, FileStatus::Error, with_pre(&pre, vec![msg]))
             .map(Outcome::plain);
     }
-    // A copy the supersede rules already skip is never decoded or parsed: it is streamed through the hash (its
-    // stored sha256 is the same), keeping only the head the classifier and the duplicate checks need, instead of
-    // holding the whole file (the 1.9 GB merged UAL export of a large Invictus tree). XLSX is classified from the
-    // whole workbook, so it is always read.
-    let streamed = job.superseded_by.is_some() && nf.format != FileFormat::Xlsx;
-    let t_read = timing::span(if streamed {
-        "file: read + sha256 (streamed, superseded)"
+    // XLSX is classified from the whole workbook, so one up to the XLSX guard is read whole once; every other file
+    // is admitted in reads of the chunk size (hash, head, blank, encoding), honouring a cancel.
+    let workbook = nf.format == FileFormat::Xlsx && size <= XLSX_MAX_BYTES;
+    let t_read = timing::span(if workbook {
+        "file: sha256 + read (workbook, whole)"
     } else {
-        "file: read"
+        "file: sha256 + encoding (admit, streamed)"
     });
-    let content = if streamed {
-        stream_file(abs, STREAM_CHUNK).map(|s| (Vec::new(), None, s))
-    } else {
+    let content = if workbook {
         std::fs::read(abs).map(|raw| {
-            // The hash, blank flag and encoding decision, as admission of the file would make them.
-            let admitted = {
-                let _t = timing::span("file: sha256 + encoding (admit)");
-                Admitted::from_bytes(abs, &raw)
-            };
-            let part = Streamed {
-                sha256: admitted.sha256.clone(),
-                head: Vec::new(),
-                blank: admitted.blank,
-            };
-            (raw, Some(admitted), part)
+            let admitted = Admitted::from_bytes(abs, &raw);
+            (Some(raw), admitted)
         })
+    } else {
+        admit_file(abs, rel, opts).map(|admitted| (None, admitted))
     };
-    let (raw, admitted, streamed_part) = match content {
+    let (mut raw, admitted) = match content {
         Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => return Ok(Outcome::Cancelled),
         Err(e) => {
             return record_simple(
                 case,
@@ -1253,10 +1330,10 @@ fn ingest_file_inner(
         }
     };
     drop(t_read);
-    if streamed_part.blank {
+    if admitted.blank {
         pre.push(EMPTY_FILE_WARNING.into());
     }
-    let sha = streamed_part.sha256;
+    let sha = admitted.sha256.clone();
     nf.sha256 = &sha;
     let t_lookup = timing::span("file: db lookups (changed, already, identical)");
     let changed: bool = case.conn().query_row(
@@ -1269,13 +1346,7 @@ fn ingest_file_inner(
     if changed {
         pre.push("file content changed since an earlier ingest of this collection (different SHA-256); records from both versions are kept".into());
     }
-    let head: &[u8] = if streamed {
-        &streamed_part.head
-    } else if nf.format == FileFormat::Xlsx {
-        &raw
-    } else {
-        &raw[..raw.len().min(SNIFF_BYTES)]
-    };
+    let head: &[u8] = raw.as_deref().unwrap_or(&admitted.head);
     let class: Option<Classification> = {
         let _t = timing::span("file: classify with head");
         reg.classify_with_head(tool, rel, Some(head))
@@ -1356,11 +1427,46 @@ fn ingest_file_inner(
             .map(Outcome::plain);
     };
 
-    let admitted = admitted.expect("a file that is parsed was read whole");
-    // The whole text is decoded only for a parser that reads it whole, a workbook and a Format-List file; other
-    // parsers read the records in passes over the bytes.
+    // The whole text is read and decoded only for a parser that reads it whole, a workbook and a Format-List file;
+    // other parsers read the records in passes over the file on disk.
     let whole_mode = parser.input() == InputMode::Whole
         || matches!(nf.format, FileFormat::Xlsx | FileFormat::Txt);
+    if whole_mode && raw.is_none() {
+        let limit = opts.whole_max_bytes.unwrap_or(WHOLE_FILE_MAX_BYTES);
+        if size > limit {
+            let msg = format!(
+                "file is {size} bytes, above the {limit} byte limit for files read whole ({} reads its file whole into memory)",
+                class.artifact_id
+            );
+            return record_simple(case, &nf, FileStatus::Error, with_pre(&pre, vec![msg]))
+                .map(Outcome::plain);
+        }
+        let t_read = timing::span("file: read whole");
+        let read = std::fs::read(abs);
+        drop(t_read);
+        match read {
+            Ok(bytes) if bytes.len() as u64 == admitted.raw_len => raw = Some(bytes),
+            Ok(_) => {
+                return record_simple(
+                    case,
+                    &nf,
+                    FileStatus::Error,
+                    with_pre(&pre, vec![FILE_CHANGED_WARNING.into()]),
+                )
+                .map(Outcome::plain);
+            }
+            Err(e) => {
+                return record_simple(
+                    case,
+                    &nf,
+                    FileStatus::Error,
+                    with_pre(&pre, vec![format!("cannot read file: {e}")]),
+                )
+                .map(Outcome::plain);
+            }
+        }
+    }
+    let raw: &[u8] = raw.as_deref().unwrap_or(&[]);
     // XLSX is a zip: parsers read it from the raw bytes, so it is not decoded.
     let t_decode = timing::span("file: decode");
     let decoded = if !whole_mode {
@@ -1368,7 +1474,7 @@ fn ingest_file_inner(
     } else if nf.format == FileFormat::Xlsx {
         Some(DecodedText::binary())
     } else {
-        Some(decode(&raw))
+        Some(decode(raw))
     };
     drop(t_decode);
     nf.encoding = (nf.format != FileFormat::Xlsx).then(|| admitted.encoding.as_str());
@@ -1382,13 +1488,10 @@ fn ingest_file_inner(
         LineIndex::new(&d.text)
     });
     let whole = match (&decoded, &index) {
-        (Some(text), Some(index)) => Some(WholeText {
-            raw: &raw,
-            text,
-            index,
-        }),
+        (Some(text), Some(index)) => Some(WholeText { raw, text, index }),
         _ => None,
     };
+    let source = FileSource::new(rel, opts);
     let t_row = timing::span("file: begin + stale rows + source_files row");
     let tx = case.conn_mut().transaction()?;
     delete_stale_rows(&tx, &nf)?;
@@ -1401,7 +1504,7 @@ fn ingest_file_inner(
         rel,
         class.subject.as_deref(),
         &admitted,
-        RecordSource::Memory(&raw),
+        RecordSource::File(&source),
         whole,
         opts,
     );
@@ -1421,7 +1524,16 @@ fn ingest_file_inner(
         let _t = timing::span("file: final flush_sources");
         ctx.flush_sources()
     });
+    // A file whose size or modification time moved while it was read may have been read in parts of two versions:
+    // nothing of it is kept.
+    let changed_while_read = || !admitted.unchanged().unwrap_or(false);
     match parsed {
+        Ok(()) if changed_while_read() => {
+            drop(ctx);
+            tx.rollback()?;
+            let warnings = with_pre(&pre, vec![FILE_CHANGED_WARNING.into()]);
+            record_simple(case, &nf, FileStatus::Error, warnings).map(Outcome::plain)
+        }
         Ok(()) => {
             let orders = ctx.orders_seen().to_vec();
             // One proved order is stored; a file that proved both stores NULL.
@@ -1455,6 +1567,12 @@ fn ingest_file_inner(
                 orders,
             ))
         }
+        Err(Error::Interrupted) => {
+            // Cancelled mid-file: the file leaves no rows, as if it was never tried.
+            drop(ctx);
+            tx.rollback()?;
+            Ok(Outcome::Cancelled)
+        }
         Err(Error::DateOrderDeferred) => {
             drop(ctx);
             tx.rollback()?;
@@ -1463,8 +1581,9 @@ fn ingest_file_inner(
         Err(e) => {
             drop(ctx);
             tx.rollback()?;
+            let changed = changed_while_read();
             let (status, msg) = match e {
-                Error::UnsupportedShape(why) => (
+                Error::UnsupportedShape(why) if !changed => (
                     FileStatus::NotSupported,
                     format!("{}: {why}", class.artifact_id),
                 ),
@@ -1473,7 +1592,15 @@ fn ingest_file_inner(
                     format!("parser {} failed: {other}", class.artifact_id),
                 ),
             };
-            let warnings = with_pre(&pre, std::iter::once(msg).chain(decode_warning).collect());
+            let first = changed.then(|| FILE_CHANGED_WARNING.to_string());
+            let warnings = with_pre(
+                &pre,
+                first
+                    .into_iter()
+                    .chain(std::iter::once(msg))
+                    .chain(decode_warning)
+                    .collect(),
+            );
             record_simple(case, &nf, status, warnings).map(Outcome::plain)
         }
     }
@@ -1482,16 +1609,6 @@ fn ingest_file_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hash::sha256_hex;
-
-    /// What the whole-file path computes: (sha256, head, blank).
-    fn whole(bytes: &[u8]) -> (String, Vec<u8>, bool) {
-        (
-            sha256_hex(bytes),
-            bytes[..bytes.len().min(SNIFF_BYTES)].to_vec(),
-            is_blank_content(bytes),
-        )
-    }
 
     fn threshold(case: &Case) -> String {
         case.conn()
@@ -1656,49 +1773,5 @@ mod tests {
         let wal = dir.path().join("case.duckdb.wal");
         let wal_len = std::fs::metadata(&wal).map_or(0, |m| m.len());
         assert_eq!(wal_len, 0, "WAL still holds {wal_len} bytes");
-    }
-
-    #[test]
-    fn a_streamed_file_hashes_heads_and_blanks_like_the_whole_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let big_blank = vec![b' '; 3 * 1024 * 1024 + 17];
-        let mut blank_then_x = big_blank.clone();
-        blank_then_x.push(b'x');
-        let mut utf16_blank = vec![0xFF, 0xFE];
-        for _ in 0..200_000 {
-            utf16_blank.extend_from_slice(&[b' ', 0, b'\n', 0]);
-        }
-        let mut nul_without_bom = vec![b' '; 10];
-        nul_without_bom.push(0);
-        let text: Vec<u8> = (0..2_500_000u32)
-            .map(|i| b"abc,def\r\n"[(i % 9) as usize])
-            .collect();
-        let cases: Vec<(&str, Vec<u8>)> = vec![
-            ("empty", Vec::new()),
-            ("one byte", vec![b'\n']),
-            ("utf-8 BOM only", vec![0xEF, 0xBB, 0xBF]),
-            ("utf-8 BOM and whitespace", b"\xEF\xBB\xBF \r\n\t".to_vec()),
-            ("utf-16 BOM only", vec![0xFF, 0xFE]),
-            ("utf-16 whitespace", utf16_blank),
-            ("NUL without a BOM", nul_without_bom),
-            ("large whitespace", big_blank),
-            (
-                "whitespace then content past the first chunks",
-                blank_then_x,
-            ),
-            ("text", text),
-        ];
-        for (name, bytes) in &cases {
-            let path = dir.path().join("f");
-            std::fs::write(&path, bytes).unwrap();
-            for chunk in [1usize, 2, 3, 5, 4096, STREAM_CHUNK] {
-                let got = stream_file(&path, chunk).unwrap();
-                assert_eq!(
-                    (got.sha256, got.head, got.blank),
-                    whole(bytes),
-                    "{name}, chunk {chunk}"
-                );
-            }
-        }
     }
 }

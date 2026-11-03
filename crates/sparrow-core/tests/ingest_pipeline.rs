@@ -1,5 +1,4 @@
 use sparrow_core::fixtures;
-use sparrow_core::ingest::DEFAULT_MAX_FILE_BYTES;
 use sparrow_core::ingest::context::ParseContext;
 use sparrow_core::ingest::parser::{ArtifactParser, InputMode, ParserRegistry};
 use sparrow_core::ingest::{FileStatus, IngestOptions, IngestReport, ingest_path};
@@ -307,7 +306,7 @@ fn oversize_files_are_errors_naming_the_flag() {
     fixtures::hawk_tree(dir.path());
     let mut case = Case::in_memory().unwrap();
     let opts = IngestOptions {
-        max_file_bytes: 10,
+        max_file_bytes: Some(10),
         ..IngestOptions::default()
     };
     let report = ingest_path(&mut case, dir.path(), &parsers(), &opts).unwrap();
@@ -604,7 +603,7 @@ fn repeated_early_errors_leave_one_row_after_success() {
     fixtures::hawk_tree(dir.path());
     let mut case = Case::in_memory().unwrap();
     let tiny = IngestOptions {
-        max_file_bytes: 10,
+        max_file_bytes: Some(10),
         ..IngestOptions::default()
     };
     for _ in 0..2 {
@@ -871,8 +870,8 @@ fn non_utf8_file_names_are_flagged() {
 }
 
 #[test]
-fn default_max_file_size_is_one_gib() {
-    assert_eq!(DEFAULT_MAX_FILE_BYTES, 1 << 30);
+fn no_default_size_limit() {
+    assert_eq!(IngestOptions::default().max_file_bytes, None);
 }
 
 /// Test parser that QUEUES sightings (the set-based path) and then fails.

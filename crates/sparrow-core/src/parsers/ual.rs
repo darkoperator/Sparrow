@@ -203,6 +203,7 @@ impl Loads {
         if staged.is_empty() {
             return Ok(());
         }
+        ctx.check_cancelled()?;
         let out = load_ual_batch(ctx.conn, ctx.collection_id, ctx.file_id, staged)?;
         self.outcome.staged += out.staged;
         self.outcome.inserted += out.inserted;
@@ -234,13 +235,18 @@ impl ArtifactParser for UalParser {
         // normalizes and loads them in batches of `batch_rows` inside the file's transaction.
         ctx.set_step(0);
         let mut first = None;
-        for_each_record(&ctx.input(), format, |event| match event {
-            RecordEvent::Record(r) => {
-                first = Some(r);
-                Ok(false)
-            }
-            RecordEvent::Error { .. } => Ok(true),
-        })?;
+        // Only the first record's columns are needed: no sightings.
+        for_each_record(
+            &ctx.input().with_sights(false),
+            format,
+            |event| match event {
+                RecordEvent::Record(r) => {
+                    first = Some(r);
+                    Ok(false)
+                }
+                RecordEvent::Error { .. } => Ok(true),
+            },
+        )?;
         let Some(first) = first else {
             // No readable record: recording the unreadable ones is all there is to do.
             read_records(ctx, format)?;
@@ -302,7 +308,8 @@ impl ArtifactParser for UalParser {
         };
         let mut detector = DateOrderDetector::default();
         let mut any_timed = false;
-        for_each_record(&ctx.input(), format, |event| {
+        // The date pass reads only times: readable records are not sighted (unreadable ones are, for parse_errors).
+        for_each_record(&ctx.input().with_sights(false), format, |event| {
             ctx.stats.read += 1;
             match event {
                 RecordEvent::Record(r) => {

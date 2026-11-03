@@ -92,7 +92,7 @@ fn ingest_dump(dir: &Path, manifest: &sparrow_synth::manifest::Manifest) -> Dump
         .as_deref()
         .map(|c| parse_culture(c).expect("ingest_culture"));
     let opts = IngestOptions {
-        max_file_bytes: u64::MAX,
+        max_file_bytes: None,
         date_order,
         ..IngestOptions::default()
     };
