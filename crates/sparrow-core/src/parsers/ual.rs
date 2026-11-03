@@ -13,6 +13,7 @@ use crate::parsers::admin_audit::load_admin_audit;
 use crate::parsers::records::{
     RecordEvent, RecordFormat, SourceRecord, for_each_record, read_records,
 };
+use crate::parsers::stage::LOAD_STREAMED_STEPS;
 use crate::readers::time::DateOrderDetector;
 use crate::{Error, Result};
 use serde_json::{Map, Value};
@@ -189,6 +190,13 @@ struct Loads {
     synthetic: u64,
 }
 
+/// The file holds only `[` and whitespace (Get-UALGraph with no results). Decided from the head, which must be the
+/// whole file: `[` followed by more whitespace than a head holds is read as records (a truncated array).
+fn only_open_bracket(ctx: &ParseContext<'_>) -> bool {
+    let a = ctx.admitted();
+    a.head.len() as u64 >= a.raw_len && ctx.head_text().trim() == "["
+}
+
 impl Loads {
     /// Load `staged` (one batch) inside the file's transaction and empty it.
     fn load(&mut self, ctx: &ParseContext<'_>, staged: &mut Vec<StagedUal>) -> Result<()> {
@@ -206,6 +214,10 @@ impl Loads {
 }
 
 impl ArtifactParser for UalParser {
+    fn steps(&self) -> &'static [&'static str] {
+        LOAD_STREAMED_STEPS
+    }
+
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
         let is_csv = format_from_path(ctx.rel_path) == FileFormat::Csv;
         let format = if is_csv {
@@ -213,16 +225,16 @@ impl ArtifactParser for UalParser {
         } else {
             RecordFormat::Json
         };
-        if self.source == UalSource::Graph && !is_csv && ctx.text.text.trim() == "[" {
+        if self.source == UalSource::Graph && !is_csv && only_open_bracket(ctx) {
             ctx.warn("Get-UALGraph found no results (the file holds only \"[\")");
             return Ok(());
         }
         // The records are streamed, never collected (a 1.76 GB Purview export collected peaked at 21.5 GB): the first
         // readable record decides the shape, a first pass reads the times for the day/month order, and a second
         // normalizes and loads them in batches of `batch_rows` inside the file's transaction.
-        let text = ctx.text;
+        ctx.set_step(0);
         let mut first = None;
-        for_each_record(&text.text, format, |event| match event {
+        for_each_record(&ctx.input(), format, |event| match event {
             RecordEvent::Record(r) => {
                 first = Some(r);
                 Ok(false)
@@ -290,7 +302,7 @@ impl ArtifactParser for UalParser {
         };
         let mut detector = DateOrderDetector::default();
         let mut any_timed = false;
-        for_each_record(&text.text, format, |event| {
+        for_each_record(&ctx.input(), format, |event| {
             ctx.stats.read += 1;
             match event {
                 RecordEvent::Record(r) => {
@@ -301,9 +313,10 @@ impl ArtifactParser for UalParser {
                 }
                 RecordEvent::Error {
                     ordinal,
-                    span,
+                    pos,
+                    snippet,
                     message,
-                } => ctx.parse_error(ordinal, span, &message)?,
+                } => ctx.parse_error_at(ordinal, &pos, &snippet, &message)?,
             }
             Ok(true)
         })?;
@@ -316,24 +329,24 @@ impl ArtifactParser for UalParser {
         let batch = ctx.options.batch_rows.max(1);
         let mut staged = Vec::new();
         let mut loads = Loads::default();
-        for_each_record(&text.text, format, |event| {
+        ctx.set_step(1);
+        for_each_record(&ctx.input(), format, |event| {
             let RecordEvent::Record(r) = event else {
                 return Ok(true);
             };
             match input_of(&r).and_then(|i| normalize_audit(&i, order)) {
                 Ok(rec) => {
-                    let (pos, raw_sha256) = ctx.sighting(r.span);
                     staged.push(StagedUal {
                         ordinal: r.ordinal,
-                        pos,
-                        raw_sha256,
+                        pos: r.sight.pos,
+                        raw_sha256: r.sight.raw_sha256,
                         rec,
                     });
                     if staged.len() >= batch {
                         loads.load(ctx, &mut staged)?;
                     }
                 }
-                Err(msg) => ctx.parse_error(r.ordinal, r.span, &msg)?,
+                Err(msg) => ctx.parse_error_at(r.ordinal, &r.sight.pos, &r.snippet, &msg)?,
             }
             Ok(true)
         })?;

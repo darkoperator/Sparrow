@@ -229,6 +229,25 @@ fn admit_matches_decode() {
 }
 
 #[test]
+fn from_bytes_matches_admit() {
+    let mut checked = 0;
+    for (name, raw) in inputs().into_iter().chain(large_inputs()) {
+        let f = on_disk(&raw);
+        let want = admitted(&f, 4096);
+        let got = Admitted::from_bytes(&f.path, &raw);
+        assert_eq!(format!("{got:?}"), format!("{want:?}"), "{name}");
+        checked += 1;
+    }
+    assert!(checked > 40, "{checked}");
+    // A path that does not exist: no modification time, the rest from the bytes.
+    let raw = b"a,b\n1,2\n";
+    let got = Admitted::from_bytes(std::path::Path::new("/nonexistent/x.csv"), raw);
+    assert_eq!(got.modified, None);
+    assert_eq!(got.raw_len, raw.len() as u64);
+    assert_eq!(got.sha256, sha256_hex(raw));
+}
+
+#[test]
 fn admitted_encodings_cover_every_kind() {
     // Guards against a vacuous oracle comparison: the inputs exercise every encoding and both lossy states.
     let mut seen = std::collections::HashSet::new();

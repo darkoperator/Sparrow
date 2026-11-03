@@ -4,12 +4,12 @@
 
 use crate::db::state_tables::LICENSES;
 use crate::ingest::context::ParseContext;
-use crate::ingest::parser::{ArtifactParser, ParserRegistry};
+use crate::ingest::parser::{ArtifactParser, InputMode, ParserRegistry};
 use crate::normalize::fields::Cell;
 use crate::normalize::ual_shape::get_ci;
 use crate::parsers::stage::{RowDraft, TableRows, load_tables};
 use crate::readers::csv_scan::read_csv;
-use crate::readers::text::{Span, line_spans};
+use crate::readers::text::{DecodedText, Span, line_spans};
 use crate::readers::time::{DateOrder, DateOrderDetector, parse_timestamp};
 use crate::{Error, Result};
 use duckdb::params;
@@ -58,6 +58,11 @@ fn re_invictus() -> &'static Regex {
 fn re_level_prefix() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     cached(&R, r"^\[(\w+)\]\s*(.*)$")
+}
+
+/// The file's decoded text (these parsers read it whole).
+fn whole_text<'a>(ctx: &ParseContext<'a>) -> &'a DecodedText<'a> {
+    ctx.whole().expect("log parsers read the whole text").text
 }
 
 /// Split `text` into entries using `head`, which returns (ts_raw, level, message) for entry lines.
@@ -120,7 +125,8 @@ fn store(
                  VALUES (?, ?, ?, ?, CAST(? AS TIMESTAMPTZ), ?, ?, ?, ?)",
             )?
             .execute(params![key, ctx.collection_id, ctx.file_id, ordinal as i64, ts, e.ts_raw, tz_assumed, e.level, e.message])?;
-        ctx.queue_source("collection_log", &key, ordinal as u64, e.span);
+        let sight = ctx.sighting(e.span);
+        ctx.queue_source("collection_log", &key, ordinal as u64, &sight);
         ctx.stats.read += 1;
         ctx.stats.loaded += 1;
     }
@@ -134,8 +140,12 @@ fn store(
 }
 
 impl ArtifactParser for HawkLogParser {
+    fn input(&self) -> InputMode {
+        InputMode::Whole
+    }
+
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
-        let text = ctx.text;
+        let text = whole_text(ctx);
         let list = entries(&text.text, |line| {
             re_hawk().captures(line).map(|c| {
                 (
@@ -182,8 +192,12 @@ impl ArtifactParser for HawkLogParser {
 }
 
 impl ArtifactParser for InvictusLogParser {
+    fn input(&self) -> InputMode {
+        InputMode::Whole
+    }
+
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
-        let text = ctx.text;
+        let text = whole_text(ctx);
         let list = entries(&text.text, |line| {
             re_invictus().captures(line).map(|c| {
                 let rest = c[2].to_string();
@@ -204,8 +218,12 @@ impl ArtifactParser for InvictusLogParser {
 /// Hawk 3 `<date>_logs.csv`: PSFramework's log export, one entry per row. Timestamp is the
 /// local time of the collecting machine (`yyyy-MM-dd HH:mm:ss.fff`).
 impl ArtifactParser for PsFrameworkLogParser {
+    fn input(&self) -> InputMode {
+        InputMode::Whole
+    }
+
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
-        let table = read_csv(&ctx.text.text);
+        let table = read_csv(&whole_text(ctx).text);
         let has = |h: &str| table.headers.iter().any(|x| x.eq_ignore_ascii_case(h));
         if !(has("Timestamp") && has("Message")) {
             return Err(Error::UnsupportedShape(format!(
@@ -383,7 +401,8 @@ impl HawkMeta {
             let mut rows = TableRows::new(&LICENSES, &["source", "license_tier", "confidence"]);
             rows.push_draft(RowDraft {
                 ordinal: 0,
-                span: *span,
+                sight: ctx.sighting(*span),
+                snippet: ctx.snippet(*span),
                 record_key: format!("{}|hawk_log|{}", ctx.collection_id, tier.to_lowercase()),
                 cells: vec![
                     Cell::text(Some("hawk_log".into())),
@@ -391,7 +410,6 @@ impl HawkMeta {
                     Cell::text(Some("low".into())),
                 ],
                 raw: None,
-                sheet_row: None,
             });
             load_tables(ctx, vec![rows])?;
             // The licence row is a second view of the log entry already counted by `store`;

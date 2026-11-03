@@ -17,11 +17,11 @@ use crate::parsers::records::{
 };
 use crate::parsers::risk::graph_location;
 use crate::parsers::stage::{
-    CellRow, RowDraft, RowOut, SheetRow, TableRows, load_streamed, load_tables, lower,
+    CellRow, LOAD_STREAMED_STEPS, RowDraft, RowOut, TableRows, load_streamed, load_tables, lower,
     read_state_records, reject_at,
 };
 use crate::readers::csv_scan::normalize_headers;
-use crate::readers::text::Span;
+use crate::readers::stream::Sight;
 use crate::readers::time::zone_assumed;
 use crate::readers::xlsx::read_xlsx;
 use crate::{Error, Result};
@@ -86,15 +86,17 @@ const COLS: &[&str] = &[
 /// One record to load: a CSV/JSON record or an XLSX row.
 struct Input {
     ordinal: u64,
-    span: Span,
-    sheet_row: Option<SheetRow>,
+    /// An XLSX row's sighting ([`ParseContext::row_sighting`]) and snippet (its cell texts).
+    sight: Sight,
+    snippet: String,
     map: Map<String, Value>,
     lossy: bool,
 }
 
 /// XLSX rows keyed by the normalized header row (same cleanup as CSV headers).
 fn xlsx_inputs(ctx: &mut ParseContext<'_>) -> Result<Vec<Input>> {
-    let table = read_xlsx(ctx.raw).map_err(Error::Invalid)?;
+    let raw = ctx.whole().expect("an XLSX workbook is read whole").raw;
+    let table = read_xlsx(raw).map_err(Error::Invalid)?;
     let headers = normalize_headers(table.headers.iter().map(String::as_str));
     Ok(table
         .rows
@@ -112,13 +114,11 @@ fn xlsx_inputs(ctx: &mut ParseContext<'_>) -> Result<Vec<Input>> {
                     (key, Value::String(v.clone()))
                 })
                 .collect();
+            let text = row.text();
             Input {
                 ordinal: row.row as u64,
-                span: Span { start: 0, end: 0 },
-                sheet_row: Some(SheetRow {
-                    row: row.row,
-                    text: row.text(),
-                }),
+                sight: ctx.row_sighting(row.row, &text),
+                snippet: text.chars().take(500).collect(),
                 map,
                 lossy: true,
             }
@@ -506,14 +506,14 @@ pub struct SigninsParser;
 /// sign-ins (a 170 MB portal CSV collected as records peaked at 11 GB).
 fn parse_streamed(ctx: &mut ParseContext<'_>) -> Result<()> {
     let format = RecordFormat::of(ctx.rel_path);
-    let text = ctx.text;
+    ctx.set_step(0);
     // What `text_inputs` + `shape_of` decided from the collected records: the shape (portal if any record is one),
     // the first record's columns for the error, and the placeholder count.
     let (mut first, mut portal, mut graph, mut placeholders) = (None, false, false, 0usize);
     // Once a portal record is seen the shape is settled; only the placeholder count can still change, and it is
     // not reported for a portal download or a JSON file, so the scan stops there.
     let count_placeholders = format == RecordFormat::Csv && !ctx.portal_export;
-    for_each_record(&text.text, format, |event| {
+    for_each_record(&ctx.input(), format, |event| {
         if let RecordEvent::Record(r) = event {
             let rec = Rec::new(&r.map, false);
             portal |= rec.has("Date (UTC)") && rec.has("Request ID");
@@ -563,17 +563,21 @@ fn parse_streamed(ctx: &mut ParseContext<'_>) -> Result<()> {
             table: 0,
             draft: RowDraft {
                 ordinal: r.ordinal,
-                span: r.span,
+                sight: r.sight.clone(),
+                snippet: r.snippet.clone(),
                 record_key: key,
                 cells,
                 raw: Some(Value::Object(r.map.clone())),
-                sheet_row: None,
             },
         }]
     })
 }
 
 impl ArtifactParser for SigninsParser {
+    fn steps(&self) -> &'static [&'static str] {
+        LOAD_STREAMED_STEPS
+    }
+
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
         let inputs = if format_from_path(ctx.rel_path) == FileFormat::Xlsx {
             xlsx_inputs(ctx)?
@@ -598,8 +602,8 @@ impl ArtifactParser for SigninsParser {
                 reject_at(
                     ctx,
                     i.ordinal,
-                    i.span,
-                    i.sheet_row.as_ref(),
+                    &i.sight.pos,
+                    &i.snippet,
                     "sign-in has no Id / Request ID",
                 )?;
                 continue;
@@ -610,11 +614,11 @@ impl ArtifactParser for SigninsParser {
             };
             rows.push_draft(RowDraft {
                 ordinal: i.ordinal,
-                span: i.span,
+                sight: i.sight,
+                snippet: i.snippet,
                 record_key: key,
                 cells,
                 raw: Some(Value::Object(i.map)),
-                sheet_row: i.sheet_row,
             });
         }
         load_tables(ctx, vec![rows])

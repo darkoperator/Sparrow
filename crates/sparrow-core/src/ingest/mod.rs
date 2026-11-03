@@ -13,11 +13,12 @@ use crate::discovery::{
     Classification, CollectionFile, DiscoveredCollection, FileFormat, Registry, SNIFF_BYTES, Tool,
     canonical_root_string, discover_collections, format_from_path, list_collection_files,
 };
-use crate::hash::{Sha256Stream, sha256_hex};
-use crate::ingest::context::{FileStats, ParseContext};
-use crate::ingest::parser::ParserRegistry;
+use crate::hash::Sha256Stream;
+use crate::ingest::context::{FileStats, ParseContext, RecordSource, WholeText};
+use crate::ingest::parser::{InputMode, ParserRegistry};
 use crate::ingest::supersede::{Handled, processing_key, truncation_warning};
-use crate::readers::text::{DecodedText, LineIndex, decode, is_blank_content};
+use crate::readers::stream::Admitted;
+use crate::readers::text::{DecodedText, LineIndex, decode, is_blank_content, lossy_warning};
 use crate::readers::time::{DateOrder, ParsedTime, parse_timestamp};
 use crate::{Case, Error, Result, VERSION};
 use duckdb::{Connection, OptionalExt, params};
@@ -1223,25 +1224,23 @@ fn ingest_file_inner(
         "file: read"
     });
     let content = if streamed {
-        stream_file(abs, STREAM_CHUNK).map(|s| (Vec::new(), s))
+        stream_file(abs, STREAM_CHUNK).map(|s| (Vec::new(), None, s))
     } else {
         std::fs::read(abs).map(|raw| {
-            let blank = is_blank_content(&raw);
-            let sha256 = {
-                let _t = timing::span("file: sha256");
-                sha256_hex(&raw)
+            // The hash, blank flag and encoding decision, as admission of the file would make them.
+            let admitted = {
+                let _t = timing::span("file: sha256 + encoding (admit)");
+                Admitted::from_bytes(abs, &raw)
             };
-            (
-                raw,
-                Streamed {
-                    sha256,
-                    head: Vec::new(),
-                    blank,
-                },
-            )
+            let part = Streamed {
+                sha256: admitted.sha256.clone(),
+                head: Vec::new(),
+                blank: admitted.blank,
+            };
+            (raw, Some(admitted), part)
         })
     };
-    let (raw, streamed_part) = match content {
+    let (raw, admitted, streamed_part) = match content {
         Ok(c) => c,
         Err(e) => {
             return record_simple(
@@ -1357,19 +1356,38 @@ fn ingest_file_inner(
             .map(Outcome::plain);
     };
 
+    let admitted = admitted.expect("a file that is parsed was read whole");
+    // The whole text is decoded only for a parser that reads it whole, a workbook and a Format-List file; other
+    // parsers read the records in passes over the bytes.
+    let whole_mode = parser.input() == InputMode::Whole
+        || matches!(nf.format, FileFormat::Xlsx | FileFormat::Txt);
     // XLSX is a zip: parsers read it from the raw bytes, so it is not decoded.
     let t_decode = timing::span("file: decode");
-    let decoded = if nf.format == FileFormat::Xlsx {
-        DecodedText::binary()
+    let decoded = if !whole_mode {
+        None
+    } else if nf.format == FileFormat::Xlsx {
+        Some(DecodedText::binary())
     } else {
-        decode(&raw)
+        Some(decode(&raw))
     };
     drop(t_decode);
-    nf.encoding = (nf.format != FileFormat::Xlsx).then(|| decoded.encoding.as_str());
-    let decode_warning = decoded.lossy_warning();
-    let index = {
+    nf.encoding = (nf.format != FileFormat::Xlsx).then(|| admitted.encoding.as_str());
+    let decode_warning = if nf.format == FileFormat::Xlsx {
+        None
+    } else {
+        lossy_warning(admitted.encoding, admitted.lossy)
+    };
+    let index = decoded.as_ref().map(|d| {
         let _t = timing::span("file: line index");
-        LineIndex::new(&decoded.text)
+        LineIndex::new(&d.text)
+    });
+    let whole = match (&decoded, &index) {
+        (Some(text), Some(index)) => Some(WholeText {
+            raw: &raw,
+            text,
+            index,
+        }),
+        _ => None,
     };
     let t_row = timing::span("file: begin + stale rows + source_files row");
     let tx = case.conn_mut().transaction()?;
@@ -1382,9 +1400,9 @@ fn ingest_file_inner(
         file_id,
         rel,
         class.subject.as_deref(),
-        &raw,
-        &decoded,
-        &index,
+        &admitted,
+        RecordSource::Memory(&raw),
+        whole,
         opts,
     );
     ctx.date_hint = job.date_hint;
@@ -1464,6 +1482,7 @@ fn ingest_file_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hash::sha256_hex;
 
     /// What the whole-file path computes: (sha256, head, blank).
     fn whole(bytes: &[u8]) -> (String, Vec<u8>, bool) {

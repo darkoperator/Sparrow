@@ -6,7 +6,7 @@
 use crate::Result;
 use crate::db::state_tables::{AUDIT_CONFIG, TENANT_SETTINGS};
 use crate::ingest::context::ParseContext;
-use crate::ingest::parser::{ArtifactParser, ParserRegistry};
+use crate::ingest::parser::{ArtifactParser, InputMode, ParserRegistry};
 use crate::normalize::fields::{Cell, Rec};
 use crate::parsers::records::RecordFormat;
 use crate::parsers::stage::{
@@ -69,6 +69,10 @@ pub struct ConfigParser {
 }
 
 impl ArtifactParser for ConfigParser {
+    fn input(&self) -> InputMode {
+        InputMode::Whole
+    }
+
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
         let format = match RecordFormat::of(ctx.rel_path) {
             RecordFormat::FormatList => RecordFormat::FormatListObject,
@@ -79,11 +83,12 @@ impl ArtifactParser for ConfigParser {
         let mut audit = TableRows::new(&AUDIT_CONFIG, self.audit_columns);
         for r in &records {
             for (name, value) in &r.map {
-                let span = r
-                    .field_spans
+                let sight = r
+                    .field_sights
                     .iter()
                     .find(|(k, _)| k == name)
-                    .map_or(r.span, |(_, s)| *s);
+                    .map_or(&r.sight, |(_, s)| s)
+                    .clone();
                 let value = match value {
                     Value::Null => None,
                     Value::String(s) if s.trim().is_empty() => None,
@@ -91,7 +96,9 @@ impl ArtifactParser for ConfigParser {
                 };
                 settings.push_draft(RowDraft {
                     ordinal: r.ordinal,
-                    span,
+                    sight,
+                    // Text and JSON cells always stage, so a setting row never needs a snippet; the record's stands in.
+                    snippet: r.snippet.clone(),
                     record_key: setting_key(ctx.collection_id, self.source, name),
                     cells: vec![
                         Cell::text(Some(self.source.into())),
@@ -99,7 +106,6 @@ impl ArtifactParser for ConfigParser {
                         Cell::json(value),
                     ],
                     raw: None,
-                    sheet_row: None,
                 });
             }
             if !self.audit_columns.is_empty() {
@@ -141,6 +147,10 @@ const SECURITY_DEFAULTS_SOURCE: &str = "entra_security_defaults";
 pub struct SecurityDefaultsParser;
 
 impl ArtifactParser for SecurityDefaultsParser {
+    fn input(&self) -> InputMode {
+        InputMode::Whole
+    }
+
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
         let format = RecordFormat::of(ctx.rel_path);
         let records = read_state_records(ctx, format)?;
@@ -163,7 +173,8 @@ impl ArtifactParser for SecurityDefaultsParser {
                 };
                 settings.push_draft(RowDraft {
                     ordinal: r.ordinal,
-                    span: r.span,
+                    sight: r.sight.clone(),
+                    snippet: r.snippet.clone(),
                     record_key: setting_key(ctx.collection_id, SECURITY_DEFAULTS_SOURCE, name),
                     cells: vec![
                         Cell::text(Some(SECURITY_DEFAULTS_SOURCE.into())),
@@ -171,7 +182,6 @@ impl ArtifactParser for SecurityDefaultsParser {
                         Cell::json(value),
                     ],
                     raw: None,
-                    sheet_row: None,
                 });
             }
             let rec = Rec::new(&r.map, format.lossy());

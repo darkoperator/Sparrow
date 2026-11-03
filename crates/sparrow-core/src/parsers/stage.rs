@@ -9,27 +9,21 @@ use crate::normalize::fields::{Cell, Rec};
 use crate::parsers::records::{
     RecordEvent, RecordFormat, SourceRecord, for_each_record, placeholder_warning, read_records,
 };
-use crate::readers::text::Span;
+use crate::readers::stream::Sight;
+use crate::readers::text::SourcePos;
 use crate::readers::time::{DateOrder, DateOrderDetector, parse_timestamp};
 use crate::{Error, Result};
 use serde_json::{Map, Value};
 
-/// A spreadsheet row (XLSX has no text lines): sheet row number and the row's cell texts
-/// joined by tabs.
-#[derive(Debug, Clone)]
-pub struct SheetRow {
-    pub row: u32,
-    pub text: String,
-}
-
 pub struct RowDraft {
     pub ordinal: u64,
-    pub span: Span,
+    /// Where the row's record lives (an XLSX row: [`ParseContext::row_sighting`]).
+    pub sight: Sight,
+    /// The record's `parse_errors.raw_snippet`, should a cell fail to stage.
+    pub snippet: String,
     pub record_key: String,
     pub cells: Vec<Cell>,
     pub raw: Option<Value>,
-    /// XLSX rows: provenance is the sheet row (`span` is then unused).
-    pub sheet_row: Option<SheetRow>,
 }
 
 /// Rows of one table read from one file; `cells` of each row align with `columns`.
@@ -52,11 +46,11 @@ impl TableRows {
     pub fn push(&mut self, r: &SourceRecord, record_key: String, cells: Vec<Cell>) {
         self.push_draft(RowDraft {
             ordinal: r.ordinal,
-            span: r.span,
+            sight: r.sight.clone(),
+            snippet: r.snippet.clone(),
             record_key,
             cells,
             raw: Some(Value::Object(r.map.clone())),
-            sheet_row: None,
         });
     }
 
@@ -113,7 +107,7 @@ pub fn lower(v: Option<String>) -> Option<String> {
 
 /// Count `r` as read and record why it could not be loaded.
 pub fn reject(ctx: &mut ParseContext<'_>, r: &SourceRecord, msg: &str) -> Result<()> {
-    reject_at(ctx, r.ordinal, r.span, None, msg)
+    reject_at(ctx, r.ordinal, &r.sight.pos, &r.snippet, msg)
 }
 
 /// [`reject`] a record the collector lost (it wrote a failure placeholder, not data): the message is prefixed with
@@ -128,19 +122,16 @@ pub fn reject_collector_loss(
     Ok(())
 }
 
-/// Count a record as read and record why it could not be loaded, at its span or sheet row.
+/// Count a record as read and record why it could not be loaded, at its position with its snippet.
 pub fn reject_at(
     ctx: &mut ParseContext<'_>,
     ordinal: u64,
-    span: Span,
-    sheet_row: Option<&SheetRow>,
+    pos: &SourcePos,
+    snippet: &str,
     msg: &str,
 ) -> Result<()> {
     ctx.stats.read += 1;
-    match sheet_row {
-        Some(s) => ctx.row_parse_error(ordinal, s.row, &s.text, msg),
-        None => ctx.parse_error(ordinal, span, msg),
-    }
+    ctx.parse_error_at(ordinal, pos, snippet, msg)
 }
 
 /// Cells addressed by column name, in the order of `columns`; unset columns stay NULL.
@@ -238,14 +229,10 @@ fn stage_draft(
     match cells {
         Ok(cells) => {
             let (cells, tz_assumed): (Vec<_>, Vec<_>) = cells.into_iter().unzip();
-            let (pos, raw_sha256) = match &r.sheet_row {
-                Some(s) => ctx.row_sighting(s.row, &s.text),
-                None => ctx.sighting(r.span),
-            };
             Ok(Some(StagedRow {
                 ordinal: r.ordinal,
-                pos,
-                raw_sha256,
+                pos: r.sight.pos,
+                raw_sha256: r.sight.raw_sha256,
                 record_key: r.record_key,
                 cells,
                 raw: r.raw.map(|v| v.to_string()),
@@ -254,10 +241,7 @@ fn stage_draft(
         }
         Err(msg) => {
             let msg = format!("{}: {msg}", spec.table);
-            match &r.sheet_row {
-                Some(s) => ctx.row_parse_error(r.ordinal, s.row, &s.text, &msg)?,
-                None => ctx.parse_error(r.ordinal, r.span, &msg)?,
-            }
+            ctx.parse_error_at(r.ordinal, &r.sight.pos, &r.snippet, &msg)?;
             Ok(None)
         }
     }
@@ -275,6 +259,9 @@ fn count_load(ctx: &mut ParseContext<'_>, spec: &TableSpec, out: LoadOutcome) {
     }
 }
 
+/// The `steps()` of a parser that loads with [`load_streamed`] (and of UAL, whose passes are the same).
+pub const LOAD_STREAMED_STEPS: &[&str] = &["Checking dates", "Loading records"];
+
 /// What one record gives [`load_streamed`].
 pub enum RowOut {
     /// A row for `tables[table]`.
@@ -290,7 +277,8 @@ pub enum RowOut {
 /// across batches as within one. `rows_of` must be pure: it runs twice per record. `tail` are rows the caller built
 /// before (each `(table, draft)`; e.g. per-message rows collapsed from the records): their times count for the order
 /// and they are staged after the streamed rows, as [`load_tables`] would after the earlier tables. Counts, errors and
-/// warnings are those of [`load_tables`] over the same rows.
+/// warnings are those of [`load_tables`] over the same rows. The two passes are steps 0 and 1 of the parser
+/// ([`LOAD_STREAMED_STEPS`]).
 pub fn load_streamed(
     ctx: &mut ParseContext<'_>,
     format: RecordFormat,
@@ -298,22 +286,23 @@ pub fn load_streamed(
     tail: Vec<(usize, RowDraft)>,
     mut rows_of: impl FnMut(&SourceRecord) -> Vec<RowOut>,
 ) -> Result<()> {
-    let text = ctx.text;
     let mut detector = DateOrderDetector::default();
     for cell in tail.iter().flat_map(|(_, d)| &d.cells) {
         if let Cell::Time(s) = cell {
             detector.observe(s);
         }
     }
-    for_each_record(&text.text, format, |event| {
+    ctx.set_step(0);
+    for_each_record(&ctx.input(), format, |event| {
         match event {
             RecordEvent::Error {
                 ordinal,
-                span,
+                pos,
+                snippet,
                 message,
             } => {
                 ctx.stats.read += 1;
-                ctx.parse_error(ordinal, span, &message)?;
+                ctx.parse_error_at(ordinal, &pos, &snippet, &message)?;
             }
             RecordEvent::Record(r) => {
                 for out in rows_of(&r) {
@@ -353,7 +342,8 @@ pub fn load_streamed(
             rows.clear();
             Ok::<(), Error>(())
         };
-    for_each_record(&text.text, format, |event| {
+    ctx.set_step(1);
+    for_each_record(&ctx.input(), format, |event| {
         let RecordEvent::Record(r) = event else {
             return Ok(true);
         };

@@ -2,7 +2,7 @@ use sparrow_core::discovery::runs::{earliest_run_stamp, run_dirs};
 use sparrow_core::discovery::{Tool, discover_collections};
 use sparrow_core::fixtures;
 use sparrow_core::ingest::context::ParseContext;
-use sparrow_core::ingest::parser::{ArtifactParser, ParserRegistry};
+use sparrow_core::ingest::parser::{ArtifactParser, InputMode, ParserRegistry};
 use sparrow_core::ingest::{
     EMPTY_FILE_WARNING, FileReport, FileStatus, IngestOptions, IngestReport, ingest_path,
 };
@@ -13,11 +13,16 @@ use std::path::{Path, PathBuf};
 /// Every physical line is a record (stands in for the UAL parser until Task 3).
 struct LinesParser;
 impl ArtifactParser for LinesParser {
+    fn input(&self) -> InputMode {
+        InputMode::Whole
+    }
+
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
-        let text = ctx.text;
+        let text = ctx.whole().unwrap().text;
         for (n, span) in line_spans(&text.text).into_iter().enumerate() {
             let key = format!("{}:{}", ctx.file_id, n);
-            ctx.record_source("test_lines", &key, n as u64, span)?;
+            let sight = ctx.sighting(span);
+            ctx.record_source("test_lines", &key, n as u64, &sight)?;
             ctx.stats.read += 1;
             ctx.stats.loaded += 1;
         }

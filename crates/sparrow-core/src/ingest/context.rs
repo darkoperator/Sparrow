@@ -4,6 +4,7 @@ use crate::Error;
 use crate::Result;
 use crate::hash::sha256_hex;
 use crate::ingest::IngestOptions;
+use crate::readers::stream::{Admitted, CHUNK_BYTES, Sight, TextStream};
 use crate::readers::text::{DecodedText, LineIndex, OffsetMapper, SourcePos, Span, locate};
 use crate::readers::time::{DateOrder, DateOrderDetector};
 use duckdb::{Connection, params};
@@ -19,15 +20,69 @@ pub struct FileStats {
     pub collector_lost: u64,
 }
 
+/// A file's whole content in memory: its raw bytes, decoded text and line index. Parsers that read the whole text
+/// (`InputMode::Whole`), XLSX workbooks and Format-List files get it.
+#[derive(Clone, Copy)]
+pub struct WholeText<'a> {
+    pub raw: &'a [u8],
+    pub text: &'a DecodedText<'a>,
+    pub index: &'a LineIndex,
+}
+
+/// Where a pass over a file's records reads its bytes.
+#[derive(Clone, Copy)]
+pub enum RecordSource<'a> {
+    /// The file's content, already read into memory.
+    Memory(&'a [u8]),
+}
+
+/// What a pass over a file's records needs ([`crate::parsers::records::for_each_record`]): the admitted file, where
+/// its bytes come from and the parser step the pass belongs to. Taken from [`ParseContext::input`]; it does not
+/// borrow the context, so a pass can write through the context as it reads.
+#[derive(Clone, Copy)]
+pub struct RecordInput<'a> {
+    admitted: &'a Admitted,
+    source: RecordSource<'a>,
+    step: usize,
+}
+
+impl<'a> RecordInput<'a> {
+    pub fn admitted(&self) -> &'a Admitted {
+        self.admitted
+    }
+
+    /// Index into the parser's `steps()` of the step this pass belongs to.
+    pub fn step(&self) -> usize {
+        self.step
+    }
+
+    /// A new pass over the file's text from its first byte.
+    pub(crate) fn open(&self) -> std::io::Result<TextStream> {
+        // Sightings do not depend on the read size; a small file needs no full-size buffer.
+        let chunk = CHUNK_BYTES.min(
+            usize::try_from(self.admitted.raw_len)
+                .unwrap_or(usize::MAX)
+                .saturating_add(1),
+        );
+        match self.source {
+            RecordSource::Memory(raw) => {
+                Ok(TextStream::from_bytes(raw.to_vec(), self.admitted, chunk))
+            }
+        }
+    }
+
+    /// What a pass reports for the raw bytes it reads; false stops it. (Nothing to report to yet.)
+    pub(crate) fn on_read(&self) -> impl FnMut(u64) -> bool + use<> {
+        |_| true
+    }
+}
+
 pub struct ParseContext<'a> {
     pub conn: &'a Connection,
     pub collection_id: i64,
     pub file_id: i64,
     pub rel_path: &'a str,
     pub subject: Option<&'a str>,
-    pub raw: &'a [u8],
-    pub text: &'a DecodedText<'a>,
-    pub index: &'a LineIndex,
     pub options: &'a IngestOptions,
     pub stats: FileStats,
     /// Day/month order the other files of this collection proved (retry pass only).
@@ -43,7 +98,12 @@ pub struct ParseContext<'a> {
     pub portal_export: bool,
     orders_seen: Vec<DateOrder>,
     warnings: Vec<String>,
-    mapper: OffsetMapper,
+    admitted: &'a Admitted,
+    source: RecordSource<'a>,
+    whole: Option<WholeText<'a>>,
+    /// Raw offsets of the whole text (with `whole`).
+    mapper: Option<OffsetMapper>,
+    step: usize,
     /// Sightings queued by [`ParseContext::queue_source`], written by [`ParseContext::flush_sources`].
     pending_sources: Vec<PendingSource>,
 }
@@ -58,6 +118,8 @@ struct PendingSource {
 }
 
 impl<'a> ParseContext<'a> {
+    /// `whole` is the file's whole content when the parser reads it whole (see [`WholeText`]); record passes read
+    /// `source` either way.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         conn: &'a Connection,
@@ -65,9 +127,9 @@ impl<'a> ParseContext<'a> {
         file_id: i64,
         rel_path: &'a str,
         subject: Option<&'a str>,
-        raw: &'a [u8],
-        text: &'a DecodedText<'a>,
-        index: &'a LineIndex,
+        admitted: &'a Admitted,
+        source: RecordSource<'a>,
+        whole: Option<WholeText<'a>>,
         options: &'a IngestOptions,
     ) -> Self {
         ParseContext {
@@ -76,9 +138,6 @@ impl<'a> ParseContext<'a> {
             file_id,
             rel_path,
             subject,
-            raw,
-            text,
-            index,
             options,
             stats: FileStats::default(),
             date_hint: None,
@@ -87,69 +146,103 @@ impl<'a> ParseContext<'a> {
             portal_export: false,
             orders_seen: Vec::new(),
             warnings: Vec::new(),
-            mapper: OffsetMapper::new(text, raw.len() as u64),
+            admitted,
+            source,
+            whole,
+            mapper: whole.map(|w| OffsetMapper::new(w.text, w.raw.len() as u64)),
+            step: 0,
             pending_sources: Vec::new(),
         }
     }
 
-    pub fn locate(&mut self, span: Span) -> SourcePos {
-        locate(&self.text.text, self.index, &mut self.mapper, span)
+    /// What a pass over the file's records reads, for the current step.
+    pub fn input(&self) -> RecordInput<'a> {
+        RecordInput {
+            admitted: self.admitted,
+            source: self.source,
+            step: self.step,
+        }
     }
 
-    fn raw_sha256(&self, pos: &SourcePos) -> String {
+    pub fn admitted(&self) -> &'a Admitted {
+        self.admitted
+    }
+
+    /// The whole content, for whole-mode parsers, XLSX workbooks and Format-List files; `None` otherwise.
+    pub fn whole(&self) -> Option<&WholeText<'a>> {
+        self.whole.as_ref()
+    }
+
+    /// The file's first bytes decoded, for sniffs of its content.
+    pub fn head_text(&self) -> String {
+        self.admitted.head_text()
+    }
+
+    /// The parser step (index into its `steps()`) the next record passes belong to.
+    pub fn set_step(&mut self, step: usize) {
+        self.step = step;
+    }
+
+    fn whole_text(&self) -> WholeText<'a> {
+        self.whole
+            .expect("whole-text helper used on a file the parser reads streamed")
+    }
+
+    fn locate(&mut self, span: Span) -> SourcePos {
+        let w = self.whole_text();
+        let mapper = self
+            .mapper
+            .as_mut()
+            .expect("mapper is set with the whole text");
+        locate(&w.text.text, w.index, mapper, span)
+    }
+
+    /// Position and raw-bytes SHA-256 of `span` of the whole text. Whole text only: panics without [`Self::whole`].
+    pub fn sighting(&mut self, span: Span) -> Sight {
+        let pos = self.locate(span);
+        let raw = self.whole_text().raw;
         let start = pos.byte_offset as usize;
         let end = (pos.byte_offset + pos.byte_length) as usize;
-        debug_assert!(end <= self.raw.len(), "record range beyond end of file");
-        sha256_hex(&self.raw[start.min(self.raw.len())..end.min(self.raw.len())])
+        debug_assert!(end <= raw.len(), "record range beyond end of file");
+        Sight {
+            pos,
+            raw_sha256: sha256_hex(&raw[start.min(raw.len())..end.min(raw.len())]),
+        }
     }
 
-    /// Position and raw-bytes SHA-256 of a record, for bulk loaders that write
-    /// `record_sources` themselves.
-    pub fn sighting(&mut self, span: Span) -> (SourcePos, String) {
-        let pos = self.locate(span);
-        let hash = self.raw_sha256(&pos);
-        (pos, hash)
+    /// The `parse_errors.raw_snippet` of `span` of the whole text: at most 500 chars, the span clamped to the text.
+    /// Whole text only: panics without [`Self::whole`].
+    pub fn snippet(&self, span: Span) -> String {
+        let text = &self.whole_text().text.text;
+        let span = clamp_span(text, span);
+        text[span.start..span.end].chars().take(500).collect()
     }
 
     /// Provenance of spreadsheet row `row` (1-based sheet row): `line_start = line_end = row`,
     /// the whole file as the byte range, and the SHA-256 of `row_text` (the row's cell texts
     /// joined by tabs), which `verify` recomputes from the workbook.
-    pub fn row_sighting(&self, row: u32, row_text: &str) -> (SourcePos, String) {
-        (
-            SourcePos {
+    pub fn row_sighting(&self, row: u32, row_text: &str) -> Sight {
+        Sight {
+            pos: SourcePos {
                 line_start: row,
                 line_end: row,
                 byte_offset: 0,
-                byte_length: self.raw.len() as u64,
+                byte_length: self.admitted.raw_len,
             },
-            sha256_hex(row_text.as_bytes()),
-        )
-    }
-
-    /// Record-level failure of spreadsheet row `row`. Increments `stats.error`.
-    pub fn row_parse_error(
-        &mut self,
-        ordinal: u64,
-        row: u32,
-        row_text: &str,
-        message: &str,
-    ) -> Result<()> {
-        let (pos, _) = self.row_sighting(row, row_text);
-        let snippet: String = row_text.chars().take(500).collect();
-        self.insert_parse_error(ordinal, &pos, message, &snippet)
+            raw_sha256: sha256_hex(row_text.as_bytes()),
+        }
     }
 
     /// Queue the sighting [`ParseContext::record_source`] would write, for [`ParseContext::flush_sources`]. A parser
     /// that matches thousands of rows against stored records queues them and flushes once: one single-row
     /// `INSERT ... ON CONFLICT` into the `record_sources` primary key costs about a millisecond.
-    pub fn queue_source(&mut self, table: &str, record_key: &str, ordinal: u64, span: Span) {
-        let (pos, sha256) = self.sighting(span);
+    pub fn queue_source(&mut self, table: &str, record_key: &str, ordinal: u64, sight: &Sight) {
         self.pending_sources.push(PendingSource {
             table: table.to_string(),
             key: record_key.to_string(),
             ordinal: ordinal as i64,
-            pos,
-            sha256,
+            pos: sight.pos,
+            sha256: sight.raw_sha256.clone(),
         });
     }
 
@@ -210,15 +303,15 @@ impl<'a> ParseContext<'a> {
         Ok(())
     }
 
-    /// Record that `record_key` in `table` was seen at `span` of this file.
+    /// Record that `record_key` in `table` was seen at `sight` of this file.
     pub fn record_source(
         &mut self,
         table: &str,
         record_key: &str,
         ordinal: u64,
-        span: Span,
+        sight: &Sight,
     ) -> Result<SourcePos> {
-        let (pos, hash) = self.sighting(span);
+        let (pos, hash) = (sight.pos, &sight.raw_sha256);
         self.conn
             .prepare_cached(
                 "INSERT INTO record_sources (table_name, record_key, file_id, record_ordinal, line_start, line_end,
@@ -239,18 +332,25 @@ impl<'a> ParseContext<'a> {
         Ok(pos)
     }
 
-    /// Record a record-level parse failure. Increments `stats.error`.
+    /// Record a record-level parse failure at `span` of the whole text. Increments `stats.error`. Whole text only:
+    /// panics without [`Self::whole`].
     pub fn parse_error(&mut self, ordinal: u64, span: Span, message: &str) -> Result<()> {
-        let text = &self.text.text;
-        let end = floor_char_boundary(text, span.end.min(text.len()));
-        let start = floor_char_boundary(text, span.start.min(end));
-        let span = Span { start, end };
+        let span = clamp_span(&self.whole_text().text.text, span);
         let pos = self.locate(span);
-        let snippet: String = self.text.text[span.start..span.end]
-            .chars()
-            .take(500)
-            .collect();
+        let snippet = self.snippet(span);
         self.insert_parse_error(ordinal, &pos, message, &snippet)
+    }
+
+    /// Record a record-level parse failure at `pos`, with its `snippet` (at most 500 chars of the record's text).
+    /// Increments `stats.error`.
+    pub fn parse_error_at(
+        &mut self,
+        ordinal: u64,
+        pos: &SourcePos,
+        snippet: &str,
+        message: &str,
+    ) -> Result<()> {
+        self.insert_parse_error(ordinal, pos, message, snippet)
     }
 
     /// Write one `parse_errors` row and count it in `stats.error`.
@@ -342,6 +442,13 @@ impl<'a> ParseContext<'a> {
         }
         (s, warnings)
     }
+}
+
+/// `span` clamped to `text` and to its char boundaries.
+fn clamp_span(text: &str, span: Span) -> Span {
+    let end = floor_char_boundary(text, span.end.min(text.len()));
+    let start = floor_char_boundary(text, span.start.min(end));
+    Span { start, end }
 }
 
 /// Largest char boundary of `s` at or below `i`.

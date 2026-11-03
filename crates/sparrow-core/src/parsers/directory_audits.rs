@@ -287,11 +287,11 @@ impl ArtifactParser for DirectoryAuditsParser {
                     .collect();
                 rows.push_draft(RowDraft {
                     ordinal: r.ordinal,
-                    span: r.span,
+                    sight: r.sight.clone(),
+                    snippet: r.snippet.clone(),
                     record_key: key,
                     cells: cells_out,
                     raw: Some(Value::Object(raw)),
-                    sheet_row: None,
                 });
                 continue;
             }

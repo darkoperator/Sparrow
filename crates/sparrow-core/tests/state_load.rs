@@ -4,11 +4,12 @@ use sparrow_core::db::state_tables::{
     SIGNINS,
 };
 use sparrow_core::ingest::IngestOptions;
-use sparrow_core::ingest::context::ParseContext;
+use sparrow_core::ingest::context::{ParseContext, RecordSource, WholeText};
 use sparrow_core::ingest::state::{LoadOutcome, StagedRow, load_rows};
 use sparrow_core::normalize::fields::Cell;
 use sparrow_core::parsers::records::SourceRecord;
 use sparrow_core::parsers::stage::{TableRows, load_tables};
+use sparrow_core::readers::stream::Admitted;
 use sparrow_core::readers::text::{LineIndex, SourcePos, Span, decode};
 use sparrow_core::{Case, Error};
 
@@ -440,12 +441,14 @@ fn unknown_column_is_an_error() {
     assert!(matches!(err, Error::Invalid(_)), "{err}");
 }
 
-fn record(ord: u64, start: usize, end: usize) -> SourceRecord {
+fn record(ctx: &mut ParseContext<'_>, ord: u64, start: usize, end: usize) -> SourceRecord {
+    let span = Span { start, end };
     SourceRecord {
         ordinal: ord,
-        span: Span { start, end },
+        sight: ctx.sighting(span),
         map: serde_json::Map::new(),
-        field_spans: Vec::new(),
+        field_sights: Vec::new(),
+        snippet: ctx.snippet(span),
     }
 }
 
@@ -458,20 +461,25 @@ fn load_tables_counts_rows_and_turns_bad_times_into_parse_errors() {
     let text = decode(raw);
     let index = LineIndex::new(&text.text);
     let opts = IngestOptions::default();
+    let admitted = Admitted::from_bytes(std::path::Path::new("Tenant/RemoteDomain.json"), raw);
     let mut ctx = ParseContext::new(
         case.conn(),
         c,
         f,
         "Tenant/RemoteDomain.json",
         None,
-        raw,
-        &text,
-        &index,
+        &admitted,
+        RecordSource::Memory(raw),
+        Some(WholeText {
+            raw,
+            text: &text,
+            index: &index,
+        }),
         &opts,
     );
     let mut t = TableRows::new(&REMOTE_DOMAINS, &["domain_name", "when_changed"]);
     t.push(
-        &record(0, 0, 8),
+        &record(&mut ctx, 0, 0, 8),
         "a.example".into(),
         vec![
             Cell::text(Some("a.example".into())),
@@ -479,7 +487,7 @@ fn load_tables_counts_rows_and_turns_bad_times_into_parse_errors() {
         ],
     );
     t.push(
-        &record(1, 9, 17),
+        &record(&mut ctx, 1, 9, 17),
         "b.example".into(),
         vec![
             Cell::text(Some("b.example".into())),
@@ -510,20 +518,25 @@ fn load_tables_fails_the_file_when_every_date_is_ambiguous() {
     let text = decode(raw);
     let index = LineIndex::new(&text.text);
     let opts = IngestOptions::default();
+    let admitted = Admitted::from_bytes(std::path::Path::new("Tenant/RemoteDomain.json"), raw);
     let mut ctx = ParseContext::new(
         case.conn(),
         c,
         f,
         "Tenant/RemoteDomain.json",
         None,
-        raw,
-        &text,
-        &index,
+        &admitted,
+        RecordSource::Memory(raw),
+        Some(WholeText {
+            raw,
+            text: &text,
+            index: &index,
+        }),
         &opts,
     );
     let mut t = TableRows::new(&REMOTE_DOMAINS, &["domain_name", "when_changed"]);
     t.push(
-        &record(0, 0, 8),
+        &record(&mut ctx, 0, 0, 8),
         "a.example".into(),
         vec![
             Cell::text(Some("a.example".into())),

@@ -4,7 +4,7 @@
 
 use crate::db::state_tables::COLLECTOR_FLAGS;
 use crate::ingest::context::ParseContext;
-use crate::ingest::parser::{ArtifactParser, ParserRegistry};
+use crate::ingest::parser::{ArtifactParser, InputMode, ParserRegistry};
 use crate::normalize::fields::{Cell, Rec};
 use crate::normalize::net::normalize_upn;
 use crate::normalize::ual_shape::{detect_shape, to_audit};
@@ -227,6 +227,10 @@ const FLAG_COLS: &[&str] = &[
 pub struct InvestigateFileParser;
 
 impl ArtifactParser for InvestigateFileParser {
+    fn input(&self) -> InputMode {
+        InputMode::Whole
+    }
+
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
         let rel = ctx.rel_path;
         let file = rel.rsplit('/').next().unwrap_or(rel);
@@ -382,8 +386,12 @@ fn rel_guess(path: &str) -> Option<String> {
 pub struct InvestigateTxtParser;
 
 impl ArtifactParser for InvestigateTxtParser {
+    fn input(&self) -> InputMode {
+        InputMode::Whole
+    }
+
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
-        let text = ctx.text;
+        let text = ctx.whole().expect("_Investigate.txt is read whole").text;
         let list = entries(&text.text);
         let mut detector = DateOrderDetector::default();
         for ts in list.iter().filter_map(|e| e.ts.as_deref()) {
@@ -425,7 +433,8 @@ impl ArtifactParser for InvestigateTxtParser {
             let key = flag_key(&[flag_type, e.ts.as_deref().unwrap_or(""), &e.message]);
             rows.push_draft(RowDraft {
                 ordinal: i as u64,
-                span: e.span,
+                sight: ctx.sighting(e.span),
+                snippet: ctx.snippet(e.span),
                 record_key: key,
                 cells: vec![
                     Cell::int(Some(file_id)),
@@ -438,7 +447,6 @@ impl ArtifactParser for InvestigateTxtParser {
                     Cell::text(reference),
                 ],
                 raw: Some(json!({ "line": &text.text[e.span.start..e.span.end] })),
-                sheet_row: None,
             });
         }
         if unparsed > 0 {

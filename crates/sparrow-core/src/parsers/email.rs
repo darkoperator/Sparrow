@@ -6,7 +6,7 @@
 use crate::Result;
 use crate::db::state_tables::EMAIL_ARTIFACTS;
 use crate::ingest::context::ParseContext;
-use crate::ingest::parser::{ArtifactParser, ParserRegistry};
+use crate::ingest::parser::{ArtifactParser, InputMode, ParserRegistry};
 use crate::normalize::fields::Cell;
 use crate::normalize::net::normalize_ip;
 use crate::parsers::stage::{CellRow, RowDraft, TableRows, load_tables};
@@ -408,8 +408,13 @@ const EMAIL_COLS: &[&str] = &[
 pub struct EmailParser;
 
 impl ArtifactParser for EmailParser {
+    fn input(&self) -> InputMode {
+        InputMode::Whole
+    }
+
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
-        let text = &*ctx.text.text;
+        let whole = *ctx.whole().expect("email files are read whole");
+        let text = &*whole.text.text;
         let (headers, header_end) = parse_header_block(text);
         if headers.is_empty() {
             return Ok(());
@@ -419,7 +424,7 @@ impl ArtifactParser for EmailParser {
         let key = message_id
             .as_deref()
             .map(message_key)
-            .unwrap_or_else(|| sha256_hex(ctx.raw));
+            .unwrap_or_else(|| sha256_hex(whole.raw));
         let from = set.get("From").map(decode_encoded_words);
         let (from_display, from_address) =
             from.as_deref().map(extract_address).unwrap_or((None, None));
@@ -493,14 +498,17 @@ impl ArtifactParser for EmailParser {
         let mut rows = TableRows::new(&EMAIL_ARTIFACTS, EMAIL_COLS);
         rows.push_draft(RowDraft {
             ordinal: 0,
-            span: Span {
+            sight: ctx.sighting(Span {
                 start: 0,
                 end: header_end,
-            },
+            }),
+            snippet: ctx.snippet(Span {
+                start: 0,
+                end: header_end,
+            }),
             record_key: key,
             cells: c.into_cells(),
             raw: Some(json!({"headers": headers_json(&headers)})),
-            sheet_row: None,
         });
         load_tables(ctx, vec![rows])
     }
@@ -660,8 +668,13 @@ fn sibling_header_row(ctx: &ParseContext<'_>) -> SiblingHeader {
 pub struct HawkHeaderParser;
 
 impl ArtifactParser for HawkHeaderParser {
+    fn input(&self) -> InputMode {
+        InputMode::Whole
+    }
+
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
-        let text = &*ctx.text.text;
+        let whole = *ctx.whole().expect("email files are read whole");
+        let text = &*whole.text.text;
         let subject = ctx.subject.unwrap_or_default().to_string();
         let headers = csv_headers(text);
         if headers.is_empty() {
@@ -672,7 +685,7 @@ impl ArtifactParser for HawkHeaderParser {
         let key = message_id
             .as_deref()
             .map(message_key)
-            .unwrap_or_else(|| sha256_hex(ctx.raw));
+            .unwrap_or_else(|| sha256_hex(whole.raw));
         let from = set.get("From").map(decode_encoded_words);
         let (from_display, from_address) =
             from.as_deref().map(extract_address).unwrap_or((None, None));
@@ -724,14 +737,17 @@ impl ArtifactParser for HawkHeaderParser {
         let mut rows = TableRows::new(&EMAIL_ARTIFACTS, HAWK_HEADER_COLS);
         rows.push_draft(RowDraft {
             ordinal: 0,
-            span: Span {
+            sight: ctx.sighting(Span {
                 start: 0,
                 end: text.len(),
-            },
+            }),
+            snippet: ctx.snippet(Span {
+                start: 0,
+                end: text.len(),
+            }),
             record_key: key,
             cells: c.into_cells(),
             raw: Some(json!({"headers": headers_json(&headers)})),
-            sheet_row: None,
         });
         load_tables(ctx, vec![rows])
     }
@@ -743,8 +759,13 @@ impl ArtifactParser for HawkHeaderParser {
 pub struct HawkFindingsParser;
 
 impl ArtifactParser for HawkFindingsParser {
+    fn input(&self) -> InputMode {
+        InputMode::Whole
+    }
+
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
-        let text = &*ctx.text.text;
+        let whole = *ctx.whole().expect("email files are read whole");
+        let text = &*whole.text.text;
         let subject = ctx.subject.unwrap_or_default().to_string();
         let findings = parse_findings(text);
         let (key, message_id, sibling_found) = match sibling_header_row(ctx) {
@@ -776,14 +797,17 @@ impl ArtifactParser for HawkFindingsParser {
         let mut rows = TableRows::new(&EMAIL_ARTIFACTS, cols);
         rows.push_draft(RowDraft {
             ordinal: 0,
-            span: Span {
+            sight: ctx.sighting(Span {
                 start: 0,
                 end: text.len(),
-            },
+            }),
+            snippet: ctx.snippet(Span {
+                start: 0,
+                end: text.len(),
+            }),
             record_key: key,
             cells: c.into_cells(),
             raw: Some(json!({"findings": findings})),
-            sheet_row: None,
         });
         load_tables(ctx, vec![rows])
     }

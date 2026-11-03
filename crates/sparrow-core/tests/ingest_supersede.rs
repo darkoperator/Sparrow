@@ -1,6 +1,6 @@
 use sparrow_core::fixtures;
 use sparrow_core::ingest::context::ParseContext;
-use sparrow_core::ingest::parser::{ArtifactParser, ParserRegistry};
+use sparrow_core::ingest::parser::{ArtifactParser, InputMode, ParserRegistry};
 use sparrow_core::ingest::supersede::{
     Handled, counterpart_stems, processing_key, truncation_warning,
 };
@@ -12,11 +12,16 @@ use std::path::{Path, PathBuf};
 /// Every physical line is a record.
 struct LinesParser;
 impl ArtifactParser for LinesParser {
+    fn input(&self) -> InputMode {
+        InputMode::Whole
+    }
+
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
-        let text = ctx.text;
+        let text = ctx.whole().unwrap().text;
         for (n, span) in line_spans(&text.text).into_iter().enumerate() {
             let key = format!("{}:{}", ctx.file_id, n);
-            ctx.record_source("test_lines", &key, n as u64, span)?;
+            let sight = ctx.sighting(span);
+            ctx.record_source("test_lines", &key, n as u64, &sight)?;
             ctx.stats.read += 1;
             ctx.stats.loaded += 1;
         }
@@ -27,6 +32,10 @@ impl ArtifactParser for LinesParser {
 /// Fails on .json files, loads lines otherwise.
 struct JsonFailsParser;
 impl ArtifactParser for JsonFailsParser {
+    fn input(&self) -> InputMode {
+        InputMode::Whole
+    }
+
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
         if ctx.rel_path.ends_with(".json") {
             return Err(Error::Invalid("broken json".into()));
@@ -38,9 +47,13 @@ impl ArtifactParser for JsonFailsParser {
 /// On .json files every record is a parse error; loads lines otherwise.
 struct JsonRecordsFailParser;
 impl ArtifactParser for JsonRecordsFailParser {
+    fn input(&self) -> InputMode {
+        InputMode::Whole
+    }
+
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
         if ctx.rel_path.ends_with(".json") {
-            let span = line_spans(&ctx.text.text)[0];
+            let span = line_spans(&ctx.whole().unwrap().text.text)[0];
             ctx.stats.read += 1;
             return ctx.parse_error(1, span, "unreadable record");
         }

@@ -6,7 +6,9 @@ use sparrow_core::verify::{source_ref, verify_record};
 use sparrow_core::{Case, Error};
 #[cfg(unix)]
 use sparrow_core::{
-    Result, ingest::context::ParseContext, ingest::parser::ArtifactParser,
+    Result,
+    ingest::context::ParseContext,
+    ingest::parser::{ArtifactParser, InputMode},
     readers::text::line_spans,
 };
 use std::path::PathBuf;
@@ -134,10 +136,18 @@ fn source_ref_formats_single_and_multi_line() {
 struct LinesParser;
 #[cfg(unix)]
 impl ArtifactParser for LinesParser {
+    fn input(&self) -> InputMode {
+        InputMode::Whole
+    }
+
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
-        for (n, span) in line_spans(&ctx.text.text).into_iter().enumerate() {
+        for (n, span) in line_spans(&ctx.whole().unwrap().text.text)
+            .into_iter()
+            .enumerate()
+        {
             let key = format!("{}:{}", ctx.file_id, n);
-            ctx.record_source("test_lines", &key, n as u64, span)?;
+            let sight = ctx.sighting(span);
+            ctx.record_source("test_lines", &key, n as u64, &sight)?;
             ctx.stats.read += 1;
             ctx.stats.loaded += 1;
         }

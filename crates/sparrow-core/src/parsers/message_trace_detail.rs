@@ -16,10 +16,10 @@ use crate::parsers::records::{
     placeholder_message,
 };
 use crate::parsers::stage::{
-    CellRow, RowDraft, RowOut, TableRows, csv_row_key, load_streamed, lower, non_empty_cells,
-    read_state_records, unsupported,
+    CellRow, LOAD_STREAMED_STEPS, RowDraft, RowOut, TableRows, csv_row_key, load_streamed, lower,
+    non_empty_cells, read_state_records, unsupported,
 };
-use crate::readers::text::Span;
+use crate::readers::stream::Sight;
 use crate::readers::time::parse_timestamp;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -202,7 +202,7 @@ fn first<'e, T>(events: &[&'e Event], f: impl Fn(&'e Event) -> Option<T>) -> Opt
 fn collapse(
     network_message_id: &str,
     events: &[Event],
-    spans: &[(u64, Span)],
+    spans: &[(u64, Sight, String)],
     rows: &mut TableRows,
 ) {
     // Events without a usable time cannot be ordered; they stay in `message_trace_events` only.
@@ -228,7 +228,7 @@ fn collapse(
         .iter()
         .filter(|e| e.total_bytes == size && size.is_some())
         .find_map(|e| e.total_bytes_text.clone());
-    let (ordinal, span) = spans[earliest.record];
+    let (ordinal, sight, snippet) = &spans[earliest.record];
     for recipient in recipients {
         let decided = timed.iter().rev().find(|e| {
             e.event_id
@@ -281,12 +281,12 @@ fn collapse(
         head.extend(raw);
 
         rows.push_draft(RowDraft {
-            ordinal,
-            span,
+            ordinal: *ordinal,
+            sight: sight.clone(),
+            snippet: snippet.clone(),
             record_key: message_trace_key(network_message_id, Some(recipient)),
             cells: c.into_cells(),
             raw: Some(Value::Object(head)),
-            sheet_row: None,
         });
     }
 }
@@ -294,26 +294,30 @@ fn collapse(
 pub struct MessageTraceDetailParser;
 
 impl ArtifactParser for MessageTraceDetailParser {
+    fn steps(&self) -> &'static [&'static str] {
+        LOAD_STREAMED_STEPS
+    }
+
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
         // Streamed (see `load_streamed`): a large export collected as records peaked at 17.7 GB for 186 MB. A first
         // scan keeps only what the collapse needs of each event; the event rows are then streamed and loaded in
         // batches, and the collapsed message rows after them.
         let format = RecordFormat::of(ctx.rel_path);
-        let text = ctx.text;
+        ctx.set_step(0);
         let mut first: Option<SourceRecord> = None;
         let (mut keyed, mut placeholders) = (false, 0usize);
         let count_placeholders = format == RecordFormat::Csv && !ctx.portal_export;
         // Messages in order of first appearance, each with its events.
         let mut order: Vec<String> = Vec::new();
         let mut by_message: HashMap<String, Vec<Event>> = HashMap::new();
-        // Where each record sits in the file, for the collapsed rows.
-        let mut spans: Vec<(u64, Span)> = Vec::new();
-        for_each_record(&text.text, format, |event| {
+        // Where each record sits in the file (and its snippet), for the collapsed rows.
+        let mut spans: Vec<(u64, Sight, String)> = Vec::new();
+        for_each_record(&ctx.input(), format, |event| {
             let RecordEvent::Record(r) = event else {
                 return Ok(true);
             };
             let i = spans.len();
-            spans.push((r.ordinal, r.span));
+            spans.push((r.ordinal, r.sight.clone(), r.snippet.clone()));
             keyed |= Rec::new(&r.map, false).has("network_message_id");
             if count_placeholders && holds_placeholder(&r) {
                 placeholders += 1;
@@ -370,11 +374,11 @@ impl ArtifactParser for MessageTraceDetailParser {
                     table: 0,
                     draft: RowDraft {
                         ordinal: r.ordinal,
-                        span: r.span,
+                        sight: r.sight.clone(),
+                        snippet: r.snippet.clone(),
                         record_key: csv_row_key(&non_empty_cells(&r.map)),
                         cells: event_cells(&rec, &recipients),
                         raw: Some(Value::Object(r.map.clone())),
-                        sheet_row: None,
                     },
                 }]
             },

@@ -18,6 +18,7 @@ use crate::parsers::records::SourceRecord;
 use crate::parsers::stage::{
     file_date_order, read_state_records, reject, reject_at, require_any_key,
 };
+use crate::readers::stream::Sight;
 use crate::readers::time::{DateOrder, parse_timestamp};
 use duckdb::params;
 use serde_json::{Map, Value, json};
@@ -118,7 +119,8 @@ const SESSION_TIME: &[&str] = &["TimeStamp", "Timestamp"];
 /// One parsed Sessions row, staged for the set-based match.
 struct SessionInput {
     ordinal: u64,
-    span: crate::readers::text::Span,
+    sight: Sight,
+    snippet: String,
     access: Access,
     count: Option<i64>,
     throttled: Option<bool>,
@@ -170,7 +172,8 @@ impl ArtifactParser for SessionsParser {
             match access(&rec, SESSION_TIME, &["ClientIP"], &["SessionId"], order) {
                 Ok(a) => parsed.push(SessionInput {
                     ordinal: r.ordinal,
-                    span: r.span,
+                    sight: r.sight.clone(),
+                    snippet: r.snippet.clone(),
                     access: a,
                     count: rec.int("OperationCount"),
                     throttled: rec.bool("IsThrottled"),
@@ -209,7 +212,7 @@ impl ArtifactParser for SessionsParser {
                 continue;
             }
             if let Some(row) = by_ordinal.get(&ord) {
-                ctx.queue_source("ual_events", &rec, row.ordinal, row.span);
+                ctx.queue_source("ual_events", &rec, row.ordinal, &row.sight);
                 ctx.stats.duplicate += 1;
                 used.insert(rec);
                 matched.insert(ord);
@@ -231,15 +234,14 @@ impl ArtifactParser for SessionsParser {
             };
             match normalize_audit(&input, None) {
                 Ok(rec) => {
-                    let (pos, raw_sha256) = ctx.sighting(row.span);
                     staged.push(StagedUal {
                         ordinal: row.ordinal,
-                        pos,
-                        raw_sha256,
+                        pos: row.sight.pos,
+                        raw_sha256: row.sight.raw_sha256.clone(),
                         rec,
                     });
                 }
-                Err(m) => reject_at(ctx, row.ordinal, row.span, None, &m)?,
+                Err(m) => reject_at(ctx, row.ordinal, &row.sight.pos, &row.snippet, &m)?,
             }
         }
         let out = load_ual_batch(ctx.conn, ctx.collection_id, ctx.file_id, &staged)?;
@@ -266,7 +268,7 @@ const ID_TIME: &[&str] = &["Timestamp", "TimeStamp"];
 /// One parsed MessageIDs row, staged for the set-based match.
 struct MessageIdInput {
     ordinal: u64,
-    span: crate::readers::text::Span,
+    sight: Sight,
     access: Access,
     message_id: Option<String>,
     access_type: Option<&'static str>,
@@ -363,7 +365,7 @@ impl ArtifactParser for MessageIdsParser {
             });
             parsed.push(MessageIdInput {
                 ordinal: r.ordinal,
-                span: r.span,
+                sight: r.sight.clone(),
                 access: a,
                 message_id,
                 access_type,
@@ -425,7 +427,7 @@ impl ArtifactParser for MessageIdsParser {
         let mut matched_count = 0u64;
         for row in &parsed {
             if let Some(rec) = matched.get(&row.ordinal) {
-                ctx.queue_source("ual_events", rec, row.ordinal, row.span);
+                ctx.queue_source("ual_events", rec, row.ordinal, &row.sight);
                 ctx.stats.duplicate += 1;
                 matched_count += 1;
                 continue;
@@ -440,7 +442,7 @@ impl ArtifactParser for MessageIdsParser {
                 params![key],
                 |r| r.get(0),
             )?;
-            ctx.queue_source("mail_items_accessed", &key, row.ordinal, row.span);
+            ctx.queue_source("mail_items_accessed", &key, row.ordinal, &row.sight);
             if exists {
                 ctx.stats.duplicate += 1;
                 continue;

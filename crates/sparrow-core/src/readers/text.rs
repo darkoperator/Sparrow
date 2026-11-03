@@ -64,16 +64,21 @@ impl DecodedText<'_> {
 
     /// Warning to record on the file when decoding was lossy.
     pub fn lossy_warning(&self) -> Option<String> {
-        if !self.lossy {
-            return None;
-        }
-        let why = match self.encoding {
-            TextEncoding::Windows1252 => "windows-1252 fallback",
-            TextEncoding::Utf16Le | TextEncoding::Utf16Be => "invalid utf-16",
-            TextEncoding::Utf8 | TextEncoding::Utf8Bom => "invalid utf-8",
-        };
-        Some(format!("text decoding was lossy ({why})"))
+        lossy_warning(self.encoding, self.lossy)
     }
+}
+
+/// Warning to record on a file decoded with `encoding` when decoding was `lossy`.
+pub fn lossy_warning(encoding: TextEncoding, lossy: bool) -> Option<String> {
+    if !lossy {
+        return None;
+    }
+    let why = match encoding {
+        TextEncoding::Windows1252 => "windows-1252 fallback",
+        TextEncoding::Utf16Le | TextEncoding::Utf16Be => "invalid utf-16",
+        TextEncoding::Utf8 | TextEncoding::Utf8Bom => "invalid utf-8",
+    };
+    Some(format!("text decoding was lossy ({why})"))
 }
 
 pub fn decode(bytes: &[u8]) -> DecodedText<'_> {

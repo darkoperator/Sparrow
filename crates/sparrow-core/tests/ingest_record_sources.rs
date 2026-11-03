@@ -4,7 +4,8 @@
 
 use sparrow_core::Case;
 use sparrow_core::ingest::IngestOptions;
-use sparrow_core::ingest::context::ParseContext;
+use sparrow_core::ingest::context::{ParseContext, RecordSource, WholeText};
+use sparrow_core::readers::stream::Admitted;
 use sparrow_core::readers::text::{LineIndex, Span, decode};
 
 /// 14 lines of different lengths, so every span has its own line and byte numbers.
@@ -89,24 +90,29 @@ fn run(batches: &[Vec<Input>], per_row: bool) -> Vec<Row> {
     let decoded = decode(&raw);
     let index = LineIndex::new(&decoded.text);
     let opts = IngestOptions::default();
+    let admitted = Admitted::from_bytes(std::path::Path::new("x.csv"), &raw);
     let mut ctx = ParseContext::new(
         case.conn(),
         1,
         7,
         "x.csv",
         None,
-        &raw,
-        &decoded,
-        &index,
+        &admitted,
+        RecordSource::Memory(&raw),
+        Some(WholeText {
+            raw: &raw,
+            text: &decoded,
+            index: &index,
+        }),
         &opts,
     );
     for batch in batches {
         for (table, key, ordinal, ln) in batch {
-            let span = line(&text, *ln);
+            let sight = ctx.sighting(line(&text, *ln));
             if per_row {
-                ctx.record_source(table, key, *ordinal, span).unwrap();
+                ctx.record_source(table, key, *ordinal, &sight).unwrap();
             } else {
-                ctx.queue_source(table, key, *ordinal, span);
+                ctx.queue_source(table, key, *ordinal, &sight);
             }
         }
         if !per_row {

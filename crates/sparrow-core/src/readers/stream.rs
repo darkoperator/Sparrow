@@ -345,6 +345,17 @@ impl Analyzer {
 pub fn admit(path: &Path, chunk: usize, on_read: OnRead) -> io::Result<Admitted> {
     let mut file = File::open(path)?;
     let modified = file.metadata()?.modified().ok();
+    admit_from(&mut file, path, modified, chunk, on_read)
+}
+
+/// [`admit`] reading the content from `reader`.
+fn admit_from(
+    reader: &mut dyn Read,
+    path: &Path,
+    modified: Option<SystemTime>,
+    chunk: usize,
+    on_read: OnRead,
+) -> io::Result<Admitted> {
     let mut buf = vec![0u8; chunk.max(1)];
     let mut hash = Sha256Stream::new();
     let mut blank = BlankCheck::default();
@@ -352,7 +363,7 @@ pub fn admit(path: &Path, chunk: usize, on_read: OnRead) -> io::Result<Admitted>
     let mut analyzer: Option<Analyzer> = None;
     let mut raw_len = 0u64;
     loop {
-        let n = read_chunk(&mut file, &mut buf, &mut *on_read)?;
+        let n = read_chunk(reader, &mut buf, &mut *on_read)?;
         let bytes = &buf[..n];
         hash.update(bytes);
         blank.feed(bytes);
@@ -440,6 +451,22 @@ fn decode_into(decoder: &mut Decoder, mut src: &[u8], out: &mut String, last: bo
 }
 
 impl Admitted {
+    /// What [`admit`] gives for the file at `path` whose content is `raw`, already read into memory: everything is
+    /// computed from `raw`, only the modification time comes from `path` (`None` when it cannot be read).
+    pub fn from_bytes(path: &Path, raw: &[u8]) -> Admitted {
+        let modified = std::fs::metadata(path).ok().and_then(|m| m.modified().ok());
+        // One read takes it all: the result does not depend on the read size.
+        let chunk = CHUNK_BYTES.min(raw.len() + 1);
+        admit_from(
+            &mut io::Cursor::new(raw),
+            path,
+            modified,
+            chunk,
+            &mut |_| true,
+        )
+        .expect("reading from memory cannot fail")
+    }
+
     /// A new pass over the file from byte 0, reading `chunk` bytes per fill.
     pub fn open(&self, chunk: usize) -> io::Result<TextStream> {
         let file = File::open(&self.path)?;
