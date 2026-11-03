@@ -404,6 +404,26 @@ fn decoder_for(encoding: TextEncoding) -> Option<Decoder> {
     Some(codec.new_decoder_without_bom_handling())
 }
 
+/// Most decoded bytes one fill of `raw` bytes can add: a UTF-8 char held back from the last fill, or the decoder's
+/// bound.
+fn text_growth(decoder: Option<&Decoder>, raw: usize) -> usize {
+    match decoder {
+        None => raw + 3,
+        Some(d) => d.max_utf8_buffer_length(raw).unwrap_or(raw * 3 + 16),
+    }
+}
+
+/// The `reserve_exact` that gives room for `grow` more bytes: geometric growth as `Vec` does, but stopping at
+/// `steady` while the need fits under it, so the steady state is one allocation of that size rather than up to
+/// twice it. `None` when there is room, or when the need is past `steady` (an outsized record: plain growth).
+fn reserve_for(cap: usize, len: usize, grow: usize, steady: usize) -> Option<usize> {
+    let need = len + grow;
+    if need <= cap || need > steady {
+        return None;
+    }
+    Some((2 * cap).max(need).min(steady) - len)
+}
+
 /// Decode `src` into `out` with `decoder`, `last` flushing what it holds back.
 fn decode_into(decoder: &mut Decoder, mut src: &[u8], out: &mut String, last: bool) {
     loop {
@@ -488,10 +508,29 @@ pub struct TextStream {
     cur: Mark,
     /// Ascending; the first is at or before `base`.
     checkpoints: Vec<Mark>,
+    /// Capacities of `text` and `raw` that hold the steady state: what compaction keeps (up to a checkpoint
+    /// interval, plus a char of slack) and one fill.
+    steady: (usize, usize),
+    /// The span [`TextStream::sight_to_end`] drained, its sighting and snippet.
+    drained: Option<(Span, Sight, String)>,
+    /// Largest capacities of `text` and `raw` seen after a fill.
+    #[cfg(test)]
+    peak: (usize, usize),
 }
 
 impl TextStream {
     fn new(reader: Box<dyn Read>, admitted: &Admitted, chunk: usize) -> TextStream {
+        let chunk = chunk.max(1);
+        let decoder = decoder_for(admitted.encoding);
+        let kept = CHECKPOINT_EVERY + 8;
+        let raw_per_byte = match admitted.encoding {
+            TextEncoding::Utf16Le | TextEncoding::Utf16Be => 2,
+            _ => 1,
+        };
+        let steady = (
+            kept + text_growth(decoder.as_ref(), chunk),
+            chunk + raw_per_byte * kept,
+        );
         let start = Mark {
             dec: 0,
             raw: admitted.bom_len,
@@ -499,13 +538,13 @@ impl TextStream {
         };
         TextStream {
             reader,
-            buf: vec![0; chunk.max(1)],
+            buf: vec![0; chunk],
             encoding: admitted.encoding,
             bom_len: admitted.bom_len,
             raw_len: admitted.raw_len,
             skip: admitted.bom_len as usize,
             utf8: Utf8Carry::default(),
-            decoder: decoder_for(admitted.encoding),
+            decoder,
             eof: false,
             text: String::new(),
             text_base: 0,
@@ -515,6 +554,10 @@ impl TextStream {
             ends_nl: false,
             cur: start,
             checkpoints: vec![start],
+            steady,
+            drained: None,
+            #[cfg(test)]
+            peak: (0, 0),
         }
     }
 
@@ -551,11 +594,19 @@ impl TextStream {
         let n = read_chunk(&mut *self.reader, &mut self.buf, on_read)?;
         let last = n < self.buf.len();
         let before = self.text.len();
+        if let Some(extra) = reserve_for(self.raw.capacity(), self.raw.len(), n, self.steady.1) {
+            self.raw.reserve_exact(extra);
+        }
         self.raw.extend_from_slice(&self.buf[..n]);
         let mut bytes = &self.buf[..n];
         let k = self.skip.min(bytes.len());
         self.skip -= k;
         bytes = &bytes[k..];
+        let grow = text_growth(self.decoder.as_ref(), bytes.len());
+        if let Some(extra) = reserve_for(self.text.capacity(), self.text.len(), grow, self.steady.0)
+        {
+            self.text.reserve_exact(extra);
+        }
         let text = &mut self.text;
         match &mut self.decoder {
             None => {
@@ -572,6 +623,11 @@ impl TextStream {
             self.ends_nl = self.text.ends_with('\n');
         }
         self.eof = last;
+        #[cfg(test)]
+        {
+            self.peak.0 = self.peak.0.max(self.text.capacity());
+            self.peak.1 = self.peak.1.max(self.raw.capacity());
+        }
         Ok(n > 0 || self.text.len() > before)
     }
 
@@ -597,6 +653,15 @@ impl TextStream {
         if raw_cut > self.raw_base {
             self.raw.drain(..(raw_cut - self.raw_base) as usize);
             self.raw_base = raw_cut;
+        }
+        // After a record far larger than a chunk, give back what the steady state (a chunk plus a checkpoint
+        // interval) does not need.
+        let (text, raw) = self.steady;
+        if self.text.capacity() > 2 * text && self.text.len() <= text {
+            self.text.shrink_to(text);
+        }
+        if self.raw.capacity() > 2 * raw && self.raw.len() <= raw {
+            self.raw.shrink_to(raw);
         }
     }
 
@@ -666,6 +731,11 @@ impl TextStream {
     /// Where `span` (absolute, inside the window) lives in the file: as `locate` on the whole text, and the
     /// SHA-256 of those raw bytes.
     pub fn sight(&mut self, span: Span) -> Sight {
+        if let Some((drained, sight, _)) = &self.drained
+            && *drained == span
+        {
+            return sight.clone();
+        }
         assert!(
             self.base <= span.start && span.start <= span.end && span.end <= self.end(),
             "span {span:?} outside the window {}..{}",
@@ -702,6 +772,11 @@ impl TextStream {
     /// At most [`SNIPPET_CHARS`] chars of `span`'s text (clamped to the window, as `parse_error` clamps to the
     /// text).
     pub fn snippet(&self, span: Span) -> String {
+        if let Some((drained, _, snippet)) = &self.drained
+            && *drained == span
+        {
+            return snippet.clone();
+        }
         let end = floor_boundary(
             &self.text,
             span.end.clamp(self.base, self.end()) - self.text_base,
@@ -711,6 +786,69 @@ impl TextStream {
             span.start.clamp(self.base, self.text_base + end) - self.text_base,
         );
         self.text[start..end].chars().take(SNIPPET_CHARS).collect()
+    }
+}
+
+impl TextStream {
+    /// Sight the span from absolute offset `start` (in the window) to the end of the text, reading the file to its
+    /// end: the window is consumed as the span's raw bytes are hashed and its lines counted, so memory stays at a
+    /// chunk or so however long the rest of the file is. Returns the sighting, the snippet and the span's end (the
+    /// text's length); afterwards [`sight`](Self::sight) and [`snippet`](Self::snippet) of that span return them.
+    pub fn sight_to_end(
+        &mut self,
+        start: usize,
+        on_read: OnRead,
+    ) -> io::Result<(Sight, String, usize)> {
+        assert!(
+            self.base <= start && start <= self.end(),
+            "start {start} outside the window {}..{}",
+            self.base,
+            self.end()
+        );
+        self.consume(start);
+        while !self.eof && self.window().chars().take(SNIPPET_CHARS).count() < SNIPPET_CHARS {
+            self.fill(&mut *on_read)?;
+        }
+        let snippet: String = self.window().chars().take(SNIPPET_CHARS).collect();
+        let ms = self.scan_to(start);
+        let line_start = self.line_of(ms);
+        let raw_start = ms.raw.min(self.raw_len);
+        let mut hash = Sha256Stream::new();
+        let mut hashed = raw_start;
+        loop {
+            // Hash up to the scan before the next fill compacts the raw bytes away.
+            let end = self.end();
+            let upto = self.scan_to(end).raw.min(self.raw_len);
+            if upto > hashed {
+                let from = (hashed - self.raw_base) as usize;
+                hash.update(&self.raw[from..(upto - self.raw_base) as usize]);
+                hashed = upto;
+            }
+            if self.eof {
+                break;
+            }
+            self.consume(end);
+            self.fill(&mut *on_read)?;
+        }
+        let end = self.end();
+        let line_end = if end > start {
+            // Line of the span's last byte, `end - 1`, as `sight` counts it.
+            (self.cur.nl - self.ends_nl as u64 + 1) as u32
+        } else {
+            line_start
+        };
+        let sight = Sight {
+            pos: SourcePos {
+                line_start,
+                line_end,
+                byte_offset: raw_start,
+                byte_length: hashed - raw_start,
+            },
+            raw_sha256: hash.finish_hex(),
+        };
+        self.consume(end);
+        self.drained = Some((Span { start, end }, sight.clone(), snippet.clone()));
+        Ok((sight, snippet, end))
     }
 }
 
@@ -726,6 +864,9 @@ fn floor_boundary(s: &str, mut i: usize) -> usize {
 pub(crate) enum Step<E> {
     Event(E),
     More(usize),
+    /// The next event spans from this absolute offset to the end of the text: sight it while reading to the end
+    /// ([`TextStream::sight_to_end`]), then step again with the text ended.
+    DrainFrom(usize),
     End,
 }
 
@@ -746,6 +887,7 @@ pub(crate) fn scan_whole<S: Scan>(
     text: &str,
     mut sink: impl FnMut(&S, S::Event) -> bool,
 ) {
+    // Over the whole text a scanner neither asks for more nor drains: the text has ended.
     while let Step::Event(e) = scan.next(text, 0, true) {
         if !sink(scan, e) {
             break;
@@ -770,6 +912,9 @@ pub(crate) fn scan_stream<S: Scan>(
                 }
             }
             Step::End => return Ok(()),
+            Step::DrainFrom(start) => {
+                stream.sight_to_end(start, &mut *on_read)?;
+            }
             Step::More(_) if stream.at_eof() => {
                 // A scanner never asks for more at the end of the text; fail rather than loop.
                 return Err(io::Error::other("scanner asked for text past the end"));
@@ -808,11 +953,21 @@ mod tests {
         }
     }
 
-    /// Stream `raw` with full consumes after every fill: the kept decoded text and raw bytes stay within a chunk
-    /// plus a checkpoint interval (`raw_per_char` raw bytes per ASCII char) however long the input.
-    fn assert_bounded(raw: Vec<u8>, encoding: TextEncoding, bom_len: u64, raw_per_char: usize) {
-        let chunk = 4096;
-        let margin = 1024;
+    const CHUNK: usize = 4096;
+    const MARGIN: usize = 1024;
+
+    /// Stream `raw` with full consumes after every fill: the kept decoded text and raw bytes, and their
+    /// capacities, stay within a chunk (`growth` decoded bytes from one chunk) plus a checkpoint interval
+    /// (`raw_per_char` raw bytes per ASCII char) however long the input.
+    fn assert_bounded(
+        raw: Vec<u8>,
+        encoding: TextEncoding,
+        bom_len: u64,
+        raw_per_char: usize,
+        growth: usize,
+    ) {
+        let chunk = CHUNK;
+        let margin = MARGIN;
         let a = admitted(&raw, encoding, bom_len);
         let mut s = TextStream::from_bytes(raw.clone(), &a, chunk);
         let (mut max_text, mut max_raw) = (0, 0);
@@ -837,6 +992,15 @@ mod tests {
             max_raw <= chunk + CHECKPOINT_EVERY * raw_per_char + margin,
             "raw bytes kept: {max_raw}"
         );
+        let (text_cap, raw_cap) = s.peak;
+        assert!(
+            text_cap <= growth + CHECKPOINT_EVERY + margin,
+            "decoded text capacity: {text_cap}"
+        );
+        assert!(
+            raw_cap <= chunk + CHECKPOINT_EVERY * raw_per_char + margin,
+            "raw capacity: {raw_cap}"
+        );
         assert!(
             s.checkpoints.len() <= 3,
             "{} checkpoints",
@@ -857,11 +1021,129 @@ mod tests {
     #[test]
     fn full_consumes_keep_the_window_bounded() {
         let text = ascii_rows(2 * 1024 * 1024);
-        assert_bounded(text.clone().into_bytes(), TextEncoding::Utf8, 0, 1);
+        assert_bounded(text.clone().into_bytes(), TextEncoding::Utf8, 0, 1, CHUNK);
         let mut utf16 = vec![0xFF, 0xFE];
         for u in text.encode_utf16() {
             utf16.extend_from_slice(&u.to_le_bytes());
         }
-        assert_bounded(utf16, TextEncoding::Utf16Le, 2, 2);
+        assert_bounded(utf16, TextEncoding::Utf16Le, 2, 2, CHUNK * 3 / 2);
+    }
+
+    /// The window's length and capacity, and their largest values.
+    #[derive(Default, Debug)]
+    struct Sizes {
+        now: (usize, usize, usize, usize),
+        max: (usize, usize, usize, usize),
+    }
+
+    impl Sizes {
+        fn see(&mut self, s: &TextStream) {
+            self.now = (
+                s.text.len(),
+                s.text.capacity(),
+                s.raw.len(),
+                s.raw.capacity(),
+            );
+            self.max.0 = self.max.0.max(self.now.0);
+            self.max.1 = self.max.1.max(self.now.1);
+            self.max.2 = self.max.2.max(self.now.2);
+            self.max.3 = self.max.3.max(self.now.3);
+        }
+    }
+
+    #[test]
+    fn capacity_returns_after_an_outsized_record() {
+        let mut csv = format!("Id,AuditData\n0,\"{}\"\n", "x".repeat(1024 * 1024));
+        csv.push_str(&ascii_rows(4 * 1024 * 1024));
+        let raw = csv.into_bytes();
+        let a = admitted(&raw, TextEncoding::Utf8, 0);
+        let mut s = TextStream::from_bytes(raw, &a, CHUNK);
+        let mut after = Sizes::default();
+        let mut rows = 0;
+        crate::readers::csv_scan::read_csv_stream(&mut s, &mut |_| true, |_, _, st| {
+            rows += 1;
+            // Past the outsized record and the read-ahead that came with it (the window grew to twice the record
+            // while it was incomplete): several fills, and so compactions, later.
+            if st.base() > 3 * 1024 * 1024 {
+                after.see(st);
+            }
+            true
+        })
+        .unwrap();
+        assert!(rows > 10_000, "{rows} rows");
+        assert!(after.now.0 > 0, "sizes were sampled");
+        assert!(
+            s.peak.0 > 1024 * 1024,
+            "the record grew the window: {:?}",
+            s.peak
+        );
+        let bound = CHUNK + CHECKPOINT_EVERY + MARGIN;
+        let (text, text_cap, raw, raw_cap) = after.max;
+        assert!(
+            text <= bound && text_cap <= bound,
+            "text {text} capacity {text_cap}"
+        );
+        assert!(
+            raw <= bound && raw_cap <= bound,
+            "raw {raw} capacity {raw_cap}"
+        );
+    }
+
+    #[test]
+    fn bad_separator_is_sighted_in_bounded_memory() {
+        use crate::readers::json_scan::{JsonEvent, scan_json_each, scan_json_stream};
+        use crate::readers::text::{LineIndex, OffsetMapper, decode, locate};
+        let mut json = String::from("[\r\n{\"a\":0} {\"a\":1}");
+        let mut i = 2;
+        while json.len() < 2 * 1024 * 1024 {
+            json.push_str(&format!(",\r\n{{\"a\":{i},\"u\":\"user{i}@contoso.com\"}}"));
+            i += 1;
+        }
+        json.push_str("\r\n]\r\n");
+        let raw = json.into_bytes();
+        let span_of = |e: &JsonEvent| match e {
+            JsonEvent::Record(r) => r.span,
+            JsonEvent::Error(e) => e.span,
+        };
+
+        let d = decode(&raw);
+        let index = LineIndex::new(&d.text);
+        let mut mapper = OffsetMapper::new(&d, raw.len() as u64);
+        let mut want = Vec::new();
+        scan_json_each(&d.text, |e| {
+            let pos = locate(&d.text, &index, &mut mapper, span_of(&e));
+            let bytes =
+                &raw[pos.byte_offset as usize..(pos.byte_offset + pos.byte_length) as usize];
+            let snippet: String = d.text[span_of(&e).start..span_of(&e).end]
+                .chars()
+                .take(500)
+                .collect();
+            want.push(format!("{e:?} {pos:?} {} {snippet:?}", sha256_hex(bytes)));
+            true
+        });
+        assert_eq!(want.len(), 2, "one record, then the failure");
+
+        let a = admitted(&raw, TextEncoding::Utf8, 0);
+        let mut s = TextStream::from_bytes(raw.clone(), &a, CHUNK);
+        let mut got = Vec::new();
+        scan_json_stream(&mut s, &mut |_| true, |e, st| {
+            let span = span_of(&e);
+            let sight = st.sight(span);
+            let snippet = st.snippet(span);
+            got.push(format!(
+                "{e:?} {:?} {} {snippet:?}",
+                sight.pos, sight.raw_sha256
+            ));
+            true
+        })
+        .unwrap();
+        assert_eq!(got, want);
+        assert!(want[1].contains("expected ',' or ']'"), "{}", want[1]);
+        let bound = CHUNK + CHECKPOINT_EVERY + MARGIN;
+        assert!(
+            s.peak.0 <= bound && s.peak.1 <= bound,
+            "peak capacities {:?}",
+            s.peak
+        );
     }
 }

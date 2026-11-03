@@ -88,6 +88,10 @@ pub fn read_csv_stream(
     Ok(scan.headers)
 }
 
+/// Field buffer sizes a scan starts with and returns to after an outsized record.
+const FIELDS_KEEP: usize = 64 * 1024;
+const ENDS_KEEP: usize = 1024;
+
 /// The scan behind [`read_csv_each`] and [`read_csv_stream`]: the reader core of the `csv` crate (what
 /// `csv::Reader` runs, with the defaults `read_csv` has always used: comma, double quotes, CR/LF/CRLF terminators,
 /// flexible field counts), fed the text as it arrives. Its records do not depend on how the input is cut, so a
@@ -115,8 +119,8 @@ impl CsvScan {
     fn new() -> Self {
         CsvScan {
             core: csv_core::Reader::new(),
-            fields: vec![0; 1024],
-            field_ends: vec![0; 16],
+            fields: vec![0; FIELDS_KEEP],
+            field_ends: vec![0; ENDS_KEEP],
             out: 0,
             ends: 0,
             pos: 0,
@@ -131,7 +135,7 @@ impl CsvScan {
 
     /// The `#TYPE` line, the header row, or a row or row error (`None` for the first two).
     fn record(&mut self, text: &str, base: usize) -> Option<CsvEvent> {
-        self.out = 0;
+        let out = std::mem::take(&mut self.out);
         let ends = std::mem::take(&mut self.ends);
         let before = std::mem::replace(&mut self.before, self.pos);
         let mut record = Vec::with_capacity(ends);
@@ -147,7 +151,16 @@ impl CsvScan {
             }
             from = to;
         }
-        // Fields of a `str` cut at ASCII bytes are UTF-8: this is the reader's error recovery, kept for safety.
+        // After a record far larger than usual, give the buffers back.
+        if self.fields.len() > 4 * out.max(FIELDS_KEEP) {
+            self.fields = vec![0; FIELDS_KEEP];
+        }
+        if self.field_ends.len() > 4 * ends.max(ENDS_KEEP) {
+            self.field_ends = vec![0; ENDS_KEEP];
+        }
+        // Unreachable: the input is a `str` and the core cuts and unquotes it only at ASCII bytes, so every field is
+        // UTF-8. Kept as the old reader's error recovery (span, ordinal, stop without progress); nothing may rely on
+        // the message's wording.
         if let Some(message) = invalid {
             return Some(self.error(text, base, before, message));
         }
@@ -274,4 +287,41 @@ pub fn fields_map(headers: &[String], fields: Vec<String>) -> Map<String, Value>
         map.insert(key, Value::String(field));
     }
     map
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn field_buffers_return_after_an_outsized_record() {
+        let mut text = format!("Id,AuditData\n0,\"{}\"\n", "x".repeat(1024 * 1024));
+        for i in 1..100 {
+            text.push_str(&format!("{i},small\n"));
+        }
+        let mut scan = CsvScan::new();
+        let mut rows = 0;
+        scan_whole(&mut scan, &text, |scan, event| {
+            let CsvEvent::Row(row) = event else {
+                panic!("{event:?}")
+            };
+            if row.ordinal == 0 {
+                // The core needed a buffer of over 1 MiB for this record...
+                assert_eq!(row.fields[1].len(), 1024 * 1024);
+                assert!(scan.fields.len() > 1024 * 1024, "{}", scan.fields.len());
+                rows += 1;
+                return true;
+            }
+            // ...and gives it back at the next one.
+            assert!(scan.fields.len() <= FIELDS_KEEP, "{}", scan.fields.len());
+            assert!(
+                scan.field_ends.len() <= ENDS_KEEP,
+                "{}",
+                scan.field_ends.len()
+            );
+            rows += 1;
+            true
+        });
+        assert_eq!(rows, 100);
+    }
 }

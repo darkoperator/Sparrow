@@ -88,9 +88,36 @@ fn csv_cases() -> Vec<(String, Vec<u8>)> {
     v
 }
 
+/// A JSON array of several chunks with a bad separator after its second record: the failure spans the rest.
+fn bad_separator_array(nl: &str, trailing: bool) -> String {
+    let mut s = format!("[{nl}{{\"a\":0}},{nl}{{\"a\":1,\"n\":\"é€𝄞\"}} {{\"a\":2}}");
+    let mut i = 3;
+    while s.len() < 150 * 1024 {
+        s.push_str(&format!(",{nl}{{\"a\":{i},\"u\":\"üser{i}@contoso.com\"}}"));
+        i += 1;
+    }
+    s.push_str(&format!("{nl}]"));
+    if trailing {
+        s.push_str(nl);
+    }
+    s
+}
+
 fn json_cases() -> Vec<(String, Vec<u8>)> {
     let big = "x".repeat(40 * 1024);
     vec![
+        (
+            "bad-separator-large-lf".into(),
+            bad_separator_array("\n", true).into_bytes(),
+        ),
+        (
+            "bad-separator-large-crlf-notrail".into(),
+            bad_separator_array("\r\n", false).into_bytes(),
+        ),
+        (
+            "bad-separator-large-utf16".into(),
+            utf16le_bom(&bad_separator_array("\r\n", true)),
+        ),
         (
             "array".into(),
             b"[\r\n  {\"a\": 1, \"s\": \"x]y}\\\"\"},\r\n  {\"a\": [2, {\"b\": null}]}\r\n]\r\n"

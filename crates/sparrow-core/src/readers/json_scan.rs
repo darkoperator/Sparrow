@@ -43,21 +43,25 @@ pub enum JsonEvent {
     Error(JsonRecordError),
 }
 
-/// Where [`Scanner`] is: between documents, in an array before a value (or its `]`), or in an array after a value.
+/// Where [`Scanner`] is: between documents, in an array before a value (or its `]`), in an array after a value, or
+/// at a bad array separator (absolute offset) whose failure is reported once the text has ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum At {
     Top,
     Item,
     AfterItem,
+    BadSeparator(usize),
     Done,
 }
 
 const TRUNCATED_ARRAY: &str = "unexpected end of input inside array (truncated file?)";
 
 /// The scan behind [`scan_json_each`] and [`scan_json_stream`]. A step over a window that may go on stops short of
-/// any value that reaches the window's end, and of any failure (its span runs to the end of the text), asking for
-/// more text from where it stands; the state it keeps between steps is only what it had at that point, so the
-/// rescan over the longer window continues exactly as a scan of the whole text.
+/// any value that reaches the window's end (and of a truncation failure, which more text may turn into a value),
+/// asking for more text from where it stands; the state it keeps between steps is only what it had at that point,
+/// so the rescan over the longer window continues exactly as a scan of the whole text. A bad array separator is a
+/// failure whatever follows, spanning to the end of the text: it asks the driver to drain the text from there
+/// ([`Step::DrainFrom`]) and reports it on the next step.
 struct Scanner {
     at: At,
     /// Absolute offset the next step starts at.
@@ -109,12 +113,12 @@ impl Scanner {
         event
     }
 
-    /// A failure from `start` of the window to the end of the text, which ends the scan.
+    /// A failure from absolute offset `start` to the end of the text, which ends the scan.
     fn fail(&mut self, text: &str, base: usize, start: usize, message: String) -> JsonEvent {
         let event = JsonEvent::Error(JsonRecordError {
             ordinal: self.ordinal,
             span: Span {
-                start: base + start,
+                start,
                 end: base + text.len(),
             },
             message,
@@ -140,11 +144,20 @@ impl Scan for Scanner {
     fn next(&mut self, text: &str, base: usize, last: bool) -> Step<JsonEvent> {
         let b = text.as_bytes();
         loop {
+            match self.at {
+                At::Done => return Step::End,
+                At::BadSeparator(start) if last => {
+                    let msg = "expected ',' or ']' in array".into();
+                    return Step::Event(self.fail(text, base, start, msg));
+                }
+                At::BadSeparator(start) => return Step::DrainFrom(start),
+                _ => {}
+            }
             let commas = self.at == At::Top;
             let p = skip(b, self.pos - base, commas);
             self.pos = base + p;
             match self.at {
-                At::Done => return Step::End,
+                At::Done | At::BadSeparator(_) => unreachable!("handled above"),
                 At::Top => {
                     if p >= b.len() {
                         if last {
@@ -171,7 +184,7 @@ impl Scan for Scanner {
                             self.pos = base + end;
                             self.push(text, base, p, end)
                         }
-                        Err(msg) => self.fail(text, base, p, msg),
+                        Err(msg) => self.fail(text, base, base + p, msg),
                     });
                 }
                 At::Item => {
@@ -179,7 +192,8 @@ impl Scan for Scanner {
                         if !last {
                             return Step::More(self.pos);
                         }
-                        return Step::Event(self.fail(text, base, p, TRUNCATED_ARRAY.into()));
+                        let msg = TRUNCATED_ARRAY.into();
+                        return Step::Event(self.fail(text, base, base + p, msg));
                     }
                     if b[p] == b']' {
                         self.pos += 1;
@@ -195,7 +209,7 @@ impl Scan for Scanner {
                             self.at = At::AfterItem;
                             self.push(text, base, p, end)
                         }
-                        Err(msg) => self.fail(text, base, p, msg),
+                        Err(msg) => self.fail(text, base, base + p, msg),
                     });
                 }
                 At::AfterItem => match b.get(p) {
@@ -207,13 +221,12 @@ impl Scan for Scanner {
                         self.pos += 1;
                         self.at = At::Top;
                     }
-                    // A failure's span runs to the end of the text: wait for all of it.
-                    _ if !last => return Step::More(self.pos),
-                    Some(_) => {
-                        let msg = "expected ',' or ']' in array".into();
-                        return Step::Event(self.fail(text, base, p, msg));
+                    Some(_) => self.at = At::BadSeparator(self.pos),
+                    None if !last => return Step::More(self.pos),
+                    None => {
+                        let msg = TRUNCATED_ARRAY.into();
+                        return Step::Event(self.fail(text, base, base + p, msg));
                     }
-                    None => return Step::Event(self.fail(text, base, p, TRUNCATED_ARRAY.into())),
                 },
             }
         }
@@ -247,8 +260,9 @@ pub fn scan_json_each(text: &str, mut sink: impl FnMut(JsonEvent) -> bool) -> Js
 
 /// [`scan_json_each`] over a [`TextStream`]: the same events (spans absolute) and shape, each event handed to `sink`
 /// while its record is still in the window, so the sink can [`sight`](TextStream::sight) it. A read error, or
-/// `on_read` asking to stop, ends the scan with that error. A failure (truncated or malformed array) spans the rest
-/// of the file, so the window holds the rest of the file before it is reported.
+/// `on_read` asking to stop, ends the scan with that error. A failure spans the rest of the file: a bad array separator
+/// is sighted while the rest of the file is drained, in bounded memory; a truncated value (an unclosed `{` or `"`)
+/// keeps the rest of the file in the window, since only its end can show it is truncated.
 pub fn scan_json_stream(
     stream: &mut TextStream,
     on_read: OnRead,
