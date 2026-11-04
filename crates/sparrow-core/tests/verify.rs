@@ -2,7 +2,7 @@ use sparrow_core::fixtures;
 use sparrow_core::fixtures::{hawk4, portal, ual};
 use sparrow_core::ingest::parser::ParserRegistry;
 use sparrow_core::ingest::{IngestOptions, ingest_path};
-use sparrow_core::verify::{source_ref, verify_record};
+use sparrow_core::verify::{SourceReader, source_ref, verify_record, verify_record_with};
 use sparrow_core::{Case, Error};
 #[cfg(unix)]
 use sparrow_core::{
@@ -224,4 +224,109 @@ fn utf16_log_with_truncated_trailing_byte_verifies() {
     assert!(rep.sightings[0].file_hash_ok, "{rep:?}");
     assert!(rep.sightings[0].record_hash_ok, "{rep:?}");
     assert!(rep.ok);
+}
+
+/// A reader over file bytes that fails any read touching bytes before `poison_before`.
+struct PoisonedPrefix {
+    data: std::io::Cursor<Vec<u8>>,
+    poison_before: u64,
+}
+
+impl std::io::Read for PoisonedPrefix {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.data.position() < self.poison_before {
+            return Err(std::io::Error::other("bytes before the record were read"));
+        }
+        self.data.read(buf)
+    }
+}
+
+impl std::io::Seek for PoisonedPrefix {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.data.seek(pos)
+    }
+}
+
+#[test]
+fn verify_does_not_read_whole_file() {
+    let (_d, _root, case, key) = setup();
+    let (offset, length): (i64, i64) = case
+        .conn()
+        .query_row(
+            "SELECT byte_offset, byte_length FROM record_sources WHERE table_name = 'collection_log' AND record_key = ?",
+            [&key],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert!(offset > 0 && length > 0);
+    let opener = move |p: &std::path::Path| -> std::io::Result<Box<dyn SourceReader>> {
+        Ok(Box::new(PoisonedPrefix {
+            data: std::io::Cursor::new(std::fs::read(p)?),
+            poison_before: offset as u64,
+        }))
+    };
+    let rep = verify_record_with(&case, "collection_log", &key, None, &opener).unwrap();
+    let s = &rep.sightings[0];
+    assert!(s.file_found);
+    assert!(
+        s.record_hash_ok,
+        "record check must only read the record: {rep:?}"
+    );
+    assert!(
+        s.excerpt
+            .as_deref()
+            .unwrap()
+            .ends_with("continued detail line"),
+        "{rep:?}"
+    );
+    // Hashing the whole file does read the poisoned prefix and fails closed.
+    assert!(!s.file_hash_ok);
+    assert!(!rep.ok);
+}
+
+#[test]
+fn record_past_the_end_of_the_file_fails_the_record_hash_without_panicking() {
+    let (_d, root, case, key) = setup();
+    let path = root.join("Hawk.log");
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
+    let rep = verify_record(&case, "collection_log", &key, None).unwrap();
+    assert!(rep.sightings[0].file_found);
+    assert!(!rep.sightings[0].file_hash_ok);
+    assert!(!rep.sightings[0].record_hash_ok);
+}
+
+#[test]
+fn utf16le_record_verifies_and_shows_decoded_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fixtures::invictus_tree(dir.path());
+    let raw = fixtures::utf16le_bom(fixtures::INVICTUS_LOG);
+    fixtures::write(&root, "LogFile.txt", &raw);
+    let mut case = Case::in_memory().unwrap();
+    ingest_path(
+        &mut case,
+        dir.path(),
+        &ParserRegistry::builtin(),
+        &IngestOptions::default(),
+    )
+    .unwrap();
+    let (key, message): (String, String) = case
+        .conn()
+        .query_row(
+            "SELECT cl.log_key, cl.message FROM collection_log cl ORDER BY cl.record_ordinal DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let rep = verify_record(&case, "collection_log", &key, None).unwrap();
+    assert!(rep.ok, "{rep:?}");
+    let excerpt = rep.sightings[0].excerpt.as_deref().unwrap();
+    assert!(
+        !excerpt.contains('\0') && !excerpt.contains('\u{FFFD}'),
+        "{excerpt:?}"
+    );
+    assert!(
+        excerpt.contains(message.trim()),
+        "{excerpt:?} vs {message:?}"
+    );
 }

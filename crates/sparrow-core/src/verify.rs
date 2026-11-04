@@ -1,15 +1,33 @@
 //! Re-validate evidence records against the original collector files.
 
-use crate::hash::sha256_hex;
-use crate::readers::text::{LineIndex, decode};
+use crate::hash::{Sha256Stream, sha256_hex};
+use crate::readers::text::{TextEncoding, decode};
 use crate::readers::xlsx::read_xlsx;
 use crate::{Case, Error, Result};
 use duckdb::params;
 use serde::Serialize;
 use std::collections::HashSet;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 const EXCERPT_LIMIT: usize = 10_000;
+
+/// Raw bytes hashed per read, so memory does not grow with the file.
+const CHUNK_BYTES: usize = 8 * 1024 * 1024;
+
+/// Raw bytes kept from a record for its excerpt: the longest encoding takes 4 bytes per char.
+const EXCERPT_BYTES: usize = EXCERPT_LIMIT * 4 + 8;
+
+/// A source file opened for verification.
+pub trait SourceReader: Read + Seek {}
+impl<T: Read + Seek> SourceReader for T {}
+
+/// Opens a source file; the production opener is `File::open`.
+pub type Opener<'a> = &'a dyn Fn(&Path) -> std::io::Result<Box<dyn SourceReader>>;
+
+fn open_file(path: &Path) -> std::io::Result<Box<dyn SourceReader>> {
+    Ok(Box::new(std::fs::File::open(path)?))
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SightingCheck {
@@ -49,6 +67,8 @@ struct Sighting {
     byte_offset: u64,
     byte_length: u64,
     raw_sha: String,
+    /// `source_files.encoding`; None for XLSX.
+    encoding: Option<String>,
 }
 
 pub fn verify_record(
@@ -57,8 +77,20 @@ pub fn verify_record(
     record_key: &str,
     root_override: Option<&Path>,
 ) -> Result<VerifyReport> {
+    verify_record_with(case, table, record_key, root_override, &open_file)
+}
+
+/// [`verify_record`] opening source files through `open`.
+#[doc(hidden)]
+pub fn verify_record_with(
+    case: &Case,
+    table: &str,
+    record_key: &str,
+    root_override: Option<&Path>,
+    open: Opener<'_>,
+) -> Result<VerifyReport> {
     let mut stmt = case.conn().prepare(
-        "SELECT sf.rel_path, sf.sha256, c.root_path, rs.line_start, rs.line_end, rs.byte_offset, rs.byte_length, rs.raw_sha256
+        "SELECT sf.rel_path, sf.sha256, c.root_path, rs.line_start, rs.line_end, rs.byte_offset, rs.byte_length, rs.raw_sha256, sf.encoding
          FROM record_sources rs
          JOIN source_files sf ON sf.file_id = rs.file_id
          JOIN collections c ON c.collection_id = sf.collection_id
@@ -76,6 +108,7 @@ pub fn verify_record(
                 byte_offset: r.get::<_, i64>(5)? as u64,
                 byte_length: r.get::<_, i64>(6)? as u64,
                 raw_sha: r.get(7)?,
+                encoding: r.get(8)?,
             })
         })?
         .collect::<std::result::Result<_, _>>()?;
@@ -90,7 +123,7 @@ pub fn verify_record(
         == 1;
     let checks: Vec<SightingCheck> = sightings
         .iter()
-        .map(|s| check(s, relocated(s, root_override, single_collection)))
+        .map(|s| check(s, relocated(s, root_override, single_collection), open))
         .collect();
     let ok = checks
         .iter()
@@ -119,7 +152,7 @@ fn relocated<'p>(
     (recorded.file_name().is_some() && recorded.file_name() == o.file_name()).then_some(o)
 }
 
-fn check(s: &Sighting, root_override: Option<&Path>) -> SightingCheck {
+fn check(s: &Sighting, root_override: Option<&Path>, open: Opener<'_>) -> SightingCheck {
     let recorded_root = PathBuf::from(&s.root_path);
     let root = root_override
         .map(Path::to_path_buf)
@@ -140,27 +173,93 @@ fn check(s: &Sighting, root_override: Option<&Path>) -> SightingCheck {
         record_hash_ok: false,
         excerpt: None,
     };
-    let Ok(raw) = std::fs::read(&path) else {
+    let Ok(mut file) = open(&path) else {
         return result;
     };
     result.file_found = true;
-    result.file_hash_ok = sha256_hex(&raw) == s.file_sha;
     if s.rel_path.to_ascii_lowercase().ends_with(".xlsx") {
-        check_sheet_row(s, &raw, &mut result);
+        let mut raw = Vec::new();
+        if file.read_to_end(&mut raw).is_ok() {
+            result.file_hash_ok = sha256_hex(&raw) == s.file_sha;
+            check_sheet_row(s, &raw, &mut result);
+        }
         return result;
     }
-    let start = s.byte_offset as usize;
-    let end = start.saturating_add(s.byte_length as usize);
-    if end <= raw.len() {
-        result.record_hash_ok = sha256_hex(&raw[start..end]) == s.raw_sha;
+    if let Ok((hash, head)) = read_record(&mut *file, s.byte_offset, s.byte_length) {
+        result.record_hash_ok = hash == s.raw_sha;
+        let text = decode_excerpt(&head, s.encoding.as_deref(), s.byte_offset);
+        result.excerpt = Some(text);
     }
-    let decoded = decode(&raw);
-    let index = LineIndex::new(&decoded.text);
-    if (s.line_start as usize) <= index.line_count() {
-        let text = index.line_text(&decoded.text, s.line_start, s.line_end);
-        result.excerpt = Some(text.chars().take(EXCERPT_LIMIT).collect());
-    }
+    result.file_hash_ok = hash_whole(&mut *file).is_ok_and(|h| h == s.file_sha);
     result
+}
+
+/// Seek to the record, hash its `length` bytes in chunks and keep the first bytes for the excerpt.
+/// Fails when the file ends before the record does.
+fn read_record(
+    file: &mut dyn SourceReader,
+    offset: u64,
+    length: u64,
+) -> std::io::Result<(String, Vec<u8>)> {
+    file.seek(SeekFrom::Start(offset))?;
+    let mut hash = Sha256Stream::new();
+    let mut head = Vec::new();
+    let mut buf = vec![0u8; CHUNK_BYTES.min(length.max(1) as usize)];
+    let mut left = length;
+    while left > 0 {
+        let want = buf.len().min(left as usize);
+        let n = match file.read(&mut buf[..want]) {
+            Ok(0) => return Err(std::io::ErrorKind::UnexpectedEof.into()),
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        hash.update(&buf[..n]);
+        let room = EXCERPT_BYTES.saturating_sub(head.len());
+        head.extend_from_slice(&buf[..n.min(room)]);
+        left -= n as u64;
+    }
+    Ok((hash.finish_hex(), head))
+}
+
+/// SHA-256 of the whole file, read in chunks from the start.
+fn hash_whole(file: &mut dyn SourceReader) -> std::io::Result<String> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut hash = Sha256Stream::new();
+    let mut buf = vec![0u8; CHUNK_BYTES];
+    loop {
+        match file.read(&mut buf) {
+            Ok(0) => return Ok(hash.finish_hex()),
+            Ok(n) => hash.update(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// The record's own bytes as text in the file's recorded encoding, without its line terminator, capped.
+fn decode_excerpt(bytes: &[u8], encoding: Option<&str>, offset: u64) -> String {
+    let codec = match encoding {
+        Some(e) if e == TextEncoding::Utf16Le.as_str() => Some(encoding_rs::UTF_16LE),
+        Some(e) if e == TextEncoding::Utf16Be.as_str() => Some(encoding_rs::UTF_16BE),
+        Some(e) if e == TextEncoding::Windows1252.as_str() => Some(encoding_rs::WINDOWS_1252),
+        Some(_) => None,
+        // No stored encoding: decide from the record's bytes (offset 0 is where a BOM would be).
+        None if offset == 0 => return trimmed(&decode(bytes).text),
+        None => None,
+    };
+    let text = match codec {
+        Some(c) => c.decode_without_bom_handling(bytes).0,
+        None => String::from_utf8_lossy(bytes),
+    };
+    trimmed(&text)
+}
+
+fn trimmed(text: &str) -> String {
+    text.trim_end_matches(['\r', '\n'])
+        .chars()
+        .take(EXCERPT_LIMIT)
+        .collect()
 }
 
 /// XLSX sighting: re-read sheet row `line_start`, re-hash its tab-joined cell texts and show
