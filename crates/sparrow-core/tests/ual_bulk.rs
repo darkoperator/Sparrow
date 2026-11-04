@@ -429,3 +429,125 @@ fn split_batches_count_like_one_for_every_completeness_order() {
         assert_eq!(snapshot(&one), snapshot(&two), "{name}");
     }
 }
+
+/// `mia_full` as another export of the same record would give it: another user, one accessed item.
+fn mia_full_other() -> UalRecord {
+    rec(
+        json!({
+            "CreationTime": "2026-09-01T10:05:00", "Id": MIA, "Operation": "MailItemsAccessed",
+            "Workload": "Exchange", "RecordType": 50, "UserId": "bob@contoso.example",
+            "OperationProperties": [{"Name": "MailAccessType", "Value": "Bind"}],
+            "Folders": [{"Path": "\\Inbox", "FolderItems": [
+                {"InternetMessageId": "<m9@contoso.example>", "SizeInBytes": 9}
+            ]}]
+        }),
+        false,
+    )
+}
+
+/// `staged(ordinal, rec)` read at another place of the file (line, bytes and hash differ).
+fn staged_again(ordinal: u64, rec: UalRecord) -> StagedUal {
+    let mut s = staged(ordinal, rec);
+    s.pos.line_start += 1000;
+    s.pos.line_end += 1000;
+    s.raw_sha256 = format!("again{ordinal}");
+    s
+}
+
+/// `ual_events` has no key index: the merge itself writes one row per record. A record staged twice at the same
+/// ordinal (which failed the file with a duplicate key while the key existed) is written once, from the first copy
+/// staged, with that copy's children and sighting only.
+#[test]
+fn a_record_staged_twice_at_the_same_ordinal_is_written_once_from_its_first_copy() {
+    let case = Case::in_memory().unwrap();
+    let mut stage = UalFileStage::begin(case.conn(), 1).unwrap();
+    stage
+        .stage(&[staged(0, mia_full()), staged(1, link())])
+        .unwrap();
+    stage
+        .stage(&[staged_again(0, mia_full_other()), staged_again(1, link())])
+        .unwrap();
+    let out = stage.finish(7).unwrap();
+    assert_eq!((out.staged, out.inserted, out.upgraded), (4, 2, 0));
+    assert_eq!(
+        count(&case, "SELECT count(*) FROM ual_events"),
+        2,
+        "one row per record"
+    );
+    let user: String = case
+        .conn()
+        .query_row(
+            "SELECT user_upn FROM ual_events WHERE record_id = ?",
+            [MIA],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(user, "alice@contoso.example", "the first copy wins");
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM mail_items_accessed WHERE internet_message_id IN ('<m1@contoso.example>', '<m2@contoso.example>')"
+        ),
+        2
+    );
+    assert_eq!(
+        count(&case, "SELECT count(*) FROM mail_items_accessed"),
+        2,
+        "the first copy's children only"
+    );
+    assert_eq!(count(&case, "SELECT count(*) FROM file_events"), 1);
+    assert_eq!(count(&case, "SELECT count(*) FROM sharing_events"), 1);
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM record_sources WHERE raw_sha256 IN ('sha0', 'sha1')"
+        ),
+        2
+    );
+    assert_eq!(
+        count(&case, "SELECT count(*) FROM record_sources"),
+        2,
+        "the first sightings only"
+    );
+}
+
+/// The same for an upgrade: a partial row stored by an earlier file, then a file staging its full copy twice at one
+/// ordinal. The row is upgraded once, from the first copy, and gets that copy's children only.
+#[test]
+fn a_full_copy_staged_twice_at_one_ordinal_upgrades_the_partial_row_once() {
+    let case = Case::in_memory().unwrap();
+    load_ual_batch(case.conn(), 7, 1, &[staged(0, mia_partial())]).unwrap();
+    let mut stage = UalFileStage::begin(case.conn(), 2).unwrap();
+    stage.stage(&[staged(3, mia_full())]).unwrap();
+    stage.stage(&[staged_again(3, mia_full_other())]).unwrap();
+    let out = stage.finish(8).unwrap();
+    assert_eq!((out.staged, out.inserted, out.upgraded), (2, 0, 1));
+    assert_eq!(count(&case, "SELECT count(*) FROM ual_events"), 1);
+    let (user, completeness): (String, String) = case
+        .conn()
+        .query_row(
+            "SELECT user_upn, CAST(data_completeness AS VARCHAR) FROM ual_events WHERE record_id = ?",
+            [MIA],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (user.as_str(), completeness.as_str()),
+        ("alice@contoso.example", "full")
+    );
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM mail_items_accessed WHERE internet_message_id IN ('<m1@contoso.example>', '<m2@contoso.example>')"
+        ),
+        2
+    );
+    assert_eq!(count(&case, "SELECT count(*) FROM mail_items_accessed"), 2);
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM record_sources WHERE file_id = 2"
+        ),
+        1
+    );
+}

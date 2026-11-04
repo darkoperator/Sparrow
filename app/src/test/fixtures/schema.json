@@ -6017,13 +6017,13 @@
   },
   {
     "name": "ual_events",
-    "comment": "Unified audit log events (one row per AuditData Id) from every source: Hawk raw/expanded/flattened files and Purview audit search exports. All sightings are in record_sources (table_name = 'ual_events').",
+    "comment": "Unified audit log events (one row per AuditData Id) from every source: Hawk raw/expanded/flattened files and Purview audit search exports. All sightings are in record_sources (table_name = 'ual_events'). record_id is unique: the ingest writes each record once (there is no key index).",
     "kind": "table",
     "columns": [
       {
         "name": "record_id",
         "type": "UUID",
-        "comment": "AuditData Id (natural key). When a record has no valid Id, a UUIDv5 of its canonical AuditData (see synthetic_id)."
+        "comment": "AuditData Id (natural key, unique: the ingest writes each record_id once; there is no key index). When a record has no valid Id, a UUIDv5 of its canonical AuditData (see synthetic_id)."
       },
       {
         "name": "collection_id",

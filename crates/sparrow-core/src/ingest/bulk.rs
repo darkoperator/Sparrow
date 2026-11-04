@@ -35,7 +35,9 @@ impl LoadOutcome {
 
 /// The stage tables of one file, created empty by [`UalFileStage::begin`]. Insert-only and constraint-free: a
 /// TEMP table's deleted or replaced rows are never reclaimed (not even across commits), so they are appended to
-/// per batch and dropped once, never emptied or replaced.
+/// per batch and dropped once, never emptied or replaced. `seq` numbers the staged records in staging order (one
+/// per `stage_ual` row; a child row carries its record's), so a staged copy is told apart even from one staged
+/// with the same `(record_id, ord)`.
 const STAGE_DDL: &str = "
 CREATE TEMP TABLE stage_ual (
     ord BIGINT, record_id VARCHAR, synthetic_id BOOLEAN, event_time VARCHAR, time_tz_assumed BOOLEAN,
@@ -44,20 +46,20 @@ CREATE TEMP TABLE stage_ual (
     client_ip VARCHAR, user_agent VARCHAR, session_id VARCHAR, app_id VARCHAR, client_app_id VARCHAR,
     object_id VARCHAR, organization_id VARCHAR, mailbox_upn VARCHAR, parameters VARCHAR,
     audit_data VARCHAR, completeness VARCHAR, line_start BIGINT, line_end BIGINT, byte_offset BIGINT,
-    byte_length BIGINT, raw_sha256 VARCHAR);
+    byte_length BIGINT, raw_sha256 VARCHAR, seq BIGINT);
 CREATE TEMP TABLE stage_mia (
     ord BIGINT, record_id VARCHAR, item_ordinal INTEGER, access_type VARCHAR, folder_path VARCHAR,
-    internet_message_id VARCHAR, size_bytes BIGINT, is_throttled BOOLEAN, operation_count INTEGER);
+    internet_message_id VARCHAR, size_bytes BIGINT, is_throttled BOOLEAN, operation_count INTEGER, seq BIGINT);
 CREATE TEMP TABLE stage_file (
     ord BIGINT, record_id VARCHAR, workload VARCHAR, site_url VARCHAR, relative_url VARCHAR,
     file_name VARCHAR, file_ext VARCHAR, item_type VARCHAR, is_onenote BOOLEAN,
     application_name VARCHAR, platform VARCHAR, device_name VARCHAR, list_id VARCHAR,
-    list_item_id VARCHAR);
+    list_item_id VARCHAR, seq BIGINT);
 CREATE TEMP TABLE stage_sharing (
     ord BIGINT, record_id VARCHAR, link_type VARCHAR, target_user VARCHAR, target_email VARCHAR,
-    permission VARCHAR, is_external BOOLEAN);
+    permission VARCHAR, is_external BOOLEAN, seq BIGINT);
 CREATE TEMP TABLE stage_search (
-    ord BIGINT, record_id VARCHAR, workload VARCHAR, query_text VARCHAR, scope VARCHAR);
+    ord BIGINT, record_id VARCHAR, workload VARCHAR, query_text VARCHAR, scope VARCHAR, seq BIGINT);
 ";
 
 /// Every TEMP object a file's stage creates (`stage_chosen` is a view), dropped by `begin` (leftovers of a failed
@@ -75,24 +77,30 @@ DROP TABLE IF EXISTS stage_sharing;
 DROP TABLE IF EXISTS stage_search;
 ";
 
-/// Pick one staged copy per record (full before partial, then first in file) on the narrow columns only, read the
-/// wide ones through a join (`audit_data` is never copied), and split the chosen copies into new records and
-/// upgrades of partial rows stored before this file.
+/// Pick one staged copy per record (full before partial, then first in file, then first staged) on the narrow
+/// columns only, read the wide ones through a join (`audit_data` is never copied), and split the chosen copies into
+/// new records and upgrades of partial rows stored before this file.
+///
+/// `ual_events` has no key index (migration 32): this is what keeps `record_id` unique. `stage_chosen_keys` holds one
+/// staged copy per record_id (`seq` is unique, so the join gives exactly one row each), `stage_fresh` only records
+/// not stored yet, `stage_upgrade` only stored ones, and the records of one file are merged once. Until the key was
+/// dropped, a record staged twice at the same `(record_id, ord)` failed the file with a duplicate key; now the first
+/// copy staged wins, as `record_sources` keeps its first sighting.
 const MERGE_SETUP: &str = "
 CREATE TEMP TABLE stage_chosen_keys AS
-    SELECT record_id, ord, completeness FROM stage_ual
-    QUALIFY row_number() OVER (PARTITION BY record_id ORDER BY (completeness = 'full') DESC, ord) = 1;
+    SELECT record_id, seq, completeness FROM stage_ual
+    QUALIFY row_number() OVER (PARTITION BY record_id ORDER BY (completeness = 'full') DESC, ord, seq) = 1;
 CREATE TEMP VIEW stage_chosen AS
-    SELECT s.* FROM stage_ual s JOIN stage_chosen_keys k ON k.record_id = s.record_id AND k.ord = s.ord;
+    SELECT s.* FROM stage_ual s JOIN stage_chosen_keys k ON k.seq = s.seq;
 CREATE TEMP TABLE stage_upgrade AS
-    SELECT k.record_id, k.ord FROM stage_chosen_keys k
+    SELECT k.record_id, k.seq FROM stage_chosen_keys k
     JOIN ual_events e ON e.record_id = CAST(k.record_id AS UUID)
     WHERE e.data_completeness = 'partial' AND k.completeness = 'full';
 CREATE TEMP TABLE stage_fresh AS
-    SELECT k.record_id, k.ord FROM stage_chosen_keys k
+    SELECT k.record_id, k.seq FROM stage_chosen_keys k
     WHERE NOT EXISTS (SELECT 1 FROM ual_events e WHERE e.record_id = CAST(k.record_id AS UUID));
 CREATE TEMP TABLE stage_written AS
-    SELECT record_id, ord FROM stage_fresh UNION ALL SELECT record_id, ord FROM stage_upgrade;
+    SELECT record_id, seq FROM stage_fresh UNION ALL SELECT record_id, seq FROM stage_upgrade;
 ";
 
 const PARAMETERS_EXPR: &str = "CASE WHEN c.parameters IS NULL THEN NULL
@@ -110,23 +118,23 @@ INSERT INTO mail_items_accessed (record_id, item_ordinal, collection_id, access_
     internet_message_id, size_bytes, is_throttled, operation_count)
 SELECT CAST(s.record_id AS UUID), s.item_ordinal, e.collection_id, CAST(s.access_type AS mail_access_type),
     s.folder_path, s.internet_message_id, s.size_bytes, s.is_throttled, s.operation_count
-FROM stage_mia s JOIN stage_written w ON w.record_id = s.record_id AND w.ord = s.ord
+FROM stage_mia s JOIN stage_written w ON w.seq = s.seq
 JOIN ual_events e ON e.record_id = CAST(s.record_id AS UUID);
 INSERT INTO file_events (record_id, collection_id, workload, site_url, relative_url, file_name, file_ext,
     item_type, is_onenote, application_name, platform, device_name, list_id, list_item_id)
 SELECT CAST(s.record_id AS UUID), e.collection_id, s.workload, s.site_url, s.relative_url, s.file_name,
     s.file_ext, CAST(s.item_type AS file_item_type), s.is_onenote, s.application_name, s.platform,
     s.device_name, s.list_id, s.list_item_id
-FROM stage_file s JOIN stage_written w ON w.record_id = s.record_id AND w.ord = s.ord
+FROM stage_file s JOIN stage_written w ON w.seq = s.seq
 JOIN ual_events e ON e.record_id = CAST(s.record_id AS UUID);
 INSERT INTO sharing_events (record_id, collection_id, link_type, target_user, target_email, permission, is_external)
 SELECT CAST(s.record_id AS UUID), e.collection_id, CAST(s.link_type AS link_type), s.target_user,
     s.target_email, CAST(s.permission AS share_permission), s.is_external
-FROM stage_sharing s JOIN stage_written w ON w.record_id = s.record_id AND w.ord = s.ord
+FROM stage_sharing s JOIN stage_written w ON w.seq = s.seq
 JOIN ual_events e ON e.record_id = CAST(s.record_id AS UUID);
 INSERT INTO search_queries (record_id, collection_id, workload, query_text, scope)
 SELECT CAST(s.record_id AS UUID), e.collection_id, CAST(s.workload AS search_workload), s.query_text, s.scope
-FROM stage_search s JOIN stage_written w ON w.record_id = s.record_id AND w.ord = s.ord
+FROM stage_search s JOIN stage_written w ON w.seq = s.seq
 JOIN ual_events e ON e.record_id = CAST(s.record_id AS UUID);
 ";
 
@@ -143,7 +151,7 @@ fn upgrade_sql() -> String {
             mailbox_upn = c.mailbox_upn, parameters = {PARAMETERS_EXPR},
             audit_data = CAST(c.audit_data AS JSON), data_completeness = 'full',
             synthetic_id = c.synthetic_id
-         FROM stage_chosen c JOIN stage_upgrade u ON u.record_id = c.record_id AND u.ord = c.ord
+         FROM stage_chosen c JOIN stage_upgrade u ON u.seq = c.seq
          WHERE ual_events.record_id = CAST(c.record_id AS UUID)"
     )
 }
@@ -160,7 +168,7 @@ fn insert_fresh_sql() -> String {
             c.user_agent, c.session_id, c.app_id, c.client_app_id, c.object_id,
             CAST(c.organization_id AS UUID), c.mailbox_upn, {PARAMETERS_EXPR},
             CAST(c.audit_data AS JSON), CAST(c.completeness AS data_completeness), c.synthetic_id
-         FROM stage_chosen c JOIN stage_fresh f ON f.record_id = c.record_id AND f.ord = c.ord"
+         FROM stage_chosen c JOIN stage_fresh f ON f.seq = c.seq"
     )
 }
 
@@ -212,9 +220,10 @@ impl<'c> UalFileStage<'c> {
         let mut file = conn.appender("stage_file")?;
         let mut sharing = conn.appender("stage_sharing")?;
         let mut search = conn.appender("stage_search")?;
-        for s in rows {
+        for (i, s) in rows.iter().enumerate() {
             let r = &s.rec;
             let ord = s.ordinal as i64;
+            let seq = (self.staged + i as u64) as i64;
             ual.append_row(params![
                 ord,
                 r.record_id,
@@ -245,7 +254,8 @@ impl<'c> UalFileStage<'c> {
                 s.pos.line_end as i64,
                 s.pos.byte_offset as i64,
                 s.pos.byte_length as i64,
-                s.raw_sha256
+                s.raw_sha256,
+                seq
             ])?;
             for m in &r.mail_items {
                 mia.append_row(params![
@@ -257,7 +267,8 @@ impl<'c> UalFileStage<'c> {
                     m.internet_message_id,
                     m.size_bytes,
                     m.is_throttled,
-                    m.operation_count
+                    m.operation_count,
+                    seq
                 ])?;
             }
             if let Some(f) = &r.file_event {
@@ -275,7 +286,8 @@ impl<'c> UalFileStage<'c> {
                     f.platform,
                     f.device_name,
                     f.list_id,
-                    f.list_item_id
+                    f.list_item_id,
+                    seq
                 ])?;
             }
             if let Some(sh) = &r.sharing {
@@ -286,11 +298,19 @@ impl<'c> UalFileStage<'c> {
                     sh.target_user,
                     sh.target_email,
                     sh.permission,
-                    sh.is_external
+                    sh.is_external,
+                    seq
                 ])?;
             }
             if let Some(q) = &r.search {
-                search.append_row(params![ord, r.record_id, q.workload, q.query_text, q.scope])?;
+                search.append_row(params![
+                    ord,
+                    r.record_id,
+                    q.workload,
+                    q.query_text,
+                    q.scope,
+                    seq
+                ])?;
             }
         }
         ual.flush()?;

@@ -917,15 +917,23 @@ fn state_tables_do_not_constrain_record_key() {
     assert!(bad.is_err(), "role_source enum must reject unknown values");
 }
 
+/// Migration 32 dropped the key (DuckDB held it in memory): the table itself takes a second row with the same
+/// record_id, so its uniqueness rests on the UAL merge (`tests/ual_bulk.rs` pins it), as `record_sources`' and
+/// `events`' do on their writers.
 #[test]
-fn ual_events_reject_a_second_row_with_the_same_record_id() {
+fn ual_events_have_no_key_index_the_merge_keeps_record_id_unique() {
     let case = Case::in_memory().unwrap();
     let insert = "INSERT INTO ual_events (record_id, collection_id, event_time, time_tz_assumed, time_precision,
                   data_completeness, synthetic_id, audit_data)
                   VALUES ('a1111111-1111-4111-8111-111111111111', 1, '2026-09-01 10:00:00+00', true, 'second',
                   'full', false, '{}')";
     case.conn().execute(insert, []).unwrap();
-    assert!(case.conn().execute(insert, []).is_err());
+    case.conn().execute(insert, []).unwrap();
+    let n: i64 = case
+        .conn()
+        .query_row("SELECT count(*) FROM ual_events", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 2);
 }
 
 #[test]
@@ -1557,4 +1565,171 @@ fn a_failed_migration_31_leaves_the_case_as_it_was() {
         "the key and the index are still there"
     );
     assert_eq!(events_rows(&conn), before);
+}
+
+/// Every `ual_events` row, all 25 columns by name, as JSON, in physical order (the migration keeps it). The time is
+/// epoch microseconds: TIMESTAMPTZ text follows the connection's time zone.
+fn ual_rows(conn: &duckdb::Connection) -> Vec<String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT CAST(to_json(e) AS VARCHAR)
+             FROM (SELECT * REPLACE (epoch_us(event_time) AS event_time) FROM ual_events ORDER BY rowid) e",
+        )
+        .unwrap();
+    stmt.query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// The key constraints and indexes on `ual_events`.
+fn ual_keys(conn: &duckdb::Connection) -> (i64, i64) {
+    conn.query_row(
+        "SELECT (SELECT count(*) FROM duckdb_constraints()
+                 WHERE table_name = 'ual_events' AND constraint_type <> 'NOT NULL'),
+                (SELECT count(*) FROM duckdb_indexes() WHERE table_name = 'ual_events')",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .unwrap()
+}
+
+/// 2,000 UAL records of a v31 case, in an order that is not the key order, with awkward text, maps and JSON.
+const V31_UAL: &str = "INSERT INTO ual_events
+    SELECT uuid_from_parts(i), 1 + i % 3, make_timestamptz(2026, 9, 1, 0, 0, 0) + to_seconds(2000 - i), i % 2 = 0,
+           CASE i % 5 WHEN 0 THEN 'minute' ELSE 'second' END, CAST(i % 60 AS SMALLINT), 'type ' || (i % 60),
+           CASE WHEN i % 4 = 0 THEN NULL ELSE 'Exchange' END, 'Op ' || i || ' d''q\"é|', 'Succeeded',
+           'u' || (i % 13) || '@contoso.example', CAST(i % 3 AS SMALLINT), NULL, '198.51.100.' || (i % 250), NULL,
+           NULL, NULL, NULL, NULL, CASE WHEN i % 6 = 0 THEN NULL ELSE uuid_from_parts(i + 9999) END, NULL,
+           CASE WHEN i % 7 = 0 THEN NULL ELSE MAP {'ForwardTo': 'x' || i || '@fabrikam.example', 'k''q': ''} END,
+           CAST('{\"Id\": \"' || i || '\", \"n\": [1, null, \"é\"]}' AS JSON),
+           CASE i % 3 WHEN 0 THEN 'partial' ELSE 'full' END, i % 11 = 0
+    FROM (SELECT (2999 * i) % 2000 AS i FROM range(2000) t(i))";
+
+/// A v31 case with [`V31_UAL`]; `uuid_from_parts` is a macro of the test only.
+fn v31_with_ual(path: &std::path::Path) -> duckdb::Connection {
+    let conn = conn_at(path, 31);
+    conn.execute_batch(
+        "CREATE TEMP MACRO uuid_from_parts(i) AS
+             CAST(printf('%08x-0000-4000-8000-%012x', (i * 2654435761) % 4294967296, i) AS UUID);",
+    )
+    .unwrap();
+    conn.execute_batch(V31_UAL).unwrap();
+    conn
+}
+
+#[test]
+fn migration_32_drops_the_ual_events_key_and_keeps_every_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v31.duckdb");
+    let before = {
+        let conn = v31_with_ual(&path);
+        assert_eq!(ual_keys(&conn).0, 1, "a v31 case has the primary key");
+        ual_rows(&conn)
+    };
+    assert_eq!(before.len(), 2000);
+    let (from, to) = Case::upgrade(&path).unwrap();
+    assert_eq!((from, to), (31, latest_version()));
+    {
+        let case = Case::open_read_only(&path).unwrap();
+        let conn = case.conn();
+        assert_eq!(ual_keys(conn), (0, 0));
+        assert_eq!(ual_rows(conn), before, "same rows, same order");
+        let not_null: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM duckdb_columns() WHERE table_name = 'ual_events' AND NOT is_nullable",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(not_null, 8, "record_id keeps its NOT NULL");
+        let (documented, record_id, client_ip): (i64, String, String) = conn
+            .query_row(
+                "SELECT count(*) FILTER (WHERE comment IS NOT NULL),
+                        any_value(comment) FILTER (WHERE column_name = 'record_id'),
+                        any_value(comment) FILTER (WHERE column_name = 'client_ip')
+                 FROM duckdb_columns() WHERE table_name = 'ual_events'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(documented, 25);
+        assert!(record_id.contains("no key index"), "{record_id}");
+        // The current comment (0004's), not 0003's.
+        assert!(client_ip.contains("IPv4-mapped"), "{client_ip}");
+        let table: String = conn
+            .query_row(
+                "SELECT comment FROM duckdb_tables() WHERE table_name = 'ual_events'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(table.contains("no key index"), "{table}");
+        // The views over it still bind.
+        let (timeline, auth): (i64, i64) = conn
+            .query_row(
+                "SELECT (SELECT count(*) FROM timeline WHERE source_table = 'ual_events'),
+                        (SELECT count(*) FROM auth_events)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((timeline, auth), (2000, 0));
+    }
+    // A second open migrates nothing; the upgraded case still loads UAL and rebuilds its events.
+    let case = Case::create_or_open(&path).unwrap();
+    assert_eq!(case.schema_version().unwrap(), latest_version());
+    let n: i64 = case
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM schema_migrations WHERE version = 32",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 1);
+    assert_eq!(ual_rows(case.conn()), before);
+    sparrow_core::case::events::rebuild(case.conn()).unwrap();
+    let events: i64 = case
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM events WHERE source_table = 'ual_events'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(events, 2000);
+    assert_eq!(ual_keys(case.conn()), (0, 0));
+}
+
+#[test]
+fn a_failed_migration_32_leaves_the_case_as_it_was() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v31.duckdb");
+    let before = {
+        let conn = v31_with_ual(&path);
+        conn.execute_batch(
+            "CREATE TABLE ual_events_v32 (x INTEGER); INSERT INTO ual_events_v32 VALUES (7);",
+        )
+        .unwrap();
+        ual_rows(&conn)
+    };
+    let err = Case::upgrade(&path).unwrap_err();
+    assert!(
+        matches!(err, Error::Migration { version: 32, .. }),
+        "{err:?}"
+    );
+    let conn = duckdb::Connection::open(&path).unwrap();
+    let v: i64 = conn
+        .query_row("SELECT max(version) FROM schema_migrations", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(v, 31);
+    assert_eq!(ual_keys(&conn).0, 1, "the key is still there");
+    assert_eq!(ual_rows(&conn), before);
+    let x: i64 = conn
+        .query_row("SELECT x FROM ual_events_v32", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(x, 7);
 }

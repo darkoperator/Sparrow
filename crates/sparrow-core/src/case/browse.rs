@@ -272,10 +272,13 @@ fn where_clause(info: &TableInfo, filters: &[Filter]) -> Result<(String, Vec<Str
 /// The columns that are unique per row of `info`, when that is proven; `None` otherwise (views, and tables whose
 /// uniqueness nothing guarantees).
 ///
-/// - Declared `PRIMARY KEY`s (migrations 0001, 0003, 0009, 0016, 0020): `ual_events(record_id)`, `collections`,
-///   `source_files`, `collection_log`, `case_meta`, `audit_trail`, `findings`, `finding_facts`, `timeline_entries`,
-///   `annotations`, `tags` and `value_flags`, and the composite keys of `record_sources`, `timeline_entry_evidence`,
-///   `account_rollup`, `events`, `event_flags` and `event_tags`.
+/// - Declared `PRIMARY KEY`s (migrations 0001, 0009, 0016, 0020): `collections`, `source_files`, `collection_log`,
+///   `case_meta`, `audit_trail`, `findings`, `finding_facts`, `timeline_entries`, `annotations`, `tags` and
+///   `value_flags`, and the composite keys of `timeline_entry_evidence`, `account_rollup`, `event_flags` and
+///   `event_tags`.
+/// - Keys whose index was dropped (DuckDB keeps it in memory) and that their writers keep unique: `record_sources`
+///   (migration 30, `ingest::sightings`), `events` (migration 31, `case::events::rebuild`) and `ual_events(record_id)`
+///   (migration 32, the UAL merge in `ingest::bulk`).
 /// - Every other table with a `record_key` column is loaded by `ingest::state::load_rows`, which inserts a row
 ///   only `WHERE NOT EXISTS (... t.record_key = p.record_key)` over the whole table (not per collection) and picks
 ///   one staged row per key, so `record_key` alone is unique. `finding_evidence` has a `record_key` column that is

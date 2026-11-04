@@ -165,6 +165,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "events_unkeyed",
         sql: include_str!("../../migrations/0031_events_unkeyed.sql"),
     },
+    Migration {
+        version: 32,
+        name: "ual_events_unkeyed",
+        sql: include_str!("../../migrations/0032_ual_events_unkeyed.sql"),
+    },
 ];
 
 /// The migration that adds the Phase 7 analyst tables and the audit trail.
