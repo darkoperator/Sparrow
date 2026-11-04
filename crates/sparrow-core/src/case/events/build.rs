@@ -10,14 +10,28 @@ use std::net::IpAddr;
 const NV: &str = "CAST(NULL AS VARCHAR)";
 const ZERO_GUID: &str = "00000000-0000-0000-0000-000000000000";
 
+/// TEMP copy of `events` the per-source inserts fill before one sorted insert into `events`.
+const STAGE: &str = "events_stage";
+
+/// `events` has no key or index (migration 31: DuckDB kept both in memory and the rebuild ran out at about 8M rows).
+/// Each (source_table, record_key) is written once: there is one insert per evidence table (the sign-in source is a
+/// CASE in the one `signins` select), each selecting one row per record, and the rows are written after the DELETE. The rows are stored in event_time order (then table and
+/// key), so zone maps prune the grid's time ranges and its default time sort reads them in order.
 pub(super) fn rebuild(conn: &Connection) -> Result<u64> {
     build_ip_map(conn)?;
     build_audit_device_map(conn)?;
-    conn.execute_batch("DELETE FROM events")?;
+    conn.execute_batch(&format!(
+        "CREATE OR REPLACE TEMP TABLE {STAGE} AS SELECT * FROM events LIMIT 0"
+    ))?;
     let mut rows = 0;
     for s in sources() {
         rows += conn.execute(&insert_sql(&s), [])? as u64;
     }
+    conn.execute_batch(&format!(
+        "DELETE FROM events;
+         INSERT INTO events SELECT * FROM {STAGE} ORDER BY event_time ASC NULLS LAST, source_table, record_key;
+         DROP TABLE {STAGE};"
+    ))?;
     conn.execute_batch(
         "DROP TABLE IF EXISTS events_ip_map; DROP TABLE IF EXISTS events_audit_device;
          -- A new generation: a search's cached hits (any connection's) are of the rows before this rebuild.
@@ -306,7 +320,7 @@ fn insert_sql(src: &Source) -> String {
         fallback, ctes, ev, ..
     } = src;
     format!(
-        "INSERT INTO events
+        "INSERT INTO {STAGE}
          WITH {ctes}
          ev AS (SELECT * FROM ({ev}) t(source, source_table, record_key, event_time, time_tz_assumed, collection_id,
                 workload, operation, result, actor_upn, owner_upn, target, ip, user_agent, device_id, device_name,

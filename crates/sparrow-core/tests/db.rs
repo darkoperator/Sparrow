@@ -1423,3 +1423,137 @@ fn a_failed_migration_30_leaves_the_case_as_it_was() {
         .unwrap();
     assert_eq!(x, 7);
 }
+
+/// Every `events` row as one string, sorted (the migration also reorders them by time).
+fn events_rows(conn: &duckdb::Connection) -> Vec<String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT concat_ws('|', source_table, record_key, source, epoch_us(event_time), category, actor_upn, summary)
+             FROM events ORDER BY 1",
+        )
+        .unwrap();
+    stmt.query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// The key constraints and indexes on `events`.
+fn events_keys(conn: &duckdb::Connection) -> (i64, i64) {
+    conn.query_row(
+        "SELECT (SELECT count(*) FROM duckdb_constraints()
+                 WHERE table_name = 'events' AND constraint_type <> 'NOT NULL'),
+                (SELECT count(*) FROM duckdb_indexes() WHERE table_name = 'events')",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .unwrap()
+}
+
+/// 2,000 events of a v30 case, inserted newest first, every 9th without a time.
+const V30_EVENTS: &str = "INSERT INTO events (source_table, record_key, source, event_time, category, actor_upn, summary)
+    SELECT CASE i % 2 WHEN 0 THEN 'signins' ELSE 'ual_events' END, 'k' || i || ' d''q|',
+           CASE i % 2 WHEN 0 THEN 'signin_interactive' ELSE 'ual' END,
+           CASE WHEN i % 9 = 0 THEN NULL ELSE make_timestamptz(2026, 9, 1, 0, 0, 0) END + to_seconds(2000 - i),
+           'auth', 'u' || (i % 13) || '@contoso.example', 'event ' || i
+    FROM range(2000) t(i)";
+
+#[test]
+fn migration_31_drops_the_events_key_and_index_and_keeps_every_row_in_time_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v30.duckdb");
+    let before = {
+        let conn = conn_at(&path, 30);
+        conn.execute_batch(V30_EVENTS).unwrap();
+        assert_eq!(
+            events_keys(&conn),
+            (1, 1),
+            "a v30 case has the key and the time index"
+        );
+        events_rows(&conn)
+    };
+    assert_eq!(before.len(), 2000);
+    let (from, to) = Case::upgrade(&path).unwrap();
+    assert_eq!((from, to), (30, latest_version()));
+    {
+        let case = Case::open_read_only(&path).unwrap();
+        let conn = case.conn();
+        assert_eq!(events_keys(conn), (0, 0));
+        assert_eq!(events_rows(conn), before);
+        // Stored in time order, untimed rows last.
+        let out_of_order: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM (SELECT event_time, lag(event_time) OVER (ORDER BY rowid) AS prev,
+                        lag(event_time IS NULL) OVER (ORDER BY rowid) AS prev_null FROM events)
+                 WHERE event_time < prev OR (prev_null AND event_time IS NOT NULL)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(out_of_order, 0);
+        let comment: String = conn
+            .query_row(
+                "SELECT comment FROM duckdb_columns() WHERE table_name = 'events' AND column_name = 'source_table'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(comment.contains("no key index"), "{comment}");
+        let documented: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM duckdb_columns() WHERE table_name = 'events' AND comment IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(documented, 26);
+    }
+    // A second open migrates nothing; the upgraded case still rebuilds its events.
+    let case = Case::create_or_open(&path).unwrap();
+    assert_eq!(case.schema_version().unwrap(), latest_version());
+    let n: i64 = case
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM schema_migrations WHERE version = 31",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 1);
+    assert_eq!(events_rows(case.conn()), before);
+    sparrow_core::case::events::rebuild(case.conn()).unwrap();
+    assert_eq!(events_keys(case.conn()), (0, 0));
+}
+
+#[test]
+fn a_failed_migration_31_leaves_the_case_as_it_was() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v30.duckdb");
+    let before = {
+        let conn = conn_at(&path, 30);
+        conn.execute_batch(V30_EVENTS).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE events_v31 (x INTEGER); INSERT INTO events_v31 VALUES (7);",
+        )
+        .unwrap();
+        events_rows(&conn)
+    };
+    let err = Case::upgrade(&path).unwrap_err();
+    assert!(
+        matches!(err, Error::Migration { version: 31, .. }),
+        "{err:?}"
+    );
+    let conn = duckdb::Connection::open(&path).unwrap();
+    let v: i64 = conn
+        .query_row("SELECT max(version) FROM schema_migrations", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(v, 30);
+    assert_eq!(
+        events_keys(&conn),
+        (1, 1),
+        "the key and the index are still there"
+    );
+    assert_eq!(events_rows(&conn), before);
+}

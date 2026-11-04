@@ -1077,3 +1077,76 @@ fn a_key_change_names_no_device_it_cannot_prove() {
     assert_eq!(dev("broken"), None);
     assert_eq!(dev("quoted").as_deref(), Some(b));
 }
+
+/// `events` has no key (migration 31): fails unless every (source_table, record_key) is there once.
+fn assert_events_unique(case: &Case) {
+    let (all, distinct): (i64, i64) = case
+        .conn()
+        .query_row(
+            "SELECT count(*), count(DISTINCT (source_table, record_key)) FROM events",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(all, distinct, "an event written twice");
+}
+
+/// Rows out of event_time order in physical (rowid) order, untimed rows last.
+fn out_of_time_order(case: &Case) -> i64 {
+    count(
+        case,
+        "SELECT count(*) FROM (SELECT event_time, lag(event_time) OVER (ORDER BY rowid) AS prev,
+                lag(event_time IS NULL) OVER (ORDER BY rowid) AS prev_null FROM events)
+         WHERE event_time < prev OR (prev_null AND event_time IS NOT NULL)",
+    )
+}
+
+#[test]
+fn every_event_is_written_once_and_stored_in_time_order() {
+    let mut case = one_of_everything();
+    // Sign-ins whose type fields could land in two sign-in sources, and ones the time order must place.
+    for (key, fields) in [
+        (
+            "si-x1",
+            json!({"event_type": "interactive", "is_interactive": false, "event_time": "2026-08-31T09:00:00Z"}),
+        ),
+        (
+            "si-x2",
+            json!({"event_type": "service_principal", "is_interactive": true, "event_time": "2026-09-02T09:00:00Z"}),
+        ),
+        ("si-x3", json!({"is_interactive": true})),
+        (
+            "si-x4",
+            json!({"event_type": "noninteractive", "is_interactive": true, "event_time": "2026-08-30T09:00:00Z"}),
+        ),
+    ] {
+        let mut f = fields;
+        f["record_key"] = json!(key);
+        put(&case, "signins", f);
+    }
+    let first = events::rebuild(case.conn()).unwrap();
+    assert_eq!(first, 18);
+    assert_events_unique(&case);
+    assert_eq!(out_of_time_order(&case), 0);
+    // Again, by hand and through the profile: still once each.
+    assert_eq!(events::rebuild(case.conn()).unwrap(), first);
+    refresh(&mut case, &ProfileOptions::default()).unwrap();
+    assert_events_unique(&case);
+    assert_eq!(count(&case, "SELECT count(*) FROM events"), first as i64);
+    assert_eq!(out_of_time_order(&case), 0);
+    // The earliest stored row is the earliest event; the untimed sign-in is last.
+    assert_eq!(
+        count(
+            &case,
+            "SELECT CASE WHEN record_key = 'si-x4' THEN 1 ELSE 0 END FROM events ORDER BY rowid LIMIT 1"
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            &case,
+            "SELECT CASE WHEN event_time IS NULL THEN 1 ELSE 0 END FROM events ORDER BY rowid DESC LIMIT 1"
+        ),
+        1
+    );
+}
