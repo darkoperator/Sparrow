@@ -66,6 +66,8 @@ function stageText(p: IngestProgress | null): string {
       return `Collection ${p.index} of ${p.count}`;
     case "file":
       return `Loading file ${p.index} of ${p.files}`;
+    case "file_step":
+      return "Loading file…";
     case "profile":
       return "Profiling the case…";
     case "detect":
@@ -126,7 +128,12 @@ export default function ImportDialog({ mode, onClose, onOpenCase }: Props) {
     runId.current = id;
     const offs: Array<() => void> = [];
     try {
-      offs.push(await onIngestProgress(setProgress));
+      // In-file progress (`file_step`) is not shown yet: the stage line keeps the file it is on.
+      offs.push(
+        await onIngestProgress((p) => {
+          if (p.stage !== "file_step") setProgress(p);
+        }),
+      );
       offs.push(
         await onIngestClosing(() => {
           setCancelling(true);

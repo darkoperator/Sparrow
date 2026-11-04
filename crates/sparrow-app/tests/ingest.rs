@@ -9,7 +9,7 @@ use sparrow_core::Case;
 use sparrow_core::case::actor::Actor;
 use sparrow_core::case::indicators::{IndicatorType, Verdict, add_indicator};
 use sparrow_core::ingest::parser::ParserRegistry;
-use sparrow_core::ingest::{IngestOptions, fault, ingest_path};
+use sparrow_core::ingest::{IngestOptions, IngestProgress, fault, ingest_path};
 use sparrow_synth::cache::Cache;
 use sparrow_synth::options::{Collector, GenerateOptions};
 use std::path::{Path, PathBuf};
@@ -1157,4 +1157,52 @@ fn a_panic_when_the_lock_down_cannot_be_restored_closes_the_case() {
         "the case stayed open unlocked"
     );
     assert_safe_after_panic(&state);
+}
+
+#[test]
+fn progress_events_serialize_file_steps_and_overall_bytes() {
+    let step = ProgressEvent::from(&IngestProgress::FileStep {
+        steps: vec!["Checking file", "Checking dates", "Loading records"],
+        step: 2,
+        bytes_done: 1024,
+        bytes_total: 4096,
+        records: 412,
+        errors: 9,
+    });
+    assert_eq!(
+        serde_json::to_value(&step).unwrap(),
+        serde_json::json!({
+            "stage": "file_step",
+            "steps": ["Checking file", "Checking dates", "Loading records"],
+            "step": 2,
+            "bytes_done": 1024,
+            "bytes_total": 4096,
+            "records": 412,
+            "errors": 9,
+        })
+    );
+    let file = ProgressEvent::from(&IngestProgress::File {
+        collection: 1,
+        collections: 2,
+        index: 3,
+        files: 4,
+        rel_path: "a_ual.csv".into(),
+        size: 4096,
+        bytes_done_before: 8192,
+        bytes_total: 16384,
+    });
+    assert_eq!(
+        serde_json::to_value(&file).unwrap(),
+        serde_json::json!({
+            "stage": "file",
+            "collection": 1,
+            "collections": 2,
+            "index": 3,
+            "files": 4,
+            "rel_path": "a_ual.csv",
+            "size": 4096,
+            "bytes_done_before": 8192,
+            "bytes_total": 16384,
+        })
+    );
 }

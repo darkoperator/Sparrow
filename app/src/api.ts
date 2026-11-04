@@ -1245,7 +1245,32 @@ export type IngestTarget = "open" | { new_case: string };
 export type IngestProgress =
   | { stage: "discover" }
   | { stage: "collection"; index: number; count: number; root: string }
-  | { stage: "file"; collection: number; collections: number; index: number; files: number; rel_path: string }
+  | {
+      stage: "file";
+      collection: number;
+      collections: number;
+      index: number;
+      files: number;
+      rel_path: string;
+      /** What this file adds to `bytes_done_before` once handled (0 for a copy known to be superseded). */
+      size: number;
+      /** Bytes of the import's files to load covered by the files handled before this one. */
+      bytes_done_before: number;
+      /** Bytes of the import's files to load. */
+      bytes_total: number;
+    }
+  | {
+      stage: "file_step";
+      /** "Checking file", then the parser's steps. */
+      steps: string[];
+      /** Index into `steps`. */
+      step: number;
+      /** Bytes read by the current step's pass, of `bytes_total` (the file's size). */
+      bytes_done: number;
+      bytes_total: number;
+      records: number;
+      errors: number;
+    }
   | { stage: "profile" }
   | { stage: "detect" };
 

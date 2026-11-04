@@ -3,6 +3,7 @@
 use crate::Error;
 use crate::Result;
 use crate::hash::sha256_hex;
+use crate::ingest::progress::FileProgress;
 use crate::ingest::{HookedRead, IngestOptions, ReadPhase};
 use crate::readers::stream::{Admitted, CHUNK_BYTES, Sight, TextStream};
 use crate::readers::text::{DecodedText, LineIndex, OffsetMapper, SourcePos, Span, locate};
@@ -31,19 +32,26 @@ pub struct WholeText<'a> {
 }
 
 /// A file being ingested from disk: what its record passes need besides the admitted file (the ingest's options, for
-/// the read size, the cancel check and the test read hook) and how many passes it has had.
+/// the read size, the cancel check and the test read hook), how many passes it has had and where its progress is
+/// reported.
 pub struct FileSource<'a> {
     rel_path: &'a str,
     options: &'a IngestOptions,
     passes: Cell<usize>,
+    progress: &'a FileProgress<'a>,
 }
 
 impl<'a> FileSource<'a> {
-    pub fn new(rel_path: &'a str, options: &'a IngestOptions) -> Self {
+    pub(crate) fn new(
+        rel_path: &'a str,
+        options: &'a IngestOptions,
+        progress: &'a FileProgress<'a>,
+    ) -> Self {
         FileSource {
             rel_path,
             options,
             passes: Cell::new(0),
+            progress,
         }
     }
 }
@@ -66,6 +74,7 @@ pub struct RecordInput<'a> {
     source: RecordSource<'a>,
     step: usize,
     sights: bool,
+    progress: bool,
 }
 
 impl<'a> RecordInput<'a> {
@@ -91,6 +100,28 @@ impl<'a> RecordInput<'a> {
         self.sights
     }
 
+    /// This input with its pass reporting no progress: for a peek that reads only up to the first record, before
+    /// the pass of the same step that reads the whole file (a step's bytes would otherwise run to 100 % twice).
+    pub fn quiet(mut self) -> Self {
+        self.progress = false;
+        self
+    }
+
+    /// Where this pass reports its progress, if it does.
+    fn progress(&self) -> Option<&'a FileProgress<'a>> {
+        match self.source {
+            RecordSource::File(f) if self.progress => Some(f.progress),
+            _ => None,
+        }
+    }
+
+    /// The pass ended without an error (read to the end, or stopped by the parser): its step is at 100 %.
+    pub(crate) fn pass_done(&self) {
+        if let Some(p) = self.progress() {
+            p.close();
+        }
+    }
+
     /// A new pass over the file's text from its first byte.
     pub(crate) fn open(&self) -> std::io::Result<TextStream> {
         let chunk = match self.source {
@@ -108,6 +139,9 @@ impl<'a> RecordInput<'a> {
                 Ok(TextStream::from_bytes(raw.to_vec(), self.admitted, chunk))
             }
             RecordSource::File(f) => {
+                if let Some(p) = self.progress() {
+                    p.begin_pass(self.step + 1);
+                }
                 let pass = f.passes.get() + 1;
                 f.passes.set(pass);
                 let file = std::fs::File::open(&self.admitted.path)?;
@@ -126,13 +160,22 @@ impl<'a> RecordInput<'a> {
         }
     }
 
-    /// What a pass reports for the raw bytes it reads; false stops it (the ingest was cancelled).
-    pub(crate) fn on_read(&self) -> impl FnMut(u64) -> bool + use<> {
+    /// What a pass reports for the raw bytes it reads (its progress); false stops it (the ingest was cancelled).
+    pub(crate) fn on_read(&self) -> impl FnMut(u64) -> bool + use<'a> {
         let cancel = match self.source {
             RecordSource::Memory(_) => None,
             RecordSource::File(f) => f.options.cancel.clone(),
         };
-        move |_| !cancel.as_ref().is_some_and(|c| c())
+        let progress = self.progress();
+        move |n| {
+            if cancel.as_ref().is_some_and(|c| c()) {
+                return false;
+            }
+            if let Some(p) = progress {
+                p.read(n);
+            }
+            true
+        }
     }
 }
 
@@ -221,12 +264,45 @@ impl<'a> ParseContext<'a> {
             source: self.source,
             step: self.step,
             sights: true,
+            progress: true,
+        }
+    }
+
+    /// Where the file's progress is reported (a file read from disk).
+    fn progress(&self) -> Option<&'a FileProgress<'a>> {
+        match self.source {
+            RecordSource::File(f) => Some(f.progress),
+            RecordSource::Memory(_) => None,
+        }
+    }
+
+    /// Hand the counts so far to the file's progress: records loaded (or staged, [`Self::note_staged`]) and errors.
+    fn sync_progress(&self) {
+        if let Some(p) = self.progress() {
+            p.set_counts(self.stats.loaded, self.stats.error);
+        }
+    }
+
+    /// `n` more records were staged for loading (a parser that stages the file's records and merges them once, so
+    /// they count as loaded only at the end): the progress counts them as they are staged.
+    pub fn note_staged(&self, n: u64) {
+        if let Some(p) = self.progress() {
+            p.add_staged(n);
+        }
+    }
+
+    /// The parse ended: the current step is at 100 % with the final counts.
+    pub(crate) fn finish_progress(&self) {
+        if let Some(p) = self.progress() {
+            p.set_counts(self.stats.loaded, self.stats.error);
+            p.close();
         }
     }
 
     /// `Err(Error::Interrupted)` when the ingest was cancelled: the streaming parsers check it before loading each
     /// batch, so a cancel stops a file between reads too.
     pub fn check_cancelled(&self) -> Result<()> {
+        self.sync_progress();
         if self.options.cancelled() {
             return Err(Error::Interrupted);
         }
@@ -250,6 +326,10 @@ impl<'a> ParseContext<'a> {
     /// The parser step (index into its `steps()`) the next record passes belong to.
     pub fn set_step(&mut self, step: usize) {
         self.step = step;
+        self.sync_progress();
+        if let Some(p) = self.progress() {
+            p.begin_step(step + 1);
+        }
     }
 
     fn whole_text(&self) -> WholeText<'a> {
@@ -447,6 +527,7 @@ impl<'a> ParseContext<'a> {
                 snippet
             ])?;
         self.stats.error += 1;
+        self.sync_progress();
         Ok(())
     }
 

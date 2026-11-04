@@ -7,7 +7,7 @@ use sparrow_core::discovery::discover_collections;
 use sparrow_core::fixtures::{self, csv_line, utf8_bom};
 use sparrow_core::ingest::parser::ParserRegistry;
 use sparrow_core::ingest::{
-    FileReport, FileStatus, IngestOptions, IngestReport, ReadEvent, ReadPhase,
+    FileReport, FileStatus, IngestOptions, IngestProgress, IngestReport, ReadEvent, ReadPhase,
     WHOLE_FILE_MAX_BYTES, XLSX_MAX_BYTES, ingest_collections_partial, ingest_path,
 };
 use sparrow_core::readers::stream::CHUNK_BYTES;
@@ -17,6 +17,7 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 fn count(case: &Case, sql: &str) -> i64 {
     case.conn().query_row(sql, [], |r| r.get(0)).unwrap()
@@ -424,4 +425,440 @@ fn whole_file_over_guard_is_an_error() {
         "{f:#?}"
     );
     assert_eq!(count(&case, "SELECT count(*) FROM audit_config"), 0);
+}
+
+/// Every progress event of an ingest of `root` with `opts` (its `progress` replaced), and the report.
+fn events_of(root: &Path, mut opts: IngestOptions) -> (IngestReport, Vec<IngestProgress>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let s = seen.clone();
+    opts.progress = Some(Arc::new(move |p: &IngestProgress| {
+        s.lock().unwrap().push(p.clone())
+    }));
+    let mut case = Case::in_memory().unwrap();
+    let (report, stopped) = run(&mut case, root, &opts);
+    assert!(!stopped);
+    let events = seen.lock().unwrap().clone();
+    (report, events)
+}
+
+/// One `FileStep` event's fields.
+#[derive(Debug, Clone, PartialEq)]
+struct Step {
+    steps: Vec<&'static str>,
+    step: usize,
+    bytes_done: u64,
+    bytes_total: u64,
+    records: u64,
+    errors: u64,
+}
+
+/// The `FileStep` events of `rel`: those between its `File` event and the next `File` event (its last handling, when
+/// it is handled twice: deferred, then retried).
+fn file_steps(events: &[IngestProgress], rel: &str) -> Vec<Step> {
+    let mut out = Vec::new();
+    let mut inside = false;
+    for e in events {
+        match e {
+            IngestProgress::File { rel_path, .. } => {
+                inside = rel_path == rel;
+                if inside {
+                    out.clear();
+                }
+            }
+            IngestProgress::FileStep {
+                steps,
+                step,
+                bytes_done,
+                bytes_total,
+                records,
+                errors,
+            } if inside => out.push(Step {
+                steps: steps.clone(),
+                step: *step,
+                bytes_done: *bytes_done,
+                bytes_total: *bytes_total,
+                records: *records,
+                errors: *errors,
+            }),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The events of `steps` grouped by step, in order.
+fn by_step(steps: &[Step]) -> Vec<Vec<Step>> {
+    let mut out: Vec<Vec<Step>> = Vec::new();
+    for s in steps {
+        match out.last_mut() {
+            Some(g) if g[0].step == s.step => g.push(s.clone()),
+            _ => out.push(vec![s.clone()]),
+        }
+    }
+    out
+}
+
+/// A clock reading `ms` milliseconds after a fixed start: tests move it.
+fn fake_clock(ms: Arc<AtomicU64>) -> sparrow_core::ingest::ClockFn {
+    let base = Instant::now();
+    Arc::new(move || base + Duration::from_millis(ms.load(Ordering::SeqCst)))
+}
+
+const UAL_STEPS: [&str; 3] = ["Checking file", "Checking dates", "Loading records"];
+
+/// [`portal_ual`] of [`ROWS`] records and one more whose AuditData is not JSON (a parse error).
+fn ual_with_one_bad_row() -> String {
+    portal_ual(1, ROWS)
+        + &csv_line(&[
+            "ffffffff-0000-4000-8000-000000000000",
+            "2026-01-01T05:00:00.0000000Z",
+            "50",
+            "MailItemsAccessed",
+            "rowan.porter@contoso.example",
+            "not json",
+            "",
+            "",
+        ])
+}
+
+#[test]
+fn file_step_events_cover_every_pass() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("portal");
+    let body = ual_with_one_bad_row();
+    fixtures::write(&root, "a_ual.csv", body.as_bytes());
+    let size = body.len() as u64;
+    // A clock that moves a second each time it is read: every read reports, so the events follow each pass.
+    let ms = Arc::new(AtomicU64::new(0));
+    let m = ms.clone();
+    let base = Instant::now();
+    let opts = IngestOptions {
+        chunk_bytes: Some(4096),
+        batch_rows: 10,
+        clock: Some(Arc::new(move || {
+            base + Duration::from_secs(m.fetch_add(1, Ordering::SeqCst))
+        })),
+        ..IngestOptions::default()
+    };
+    let (report, events) = events_of(&root, opts);
+    let a = row(&report, "a_ual.csv");
+    assert_eq!(a.status, FileStatus::Parsed, "{a:#?}");
+    assert_eq!((a.records_loaded, a.records_error), (ROWS, 1), "{a:#?}");
+    assert!(
+        events.contains(&IngestProgress::File {
+            collection: 1,
+            collections: 1,
+            index: 1,
+            files: 1,
+            rel_path: "a_ual.csv".into(),
+            size,
+            bytes_done_before: 0,
+            bytes_total: size,
+        }),
+        "{events:#?}"
+    );
+    let steps = file_steps(&events, "a_ual.csv");
+    // A portal download is told from its content: until its admission read is done only "Checking file" is known.
+    assert!(
+        steps.iter().all(|s| s.bytes_total == size
+            && if s.step == 0 {
+                s.steps == UAL_STEPS[..1] || s.steps == UAL_STEPS
+            } else {
+                s.steps == UAL_STEPS
+            }),
+        "{steps:#?}"
+    );
+    let groups = by_step(&steps);
+    let order: Vec<usize> = groups.iter().map(|g| g[0].step).collect();
+    assert_eq!(order, [0, 1, 2], "{steps:#?}");
+    let reads = size.div_ceil(4096) as usize;
+    for g in &groups {
+        assert_eq!(g[0].bytes_done, 0, "step {} starts at 0: {g:#?}", g[0].step);
+        assert_eq!(
+            g.last().unwrap().bytes_done,
+            size,
+            "step {} ends at 100 %: {g:#?}",
+            g[0].step
+        );
+        assert!(
+            g.windows(2).all(|w| w[0].bytes_done <= w[1].bytes_done),
+            "step {} goes back: {g:#?}",
+            g[0].step
+        );
+        // Each read of the pass reported (the clock always moved past the throttle).
+        assert!(
+            g.len() >= reads,
+            "step {}: {} events for {reads} reads",
+            g[0].step,
+            g.len()
+        );
+    }
+    assert!(
+        steps
+            .windows(2)
+            .all(|w| w[0].records <= w[1].records && w[0].errors <= w[1].errors),
+        "{steps:#?}"
+    );
+    let last = steps.last().unwrap();
+    assert_eq!((last.records, last.errors), (ROWS, 1), "{last:#?}");
+    // Records count up while the load pass reads, not only at its end.
+    assert!(
+        groups[2].iter().any(|s| s.records > 0 && s.records < ROWS),
+        "{:#?}",
+        groups[2]
+    );
+}
+
+#[test]
+fn progress_is_throttled() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("portal");
+    let body = portal_ual(1, ROWS);
+    fixtures::write(&root, "a_ual.csv", body.as_bytes());
+    // A clock that never moves: only each step's start and end are reported, however many reads there are.
+    let frozen = IngestOptions {
+        chunk_bytes: Some(4096),
+        batch_rows: 10,
+        clock: Some(fake_clock(Arc::new(AtomicU64::new(0)))),
+        ..IngestOptions::default()
+    };
+    let (_, events) = events_of(&root, frozen);
+    let groups = by_step(&file_steps(&events, "a_ual.csv"));
+    let counts: Vec<usize> = groups.iter().map(Vec::len).collect();
+    assert_eq!(counts, [2, 2, 2], "{groups:#?}");
+    // A clock that moves 40 ms with each read: at most one event per 100 ms of it besides each step's start and
+    // end, and about that many.
+    let ms = Arc::new(AtomicU64::new(0));
+    let reads = Arc::new(Mutex::new([0u64; 3]));
+    let (m, r) = (ms.clone(), reads.clone());
+    let mut moving = small_reads(move |e| {
+        if e.bytes > 0 {
+            m.fetch_add(40, Ordering::SeqCst);
+            let step = match e.phase {
+                ReadPhase::Admit => 0,
+                ReadPhase::Pass(1 | 2) => 1,
+                ReadPhase::Pass(_) => 2,
+            };
+            r.lock().unwrap()[step] += 1;
+        }
+        Ok(())
+    });
+    moving.clock = Some(fake_clock(ms));
+    let (_, events) = events_of(&root, moving);
+    let groups = by_step(&file_steps(&events, "a_ual.csv"));
+    let reads = *reads.lock().unwrap();
+    assert_eq!(groups.len(), 3, "{groups:#?}");
+    for (g, reads) in groups.iter().zip(reads) {
+        let within = g.len() as u64 - 2;
+        let most = reads * 40 / 100;
+        assert!(reads > 20, "{reads} reads");
+        assert!(
+            within <= most && within >= most / 2,
+            "step {}: {within} events within it for {reads} reads of 40 ms",
+            g[0].step
+        );
+    }
+}
+
+#[test]
+fn overall_bytes_weigh_the_files_to_load() {
+    // Two downloads: the second starts after the first's bytes, of both.
+    let dir = tempfile::tempdir().unwrap();
+    let root = two_downloads(dir.path());
+    let a = std::fs::metadata(root.join("a_ual.csv")).unwrap().len();
+    let b = std::fs::metadata(root.join("b_ual.csv")).unwrap().len();
+    let (_, events) = events_of(&root, IngestOptions::default());
+    let files: Vec<(String, u64, u64, u64)> = events
+        .iter()
+        .filter_map(|e| match e {
+            IngestProgress::File {
+                rel_path,
+                size,
+                bytes_done_before,
+                bytes_total,
+                ..
+            } => Some((rel_path.clone(), *size, *bytes_done_before, *bytes_total)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        files,
+        [
+            ("a_ual.csv".to_string(), a, 0, a + b),
+            ("b_ual.csv".to_string(), b, a, a + b)
+        ]
+    );
+    // A merged copy known in advance to be superseded by its window file is only hashed: it is left out of the
+    // total and adds nothing to it (size 0); its hash pass is still reported, as the "Checking file" step.
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("OUT");
+    let window = "UnifiedAuditLog/20260910-100000/UAL-20260901000000-20260902000000.csv";
+    let merged = "UnifiedAuditLog/20260910-100000/Merged/UAL-Combined.csv";
+    let one = raw_row("11111111-1111-4111-8111-111111111111", "Set-Mailbox");
+    let two = raw_row("22222222-2222-4222-8222-222222222222", "New-InboxRule");
+    let window_bytes = utf8_bom(&format!("{}{one}", csv_line(RAW_HEADER)));
+    let merged_bytes = utf8_bom(&format!("{}{one}{two}", csv_line(RAW_HEADER)));
+    fixtures::write(&out, window, &window_bytes);
+    fixtures::write(&out, merged, &merged_bytes);
+    let w = window_bytes.len() as u64;
+    let (report, events) = events_of(dir.path(), IngestOptions::default());
+    assert_eq!(row(&report, merged).status, FileStatus::SkippedSuperseded);
+    let files: Vec<(String, u64, u64, u64)> = events
+        .iter()
+        .filter_map(|e| match e {
+            IngestProgress::File {
+                rel_path,
+                size,
+                bytes_done_before,
+                bytes_total,
+                ..
+            } => Some((rel_path.clone(), *size, *bytes_done_before, *bytes_total)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        files,
+        [(window.to_string(), w, 0, w), (merged.to_string(), 0, w, w)]
+    );
+    let hashed = file_steps(&events, merged);
+    let m = merged_bytes.len() as u64;
+    assert_eq!(
+        hashed.first().map(|s| (s.step, s.bytes_done)),
+        Some((0, 0)),
+        "{hashed:#?}"
+    );
+    assert!(
+        hashed
+            .iter()
+            .all(|s| s.steps == ["Checking file"] && s.bytes_total == m),
+        "{hashed:#?}"
+    );
+    assert_eq!(hashed.last().unwrap().bytes_done, m);
+}
+
+/// Every handled file of `root` reports each step it reaches once, in order, from 0 to 100 % (a file that failed may
+/// stop below), its bytes never going back within a step, its counts never going back.
+fn assert_steps_well_formed(root: &Path) -> usize {
+    let ms = Arc::new(AtomicU64::new(0));
+    let m = ms.clone();
+    let base = Instant::now();
+    let opts = IngestOptions {
+        chunk_bytes: Some(64 * 1024),
+        clock: Some(Arc::new(move || {
+            base + Duration::from_secs(m.fetch_add(1, Ordering::SeqCst))
+        })),
+        ..IngestOptions::default()
+    };
+    let (report, events) = events_of(root, opts);
+    let mut multi = 0;
+    for f in files(&report) {
+        let steps = file_steps(&events, &f.rel_path);
+        assert!(!steps.is_empty(), "{}: no step events", f.rel_path);
+        let groups = by_step(&steps);
+        let order: Vec<usize> = groups.iter().map(|g| g[0].step).collect();
+        assert!(
+            order.windows(2).all(|w| w[0] < w[1]) && order[0] == 0,
+            "{} ({:?}): steps {order:?}",
+            f.rel_path,
+            f.artifact_id
+        );
+        if order.len() > 2 {
+            multi += 1;
+        }
+        for g in &groups {
+            let ctx = format!(
+                "{} ({:?}) step {}: {g:#?}",
+                f.rel_path, f.artifact_id, g[0].step
+            );
+            assert!(g.iter().all(|s| s.step < s.steps.len()), "{ctx}");
+            assert_eq!(g[0].bytes_done, 0, "{ctx}");
+            assert!(
+                g.windows(2).all(|w| w[0].bytes_done <= w[1].bytes_done),
+                "{ctx}"
+            );
+            if f.status != FileStatus::Error {
+                let last = g.last().unwrap();
+                assert_eq!(last.bytes_done, last.bytes_total, "{ctx}");
+            }
+        }
+        assert!(
+            steps
+                .windows(2)
+                .all(|w| w[0].records <= w[1].records && w[0].errors <= w[1].errors),
+            "{}: {steps:#?}",
+            f.rel_path
+        );
+        if f.status == FileStatus::Parsed {
+            let last = steps.last().unwrap();
+            assert!(
+                last.records >= f.records_loaded && last.errors == f.records_error,
+                "{}: {last:#?} vs {f:#?}",
+                f.rel_path
+            );
+        }
+    }
+    multi
+}
+
+#[test]
+fn every_parser_reports_its_steps_from_0_to_100_percent() {
+    use sparrow_synth::options::{Collector, GenerateOptions};
+    let cache = sparrow_synth::test_cache!();
+    let scenario = sparrow_synth::scenario::load("bec-aitm").unwrap();
+    let mut multi = 0;
+    for c in [
+        Collector::Invictus,
+        Collector::Hawk3,
+        Collector::Hawk4,
+        Collector::Portal,
+    ] {
+        let t = cache.tree(&scenario, &GenerateOptions::new(c, 17)).unwrap();
+        multi += assert_steps_well_formed(&t.dir.join(&t.manifest.root));
+    }
+    let dir = tempfile::tempdir().unwrap();
+    fixtures::hawk_tree(dir.path());
+    assert_steps_well_formed(dir.path());
+    // Multi-pass parsers (UAL, sign-ins, message trace detail) were among them.
+    assert!(multi > 0);
+}
+
+#[test]
+fn streamed_parsers_walk_every_step() {
+    // Each streamed export alone, small but over several reads: every step of its parser, in order.
+    let want: [(BigKind, &[&str]); 4] = [
+        (BigKind::PortalUal, &UAL_STEPS),
+        (BigKind::UalJson, &UAL_STEPS),
+        (
+            BigKind::SigninsCsv,
+            &[
+                "Checking file",
+                "Checking columns",
+                "Checking dates",
+                "Loading records",
+            ],
+        ),
+        (
+            BigKind::MessageTraceDetail,
+            &[
+                "Checking file",
+                "Grouping messages",
+                "Checking dates",
+                "Loading records",
+            ],
+        ),
+    ];
+    for (kind, steps) in want {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("portal");
+        let rel = kind.example_rel_path();
+        write_big_file(kind, 300 * 1024, BigEncoding::Utf8, &root.join(rel)).unwrap();
+        assert_eq!(assert_steps_well_formed(dir.path()), 1, "{kind:?}");
+        let (report, events) = events_of(dir.path(), IngestOptions::default());
+        let f = files(&report)[0];
+        assert_eq!(f.status, FileStatus::Parsed, "{kind:?}: {f:#?}");
+        let got = file_steps(&events, &f.rel_path);
+        let order: Vec<usize> = by_step(&got).iter().map(|g| g[0].step).collect();
+        assert_eq!(order, (0..steps.len()).collect::<Vec<_>>(), "{kind:?}");
+        assert_eq!(got.last().unwrap().steps, steps, "{kind:?}");
+    }
 }

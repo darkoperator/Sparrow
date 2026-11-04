@@ -4,6 +4,7 @@
 pub mod bulk;
 pub mod context;
 pub mod parser;
+pub mod progress;
 pub mod state;
 pub mod supersede;
 pub mod timing;
@@ -15,6 +16,7 @@ use crate::discovery::{
 };
 use crate::ingest::context::{FileSource, FileStats, ParseContext, RecordSource, WholeText};
 use crate::ingest::parser::{InputMode, ParserRegistry};
+use crate::ingest::progress::{FileProgress, ImportBytes};
 use crate::ingest::supersede::{Handled, processing_key, truncation_warning};
 use crate::readers::stream::{Admitted, CHUNK_BYTES};
 use crate::readers::text::{DecodedText, LineIndex, decode, lossy_warning};
@@ -22,6 +24,7 @@ use crate::readers::time::{DateOrder, ParsedTime, parse_timestamp};
 use crate::{Case, Error, Result, VERSION};
 use duckdb::{Connection, OptionalExt, params};
 use serde::Serialize;
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -90,14 +93,48 @@ pub enum IngestProgress {
     },
     /// A file is about to be handled. `index` is the number of files of the collection finished so far plus one;
     /// `files` is the number the collection lists.
+    ///
+    /// The import's overall progress is weighted by bytes: `bytes_total` is the bytes of the files to load across
+    /// the whole import (every listed file of every collection, less the copies known before the import starts to
+    /// be superseded, which are only hashed), `bytes_done_before` the part of it the files handled before this one
+    /// cover, and `size` what this file adds to it once handled: its size in bytes, or 0 when it is not counted in
+    /// `bytes_total` (a copy known in advance to be superseded; a file retried after its dates were deferred, counted
+    /// when it was deferred). So `(bytes_done_before + this file's fraction done × size) / bytes_total` is the overall
+    /// fraction: it never goes back, and the last file ends it at 1, except when a copy left out as superseded turns
+    /// out to be parsed (the file that would have superseded it failed): it is added to `bytes_total` then.
     File {
         collection: usize,
         collections: usize,
         index: usize,
         files: usize,
         rel_path: String,
+        size: u64,
+        bytes_done_before: u64,
+        bytes_total: u64,
+    },
+    /// Where the file being handled is: `steps` are its step names (`"Checking file"`, the admission read that
+    /// hashes it, then the parser's [`steps`](parser::ArtifactParser::steps); a file that is not parsed has the first
+    /// only), `step` indexes them. `bytes_done` of `bytes_total` (the file's size) is how far the current step's
+    /// pass over the file has read; `records` the records loaded (or staged for loading) so far and `errors` the
+    /// records rejected so far. Each step reports once when it starts (`bytes_done` 0) and once when its pass ends
+    /// (`bytes_done == bytes_total`), and in between at most every [`FILE_STEP_INTERVAL`]; a file that is cancelled
+    /// or fails stops reporting where it was.
+    FileStep {
+        steps: Vec<&'static str>,
+        step: usize,
+        bytes_done: u64,
+        bytes_total: u64,
+        records: u64,
+        errors: u64,
     },
 }
+
+/// Least time between two [`IngestProgress::FileStep`] events of a file within a step (its start and end excepted).
+pub const FILE_STEP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// The clock [`IngestProgress::FileStep`] events are throttled by. Test seam ([`IngestOptions::clock`]).
+#[doc(hidden)]
+pub type ClockFn = Arc<dyn Fn() -> std::time::Instant + Send + Sync>;
 
 /// Called with each [`IngestProgress`], on the ingesting thread, so it must be quick.
 pub type ProgressFn = Arc<dyn Fn(&IngestProgress) + Send + Sync>;
@@ -157,6 +194,9 @@ pub struct IngestOptions {
     /// Test seam: sees every streamed read of every file ([`ReadHook`]).
     #[doc(hidden)]
     pub read_hook: Option<ReadHook>,
+    /// Test seam: the clock progress is throttled by; `None` is [`std::time::Instant::now`].
+    #[doc(hidden)]
+    pub clock: Option<ClockFn>,
 }
 
 /// Default [`IngestOptions::batch_rows`].
@@ -174,6 +214,7 @@ impl std::fmt::Debug for IngestOptions {
             .field("chunk_bytes", &self.chunk_bytes)
             .field("whole_max_bytes", &self.whole_max_bytes)
             .field("read_hook", &self.read_hook.as_ref().map(|_| "<fn>"))
+            .field("clock", &self.clock.as_ref().map(|_| "<fn>"))
             .finish()
     }
 }
@@ -190,6 +231,7 @@ impl Default for IngestOptions {
             chunk_bytes: None,
             whole_max_bytes: None,
             read_hook: None,
+            clock: None,
         }
     }
 }
@@ -208,6 +250,13 @@ impl IngestOptions {
 
     pub(crate) fn cancelled(&self) -> bool {
         self.cancel.as_ref().is_some_and(|f| f())
+    }
+
+    /// The time now, by the progress clock ([`IngestOptions::clock`]).
+    pub(crate) fn now(&self) -> std::time::Instant {
+        self.clock
+            .as_ref()
+            .map_or_else(std::time::Instant::now, |c| c())
     }
 
     /// Raw bytes per read of a streamed file.
@@ -588,18 +637,34 @@ fn ingest_collections_in_order(
     let mut done: Vec<Option<CollectionReport>> = vec![None; collections.len()];
     let count = collections.len();
     let (mut stopped, mut error) = (false, None);
+    // Every collection is listed before the first file is read, for the import's bytes to load.
+    let mut plans: Vec<Option<Result<Plan>>> = order
+        .iter()
+        .map(|&i| Some(plan_collection(&collections[i])))
+        .collect();
+    let mut bytes = ImportBytes {
+        done: 0,
+        total: plans
+            .iter()
+            .flatten()
+            .filter_map(|p| p.as_ref().ok())
+            .map(|p| p.bytes)
+            .sum(),
+    };
     for (n, i) in order.into_iter().enumerate() {
         if opts.cancelled() {
             stopped = true;
             break;
         }
+        let plan = plans[n].take().expect("each plan is taken once");
         match ingest_collection(
             case,
             &collections[i],
+            plan,
             parsers,
             opts,
             (n + 1, count),
-            &mut stopped,
+            (&mut stopped, &mut bytes),
         ) {
             Ok(report) => done[i] = Some(report),
             Err(halt) => {
@@ -675,13 +740,115 @@ impl Outcome {
     }
 }
 
+/// A collection's files, listed and put in processing order before the ingest starts, and the bytes of those to load.
+struct Plan {
+    listing: crate::discovery::CollectionListing,
+    /// Index into `listing.files`, derived, collector flag, artifact, priority: in processing order.
+    keyed: Vec<(usize, bool, bool, Option<&'static str>, i16)>,
+    /// Listed files known in advance to be superseded (the files that supersede them come first and are assumed to
+    /// load): only hashed, so left out of the bytes to load.
+    uncounted: HashSet<String>,
+    /// Bytes of the listed files to load (all but `uncounted`).
+    bytes: u64,
+}
+
+/// List `dc`'s files, put them in processing order and count the bytes to load.
+fn plan_collection(dc: &DiscoveredCollection) -> Result<Plan> {
+    let listing = {
+        let _t = timing::span("collection: list files");
+        list_collection_files(&dc.root, dc.shallow)?
+    };
+    let _classify = timing::span("collection: classify + order");
+    let reg = Registry::builtin();
+    let mut keyed: Vec<(usize, bool, bool, Option<&'static str>, i16)> = listing
+        .files
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let class = reg.classify(dc.tool, &f.rel);
+            let derived = class.as_ref().is_some_and(|c| c.derived);
+            let flag = class
+                .as_ref()
+                .is_some_and(|c| c.artifact_id == "hawk.investigate_file");
+            let artifact = class.as_ref().map(|c| c.artifact_id);
+            let priority = class.as_ref().map_or(0, |c| c.priority);
+            (i, derived, flag, artifact, priority)
+        })
+        .collect();
+    // Collector flags last: their links look up rows the other files load.
+    keyed.sort_by_cached_key(|&(i, derived, flag, _, priority)| {
+        (
+            flag,
+            processing_key(&listing.files[i].rel, derived, priority),
+        )
+    });
+    // The supersede rules run ahead over the processing order (raw files, then the rest), as if every classified
+    // file loaded: what they skip is only hashed.
+    let mut ahead = Handled::default();
+    for &(i, _, _, artifact, _) in &keyed {
+        if let Some(a) = artifact {
+            ahead.note_artifact(&listing.files[i].rel, a);
+        }
+    }
+    let (mut uncounted, mut bytes) = (HashSet::new(), 0u64);
+    let raw_first = keyed
+        .iter()
+        .filter(|(_, derived, flag, _, _)| !derived && !flag)
+        .chain(
+            keyed
+                .iter()
+                .filter(|(_, derived, flag, _, _)| *derived || *flag),
+        );
+    for &(i, derived, _, artifact, _) in raw_first {
+        let f = &listing.files[i];
+        if ahead.superseded_by(&f.rel, derived).is_some() {
+            uncounted.insert(f.rel.clone());
+        } else {
+            bytes += f.size;
+            if artifact.is_some() {
+                ahead.insert(&f.rel);
+            }
+        }
+    }
+    drop(_classify);
+    Ok(Plan {
+        listing,
+        keyed,
+        uncounted,
+        bytes,
+    })
+}
+
+/// What file `f` adds to the import's bytes once handled ([`IngestProgress::File`]'s `size`): 0 when it was counted
+/// already (deferred, then retried) or is a copy left out as superseded and skipped; a copy left out but parsed after
+/// all (what superseded it failed) is added to the total now.
+fn file_weight(
+    bytes: &mut ImportBytes,
+    plan: &Plan,
+    accounted: &HashSet<String>,
+    f: &CollectionFile,
+    superseded: bool,
+) -> u64 {
+    if accounted.contains(&f.rel) {
+        return 0;
+    }
+    if plan.uncounted.contains(&f.rel) {
+        if superseded {
+            return 0;
+        }
+        bytes.total += f.size;
+    }
+    f.size
+}
+
 fn ingest_collection(
     case: &mut Case,
     dc: &DiscoveredCollection,
+    plan: Result<Plan>,
     parsers: &ParserRegistry,
     opts: &IngestOptions,
     (position, collections): (usize, usize),
-    stopped: &mut bool,
+    (stopped, bytes): (&mut bool, &mut ImportBytes),
 ) -> std::result::Result<CollectionReport, Box<Halt>> {
     let root = canonical_root_string(&dc.root);
     opts.report(|| IngestProgress::Collection {
@@ -694,31 +861,17 @@ fn ingest_collection(
         let _t = timing::span("collection: collector_runs");
         record_collector_runs(case, collection_id, &dc.root)?;
     }
-    let listing = {
-        let _t = timing::span("collection: list files");
-        list_collection_files(&dc.root, dc.shallow)?
-    };
-    let _classify = timing::span("collection: classify + order");
-    let reg = Registry::builtin();
-    let mut keyed: Vec<(&CollectionFile, bool, bool, Option<&'static str>, i16)> = listing
-        .files
+    let plan = plan?;
+    let listing = &plan.listing;
+    let keyed: Vec<(&CollectionFile, bool, bool, Option<&'static str>, i16)> = plan
+        .keyed
         .iter()
-        .map(|f| {
-            let class = reg.classify(dc.tool, &f.rel);
-            let derived = class.as_ref().is_some_and(|c| c.derived);
-            let flag = class
-                .as_ref()
-                .is_some_and(|c| c.artifact_id == "hawk.investigate_file");
-            let artifact = class.as_ref().map(|c| c.artifact_id);
-            let priority = class.as_ref().map_or(0, |c| c.priority);
-            (f, derived, flag, artifact, priority)
+        .map(|&(i, derived, flag, artifact, priority)| {
+            (&listing.files[i], derived, flag, artifact, priority)
         })
         .collect();
-    // Collector flags last: their links look up rows the other files load.
-    keyed.sort_by_cached_key(|(f, derived, flag, _, priority)| {
-        (*flag, processing_key(&f.rel, *derived, *priority))
-    });
-    drop(_classify);
+    // Files whose bytes were counted as done already: deferred, to be retried.
+    let mut accounted: HashSet<String> = HashSet::new();
     let total_files = keyed.len();
     let mut handled = Handled::default();
     // Note every listed file's artifact up front: the supersede rules need to know which files
@@ -748,7 +901,7 @@ fn ingest_collection(
             if opts.cancelled() {
                 *stopped = true;
                 // Entries discovery could not read are still recorded as errors, never lost in a cancel.
-                record_listing_errors(case, collection_id, &listing, &mut files)?;
+                record_listing_errors(case, collection_id, listing, &mut files)?;
                 return Ok(CollectionReport {
                     collection_id,
                     tool: dc.tool,
@@ -756,12 +909,17 @@ fn ingest_collection(
                     files,
                 });
             }
+            let superseded_by = handled.superseded_by(&f.rel, derived);
+            let weight = file_weight(bytes, &plan, &accounted, f, superseded_by.is_some());
             opts.report(|| IngestProgress::File {
                 collection: position,
                 collections,
                 index: files.len() + 1,
                 files: total_files,
                 rel_path: f.rel.clone(),
+                size: weight,
+                bytes_done_before: bytes.done,
+                bytes_total: bytes.total,
             });
             let job = FileJob {
                 collection_id,
@@ -769,7 +927,7 @@ fn ingest_collection(
                 abs: &f.abs,
                 rel: &f.rel,
                 lossy_name: f.lossy_name,
-                superseded_by: handled.superseded_by(&f.rel, derived),
+                superseded_by,
                 date_hint: None,
                 defer: true,
                 orders_conflict: false,
@@ -791,7 +949,7 @@ fn ingest_collection(
             if matches!(outcome, Outcome::Cancelled) {
                 // Cancelled mid-file (rolled back): the ingest stops as a cancel between files does.
                 *stopped = true;
-                record_listing_errors(case, collection_id, &listing, &mut files)?;
+                record_listing_errors(case, collection_id, listing, &mut files)?;
                 return Ok(CollectionReport {
                     collection_id,
                     tool: dc.tool,
@@ -799,8 +957,11 @@ fn ingest_collection(
                     files,
                 });
             }
+            // Handled (or deferred, counted now and not again on its retry): the overall bar passes the file.
+            bytes.done += weight;
             match outcome {
                 Outcome::Deferred => {
+                    accounted.insert(f.rel.clone());
                     handled.insert_failed(&f.rel);
                     deferred.push((f, derived, artifact));
                 }
@@ -838,7 +999,7 @@ fn ingest_collection(
             if opts.cancelled() {
                 *stopped = true;
                 // Entries discovery could not read are still recorded as errors, never lost in a cancel.
-                record_listing_errors(case, collection_id, &listing, &mut files)?;
+                record_listing_errors(case, collection_id, listing, &mut files)?;
                 return Ok(CollectionReport {
                     collection_id,
                     tool: dc.tool,
@@ -846,12 +1007,17 @@ fn ingest_collection(
                     files,
                 });
             }
+            let superseded_by = handled.superseded_by(&f.rel, derived);
+            let weight = file_weight(bytes, &plan, &accounted, f, superseded_by.is_some());
             opts.report(|| IngestProgress::File {
                 collection: position,
                 collections,
                 index: files.len() + 1,
                 files: total_files,
                 rel_path: f.rel.clone(),
+                size: weight,
+                bytes_done_before: bytes.done,
+                bytes_total: bytes.total,
             });
             let job = FileJob {
                 collection_id,
@@ -859,7 +1025,7 @@ fn ingest_collection(
                 abs: &f.abs,
                 rel: &f.rel,
                 lossy_name: f.lossy_name,
-                superseded_by: handled.superseded_by(&f.rel, derived),
+                superseded_by,
                 date_hint: hint,
                 defer: false,
                 orders_conflict: proved.len() > 1,
@@ -881,7 +1047,7 @@ fn ingest_collection(
             if matches!(outcome, Outcome::Cancelled) {
                 // Cancelled mid-file (rolled back): the ingest stops as a cancel between files does.
                 *stopped = true;
-                record_listing_errors(case, collection_id, &listing, &mut files)?;
+                record_listing_errors(case, collection_id, listing, &mut files)?;
                 return Ok(CollectionReport {
                     collection_id,
                     tool: dc.tool,
@@ -889,6 +1055,7 @@ fn ingest_collection(
                     files,
                 });
             }
+            bytes.done += weight;
             match outcome {
                 Outcome::Done(report, _) => {
                     mark_handled(&mut handled, &f.rel, &report);
@@ -905,7 +1072,7 @@ fn ingest_collection(
             }
         }
     }
-    record_listing_errors(case, collection_id, &listing, &mut files)?;
+    record_listing_errors(case, collection_id, listing, &mut files)?;
     Ok(CollectionReport {
         collection_id,
         tool: dc.tool,
@@ -1185,12 +1352,21 @@ impl<R: std::io::Read> std::io::Read for HookedRead<R> {
 
 /// [`admit`](crate::readers::stream::admit) `abs` in reads of the ingest's chunk size, honouring its cancel check
 /// (a cancel fails the read with `ErrorKind::Interrupted`) and its test read hook.
-fn admit_file(abs: &Path, rel: &str, opts: &IngestOptions) -> std::io::Result<Admitted> {
+fn admit_file(
+    abs: &Path,
+    rel: &str,
+    opts: &IngestOptions,
+    progress: &FileProgress,
+) -> std::io::Result<Admitted> {
     let file = std::fs::File::open(abs)?;
     let modified = file.metadata()?.modified().ok();
     let mut reader = HookedRead::open(file, opts.read_hook.clone(), rel, ReadPhase::Admit)?;
-    crate::readers::stream::admit_from(&mut reader, abs, modified, opts.chunk(), &mut |_| {
-        !opts.cancelled()
+    crate::readers::stream::admit_from(&mut reader, abs, modified, opts.chunk(), &mut |n| {
+        if opts.cancelled() {
+            return false;
+        }
+        progress.read(n);
+        true
     })
 }
 
@@ -1303,6 +1479,14 @@ fn ingest_file_inner(
     // XLSX is classified from the whole workbook, so one up to the XLSX guard is read whole once; every other file
     // is admitted in reads of the chunk size (hash, head, blank, encoding), honouring a cancel.
     let workbook = nf.format == FileFormat::Xlsx && size <= XLSX_MAX_BYTES;
+    // Step 0, "Checking file", is the admission read; the parser's steps follow, as far as the path tells (the
+    // content may still change the artifact). A superseded copy is only hashed.
+    let guessed_steps = match &path_class {
+        Some(c) if !superseded => parsers.get(c.artifact_id).map_or(&[][..], |p| p.steps()),
+        _ => &[],
+    };
+    let progress = FileProgress::new(opts, guessed_steps, size);
+    progress.begin_step(0);
     let t_read = timing::span(if workbook {
         "file: sha256 + read (workbook, whole)"
     } else {
@@ -1314,7 +1498,7 @@ fn ingest_file_inner(
             (Some(raw), admitted)
         })
     } else {
-        admit_file(abs, rel, opts).map(|admitted| (None, admitted))
+        admit_file(abs, rel, opts, &progress).map(|admitted| (None, admitted))
     };
     let (mut raw, admitted) = match content {
         Ok(c) => c,
@@ -1330,6 +1514,8 @@ fn ingest_file_inner(
         }
     };
     drop(t_read);
+    // The admission read is done (a workbook was read whole, in one read).
+    progress.close();
     if admitted.blank {
         pre.push(EMPTY_FILE_WARNING.into());
     }
@@ -1426,6 +1612,10 @@ fn ingest_file_inner(
         return record_simple(case, &nf, FileStatus::NotSupported, with_pre(&pre, vec![]))
             .map(Outcome::plain);
     };
+    // The parser's first step starts here: a file read whole is read in it (no pass of its own reports bytes; the
+    // step ends at 100 % when the parse does).
+    progress.set_parser_steps(parser.steps());
+    progress.begin_step(1);
 
     // The whole text is read and decoded only for a parser that reads it whole, a workbook and a Format-List file;
     // other parsers read the records in passes over the file on disk.
@@ -1491,7 +1681,7 @@ fn ingest_file_inner(
         (Some(text), Some(index)) => Some(WholeText { raw, text, index }),
         _ => None,
     };
-    let source = FileSource::new(rel, opts);
+    let source = FileSource::new(rel, opts, &progress);
     let t_row = timing::span("file: begin + stale rows + source_files row");
     let tx = case.conn_mut().transaction()?;
     delete_stale_rows(&tx, &nf)?;
@@ -1535,6 +1725,7 @@ fn ingest_file_inner(
             record_simple(case, &nf, FileStatus::Error, warnings).map(Outcome::plain)
         }
         Ok(()) => {
+            ctx.finish_progress();
             let orders = ctx.orders_seen().to_vec();
             // One proved order is stored; a file that proved both stores NULL.
             let date_order = match orders.as_slice() {

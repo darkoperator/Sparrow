@@ -270,7 +270,9 @@ fn scan_records(
     if let Some(e) = failed {
         return Err(e);
     }
-    scanned.map_err(io_err)
+    scanned.map_err(io_err)?;
+    input.pass_done();
+    Ok(())
 }
 
 /// The sighting of a readable record on a pass without sightings ([`RecordInput::with_sights`]): all zero, no hash.

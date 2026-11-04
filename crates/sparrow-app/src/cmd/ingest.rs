@@ -232,6 +232,22 @@ pub enum ProgressEvent {
         index: usize,
         files: usize,
         rel_path: String,
+        /// What this file adds to `bytes_done_before` once handled (see [`IngestProgress::File`]).
+        size: u64,
+        /// Bytes of the import's files to load that the files handled before this one cover.
+        bytes_done_before: u64,
+        /// Bytes of the import's files to load.
+        bytes_total: u64,
+    },
+    /// Where the current file is: its steps, the current one, bytes read of its pass, records and errors so far
+    /// (see [`IngestProgress::FileStep`]).
+    FileStep {
+        steps: Vec<String>,
+        step: usize,
+        bytes_done: u64,
+        bytes_total: u64,
+        records: u64,
+        errors: u64,
     },
     Profile,
     Detect,
@@ -251,12 +267,33 @@ impl From<&IngestProgress> for ProgressEvent {
                 index,
                 files,
                 rel_path,
+                size,
+                bytes_done_before,
+                bytes_total,
             } => ProgressEvent::File {
                 collection: *collection,
                 collections: *collections,
                 index: *index,
                 files: *files,
                 rel_path: rel_path.clone(),
+                size: *size,
+                bytes_done_before: *bytes_done_before,
+                bytes_total: *bytes_total,
+            },
+            IngestProgress::FileStep {
+                steps,
+                step,
+                bytes_done,
+                bytes_total,
+                records,
+                errors,
+            } => ProgressEvent::FileStep {
+                steps: steps.iter().map(|s| s.to_string()).collect(),
+                step: *step,
+                bytes_done: *bytes_done,
+                bytes_total: *bytes_total,
+                records: *records,
+                errors: *errors,
             },
         }
     }

@@ -255,7 +255,17 @@ describe("ImportDialog progress and result", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Looking through the folder");
     emit({ stage: "collection", index: 1, count: 2, root: "/evidence/run-1" });
     expect(await screen.findByText("Collection 1 of 2")).toBeInTheDocument();
-    emit({ stage: "file", collection: 1, collections: 2, index: 2, files: 6, rel_path: "UnifiedAuditLog/UAL.csv" });
+    emit({
+      stage: "file",
+      collection: 1,
+      collections: 2,
+      index: 2,
+      files: 6,
+      rel_path: "UnifiedAuditLog/UAL.csv",
+      size: 1024,
+      bytes_done_before: 2048,
+      bytes_total: 8192,
+    });
     expect(await screen.findByText("Loading file 2 of 6")).toBeInTheDocument();
     expect(screen.getByText("UnifiedAuditLog/UAL.csv")).toBeInTheDocument();
     const bar = screen.getByRole("progressbar");

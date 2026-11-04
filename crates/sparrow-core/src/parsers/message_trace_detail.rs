@@ -16,8 +16,8 @@ use crate::parsers::records::{
     placeholder_message,
 };
 use crate::parsers::stage::{
-    CellRow, LOAD_STREAMED_STEPS, RowDraft, RowOut, TableRows, TailSink, csv_row_key,
-    load_streamed, lower, non_empty_cells, read_state_records, unsupported,
+    CellRow, RowDraft, RowOut, TableRows, TailSink, csv_row_key, load_streamed, lower,
+    non_empty_cells, read_state_records, unsupported,
 };
 use crate::readers::stream::Sight;
 use crate::readers::text::SourcePos;
@@ -509,8 +509,10 @@ fn collapse_sorted(
 }
 
 impl ArtifactParser for MessageTraceDetailParser {
+    /// The first scan into the TEMP events table, then [`load_streamed`]'s two passes; the collapse of the message
+    /// rows (the tail, read from the TEMP table, not the file) runs within the last, after its pass.
     fn steps(&self) -> &'static [&'static str] {
-        LOAD_STREAMED_STEPS
+        &["Grouping messages", "Checking dates", "Loading records"]
     }
 
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
@@ -582,7 +584,8 @@ fn parse_detail(ctx: &mut ParseContext<'_>) -> Result<()> {
         app.flush()?;
     }
     let Some(first) = first else {
-        // No readable record: recording the unreadable ones is all there is to do.
+        // No readable record: recording the unreadable ones is all there is to do (the load step's pass).
+        ctx.set_step(2);
         read_state_records(ctx, format)?;
         return Ok(());
     };
@@ -608,6 +611,7 @@ fn parse_detail(ctx: &mut ParseContext<'_>) -> Result<()> {
     ))?;
     load_streamed(
         ctx,
+        1,
         format,
         &[(&MESSAGE_TRACE_EVENTS, COLS), (&MESSAGE_TRACE, TRACE_COLS)],
         |sink| collapse_sorted(conn, options, appended as i64, batch, sink),

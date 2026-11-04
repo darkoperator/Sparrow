@@ -12,6 +12,8 @@ pub struct CollectionFile {
     pub rel: String,
     /// True when a path component is not valid UTF-8 (rel shows U+FFFD).
     pub lossy_name: bool,
+    /// Size in bytes when listed (0 when it could not be read).
+    pub size: u64,
 }
 
 pub fn is_os_junk(name: &str) -> bool {
@@ -86,6 +88,7 @@ pub fn list_collection_files(root: &Path, shallow: bool) -> Result<CollectionLis
             abs: entry.path().to_path_buf(),
             rel: rel_path(root, entry.path()),
             lossy_name,
+            size: entry.metadata().map_or(0, |m| m.len()),
         });
     }
     Ok(out)

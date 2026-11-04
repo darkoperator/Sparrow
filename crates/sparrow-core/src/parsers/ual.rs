@@ -211,6 +211,7 @@ impl<'c> Loads<'c> {
         }
         ctx.check_cancelled()?;
         self.stage.stage(staged)?;
+        ctx.note_staged(staged.len() as u64);
         self.synthetic += staged.iter().filter(|s| s.rec.synthetic_id).count() as u64;
         staged.clear();
         Ok(())
@@ -244,9 +245,10 @@ impl ArtifactParser for UalParser {
         // normalizes and loads them in batches of `batch_rows` inside the file's transaction.
         ctx.set_step(0);
         let mut first = None;
-        // Only the first record's columns are needed: no sightings.
+        // Only the first record's columns are needed: no sightings, and no progress (a peek at the file's start,
+        // before the date pass of the same step reads it all).
         for_each_record(
-            &ctx.input().with_sights(false),
+            &ctx.input().with_sights(false).quiet(),
             format,
             |event| match event {
                 RecordEvent::Record(r) => {
@@ -257,7 +259,8 @@ impl ArtifactParser for UalParser {
             },
         )?;
         let Some(first) = first else {
-            // No readable record: recording the unreadable ones is all there is to do.
+            // No readable record: recording the unreadable ones is all there is to do (the load step's pass).
+            ctx.set_step(1);
             read_records(ctx, format)?;
             return Ok(());
         };
@@ -280,6 +283,8 @@ impl ArtifactParser for UalParser {
             // Hawk 3 writes Search-AdminAuditLog records under UAL-looking names
             // (RBAC_Changes, User_Changes, Simple_*): they belong in admin_audit_events.
             UalShape::AdminAudit | UalShape::AdminAuditSimple => {
+                // One pass, that loads: no date pass of its own.
+                ctx.set_step(1);
                 let records = read_records(ctx, format)?;
                 return load_admin_audit(
                     ctx,

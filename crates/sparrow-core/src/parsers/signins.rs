@@ -17,8 +17,8 @@ use crate::parsers::records::{
 };
 use crate::parsers::risk::graph_location;
 use crate::parsers::stage::{
-    CellRow, LOAD_STREAMED_STEPS, RowDraft, RowOut, TableRows, load_streamed, load_tables, lower,
-    no_tail, read_state_records, reject_at,
+    CellRow, RowDraft, RowOut, TableRows, load_streamed, load_tables, lower, no_tail,
+    read_state_records, reject_at,
 };
 use crate::readers::csv_scan::normalize_headers;
 use crate::readers::stream::Sight;
@@ -502,6 +502,9 @@ fn portal_row(rec: &Rec, event_type: Option<&'static str>) -> Vec<Cell> {
 
 pub struct SigninsParser;
 
+/// [`SigninsParser`]'s steps.
+const SIGNINS_STEPS: &[&str] = &["Checking columns", "Checking dates", "Loading records"];
+
 /// A CSV/JSON sign-in export, streamed (see [`load_streamed`]): a portal or Graph export can hold millions of
 /// sign-ins (a 170 MB portal CSV collected as records peaked at 11 GB).
 fn parse_streamed(ctx: &mut ParseContext<'_>) -> Result<()> {
@@ -530,7 +533,8 @@ fn parse_streamed(ctx: &mut ParseContext<'_>) -> Result<()> {
         Ok(true)
     })?;
     let Some(first) = first else {
-        // No readable record: recording the unreadable ones is all there is to do.
+        // No readable record: recording the unreadable ones is all there is to do (the load step's pass).
+        ctx.set_step(2);
         read_state_records(ctx, format)?;
         return Ok(());
     };
@@ -551,7 +555,7 @@ fn parse_streamed(ctx: &mut ParseContext<'_>) -> Result<()> {
     };
     let event_type = portal_event_type(ctx.rel_path);
     let lossy = format.lossy();
-    load_streamed(ctx, format, &[(&SIGNINS, COLS)], no_tail, |r| {
+    load_streamed(ctx, 1, format, &[(&SIGNINS, COLS)], no_tail, |r| {
         let rec = Rec::new(&r.map, lossy);
         let Some(key) = signin_key(&rec) else {
             return vec![RowOut::Reject("sign-in has no Id / Request ID".into())];
@@ -575,12 +579,15 @@ fn parse_streamed(ctx: &mut ParseContext<'_>) -> Result<()> {
 }
 
 impl ArtifactParser for SigninsParser {
+    /// The shape pass (which stops at the first portal record when it need not count placeholders), then
+    /// [`load_streamed`]'s two. An XLSX workbook, read whole, only has the last.
     fn steps(&self) -> &'static [&'static str] {
-        LOAD_STREAMED_STEPS
+        SIGNINS_STEPS
     }
 
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
         let inputs = if format_from_path(ctx.rel_path) == FileFormat::Xlsx {
+            ctx.set_step(2);
             xlsx_inputs(ctx)?
         } else {
             return parse_streamed(ctx);

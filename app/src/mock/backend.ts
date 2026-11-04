@@ -286,9 +286,22 @@ async function mockIngestRun(a: Record<string, unknown> | undefined): Promise<In
     emitIngest({ stage: "collection", index: 1, count: 1, root: path });
     const files = preview.collections[0].files.filter((f) => f.status === "recognised");
     const loaded: typeof files = [];
+    const bytesTotal = files.reduce((n, f) => n + f.size, 0);
+    let bytesDone = 0;
     for (const [i, f] of files.entries()) {
       if (cancelledRuns.has(runId)) break;
-      emitIngest({ stage: "file", collection: 1, collections: 1, index: i + 1, files: preview.collections[0].files.length, rel_path: f.rel_path });
+      emitIngest({
+        stage: "file",
+        collection: 1,
+        collections: 1,
+        index: i + 1,
+        files: preview.collections[0].files.length,
+        rel_path: f.rel_path,
+        size: f.size,
+        bytes_done_before: bytesDone,
+        bytes_total: bytesTotal,
+      });
+      bytesDone += f.size;
       await nap(250);
       loaded.push(f);
     }

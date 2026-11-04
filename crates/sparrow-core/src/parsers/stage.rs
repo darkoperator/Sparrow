@@ -259,7 +259,8 @@ fn count_load(ctx: &mut ParseContext<'_>, spec: &TableSpec, out: LoadOutcome) {
     }
 }
 
-/// The `steps()` of a parser that loads with [`load_streamed`] (and of UAL, whose passes are the same).
+/// [`load_streamed`]'s steps, after the caller's own (its `first_step` argument), and the `steps()` of UAL, whose
+/// passes are the same.
 pub const LOAD_STREAMED_STEPS: &[&str] = &["Checking dates", "Loading records"];
 
 /// Where [`load_streamed`]'s `tail` hands each of its rows: `(table, draft)`, staged at once.
@@ -288,17 +289,18 @@ pub enum RowOut {
 /// never held whole; they are staged after the streamed rows, as [`load_tables`] would after the earlier tables. The
 /// tail's time cells are not read for the day/month order (it is resolved before the tail is produced): each must be a
 /// copy of a time cell of a streamed row, so it adds no evidence (checked: the file fails otherwise). Counts, errors and
-/// warnings are those of [`load_tables`] over the same rows. The two passes are steps 0 and 1 of the parser
-/// ([`LOAD_STREAMED_STEPS`]).
+/// warnings are those of [`load_tables`] over the same rows. The two passes are steps `first_step` and `first_step + 1`
+/// of the parser ([`LOAD_STREAMED_STEPS`]); the tail and the merge run within the second, after its pass.
 pub fn load_streamed(
     ctx: &mut ParseContext<'_>,
+    first_step: usize,
     format: RecordFormat,
     tables: &[(&'static TableSpec, &'static [&'static str])],
     tail: impl FnOnce(&mut TailSink<'_>) -> Result<()>,
     mut rows_of: impl FnMut(&SourceRecord) -> Vec<RowOut>,
 ) -> Result<()> {
     let mut detector = DateOrderDetector::default();
-    ctx.set_step(0);
+    ctx.set_step(first_step);
     // The first pass reads only times: the records' sightings are not needed.
     for_each_record(&ctx.input().with_sights(false), format, |event| {
         match event {
@@ -343,10 +345,11 @@ pub fn load_streamed(
             }
             ctx.check_cancelled()?;
             stage.stage(rows)?;
+            ctx.note_staged(rows.len() as u64);
             rows.clear();
             Ok::<(), Error>(())
         };
-    ctx.set_step(1);
+    ctx.set_step(first_step + 1);
     for_each_record(&ctx.input(), format, |event| {
         let RecordEvent::Record(r) = event else {
             return Ok(true);
