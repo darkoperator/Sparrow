@@ -361,7 +361,7 @@ pub fn load_streamed(
                 RowOut::Reject(msg) => reject(ctx, &r, &msg)?,
                 RowOut::Row { table, draft } => {
                     if let Some(row) = stage_draft(ctx, tables[table].0, draft, order)? {
-                        check.streamed(table, &row);
+                        check.streamed(table, &row)?;
                         staged[table].push(row);
                         if staged[table].len() >= batch {
                             flush(ctx, &mut stages[table], &mut staged[table])?;
@@ -413,10 +413,12 @@ pub fn load_streamed(
     Ok(())
 }
 
-/// Debug check that [`load_streamed`]'s staging order picks what batches picked: a batch picked a key's copy by
+/// Check that [`load_streamed`]'s staging order picks what batches picked: a batch picked a key's copy by
 /// (ordinal, position in batch), the whole-file stage picks the first staged copy. They agree when the copies of a
 /// key are staged in ordinal order within the streamed rows and within the tail (the tail is staged after the
-/// streamed rows and loses to them either way). Streamed rows follow the records, so their ordinals never fall.
+/// streamed rows and loses to them either way). Streamed rows follow the records, so their ordinals never fall: that
+/// check is always on and fails the file (one number per table). The tail's check holds a map of every key it saw,
+/// which grows with the file, so it runs in debug builds only.
 struct PickOrderCheck {
     last_streamed: Vec<Option<u64>>,
     tail: std::collections::HashMap<(usize, String), u64>,
@@ -430,15 +432,18 @@ impl PickOrderCheck {
         }
     }
 
-    fn streamed(&mut self, table: usize, row: &StagedRow) {
-        if cfg!(debug_assertions) {
-            let last = self.last_streamed[table].replace(row.ordinal);
-            debug_assert!(
-                last.is_none_or(|l| l <= row.ordinal),
-                "streamed rows of table {table} staged out of ordinal order ({last:?} then {})",
-                row.ordinal
-            );
+    /// `Err(Error::Invalid)` when a streamed row of `table` comes after one of a later record: the stage would then
+    /// keep another copy of a key than the batches did, so the file fails rather than load it.
+    fn streamed(&mut self, table: usize, row: &StagedRow) -> Result<()> {
+        let last = self.last_streamed[table].replace(row.ordinal);
+        if last.is_some_and(|l| l > row.ordinal) {
+            return Err(Error::Invalid(format!(
+                "streamed rows of table {table} staged out of record order (record {} after record {})",
+                row.ordinal,
+                last.unwrap_or_default()
+            )));
         }
+        Ok(())
     }
 
     fn tail(&mut self, table: usize, row: &StagedRow) {
@@ -498,4 +503,41 @@ pub fn collection_key(collection_id: i64, name: &str) -> String {
 /// Record key of a collection's `tenant_settings` row.
 pub fn setting_key(collection_id: i64, source: &str, name: &str) -> String {
     format!("{collection_id}|{source}|{}", name.to_lowercase())
+}
+
+#[cfg(test)]
+mod pick_order_tests {
+    use super::*;
+
+    fn row(ordinal: u64) -> StagedRow {
+        StagedRow {
+            ordinal,
+            pos: SourcePos {
+                line_start: 1,
+                line_end: 1,
+                byte_offset: 0,
+                byte_length: 0,
+            },
+            raw_sha256: String::new(),
+            record_key: format!("k{ordinal}"),
+            cells: Vec::new(),
+            raw: None,
+            tz_assumed: Vec::new(),
+        }
+    }
+
+    /// Fail closed in every build: a streamed row of an earlier record after a later one is an error, per table.
+    #[test]
+    fn streamed_rows_out_of_record_order_fail_the_file() {
+        let mut check = PickOrderCheck::new(2);
+        check.streamed(0, &row(3)).unwrap();
+        check.streamed(0, &row(3)).unwrap();
+        check.streamed(1, &row(1)).unwrap();
+        check.streamed(0, &row(5)).unwrap();
+        let err = check.streamed(0, &row(4)).unwrap_err();
+        assert!(
+            matches!(&err, Error::Invalid(m) if m.contains("record 4 after record 5")),
+            "{err:?}"
+        );
+    }
 }
