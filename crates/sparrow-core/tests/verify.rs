@@ -330,3 +330,89 @@ fn utf16le_record_verifies_and_shows_decoded_text() {
         "{excerpt:?} vs {message:?}"
     );
 }
+
+/// A reader that adds every byte it returns to a shared count.
+struct Counted {
+    data: std::io::Cursor<Vec<u8>>,
+    read: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl std::io::Read for Counted {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.data.read(buf)?;
+        self.read
+            .fetch_add(n as u64, std::sync::atomic::Ordering::SeqCst);
+        Ok(n)
+    }
+}
+
+impl std::io::Seek for Counted {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.data.seek(pos)
+    }
+}
+
+/// A record seen twice in one file: the file's hash is computed once per verify, not once per sighting.
+#[test]
+fn a_file_with_several_sightings_of_the_record_is_hashed_once() {
+    let (_d, root, case, key) = setup();
+    case.conn()
+        .execute(
+            "INSERT INTO record_sources
+             SELECT table_name, record_key, file_id, record_ordinal + 1000, line_start, line_end, byte_offset,
+                    byte_length, raw_sha256
+             FROM record_sources WHERE table_name = 'collection_log' AND record_key = ?",
+            [&key],
+        )
+        .unwrap();
+    let length: i64 = case
+        .conn()
+        .query_row(
+            "SELECT max(byte_length) FROM record_sources WHERE table_name = 'collection_log' AND record_key = ?",
+            [&key],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let size = std::fs::metadata(root.join("Hawk.log")).unwrap().len();
+    let read = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let r = read.clone();
+    let opener = move |p: &std::path::Path| -> std::io::Result<Box<dyn SourceReader>> {
+        Ok(Box::new(Counted {
+            data: std::io::Cursor::new(std::fs::read(p)?),
+            read: r.clone(),
+        }))
+    };
+    let rep = verify_record_with(&case, "collection_log", &key, None, &opener).unwrap();
+    assert_eq!(rep.sightings.len(), 2);
+    assert!(rep.ok, "{rep:?}");
+    assert!(
+        rep.sightings
+            .iter()
+            .all(|s| s.file_hash_ok && s.record_hash_ok)
+    );
+    // Each sighting reads its record; the whole file is read once.
+    assert_eq!(
+        read.load(std::sync::atomic::Ordering::SeqCst),
+        size + 2 * length as u64
+    );
+}
+
+/// An empty record placed past the end of its file (its hash, of nothing, matches) still fails: it is not in the
+/// file.
+#[test]
+fn an_empty_record_past_the_end_of_the_file_fails_the_record_hash() {
+    let (_d, root, case, key) = setup();
+    let size = std::fs::metadata(root.join("Hawk.log")).unwrap().len();
+    case.conn()
+        .execute(
+            "UPDATE record_sources SET byte_offset = ? + 10, byte_length = 0, raw_sha256 = sha256('')
+             WHERE table_name = 'collection_log' AND record_key = ?",
+            duckdb::params![size as i64, &key],
+        )
+        .unwrap();
+    let rep = verify_record(&case, "collection_log", &key, None).unwrap();
+    assert!(rep.sightings[0].file_found);
+    assert!(rep.sightings[0].file_hash_ok, "the file itself is intact");
+    assert!(!rep.sightings[0].record_hash_ok);
+    assert!(!rep.ok);
+}

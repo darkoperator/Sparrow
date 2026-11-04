@@ -6,7 +6,7 @@ use crate::readers::xlsx::read_xlsx;
 use crate::{Case, Error, Result};
 use duckdb::params;
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -121,9 +121,18 @@ pub fn verify_record_with(
         .collect::<HashSet<_>>()
         .len()
         == 1;
+    // A record seen several times in one (possibly multi-GB) file: that file is hashed once.
+    let mut file_hashes = HashMap::new();
     let checks: Vec<SightingCheck> = sightings
         .iter()
-        .map(|s| check(s, relocated(s, root_override, single_collection), open))
+        .map(|s| {
+            check(
+                s,
+                relocated(s, root_override, single_collection),
+                open,
+                &mut file_hashes,
+            )
+        })
         .collect();
     let ok = checks
         .iter()
@@ -152,7 +161,14 @@ fn relocated<'p>(
     (recorded.file_name().is_some() && recorded.file_name() == o.file_name()).then_some(o)
 }
 
-fn check(s: &Sighting, root_override: Option<&Path>, open: Opener<'_>) -> SightingCheck {
+/// One sighting's check. `file_hashes` holds the whole-file hash of each resolved path hashed so far in this verify
+/// (`None` when it could not be read).
+fn check(
+    s: &Sighting,
+    root_override: Option<&Path>,
+    open: Opener<'_>,
+    file_hashes: &mut HashMap<PathBuf, Option<String>>,
+) -> SightingCheck {
     let recorded_root = PathBuf::from(&s.root_path);
     let root = root_override
         .map(Path::to_path_buf)
@@ -190,17 +206,24 @@ fn check(s: &Sighting, root_override: Option<&Path>, open: Opener<'_>) -> Sighti
         let text = decode_excerpt(&head, s.encoding.as_deref(), s.byte_offset);
         result.excerpt = Some(text);
     }
-    result.file_hash_ok = hash_whole(&mut *file).is_ok_and(|h| h == s.file_sha);
+    let hash = file_hashes
+        .entry(path)
+        .or_insert_with(|| hash_whole(&mut *file).ok());
+    result.file_hash_ok = hash.as_deref() == Some(s.file_sha.as_str());
     result
 }
 
 /// Seek to the record, hash its `length` bytes in chunks and keep the first bytes for the excerpt.
-/// Fails when the file ends before the record does.
+/// Fails when the file ends before the record does (an empty record past the end included).
 fn read_record(
     file: &mut dyn SourceReader,
     offset: u64,
     length: u64,
 ) -> std::io::Result<(String, Vec<u8>)> {
+    let size = file.seek(SeekFrom::End(0))?;
+    if offset.checked_add(length).is_none_or(|end| end > size) {
+        return Err(std::io::ErrorKind::UnexpectedEof.into());
+    }
     file.seek(SeekFrom::Start(offset))?;
     let mut hash = Sha256Stream::new();
     let mut head = Vec::new();
