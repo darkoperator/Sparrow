@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 use sparrow_core::Case;
-use sparrow_core::ingest::bulk::{LoadOutcome, StagedUal, load_ual_batch};
+use sparrow_core::ingest::bulk::{LoadOutcome, StagedUal, UalFileStage, load_ual_batch};
 use sparrow_core::normalize::ual::{UalRecord, normalize_audit};
 use sparrow_core::normalize::ual_shape::{detect_shape, to_audit};
 use sparrow_core::readers::text::SourcePos;
@@ -304,8 +304,8 @@ fn empty_batch_is_a_no_op() {
 
 #[test]
 fn a_files_own_full_copy_in_a_later_batch_is_a_duplicate_not_an_upgrade() {
-    // One batch keeps the file's full copy over its partial one (stage_chosen); split over two batches of the same
-    // file, the full copy upgrades the partial row: same rows, and the counts must say the same.
+    // One batch keeps the file's full copy over its partial one (stage_chosen_keys); staged in two batches of the
+    // same file and merged once, the full copy is chosen the same way: same rows, and the counts must say the same.
     let snapshot = |case: &Case| -> Vec<String> {
         let mut stmt = case
             .conn()
@@ -338,18 +338,19 @@ fn a_files_own_full_copy_in_a_later_batch_is_a_duplicate_not_an_upgrade() {
         }
     );
     let two = Case::in_memory().unwrap();
-    let first = load_ual_batch(two.conn(), 7, 1, &[staged(0, mia_partial())]).unwrap();
-    let second = load_ual_batch(two.conn(), 7, 1, &[staged(1, mia_full())]).unwrap();
-    assert_eq!((first.inserted, first.upgraded), (1, 0));
+    let mut stage = UalFileStage::begin(two.conn(), 1).unwrap();
+    stage.stage(&[staged(0, mia_partial())]).unwrap();
+    stage.stage(&[staged(1, mia_full())]).unwrap();
+    let split = stage.finish(7).unwrap();
     assert_eq!(
-        second,
+        split,
         LoadOutcome {
-            staged: 1,
-            inserted: 0,
+            staged: 2,
+            inserted: 1,
             upgraded: 0
         }
     );
-    assert_eq!(second.duplicate(), 1);
+    assert_eq!(split.duplicate(), 1);
     assert_eq!(snapshot(&one), snapshot(&two));
     assert!(snapshot(&two).iter().any(|r| r.contains("|full|")));
 }
@@ -376,16 +377,15 @@ fn a_row_stored_before_the_file_is_still_upgraded_across_its_batches() {
     );
     let two = Case::in_memory().unwrap();
     prior(&two);
-    let a = load_ual_batch(two.conn(), 7, 2, &[staged(0, mia_partial())]).unwrap();
-    let b = load_ual_batch(two.conn(), 7, 2, &[staged(1, mia_full())]).unwrap();
+    let mut stage = UalFileStage::begin(two.conn(), 2).unwrap();
+    stage.stage(&[staged(0, mia_partial())]).unwrap();
+    stage.stage(&[staged(1, mia_full())]).unwrap();
+    let split = stage.finish(7).unwrap();
     assert_eq!(
-        (
-            a.inserted + b.inserted,
-            a.upgraded + b.upgraded,
-            a.duplicate() + b.duplicate()
-        ),
+        (split.inserted, split.upgraded, split.duplicate()),
         (0, 1, 1)
     );
+    assert_eq!(split, whole);
 }
 
 #[test]
@@ -416,17 +416,16 @@ fn split_batches_count_like_one_for_every_completeness_order() {
         let one = Case::in_memory().unwrap();
         let w = load_ual_batch(one.conn(), 7, 1, &[staged(0, x()), staged(1, y())]).unwrap();
         let two = Case::in_memory().unwrap();
-        let a = load_ual_batch(two.conn(), 7, 1, &[staged(0, x())]).unwrap();
-        let b = load_ual_batch(two.conn(), 7, 1, &[staged(1, y())]).unwrap();
+        let mut stage = UalFileStage::begin(two.conn(), 1).unwrap();
+        stage.stage(&[staged(0, x())]).unwrap();
+        stage.stage(&[staged(1, y())]).unwrap();
+        let split = stage.finish(7).unwrap();
         assert_eq!(
             (w.inserted, w.upgraded, w.duplicate()),
-            (
-                a.inserted + b.inserted,
-                a.upgraded + b.upgraded,
-                a.duplicate() + b.duplicate()
-            ),
+            (split.inserted, split.upgraded, split.duplicate()),
             "{name}"
         );
+        assert_eq!(w, split, "{name}");
         assert_eq!(snapshot(&one), snapshot(&two), "{name}");
     }
 }

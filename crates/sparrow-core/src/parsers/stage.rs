@@ -4,7 +4,7 @@
 use crate::db::state_tables::{LoadMode, TableSpec};
 use crate::hash::sha256_hex;
 use crate::ingest::context::ParseContext;
-use crate::ingest::state::{LoadOutcome, StagedRow, load_rows, load_rows_batch};
+use crate::ingest::state::{LoadOutcome, StagedRow, StateFileStage, load_rows};
 use crate::normalize::fields::{Cell, Rec};
 use crate::parsers::records::{
     RecordEvent, RecordFormat, SourceRecord, for_each_record, placeholder_warning, read_records,
@@ -272,9 +272,9 @@ pub enum RowOut {
 
 /// [`load_tables`] for a large CSV/JSON file, without holding its records or rows: the records are streamed twice
 /// (the first pass records the unreadable ones and reads every time cell for the day/month order, the second turns
-/// each record into rows with `rows_of` again and stages them) and each table is loaded every
-/// [`crate::ingest::IngestOptions::batch_rows`] rows with [`load_rows_batch`], so a key keeps the file's first copy
-/// across batches as within one. `rows_of` must be pure: it runs twice per record. `tail` are rows the caller built
+/// each record into rows with `rows_of` again and stages them) and each table's rows are appended every
+/// [`crate::ingest::IngestOptions::batch_rows`] rows to one [`StateFileStage`] per table, merged once at the end of
+/// the file, so a key keeps the file's first copy. `rows_of` must be pure: it runs twice per record. `tail` are rows the caller built
 /// before (each `(table, draft)`; e.g. per-message rows collapsed from the records): their times count for the order
 /// and they are staged after the streamed rows, as [`load_tables`] would after the earlier tables. Counts, errors and
 /// warnings are those of [`load_tables`] over the same rows. The two passes are steps 0 and 1 of the parser
@@ -321,26 +321,22 @@ pub fn load_streamed(
     })?;
     let order = ctx.resolve_date_order(&detector)?;
     let batch = ctx.options.batch_rows.max(1);
+    // One stage per table for the whole file (staged once, merged once by `finish`): a per-batch merge inside the
+    // file's transaction would keep every batch's staging until COMMIT.
+    let conn = ctx.conn;
+    let mut stages = tables
+        .iter()
+        .map(|(spec, columns)| StateFileStage::begin(conn, spec, columns, ctx.file_id))
+        .collect::<Result<Vec<_>>>()?;
     let mut staged: Vec<Vec<StagedRow>> = tables.iter().map(|_| Vec::new()).collect();
-    let mut outcomes: Vec<LoadOutcome> = vec![LoadOutcome::default(); tables.len()];
-    let load =
-        |ctx: &ParseContext<'_>, i: usize, rows: &mut Vec<StagedRow>, total: &mut LoadOutcome| {
+    let mut check = PickOrderCheck::new(tables.len());
+    let flush =
+        |ctx: &ParseContext<'_>, stage: &mut StateFileStage<'_>, rows: &mut Vec<StagedRow>| {
             if rows.is_empty() {
                 return Ok(());
             }
             ctx.check_cancelled()?;
-            let (spec, columns) = tables[i];
-            let out = load_rows_batch(
-                ctx.conn,
-                spec,
-                columns,
-                ctx.collection_id,
-                ctx.file_id,
-                rows,
-            )?;
-            total.staged += out.staged;
-            total.inserted += out.inserted;
-            total.updated += out.updated;
+            stage.stage(rows)?;
             rows.clear();
             Ok::<(), Error>(())
         };
@@ -354,9 +350,10 @@ pub fn load_streamed(
                 RowOut::Reject(msg) => reject(ctx, &r, &msg)?,
                 RowOut::Row { table, draft } => {
                     if let Some(row) = stage_draft(ctx, tables[table].0, draft, order)? {
+                        check.streamed(table, &row);
                         staged[table].push(row);
                         if staged[table].len() >= batch {
-                            load(ctx, table, &mut staged[table], &mut outcomes[table])?;
+                            flush(ctx, &mut stages[table], &mut staged[table])?;
                         }
                     }
                 }
@@ -364,24 +361,74 @@ pub fn load_streamed(
         }
         Ok(true)
     })?;
-    for (i, rows) in staged.iter_mut().enumerate() {
-        load(ctx, i, rows, &mut outcomes[i])?;
+    for (stage, rows) in stages.iter_mut().zip(staged.iter_mut()) {
+        flush(ctx, stage, rows)?;
     }
     for (table, draft) in tail {
         if let Some(row) = stage_draft(ctx, tables[table].0, draft, order)? {
+            check.tail(table, &row);
             staged[table].push(row);
             if staged[table].len() >= batch {
-                load(ctx, table, &mut staged[table], &mut outcomes[table])?;
+                flush(ctx, &mut stages[table], &mut staged[table])?;
             }
         }
     }
-    for (i, rows) in staged.iter_mut().enumerate() {
-        load(ctx, i, rows, &mut outcomes[i])?;
+    for (stage, rows) in stages.iter_mut().zip(staged.iter_mut()) {
+        flush(ctx, stage, rows)?;
+    }
+    ctx.check_cancelled()?;
+    let mut outcomes = Vec::with_capacity(tables.len());
+    for stage in stages {
+        outcomes.push(stage.finish(ctx.collection_id)?);
     }
     for (i, out) in outcomes.into_iter().enumerate() {
         count_load(ctx, tables[i].0, out);
     }
     Ok(())
+}
+
+/// Debug check that [`load_streamed`]'s staging order picks what batches picked: a batch picked a key's copy by
+/// (ordinal, position in batch), the whole-file stage picks the first staged copy. They agree when the copies of a
+/// key are staged in ordinal order within the streamed rows and within the tail (the tail is staged after the
+/// streamed rows and loses to them either way). Streamed rows follow the records, so their ordinals never fall.
+struct PickOrderCheck {
+    last_streamed: Vec<Option<u64>>,
+    tail: std::collections::HashMap<(usize, String), u64>,
+}
+
+impl PickOrderCheck {
+    fn new(tables: usize) -> Self {
+        PickOrderCheck {
+            last_streamed: vec![None; tables],
+            tail: Default::default(),
+        }
+    }
+
+    fn streamed(&mut self, table: usize, row: &StagedRow) {
+        if cfg!(debug_assertions) {
+            let last = self.last_streamed[table].replace(row.ordinal);
+            debug_assert!(
+                last.is_none_or(|l| l <= row.ordinal),
+                "streamed rows of table {table} staged out of ordinal order ({last:?} then {})",
+                row.ordinal
+            );
+        }
+    }
+
+    fn tail(&mut self, table: usize, row: &StagedRow) {
+        if cfg!(debug_assertions)
+            && let Some(prev) = self
+                .tail
+                .insert((table, row.record_key.clone()), row.ordinal)
+        {
+            debug_assert!(
+                prev <= row.ordinal,
+                "tail copies of key {} staged out of ordinal order ({prev} then {})",
+                row.record_key,
+                row.ordinal
+            );
+        }
+    }
 }
 
 /// Non-empty cells of a CSV row (blank cells are dropped, other values kept as they are).

@@ -1,7 +1,8 @@
 //! Staged loading of keyed rows into the state tables (spec 5.2, per-column latest wins), the
 //! event tables (fill missing: evidence is never overwritten), risk detections and collector
 //! flags. Same pattern as `bulk.rs`: an appender fills a TEMP staging table (every value as
-//! text) and set-based SQL merges it inside the caller's transaction. The tables have no key
+//! text) and set-based SQL merges it inside the caller's transaction, once per file and table
+//! ([`StateFileStage`]). The tables have no key
 //! constraints; this module keeps `record_key` unique.
 
 use crate::db::state_tables::{Col, LoadMode, TableSpec};
@@ -145,80 +146,132 @@ pub fn load_rows(
     file_id: i64,
     rows: &[StagedRow],
 ) -> Result<LoadOutcome> {
-    load(conn, spec, columns, collection_id, file_id, rows, false)
-}
-
-/// [`load_rows`] for one batch of a file loaded in several (in file order, inside the file's transaction): a key an
-/// earlier batch of the same file already picked is a duplicate, as it is within one batch (the file's first copy
-/// wins), instead of updating the row with a later copy. `file_picked` holds the picked keys of one file at a time.
-pub fn load_rows_batch(
-    conn: &Connection,
-    spec: &TableSpec,
-    columns: &[&str],
-    collection_id: i64,
-    file_id: i64,
-    rows: &[StagedRow],
-) -> Result<LoadOutcome> {
-    load(conn, spec, columns, collection_id, file_id, rows, true)
-}
-
-fn load(
-    conn: &Connection,
-    spec: &TableSpec,
-    columns: &[&str],
-    collection_id: i64,
-    file_id: i64,
-    rows: &[StagedRow],
-    batched: bool,
-) -> Result<LoadOutcome> {
-    let t = spec.table;
-    let cols: Vec<&Col> = columns
-        .iter()
-        .map(|n| {
-            spec.col(n)
-                .ok_or_else(|| Error::Invalid(format!("{t} has no loadable column {n}")))
-        })
-        .collect::<Result<_>>()?;
+    let cols = loadable(spec, columns)?;
     if rows.is_empty() {
         return Ok(LoadOutcome::default());
     }
-    let _total = super::timing::span(&format!("state load total: {t}"));
-    let _all = super::timing::span("state load: total");
-    let vcols: String = (0..cols.len())
-        .map(|i| format!(", v{i} VARCHAR, z{i} BOOLEAN"))
-        .collect();
-    conn.execute_batch(&format!(
-        "CREATE OR REPLACE TEMP TABLE stage_state (ord BIGINT, seq BIGINT, record_key VARCHAR, raw VARCHAR,
-             raw_patch VARCHAR, line_start BIGINT, line_end BIGINT, byte_offset BIGINT, byte_length BIGINT,
-             raw_sha256 VARCHAR{vcols});"
-    ))?;
-    {
+    let mut stage = StateFileStage::create(conn, spec, cols, file_id, Pick::FileOrder)?;
+    stage.stage(rows)?;
+    stage.finish(collection_id)
+}
+
+/// The `Col`s of `columns`, or an error naming one `spec` cannot load.
+fn loadable<'s>(spec: &'s TableSpec, columns: &[&str]) -> Result<Vec<&'s Col>> {
+    columns
+        .iter()
+        .map(|n| {
+            spec.col(n)
+                .ok_or_else(|| Error::Invalid(format!("{} has no loadable column {n}", spec.table)))
+        })
+        .collect()
+}
+
+/// Which staged copy of a key a merge picks.
+#[derive(Debug, Clone, Copy)]
+enum Pick {
+    /// The lowest ordinal, then the first staged ([`load_rows`]: one batch).
+    FileOrder,
+    /// The first staged ([`StateFileStage`]: the batches of one file, so a later batch never beats an earlier one).
+    StagingOrder,
+}
+
+/// Merge objects [`StateFileStage::finish`] creates and drops. Every one is narrow (`seq` plus flags): the wide
+/// staged columns (`raw`, the cells) are read through the `stage_pick` view, never copied.
+const DROP_MERGE: &str = "DROP TABLE IF EXISTS stage_fill; DROP TABLE IF EXISTS stage_match;
+    DROP TABLE IF EXISTS stage_new; DROP VIEW IF EXISTS stage_pick; DROP TABLE IF EXISTS stage_pick_keys;";
+
+/// The rows of ONE file for one state table, staged once (an insert-only, constraint-free TEMP table
+/// `stage_state_<table>`, appended to per batch with a global `seq`) and merged once by
+/// [`StateFileStage::finish`]: one [`load_rows`] of every staged row, a key keeping its first staged copy.
+/// A TEMP table's deleted or replaced rows are never reclaimed, so the stage is never emptied or replaced; it is
+/// dropped by `finish` and freed when the file's transaction ends.
+pub struct StateFileStage<'c> {
+    conn: &'c Connection,
+    spec: &'c TableSpec,
+    cols: Vec<&'c Col>,
+    file_id: i64,
+    name: String,
+    pick: Pick,
+    seq: u64,
+}
+
+impl<'c> StateFileStage<'c> {
+    /// Drops this table's stage left on the connection and creates an empty one. Call inside the file's transaction.
+    pub fn begin(
+        conn: &'c Connection,
+        spec: &'c TableSpec,
+        columns: &[&str],
+        file_id: i64,
+    ) -> Result<Self> {
+        let cols = loadable(spec, columns)?;
+        Self::create(conn, spec, cols, file_id, Pick::StagingOrder)
+    }
+
+    fn create(
+        conn: &'c Connection,
+        spec: &'c TableSpec,
+        cols: Vec<&'c Col>,
+        file_id: i64,
+        pick: Pick,
+    ) -> Result<Self> {
+        let name = format!("stage_state_{}", spec.table);
+        let vcols: String = (0..cols.len())
+            .map(|i| format!(", v{i} VARCHAR, z{i} BOOLEAN"))
+            .collect();
+        conn.execute_batch(&format!(
+            "DROP TABLE IF EXISTS {name};
+             CREATE TEMP TABLE {name} (ord BIGINT, seq BIGINT, record_key VARCHAR, raw VARCHAR,
+                 raw_patch VARCHAR, line_start BIGINT, line_end BIGINT, byte_offset BIGINT, byte_length BIGINT,
+                 raw_sha256 VARCHAR{vcols});"
+        ))?;
+        Ok(StateFileStage {
+            conn,
+            spec,
+            cols,
+            file_id,
+            name,
+            pick,
+            seq: 0,
+        })
+    }
+
+    /// Appends one batch (an appender only: no DELETE, no merge, no read of the state table).
+    pub fn stage(&mut self, rows: &[StagedRow]) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let t = self.spec.table;
+        let n = self.cols.len();
         let _a = super::timing::span("state load: appender (stage_state)");
-        let mut app = conn.appender("stage_state")?;
+        let mut app = self.conn.appender(&self.name)?;
         let text = |s: &Option<String>| s.clone().map_or(DbValue::Null, DbValue::Text);
-        for (seq, r) in rows.iter().enumerate() {
-            if r.cells.len() != cols.len() {
+        for r in rows {
+            if r.cells.len() != n {
                 return Err(Error::Invalid(format!(
-                    "{t}: row {} has {} cells for {} columns",
+                    "{t}: row {} has {} cells for {n} columns",
                     r.record_key,
                     r.cells.len(),
-                    cols.len()
                 )));
             }
-            if !r.tz_assumed.is_empty() && r.tz_assumed.len() != cols.len() {
+            if !r.tz_assumed.is_empty() && r.tz_assumed.len() != n {
                 return Err(Error::Invalid(format!(
-                    "{t}: row {} has {} tz_assumed flags for {} columns",
+                    "{t}: row {} has {} tz_assumed flags for {n} columns",
                     r.record_key,
                     r.tz_assumed.len(),
-                    cols.len()
                 )));
             }
             let mut vals = vec![
                 DbValue::BigInt(r.ordinal as i64),
-                DbValue::BigInt(seq as i64),
+                DbValue::BigInt(self.seq as i64),
                 DbValue::Text(r.record_key.clone()),
                 text(&r.raw),
-                text(&r.raw.as_deref().map(strip_top_level_nulls)),
+                // Stored only when it differs from `raw` (the `stage_pick` view reads `coalesce(raw_patch, raw)`).
+                text(
+                    &r.raw
+                        .as_deref()
+                        .map(strip_top_level_nulls)
+                        .filter(|p| Some(p.as_str()) != r.raw.as_deref()),
+                ),
                 DbValue::BigInt(r.pos.line_start as i64),
                 DbValue::BigInt(r.pos.line_end as i64),
                 DbValue::BigInt(r.pos.byte_offset as i64),
@@ -232,82 +285,86 @@ fn load(
                 ));
             }
             app.append_row(appender_params_from_iter(vals))?;
+            self.seq += 1;
         }
         app.flush()?;
+        Ok(())
     }
-    let tp = super::timing::span("state load: pick + new");
-    let earlier_batches = if batched {
-        conn.execute_batch(
-            "CREATE TEMP TABLE IF NOT EXISTS file_picked (table_name VARCHAR, file_id BIGINT, record_key VARCHAR)",
-        )?;
+
+    /// Merges everything staged once (= one [`load_rows`] of every staged row, in staging order), then DROPs the
+    /// stage and merge tables.
+    pub fn finish(self, collection_id: i64) -> Result<LoadOutcome> {
+        let conn = self.conn;
+        if self.seq == 0 {
+            conn.execute_batch(&format!("DROP TABLE IF EXISTS {}", self.name))?;
+            return Ok(LoadOutcome::default());
+        }
+        let (t, cols, stage) = (self.spec.table, &self.cols[..], &self.name);
+        let _total = super::timing::span(&format!("state load total: {t}"));
+        let _all = super::timing::span("state load: total");
+        let order = match self.pick {
+            Pick::FileOrder => "ord, seq",
+            Pick::StagingOrder => "seq",
+        };
+        let tp = super::timing::span("state load: pick + new");
+        conn.execute_batch(DROP_MERGE)?;
+        conn.execute_batch(&format!(
+            "CREATE TEMP TABLE stage_pick_keys AS SELECT seq FROM {stage}
+                 QUALIFY row_number() OVER (PARTITION BY record_key ORDER BY {order}) = 1;
+             CREATE TEMP VIEW stage_pick AS
+                 SELECT s.* EXCLUDE (raw_patch), coalesce(s.raw_patch, s.raw) AS raw_patch
+                 FROM {stage} s JOIN stage_pick_keys k ON k.seq = s.seq;
+             CREATE TEMP TABLE stage_new AS SELECT p.seq FROM stage_pick p
+                 WHERE NOT EXISTS (SELECT 1 FROM {t} t WHERE t.record_key = p.record_key);"
+        ))?;
+        let inserted: i64 = conn.query_row("SELECT count(*) FROM stage_new", [], |r| r.get(0))?;
+        let collected_at =
+            format!("(SELECT collected_at FROM collections WHERE collection_id = {collection_id})");
+        drop(tp);
+        let tu = super::timing::span("state load: update/fill existing");
+        let updated = match self.spec.mode {
+            LoadMode::LatestWins => update_existing(conn, t, cols, collection_id, &collected_at)?,
+            LoadMode::FillMissing => fill_missing(conn, t, cols, collection_id)?,
+            LoadMode::InsertOnly => 0,
+        };
+        drop(tu);
+        let ti = super::timing::span("state load: insert new rows");
+        let names = cols.iter().map(|c| c.name).collect::<Vec<_>>().join(", ");
+        let casts = cols
+            .iter()
+            .enumerate()
+            .map(|(i, c)| cast(c.sql_type, &format!("p.v{i}")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let claims = insert_claims(cols, collection_id);
+        let zones = insert_zones(cols);
         conn.execute(
-            "DELETE FROM file_picked WHERE file_id <> ?",
-            params![file_id],
+            &format!(
+                "INSERT INTO {t} (record_key, collection_id, collected_at, {names}, raw, column_collections, tz_assumed)
+                 SELECT p.record_key, {collection_id}, {collected_at}, {casts}, CAST(p.raw AS JSON), {claims}, {zones}
+                 FROM stage_pick p JOIN stage_new n ON n.seq = p.seq"
+            ),
+            [],
         )?;
-        format!(
-            "WHERE NOT EXISTS (SELECT 1 FROM file_picked f
-                               WHERE f.table_name = '{t}' AND f.file_id = {file_id} AND f.record_key = s.record_key)"
-        )
-    } else {
-        String::new()
-    };
-    conn.execute_batch(&format!(
-        "CREATE OR REPLACE TEMP TABLE stage_pick AS SELECT * FROM (SELECT * FROM stage_state
-             QUALIFY row_number() OVER (PARTITION BY record_key ORDER BY ord, seq) = 1) s {earlier_batches};
-         CREATE OR REPLACE TEMP TABLE stage_new AS SELECT p.* FROM stage_pick p
-             WHERE NOT EXISTS (SELECT 1 FROM {t} t WHERE t.record_key = p.record_key);"
-    ))?;
-    let inserted: i64 = conn.query_row("SELECT count(*) FROM stage_new", [], |r| r.get(0))?;
-    let collected_at =
-        format!("(SELECT collected_at FROM collections WHERE collection_id = {collection_id})");
-    drop(tp);
-    let tu = super::timing::span("state load: update/fill existing");
-    let updated = match spec.mode {
-        LoadMode::LatestWins => update_existing(conn, t, &cols, collection_id, &collected_at)?,
-        LoadMode::FillMissing => fill_missing(conn, t, &cols, collection_id)?,
-        LoadMode::InsertOnly => 0,
-    };
-    drop(tu);
-    let ti = super::timing::span("state load: insert new rows");
-    let names = cols.iter().map(|c| c.name).collect::<Vec<_>>().join(", ");
-    let casts = cols
-        .iter()
-        .enumerate()
-        .map(|(i, c)| cast(c.sql_type, &format!("p.v{i}")))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let claims = insert_claims(&cols, collection_id);
-    let zones = insert_zones(&cols);
-    conn.execute(
-        &format!(
-            "INSERT INTO {t} (record_key, collection_id, collected_at, {names}, raw, column_collections, tz_assumed)
-             SELECT p.record_key, {collection_id}, {collected_at}, {casts}, CAST(p.raw AS JSON), {claims}, {zones}
-             FROM stage_new p"
-        ),
-        [],
-    )?;
-    drop(ti);
-    let _ts = super::timing::span("state load: insert record_sources");
-    conn.execute(
-        &format!(
-            "INSERT INTO record_sources (table_name, record_key, file_id, record_ordinal, line_start,
-                                         line_end, byte_offset, byte_length, raw_sha256)
-             SELECT '{t}', record_key, ?, ord, line_start, line_end, byte_offset, byte_length, raw_sha256
-             FROM stage_state ON CONFLICT DO NOTHING"
-        ),
-        params![file_id],
-    )?;
-    if batched {
+        drop(ti);
+        let ts = super::timing::span("state load: insert record_sources");
         conn.execute(
-            &format!("INSERT INTO file_picked SELECT '{t}', ?, record_key FROM stage_pick"),
-            params![file_id],
+            &format!(
+                "INSERT INTO record_sources (table_name, record_key, file_id, record_ordinal, line_start,
+                                             line_end, byte_offset, byte_length, raw_sha256)
+                 SELECT '{t}', record_key, ?, ord, line_start, line_end, byte_offset, byte_length, raw_sha256
+                 FROM {stage} ON CONFLICT DO NOTHING"
+            ),
+            params![self.file_id],
         )?;
+        drop(ts);
+        conn.execute_batch(&format!("{DROP_MERGE} DROP TABLE {stage};"))?;
+        Ok(LoadOutcome {
+            staged: self.seq,
+            inserted: inserted as u64,
+            updated,
+        })
     }
-    Ok(LoadOutcome {
-        staged: rows.len() as u64,
-        inserted: inserted as u64,
-        updated,
-    })
 }
 
 /// Per-column latest wins for the batch rows whose key already exists (spec 5.2).
@@ -388,8 +445,8 @@ fn update_existing(
         ));
     }
     conn.execute_batch(&format!(
-        "CREATE OR REPLACE TEMP TABLE stage_match AS
-         SELECT p.*, {select}, {changed} AS changed
+        "CREATE TEMP TABLE stage_match AS
+         SELECT p.seq, {select}, {changed} AS changed
          FROM stage_pick p JOIN {t} t ON t.record_key = p.record_key;",
         changed = changed.join(" OR ")
     ))?;
@@ -407,7 +464,8 @@ fn update_existing(
                  raw = CASE WHEN NOT p.changed OR p.raw_patch IS NULL THEN {t}.raw
                             WHEN p.row_ok THEN json_merge_patch(coalesce({t}.raw, CAST('{{}}' AS JSON)), CAST(p.raw_patch AS JSON))
                             ELSE json_merge_patch(CAST(p.raw_patch AS JSON), coalesce({t}.raw, CAST('{{}}' AS JSON))) END{zones}
-             FROM stage_match p WHERE {t}.record_key = p.record_key AND ({any})",
+             FROM (SELECT p.*, m.* EXCLUDE (seq) FROM stage_pick p JOIN stage_match m ON m.seq = p.seq) p
+             WHERE {t}.record_key = p.record_key AND ({any})",
             sets = sets.join(", "),
             claims = claims.join(", "),
             any = any_write.join(" OR "),
@@ -431,8 +489,8 @@ fn fill_missing(conn: &Connection, t: &str, cols: &[&Col], collection_id: i64) -
         .collect::<Vec<_>>()
         .join(", ");
     conn.execute_batch(&format!(
-        "CREATE OR REPLACE TEMP TABLE stage_fill AS
-         SELECT p.*, {fills} FROM stage_pick p JOIN {t} t ON t.record_key = p.record_key;"
+        "CREATE TEMP TABLE stage_fill AS
+         SELECT p.seq, {fills} FROM stage_pick p JOIN {t} t ON t.record_key = p.record_key;"
     ))?;
     let any = (0..cols.len())
         .map(|i| format!("p.f{i}"))
@@ -475,7 +533,8 @@ fn fill_missing(conn: &Connection, t: &str, cols: &[&Col], collection_id: i64) -
                                                        json_object({claims})),
                  raw = CASE WHEN p.raw_patch IS NULL THEN {t}.raw
                             ELSE json_merge_patch(CAST(p.raw_patch AS JSON), coalesce({t}.raw, CAST('{{}}' AS JSON))) END{zones}
-             FROM stage_fill p WHERE {t}.record_key = p.record_key AND ({any})",
+             FROM (SELECT p.*, f.* EXCLUDE (seq) FROM stage_pick p JOIN stage_fill f ON f.seq = p.seq) p
+             WHERE {t}.record_key = p.record_key AND ({any})",
             zones = zone_set(t, cols, "f")
         ),
         [],

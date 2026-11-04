@@ -1,6 +1,6 @@
 //! Bulk loading of normalized UAL records (Phase 1 follow-up: no per-row INSERT ... ON
 //! CONFLICT). Rows go through DuckDB appenders into TEMP staging tables and are merged with
-//! set-based SQL inside the caller's transaction.
+//! set-based SQL inside the caller's transaction: once per file ([`UalFileStage`]).
 
 use crate::Result;
 use crate::normalize::ual::UalRecord;
@@ -22,8 +22,7 @@ pub struct LoadOutcome {
     pub staged: u64,
     /// New `ual_events` rows.
     pub inserted: u64,
-    /// Existing `partial` rows replaced by a `full` copy from this batch, not counting rows an earlier batch of the
-    /// same file inserted (one batch would have stored the full copy directly: those count as duplicates).
+    /// `partial` rows stored before this file (or batch) replaced by its `full` copy.
     pub upgraded: u64,
 }
 
@@ -34,8 +33,11 @@ impl LoadOutcome {
     }
 }
 
+/// The stage tables of one file, created empty by [`UalFileStage::begin`]. Insert-only and constraint-free: a
+/// TEMP table's deleted or replaced rows are never reclaimed (not even across commits), so they are appended to
+/// per batch and dropped once, never emptied or replaced.
 const STAGE_DDL: &str = "
-CREATE TEMP TABLE IF NOT EXISTS stage_ual (
+CREATE TEMP TABLE stage_ual (
     ord BIGINT, record_id VARCHAR, synthetic_id BOOLEAN, event_time VARCHAR, time_tz_assumed BOOLEAN,
     time_precision VARCHAR, record_type SMALLINT, record_type_name VARCHAR, workload VARCHAR,
     operation VARCHAR, result_status VARCHAR, user_upn VARCHAR, user_type SMALLINT, user_key VARCHAR,
@@ -43,40 +45,53 @@ CREATE TEMP TABLE IF NOT EXISTS stage_ual (
     object_id VARCHAR, organization_id VARCHAR, mailbox_upn VARCHAR, parameters VARCHAR,
     audit_data VARCHAR, completeness VARCHAR, line_start BIGINT, line_end BIGINT, byte_offset BIGINT,
     byte_length BIGINT, raw_sha256 VARCHAR);
-CREATE TEMP TABLE IF NOT EXISTS stage_mia (
+CREATE TEMP TABLE stage_mia (
     ord BIGINT, record_id VARCHAR, item_ordinal INTEGER, access_type VARCHAR, folder_path VARCHAR,
     internet_message_id VARCHAR, size_bytes BIGINT, is_throttled BOOLEAN, operation_count INTEGER);
-CREATE TEMP TABLE IF NOT EXISTS stage_file (
+CREATE TEMP TABLE stage_file (
     ord BIGINT, record_id VARCHAR, workload VARCHAR, site_url VARCHAR, relative_url VARCHAR,
     file_name VARCHAR, file_ext VARCHAR, item_type VARCHAR, is_onenote BOOLEAN,
     application_name VARCHAR, platform VARCHAR, device_name VARCHAR, list_id VARCHAR,
     list_item_id VARCHAR);
-CREATE TEMP TABLE IF NOT EXISTS stage_sharing (
+CREATE TEMP TABLE stage_sharing (
     ord BIGINT, record_id VARCHAR, link_type VARCHAR, target_user VARCHAR, target_email VARCHAR,
     permission VARCHAR, is_external BOOLEAN);
-CREATE TEMP TABLE IF NOT EXISTS stage_search (
+CREATE TEMP TABLE stage_search (
     ord BIGINT, record_id VARCHAR, workload VARCHAR, query_text VARCHAR, scope VARCHAR);
-DELETE FROM stage_ual;
-DELETE FROM stage_mia;
-DELETE FROM stage_file;
-DELETE FROM stage_sharing;
-DELETE FROM stage_search;
 ";
 
-/// Pick one staged copy per record (full before partial, then first in file) and split the
-/// chosen copies into new records and upgrades of stored partial rows.
+/// Every TEMP object a file's stage creates (`stage_chosen` is a view), dropped by `begin` (leftovers of a failed
+/// load on an autocommit connection) and by `finish`.
+const DROP_STAGE: &str = "
+DROP VIEW IF EXISTS stage_chosen;
+DROP TABLE IF EXISTS stage_written;
+DROP TABLE IF EXISTS stage_fresh;
+DROP TABLE IF EXISTS stage_upgrade;
+DROP TABLE IF EXISTS stage_chosen_keys;
+DROP TABLE IF EXISTS stage_ual;
+DROP TABLE IF EXISTS stage_mia;
+DROP TABLE IF EXISTS stage_file;
+DROP TABLE IF EXISTS stage_sharing;
+DROP TABLE IF EXISTS stage_search;
+";
+
+/// Pick one staged copy per record (full before partial, then first in file) on the narrow columns only, read the
+/// wide ones through a join (`audit_data` is never copied), and split the chosen copies into new records and
+/// upgrades of partial rows stored before this file.
 const MERGE_SETUP: &str = "
-CREATE OR REPLACE TEMP TABLE stage_chosen AS
-    SELECT * FROM stage_ual
+CREATE TEMP TABLE stage_chosen_keys AS
+    SELECT record_id, ord, completeness FROM stage_ual
     QUALIFY row_number() OVER (PARTITION BY record_id ORDER BY (completeness = 'full') DESC, ord) = 1;
-CREATE OR REPLACE TEMP TABLE stage_upgrade AS
-    SELECT c.record_id, c.ord FROM stage_chosen c
-    JOIN ual_events e ON e.record_id = CAST(c.record_id AS UUID)
-    WHERE e.data_completeness = 'partial' AND c.completeness = 'full';
-CREATE OR REPLACE TEMP TABLE stage_fresh AS
-    SELECT c.record_id, c.ord FROM stage_chosen c
-    WHERE NOT EXISTS (SELECT 1 FROM ual_events e WHERE e.record_id = CAST(c.record_id AS UUID));
-CREATE OR REPLACE TEMP TABLE stage_written AS
+CREATE TEMP VIEW stage_chosen AS
+    SELECT s.* FROM stage_ual s JOIN stage_chosen_keys k ON k.record_id = s.record_id AND k.ord = s.ord;
+CREATE TEMP TABLE stage_upgrade AS
+    SELECT k.record_id, k.ord FROM stage_chosen_keys k
+    JOIN ual_events e ON e.record_id = CAST(k.record_id AS UUID)
+    WHERE e.data_completeness = 'partial' AND k.completeness = 'full';
+CREATE TEMP TABLE stage_fresh AS
+    SELECT k.record_id, k.ord FROM stage_chosen_keys k
+    WHERE NOT EXISTS (SELECT 1 FROM ual_events e WHERE e.record_id = CAST(k.record_id AS UUID));
+CREATE TEMP TABLE stage_written AS
     SELECT record_id, ord FROM stage_fresh UNION ALL SELECT record_id, ord FROM stage_upgrade;
 ";
 
@@ -168,23 +183,37 @@ fn parameters_json(p: &[(String, String)]) -> Option<String> {
     Some(serde_json::Value::Array(entries).to_string())
 }
 
-/// Callers must hold a transaction: this is not atomic on its own (it runs several
-/// statements against TEMP staging tables, then merges them into the evidence tables).
-pub fn load_ual_batch(
-    conn: &Connection,
-    collection_id: i64,
+/// The UAL rows of ONE file, staged once (insert-only, constraint-free TEMP tables) and merged once.
+///
+/// Inside the file's transaction: [`UalFileStage::begin`], [`UalFileStage::stage`] per batch (appenders only),
+/// [`UalFileStage::finish`] after the last one. The stage spills like any TEMP table and is freed when the
+/// transaction ends (commit or rollback); a file that fails or is cancelled before `finish` leaves nothing.
+pub struct UalFileStage<'c> {
+    conn: &'c Connection,
     file_id: i64,
-    rows: &[StagedUal],
-) -> Result<LoadOutcome> {
-    if rows.is_empty() {
-        return Ok(LoadOutcome::default());
+    staged: u64,
+}
+
+impl<'c> UalFileStage<'c> {
+    /// Drops any stage tables left on this connection, creates empty ones. Call inside the file's transaction.
+    pub fn begin(conn: &'c Connection, file_id: i64) -> Result<Self> {
+        let _t = super::timing::span("ual load: stage ddl");
+        conn.execute_batch(DROP_STAGE)?;
+        conn.execute_batch(STAGE_DDL)?;
+        Ok(UalFileStage {
+            conn,
+            file_id,
+            staged: 0,
+        })
     }
-    let _total = super::timing::span("ual load: total");
-    let t = super::timing::span("ual load: stage ddl");
-    conn.execute_batch(STAGE_DDL)?;
-    drop(t);
-    {
+
+    /// Appends one batch (appenders only: no DELETE, no merge, no read of the evidence tables).
+    pub fn stage(&mut self, rows: &[StagedUal]) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
         let _t = super::timing::span("ual load: appenders (stage_*)");
+        let conn = self.conn;
         let mut ual = conn.appender("stage_ual")?;
         let mut mia = conn.appender("stage_mia")?;
         let mut file = conn.appender("stage_file")?;
@@ -276,47 +305,64 @@ pub fn load_ual_batch(
         file.flush()?;
         sharing.flush()?;
         search.flush()?;
+        self.staged += rows.len() as u64;
+        Ok(())
     }
-    let t = super::timing::span("ual load: merge setup (chosen/upgrade/fresh)");
-    conn.execute_batch(MERGE_SETUP)?;
-    // An upgrade of a row an earlier batch of this file inserted is the file's own full copy winning over its partial
-    // one, which a single batch decides in `stage_chosen`: not an upgrade. `file_inserted` holds the rows this file's
-    // batches inserted (a row that existed before the file and was only sighted by it is still upgraded); it keeps
-    // one file's ids at a time.
-    conn.execute_batch(
-        "CREATE TEMP TABLE IF NOT EXISTS file_inserted (file_id BIGINT, record_id VARCHAR)",
-    )?;
-    conn.execute(
-        "DELETE FROM file_inserted WHERE file_id <> ?",
-        params![file_id],
-    )?;
-    let (inserted, upgraded): (i64, i64) = conn.query_row(
-        "SELECT (SELECT count(*) FROM stage_fresh),
-                (SELECT count(*) FROM stage_upgrade u WHERE NOT EXISTS (
-                    SELECT 1 FROM file_inserted f WHERE f.file_id = ? AND f.record_id = u.record_id))",
-        params![file_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
-    conn.execute(
-        "INSERT INTO file_inserted SELECT ?, record_id FROM stage_fresh",
-        params![file_id],
-    )?;
-    drop(t);
-    let t = super::timing::span("ual load: upgrade + delete children");
-    conn.execute(&upgrade_sql(), [])?;
-    conn.execute_batch(DELETE_UPGRADED_CHILDREN)?;
-    drop(t);
-    let t = super::timing::span("ual load: insert ual_events");
-    conn.execute(&insert_fresh_sql(), params![collection_id])?;
-    drop(t);
-    let t = super::timing::span("ual load: insert children (mia/file/sharing/search)");
-    conn.execute_batch(INSERT_CHILDREN)?;
-    drop(t);
-    let _t = super::timing::span("ual load: insert record_sources");
-    conn.execute(INSERT_SOURCES, params![file_id])?;
-    Ok(LoadOutcome {
-        staged: rows.len() as u64,
-        inserted: inserted as u64,
-        upgraded: upgraded as u64,
-    })
+
+    /// Runs the dedup/upgrade/insert/children/record_sources merge once over everything staged, then DROPs every
+    /// stage table. Counts are those one `load_ual_batch` of all the rows would return.
+    pub fn finish(self, collection_id: i64) -> Result<LoadOutcome> {
+        let conn = self.conn;
+        if self.staged == 0 {
+            conn.execute_batch(DROP_STAGE)?;
+            return Ok(LoadOutcome::default());
+        }
+        let _total = super::timing::span("ual load: total");
+        let t = super::timing::span("ual load: merge setup (chosen/upgrade/fresh)");
+        conn.execute_batch(MERGE_SETUP)?;
+        // `stage_upgrade` was decided before this file wrote anything: every row in it was stored by an earlier file.
+        let (inserted, upgraded): (i64, i64) = conn.query_row(
+            "SELECT (SELECT count(*) FROM stage_fresh), (SELECT count(*) FROM stage_upgrade)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        drop(t);
+        let t = super::timing::span("ual load: upgrade + delete children");
+        conn.execute(&upgrade_sql(), [])?;
+        conn.execute_batch(DELETE_UPGRADED_CHILDREN)?;
+        drop(t);
+        let t = super::timing::span("ual load: insert ual_events");
+        conn.execute(&insert_fresh_sql(), params![collection_id])?;
+        drop(t);
+        let t = super::timing::span("ual load: insert children (mia/file/sharing/search)");
+        conn.execute_batch(INSERT_CHILDREN)?;
+        drop(t);
+        let t = super::timing::span("ual load: insert record_sources");
+        conn.execute(INSERT_SOURCES, params![self.file_id])?;
+        drop(t);
+        let _t = super::timing::span("ual load: drop stage");
+        conn.execute_batch(DROP_STAGE)?;
+        Ok(LoadOutcome {
+            staged: self.staged,
+            inserted: inserted as u64,
+            upgraded: upgraded as u64,
+        })
+    }
+}
+
+/// One file's rows in one batch: [`UalFileStage::begin`] + [`UalFileStage::stage`] + [`UalFileStage::finish`].
+/// Callers must hold a transaction: this is not atomic on its own (it runs several statements against TEMP staging
+/// tables, then merges them into the evidence tables).
+pub fn load_ual_batch(
+    conn: &Connection,
+    collection_id: i64,
+    file_id: i64,
+    rows: &[StagedUal],
+) -> Result<LoadOutcome> {
+    if rows.is_empty() {
+        return Ok(LoadOutcome::default());
+    }
+    let mut stage = UalFileStage::begin(conn, file_id)?;
+    stage.stage(rows)?;
+    stage.finish(collection_id)
 }

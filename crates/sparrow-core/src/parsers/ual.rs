@@ -3,7 +3,7 @@
 //! keys, never from the file name (Addendum A.3).
 
 use crate::discovery::{FileFormat, format_from_path};
-use crate::ingest::bulk::{LoadOutcome, StagedUal, load_ual_batch};
+use crate::ingest::bulk::{LoadOutcome, StagedUal, UalFileStage};
 use crate::ingest::context::ParseContext;
 use crate::ingest::parser::{ArtifactParser, ParserRegistry};
 use crate::normalize::fields::Rec;
@@ -182,11 +182,10 @@ fn quickual_csv_input(record: &Map<String, Value>) -> Result<AuditInput> {
     })
 }
 
-/// The batches of one file loaded so far.
-#[derive(Default)]
-struct Loads {
-    outcome: LoadOutcome,
-    /// Loaded records whose id was derived from their content.
+/// The file's rows: one [`UalFileStage`] for the whole file, staged per batch and merged once at the end.
+struct Loads<'c> {
+    stage: UalFileStage<'c>,
+    /// Staged records whose id was derived from their content.
     synthetic: u64,
 }
 
@@ -197,20 +196,30 @@ fn only_open_bracket(ctx: &ParseContext<'_>) -> bool {
     a.head.len() as u64 >= a.raw_len && ctx.head_text().trim() == "["
 }
 
-impl Loads {
-    /// Load `staged` (one batch) inside the file's transaction and empty it.
+impl<'c> Loads<'c> {
+    fn begin(ctx: &ParseContext<'c>) -> Result<Self> {
+        Ok(Loads {
+            stage: UalFileStage::begin(ctx.conn, ctx.file_id)?,
+            synthetic: 0,
+        })
+    }
+
+    /// Stage `staged` (one batch) inside the file's transaction and empty it.
     fn load(&mut self, ctx: &ParseContext<'_>, staged: &mut Vec<StagedUal>) -> Result<()> {
         if staged.is_empty() {
             return Ok(());
         }
         ctx.check_cancelled()?;
-        let out = load_ual_batch(ctx.conn, ctx.collection_id, ctx.file_id, staged)?;
-        self.outcome.staged += out.staged;
-        self.outcome.inserted += out.inserted;
-        self.outcome.upgraded += out.upgraded;
+        self.stage.stage(staged)?;
         self.synthetic += staged.iter().filter(|s| s.rec.synthetic_id).count() as u64;
         staged.clear();
         Ok(())
+    }
+
+    /// Merge everything staged (once per file).
+    fn finish(self, ctx: &ParseContext<'_>) -> Result<(LoadOutcome, u64)> {
+        ctx.check_cancelled()?;
+        Ok((self.stage.finish(ctx.collection_id)?, self.synthetic))
     }
 }
 
@@ -335,7 +344,7 @@ impl ArtifactParser for UalParser {
         let order = ctx.resolve_date_order(&detector)?;
         let batch = ctx.options.batch_rows.max(1);
         let mut staged = Vec::new();
-        let mut loads = Loads::default();
+        let mut loads = Loads::begin(ctx)?;
         ctx.set_step(1);
         for_each_record(&ctx.input(), format, |event| {
             let RecordEvent::Record(r) = event else {
@@ -358,7 +367,7 @@ impl ArtifactParser for UalParser {
             Ok(true)
         })?;
         loads.load(ctx, &mut staged)?;
-        let out = loads.outcome;
+        let (out, synthetic) = loads.finish(ctx)?;
         ctx.stats.loaded += out.inserted + out.upgraded;
         ctx.stats.duplicate += out.duplicate();
         if out.upgraded > 0 {
@@ -367,10 +376,9 @@ impl ArtifactParser for UalParser {
                 out.upgraded
             ));
         }
-        if loads.synthetic > 0 {
+        if synthetic > 0 {
             ctx.warn(format!(
-                "{} records have no valid AuditData Id; a content-derived id was used",
-                loads.synthetic
+                "{synthetic} records have no valid AuditData Id; a content-derived id was used",
             ));
         }
         Ok(())
