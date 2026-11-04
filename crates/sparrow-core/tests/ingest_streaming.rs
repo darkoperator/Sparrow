@@ -862,3 +862,90 @@ fn streamed_parsers_walk_every_step() {
         assert_eq!(got.last().unwrap().steps, steps, "{kind:?}");
     }
 }
+
+/// [`raw_row`] whose AuditData time is the culture-formatted `time` (day/month order unknown when ambiguous).
+fn raw_row_at(id: &str, op: &str, time: &str) -> String {
+    let audit = json!({
+        "CreationTime": time, "Id": id, "Operation": op,
+        "OrganizationId": "0e0e0e0e-0000-4000-8000-00000000000a", "RecordType": 1,
+        "ResultStatus": "True", "UserType": 2, "Version": 1, "Workload": "Exchange",
+        "ClientIP": "203.0.113.10", "UserId": "alice@contoso.example", "ObjectId": "alice@contoso.example",
+    });
+    csv_line(&[
+        "ExchangeAdmin",
+        time,
+        "alice@contoso.example",
+        op,
+        &audit.to_string(),
+        "1",
+        "1",
+        "",
+        id,
+        "True",
+        "Unchanged",
+    ])
+}
+
+#[test]
+fn a_copy_parsed_after_its_original_is_deferred_grows_the_total() {
+    // The window file's dates are all ambiguous and nothing proved an order yet: it is deferred past the derived
+    // stage, so its Merged copy (left out of the total as superseded) is parsed after all, proves the order, and the
+    // window file is retried.
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("OUT");
+    let window = "UnifiedAuditLog/20260910-100000/UAL-20260901000000-20260902000000.csv";
+    let merged = "UnifiedAuditLog/20260910-100000/Merged/UAL-Combined.csv";
+    let one = raw_row_at(
+        "11111111-1111-4111-8111-111111111111",
+        "Set-Mailbox",
+        "9/1/2026 10:20:00 AM",
+    );
+    let two = raw_row_at(
+        "22222222-2222-4222-8222-222222222222",
+        "New-InboxRule",
+        "9/13/2026 10:20:00 AM",
+    );
+    let window_bytes = utf8_bom(&format!("{}{one}", csv_line(RAW_HEADER)));
+    let merged_bytes = utf8_bom(&format!("{}{one}{two}", csv_line(RAW_HEADER)));
+    fixtures::write(&out, window, &window_bytes);
+    fixtures::write(&out, merged, &merged_bytes);
+    let (w, m) = (window_bytes.len() as u64, merged_bytes.len() as u64);
+    let (report, events) = events_of(dir.path(), IngestOptions::default());
+    assert_eq!(
+        row(&report, window).status,
+        FileStatus::Parsed,
+        "{report:#?}"
+    );
+    assert_eq!(
+        row(&report, merged).status,
+        FileStatus::Parsed,
+        "{report:#?}"
+    );
+    let files: Vec<(String, u64, u64, u64)> = events
+        .iter()
+        .filter_map(|e| match e {
+            IngestProgress::File {
+                rel_path,
+                size,
+                bytes_done_before,
+                bytes_total,
+                ..
+            } => Some((rel_path.clone(), *size, *bytes_done_before, *bytes_total)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        files,
+        [
+            // Counted, deferred: its bytes are done when it is deferred.
+            (window.to_string(), w, 0, w),
+            // Left out as superseded, parsed after all: the total grows by exactly its size.
+            (merged.to_string(), m, w, w + m),
+            // The retry adds nothing: it was counted when deferred.
+            (window.to_string(), 0, w + m, w + m),
+        ]
+    );
+    // The bar still ends at 100 %.
+    let (_, size, before, total) = files.last().unwrap();
+    assert_eq!(before + size, *total);
+}

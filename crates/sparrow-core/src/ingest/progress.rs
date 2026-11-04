@@ -31,6 +31,8 @@ pub(crate) struct FileProgress<'a> {
     errors: Cell<u64>,
     last_at: Cell<Option<Instant>>,
     shown: Cell<Option<Shown>>,
+    /// A reporting pass ran in the current step.
+    passes_in_step: Cell<bool>,
 }
 
 impl<'a> FileProgress<'a> {
@@ -47,6 +49,7 @@ impl<'a> FileProgress<'a> {
             errors: Cell::new(0),
             last_at: Cell::new(None),
             shown: Cell::new(None),
+            passes_in_step: Cell::new(false),
         };
         p.set_parser_steps(parser_steps);
         p
@@ -74,16 +77,24 @@ impl<'a> FileProgress<'a> {
             self.close();
         }
         self.step.set(Some(step));
+        self.passes_in_step.set(false);
         self.done.set(0);
         self.emit();
     }
 
     /// A pass over the file opens in step `step`: its bytes count from 0.
+    /// A step has at most one reporting pass (others are [`quiet`](crate::ingest::context::RecordInput::quiet)): a
+    /// second would run the step's bytes from 0 again.
     pub(crate) fn begin_pass(&self, step: usize) {
         if !self.on {
             return;
         }
+        debug_assert!(
+            !self.passes_in_step.get() || self.step.get() != Some(step),
+            "a second reporting pass in step {step}: make one of them quiet or give it its own step"
+        );
         self.begin_step(step);
+        self.passes_in_step.set(true);
         self.done.set(0);
     }
 

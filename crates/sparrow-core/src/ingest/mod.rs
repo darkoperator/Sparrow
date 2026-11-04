@@ -100,8 +100,11 @@ pub enum IngestProgress {
     /// cover, and `size` what this file adds to it once handled: its size in bytes, or 0 when it is not counted in
     /// `bytes_total` (a copy known in advance to be superseded; a file retried after its dates were deferred, counted
     /// when it was deferred). So `(bytes_done_before + this file's fraction done × size) / bytes_total` is the overall
-    /// fraction: it never goes back, and the last file ends it at 1, except when a copy left out as superseded turns
-    /// out to be parsed (the file that would have superseded it failed): it is added to `bytes_total` then.
+    /// fraction, and the last file ends it at 1. `bytes_done_before` never goes back, but `bytes_total` can grow: a
+    /// copy left out as superseded is parsed after all when the file that would supersede it failed, or was deferred
+    /// (its culture dates all ambiguous, no order proved yet) and is retried after the derived stage. That copy is
+    /// added to `bytes_total` at its `File` event, so the fraction can drop then: a consumer must clamp the overall
+    /// fraction it shows to be non-decreasing (show the larger of the previous and the current one).
     File {
         collection: usize,
         collections: usize,
@@ -793,11 +796,11 @@ fn plan_collection(dc: &DiscoveredCollection) -> Result<Plan> {
     let (mut uncounted, mut bytes) = (HashSet::new(), 0u64);
     let raw_first = keyed
         .iter()
-        .filter(|(_, derived, flag, _, _)| !derived && !flag)
+        .filter(|(_, derived, flag, _, _)| raw_stage(*derived, *flag))
         .chain(
             keyed
                 .iter()
-                .filter(|(_, derived, flag, _, _)| *derived || *flag),
+                .filter(|(_, derived, flag, _, _)| !raw_stage(*derived, *flag)),
         );
     for &(i, derived, _, artifact, _) in raw_first {
         let f = &listing.files[i];
@@ -819,9 +822,17 @@ fn plan_collection(dc: &DiscoveredCollection) -> Result<Plan> {
     })
 }
 
+/// True for a file of a collection's raw stage (handled first, with its own retry pass): neither derived nor a
+/// collector flag. The rest (derived files, then flags) form the second stage. The supersede look-ahead
+/// ([`plan_collection`]) and the ingest loop split the files the same way through this.
+fn raw_stage(derived: bool, flag: bool) -> bool {
+    !derived && !flag
+}
+
 /// What file `f` adds to the import's bytes once handled ([`IngestProgress::File`]'s `size`): 0 when it was counted
 /// already (deferred, then retried) or is a copy left out as superseded and skipped; a copy left out but parsed after
-/// all (what superseded it failed) is added to the total now.
+/// all (what would supersede it failed, or was deferred and is retried after the derived stage) is added to the total
+/// now.
 fn file_weight(
     bytes: &mut ImportBytes,
     plan: &Plan,
@@ -887,7 +898,7 @@ fn ingest_collection(
     // (spec §6); otherwise it waits for the derived files' proof.
     let (raw, rest): (Vec<_>, Vec<_>) = keyed
         .into_iter()
-        .partition(|(_, derived, flag, _, _)| !derived && !flag);
+        .partition(|(_, derived, flag, _, _)| raw_stage(*derived, *flag));
     let mut files = Vec::new();
     // Orders proved by files of this collection parsed in earlier runs count too.
     let mut proved = orders_proved_earlier(case.conn(), collection_id)?;
