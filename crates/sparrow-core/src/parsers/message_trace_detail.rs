@@ -8,6 +8,7 @@ use crate::db::state_tables::{MESSAGE_TRACE, MESSAGE_TRACE_EVENTS};
 use crate::ingest::IngestOptions;
 use crate::ingest::context::ParseContext;
 use crate::ingest::parser::{ArtifactParser, ParserRegistry};
+use crate::ingest::progress::SAVING_RECORDS;
 use crate::normalize::fields::{Cell, Rec};
 use crate::normalize::net::{normalize_ip, normalize_upn};
 use crate::parsers::message_trace::{COLS as TRACE_COLS, message_trace_key, received_cells};
@@ -530,10 +531,17 @@ fn collapse_sorted(
 }
 
 impl ArtifactParser for MessageTraceDetailParser {
-    /// The first scan into the TEMP events table, then [`load_streamed`]'s two passes; the collapse of the message
-    /// rows (the tail, read from the TEMP table, not the file) runs within the last, after its pass.
+    /// The first scan into the TEMP events table, the sort of its copy by message, then [`load_streamed`]'s two
+    /// passes and its merge; the collapse of the message rows (the tail, read from the sorted copy, not the file) runs
+    /// within the second pass's step, after the pass.
     fn steps(&self) -> &'static [&'static str] {
-        &["Grouping messages", "Checking dates", "Loading records"]
+        &[
+            "Grouping messages",
+            "Sorting messages",
+            "Checking dates",
+            "Loading records",
+            SAVING_RECORDS,
+        ]
     }
 
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
@@ -606,7 +614,7 @@ fn parse_detail(ctx: &mut ParseContext<'_>) -> Result<()> {
     }
     let Some(first) = first else {
         // No readable record: recording the unreadable ones is all there is to do (the load step's pass).
-        ctx.set_step(2);
+        ctx.set_step(3);
         read_state_records(ctx, format)?;
         return Ok(());
     };
@@ -623,6 +631,8 @@ fn parse_detail(ctx: &mut ParseContext<'_>) -> Result<()> {
     }
     drop(first);
     ctx.check_cancelled()?;
+    // One statement over every event (minutes on a multi-GB file): its own step, so the progress shows it.
+    ctx.set_step(1);
     conn.execute_batch(&format!(
         "CREATE TEMP TABLE {SORTED} AS
              SELECT row_number() OVER (ORDER BY first_idx, idx) - 1 AS pos, * EXCLUDE (first_idx)
@@ -632,7 +642,7 @@ fn parse_detail(ctx: &mut ParseContext<'_>) -> Result<()> {
     ))?;
     load_streamed(
         ctx,
-        1,
+        2,
         format,
         &[(&MESSAGE_TRACE_EVENTS, COLS), (&MESSAGE_TRACE, TRACE_COLS)],
         |sink| collapse_sorted(conn, options, appended as i64, batch, sink),

@@ -217,9 +217,10 @@ impl<'c> Loads<'c> {
         Ok(())
     }
 
-    /// Merge everything staged (once per file).
-    fn finish(self, ctx: &ParseContext<'_>) -> Result<(LoadOutcome, u64)> {
+    /// Merge everything staged (once per file), as the "Saving records" step.
+    fn finish(self, ctx: &mut ParseContext<'_>) -> Result<(LoadOutcome, u64)> {
         ctx.check_cancelled()?;
+        ctx.set_step(2);
         Ok((self.stage.finish(ctx.collection_id)?, self.synthetic))
     }
 }

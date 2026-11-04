@@ -11,7 +11,7 @@ const step = (steps: string[], i: number, done: number): IngestProgress => ({
   stage: "file_step", steps, step: i, bytes_done: done, bytes_total: S, records: 0, errors: 0,
 });
 const CHECKING = ["Checking file"];
-const UAL = ["Checking file", "Checking dates", "Loading records"];
+const UAL = ["Checking file", "Checking dates", "Loading records", "Saving records"];
 
 /**
  * One file read at an even speed, a pass of it every 10 s, its steps list told late: "Checking file" alone through

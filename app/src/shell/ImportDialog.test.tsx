@@ -539,6 +539,28 @@ describe("ImportDialog in-file progress", () => {
     expect(screen.getByText("Cancel stops now; this file is rolled back, files already loaded stay.")).toBeInTheDocument();
   });
 
+  it("shows the merge as its own step once the passes are done", async () => {
+    const user = userEvent.setup();
+    await running(user);
+    emit(fileEvent(1));
+    const saving = ["Checking file", "Checking dates", "Loading records", "Saving records"];
+    emit({ stage: "file_step", steps: saving, step: 3, bytes_done: 0, bytes_total: S, records: 1_388_247, errors: 0 });
+    await waitFor(() =>
+      expect(within(screen.getByRole("list", { name: "Steps" })).getAllByRole("listitem").map((c) => c.textContent)).toEqual([
+        "✓ Checking file",
+        "✓ Checking dates",
+        "✓ Loading records",
+        "Saving records",
+      ]),
+    );
+    const chips = within(screen.getByRole("list", { name: "Steps" })).getAllByRole("listitem");
+    expect(chips[3]).toHaveAttribute("aria-current", "step");
+    expect(thisFile()).toHaveAttribute("aria-valuetext", "Saving records 0%");
+    // Three of four steps of a file that is a third of the import.
+    expect(overall()).toHaveAttribute("aria-valuenow", "25");
+    expect(screen.getByText(/1,388,247 records/)).toBeInTheDocument();
+  });
+
   it("Cancel asks the backend at once and says the file is being rolled back", async () => {
     const user = userEvent.setup();
     await running(user);

@@ -8,6 +8,11 @@ use std::time::Instant;
 /// Step 0 of every file: the admission read (hash, head, encoding).
 pub const CHECKING_FILE: &str = "Checking file";
 
+/// The last step of a parser that stages a file's records and merges them once: the merge into the evidence tables
+/// (single statements that can run for minutes on a multi-GB file; it reads nothing, so it reports only its start
+/// and its end).
+pub const SAVING_RECORDS: &str = "Saving records";
+
 /// What the last event of a file reported.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Shown {

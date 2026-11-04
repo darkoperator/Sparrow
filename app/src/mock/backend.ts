@@ -279,27 +279,31 @@ function mockDiscovery(path: string): DiscoveryPreview {
   };
 }
 
-/** The steps of a file, as the real ingest names them: the admission read, then the parser's passes. */
-const MOCK_STEPS = ["Checking file", "Checking dates", "Loading records"];
+/** The steps of a file, as the real ingest names them: the admission read, then the parser's passes, then the merge of
+ * what they staged (which reads nothing). */
+const MOCK_STEPS = ["Checking file", "Checking dates", "Loading records", "Saving records"];
+/** The merge step: it reports its start and its end only. */
+const MOCK_SAVING = MOCK_STEPS.length - 1;
 /** `file_step` events per step, and the time between them (the real ingest sends one at most every 100 ms). */
 const MOCK_TICKS = 4;
 const MOCK_TICK_MS = 30;
 
 /**
  * Plays one file's `file_step` events as the real ingest does: every event lists all the steps (the core classifies
- * the file from its head before the hash pass goes on); each step starts at 0 bytes and reads to the file's size.
- * Records grow while loading, with an error now and then. Returns false when the run was cancelled mid-file (the
- * real ingest rolls that file back).
+ * the file from its head before the hash pass goes on); each step starts at 0 bytes and reads to the file's size,
+ * the merge ("Saving records") at once, as it reads nothing. Records grow while loading, with an error now and then.
+ * Returns false when the run was cancelled mid-file (the real ingest rolls that file back).
  */
 async function mockFileSteps(size: number, runId: string): Promise<boolean> {
   const recordsTotal = Math.max(1, Math.round(size / 700));
   for (const [step] of MOCK_STEPS.entries()) {
     const steps = MOCK_STEPS;
-    for (let t = 0; t <= MOCK_TICKS; t++) {
+    const saving = step === MOCK_SAVING;
+    for (let t = 0; t <= MOCK_TICKS; t += saving ? MOCK_TICKS : 1) {
       if (cancelledRuns.has(runId)) return false;
       const bytes = Math.round((size * t) / MOCK_TICKS);
-      const loading = step === MOCK_STEPS.length - 1;
-      const records = loading ? Math.round((recordsTotal * t) / MOCK_TICKS) : 0;
+      const loading = step === MOCK_SAVING - 1;
+      const records = saving ? recordsTotal : loading ? Math.round((recordsTotal * t) / MOCK_TICKS) : 0;
       emitIngest({ stage: "file_step", steps, step, bytes_done: bytes, bytes_total: size, records, errors: Math.floor(records / 45_000) });
       if (t < MOCK_TICKS) await nap(MOCK_TICK_MS);
     }

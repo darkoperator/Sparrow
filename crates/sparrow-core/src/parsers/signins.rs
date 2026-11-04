@@ -10,6 +10,7 @@ use crate::db::state_tables::SIGNINS;
 use crate::discovery::{FileFormat, format_from_path};
 use crate::ingest::context::ParseContext;
 use crate::ingest::parser::{ArtifactParser, ParserRegistry};
+use crate::ingest::progress::SAVING_RECORDS;
 use crate::normalize::fields::{Cell, Rec};
 use crate::normalize::net::{normalize_ip, normalize_upn};
 use crate::parsers::records::{
@@ -503,7 +504,12 @@ fn portal_row(rec: &Rec, event_type: Option<&'static str>) -> Vec<Cell> {
 pub struct SigninsParser;
 
 /// [`SigninsParser`]'s steps.
-const SIGNINS_STEPS: &[&str] = &["Checking columns", "Checking dates", "Loading records"];
+const SIGNINS_STEPS: &[&str] = &[
+    "Checking columns",
+    "Checking dates",
+    "Loading records",
+    SAVING_RECORDS,
+];
 
 /// A CSV/JSON sign-in export, streamed (see [`load_streamed`]): a portal or Graph export can hold millions of
 /// sign-ins (a 170 MB portal CSV collected as records peaked at 11 GB).
@@ -580,7 +586,7 @@ fn parse_streamed(ctx: &mut ParseContext<'_>) -> Result<()> {
 
 impl ArtifactParser for SigninsParser {
     /// The shape pass (which stops at the first portal record when it need not count placeholders), then
-    /// [`load_streamed`]'s two. An XLSX workbook, read whole, only has the last.
+    /// [`load_streamed`]'s two passes and its merge. An XLSX workbook, read whole, only has "Loading records".
     fn steps(&self) -> &'static [&'static str] {
         SIGNINS_STEPS
     }

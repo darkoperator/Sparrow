@@ -315,9 +315,13 @@ describe("mock import", () => {
     const steps = seen.slice(firstFile + 1, nextFile).filter((p) => p.stage === "file_step");
     expect(steps.length).toBeGreaterThan(3);
     const names = steps.map((p) => (p.stage === "file_step" ? p.steps[p.step] : ""));
-    expect([...new Set(names)]).toEqual(["Checking file", "Checking dates", "Loading records"]);
+    expect([...new Set(names)]).toEqual(["Checking file", "Checking dates", "Loading records", "Saving records"]);
     // Every event lists all of the file's steps, from the first: the real ingest knows them from the file's head.
-    expect(steps.every((p) => p.stage === "file_step" && p.steps.length === 3)).toBe(true);
+    expect(steps.every((p) => p.stage === "file_step" && p.steps.length === 4)).toBe(true);
+    // The merge reads nothing: its start and its end, with every record.
+    const saving = steps.filter((p) => p.stage === "file_step" && p.step === 3);
+    expect(saving.map((p) => (p.stage === "file_step" ? p.bytes_done : -1))).toEqual([0, saving[0].stage === "file_step" ? saving[0].bytes_total : -1]);
+    expect(saving.every((p) => p.stage === "file_step" && p.records === saving[1].records && p.records > 0)).toBe(true);
     // Within a step the bytes only go up, to the file's size; records grow while loading.
     for (const p of steps) if (p.stage === "file_step") expect(p.bytes_done).toBeLessThanOrEqual(p.bytes_total);
     const loading = steps.filter((p) => p.stage === "file_step" && p.step === 2);

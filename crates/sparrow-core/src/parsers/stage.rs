@@ -4,6 +4,7 @@
 use crate::db::state_tables::{LoadMode, TableSpec};
 use crate::hash::sha256_hex;
 use crate::ingest::context::ParseContext;
+use crate::ingest::progress::SAVING_RECORDS;
 use crate::ingest::state::{LoadOutcome, StagedRow, StateFileStage, load_rows};
 use crate::normalize::fields::{Cell, Rec};
 use crate::parsers::records::{
@@ -260,8 +261,8 @@ fn count_load(ctx: &mut ParseContext<'_>, spec: &TableSpec, out: LoadOutcome) {
 }
 
 /// [`load_streamed`]'s steps, after the caller's own (its `first_step` argument), and the `steps()` of UAL, whose
-/// passes are the same.
-pub const LOAD_STREAMED_STEPS: &[&str] = &["Checking dates", "Loading records"];
+/// passes and merge are the same: the two passes, then the merge of what they staged.
+pub const LOAD_STREAMED_STEPS: &[&str] = &["Checking dates", "Loading records", SAVING_RECORDS];
 
 /// Where [`load_streamed`]'s `tail` hands each of its rows: `(table, draft)`, staged at once.
 pub type TailSink<'s> = dyn FnMut(usize, RowDraft) -> Result<()> + 's;
@@ -290,7 +291,8 @@ pub enum RowOut {
 /// tail's time cells are not read for the day/month order (it is resolved before the tail is produced): each must be a
 /// copy of a time cell of a streamed row, so it adds no evidence (checked: the file fails otherwise). Counts, errors and
 /// warnings are those of [`load_tables`] over the same rows. The two passes are steps `first_step` and `first_step + 1`
-/// of the parser ([`LOAD_STREAMED_STEPS`]); the tail and the merge run within the second, after its pass.
+/// of the parser ([`LOAD_STREAMED_STEPS`]); the tail runs within the second, after its pass, and the merge is step
+/// `first_step + 2`.
 pub fn load_streamed(
     ctx: &mut ParseContext<'_>,
     first_step: usize,
@@ -400,6 +402,7 @@ pub fn load_streamed(
         flush(ctx, stage, rows)?;
     }
     ctx.check_cancelled()?;
+    ctx.set_step(first_step + 2);
     let mut outcomes = Vec::with_capacity(tables.len());
     for stage in stages {
         outcomes.push(stage.finish(ctx.collection_id)?);

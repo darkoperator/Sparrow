@@ -504,7 +504,12 @@ fn fake_clock(ms: Arc<AtomicU64>) -> sparrow_core::ingest::ClockFn {
     Arc::new(move || base + Duration::from_millis(ms.load(Ordering::SeqCst)))
 }
 
-const UAL_STEPS: [&str; 3] = ["Checking file", "Checking dates", "Loading records"];
+const UAL_STEPS: [&str; 4] = [
+    "Checking file",
+    "Checking dates",
+    "Loading records",
+    "Saving records",
+];
 
 /// [`portal_ual`] of [`ROWS`] records and one more whose AuditData is not JSON (a parse error).
 fn ual_with_one_bad_row() -> String {
@@ -567,9 +572,15 @@ fn file_step_events_cover_every_pass() {
     );
     let groups = by_step(&steps);
     let order: Vec<usize> = groups.iter().map(|g| g[0].step).collect();
-    assert_eq!(order, [0, 1, 2], "{steps:#?}");
+    assert_eq!(order, [0, 1, 2, 3], "{steps:#?}");
+    // The merge reads nothing: its step reports its start, with every record staged, and its end.
+    let saving: Vec<(u64, u64, u64)> = groups[3]
+        .iter()
+        .map(|s| (s.bytes_done, s.records, s.errors))
+        .collect();
+    assert_eq!(saving, [(0, ROWS, 1), (size, ROWS, 1)], "{steps:#?}");
     let reads = size.div_ceil(4096) as usize;
-    for g in &groups {
+    for g in &groups[..3] {
         assert_eq!(g[0].bytes_done, 0, "step {} starts at 0: {g:#?}", g[0].step);
         assert_eq!(
             g.last().unwrap().bytes_done,
@@ -631,7 +642,7 @@ fn progress_is_throttled() {
     let (_, events) = events_of(&root, frozen);
     let groups = by_step(&file_steps(&events, "a_ual.csv"));
     let counts: Vec<usize> = groups.iter().map(Vec::len).collect();
-    assert_eq!(counts, [2, 2, 2], "{groups:#?}");
+    assert_eq!(counts, [2, 2, 2, 2], "{groups:#?}");
     // A clock that moves 40 ms with each read: at most one event per 100 ms of it besides each step's start and
     // end, and about that many.
     let ms = Arc::new(AtomicU64::new(0));
@@ -653,7 +664,12 @@ fn progress_is_throttled() {
     let (_, events) = events_of(&root, moving);
     let groups = by_step(&file_steps(&events, "a_ual.csv"));
     let reads = *reads.lock().unwrap();
-    assert_eq!(groups.len(), 3, "{groups:#?}");
+    assert_eq!(groups.len(), 4, "{groups:#?}");
+    assert_eq!(
+        groups[3].len(),
+        2,
+        "the merge reports its start and end only"
+    );
     for (g, reads) in groups.iter().zip(reads) {
         assert!(reads > 20, "{reads} reads");
         // The hash pass starts reporting once the head is read (its steps are known then).
@@ -847,6 +863,7 @@ fn streamed_parsers_walk_every_step() {
                 "Checking columns",
                 "Checking dates",
                 "Loading records",
+                "Saving records",
             ],
         ),
         (
@@ -854,8 +871,10 @@ fn streamed_parsers_walk_every_step() {
             &[
                 "Checking file",
                 "Grouping messages",
+                "Sorting messages",
                 "Checking dates",
                 "Loading records",
+                "Saving records",
             ],
         ),
     ];

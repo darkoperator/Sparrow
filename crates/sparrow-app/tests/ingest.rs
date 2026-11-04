@@ -1179,7 +1179,12 @@ fn a_panic_when_the_lock_down_cannot_be_restored_closes_the_case() {
 #[test]
 fn progress_events_serialize_file_steps_and_overall_bytes() {
     let step = ProgressEvent::from(&IngestProgress::FileStep {
-        steps: vec!["Checking file", "Checking dates", "Loading records"],
+        steps: vec![
+            "Checking file",
+            "Checking dates",
+            "Loading records",
+            "Saving records",
+        ],
         step: 2,
         bytes_done: 1024,
         bytes_total: 4096,
@@ -1190,7 +1195,7 @@ fn progress_events_serialize_file_steps_and_overall_bytes() {
         serde_json::to_value(&step).unwrap(),
         serde_json::json!({
             "stage": "file_step",
-            "steps": ["Checking file", "Checking dates", "Loading records"],
+            "steps": ["Checking file", "Checking dates", "Loading records", "Saving records"],
             "step": 2,
             "bytes_done": 1024,
             "bytes_total": 4096,
