@@ -240,34 +240,67 @@ export const mockOnIngestProgress = (f: (p: IngestProgress) => void): (() => voi
   return () => void ingestListeners.delete(f);
 };
 
-const MOCK_SOURCES: [string, string][] = [
-  ["invictus.signins", "UnifiedAuditLog/SignInLogs.csv"],
-  ["invictus.ual", "UnifiedAuditLog/UAL-2026-08.csv"],
-  ["invictus.mailbox_audit", "Exchange/MailboxAudit.csv"],
-  ["invictus.inbox_rules", "Exchange/InboxRules.csv"],
-  ["invictus.message_trace", "Exchange/MessageTrace.csv"],
-  ["invictus.users", "Users/Users.csv"],
+const XLSX_MAX_BYTES = 1_073_741_824;
+const MOCK_SOURCES: [string, string, number][] = [
+  ["invictus.signins", "UnifiedAuditLog/SignInLogs.csv", 48_000_000],
+  ["invictus.ual", "UnifiedAuditLog/UAL-2026-08.csv", 3_006_477_107],
+  ["invictus.mailbox_audit", "Exchange/MailboxAudit.csv", 210_000_000],
+  ["invictus.inbox_rules", "Exchange/InboxRules.csv", 90_000],
+  ["invictus.message_trace", "Exchange/MessageTrace.csv", 64_000_000],
+  ["invictus.users", "Users/Users.csv", 400_000],
 ];
 
-/** A fake discovery: `empty` in the path finds nothing, `big` adds a file over the limit. */
+/** A fake discovery: `empty` in the path finds nothing, `big` adds a workbook over the XLSX limit. */
 function mockDiscovery(path: string): DiscoveryPreview {
   if (/empty/i.test(path)) {
-    return { path, collections: [], recognised: 0, unrecognised: 0, too_large: 0, unreadable: 0, max_file_bytes: 1_073_741_824 };
+    return { path, collections: [], recognised: 0, unrecognised: 0, too_large: 0, unreadable: 0, xlsx_max_bytes: XLSX_MAX_BYTES };
   }
-  const files: PreviewFile[] = MOCK_SOURCES.map(([artifact_id, rel_path], i) => ({
-    rel_path, artifact_id, derived: false, size: 40_000 * (i + 1), status: "recognised", error: null,
+  const files: PreviewFile[] = MOCK_SOURCES.map(([artifact_id, rel_path, size]) => ({
+    rel_path, artifact_id, derived: false, size, status: "recognised", too_large: false, error: null,
   }));
-  files.push({ rel_path: "README.txt", artifact_id: null, derived: false, size: 312, status: "unrecognised", error: null });
-  if (/big/i.test(path)) files.push({ rel_path: "UnifiedAuditLog/UAL-huge.csv", artifact_id: "invictus.ual", derived: false, size: 2_400_000_000, status: "too_large", error: null });
+  files.push({ rel_path: "README.txt", artifact_id: null, derived: false, size: 312, status: "unrecognised", too_large: false, error: null });
+  if (/big/i.test(path)) {
+    files.push({
+      rel_path: "InteractiveSignins.xlsx", artifact_id: "portal.entra_signins", derived: false, size: 1_400_000_000, status: "recognised",
+      too_large: true, error: null,
+    });
+  }
   return {
     path,
     collections: [{ tool: "invictus", root: path, tenant_hint: "contoso.example", started_hint: "2026-08-14T09:00:00Z", files }],
-    recognised: MOCK_SOURCES.length,
+    recognised: files.filter((f) => f.status === "recognised").length,
     unrecognised: 1,
-    too_large: /big/i.test(path) ? 1 : 0,
+    too_large: files.filter((f) => f.too_large).length,
     unreadable: 0,
-    max_file_bytes: 1_073_741_824,
+    xlsx_max_bytes: XLSX_MAX_BYTES,
   };
+}
+
+/** The steps of a file, as the real ingest names them: the admission read, then the parser's passes. */
+const MOCK_STEPS = ["Checking file", "Checking dates", "Loading records"];
+/** `file_step` events per step, and the time between them (the real ingest sends one at most every 100 ms). */
+const MOCK_TICKS = 4;
+const MOCK_TICK_MS = 30;
+
+/**
+ * Plays one file's `file_step` events: each step starts at 0 bytes and reads to the file's size; the step list grows
+ * after "Checking file", as it does for a file recognised by its content. Records grow while loading, with an error
+ * now and then. Returns false when the run was cancelled mid-file (the real ingest rolls that file back).
+ */
+async function mockFileSteps(size: number, runId: string): Promise<boolean> {
+  const recordsTotal = Math.max(1, Math.round(size / 700));
+  for (const [step] of MOCK_STEPS.entries()) {
+    const steps = step === 0 ? MOCK_STEPS.slice(0, 1) : MOCK_STEPS;
+    for (let t = 0; t <= MOCK_TICKS; t++) {
+      if (cancelledRuns.has(runId)) return false;
+      const bytes = Math.round((size * t) / MOCK_TICKS);
+      const loading = step === MOCK_STEPS.length - 1;
+      const records = loading ? Math.round((recordsTotal * t) / MOCK_TICKS) : 0;
+      emitIngest({ stage: "file_step", steps, step, bytes_done: bytes, bytes_total: size, records, errors: Math.floor(records / 45_000) });
+      if (t < MOCK_TICKS) await nap(MOCK_TICK_MS);
+    }
+  }
+  return true;
 }
 
 async function mockIngestRun(a: Record<string, unknown> | undefined): Promise<IngestResult> {
@@ -284,7 +317,7 @@ async function mockIngestRun(a: Record<string, unknown> | undefined): Promise<In
     emitIngest({ stage: "discover" });
     await nap(80);
     emitIngest({ stage: "collection", index: 1, count: 1, root: path });
-    const files = preview.collections[0].files.filter((f) => f.status === "recognised");
+    const files = preview.collections[0].files.filter((f) => f.status === "recognised" && !f.too_large);
     const loaded: typeof files = [];
     const bytesTotal = files.reduce((n, f) => n + f.size, 0);
     let bytesDone = 0;
@@ -301,8 +334,8 @@ async function mockIngestRun(a: Record<string, unknown> | undefined): Promise<In
         bytes_done_before: bytesDone,
         bytes_total: bytesTotal,
       });
+      if (!(await mockFileSteps(f.size, runId))) break;
       bytesDone += f.size;
-      await nap(250);
       loaded.push(f);
     }
     const cancelled = cancelledRuns.has(runId);

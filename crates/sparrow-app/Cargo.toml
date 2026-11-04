@@ -32,6 +32,7 @@ windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 csv.workspace = true
+rust_xlsxwriter.workspace = true
 # The failure-injection hooks of core (a feature of the existing crate; no new dependency).
 sparrow-core = { path = "../sparrow-core", features = ["test-fixtures"] }
 sparrow-synth = { path = "../sparrow-synth" }

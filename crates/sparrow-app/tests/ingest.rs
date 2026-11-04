@@ -95,10 +95,7 @@ fn discovery_preview_lists_collections_and_classifies_files() {
     assert_eq!(p.collections.len(), 1);
     assert!(p.recognised > 0);
     let files: Vec<_> = p.collections.iter().flat_map(|c| &c.files).collect();
-    assert_eq!(
-        files.len(),
-        p.recognised + p.unrecognised + p.too_large + p.unreadable
-    );
+    assert_eq!(files.len(), p.recognised + p.unrecognised + p.unreadable);
     assert!(
         files
             .iter()
@@ -111,7 +108,7 @@ fn discovery_preview_lists_collections_and_classifies_files() {
             .filter(|f| f.status == "unrecognised")
             .all(|f| f.artifact_id.is_none())
     );
-    assert!(files.iter().all(|f| f.status != "too_large"));
+    assert!(files.iter().all(|f| !f.too_large) && p.too_large == 0);
 }
 
 #[test]
@@ -388,11 +385,16 @@ fn cancel_stops_in_the_current_file_and_the_case_is_profiled() {
     let case = dir.path().join("cut.duckdb");
     let ing = Arc::new(IngestState::default());
     let seen = Arc::new(AtomicBool::new(false));
+    let cut = Arc::new(Mutex::new(String::new()));
     let emit: Emit = {
-        let (ing, seen) = (ing.clone(), seen.clone());
+        let (ing, seen, cut) = (ing.clone(), seen.clone(), cut.clone());
         Arc::new(move |e: &ProgressEvent| {
-            if let ProgressEvent::File { index: 4, .. } = e {
+            if let ProgressEvent::File {
+                index: 4, rel_path, ..
+            } = e
+            {
                 seen.store(true, Ordering::SeqCst);
+                *cut.lock().unwrap() = rel_path.clone();
                 ingest_cancel(&ing, "run-1").unwrap();
             }
         })
@@ -434,6 +436,19 @@ fn cancel_stops_in_the_current_file_and_the_case_is_profiled() {
         .query_row("SELECT count(*) FROM source_files", [], |r| r.get(0))
         .unwrap();
     assert_eq!(n as usize, handled);
+    // The file the cancel stopped mid-read left no source row behind.
+    let cut = cut.lock().unwrap().clone();
+    assert!(!cut.is_empty());
+    let left: i64 = c
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM source_files WHERE rel_path = ?",
+            [&cut],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(left, 0, "{cut} was rolled back");
+    assert!(r.not_loaded.iter().any(|f| f.rel_path == cut), "{cut}");
     // A cancel pressed with nothing running does nothing; the next import is not affected by the last one.
     ingest_cancel(&ing, "run-1").unwrap();
     let again = ingest_run(
@@ -963,7 +978,7 @@ fn profiling_is_refused_on_a_read_only_case_and_with_no_case() {
 }
 
 #[test]
-fn discovery_marks_a_file_whose_size_cannot_be_read_and_one_over_the_limit() {
+fn discovery_marks_a_file_whose_size_cannot_be_read_and_never_a_big_csv() {
     let dir = tempfile::tempdir().unwrap();
     let copy = dir.path().join("evidence");
     copy_dir(&tree(), &copy);
@@ -985,9 +1000,11 @@ fn discovery_marks_a_file_whose_size_cannot_be_read_and_one_over_the_limit() {
         .iter()
         .find(|f| f.rel_path.ends_with("huge.csv"))
         .expect("huge.csv listed");
-    assert_eq!(huge.status, "too_large");
+    // CSV has no size limit: a big one is never flagged.
+    assert_ne!(huge.status, "unreadable");
+    assert!(!huge.too_large);
     assert_eq!(huge.size, sparrow_core::ingest::XLSX_MAX_BYTES + 1);
-    assert_eq!((whole.too_large, whole.unreadable), (1, 0));
+    assert_eq!((whole.too_large, whole.unreadable), (0, 0));
     // A listed file whose metadata cannot be read (the seam fails it): unreadable, with the reason, never recognised.
     let target = all
         .iter()
@@ -1000,7 +1017,7 @@ fn discovery_marks_a_file_whose_size_cannot_be_read_and_one_over_the_limit() {
         if path.to_string_lossy().replace('\\', "/").ends_with(&target) {
             Err(std::io::Error::other("injected metadata failure"))
         } else {
-            std::fs::metadata(path)
+            std::fs::metadata(path).map(|m| m.len())
         }
     })
     .unwrap();
@@ -1205,4 +1222,65 @@ fn progress_events_serialize_file_steps_and_overall_bytes() {
             "bytes_total": 16384,
         })
     );
+}
+
+const PURVIEW_HEADER: &str = "RecordId,CreationDate,RecordType,Operation,UserId,AuditData,AssociatedAdminUnits,AssociatedAdminUnitsNames\r\n";
+
+/// Every file reported `size` bytes long through the preview's metadata seam.
+fn sized(size: u64) -> impl Fn(&Path) -> std::io::Result<u64> {
+    move |_| Ok(size)
+}
+
+#[test]
+fn preview_counts_big_recognised_files_as_recognised() {
+    // Three portal audit-log downloads, each reported over 1 GiB: CSV has no size limit, so all three are recognised.
+    let dir = tempfile::tempdir().unwrap();
+    let exports = dir.path().join("exports");
+    std::fs::create_dir(&exports).unwrap();
+    for name in ["Aug UAL.csv", "July UAL.csv", "June UAL.csv"] {
+        std::fs::write(exports.join(name), PURVIEW_HEADER).unwrap();
+    }
+    let big = sparrow_core::ingest::XLSX_MAX_BYTES * 2 + 1;
+    let p = sparrow_app::cmd::ingest::ingest_discover_with(&exports, &sized(big)).unwrap();
+    let files: Vec<_> = p.collections.iter().flat_map(|c| &c.files).collect();
+    assert_eq!(files.len(), 3, "{files:?}");
+    assert_eq!((p.recognised, p.too_large, p.unrecognised), (3, 0, 0));
+    assert!(
+        files
+            .iter()
+            .all(|f| f.status == "recognised" && !f.too_large && f.size == big),
+        "{files:?}"
+    );
+    assert_eq!(p.xlsx_max_bytes, sparrow_core::ingest::XLSX_MAX_BYTES);
+}
+
+#[test]
+fn preview_flags_big_xlsx() {
+    let dir = tempfile::tempdir().unwrap();
+    let exports = dir.path().join("exports");
+    std::fs::create_dir(&exports).unwrap();
+    let mut wb = rust_xlsxwriter::Workbook::new();
+    let ws = wb.add_worksheet();
+    for (c, h) in ["Date (UTC)", "Request ID", "User agent", "Correlation ID"]
+        .iter()
+        .enumerate()
+    {
+        ws.write_string(0, c as u16, *h).unwrap();
+    }
+    std::fs::write(
+        exports.join("InteractiveSignins.xlsx"),
+        wb.save_to_buffer().unwrap(),
+    )
+    .unwrap();
+    let max = sparrow_core::ingest::XLSX_MAX_BYTES;
+    let p = sparrow_app::cmd::ingest::ingest_discover_with(&exports, &sized(max + 1)).unwrap();
+    let files: Vec<_> = p.collections.iter().flat_map(|c| &c.files).collect();
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert_eq!((p.recognised, p.too_large), (1, 1));
+    assert_eq!(files[0].status, "recognised");
+    assert!(files[0].too_large);
+    // At the limit it is not flagged.
+    let at = sparrow_app::cmd::ingest::ingest_discover_with(&exports, &sized(max)).unwrap();
+    assert_eq!((at.recognised, at.too_large), (1, 0));
+    assert!(!at.collections[0].files[0].too_large);
 }

@@ -4012,6 +4012,7 @@ dependencies = [
  "duckdb",
  "getrandom 0.3.4",
  "hex",
+ "rust_xlsxwriter",
  "serde",
  "serde_json",
  "sparrow-cli",

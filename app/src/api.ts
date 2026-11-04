@@ -1207,8 +1207,8 @@ export const timelineAddEvents = (args: AddEventsArgs) => call<EventsAdded>("tim
 
 // ---------------------------------------------------------------- import (ingest from the window)
 
-/** `cmd::ingest::PreviewFile.status`. */
-export type PreviewFileStatus = "recognised" | "unrecognised" | "too_large" | "unreadable";
+/** `cmd::ingest::PreviewFile.status`. Size never changes it (see `PreviewFile.too_large`). */
+export type PreviewFileStatus = "recognised" | "unrecognised" | "unreadable";
 
 export interface PreviewFile {
   rel_path: string;
@@ -1216,6 +1216,8 @@ export interface PreviewFile {
   derived: boolean;
   size: number;
   status: PreviewFileStatus;
+  /** An XLSX workbook over `DiscoveryPreview.xlsx_max_bytes`: ingest refuses it. CSV and JSON have no size limit. */
+  too_large: boolean;
   error: string | null;
 }
 
@@ -1231,11 +1233,14 @@ export interface PreviewCollection {
 export interface DiscoveryPreview {
   path: string;
   collections: PreviewCollection[];
+  /** Files a parser is known for, whatever their size. */
   recognised: number;
   unrecognised: number;
+  /** Files flagged `too_large` (also counted under their status). */
   too_large: number;
   unreadable: number;
-  max_file_bytes: number;
+  /** The XLSX size limit. */
+  xlsx_max_bytes: number;
 }
 
 /** Into the open case, or a new case file at this path (which must not exist). */
@@ -1318,8 +1323,9 @@ export const ingestDiscover = (path: string) => call<DiscoveryPreview>("ingest_d
 export const ingestRun = (path: string, target: IngestTarget, culture: string | null, detect: boolean, runId: string) =>
   call<IngestResult>("ingest_run", { path, target, culture, detect, runId });
 /**
- * Stops the import `runId` (the id `ingestRun` was given) after the file it is loading; the result says what was left.
- * Safe before the run has started: the run then stops at its first check.
+ * Stops the import `runId` (the id `ingestRun` was given) now: the file it is loading is rolled back, the files
+ * already loaded stay, and the result says what was left. Safe before the run has started: the run then stops at its
+ * first check.
  */
 export const ingestCancel = (runId: string) => call<null>("ingest_cancel", { runId });
 /** Collections an import loaded but never profiled (the process was killed mid-import): their ids. */

@@ -45,7 +45,8 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // A close during an import waits for the current file and the profile (see `cmd::ingest`).
+            // A close during an import stops it (the file being loaded is rolled back) and waits for the profile (see
+            // `cmd::ingest`).
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let ing = window.state::<cmd::ingest::IngestState>();
                 if cmd::ingest::window_close_requested(&ing) {

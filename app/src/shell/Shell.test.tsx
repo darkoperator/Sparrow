@@ -852,14 +852,14 @@ describe("Shell import", () => {
         root: "/evidence/run-1",
         tenant_hint: null,
         started_hint: null,
-        files: [{ rel_path: "SignInLogs.csv", artifact_id: "invictus.signins", derived: false, size: 10, status: "recognised", error: null }],
+        files: [{ rel_path: "SignInLogs.csv", artifact_id: "invictus.signins", derived: false, size: 10, status: "recognised", too_large: false, error: null }],
       },
     ],
     recognised: 1,
     unrecognised: 0,
     too_large: 0,
     unreadable: 0,
-    max_file_bytes: 1_073_741_824,
+    xlsx_max_bytes: 1_073_741_824,
   };
   const result = (case_path: string): api.IngestResult => ({
     case_path,

@@ -48,3 +48,14 @@
 .import-notes ul { margin: 2px 0 0; padding-left: 18px; color: var(--text-2); font-family: var(--font-ui); }
 .import-result h4 { margin: 0 0 4px; }
 .import-detect { margin: 0; color: var(--text-2); font-size: 12px; }
+
+/* Progress (two bars: the whole import, then the file being loaded with its steps). */
+.import-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; }
+.import-row > .meta, .import-row.meta { font-size: 12px; }
+.import-file-progress { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.import-bar-file { height: 4px; }
+.import-bar-file > span { background: var(--accent-text); }
+.import-steps { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.import-steps > li { padding: 2px 8px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--muted); font-size: 11px; }
+.import-steps > li.import-step-done { border-color: var(--ok); color: var(--ok); }
+.import-steps > li.import-step-on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); }

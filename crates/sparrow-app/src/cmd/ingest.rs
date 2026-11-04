@@ -1,11 +1,11 @@
 //! Import from the window: preview what discovery finds under a folder (nothing is written), then ingest it into
 //! the open case or into a new case file, as `sparrow ingest` does (profile, then detection), with progress events
-//! and a Cancel that stops after the file being loaded.
+//! and a Cancel that stops in the file being loaded (that file is rolled back; the files before it stay).
 //!
 //! The import runs on the app's own open [`Case`] while holding the open-case lock, so no second connection is opened
 //! on the file. While it runs `AppState::importing` is set: writes, case switches and reads that queued meanwhile are
 //! refused `busy` instead of running after it, and a running events/SQL query is cancelled first so the lock frees
-//! up. A native window close during an import is held back until the current file and the profile are done.
+//! up. A native window close during an import stops it the same way and is held back until the profile is done.
 
 use crate::error::{CmdError, CmdResult};
 use crate::state::{AppState, check_query_id, query_cancel, with_case};
@@ -14,8 +14,8 @@ use sparrow_core::Case;
 use sparrow_core::data::DataDirs;
 use sparrow_core::detect::DetectOptions;
 use sparrow_core::discovery::{
-    DiscoveredCollection, Registry, Tool, canonical_root_string, discover_collections,
-    list_collection_files,
+    DiscoveredCollection, FileFormat, Registry, Tool, canonical_root_string, discover_collections,
+    format_from_path, list_collection_files,
 };
 use sparrow_core::ingest::parser::ParserRegistry;
 use sparrow_core::ingest::{
@@ -45,7 +45,7 @@ struct Shared {
     /// Run ids cancelled, newest last. A cancel names its run, so one that arrives before the run has started (the
     /// dialog's Cancel pressed at startup) still stops it and never leaks into a later run.
     cancelled: Mutex<VecDeque<String>>,
-    /// The window is closing: stop the running import after the current file.
+    /// The window is closing: stop the running import now (the file being loaded is rolled back).
     closing: AtomicBool,
 }
 
@@ -103,8 +103,12 @@ pub struct PreviewFile {
     pub artifact_id: Option<String>,
     pub derived: bool,
     pub size: u64,
-    /// `recognised`, `unrecognised`, `too_large` (over the size limit: ingest refuses it) or `unreadable`.
+    /// `recognised`, `unrecognised` or `unreadable`. Size never changes it: a recognised file over a limit is still
+    /// recognised (and flagged `too_large`).
     pub status: &'static str,
+    /// An XLSX workbook over [`XLSX_MAX_BYTES`]: ingest refuses it (workbooks are read whole). CSV and JSON have no
+    /// size limit.
+    pub too_large: bool,
     pub error: Option<String>,
 }
 
@@ -121,23 +125,27 @@ pub struct PreviewCollection {
 pub struct DiscoveryPreview {
     pub path: String,
     pub collections: Vec<PreviewCollection>,
+    /// Files a parser is known for, whatever their size.
     pub recognised: usize,
     pub unrecognised: usize,
+    /// Files flagged `too_large` (counted under their status as well).
     pub too_large: usize,
     pub unreadable: usize,
-    pub max_file_bytes: u64,
+    /// The XLSX limit `too_large` is measured against.
+    pub xlsx_max_bytes: u64,
 }
 
 /// What discovery finds under `path`: collections and each file's classification. Nothing is written.
 pub fn ingest_discover(path: &Path) -> CmdResult<DiscoveryPreview> {
-    ingest_discover_with(path, &|p| std::fs::metadata(p))
+    ingest_discover_with(path, &|p| std::fs::metadata(p).map(|m| m.len()))
 }
 
-/// [`ingest_discover`] reading each file's metadata through `meta` (a test seam for a size that cannot be read).
+/// [`ingest_discover`] reading each file's size through `size_of` (a test seam for a size that cannot be read, or
+/// one too big to write to disk).
 #[doc(hidden)]
 pub fn ingest_discover_with(
     path: &Path,
-    meta: &dyn Fn(&Path) -> std::io::Result<std::fs::Metadata>,
+    size_of: &dyn Fn(&Path) -> std::io::Result<u64>,
 ) -> CmdResult<DiscoveryPreview> {
     if !path.is_dir() {
         return Err(CmdError::new(
@@ -153,23 +161,25 @@ pub fn ingest_discover_with(
         unrecognised: 0,
         too_large: 0,
         unreadable: 0,
-        max_file_bytes: XLSX_MAX_BYTES,
+        xlsx_max_bytes: XLSX_MAX_BYTES,
     };
     for dc in discover_collections(path)? {
         let listing = list_collection_files(&dc.root, dc.shallow)?;
         let mut files = Vec::new();
         for f in listing.files {
             let class = reg.classify_file(dc.tool, &f.rel, &f.abs);
-            let (size, meta_error) = match meta(&f.abs) {
-                Ok(m) => (m.len(), None),
+            let (size, meta_error) = match size_of(&f.abs) {
+                Ok(n) => (n, None),
                 Err(e) => (0, Some(format!("cannot read the file's size: {e}"))),
             };
+            // Only workbooks have a size limit (ingest reads them whole); the flag never hides the classification.
+            let too_large = meta_error.is_none()
+                && format_from_path(&f.rel) == FileFormat::Xlsx
+                && size > XLSX_MAX_BYTES;
+            preview.too_large += usize::from(too_large);
             let status = if meta_error.is_some() {
                 preview.unreadable += 1;
                 "unreadable"
-            } else if size > XLSX_MAX_BYTES {
-                preview.too_large += 1;
-                "too_large"
             } else if class.is_some() {
                 preview.recognised += 1;
                 "recognised"
@@ -183,6 +193,7 @@ pub fn ingest_discover_with(
                 derived: class.as_ref().is_some_and(|c| c.derived),
                 size,
                 status,
+                too_large,
                 error: meta_error,
             });
         }
@@ -194,6 +205,7 @@ pub fn ingest_discover_with(
                 derived: false,
                 size: 0,
                 status: "unreadable",
+                too_large: false,
                 error: Some(e.message),
             });
         }
@@ -756,8 +768,9 @@ pub fn ingest_run(
     }
 }
 
-/// Ask the import `run_id` to stop after the file it is loading. Safe to call before the run has started, or after it
-/// ended (then it only costs one remembered id).
+/// Ask the import `run_id` to stop. It returns at once, without waiting for the import (nor the case lock it holds);
+/// the import sees it at its next check inside the file being loaded, rolls that file back and stops. Safe to call
+/// before the run has started, or after it ended (then it only costs one remembered id).
 pub fn ingest_cancel(ing: &IngestState, run_id: &str) -> CmdResult<()> {
     check_query_id(run_id)?;
     let mut ids = ing
@@ -774,7 +787,7 @@ pub fn ingest_cancel(ing: &IngestState, run_id: &str) -> CmdResult<()> {
     Ok(())
 }
 
-/// The window asked to close. While an import runs this asks it to stop after the current file and returns true: the
+/// The window asked to close. While an import runs this asks it to stop (as a Cancel does) and returns true: the
 /// caller keeps the window open until [`wait_idle`] returns, then closes it. Otherwise false.
 pub fn window_close_requested(ing: &IngestState) -> bool {
     if ing.running.load(Ordering::SeqCst) {

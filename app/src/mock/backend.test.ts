@@ -4,7 +4,7 @@ import { GEN_COLUMNS, GEN_ROWS, genRows } from "./generated";
 import apiSource from "../api.ts?raw";
 import * as fx from "../test/fixtures";
 import { ACCESS_TITLES } from "../api";
-import type { AccessReport, BrowsePage, CmdError, EventQuery, EventRow, EventsAdded, EventsPage, EventsSummary, FieldValues, Histogram, QueueItem, QueryResult, RowRef, SqlCheck, TimelineEntry } from "../api";
+import type { AccessReport, BrowsePage, CmdError, DiscoveryPreview, IngestProgress, EventQuery, EventRow, EventsAdded, EventsPage, EventsSummary, FieldValues, Histogram, QueueItem, QueryResult, RowRef, SqlCheck, TimelineEntry } from "../api";
 
 const apiCommands = [...apiSource.matchAll(/\bcall(?:<[^(]*>)?\(\s*"([a-z_]+)"/g)].map((m) => m[1]);
 
@@ -201,7 +201,7 @@ const TABLE: { cmd: string; args?: Obj; check: (r: unknown) => void }[] = [
   { cmd: "sql_export_csv", args: { sql: "SELECT * FROM signins", path: "/o.csv", queryId: "e" }, check: (r) => { keys(r, ["rows", "capped"]); expect((r as Obj).rows).toBeGreaterThan(0); } },
   { cmd: "query_cancel", args: { queryId: "nothing-runs" }, check: (r) => expect(r).toBeNull() },
   { cmd: "indicators_active", check: (r) => arrOf(r, ["ioc_type", "value", "verdict"]) },
-  { cmd: "ingest_discover", args: { path: "/evidence/run" }, check: (r) => { keys(r, ["path", "collections", "recognised", "unrecognised", "too_large", "unreadable", "max_file_bytes"]); arrOf((r as Obj).collections, ["tool", "root", "tenant_hint", "started_hint", "files"]); } },
+  { cmd: "ingest_discover", args: { path: "/evidence/run" }, check: (r) => { keys(r, ["path", "collections", "recognised", "unrecognised", "too_large", "unreadable", "xlsx_max_bytes"]); arrOf((r as Obj).collections, ["tool", "root", "tenant_hint", "started_hint", "files"]); } },
   { cmd: "ingest_run", args: { path: "/evidence/run", target: "open", culture: null, detect: true, runId: "r-1" }, check: (r) => { keys(r, ["case_path", "cancelled", "report", "files_loaded", "error", "files_total", "rows_by_source", "file_notes", "not_loaded", "profile_error", "profile_warnings", "detect", "detect_error"]); expect((r as Obj).cancelled).toBe(false); arrOf((r as Obj).rows_by_source, ["source", "files", "rows"]); } },
   { cmd: "ingest_cancel", args: { runId: "r-0" }, check: (r) => expect(r).toBeNull() },
   { cmd: "ingest_unprofiled", check: (r) => expect(r).toEqual([]) },
@@ -301,6 +301,38 @@ describe("mock import", () => {
     expect(r.files_loaded).toBeLessThan(6);
     expect(r.files_loaded + r.not_loaded.length).toBe(6);
     expect(r.detect).toBeNull();
+  });
+
+  it("emits each file's steps with its bytes advancing, the way the real ingest does", async () => {
+    const m = await fresh();
+    await m.mockCall("case_open", { path: "/x.duckdb", allowUpgrade: false });
+    const seen: IngestProgress[] = [];
+    const off = await m.mockOnIngestProgress((p) => seen.push(p));
+    await m.mockCall("ingest_run", { path: "/evidence/run", target: "open", culture: null, detect: false, runId: "r-6" });
+    off();
+    const firstFile = seen.findIndex((p) => p.stage === "file");
+    const nextFile = seen.findIndex((p, i) => i > firstFile && p.stage === "file");
+    const steps = seen.slice(firstFile + 1, nextFile).filter((p) => p.stage === "file_step");
+    expect(steps.length).toBeGreaterThan(3);
+    const names = steps.map((p) => (p.stage === "file_step" ? p.steps[p.step] : ""));
+    expect([...new Set(names)]).toEqual(["Checking file", "Checking dates", "Loading records"]);
+    // Within a step the bytes only go up, to the file's size; records grow while loading.
+    for (const p of steps) if (p.stage === "file_step") expect(p.bytes_done).toBeLessThanOrEqual(p.bytes_total);
+    const loading = steps.filter((p) => p.stage === "file_step" && p.step === 2);
+    const bytes = loading.map((p) => (p.stage === "file_step" ? p.bytes_done : 0));
+    expect(bytes).toEqual([...bytes].sort((a, b) => a - b));
+    expect(bytes.at(-1)).toBe(loading[0].stage === "file_step" ? loading[0].bytes_total : -1);
+    const last = loading.at(-1);
+    expect(last?.stage === "file_step" && last.records).toBeGreaterThan(0);
+  });
+
+  it("a big folder lists a workbook over the XLSX limit as recognised and flagged", async () => {
+    const m = await fresh();
+    const p = await m.mockCall<DiscoveryPreview>("ingest_discover", { path: "/evidence/big" });
+    const big = p.collections[0].files.find((f) => f.too_large);
+    expect(big).toMatchObject({ status: "recognised", too_large: true });
+    expect(p.too_large).toBe(1);
+    expect(p.recognised).toBe(p.collections[0].files.filter((f) => f.status === "recognised").length);
   });
 
   it("refuses a read-only case, a folder with nothing, and a second run at once", async () => {

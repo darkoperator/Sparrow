@@ -16,6 +16,7 @@ import {
 } from "../api";
 import { displaySafe } from "../text";
 import Icon from "../ui/Icon";
+import { initialView, passFraction, reduce, secondsLeft, timeLeftText, type ImportView } from "./importProgress";
 import "./import.css";
 
 export type ImportMode = "new" | "open";
@@ -29,6 +30,8 @@ interface Props {
   onClose: (changed: boolean) => void;
   /** "new" mode: open the case that was made. */
   onOpenCase?: (path: string) => void;
+  /** Milliseconds now, for the time-left estimate (a test seam). */
+  clock?: () => number;
 }
 
 const CASE_FILTER = [{ name: "Sparrow case", extensions: ["duckdb"] }];
@@ -45,17 +48,33 @@ const FOCUSABLE = "button:not([disabled]), select:not([disabled]), input:not([di
 const message = (e: unknown) => (isCmdError(e) ? e.message : String(e));
 const n = (v: number) => v.toLocaleString("en-US");
 
-function size(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ["KiB", "MiB", "GiB", "TiB"];
+const UNITS = ["KiB", "MiB", "GiB", "TiB"];
+/** The unit `bytes` is best shown in: -1 for bytes, else an index into `UNITS`. */
+function unitOf(bytes: number): number {
   let v = bytes;
   let u = -1;
-  while (v >= 1024 && u < units.length - 1) {
+  while (v >= 1024 && u < UNITS.length - 1) {
     v /= 1024;
     u += 1;
   }
-  return `${v.toFixed(v < 10 ? 1 : 0)} ${units[u]}`;
+  return u;
 }
+const inUnit = (bytes: number, u: number) => {
+  if (u < 0) return `${Math.round(bytes)}`;
+  const v = bytes / 1024 ** (u + 1);
+  return v.toFixed(v < 10 ? 1 : 0);
+};
+function size(bytes: number): string {
+  const u = unitOf(bytes);
+  return u < 0 ? `${bytes} B` : `${inUnit(bytes, u)} ${UNITS[u]}`;
+}
+/** "1.1 of 2.8 GiB": both in the unit of the total. */
+function sizeOf(done: number, total: number): string {
+  const u = unitOf(total);
+  return `${inUnit(done, u)} of ${inUnit(total, u)} ${u < 0 ? "B" : UNITS[u]}`;
+}
+const plural = (v: number, one: string, many: string) => `${n(v)} ${v === 1 ? one : many}`;
+const percent = (fraction: number) => Math.floor(fraction * 100);
 
 function stageText(p: IngestProgress | null): string {
   switch (p?.stage) {
@@ -65,7 +84,7 @@ function stageText(p: IngestProgress | null): string {
     case "collection":
       return `Collection ${p.index} of ${p.count}`;
     case "file":
-      return `Loading file ${p.index} of ${p.files}`;
+      return `${p.collections > 1 ? `Collection ${p.collection} of ${p.collections} · ` : ""}Overall: file ${p.index} of ${p.files}`;
     case "file_step":
       return "Loading file…";
     case "profile":
@@ -75,16 +94,16 @@ function stageText(p: IngestProgress | null): string {
   }
 }
 
-export default function ImportDialog({ mode, onClose, onOpenCase }: Props) {
+export default function ImportDialog({ mode, onClose, onOpenCase, clock = Date.now }: Props) {
   const [preview, setPreview] = useState<DiscoveryPreview | null>(null);
   const [target, setTarget] = useState<string | null>(null);
   const [culture, setCulture] = useState("");
   const [skipDetect, setSkipDetect] = useState(false);
   const [busy, setBusy] = useState<"discover" | "run" | null>(null);
   const [cancelling, setCancelling] = useState(false);
-  // The window is closing: the backend finishes the current file and the profile, then closes it.
+  // The window is closing: the backend stops the import (rolling back the file being loaded), profiles, then closes it.
   const [closing, setClosing] = useState(false);
-  const [progress, setProgress] = useState<IngestProgress | null>(null);
+  const [view, setView] = useState<ImportView>(initialView);
   const [result, setResult] = useState<IngestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Set once an import was started: the case may have changed even when it ended in an error.
@@ -118,7 +137,7 @@ export default function ImportDialog({ mode, onClose, onOpenCase }: Props) {
   const start = async () => {
     if (!preview) return;
     setError(null);
-    setProgress(null);
+    setView(initialView());
     setCancelling(false);
     setClosing(false);
     setBusy("run");
@@ -128,10 +147,10 @@ export default function ImportDialog({ mode, onClose, onOpenCase }: Props) {
     runId.current = id;
     const offs: Array<() => void> = [];
     try {
-      // In-file progress (`file_step`) is not shown yet: the stage line keeps the file it is on.
       offs.push(
-        await onIngestProgress((p) => {
-          if (p.stage !== "file_step") setProgress(p);
+        await onIngestProgress((p: IngestProgress) => {
+          const now = clock();
+          setView((v) => reduce(v, p, now));
         }),
       );
       offs.push(
@@ -208,7 +227,7 @@ export default function ImportDialog({ mode, onClose, onOpenCase }: Props) {
         {result ? (
           <Result result={result} mode={mode} onClose={close} onOpenCase={onOpenCase} />
         ) : running ? (
-          <Running progress={progress} cancelling={cancelling} closing={closing} onCancel={cancel} />
+          <Running view={view} cancelling={cancelling} closing={closing} onCancel={cancel} />
         ) : (
           <>
             <p className="import-hint">
@@ -306,7 +325,8 @@ function Preview({ preview }: { preview: DiscoveryPreview }) {
       )}
       {preview.too_large > 0 && (
         <p className="import-note">
-          Files over {size(preview.max_file_bytes)} are not loaded; they are listed in the result as errors.
+          XLSX workbooks over {size(preview.xlsx_max_bytes)} are not loaded (export them as CSV); they are listed in the
+          result as errors.
         </p>
       )}
       {preview.collections.map((c) => (
@@ -340,9 +360,14 @@ function FileRow({ f }: { f: PreviewFile }) {
         {f.artifact_id ? displaySafe(f.artifact_id) : ""}
       </span>
       <span className="mono import-file-size">{size(f.size)}</span>
-      {f.status === "recognised" && <span className="pill pill-ok">recognised</span>}
-      {f.status === "unrecognised" && <span className="pill">not recognised</span>}
-      {f.status === "too_large" && <span className="pill pill-mal">over the size limit</span>}
+      {f.too_large ? (
+        <span className="pill pill-mal">over the size limit</span>
+      ) : (
+        <>
+          {f.status === "recognised" && <span className="pill pill-ok">recognised</span>}
+          {f.status === "unrecognised" && <span className="pill">not recognised</span>}
+        </>
+      )}
       {f.status === "unreadable" && (
         <span className="pill pill-mal" title={f.error ? displaySafe(f.error) : undefined}>
           unreadable
@@ -353,44 +378,84 @@ function FileRow({ f }: { f: PreviewFile }) {
 }
 
 function Running({
-  progress,
+  view,
   cancelling,
   closing,
   onCancel,
 }: {
-  progress: IngestProgress | null;
+  view: ImportView;
   cancelling: boolean;
   closing: boolean;
   onCancel: () => void;
 }) {
-  const file = progress?.stage === "file" ? progress : null;
-  const done = file ? file.index - 1 : null;
+  const { stage, file, step } = view;
+  const loading = stage?.stage === "file" ? file : null;
+  const overall = percent(view.overall);
+  const thisFile = percent(passFraction(step));
+  const left = loading ? timeLeftText(secondsLeft(view)) : null;
   return (
     <div className="import-running">
-      <p className="import-stage" role="status">
-        {stageText(progress)}
-      </p>
-      {file && (
-        <p className="mono import-current" title={displaySafe(file.rel_path)}>
-          {displaySafe(file.rel_path)}
+      <div className="import-row">
+        <p className="import-stage" role="status">
+          {stageText(stage)}
         </p>
-      )}
+        {loading && <span className="meta">{size(loading.bytes_total)} total</span>}
+      </div>
       <div
         className="import-bar"
         role="progressbar"
         aria-label="Import progress"
         aria-valuemin={0}
-        aria-valuemax={file ? file.files : 1}
-        aria-valuenow={done ?? undefined}
+        aria-valuemax={100}
+        aria-valuenow={overall}
+        aria-valuetext={`${overall}%`}
       >
-        <span style={{ width: file ? `${Math.round(((done ?? 0) / Math.max(file.files, 1)) * 100)}%` : "0%" }} />
+        <span style={{ width: `${view.overall * 100}%` }} />
       </div>
+      {loading && (
+        <div className="import-file-progress">
+          <p className="mono import-current" title={displaySafe(loading.rel_path)}>
+            {displaySafe(loading.rel_path)}
+          </p>
+          {step && step.steps.length > 0 && (
+            <ol className="import-steps" aria-label="Steps">
+              {step.steps.map((name, i) => (
+                <li
+                  key={`${i}-${name}`}
+                  className={i < step.step ? "import-step-done" : i === step.step ? "import-step-on" : undefined}
+                  aria-current={i === step.step ? "step" : undefined}
+                >
+                  {i < step.step ? `✓ ${name}` : name}
+                </li>
+              ))}
+            </ol>
+          )}
+          <div
+            className="import-bar import-bar-file"
+            role="progressbar"
+            aria-label="This file"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={thisFile}
+            aria-valuetext={step ? `${step.steps[step.step] ?? ""} ${thisFile}%`.trim() : "starting"}
+          >
+            <span style={{ width: `${passFraction(step) * 100}%` }} />
+          </div>
+          {(step || left) && (
+            <div className="import-row meta">
+              <span>
+                {step &&
+                  `${sizeOf(step.bytes_done, step.bytes_total)} · ${plural(step.records, "record", "records")} · ${plural(step.errors, "error", "errors")}`}
+              </span>
+              {left && <span>{left}</span>}
+            </div>
+          )}
+        </div>
+      )}
       <p className="import-hint">
-        {closing
-          ? "Finishing the current file…"
-          : cancelling
-          ? "Stopping after the file being loaded; the files already loaded stay."
-          : "The case is busy while this runs. Cancel stops after the file being loaded."}
+        {cancelling || closing
+          ? `Stopping and rolling back the file being loaded…${closing ? " The window closes when it is done." : ""}`
+          : "Cancel stops now; this file is rolled back, files already loaded stay."}
       </p>
       <footer className="import-actions">
         <button className="btn" disabled={cancelling} onClick={onCancel}>

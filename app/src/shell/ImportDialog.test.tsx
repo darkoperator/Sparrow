@@ -29,8 +29,14 @@ const m = {
   closing: vi.mocked(api.onIngestClosing),
 };
 
-const file = (rel_path: string, status: PreviewFile["status"], artifact_id: string | null = "invictus.signins", size = 2048): PreviewFile => ({
-  rel_path, artifact_id, derived: false, size, status, error: null,
+const file = (
+  rel_path: string,
+  status: PreviewFile["status"],
+  artifact_id: string | null = "invictus.signins",
+  size = 2048,
+  too_large = false,
+): PreviewFile => ({
+  rel_path, artifact_id, derived: false, size, status, too_large, error: null,
 });
 
 function previewOf(files: PreviewFile[], extra: Partial<DiscoveryPreview> = {}): DiscoveryPreview {
@@ -40,9 +46,9 @@ function previewOf(files: PreviewFile[], extra: Partial<DiscoveryPreview> = {}):
     collections: [{ tool: "invictus", root: "/evidence/run-1", tenant_hint: "contoso.example", started_hint: null, files }],
     recognised: count("recognised"),
     unrecognised: count("unrecognised"),
-    too_large: count("too_large"),
+    too_large: files.filter((f) => f.too_large).length,
     unreadable: count("unreadable"),
-    max_file_bytes: 1_073_741_824,
+    xlsx_max_bytes: 1_073_741_824,
     ...extra,
   };
 }
@@ -155,14 +161,35 @@ describe("ImportDialog preview", () => {
     expect(screen.getByRole("button", { name: "Import" })).toBeDisabled();
   });
 
-  it("files over the size limit are flagged and the limit is explained", async () => {
-    m.discover.mockResolvedValue(previewOf([...FILES, file("UnifiedAuditLog/huge.csv", "too_large", "invictus.ual", 2_400_000_000)]));
+  it("a workbook over the XLSX limit is flagged and the limit is explained", async () => {
+    m.discover.mockResolvedValue(
+      previewOf([...FILES, file("InteractiveSignins.xlsx", "recognised", "portal.entra_signins", 1_200_000_000, true)]),
+    );
     const user = userEvent.setup();
     render(<ImportDialog mode="open" onClose={onClose} />);
     await pickFolder(user);
-    expect(screen.getByRole("status")).toHaveTextContent("1 over the size limit");
+    expect(screen.getByRole("status")).toHaveTextContent("3 recognised · 1 not recognised · 1 over the size limit");
     expect(screen.getByText("over the size limit", { selector: ".pill" })).toBeInTheDocument();
-    expect(screen.getByText(/Files over 1\.0 GiB are not loaded/)).toBeInTheDocument();
+    expect(screen.getByText(/XLSX workbooks over 1\.0 GiB are not loaded/)).toBeInTheDocument();
+  });
+
+  it("big recognised files count as recognised, whatever their size", async () => {
+    const big = 3_006_477_107;
+    m.discover.mockResolvedValue(
+      previewOf([
+        file("Aug UAL.csv", "recognised", "portal.ual", big),
+        file("July UAL.csv", "recognised", "portal.ual", big),
+        file("June UAL.csv", "recognised", "portal.ual", big),
+      ]),
+    );
+    const user = userEvent.setup();
+    render(<ImportDialog mode="open" onClose={onClose} />);
+    await pickFolder(user);
+    expect(screen.getByRole("status")).toHaveTextContent("1 collection · 3 recognised · 0 not recognised");
+    expect(screen.queryByText(/recognises none/)).not.toBeInTheDocument();
+    expect(screen.queryByText("over the size limit", { selector: ".pill" })).not.toBeInTheDocument();
+    expect(screen.getAllByText("recognised", { selector: ".pill" })).toHaveLength(3);
+    expect(screen.getByRole("button", { name: "Import" })).toBeEnabled();
   });
 
   it("shows a discovery error and keeps the dialog usable", async () => {
@@ -266,11 +293,12 @@ describe("ImportDialog progress and result", () => {
       bytes_done_before: 2048,
       bytes_total: 8192,
     });
-    expect(await screen.findByText("Loading file 2 of 6")).toBeInTheDocument();
+    expect(await screen.findByText("Collection 1 of 2 · Overall: file 2 of 6")).toBeInTheDocument();
     expect(screen.getByText("UnifiedAuditLog/UAL.csv")).toBeInTheDocument();
-    const bar = screen.getByRole("progressbar");
-    expect(bar).toHaveAttribute("aria-valuenow", "1");
-    expect(bar).toHaveAttribute("aria-valuemax", "6");
+    // 2048 of 8192 bytes are behind it: a quarter of the import.
+    const bar = screen.getByRole("progressbar", { name: "Import progress" });
+    expect(bar).toHaveAttribute("aria-valuenow", "25");
+    expect(bar).toHaveAttribute("aria-valuemax", "100");
     // While it runs there is no close button, and Escape does nothing.
     expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
     await user.keyboard("{Escape}");
@@ -395,7 +423,7 @@ describe("ImportDialog hardening", () => {
     expect(m.run.mock.calls[0][4]).not.toBe(m.run.mock.calls[1][4]);
   });
 
-  it("a window close during the import says it is finishing the current file", async () => {
+  it("a window close during the import says it is stopping and rolling back the file being loaded", async () => {
     m.run.mockReturnValue(new Promise<IngestResult>(() => {}));
     const user = userEvent.setup();
     render(<ImportDialog mode="open" onClose={onClose} />);
@@ -403,7 +431,7 @@ describe("ImportDialog hardening", () => {
     await user.click(screen.getByRole("button", { name: "Import" }));
     await waitFor(() => expect(m.run).toHaveBeenCalled());
     closeNow();
-    expect(await screen.findByText("Finishing the current file…")).toBeInTheDocument();
+    expect(await screen.findByText(/Stopping and rolling back the file being loaded…/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Stopping…" })).toBeDisabled();
   });
 
@@ -446,5 +474,150 @@ describe("ImportDialog hardening", () => {
       await user.tab({ shift: true });
       expect(dialog).toContainElement(document.activeElement as HTMLElement);
     }
+  });
+});
+
+describe("ImportDialog in-file progress", () => {
+  const GiB = 1024 ** 3;
+  const S = Math.round(2.8 * GiB);
+  const STEPS = ["Checking file", "Checking dates", "Loading records"];
+  const fileEvent = (index: number, extra: Partial<Extract<IngestProgress, { stage: "file" }>> = {}): IngestProgress => ({
+    stage: "file",
+    collection: 1,
+    collections: 1,
+    index,
+    files: 3,
+    rel_path: ["Aug UAL.csv", "July UAL.csv", "June UAL.csv"][index - 1],
+    size: S,
+    bytes_done_before: (index - 1) * S,
+    bytes_total: 3 * S,
+    ...extra,
+  });
+  const stepEvent = (step: number, bytes_done: number, records = 0, errors = 0, bytes_total = S): IngestProgress => ({
+    stage: "file_step", steps: STEPS, step, bytes_done, bytes_total, records, errors,
+  });
+
+  let now = 0;
+  const clock = () => now;
+
+  async function running(user: ReturnType<typeof userEvent.setup>) {
+    m.run.mockReturnValue(new Promise<IngestResult>(() => {}));
+    render(<ImportDialog mode="open" onClose={onClose} clock={clock} />);
+    await pickFolder(user);
+    await user.click(screen.getByRole("button", { name: "Import" }));
+    await waitFor(() => expect(m.run).toHaveBeenCalled());
+  }
+  const overall = () => screen.getByRole("progressbar", { name: "Import progress" });
+  const thisFile = () => screen.getByRole("progressbar", { name: "This file" });
+
+  beforeEach(() => {
+    now = 1_000_000;
+  });
+
+  it("shows the overall bar, this file's bar, its steps and its counts", async () => {
+    const user = userEvent.setup();
+    await running(user);
+    emit(fileEvent(1));
+    emit(stepEvent(2, Math.round(1.1 * GiB), 412_880, 9));
+    expect(await screen.findByText("1.1 of 2.8 GiB · 412,880 records · 9 errors")).toBeInTheDocument();
+    expect(screen.getByText("Overall: file 1 of 3")).toBeInTheDocument();
+    expect(screen.getByText("8.4 GiB total")).toBeInTheDocument();
+    expect(screen.getByText("Aug UAL.csv")).toBeInTheDocument();
+    // This file: 1.1 of 2.8 GiB through its last pass. Overall: two of three passes done and 39% of the third,
+    // of a file that is a third of the import.
+    expect(thisFile()).toHaveAttribute("aria-valuenow", "39");
+    expect(thisFile()).toHaveAttribute("aria-valuemin", "0");
+    expect(thisFile()).toHaveAttribute("aria-valuemax", "100");
+    expect(overall()).toHaveAttribute("aria-valuenow", "26");
+    const chips = within(screen.getByRole("list", { name: "Steps" })).getAllByRole("listitem");
+    expect(chips.map((c) => c.textContent)).toEqual(["✓ Checking file", "✓ Checking dates", "Loading records"]);
+    expect(chips[2]).toHaveAttribute("aria-current", "step");
+    expect(chips[0]).not.toHaveAttribute("aria-current");
+    expect(screen.getByText("Cancel stops now; this file is rolled back, files already loaded stay.")).toBeInTheDocument();
+  });
+
+  it("Cancel asks the backend at once and says the file is being rolled back", async () => {
+    const user = userEvent.setup();
+    await running(user);
+    emit(fileEvent(1));
+    emit(stepEvent(2, Math.round(1.1 * GiB)));
+    await user.click(await screen.findByRole("button", { name: "Cancel" }));
+    expect(m.cancel).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Stopping and rolling back the file being loaded…")).toBeInTheDocument();
+    expect(screen.queryByText(/Cancel stops now/)).not.toBeInTheDocument();
+  });
+
+  it("the overall bar never goes back when the import's total grows", async () => {
+    const user = userEvent.setup();
+    await running(user);
+    emit(fileEvent(1));
+    emit(stepEvent(2, S));
+    await waitFor(() => expect(overall()).toHaveAttribute("aria-valuenow", "33"));
+    // A copy expected to be skipped is parsed after all: the total doubles, so the computed fraction is 1/6.
+    emit(fileEvent(2, { bytes_done_before: S, bytes_total: 6 * S }));
+    await screen.findByText("Overall: file 2 of 3");
+    expect(overall()).toHaveAttribute("aria-valuenow", "33");
+    emit(stepEvent(0, S / 2));
+    expect(overall()).toHaveAttribute("aria-valuenow", "33");
+    emit(stepEvent(2, S));
+    expect(overall()).toHaveAttribute("aria-valuenow", "33");
+    // Once the computed fraction passes the shown one, it moves on.
+    emit(fileEvent(3, { bytes_done_before: 3 * S, bytes_total: 6 * S }));
+    await waitFor(() => expect(overall()).toHaveAttribute("aria-valuenow", "50"));
+  });
+
+  it("a zero total never shows NaN", async () => {
+    const user = userEvent.setup();
+    await running(user);
+    emit(fileEvent(1, { size: 0, bytes_total: 0 }));
+    emit(stepEvent(0, 0, 0, 0, 0));
+    await screen.findByText("Overall: file 1 of 3");
+    expect(overall()).toHaveAttribute("aria-valuenow", "0");
+    expect(thisFile()).toHaveAttribute("aria-valuenow", "0");
+  });
+
+  it("a new file resets this file's view", async () => {
+    const user = userEvent.setup();
+    await running(user);
+    emit(fileEvent(1));
+    emit(stepEvent(2, Math.round(1.1 * GiB), 412_880, 9));
+    await screen.findByText("1.1 of 2.8 GiB · 412,880 records · 9 errors");
+    // The next file is refused before it is read: no file_step comes for it.
+    emit(fileEvent(2));
+    await screen.findByText("July UAL.csv");
+    expect(screen.queryByText(/412,880 records/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Steps" })).not.toBeInTheDocument();
+    expect(thisFile()).toHaveAttribute("aria-valuenow", "0");
+    // Its own steps replace the old ones, and may grow after the first.
+    emit({ stage: "file_step", steps: ["Checking file"], step: 0, bytes_done: 0, bytes_total: S, records: 0, errors: 0 });
+    await waitFor(() =>
+      expect(within(screen.getByRole("list", { name: "Steps" })).getAllByRole("listitem").map((c) => c.textContent)).toEqual([
+        "Checking file",
+      ]),
+    );
+    emit(stepEvent(1, 0));
+    await waitFor(() => expect(within(screen.getByRole("list", { name: "Steps" })).getAllByRole("listitem")).toHaveLength(3));
+  });
+
+  it("estimates the time left from the overall byte rate, after 5 s of data", async () => {
+    const user = userEvent.setup();
+    await running(user);
+    emit(fileEvent(1));
+    emit(stepEvent(0, 0));
+    now += 4_000;
+    emit(stepEvent(0, S / 2));
+    await screen.findByText(/0 records/);
+    expect(screen.queryByText(/left$/)).not.toBeInTheDocument();
+    // 6 s for a ninth of the import (one of three passes of a third): 48 s to go.
+    now += 2_000;
+    emit(stepEvent(0, S));
+    expect(await screen.findByText("~48 s left")).toBeInTheDocument();
+    // 60 s for two thirds of the import: 30 s to go; a minute or more is shown in minutes.
+    now += 54_000;
+    emit(fileEvent(3));
+    expect(await screen.findByText("~30 s left")).toBeInTheDocument();
+    now += 1_000;
+    emit(fileEvent(3, { bytes_total: 30 * S }));
+    expect(await screen.findByText(/^~\d+ min left$/)).toBeInTheDocument();
   });
 });
