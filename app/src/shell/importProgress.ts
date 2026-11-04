@@ -43,6 +43,16 @@ export function fileFraction(step: FileStepEvent | null): number {
   return clamp01((Math.min(step.step, step.steps.length - 1) + within) / count);
 }
 
+/** Steps that read nothing (one long statement over what the passes staged): they report only their start and end,
+ * so their bar is shown as indeterminate, with what they do instead of a byte count. Name → what the line says. */
+const NON_READING_STEPS: Record<string, string> = { "Sorting messages": "sorting…", "Saving records": "saving…" };
+
+/** What the current step is doing when it reads nothing (`"saving…"`), or `null` for a step that reads the file. */
+export function nonReading(step: FileStepEvent | null): string | null {
+  if (!step) return null;
+  return NON_READING_STEPS[step.steps[step.step] ?? ""] ?? null;
+}
+
 /** This file's bar: the current pass, `bytes_done / bytes_total`. */
 export const passFraction = (step: FileStepEvent | null): number =>
   step && step.bytes_total > 0 ? clamp01(step.bytes_done / step.bytes_total) : 0;

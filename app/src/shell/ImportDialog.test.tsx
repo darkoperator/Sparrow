@@ -555,10 +555,39 @@ describe("ImportDialog in-file progress", () => {
     );
     const chips = within(screen.getByRole("list", { name: "Steps" })).getAllByRole("listitem");
     expect(chips[3]).toHaveAttribute("aria-current", "step");
-    expect(thisFile()).toHaveAttribute("aria-valuetext", "Saving records 0%");
+    // The merge reads nothing: this file's bar is indeterminate and the line says what it does, not "0 B of".
+    expect(thisFile()).toHaveAttribute("aria-valuetext", "Saving records");
+    expect(thisFile()).not.toHaveAttribute("aria-valuenow");
+    expect(thisFile()).toHaveClass("import-bar-indeterminate");
+    expect(screen.getByText("1,388,247 records · saving…")).toBeInTheDocument();
+    expect(screen.queryByText(/0 B of/)).not.toBeInTheDocument();
     // Three of four steps of a file that is a third of the import.
     expect(overall()).toHaveAttribute("aria-valuenow", "25");
-    expect(screen.getByText(/1,388,247 records/)).toBeInTheDocument();
+    // Cancel waits for the statement there.
+    expect(
+      screen.getByText("Cancel takes effect when saving ends; this file is then rolled back, files already loaded stay."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Cancel stops now/)).not.toBeInTheDocument();
+    // The next file's reading step shows its bytes and bar again.
+    emit(fileEvent(2));
+    emit(stepEvent(1, Math.round(1.1 * GiB)));
+    expect(await screen.findByText("1.1 of 2.8 GiB · 0 records · 0 errors")).toBeInTheDocument();
+    expect(thisFile()).toHaveAttribute("aria-valuenow", "39");
+    expect(screen.getByText("Cancel stops now; this file is rolled back, files already loaded stay.")).toBeInTheDocument();
+  });
+
+  it("shows the detail sort as a step that reads nothing", async () => {
+    const user = userEvent.setup();
+    await running(user);
+    emit(fileEvent(1));
+    const detail = ["Checking file", "Grouping messages", "Sorting messages", "Checking dates", "Loading records", "Saving records"];
+    emit({ stage: "file_step", steps: detail, step: 2, bytes_done: 0, bytes_total: S, records: 0, errors: 0 });
+    expect(await screen.findByText("0 records · sorting…")).toBeInTheDocument();
+    expect(thisFile()).toHaveAttribute("aria-valuetext", "Sorting messages");
+    expect(thisFile()).not.toHaveAttribute("aria-valuenow");
+    expect(
+      screen.getByText("Cancel takes effect when sorting ends; this file is then rolled back, files already loaded stay."),
+    ).toBeInTheDocument();
   });
 
   it("Cancel asks the backend at once and says the file is being rolled back", async () => {

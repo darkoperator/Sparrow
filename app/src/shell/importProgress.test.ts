@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { IngestProgress } from "../api";
-import { initialView, reduce, secondsLeft, type ImportView } from "./importProgress";
+import { initialView, nonReading, reduce, secondsLeft, type FileStepEvent, type ImportView } from "./importProgress";
 
 const S = 3_000_000_000;
 const file = (index: number): IngestProgress => ({
@@ -64,5 +64,23 @@ describe("import progress fold", () => {
     v = reduce(v, { ...(file(2) as Extract<IngestProgress, { stage: "file" }>), bytes_total: 6 * S }, 10_000);
     expect(v.bytesDone).toBe(S);
     expect(secondsLeft(v)).toBeGreaterThan(before ?? 0);
+  });
+});
+
+describe("steps that read nothing", () => {
+  const at = (i: number) => step(UAL, i, 0) as FileStepEvent;
+  it("the merge and the detail sort are told apart from the passes", () => {
+    expect(nonReading(at(3))).toBe("saving…");
+    expect(nonReading(at(1))).toBeNull();
+    expect(nonReading(at(2))).toBeNull();
+    expect(nonReading(step(["Checking file", "Grouping messages", "Sorting messages"], 2, 0) as FileStepEvent)).toBe("sorting…");
+    expect(nonReading(null)).toBeNull();
+  });
+  it("a merge step keeps the file's size as its total, so the fold still weighs the file", () => {
+    let v = reduce(initialView(), file(1), 0);
+    v = reduce(v, step(UAL, 3, 0), 1_000);
+    // Three of four steps of a file that is a third of the import.
+    expect(v.overall).toBeCloseTo(0.25);
+    expect(v.step?.bytes_total).toBe(S);
   });
 });

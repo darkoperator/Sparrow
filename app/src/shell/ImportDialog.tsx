@@ -16,7 +16,7 @@ import {
 } from "../api";
 import { displaySafe } from "../text";
 import Icon from "../ui/Icon";
-import { initialView, passFraction, reduce, secondsLeft, timeLeftText, type ImportView } from "./importProgress";
+import { initialView, nonReading, passFraction, reduce, secondsLeft, timeLeftText, type ImportView } from "./importProgress";
 import "./import.css";
 
 export type ImportMode = "new" | "open";
@@ -392,6 +392,8 @@ function Running({
   const loading = stage?.stage === "file" ? file : null;
   const overall = percent(view.overall);
   const thisFile = percent(passFraction(step));
+  // A step that reads nothing (the merge, the detail sort): no bytes to count, and Cancel waits for its statement.
+  const busy = loading ? nonReading(step) : null;
   const left = loading ? timeLeftText(secondsLeft(view)) : null;
   return (
     <div className="import-running">
@@ -430,22 +432,35 @@ function Running({
               ))}
             </ol>
           )}
-          <div
-            className="import-bar import-bar-file"
-            role="progressbar"
-            aria-label="This file"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={thisFile}
-            aria-valuetext={step ? `${step.steps[step.step] ?? ""} ${thisFile}%`.trim() : "starting"}
-          >
-            <span style={{ width: `${passFraction(step) * 100}%` }} />
-          </div>
+          {busy && step ? (
+            <div
+              className="import-bar import-bar-file import-bar-indeterminate"
+              role="progressbar"
+              aria-label="This file"
+              aria-valuetext={step.steps[step.step]}
+            >
+              <span />
+            </div>
+          ) : (
+            <div
+              className="import-bar import-bar-file"
+              role="progressbar"
+              aria-label="This file"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={thisFile}
+              aria-valuetext={step ? `${step.steps[step.step] ?? ""} ${thisFile}%`.trim() : "starting"}
+            >
+              <span style={{ width: `${passFraction(step) * 100}%` }} />
+            </div>
+          )}
           {(step || left) && (
             <div className="import-row meta">
               <span>
                 {step &&
-                  `${sizeOf(step.bytes_done, step.bytes_total)} · ${plural(step.records, "record", "records")} · ${plural(step.errors, "error", "errors")}`}
+                  (busy
+                    ? `${plural(step.records, "record", "records")} · ${busy}`
+                    : `${sizeOf(step.bytes_done, step.bytes_total)} · ${plural(step.records, "record", "records")} · ${plural(step.errors, "error", "errors")}`)}
               </span>
               {left && <span>{left}</span>}
             </div>
@@ -455,7 +470,9 @@ function Running({
       <p className="import-hint">
         {cancelling || closing
           ? `Stopping and rolling back the file being loaded…${closing ? " The window closes when it is done." : ""}`
-          : "Cancel stops now; this file is rolled back, files already loaded stay."}
+          : busy
+            ? `Cancel takes effect when ${busy === "saving…" ? "saving" : "sorting"} ends; this file is then rolled back, files already loaded stay.`
+            : "Cancel stops now; this file is rolled back, files already loaded stay."}
       </p>
       <footer className="import-actions">
         <button className="btn" disabled={cancelling} onClick={onCancel}>

@@ -55,6 +55,10 @@
 .import-file-progress { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .import-bar-file { height: 4px; }
 .import-bar-file > span { background: var(--accent-text); }
+/* A step that reads nothing: a stripe that moves, no fraction. */
+.import-bar-indeterminate > span { width: 30%; animation: import-indeterminate 1.4s ease-in-out infinite; }
+@keyframes import-indeterminate { 0% { transform: translateX(-100%); } 100% { transform: translateX(340%); } }
+@media (prefers-reduced-motion: reduce) { .import-bar-indeterminate > span { width: 100%; opacity: 0.5; animation: none; } }
 .import-steps { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .import-steps > li { padding: 2px 8px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--muted); font-size: 11px; }
 .import-steps > li.import-step-done { border-color: var(--ok); color: var(--ok); }
