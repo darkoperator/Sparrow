@@ -163,13 +163,16 @@ describe("ImportDialog preview", () => {
 
   it("a workbook over the XLSX limit is flagged and the limit is explained", async () => {
     m.discover.mockResolvedValue(
-      previewOf([...FILES, file("InteractiveSignins.xlsx", "recognised", "portal.entra_signins", 1_200_000_000, true)]),
+      // As the real preview lists it: a workbook over the limit is not read, so it is not classified.
+      previewOf([...FILES, file("InteractiveSignins.xlsx", "unrecognised", null, 1_200_000_000, true)]),
     );
     const user = userEvent.setup();
     render(<ImportDialog mode="open" onClose={onClose} />);
     await pickFolder(user);
-    expect(screen.getByRole("status")).toHaveTextContent("3 recognised · 1 not recognised · 1 over the size limit");
+    expect(screen.getByRole("status")).toHaveTextContent("2 recognised · 2 not recognised · 1 over the size limit");
     expect(screen.getByText("over the size limit", { selector: ".pill" })).toBeInTheDocument();
+    // Its row shows the size pill, not "not recognised" (only README.txt does).
+    expect(screen.getAllByText("not recognised", { selector: ".pill" })).toHaveLength(1);
     expect(screen.getByText(/XLSX workbooks over 1\.0 GiB are not loaded/)).toBeInTheDocument();
   });
 

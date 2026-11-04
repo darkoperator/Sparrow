@@ -1362,23 +1362,42 @@ impl<R: std::io::Read> std::io::Read for HookedRead<R> {
 }
 
 /// [`admit`](crate::readers::stream::admit) `abs` in reads of the ingest's chunk size, honouring its cancel check
-/// (a cancel fails the read with `ErrorKind::Interrupted`) and its test read hook.
+/// (a cancel fails the read with `ErrorKind::Interrupted`) and its test read hook. `on_head` gets the head as soon
+/// as it is read (it starts the file's progress); the bytes read before it are reported to `progress` then.
 fn admit_file(
     abs: &Path,
     rel: &str,
     opts: &IngestOptions,
     progress: &FileProgress,
+    on_head: impl Fn(&[u8]),
 ) -> std::io::Result<Admitted> {
     let file = std::fs::File::open(abs)?;
     let modified = file.metadata()?.modified().ok();
     let mut reader = HookedRead::open(file, opts.read_hook.clone(), rel, ReadPhase::Admit)?;
-    crate::readers::stream::admit_from(&mut reader, abs, modified, opts.chunk(), &mut |n| {
-        if opts.cancelled() {
-            return false;
-        }
-        progress.read(n);
-        true
-    })
+    // Bytes read before the head was complete; `None` once it has been told.
+    let early = std::cell::Cell::new(Some(0u64));
+    crate::readers::stream::admit_from_with_head(
+        &mut reader,
+        abs,
+        modified,
+        opts.chunk(),
+        &mut |n| {
+            if opts.cancelled() {
+                return false;
+            }
+            match early.get() {
+                Some(before) => early.set(Some(before + n)),
+                None => progress.read(n),
+            }
+            true
+        },
+        &mut |head| {
+            on_head(head);
+            if let Some(before) = early.take() {
+                progress.read(before);
+            }
+        },
+    )
 }
 
 /// The size limit `size` breaks before the file is read, if any: `--max-file-size`, then the XLSX guard.
@@ -1490,14 +1509,19 @@ fn ingest_file_inner(
     // XLSX is classified from the whole workbook, so one up to the XLSX guard is read whole once; every other file
     // is admitted in reads of the chunk size (hash, head, blank, encoding), honouring a cancel.
     let workbook = nf.format == FileFormat::Xlsx && size <= XLSX_MAX_BYTES;
-    // Step 0, "Checking file", is the admission read; the parser's steps follow, as far as the path tells (the
-    // content may still change the artifact). A superseded copy is only hashed.
-    let guessed_steps = match &path_class {
-        Some(c) if !superseded => parsers.get(c.artifact_id).map_or(&[][..], |p| p.steps()),
-        _ => &[],
+    // Step 0, "Checking file", is the admission read; the parser's steps follow. A superseded copy is only hashed:
+    // it starts at once with no parser steps. Any other file starts once its steps are known, so the first event
+    // already lists them all: a streamed file as soon as its head is read (classified from the head as below,
+    // while the hash goes on), a workbook once it has been read (it is classified from the whole of it).
+    let steps_of = |head: &[u8]| {
+        reg.classify_with_head(tool, rel, Some(head))
+            .and_then(|c| parsers.get(c.artifact_id))
+            .map_or(&[][..], |p| p.steps())
     };
-    let progress = FileProgress::new(opts, guessed_steps, size);
-    progress.begin_step(0);
+    let progress = FileProgress::new(opts, &[], size);
+    if superseded {
+        progress.begin_step(0);
+    }
     let t_read = timing::span(if workbook {
         "file: sha256 + read (workbook, whole)"
     } else {
@@ -1506,10 +1530,20 @@ fn ingest_file_inner(
     let content = if workbook {
         std::fs::read(abs).map(|raw| {
             let admitted = Admitted::from_bytes(abs, &raw);
+            if !superseded {
+                progress.set_parser_steps(steps_of(&raw));
+                progress.begin_step(0);
+            }
             (Some(raw), admitted)
         })
     } else {
-        admit_file(abs, rel, opts, &progress).map(|admitted| (None, admitted))
+        let on_head = |head: &[u8]| {
+            if !superseded {
+                progress.set_parser_steps(steps_of(head));
+                progress.begin_step(0);
+            }
+        };
+        admit_file(abs, rel, opts, &progress, on_head).map(|admitted| (None, admitted))
     };
     let (mut raw, admitted) = match content {
         Ok(c) => c,

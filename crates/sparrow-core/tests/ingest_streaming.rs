@@ -558,14 +558,11 @@ fn file_step_events_cover_every_pass() {
         "{events:#?}"
     );
     let steps = file_steps(&events, "a_ual.csv");
-    // A portal download is told from its content: until its admission read is done only "Checking file" is known.
+    // A portal download is told from its content: its steps are known from its head, before the first event.
     assert!(
-        steps.iter().all(|s| s.bytes_total == size
-            && if s.step == 0 {
-                s.steps == UAL_STEPS[..1] || s.steps == UAL_STEPS
-            } else {
-                s.steps == UAL_STEPS
-            }),
+        steps
+            .iter()
+            .all(|s| s.bytes_total == size && s.steps == UAL_STEPS),
         "{steps:#?}"
     );
     let groups = by_step(&steps);
@@ -585,7 +582,16 @@ fn file_step_events_cover_every_pass() {
             "step {} goes back: {g:#?}",
             g[0].step
         );
-        // Each read of the pass reported (the clock always moved past the throttle).
+        // Each read of the pass reported (the clock always moved past the throttle); the hash pass from the read
+        // that completed the head on (the reads before it are reported with it).
+        let head_reads = (sparrow_core::discovery::SNIFF_BYTES as u64)
+            .min(size)
+            .div_ceil(4096) as usize;
+        let reads = if g[0].step == 0 {
+            reads - head_reads + 1
+        } else {
+            reads
+        };
         assert!(
             g.len() >= reads,
             "step {}: {} events for {reads} reads",
@@ -649,9 +655,15 @@ fn progress_is_throttled() {
     let reads = *reads.lock().unwrap();
     assert_eq!(groups.len(), 3, "{groups:#?}");
     for (g, reads) in groups.iter().zip(reads) {
+        assert!(reads > 20, "{reads} reads");
+        // The hash pass starts reporting once the head is read (its steps are known then).
+        let reads = if g[0].step == 0 {
+            reads - (sparrow_core::discovery::SNIFF_BYTES as u64).div_ceil(4096)
+        } else {
+            reads
+        };
         let within = g.len() as u64 - 2;
         let most = reads * 40 / 100;
-        assert!(reads > 20, "{reads} reads");
         assert!(
             within <= most && within >= most / 2,
             "step {}: {within} events within it for {reads} reads of 40 ms",
@@ -948,4 +960,71 @@ fn a_copy_parsed_after_its_original_is_deferred_grows_the_total() {
     // The bar still ends at 100 %.
     let (_, size, before, total) = files.last().unwrap();
     assert_eq!(before + size, *total);
+}
+
+#[test]
+fn a_file_told_from_its_content_lists_its_steps_from_the_first_event() {
+    // A portal download is classified by its header, not its name: its parser's steps are known once the head is
+    // read, before the hash pass goes on, so no event of it ever shows "Checking file" alone.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("portal");
+    let body = portal_ual(1, ROWS);
+    assert!(body.len() > sparrow_core::discovery::SNIFF_BYTES);
+    fixtures::write(&root, "a_ual.csv", body.as_bytes());
+    let size = body.len() as u64;
+    for chunk in [4096, CHUNK_BYTES] {
+        let ms = Arc::new(AtomicU64::new(0));
+        let m = ms.clone();
+        let base = Instant::now();
+        let opts = IngestOptions {
+            chunk_bytes: Some(chunk),
+            clock: Some(Arc::new(move || {
+                base + Duration::from_secs(m.fetch_add(1, Ordering::SeqCst))
+            })),
+            ..IngestOptions::default()
+        };
+        let (_, events) = events_of(&root, opts);
+        let steps = file_steps(&events, "a_ual.csv");
+        assert_eq!(
+            steps
+                .first()
+                .map(|s| (s.steps.clone(), s.step, s.bytes_done)),
+            Some((UAL_STEPS.to_vec(), 0, 0)),
+            "chunk {chunk}: {steps:#?}"
+        );
+        assert!(
+            steps.iter().all(|s| s.steps == UAL_STEPS),
+            "chunk {chunk}: {steps:#?}"
+        );
+        // The hash pass still reports to its end, and the bytes read before the head was told are not lost.
+        let hash: Vec<&Step> = steps.iter().filter(|s| s.step == 0).collect();
+        assert_eq!(hash.last().unwrap().bytes_done, size, "chunk {chunk}");
+        if chunk == 4096 {
+            assert!(
+                hash.iter().any(|s| s.bytes_done > 0 && s.bytes_done < size),
+                "chunk {chunk}: {hash:#?}"
+            );
+        }
+    }
+    // A portal workbook is classified from the whole of it: its first event lists the sign-in steps too.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("portal");
+    let mut wb = rust_xlsxwriter::Workbook::new();
+    let ws = wb.add_worksheet();
+    for (c, h) in ["Date (UTC)", "Request ID", "User agent", "Correlation ID"]
+        .iter()
+        .enumerate()
+    {
+        ws.write_string(0, c as u16, *h).unwrap();
+    }
+    fixtures::write(
+        &root,
+        "InteractiveSignins.xlsx",
+        &wb.save_to_buffer().unwrap(),
+    );
+    let (_, events) = events_of(&root, IngestOptions::default());
+    let steps = file_steps(&events, "InteractiveSignins.xlsx");
+    let first = steps.first().expect("a step event");
+    assert!(first.steps.len() > 1, "{steps:#?}");
+    assert!(steps.iter().all(|s| s.steps == first.steps), "{steps:#?}");
 }

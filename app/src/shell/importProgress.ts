@@ -27,21 +27,28 @@ export const initialView = (): ImportView => ({ stage: null, file: null, step: n
 
 const clamp01 = (v: number) => (Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0);
 
+/** Step 0 of every file, the admission read. */
+const CHECKING_FILE = "Checking file";
+
 /**
  * How far through its passes the file is, in [0, 1]: the steps before the current one are done, the current one is
  * `bytes_done / bytes_total` through. Each pass counts the same, so a file read three times fills once, not thrice.
+ * A list that is still only "Checking file" counts as two steps: the core tells a file's parser steps from the first
+ * event (a file it is only hashing has no others), but the hash pass must never claim the whole file if a list grows.
  */
 export function fileFraction(step: FileStepEvent | null): number {
   if (!step || step.steps.length === 0) return 0;
   const within = step.bytes_total > 0 ? clamp01(step.bytes_done / step.bytes_total) : 0;
-  return clamp01((Math.min(step.step, step.steps.length - 1) + within) / step.steps.length);
+  const count = step.steps.length === 1 && step.steps[0] === CHECKING_FILE ? 2 : step.steps.length;
+  return clamp01((Math.min(step.step, step.steps.length - 1) + within) / count);
 }
 
 /** This file's bar: the current pass, `bytes_done / bytes_total`. */
 export const passFraction = (step: FileStepEvent | null): number =>
   step && step.bytes_total > 0 ? clamp01(step.bytes_done / step.bytes_total) : 0;
 
-/** Bytes of the import done: the files before this one, and this one's share by its passes. */
+/** Bytes of the import done: the files before this one, and this one's share by its passes. The view keeps the
+ * largest so far, so the bar and the time left read the same never-decreasing count. */
 function bytesDone(file: FileEvent, step: FileStepEvent | null): number {
   return file.bytes_done_before + fileFraction(step) * file.size;
 }
@@ -59,7 +66,7 @@ export function reduce(view: ImportView, p: IngestProgress, now: number): Import
         overall: Math.max(view.overall, p.bytes_total > 0 ? clamp01(done / p.bytes_total) : 0),
         since: view.since ?? now,
         sinceBytes: view.since === null ? done : view.sinceBytes,
-        bytesDone: done,
+        bytesDone: Math.max(view.bytesDone, done),
         at: now,
       };
     }
@@ -71,7 +78,7 @@ export function reduce(view: ImportView, p: IngestProgress, now: number): Import
         ...view,
         step: p,
         overall: Math.max(view.overall, total > 0 ? clamp01(done / total) : 0),
-        bytesDone: done,
+        bytesDone: Math.max(view.bytesDone, done),
         at: now,
       };
     }

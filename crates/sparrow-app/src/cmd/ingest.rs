@@ -167,11 +167,17 @@ pub fn ingest_discover_with(
         let listing = list_collection_files(&dc.root, dc.shallow)?;
         let mut files = Vec::new();
         for f in listing.files {
-            let class = reg.classify_file(dc.tool, &f.rel, &f.abs);
             let (size, meta_error) = match size_of(&f.abs) {
                 Ok(n) => (n, None),
                 Err(e) => (0, Some(format!("cannot read the file's size: {e}"))),
             };
+            // The size read here decides whether a workbook is read to classify it, as ingest's guard does.
+            let class = reg.classify_file_sized(
+                dc.tool,
+                &f.rel,
+                &f.abs,
+                meta_error.is_none().then_some(size),
+            );
             // Only workbooks have a size limit (ingest reads them whole); the flag never hides the classification.
             let too_large = meta_error.is_none()
                 && format_from_path(&f.rel) == FileFormat::Xlsx

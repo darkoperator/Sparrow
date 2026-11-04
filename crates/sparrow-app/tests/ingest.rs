@@ -1256,9 +1256,12 @@ fn preview_counts_big_recognised_files_as_recognised() {
 
 #[test]
 fn preview_flags_big_xlsx() {
+    // A portal folder (the CSV makes it one whatever the workbook's size) with a sign-ins workbook. As in ingest, a
+    // workbook over the XLSX limit is not read, so it is not classified: unrecognised, and flagged too large.
     let dir = tempfile::tempdir().unwrap();
     let exports = dir.path().join("exports");
     std::fs::create_dir(&exports).unwrap();
+    std::fs::write(exports.join("audit.csv"), PURVIEW_HEADER).unwrap();
     let mut wb = rust_xlsxwriter::Workbook::new();
     let ws = wb.add_worksheet();
     for (c, h) in ["Date (UTC)", "Request ID", "User agent", "Correlation ID"]
@@ -1272,15 +1275,30 @@ fn preview_flags_big_xlsx() {
         wb.save_to_buffer().unwrap(),
     )
     .unwrap();
+    let book = |p: &sparrow_app::cmd::ingest::DiscoveryPreview| {
+        p.collections
+            .iter()
+            .flat_map(|c| &c.files)
+            .find(|f| f.rel_path == "InteractiveSignins.xlsx")
+            .cloned()
+            .expect("the workbook is listed")
+    };
     let max = sparrow_core::ingest::XLSX_MAX_BYTES;
     let p = sparrow_app::cmd::ingest::ingest_discover_with(&exports, &sized(max + 1)).unwrap();
-    let files: Vec<_> = p.collections.iter().flat_map(|c| &c.files).collect();
-    assert_eq!(files.len(), 1, "{files:?}");
-    assert_eq!((p.recognised, p.too_large), (1, 1));
-    assert_eq!(files[0].status, "recognised");
-    assert!(files[0].too_large);
-    // At the limit it is not flagged.
+    assert_eq!((p.recognised, p.unrecognised, p.too_large), (1, 1, 1));
+    let big = book(&p);
+    assert_eq!((big.status, big.too_large), ("unrecognised", true));
+    assert_eq!(big.artifact_id, None);
+    // At the limit it is read, classified and not flagged.
     let at = sparrow_app::cmd::ingest::ingest_discover_with(&exports, &sized(max)).unwrap();
-    assert_eq!((at.recognised, at.too_large), (1, 0));
-    assert!(!at.collections[0].files[0].too_large);
+    assert_eq!((at.recognised, at.too_large), (2, 0));
+    let book_at = book(&at);
+    assert_eq!(
+        (
+            book_at.status,
+            book_at.too_large,
+            book_at.artifact_id.as_deref()
+        ),
+        ("recognised", false, Some("portal.entra_signins"))
+    );
 }

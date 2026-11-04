@@ -4,7 +4,7 @@ import { GEN_COLUMNS, GEN_ROWS, genRows } from "./generated";
 import apiSource from "../api.ts?raw";
 import * as fx from "../test/fixtures";
 import { ACCESS_TITLES } from "../api";
-import type { AccessReport, BrowsePage, CmdError, DiscoveryPreview, IngestProgress, EventQuery, EventRow, EventsAdded, EventsPage, EventsSummary, FieldValues, Histogram, QueueItem, QueryResult, RowRef, SqlCheck, TimelineEntry } from "../api";
+import type { AccessReport, BrowsePage, CmdError, DiscoveryPreview, IngestProgress, IngestResult, EventQuery, EventRow, EventsAdded, EventsPage, EventsSummary, FieldValues, Histogram, QueueItem, QueryResult, RowRef, SqlCheck, TimelineEntry } from "../api";
 
 const apiCommands = [...apiSource.matchAll(/\bcall(?:<[^(]*>)?\(\s*"([a-z_]+)"/g)].map((m) => m[1]);
 
@@ -316,6 +316,8 @@ describe("mock import", () => {
     expect(steps.length).toBeGreaterThan(3);
     const names = steps.map((p) => (p.stage === "file_step" ? p.steps[p.step] : ""));
     expect([...new Set(names)]).toEqual(["Checking file", "Checking dates", "Loading records"]);
+    // Every event lists all of the file's steps, from the first: the real ingest knows them from the file's head.
+    expect(steps.every((p) => p.stage === "file_step" && p.steps.length === 3)).toBe(true);
     // Within a step the bytes only go up, to the file's size; records grow while loading.
     for (const p of steps) if (p.stage === "file_step") expect(p.bytes_done).toBeLessThanOrEqual(p.bytes_total);
     const loading = steps.filter((p) => p.stage === "file_step" && p.step === 2);
@@ -326,14 +328,23 @@ describe("mock import", () => {
     expect(last?.stage === "file_step" && last.records).toBeGreaterThan(0);
   });
 
-  it("a big folder lists a workbook over the XLSX limit as recognised and flagged", async () => {
+  it("a big folder lists a workbook over the XLSX limit as unrecognised and flagged, and the import as an error", async () => {
     const m = await fresh();
     const p = await m.mockCall<DiscoveryPreview>("ingest_discover", { path: "/evidence/big" });
     const big = p.collections[0].files.find((f) => f.too_large);
-    expect(big).toMatchObject({ status: "recognised", too_large: true });
+    expect(big).toMatchObject({ status: "unrecognised", artifact_id: null, too_large: true });
     expect(p.too_large).toBe(1);
     expect(p.recognised).toBe(p.collections[0].files.filter((f) => f.status === "recognised").length);
+    expect(p.unrecognised).toBe(2);
+    await m.mockCall("case_open", { path: "/x.duckdb", allowUpgrade: false });
+    const r = await m.mockCall<IngestResult>("ingest_run", { path: "/evidence/big", target: "open", culture: null, detect: false, runId: "r-7" });
+    const note = r.file_notes.find((f) => f.rel_path === big?.rel_path);
+    expect(note).toMatchObject({ status: "error" });
+    expect(note?.notes[0]).toMatch(/above the 1073741824 byte limit for XLSX workbooks/);
+    expect(r.report.collections[0].files.some((f) => f.rel_path === big?.rel_path && f.status === "error")).toBe(true);
+    expect(r.not_loaded).toEqual([]);
   });
+
 
   it("refuses a read-only case, a folder with nothing, and a second run at once", async () => {
     const m = await fresh();

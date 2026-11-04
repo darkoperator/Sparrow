@@ -356,6 +356,21 @@ pub fn admit_from(
     chunk: usize,
     on_read: OnRead,
 ) -> io::Result<Admitted> {
+    admit_from_with_head(reader, path, modified, chunk, on_read, &mut |_| {})
+}
+
+/// [`admit_from`], calling `on_head` once with the head (the first [`SNIFF_BYTES`], or the whole of a shorter file)
+/// as soon as it has been read, before the rest of the file is: the file can be classified while it is still being
+/// hashed. A read error or a cancel before the head is complete never calls it.
+pub fn admit_from_with_head(
+    reader: &mut dyn Read,
+    path: &Path,
+    modified: Option<SystemTime>,
+    chunk: usize,
+    on_read: OnRead,
+    on_head: &mut dyn FnMut(&[u8]),
+) -> io::Result<Admitted> {
+    let mut head_told = false;
     let mut buf = vec![0u8; chunk.max(1)];
     let mut hash = Sha256Stream::new();
     let mut blank = BlankCheck::default();
@@ -370,6 +385,10 @@ pub fn admit_from(
         raw_len += n as u64;
         let take = (SNIFF_BYTES - head.len().min(SNIFF_BYTES)).min(n);
         head.extend_from_slice(&bytes[..take]);
+        if !head_told && (head.len() >= SNIFF_BYTES || n < buf.len()) {
+            head_told = true;
+            on_head(&head);
+        }
         match &mut analyzer {
             Some(a) => a.feed(bytes),
             None if head.len() >= DECIDE_BYTES => {

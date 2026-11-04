@@ -250,7 +250,10 @@ const MOCK_SOURCES: [string, string, number][] = [
   ["invictus.users", "Users/Users.csv", 400_000],
 ];
 
-/** A fake discovery: `empty` in the path finds nothing, `big` adds a workbook over the XLSX limit. */
+/**
+ * A fake discovery: `empty` in the path finds nothing, `big` adds a workbook over the XLSX limit (not read, so not
+ * classified: unrecognised and flagged, as the real preview lists it).
+ */
 function mockDiscovery(path: string): DiscoveryPreview {
   if (/empty/i.test(path)) {
     return { path, collections: [], recognised: 0, unrecognised: 0, too_large: 0, unreadable: 0, xlsx_max_bytes: XLSX_MAX_BYTES };
@@ -261,7 +264,7 @@ function mockDiscovery(path: string): DiscoveryPreview {
   files.push({ rel_path: "README.txt", artifact_id: null, derived: false, size: 312, status: "unrecognised", too_large: false, error: null });
   if (/big/i.test(path)) {
     files.push({
-      rel_path: "InteractiveSignins.xlsx", artifact_id: "portal.entra_signins", derived: false, size: 1_400_000_000, status: "recognised",
+      rel_path: "InteractiveSignins.xlsx", artifact_id: null, derived: false, size: 1_400_000_000, status: "unrecognised",
       too_large: true, error: null,
     });
   }
@@ -269,7 +272,7 @@ function mockDiscovery(path: string): DiscoveryPreview {
     path,
     collections: [{ tool: "invictus", root: path, tenant_hint: "contoso.example", started_hint: "2026-08-14T09:00:00Z", files }],
     recognised: files.filter((f) => f.status === "recognised").length,
-    unrecognised: 1,
+    unrecognised: files.filter((f) => f.status === "unrecognised").length,
     too_large: files.filter((f) => f.too_large).length,
     unreadable: 0,
     xlsx_max_bytes: XLSX_MAX_BYTES,
@@ -283,14 +286,15 @@ const MOCK_TICKS = 4;
 const MOCK_TICK_MS = 30;
 
 /**
- * Plays one file's `file_step` events: each step starts at 0 bytes and reads to the file's size; the step list grows
- * after "Checking file", as it does for a file recognised by its content. Records grow while loading, with an error
- * now and then. Returns false when the run was cancelled mid-file (the real ingest rolls that file back).
+ * Plays one file's `file_step` events as the real ingest does: every event lists all the steps (the core classifies
+ * the file from its head before the hash pass goes on); each step starts at 0 bytes and reads to the file's size.
+ * Records grow while loading, with an error now and then. Returns false when the run was cancelled mid-file (the
+ * real ingest rolls that file back).
  */
 async function mockFileSteps(size: number, runId: string): Promise<boolean> {
   const recordsTotal = Math.max(1, Math.round(size / 700));
   for (const [step] of MOCK_STEPS.entries()) {
-    const steps = step === 0 ? MOCK_STEPS.slice(0, 1) : MOCK_STEPS;
+    const steps = MOCK_STEPS;
     for (let t = 0; t <= MOCK_TICKS; t++) {
       if (cancelledRuns.has(runId)) return false;
       const bytes = Math.round((size * t) / MOCK_TICKS);
@@ -349,16 +353,30 @@ async function mockIngestRun(a: Record<string, unknown> | undefined): Promise<In
       rel_path: f.rel_path, artifact_id: f.artifact_id, status: "parsed", records_read: 1000 * (i + 1) + 3, records_loaded: 1000 * (i + 1),
       records_duplicate: 0, records_error: i === 1 ? 3 : 0, records_collector_lost: 0, warnings: i === 1 ? ["3 records could not be parsed"] : [],
     }));
-    const left = files.slice(loaded.length).map((f) => ({ root: path, rel_path: f.rel_path }));
+    // A workbook over the XLSX limit is refused before it is read, as an error the result lists (a cancel before it
+    // was reached leaves it not loaded).
+    const oversized = preview.collections[0].files.filter((f) => f.too_large);
+    const refused = cancelled ? [] : oversized;
+    const errors = refused.map((f) => ({
+      rel_path: f.rel_path, artifact_id: f.artifact_id, status: "error", records_read: 0, records_loaded: 0, records_duplicate: 0,
+      records_error: 0, records_collector_lost: 0,
+      warnings: [
+        `file is ${f.size} bytes, above the ${XLSX_MAX_BYTES} byte limit for XLSX workbooks (read whole into memory); export the data as CSV to ingest it`,
+      ],
+    }));
+    const left = [...files.slice(loaded.length), ...(cancelled ? oversized : [])].map((f) => ({ root: path, rel_path: f.rel_path }));
     return {
       case_path: target === "open" ? (info?.path ?? "") : target.new_case,
       cancelled,
       error: null,
-      report: { collections: [{ collection_id: 1, tool: "invictus", root: path, files: reports }] },
+      report: { collections: [{ collection_id: 1, tool: "invictus", root: path, files: [...reports, ...errors] }] },
       files_loaded: loaded.length,
       files_total: preview.collections[0].files.length,
       rows_by_source: reports.map((r) => ({ source: r.artifact_id ?? "unknown", files: 1, rows: r.records_loaded })),
-      file_notes: reports.filter((r) => r.warnings.length).map((r) => ({ root: path, rel_path: r.rel_path, status: r.status, notes: ["3 records rejected", ...r.warnings] })),
+      file_notes: [
+        ...reports.filter((r) => r.warnings.length).map((r) => ({ root: path, rel_path: r.rel_path, status: r.status, notes: ["3 records rejected", ...r.warnings] })),
+        ...errors.map((r) => ({ root: path, rel_path: r.rel_path, status: r.status, notes: r.warnings })),
+      ],
       not_loaded: left,
       profile_error: null,
       profile_warnings: [],

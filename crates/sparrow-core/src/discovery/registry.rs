@@ -1044,12 +1044,25 @@ impl Registry {
     /// An XLSX larger than `ingest::XLSX_MAX_BYTES` is not read: it is classified by
     /// path alone (ingest then refuses it by size).
     pub fn classify_file(&self, tool: Tool, rel_path: &str, abs: &Path) -> Option<Classification> {
+        let size = std::fs::metadata(abs).ok().map(|m| m.len());
+        self.classify_file_sized(tool, rel_path, abs, size)
+    }
+
+    /// [`classify_file`](Self::classify_file) for a file whose size is already known (`None`: it could not be read,
+    /// and a workbook is then not read either).
+    pub fn classify_file_sized(
+        &self,
+        tool: Tool,
+        rel_path: &str,
+        abs: &Path,
+        size: Option<u64>,
+    ) -> Option<Classification> {
         let head = match format_from_path(rel_path) {
             FileFormat::Csv => read_head(abs),
             // A path pattern owns its JSON files; only the others are sniffed.
             FileFormat::Json if self.classify(tool, rel_path).is_none() => read_head(abs),
-            FileFormat::Xlsx => std::fs::metadata(abs)
-                .is_ok_and(|m| m.len() <= crate::ingest::XLSX_MAX_BYTES)
+            FileFormat::Xlsx => size
+                .is_some_and(|n| n <= crate::ingest::XLSX_MAX_BYTES)
                 .then(|| std::fs::read(abs).ok())
                 .flatten(),
             _ => None,
