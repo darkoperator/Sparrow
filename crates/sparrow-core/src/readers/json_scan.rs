@@ -51,17 +51,28 @@ enum At {
     Item,
     AfterItem,
     BadSeparator(usize),
+    /// A value from this absolute offset reached the record cap without ending: drained, then failed.
+    OverCap(usize),
     Done,
 }
 
+/// Decoded bytes a streamed JSON value may reach without ending before it is failed. Only a truncated or unbalanced
+/// value (a `{`, `[` or `"` that never closes) makes a record this long, and the scan holds a record whole until it
+/// ends, so without a cap one such value in a multi-GB export would hold the rest of the file in memory. A whole-text
+/// scan has no cap (the text is already in memory), so the two differ only for a value over the cap.
+pub(crate) const JSON_RECORD_MAX_BYTES: usize = 64 * 1024 * 1024;
+
 const TRUNCATED_ARRAY: &str = "unexpected end of input inside array (truncated file?)";
+
+const OVER_CAP: &str = "record exceeds the JSON record size limit without ending (truncated or unbalanced value?); the rest of the file is not read as records";
 
 /// The scan behind [`scan_json_each`] and [`scan_json_stream`]. A step over a window that may go on stops short of
 /// any value that reaches the window's end (and of a truncation failure, which more text may turn into a value),
 /// asking for more text from where it stands; the state it keeps between steps is only what it had at that point,
 /// so the rescan over the longer window continues exactly as a scan of the whole text. A bad array separator is a
 /// failure whatever follows, spanning to the end of the text: it asks the driver to drain the text from there
-/// ([`Step::DrainFrom`]) and reports it on the next step.
+/// ([`Step::DrainFrom`]) and reports it on the next step. A value that reaches `cap` decoded bytes while more text
+/// follows is failed the same way, from its start to the end of the text.
 struct Scanner {
     at: At,
     /// Absolute offset the next step starts at.
@@ -69,6 +80,9 @@ struct Scanner {
     docs: usize,
     first_is_array: bool,
     ordinal: u64,
+    /// Decoded bytes a value may reach without ending while more text follows ([`JSON_RECORD_MAX_BYTES`] when
+    /// streamed; no cap over a whole text, which is already in memory).
+    cap: usize,
 }
 
 impl Scanner {
@@ -79,7 +93,18 @@ impl Scanner {
             docs: 0,
             first_is_array: false,
             ordinal: 0,
+            cap: usize::MAX,
         }
+    }
+
+    /// `More(self.pos)` for a value starting at `self.pos` that may go on, unless the window from it is past the cap:
+    /// then drain from it (the failure comes on the next step).
+    fn more_or_drain(&mut self, text: &str, base: usize) -> Step<JsonEvent> {
+        if base + text.len() - self.pos > self.cap {
+            self.at = At::OverCap(self.pos);
+            return Step::DrainFrom(self.pos);
+        }
+        Step::More(self.pos)
     }
 
     fn shape(&self) -> JsonShape {
@@ -151,13 +176,17 @@ impl Scan for Scanner {
                     return Step::Event(self.fail(text, base, start, msg));
                 }
                 At::BadSeparator(start) => return Step::DrainFrom(start),
+                At::OverCap(start) => {
+                    // Drained: the text has ended.
+                    return Step::Event(self.fail(text, base, start, OVER_CAP.into()));
+                }
                 _ => {}
             }
             let commas = self.at == At::Top;
             let p = skip(b, self.pos - base, commas);
             self.pos = base + p;
             match self.at {
-                At::Done | At::BadSeparator(_) => unreachable!("handled above"),
+                At::Done | At::BadSeparator(_) | At::OverCap(_) => unreachable!("handled above"),
                 At::Top => {
                     if p >= b.len() {
                         if last {
@@ -176,7 +205,11 @@ impl Scan for Scanner {
                         continue;
                     }
                     let Some(end) = window_value_end(b, p, last) else {
-                        return Step::More(self.pos);
+                        if base + b.len() - self.pos > self.cap {
+                            // A document of its own, failed as a truncated one is.
+                            self.docs += 1;
+                        }
+                        return self.more_or_drain(text, base);
                     };
                     self.docs += 1;
                     return Step::Event(match end {
@@ -201,7 +234,7 @@ impl Scan for Scanner {
                         continue;
                     }
                     let Some(end) = window_value_end(b, p, last) else {
-                        return Step::More(self.pos);
+                        return self.more_or_drain(text, base);
                     };
                     return Step::Event(match end {
                         Ok(end) => {
@@ -261,14 +294,25 @@ pub fn scan_json_each(text: &str, mut sink: impl FnMut(JsonEvent) -> bool) -> Js
 /// [`scan_json_each`] over a [`TextStream`]: the same events (spans absolute) and shape, each event handed to `sink`
 /// while its record is still in the window, so the sink can [`sight`](TextStream::sight) it. A read error, or
 /// `on_read` asking to stop, ends the scan with that error. A failure spans the rest of the file: a bad array separator
-/// is sighted while the rest of the file is drained, in bounded memory; a truncated value (an unclosed `{` or `"`)
-/// keeps the rest of the file in the window, since only its end can show it is truncated.
+/// is sighted while the rest of the file is drained, in bounded memory, and so is a value (an unclosed `{`, `[` or `"`)
+/// that reaches [`JSON_RECORD_MAX_BYTES`] without ending; a shorter truncated value is failed at the end of the text.
 pub fn scan_json_stream(
     stream: &mut TextStream,
     on_read: OnRead,
+    sink: impl FnMut(JsonEvent, &mut TextStream) -> bool,
+) -> io::Result<JsonShape> {
+    scan_json_stream_capped(stream, on_read, JSON_RECORD_MAX_BYTES, sink)
+}
+
+/// [`scan_json_stream`] with a record cap of `cap` decoded bytes instead of [`JSON_RECORD_MAX_BYTES`].
+pub(crate) fn scan_json_stream_capped(
+    stream: &mut TextStream,
+    on_read: OnRead,
+    cap: usize,
     mut sink: impl FnMut(JsonEvent, &mut TextStream) -> bool,
 ) -> io::Result<JsonShape> {
     let mut scan = Scanner::new();
+    scan.cap = cap;
     scan_stream(&mut scan, stream, on_read, |_, event, stream| {
         sink(event, stream)
     })?;

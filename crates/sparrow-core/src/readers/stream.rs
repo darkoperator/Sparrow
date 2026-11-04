@@ -1228,6 +1228,131 @@ mod tests {
         assert!(rows > 10_000, "{rows} rows");
     }
 
+    /// A JSON value that never ends (an unclosed string, object or array, then a long rest of the file): past the
+    /// record cap the scan stops holding it and fails it from its start to the end of the file, in bounded memory.
+    #[test]
+    fn an_unclosed_json_value_is_failed_at_the_record_cap_in_bounded_memory() {
+        use crate::readers::json_scan::{JsonEvent, scan_json_stream_capped};
+        const CAP: usize = 256 * 1024;
+        let quoted = |len: usize| {
+            let mut s = String::new();
+            let mut i = 0;
+            while s.len() < len {
+                s.push_str(&format!(",\r\n{{\"a\":{i},\"u\":\"user{i}@contoso.com\"}}"));
+                i += 1;
+            }
+            s
+        };
+        // An unclosed string must not meet another quote: its rest is quote-free.
+        let unquoted = |len: usize| {
+            let mut s = String::new();
+            let mut i = 0;
+            while s.len() < len {
+                s.push_str(&format!(" {i} user{i}@contoso.com\r\n"));
+                i += 1;
+            }
+            s
+        };
+        let size = 4 * 1024 * 1024;
+        for (what, opener, rest) in [
+            ("string", "{\"a\":\"unclosed", unquoted(size)),
+            ("object", "{\"a\":", quoted(size)),
+            ("array", "[{\"a\":-1}", quoted(size)),
+        ] {
+            let mut json = String::from("[\r\n{\"a\":0},\r\n{\"a\":1},\r\n");
+            let start = json.len();
+            json.push_str(opener);
+            json.push_str(&rest);
+            let raw = json.clone().into_bytes();
+            let a = admitted(&raw, TextEncoding::Utf8, 0);
+            let mut s = TextStream::from_bytes(raw.clone(), &a, CHUNK);
+            let mut got = Vec::new();
+            scan_json_stream_capped(&mut s, &mut |_| true, CAP, |e, st| {
+                let span = match &e {
+                    JsonEvent::Record(r) => r.span,
+                    JsonEvent::Error(e) => e.span,
+                };
+                got.push((e, st.sight(span), st.snippet(span)));
+                true
+            })
+            .unwrap();
+            assert_eq!(got.len(), 3, "{what}: two records, then the failure");
+            assert!(
+                matches!(&got[0].0, JsonEvent::Record(r) if r.value["a"] == 0),
+                "{what}"
+            );
+            assert!(
+                matches!(&got[1].0, JsonEvent::Record(r) if r.value["a"] == 1),
+                "{what}"
+            );
+            let (JsonEvent::Error(e), sight, snippet) = &got[2] else {
+                let JsonEvent::Record(r) = &got[2].0 else {
+                    unreachable!()
+                };
+                panic!(
+                    "{what}: a record of {} bytes instead of the failure; peak capacities {:?}",
+                    r.span.end - r.span.start,
+                    s.peak
+                )
+            };
+            assert_eq!(e.ordinal, 2, "{what}");
+            assert_eq!((e.span.start, e.span.end), (start, raw.len()), "{what}");
+            assert!(
+                e.message.contains("record size limit"),
+                "{what}: {}; peak capacities {:?}",
+                e.message,
+                s.peak
+            );
+            assert_eq!(sight.pos.byte_offset, start as u64, "{what}");
+            assert_eq!(sight.pos.byte_length, (raw.len() - start) as u64, "{what}");
+            assert_eq!(sight.raw_sha256, sha256_hex(&raw[start..]), "{what}");
+            assert_eq!(
+                *snippet,
+                json[start..].chars().take(500).collect::<String>(),
+                "{what}"
+            );
+            let bound = 2 * CAP + CHUNK + CHECKPOINT_EVERY + MARGIN;
+            assert!(
+                s.peak.0 <= bound && s.peak.1 <= bound,
+                "{what}: peak capacities {:?} over {bound}",
+                s.peak
+            );
+        }
+    }
+
+    /// A JSON record just under the cap is read as before.
+    #[test]
+    fn a_json_record_under_the_cap_is_read_whole() {
+        use crate::readers::json_scan::{JsonEvent, scan_json_stream_capped};
+        const CAP: usize = 256 * 1024;
+        let big = "x".repeat(CAP - 1024);
+        let mut json = format!("[\r\n{{\"a\":\"{big}\"}}");
+        let mut i = 1;
+        while json.len() < 1024 * 1024 {
+            json.push_str(&format!(",\r\n{{\"a\":{i}}}"));
+            i += 1;
+        }
+        json.push_str("\r\n]\r\n");
+        let raw = json.into_bytes();
+        let a = admitted(&raw, TextEncoding::Utf8, 0);
+        let mut s = TextStream::from_bytes(raw, &a, CHUNK);
+        let (mut records, mut errors) = (0, 0);
+        scan_json_stream_capped(&mut s, &mut |_| true, CAP, |e, _| {
+            match e {
+                JsonEvent::Record(r) if r.ordinal == 0 => {
+                    assert_eq!(r.value["a"], big.as_str());
+                    records += 1
+                }
+                JsonEvent::Record(_) => records += 1,
+                JsonEvent::Error(_) => errors += 1,
+            }
+            true
+        })
+        .unwrap();
+        assert_eq!(errors, 0);
+        assert_eq!(records, i);
+    }
+
     #[test]
     fn bad_separator_is_sighted_in_bounded_memory() {
         use crate::readers::json_scan::{JsonEvent, scan_json_each, scan_json_stream};

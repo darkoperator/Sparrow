@@ -102,7 +102,9 @@ pub(crate) fn read_csv_stream_capped(
 /// Decoded bytes a streamed record may reach without ending before it is failed. Only an unclosed quote makes a
 /// record this long (a spreadsheet cell holds at most 32,767 characters; audit records are kilobytes), and the scan
 /// holds a record whole (its text, its raw bytes and its field bytes, up to about twice this each), so without a cap
-/// one stray quote in a multi-GB export would hold the rest of the file in memory.
+/// one stray quote in a multi-GB export would hold the rest of the file in memory. A whole-text scan has no cap (the
+/// text is already in memory and under the whole-file guard), so the two differ only for a record over the cap: one
+/// error to the end of the file when streamed, one large row over a whole text.
 pub(crate) const CSV_RECORD_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 /// Field buffer sizes a scan starts with and returns to after an outsized record.
