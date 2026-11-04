@@ -303,6 +303,50 @@ fn cancel_in(phase: ReadPhase, after: u64) -> (Case, IngestReport, bool, u64, Ve
     (case, report, stopped, read.load(Ordering::SeqCst), opened)
 }
 
+/// An interrupt that is not the ingest's cancel (here: the cancel check answers yes once, at a read of `a_ual.csv` in
+/// `phase`, and no again by the time the file's outcome is decided, as with a DuckDB interrupt from elsewhere) fails
+/// that file; it does not stop the ingest as a cancel does.
+#[test]
+fn an_interrupt_without_a_cancel_is_the_files_error() {
+    for phase in [ReadPhase::Admit, ReadPhase::Pass(2)] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = two_downloads(dir.path());
+        let (fire, fired) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let (f, d) = (fire.clone(), fired.clone());
+        let mut opts = small_reads(move |e| {
+            if e.rel_path == "a_ual.csv"
+                && e.phase == phase
+                && e.bytes > 0
+                && !d.swap(true, Ordering::SeqCst)
+            {
+                f.store(true, Ordering::SeqCst);
+            }
+            Ok(())
+        });
+        let c = fire.clone();
+        opts.cancel = Some(Arc::new(move || c.swap(false, Ordering::SeqCst)));
+        let mut case = Case::in_memory().unwrap();
+        let (report, stopped) = run(&mut case, &root, &opts);
+        assert!(
+            fired.load(Ordering::SeqCst),
+            "{phase:?}: the interrupt never fired"
+        );
+        assert!(!stopped, "{phase:?}: the ingest stopped as if cancelled");
+        let a = row(&report, "a_ual.csv");
+        assert_eq!(a.status, FileStatus::Error, "{phase:?}: {a:#?}");
+        assert_eq!(ual_rows_of(&case, "a_ual.csv"), 0, "{phase:?}");
+        assert_eq!(
+            row(&report, "b_ual.csv").status,
+            FileStatus::Parsed,
+            "{phase:?}"
+        );
+        assert_eq!(ual_rows_of(&case, "b_ual.csv"), ROWS as i64, "{phase:?}");
+    }
+}
+
 fn assert_file_two_rolled_back(case: &Case, report: &IngestReport, stopped: bool) {
     assert!(stopped, "the ingest did not stop");
     // As a between-files cancel leaves it: file 1 in the report and loaded, file 2 absent and with no rows.

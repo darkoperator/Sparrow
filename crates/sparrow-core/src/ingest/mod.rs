@@ -911,15 +911,13 @@ fn ingest_collection(
         let mut deferred: Vec<(&CollectionFile, bool, Option<&'static str>)> = Vec::new();
         for (f, derived, _, artifact, _) in stage {
             if opts.cancelled() {
-                *stopped = true;
-                // Entries discovery could not read are still recorded as errors, never lost in a cancel.
-                record_listing_errors(case, collection_id, listing, &mut files)?;
-                return Ok(CollectionReport {
-                    collection_id,
-                    tool: dc.tool,
-                    root,
+                return Ok(stopped_at_cancel(
+                    case,
+                    (collection_id, dc.tool, root),
+                    listing,
                     files,
-                });
+                    stopped,
+                )?);
             }
             let superseded_by = handled.superseded_by(&f.rel, derived);
             let weight = file_weight(bytes, &plan, &accounted, f, superseded_by.is_some());
@@ -960,14 +958,13 @@ fn ingest_collection(
             };
             if matches!(outcome, Outcome::Cancelled) {
                 // Cancelled mid-file (rolled back): the ingest stops as a cancel between files does.
-                *stopped = true;
-                record_listing_errors(case, collection_id, listing, &mut files)?;
-                return Ok(CollectionReport {
-                    collection_id,
-                    tool: dc.tool,
-                    root,
+                return Ok(stopped_at_cancel(
+                    case,
+                    (collection_id, dc.tool, root),
+                    listing,
                     files,
-                });
+                    stopped,
+                )?);
             }
             // Handled (or deferred, counted now and not again on its retry): the overall bar passes the file.
             bytes.done += weight;
@@ -1009,15 +1006,13 @@ fn ingest_collection(
         };
         for (f, derived, _) in retry {
             if opts.cancelled() {
-                *stopped = true;
-                // Entries discovery could not read are still recorded as errors, never lost in a cancel.
-                record_listing_errors(case, collection_id, listing, &mut files)?;
-                return Ok(CollectionReport {
-                    collection_id,
-                    tool: dc.tool,
-                    root,
+                return Ok(stopped_at_cancel(
+                    case,
+                    (collection_id, dc.tool, root),
+                    listing,
                     files,
-                });
+                    stopped,
+                )?);
             }
             let superseded_by = handled.superseded_by(&f.rel, derived);
             let weight = file_weight(bytes, &plan, &accounted, f, superseded_by.is_some());
@@ -1058,14 +1053,13 @@ fn ingest_collection(
             };
             if matches!(outcome, Outcome::Cancelled) {
                 // Cancelled mid-file (rolled back): the ingest stops as a cancel between files does.
-                *stopped = true;
-                record_listing_errors(case, collection_id, listing, &mut files)?;
-                return Ok(CollectionReport {
-                    collection_id,
-                    tool: dc.tool,
-                    root,
+                return Ok(stopped_at_cancel(
+                    case,
+                    (collection_id, dc.tool, root),
+                    listing,
                     files,
-                });
+                    stopped,
+                )?);
             }
             bytes.done += weight;
             match outcome {
@@ -1088,6 +1082,26 @@ fn ingest_collection(
     Ok(CollectionReport {
         collection_id,
         tool: dc.tool,
+        root,
+        files,
+    })
+}
+
+/// The report of a collection whose ingest stops at a cancel (between files, or mid-file once that file is rolled
+/// back): the files handled so far, then the entries discovery could not read, still recorded as errors (never lost
+/// in a cancel). Sets `stopped`.
+fn stopped_at_cancel(
+    case: &mut Case,
+    (collection_id, tool, root): (i64, Tool, String),
+    listing: &crate::discovery::CollectionListing,
+    mut files: Vec<FileReport>,
+    stopped: &mut bool,
+) -> Result<CollectionReport> {
+    *stopped = true;
+    record_listing_errors(case, collection_id, listing, &mut files)?;
+    Ok(CollectionReport {
+        collection_id,
+        tool,
         root,
         files,
     })
@@ -1575,7 +1589,10 @@ fn ingest_file_inner(
     };
     let (mut raw, admitted) = match content {
         Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => return Ok(Outcome::Cancelled),
+        // A read stopped by the cancel check; any other interrupted read is a read error.
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted && opts.cancelled() => {
+            return Ok(Outcome::Cancelled);
+        }
         Err(e) => {
             return record_simple(
                 case,
@@ -1834,8 +1851,9 @@ fn ingest_file_inner(
                 orders,
             ))
         }
-        Err(Error::Interrupted) => {
-            // Cancelled mid-file: the file leaves no rows, as if it was never tried.
+        Err(Error::Interrupted) if opts.cancelled() => {
+            // Cancelled mid-file: the file leaves no rows, as if it was never tried. An interrupt with no cancel
+            // behind it (a DuckDB interrupt from elsewhere) is not a cancel: it is the file's error, below.
             drop(ctx);
             tx.rollback()?;
             Ok(Outcome::Cancelled)
