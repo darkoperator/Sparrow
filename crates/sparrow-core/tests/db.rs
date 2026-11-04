@@ -574,9 +574,9 @@ fn upgrading_a_v20_case_keeps_decisions_and_adds_imported_proposals() {
         .unwrap();
     }
     let (from, to) = Case::upgrade(&path).unwrap();
-    assert_eq!((from, to), (20, 29));
+    assert_eq!((from, to), (20, latest_version()));
     let case = Case::open_read_only(&path).unwrap();
-    assert_eq!(case.schema_version().unwrap(), 29);
+    assert_eq!(case.schema_version().unwrap(), latest_version());
     let kept: (String, String, String, String) = case
         .conn()
         .query_row(
@@ -646,7 +646,7 @@ fn upgrading_a_v21_case_keeps_directory_audits_and_adds_completeness() {
         .unwrap();
     }
     let (from, to) = Case::upgrade(&path).unwrap();
-    assert_eq!((from, to), (21, 29));
+    assert_eq!((from, to), (21, latest_version()));
     let case = Case::open_read_only(&path).unwrap();
     let kept: (String, String, String, String, Option<String>) = case
         .conn()
@@ -717,7 +717,7 @@ fn upgrading_a_v22_case_keeps_account_rollup_and_adds_the_signin_window() {
         .unwrap();
     }
     let (from, to) = Case::upgrade(&path).unwrap();
-    assert_eq!((from, to), (22, 29));
+    assert_eq!((from, to), (22, latest_version()));
     let case = Case::open_read_only(&path).unwrap();
     let kept: (String, String, i64, String, String, i64, Option<String>, Option<String>) = case
         .conn()
@@ -810,7 +810,7 @@ fn upgrading_a_v23_case_keeps_message_trace_and_adds_an_empty_events_table() {
         .unwrap();
     }
     let (from, to) = Case::upgrade(&path).unwrap();
-    assert_eq!((from, to), (23, 29));
+    assert_eq!((from, to), (23, latest_version()));
     let case = Case::open_read_only(&path).unwrap();
     let kept: (String, String, String, String, String) = case
         .conn()
@@ -864,7 +864,7 @@ fn describe_lists_views_with_their_kind() {
 #[test]
 fn state_table_specs_match_the_schema() {
     let case = Case::in_memory().unwrap();
-    assert_eq!(case.schema_version().unwrap(), 29);
+    assert_eq!(case.schema_version().unwrap(), latest_version());
     for spec in ALL {
         for common in [
             "record_key",
@@ -1198,7 +1198,7 @@ fn upgrading_a_v27_case_keeps_value_flags_and_adds_the_device_analyst_status_tab
         .unwrap();
     }
     let (from, to) = Case::upgrade(&path).unwrap();
-    assert_eq!((from, to), (27, 29));
+    assert_eq!((from, to), (27, latest_version()));
     {
         let case = Case::open_read_only(&path).unwrap();
         let kept: (String, String) = case
@@ -1267,11 +1267,159 @@ fn upgrading_a_v28_case_adds_empty_notebook_tables_that_take_writes() {
         .unwrap();
     }
     let (from, to) = Case::upgrade(&path).unwrap();
-    assert_eq!((from, to), (28, 29));
+    assert_eq!((from, to), (28, latest_version()));
     let case = Case::create_or_open(&path).unwrap();
     assert_eq!(notebooks::list(case.conn()).unwrap().len(), 1);
     let a = Actor::analyst("carlos").unwrap();
     let (nb, _) = notebooks::create_notebook(case.conn(), &a, "Triage").unwrap();
     notebooks::add_query(case.conn(), &a, &nb, "SELECT 1").unwrap();
     assert!(sparrow_core::case::audit::verify(case.conn()).unwrap().ok);
+}
+
+/// A case file at schema `v`, built migration by migration (the schema an older build left).
+fn conn_at(path: &std::path::Path, v: u32) -> duckdb::Connection {
+    let conn = duckdb::Connection::open(path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name VARCHAR NOT NULL,
+         applied_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp);",
+    )
+    .unwrap();
+    for m in MIGRATIONS.iter().filter(|m| m.version <= v) {
+        conn.execute_batch(m.sql).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
+            duckdb::params![m.version as i64, m.name],
+        )
+        .unwrap();
+    }
+    conn
+}
+
+/// Every `record_sources` row, in physical order, as one string.
+fn sightings(conn: &duckdb::Connection) -> Vec<String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT concat_ws('|', table_name, record_key, file_id, record_ordinal, line_start, line_end, byte_offset,
+                    byte_length, raw_sha256) FROM record_sources ORDER BY rowid",
+        )
+        .unwrap();
+    stmt.query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// The key constraints and indexes on `record_sources` (NOT NULL is not a key).
+fn record_sources_keys(conn: &duckdb::Connection) -> (i64, i64) {
+    conn.query_row(
+        "SELECT (SELECT count(*) FROM duckdb_constraints()
+                 WHERE table_name = 'record_sources' AND constraint_type <> 'NOT NULL'),
+                (SELECT count(*) FROM duckdb_indexes() WHERE table_name = 'record_sources')",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .unwrap()
+}
+
+/// 3,000 sightings of a v29 case, in an order that is not the key order, with awkward text.
+const V29_SIGHTINGS: &str = "INSERT INTO record_sources
+    SELECT CASE i % 3 WHEN 0 THEN 'ual_events' WHEN 1 THEN 'signins' ELSE 'message_trace' END,
+           'k' || (2999 - i) || CASE WHEN i % 7 = 0 THEN ' d''q\"é|' ELSE '' END,
+           1 + i % 5, i, i + 1, i + 2, i * 10, 9, sha256(CAST(i AS VARCHAR))
+    FROM range(3000) t(i)";
+
+#[test]
+fn migration_30_drops_the_record_sources_key_and_keeps_every_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v29.duckdb");
+    let before = {
+        let conn = conn_at(&path, 29);
+        conn.execute_batch(V29_SIGHTINGS).unwrap();
+        assert_eq!(
+            record_sources_keys(&conn).0,
+            1,
+            "a v29 case has the primary key"
+        );
+        sightings(&conn)
+    };
+    assert_eq!(before.len(), 3000);
+    let (from, to) = Case::upgrade(&path).unwrap();
+    assert_eq!((from, to), (29, latest_version()));
+    let after = {
+        let case = Case::open_read_only(&path).unwrap();
+        assert_eq!(record_sources_keys(case.conn()), (0, 0));
+        let comment: String = case
+            .conn()
+            .query_row(
+                "SELECT comment FROM duckdb_columns() WHERE table_name = 'record_sources' AND column_name = 'raw_sha256'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(comment.contains("for XLSX rows"), "{comment}");
+        let not_null: i64 = case
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM duckdb_columns() WHERE table_name = 'record_sources' AND NOT is_nullable",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(not_null, 9);
+        // The views over it still bind.
+        let refs: i64 = case
+            .conn()
+            .query_row("SELECT count(*) FROM record_source_refs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(refs, 0, "no source_files rows to join");
+        sightings(case.conn())
+    };
+    assert_eq!(after, before, "same rows, same order");
+    // A second open migrates nothing: same version, same rows, one schema_migrations row per migration.
+    let case = Case::create_or_open(&path).unwrap();
+    assert_eq!(case.schema_version().unwrap(), latest_version());
+    let n: i64 = case
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM schema_migrations WHERE version = 30",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 1);
+    assert_eq!(sightings(case.conn()), before);
+    assert_eq!(record_sources_keys(case.conn()), (0, 0));
+}
+
+#[test]
+fn a_failed_migration_30_leaves_the_case_as_it_was() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v29.duckdb");
+    let before = {
+        let conn = conn_at(&path, 29);
+        conn.execute_batch(V29_SIGHTINGS).unwrap();
+        // The table the migration builds is in the way, so the migration fails; the runner must roll back to v29
+        // with the key, the rows and the obstacle untouched.
+        conn.execute_batch("CREATE TABLE record_sources_v30 (x INTEGER); INSERT INTO record_sources_v30 VALUES (7);")
+            .unwrap();
+        sightings(&conn)
+    };
+    let err = Case::upgrade(&path).unwrap_err();
+    assert!(
+        matches!(err, Error::Migration { version: 30, .. }),
+        "{err:?}"
+    );
+    let conn = duckdb::Connection::open(&path).unwrap();
+    let v: i64 = conn
+        .query_row("SELECT max(version) FROM schema_migrations", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(v, 29);
+    assert_eq!(record_sources_keys(&conn).0, 1, "the key is still there");
+    assert_eq!(sightings(&conn), before);
+    let x: i64 = conn
+        .query_row("SELECT x FROM record_sources_v30", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(x, 7);
 }

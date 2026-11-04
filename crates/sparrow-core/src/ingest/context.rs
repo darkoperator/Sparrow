@@ -384,7 +384,7 @@ impl<'a> ParseContext<'a> {
 
     /// Queue the sighting [`ParseContext::record_source`] would write, for [`ParseContext::flush_sources`]. A parser
     /// that matches thousands of rows against stored records queues them and flushes once: one single-row
-    /// `INSERT ... ON CONFLICT` into the `record_sources` primary key costs about a millisecond.
+    /// `record_sources` insert checked against this file's stored sightings costs about a millisecond.
     pub fn queue_source(&mut self, table: &str, record_key: &str, ordinal: u64, sight: &Sight) {
         self.pending_sources.push(PendingSource {
             table: table.to_string(),
@@ -396,13 +396,13 @@ impl<'a> ParseContext<'a> {
     }
 
     /// Write the queued sightings with one `INSERT ... SELECT`, in queue order. The order is not load-bearing: readers
-    /// of `record_sources` order explicitly (`record_source_refs` by file and ordinal) and the primary key makes that order
-    /// total, so nothing may come to depend on insertion order; the tests compare `rowid` only because that is stricter
-    /// than needed. Rows already stored are filtered out with `NOT EXISTS` rather than `ON CONFLICT` (which scrambled the
-    /// order, and so the row-for-row comparison with the per-row path). Within the batch and against stored rows
-    /// the first sighting of a primary key (table, key, file, ordinal) wins, exactly as the same calls to
-    /// `record_source` would leave it. The ingest also flushes after every successful parse, so a parser that
-    /// queues and forgets to flush loses nothing.
+    /// of `record_sources` order explicitly (`record_source_refs` by file and ordinal) and the unique (table, key,
+    /// file, ordinal) makes that order total, so nothing may come to depend on insertion order; the tests compare
+    /// `rowid` only because that is stricter than needed. `record_sources` has no key index (see
+    /// `ingest::sightings`), so uniqueness is kept here: within the batch and against the rows this file already
+    /// stored (an earlier flush, another writer), the first sighting of a (table, key, file, ordinal) wins, exactly
+    /// as the same calls to `record_source` would leave it. The ingest also flushes after every successful parse, so
+    /// a parser that queues and forgets to flush loses nothing.
     pub fn flush_sources(&mut self) -> Result<()> {
         let _t = super::timing::span("flush_sources (queued sightings)");
         if self.pending_sources.is_empty() {
@@ -435,16 +435,24 @@ impl<'a> ParseContext<'a> {
             }
             app.flush()?;
         }
+        // The file id is a literal so the scan of this file's stored rows is pruned to them (zone maps).
+        let file_id = self.file_id;
         self.conn.execute(
-            "INSERT INTO record_sources (table_name, record_key, file_id, record_ordinal, line_start, line_end,
-                                         byte_offset, byte_length, raw_sha256)
-             SELECT table_name, record_key, ?, record_ordinal, line_start, line_end, byte_offset, byte_length, raw_sha256
-             FROM record_sources_stage s
-             WHERE NOT EXISTS (SELECT 1 FROM record_sources r
-                               WHERE r.table_name = s.table_name AND r.record_key = s.record_key
-                                 AND r.file_id = ? AND r.record_ordinal = s.record_ordinal)
-             ORDER BY s.seq",
-            params![self.file_id, self.file_id],
+            &format!(
+                "INSERT INTO record_sources (table_name, record_key, file_id, record_ordinal, line_start, line_end,
+                                             byte_offset, byte_length, raw_sha256)
+                 WITH stored AS (
+                     SELECT table_name, record_key, record_ordinal FROM record_sources WHERE file_id = {file_id}
+                 )
+                 SELECT table_name, record_key, {file_id}, record_ordinal, line_start, line_end, byte_offset,
+                        byte_length, raw_sha256
+                 FROM record_sources_stage s
+                 WHERE NOT EXISTS (SELECT 1 FROM stored r
+                                   WHERE r.table_name = s.table_name AND r.record_key = s.record_key
+                                     AND r.record_ordinal = s.record_ordinal)
+                 ORDER BY s.seq"
+            ),
+            [],
         )?;
         self.conn
             .execute_batch("DROP TABLE record_sources_stage;")?;
@@ -452,7 +460,9 @@ impl<'a> ParseContext<'a> {
         Ok(())
     }
 
-    /// Record that `record_key` in `table` was seen at `sight` of this file.
+    /// Record that `record_key` in `table` was seen at `sight` of this file, unless this file already recorded the
+    /// same (table, key, ordinal): the first sighting wins. One statement per call (and a scan of this file's stored
+    /// sightings): a parser with many rows uses [`ParseContext::queue_source`].
     pub fn record_source(
         &mut self,
         table: &str,
@@ -461,11 +471,14 @@ impl<'a> ParseContext<'a> {
         sight: &Sight,
     ) -> Result<SourcePos> {
         let (pos, hash) = (sight.pos, &sight.raw_sha256);
+        // Not `prepare_cached`: a cached plan keeps the statistics it was planned with, and this one joins.
         self.conn
-            .prepare_cached(
+            .prepare(
                 "INSERT INTO record_sources (table_name, record_key, file_id, record_ordinal, line_start, line_end,
                                              byte_offset, byte_length, raw_sha256)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                 SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9
+                 WHERE NOT EXISTS (SELECT 1 FROM record_sources
+                                   WHERE table_name = $1 AND record_key = $2 AND file_id = $3 AND record_ordinal = $4)",
             )?
             .execute(params![
                 table,

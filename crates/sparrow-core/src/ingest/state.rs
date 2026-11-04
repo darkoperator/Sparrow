@@ -348,15 +348,7 @@ impl<'c> StateFileStage<'c> {
         )?;
         drop(ti);
         let ts = super::timing::span("state load: insert record_sources");
-        conn.execute(
-            &format!(
-                "INSERT INTO record_sources (table_name, record_key, file_id, record_ordinal, line_start,
-                                             line_end, byte_offset, byte_length, raw_sha256)
-                 SELECT '{t}', record_key, ?, ord, line_start, line_end, byte_offset, byte_length, raw_sha256
-                 FROM {stage} ON CONFLICT DO NOTHING"
-            ),
-            params![self.file_id],
-        )?;
+        super::sightings::insert_from_stage(conn, t, stage, "record_key", "seq", self.file_id)?;
         drop(ts);
         conn.execute_batch(&format!("{DROP_MERGE} DROP TABLE {stage};"))?;
         Ok(LoadOutcome {

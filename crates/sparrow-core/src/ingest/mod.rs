@@ -5,6 +5,7 @@ pub mod bulk;
 pub mod context;
 pub mod parser;
 pub mod progress;
+mod sightings;
 pub mod state;
 pub mod supersede;
 pub mod timing;

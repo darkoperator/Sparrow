@@ -1,6 +1,6 @@
 //! `ParseContext::queue_source` + `flush_sources` (one set-based INSERT) must leave `record_sources` exactly as
-//! the per-row `record_source` path does: every column, in physical order, including the rows that conflict on the
-//! primary key (the first one wins, as with `ON CONFLICT DO NOTHING` row by row).
+//! the per-row `record_source` path does: every column, in physical order, including the rows that repeat a
+//! (table, key, file, ordinal) (the first one wins; `record_sources` has no key index, the writers keep it unique).
 
 use sparrow_core::Case;
 use sparrow_core::ingest::IngestOptions;

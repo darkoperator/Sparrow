@@ -164,13 +164,6 @@ fn insert_fresh_sql() -> String {
     )
 }
 
-const INSERT_SOURCES: &str = "
-INSERT INTO record_sources (table_name, record_key, file_id, record_ordinal, line_start, line_end,
-                            byte_offset, byte_length, raw_sha256)
-SELECT 'ual_events', record_id, ?, ord, line_start, line_end, byte_offset, byte_length, raw_sha256
-FROM stage_ual
-ON CONFLICT DO NOTHING";
-
 /// `[{"k": name, "v": value}]` for `map_from_entries`; `None` when there are no parameters.
 fn parameters_json(p: &[(String, String)]) -> Option<String> {
     if p.is_empty() {
@@ -338,7 +331,15 @@ impl<'c> UalFileStage<'c> {
         conn.execute_batch(INSERT_CHILDREN)?;
         drop(t);
         let t = super::timing::span("ual load: insert record_sources");
-        conn.execute(INSERT_SOURCES, params![self.file_id])?;
+        // `rowid` is the staging order: `stage_ual` is only ever appended to.
+        super::sightings::insert_from_stage(
+            conn,
+            "ual_events",
+            "stage_ual",
+            "record_id",
+            "rowid",
+            self.file_id,
+        )?;
         drop(t);
         let _t = super::timing::span("ual load: drop stage");
         conn.execute_batch(DROP_STAGE)?;

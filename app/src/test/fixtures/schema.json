@@ -4048,7 +4048,7 @@
   },
   {
     "name": "record_sources",
-    "comment": "Provenance: every sighting of an evidence record, with file, 1-based line range, raw byte range and SHA-256 of the raw record bytes.",
+    "comment": "Provenance: every sighting of an evidence record, with file, 1-based line range, raw byte range and SHA-256 of the raw record bytes. One row per (table_name, record_key, file_id, record_ordinal): the ingest keeps that unique (there is no key index).",
     "kind": "table",
     "columns": [
       {
