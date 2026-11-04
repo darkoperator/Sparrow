@@ -262,6 +262,14 @@ fn count_load(ctx: &mut ParseContext<'_>, spec: &TableSpec, out: LoadOutcome) {
 /// The `steps()` of a parser that loads with [`load_streamed`] (and of UAL, whose passes are the same).
 pub const LOAD_STREAMED_STEPS: &[&str] = &["Checking dates", "Loading records"];
 
+/// Where [`load_streamed`]'s `tail` hands each of its rows: `(table, draft)`, staged at once.
+pub type TailSink<'s> = dyn FnMut(usize, RowDraft) -> Result<()> + 's;
+
+/// A [`load_streamed`] `tail` that produces no row.
+pub fn no_tail(_: &mut TailSink<'_>) -> Result<()> {
+    Ok(())
+}
+
 /// What one record gives [`load_streamed`].
 pub enum RowOut {
     /// A row for `tables[table]`.
@@ -274,24 +282,22 @@ pub enum RowOut {
 /// (the first pass records the unreadable ones and reads every time cell for the day/month order, the second turns
 /// each record into rows with `rows_of` again and stages them) and each table's rows are appended every
 /// [`crate::ingest::IngestOptions::batch_rows`] rows to one [`StateFileStage`] per table, merged once at the end of
-/// the file, so a key keeps the file's first copy. `rows_of` must be pure: it runs twice per record. `tail` are rows the caller built
-/// before (each `(table, draft)`; e.g. per-message rows collapsed from the records): their times count for the order
-/// and they are staged after the streamed rows, as [`load_tables`] would after the earlier tables. Counts, errors and
+/// the file, so a key keeps the file's first copy. `rows_of` must be pure: it runs twice per record. `tail` produces
+/// rows the caller builds apart from the records (e.g. per-message rows collapsed from them): called once, after the
+/// streamed rows are staged, it hands each `(table, draft)` to the sink it is given, which stages it, so the tail is
+/// never held whole; they are staged after the streamed rows, as [`load_tables`] would after the earlier tables. The
+/// tail's time cells are not read for the day/month order (it is resolved before the tail is produced): each must be a
+/// copy of a time cell of a streamed row, so it adds no evidence (checked in debug builds). Counts, errors and
 /// warnings are those of [`load_tables`] over the same rows. The two passes are steps 0 and 1 of the parser
 /// ([`LOAD_STREAMED_STEPS`]).
 pub fn load_streamed(
     ctx: &mut ParseContext<'_>,
     format: RecordFormat,
     tables: &[(&'static TableSpec, &'static [&'static str])],
-    tail: Vec<(usize, RowDraft)>,
+    tail: impl FnOnce(&mut TailSink<'_>) -> Result<()>,
     mut rows_of: impl FnMut(&SourceRecord) -> Vec<RowOut>,
 ) -> Result<()> {
     let mut detector = DateOrderDetector::default();
-    for cell in tail.iter().flat_map(|(_, d)| &d.cells) {
-        if let Cell::Time(s) = cell {
-            detector.observe(s);
-        }
-    }
     ctx.set_step(0);
     // The first pass reads only times: the records' sightings are not needed.
     for_each_record(&ctx.input().with_sights(false), format, |event| {
@@ -364,7 +370,16 @@ pub fn load_streamed(
     for (stage, rows) in stages.iter_mut().zip(staged.iter_mut()) {
         flush(ctx, stage, rows)?;
     }
-    for (table, draft) in tail {
+    // The evidence the tail's times would give, had they been read with the records' (debug builds only).
+    let mut with_tail = detector.clone();
+    tail(&mut |table, draft| {
+        if cfg!(debug_assertions) {
+            for cell in &draft.cells {
+                if let Cell::Time(s) = cell {
+                    with_tail.observe(s);
+                }
+            }
+        }
         if let Some(row) = stage_draft(ctx, tables[table].0, draft, order)? {
             check.tail(table, &row);
             staged[table].push(row);
@@ -372,7 +387,12 @@ pub fn load_streamed(
                 flush(ctx, &mut stages[table], &mut staged[table])?;
             }
         }
-    }
+        Ok(())
+    })?;
+    debug_assert_eq!(
+        with_tail, detector,
+        "a tail time cell changed the day/month order evidence: it is not a copy of a streamed row's"
+    );
     for (stage, rows) in stages.iter_mut().zip(staged.iter_mut()) {
         flush(ctx, stage, rows)?;
     }

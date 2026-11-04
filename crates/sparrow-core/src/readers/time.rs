@@ -239,7 +239,7 @@ pub fn zone_assumed(s: &str) -> bool {
 }
 
 /// Collects evidence about day/month order across a file's culture-formatted values.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DateOrderDetector {
     month_first: bool,
     day_first: bool,

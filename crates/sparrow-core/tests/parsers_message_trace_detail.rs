@@ -942,3 +942,49 @@ fn every_batch_size_stores_what_one_batch_stores() {
         assert_eq!(tables, want_tables, "batch {batch}: tables");
     }
 }
+
+#[test]
+fn trace_detail_holds_at_most_one_batch() {
+    // A generated detail report of 200,000+ events (one per message): the collapse must not hold the file's events
+    // in memory, at most one batch of them.
+    use sparrow_core::parsers::message_trace_detail::PEAK_HELD_EVENTS;
+    use sparrow_synth::big_file::{BigEncoding, BigKind, write_big_file};
+    use std::sync::atomic::Ordering;
+    let dir = tempfile::tempdir().unwrap();
+    let rel = BigKind::MessageTraceDetail.example_rel_path();
+    write_big_file(
+        BigKind::MessageTraceDetail,
+        200_000 * 510, // about 506 bytes a row
+        BigEncoding::Utf8,
+        &dir.path().join(rel),
+    )
+    .unwrap();
+    let mut case = Case::in_memory().unwrap();
+    let opts = IngestOptions {
+        batch_rows: 1000,
+        max_file_bytes: None,
+        ..IngestOptions::default()
+    };
+    PEAK_HELD_EVENTS.store(0, Ordering::Relaxed);
+    let report = ingest_path(&mut case, dir.path(), &ParserRegistry::builtin(), &opts).unwrap();
+    let peak = PEAK_HELD_EVENTS.load(Ordering::Relaxed);
+    let f = row(&report, rel);
+    assert_eq!(f.status, FileStatus::Parsed, "{f:#?}");
+    let events = count(&case, "SELECT count(*) FROM message_trace_events");
+    assert!(events >= 200_000, "{events} events");
+    assert_eq!(
+        count(&case, "SELECT count(*) FROM message_trace"),
+        events,
+        "one message row per event"
+    );
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM duckdb_tables() WHERE temporary"
+        ),
+        0,
+        "the parser's TEMP tables are dropped"
+    );
+    assert!(peak > 0, "the counter never moved");
+    assert!(peak <= 1000, "{peak} events held at once");
+}

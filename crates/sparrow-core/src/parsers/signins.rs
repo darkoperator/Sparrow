@@ -18,7 +18,7 @@ use crate::parsers::records::{
 use crate::parsers::risk::graph_location;
 use crate::parsers::stage::{
     CellRow, LOAD_STREAMED_STEPS, RowDraft, RowOut, TableRows, load_streamed, load_tables, lower,
-    read_state_records, reject_at,
+    no_tail, read_state_records, reject_at,
 };
 use crate::readers::csv_scan::normalize_headers;
 use crate::readers::stream::Sight;
@@ -551,7 +551,7 @@ fn parse_streamed(ctx: &mut ParseContext<'_>) -> Result<()> {
     };
     let event_type = portal_event_type(ctx.rel_path);
     let lossy = format.lossy();
-    load_streamed(ctx, format, &[(&SIGNINS, COLS)], Vec::new(), |r| {
+    load_streamed(ctx, format, &[(&SIGNINS, COLS)], no_tail, |r| {
         let rec = Rec::new(&r.map, lossy);
         let Some(key) = signin_key(&rec) else {
             return vec![RowOut::Reject("sign-in has no Id / Request ID".into())];
