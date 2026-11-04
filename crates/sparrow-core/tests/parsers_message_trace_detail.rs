@@ -1179,6 +1179,45 @@ fn the_collapse_groups_orders_and_points_at_the_earliest_event() {
 }
 
 #[test]
+fn the_earliest_event_is_decided_to_the_nanosecond() {
+    // r1 is 100 ns earlier than r0, though second in the file: the message's row points at r1. (A time kept only to
+    // the microsecond would tie them and pick r0, the first in the file.)
+    let events = vec![
+        pin_event(
+            "2026-08-04T10:00:03.0000002Z",
+            MSG_A,
+            "RECEIVE",
+            "bob@contoso.example",
+            "r0",
+        ),
+        pin_event(
+            "2026-08-04T10:00:03.0000001Z",
+            MSG_A,
+            "DELIVER",
+            "bob@contoso.example",
+            "r1",
+        ),
+    ];
+    let dir = tempfile::tempdir().unwrap();
+    fixtures::write(
+        &dir.path().join("downloads"),
+        DETAIL_REL,
+        report_text(&events, false).as_bytes(),
+    );
+    let (case, report) = ingest(dir.path());
+    assert!(!report.has_errors(), "{report:#?}");
+    assert_eq!(
+        text(
+            &case,
+            "SELECT string_agg(s.record_ordinal || '@' || s.line_start, ',')
+             FROM message_trace t
+             JOIN record_sources s ON s.table_name = 'message_trace' AND s.record_key = t.record_key"
+        ),
+        "1@3"
+    );
+}
+
+#[test]
 fn a_failed_detail_file_leaves_nothing_and_the_next_one_loads() {
     // The first file fails when its last pass opens (its events are in the parser's TEMP tables by then): it rolls
     // back and leaves no TEMP table; the next file, on the same connection, loads all its rows.

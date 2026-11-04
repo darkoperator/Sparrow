@@ -311,7 +311,7 @@ fn collapse(
 pub struct MessageTraceDetailParser;
 
 /// The keyed events of the file being parsed, appended in file order during the first scan (the fields an [`Event`]
-/// holds, its record's span, and `msg`, its lower-case network message id).
+/// holds, its parsed time as `t_s` / `t_ns`, its record's span, and `msg`, its lower-case network message id).
 const EVENTS: &str = "stage_mtd_events";
 /// [`EVENTS`] numbered by `pos` in collapse order: messages in order of first appearance, each message's events in
 /// file order. Stored in `pos` order, so a range of `pos` reads few row groups.
@@ -322,7 +322,7 @@ const DROP_TEMP: &str =
 const EVENT_COLUMNS: &str =
     "msg, idx, time_text, event_id, sender, subject, internet_message_id, direction, connector_id,
     original_client_ip_text, from_ip, total_bytes_text, total_bytes, recipients,
-    ord, line_start, line_end, byte_offset, byte_length, raw_sha256, snippet";
+    ord, line_start, line_end, byte_offset, byte_length, raw_sha256, snippet, t_s, t_ns";
 
 thread_local! {
     static PEAK_MESSAGE_EVENTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -378,18 +378,39 @@ fn append_event(
         DbValue::BigInt(pos.byte_length as i64),
         DbValue::Text(r.sight.raw_sha256.clone()),
         DbValue::Text(r.snippet.clone()),
+        // The parsed time, exact to the nanosecond (seconds, then nanoseconds of the second), so a range read need not
+        // parse the text again.
+        e.time
+            .map_or(DbValue::Null, |t| DbValue::BigInt(t.timestamp())),
+        e.time.map_or(DbValue::Null, |t| {
+            DbValue::Int(t.timestamp_subsec_nanos() as i32)
+        }),
     ];
     app.append_row(appender_params_from_iter(vals))?;
     Ok(())
 }
 
 /// The [`Event`] of a row selected with [`EVENT_COLUMNS`] (column 0, the message, is read by the caller).
-fn read_event(row: &duckdb::Row<'_>) -> duckdb::Result<Event> {
+fn read_event(row: &duckdb::Row<'_>) -> Result<Event> {
     let time_text: Option<String> = row.get(2)?;
     let recipients: Option<String> = row.get(13)?;
+    let time = match (
+        row.get::<_, Option<i64>>(21)?,
+        row.get::<_, Option<i32>>(22)?,
+    ) {
+        (Some(s), Some(ns)) => Some(
+            u32::try_from(ns)
+                .ok()
+                .and_then(|ns| chrono::DateTime::from_timestamp(s, ns))
+                .ok_or_else(|| {
+                    Error::Invalid(format!("staged event time {s}.{ns} is out of range"))
+                })?,
+        ),
+        _ => None,
+    };
     Ok(Event {
         record: row.get::<_, i64>(1)? as usize,
-        time: event_time(time_text.as_deref()),
+        time,
         time_text,
         event_id: row.get(3)?,
         sender: row.get(4)?,
@@ -547,7 +568,7 @@ fn parse_detail(ctx: &mut ParseContext<'_>) -> Result<()> {
              subject VARCHAR, internet_message_id VARCHAR, direction VARCHAR, connector_id VARCHAR,
              original_client_ip_text VARCHAR, from_ip VARCHAR, total_bytes_text VARCHAR, total_bytes BIGINT,
              recipients VARCHAR, ord BIGINT, line_start BIGINT, line_end BIGINT, byte_offset BIGINT,
-             byte_length BIGINT, raw_sha256 VARCHAR, snippet VARCHAR);"
+             byte_length BIGINT, raw_sha256 VARCHAR, snippet VARCHAR, t_s BIGINT, t_ns INTEGER);"
     ))?;
     ctx.set_step(0);
     let mut first: Option<SourceRecord> = None;
