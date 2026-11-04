@@ -1362,6 +1362,22 @@ impl<R: std::io::Read> std::io::Read for HookedRead<R> {
     }
 }
 
+/// The whole of the workbook `abs`, read through the test read hook ([`ReadPhase::Admit`]), and its modification time
+/// from before the read: a workbook rewritten while it is read then shows as changed ([`Admitted::unchanged`]).
+fn read_workbook(
+    abs: &Path,
+    rel: &str,
+    opts: &IngestOptions,
+) -> std::io::Result<(Vec<u8>, Option<std::time::SystemTime>)> {
+    use std::io::Read;
+    let file = std::fs::File::open(abs)?;
+    let meta = file.metadata()?;
+    let modified = meta.modified().ok();
+    let mut raw = Vec::with_capacity(usize::try_from(meta.len()).unwrap_or(0));
+    HookedRead::open(file, opts.read_hook.clone(), rel, ReadPhase::Admit)?.read_to_end(&mut raw)?;
+    Ok((raw, modified))
+}
+
 /// [`admit`](crate::readers::stream::admit) `abs` in reads of the ingest's chunk size, honouring its cancel check
 /// (a cancel fails the read with `ErrorKind::Interrupted`) and its test read hook. `on_head` gets the head as soon
 /// as it is read (it starts the file's progress); the bytes read before it are reported to `progress` then.
@@ -1514,11 +1530,14 @@ fn ingest_file_inner(
     // it starts at once with no parser steps. Any other file starts once its steps are known, so the first event
     // already lists them all: a streamed file as soon as its head is read (classified from the head as below,
     // while the hash goes on), a workbook once it has been read (it is classified from the whole of it).
-    let steps_of = |head: &[u8]| {
-        reg.classify_with_head(tool, rel, Some(head))
+    let steps_of = |class: Option<&Classification>| {
+        class
             .and_then(|c| parsers.get(c.artifact_id))
             .map_or(&[][..], |p| p.steps())
     };
+    // A workbook's classification, made once from the whole of it as soon as it is read (opening it is costly): its
+    // progress steps and the parse use the same.
+    let mut workbook_class: Option<Option<Classification>> = None;
     let progress = FileProgress::new(opts, &[], size);
     if superseded {
         progress.begin_step(0);
@@ -1529,18 +1548,26 @@ fn ingest_file_inner(
         "file: sha256 + encoding (admit, streamed)"
     });
     let content = if workbook {
-        std::fs::read(abs).map(|raw| {
-            let admitted = Admitted::from_bytes(abs, &raw);
+        read_workbook(abs, rel, opts).map(|(raw, modified)| {
+            let admitted = Admitted::from_bytes_at(abs, &raw, modified);
+            let class = {
+                let _t = timing::span("file: classify with head");
+                reg.classify_with_head(tool, rel, Some(&raw))
+            };
             if !superseded {
-                progress.set_parser_steps(steps_of(&raw));
+                progress.set_parser_steps(steps_of(class.as_ref()));
                 progress.begin_step(0);
             }
+            workbook_class = Some(class);
             (Some(raw), admitted)
         })
     } else {
         let on_head = |head: &[u8]| {
-            if !superseded {
-                progress.set_parser_steps(steps_of(head));
+            // Classified from the head for the steps only when they are shown (the parse classifies it again, below:
+            // a head sniff is cheap).
+            if !superseded && progress.is_on() {
+                let class = reg.classify_with_head(tool, rel, Some(head));
+                progress.set_parser_steps(steps_of(class.as_ref()));
                 progress.begin_step(0);
             }
         };
@@ -1579,9 +1606,12 @@ fn ingest_file_inner(
         pre.push("file content changed since an earlier ingest of this collection (different SHA-256); records from both versions are kept".into());
     }
     let head: &[u8] = raw.as_deref().unwrap_or(&admitted.head);
-    let class: Option<Classification> = {
-        let _t = timing::span("file: classify with head");
-        reg.classify_with_head(tool, rel, Some(head))
+    let class: Option<Classification> = match workbook_class {
+        Some(class) => class,
+        None => {
+            let _t = timing::span("file: classify with head");
+            reg.classify_with_head(tool, rel, Some(head))
+        }
     };
     nf.artifact_id = class.as_ref().map(|c| c.artifact_id);
     nf.subject = class.as_ref().and_then(|c| c.subject.as_deref());

@@ -60,6 +60,11 @@ impl<'a> FileProgress<'a> {
         p
     }
 
+    /// True when the ingest has a progress callback (otherwise every method is a no-op).
+    pub(crate) fn is_on(&self) -> bool {
+        self.on
+    }
+
     /// The parser's steps, once the file is classified from its content (they follow `"Checking file"`).
     pub(crate) fn set_parser_steps(&self, parser_steps: &[&'static str]) {
         if !self.on {

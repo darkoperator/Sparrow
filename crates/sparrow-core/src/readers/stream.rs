@@ -474,6 +474,12 @@ impl Admitted {
     /// computed from `raw`, only the modification time comes from `path` (`None` when it cannot be read).
     pub fn from_bytes(path: &Path, raw: &[u8]) -> Admitted {
         let modified = std::fs::metadata(path).ok().and_then(|m| m.modified().ok());
+        Admitted::from_bytes_at(path, raw, modified)
+    }
+
+    /// [`from_bytes`](Self::from_bytes) with the modification time `modified` the file had before `raw` was read
+    /// (so a file rewritten during the read is not [`unchanged`](Self::unchanged)).
+    pub fn from_bytes_at(path: &Path, raw: &[u8], modified: Option<SystemTime>) -> Admitted {
         // One read takes it all: the result does not depend on the read size.
         let chunk = CHUNK_BYTES.min(raw.len() + 1);
         admit_from(

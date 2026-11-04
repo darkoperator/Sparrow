@@ -100,6 +100,53 @@ fn ual_rows_of(case: &Case, rel: &str) -> i64 {
     )
 }
 
+/// A workbook is read whole; one rewritten while that read runs (here: its modification time moves as the read
+/// opens) is an error, as a streamed file is: its size and time are taken before the read, not after it.
+#[test]
+fn a_workbook_rewritten_while_it_is_read_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("portal");
+    let mut wb = rust_xlsxwriter::Workbook::new();
+    let ws = wb.add_worksheet();
+    for (c, h) in ["Date (UTC)", "Request ID", "User agent", "Correlation ID"]
+        .iter()
+        .enumerate()
+    {
+        ws.write_string(0, c as u16, *h).unwrap();
+    }
+    let rel = "InteractiveSignins.xlsx";
+    fixtures::write(&root, rel, &wb.save_to_buffer().unwrap());
+    let target = root.join(rel);
+    let touched = Arc::new(AtomicBool::new(false));
+    let t = touched.clone();
+    let opts = small_reads(move |e| {
+        if e.rel_path == rel && e.bytes == 0 && !t.swap(true, Ordering::SeqCst) {
+            let f = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&target)
+                .unwrap();
+            f.set_modified(std::time::SystemTime::now() + Duration::from_secs(3600))
+                .unwrap();
+        }
+        Ok(())
+    });
+    let mut case = Case::in_memory().unwrap();
+    let (report, stopped) = run(&mut case, &root, &opts);
+    assert!(!stopped);
+    assert!(
+        touched.load(Ordering::SeqCst),
+        "the workbook's read was seen"
+    );
+    let f = row(&report, rel);
+    assert_eq!(f.status, FileStatus::Error, "{f:#?}");
+    assert!(
+        f.warnings
+            .iter()
+            .any(|w| w.contains("file changed while it was read")),
+        "{f:#?}"
+    );
+}
+
 #[test]
 fn big_file_has_no_default_limit() {
     assert_eq!(IngestOptions::default().max_file_bytes, None);
