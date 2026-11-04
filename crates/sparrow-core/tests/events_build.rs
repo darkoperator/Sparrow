@@ -1150,3 +1150,47 @@ fn every_event_is_written_once_and_stored_in_time_order() {
         1
     );
 }
+
+#[test]
+fn a_source_mixing_null_and_empty_operations_writes_each_event_once() {
+    // The category lookup groups a source's (workload, operation) pairs; NULL and '' are different pairs and each
+    // event must meet only its own (an equality on coalesced values matched both and wrote the event twice). Only
+    // ual_events takes its workload from a column, and the UAL normalizer stores '' as NULL, so operations are mixed.
+    let case = Case::in_memory().unwrap();
+    for (key, activity) in [
+        ("da-null", None),
+        ("da-empty", Some("")),
+        ("da-op", Some("Add user")),
+    ] {
+        let mut f = json!({"record_key": key, "event_time": "2026-09-01T10:04:00Z"});
+        if let Some(a) = activity {
+            f["activity"] = json!(a);
+        }
+        put(&case, "directory_audits", f);
+    }
+    for (key, operation) in [("ma-null", None), ("ma-empty", Some(""))] {
+        let mut f = json!({"record_key": key, "event_time": "2026-09-01T10:06:00Z"});
+        if let Some(o) = operation {
+            f["operation"] = json!(o);
+        }
+        put(&case, "mailbox_audit_legacy", f);
+    }
+    assert_eq!(events::rebuild(case.conn()).unwrap(), 5);
+    assert_events_unique(&case);
+    assert_eq!(count(&case, "SELECT count(*) FROM events"), 5);
+    // Each keeps the category of its own (workload, operation).
+    assert_eq!(
+        cell(
+            &case,
+            "directory_audits",
+            "da-null",
+            "CAST(category AS VARCHAR)"
+        ),
+        cell(
+            &case,
+            "directory_audits",
+            "da-empty",
+            "CAST(category AS VARCHAR)"
+        )
+    );
+}

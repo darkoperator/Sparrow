@@ -471,19 +471,21 @@ impl<'a> ParseContext<'a> {
         sight: &Sight,
     ) -> Result<SourcePos> {
         let (pos, hash) = (sight.pos, &sight.raw_sha256);
-        // Not `prepare_cached`: a cached plan keeps the statistics it was planned with, and this one joins.
+        // Not `prepare_cached`: a cached plan keeps the statistics it was planned with, and this one joins. The file
+        // id is a literal so the check reads only this file's rows (zone maps), not the whole table.
+        let file_id = self.file_id;
         self.conn
-            .prepare(
+            .prepare(&format!(
                 "INSERT INTO record_sources (table_name, record_key, file_id, record_ordinal, line_start, line_end,
                                              byte_offset, byte_length, raw_sha256)
-                 SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9
+                 SELECT $1, $2, {file_id}, $3, $4, $5, $6, $7, $8
                  WHERE NOT EXISTS (SELECT 1 FROM record_sources
-                                   WHERE table_name = $1 AND record_key = $2 AND file_id = $3 AND record_ordinal = $4)",
-            )?
+                                   WHERE file_id = {file_id} AND table_name = $1 AND record_key = $2
+                                     AND record_ordinal = $3)"
+            ))?
             .execute(params![
                 table,
                 record_key,
-                self.file_id,
                 ordinal as i64,
                 pos.line_start as i64,
                 pos.line_end as i64,

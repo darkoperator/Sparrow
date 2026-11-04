@@ -1,6 +1,10 @@
 //! `record_sources` has no key index (migration 30), so its writers keep `(table_name, record_key, file_id,
 //! record_ordinal)` unique themselves: duplicates within one file's rows (first in staging order wins), a second
-//! writer or flush of the same file, deferred and retried files, superseded copies and re-imports.
+//! writer or flush of the same file, deferred and retried files and superseded copies. The writer tests (state,
+//! second writer, UAL) exercise the deduplication itself; the ingest tests (deferred, superseded, re-import) are
+//! regression guards for the file-id argument: no writer may see another attempt's rows. The re-import parses
+//! nothing (every file is a duplicate), and Hawk.log's second flush finds nothing queued, so neither exercises the
+//! deduplication.
 
 use duckdb::params;
 use sparrow_core::Case;
@@ -83,7 +87,8 @@ fn row<'r>(report: &'r IngestReport, rel: &str) -> &'r FileReport {
 const USERS: &str = "Tenant/AzureADUsers.csv";
 
 /// A Hawk capture whose user list (one ambiguous date) waits for the order the eDiscovery summary proves: the user
-/// list is deferred, rolled back and parsed again on the retry pass. Hawk.log's sightings are flushed twice (the
+/// list is deferred, rolled back and parsed again on the retry pass (a regression guard). Hawk.log's sightings are
+/// flushed by the parser and the ingest's final flush is then a no-op (the
 /// parser's own flush and the ingest's final one).
 fn deferred_capture(base: &Path) {
     let root = base.join("cap");
@@ -226,7 +231,7 @@ fn a_superseded_copy_adds_no_sightings_and_retried_windows_one_each() {
 }
 
 #[test]
-fn re_importing_the_same_files_into_the_same_case_adds_no_sightings() {
+fn regression_guard_re_importing_the_same_files_into_the_same_case_adds_no_sightings() {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
     deferred_capture(&data);
@@ -329,10 +334,11 @@ fn a_state_file_staging_a_record_twice_keeps_its_first_sighting() {
     let c = collection(&case);
     let f = file(&case, c);
     let mut stage = StateFileStage::begin(case.conn(), &INBOX_RULES, RULE_COLS, f).unwrap();
-    // (k1, 0) is staged three times (twice in the first batch, once in the second) with other spans; the first, at
-    // line 2, wins. (k1, 1) is the same key at another ordinal: its own sighting.
+    // (k1, 0) is staged three times (twice in the first batch, once in the second) with other spans; the first
+    // staged, at line 2, wins, though a later copy has a smaller line (1): staging order decides, not the line.
+    // (k1, 1) is the same key at another ordinal: its own sighting.
     stage
-        .stage(&[rule(0, "k1", 2), rule(0, "k1", 3), rule(1, "k1", 4)])
+        .stage(&[rule(0, "k1", 2), rule(0, "k1", 1), rule(1, "k1", 4)])
         .unwrap();
     stage.stage(&[rule(0, "k1", 5), rule(2, "k2", 6)]).unwrap();
     stage.finish(c).unwrap();

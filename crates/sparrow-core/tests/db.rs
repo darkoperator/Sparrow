@@ -1424,12 +1424,13 @@ fn a_failed_migration_30_leaves_the_case_as_it_was() {
     assert_eq!(x, 7);
 }
 
-/// Every `events` row as one string, sorted (the migration also reorders them by time).
+/// Every `events` row, all 26 columns by name (a column moved by the copy shows), as JSON, sorted (the migration also
+/// reorders them by time). The time is epoch microseconds: TIMESTAMPTZ text follows the connection's time zone.
 fn events_rows(conn: &duckdb::Connection) -> Vec<String> {
     let mut stmt = conn
         .prepare(
-            "SELECT concat_ws('|', source_table, record_key, source, epoch_us(event_time), category, actor_upn, summary)
-             FROM events ORDER BY 1",
+            "SELECT CAST(to_json(e) AS VARCHAR)
+             FROM (SELECT * REPLACE (epoch_us(event_time) AS event_time) FROM events) e ORDER BY 1",
         )
         .unwrap();
     stmt.query_map([], |r| r.get(0))

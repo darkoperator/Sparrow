@@ -15,8 +15,12 @@ const STAGE: &str = "events_stage";
 
 /// `events` has no key or index (migration 31: DuckDB kept both in memory and the rebuild ran out at about 8M rows).
 /// Each (source_table, record_key) is written once: there is one insert per evidence table (the sign-in source is a
-/// CASE in the one `signins` select), each selecting one row per record, and the rows are written after the DELETE. The rows are stored in event_time order (then table and
-/// key), so zone maps prune the grid's time ranges and its default time sort reads them in order.
+/// CASE in the one `signins` select), each selecting one row per record, every join is one-to-one (`cat` matches the
+/// raw workload and operation with `IS NOT DISTINCT FROM`, so NULL and '' are separate pairs), and the rows are
+/// written after the DELETE. This relies on the evidence tables keeping their keys unique (`ual_events.record_id`,
+/// each loader's `record_key`, `mail_items_accessed.item_key`); nothing at this layer checks it. The rows are stored
+/// in event_time order (then table and key), so zone maps prune the grid's time ranges and its default time sort
+/// reads them in order.
 pub(super) fn rebuild(conn: &Connection) -> Result<u64> {
     build_ip_map(conn)?;
     build_audit_device_map(conn)?;
@@ -340,8 +344,8 @@ fn insert_sql(src: &Source) -> String {
                 ev.device_id, ev.device_name, ev.device_object_id, ev.entra_session_id, ev.user_agent, ev.app_id, ev.summary
          FROM ev
          LEFT JOIN collections c ON c.collection_id = ev.collection_id
-         LEFT JOIN cat ON coalesce(cat.workload, '') = coalesce(ev.workload, '')
-                      AND coalesce(cat.operation, '') = coalesce(ev.operation, '')
+         LEFT JOIN cat ON cat.workload IS NOT DISTINCT FROM ev.workload
+                      AND cat.operation IS NOT DISTINCT FROM ev.operation
          LEFT JOIN events_ip_map m ON m.ip = ev.ip
          LEFT JOIN ip_intel i ON i.ip = ev.ip"
     )
