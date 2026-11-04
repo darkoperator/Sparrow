@@ -156,24 +156,48 @@ fn csv_field(s: &str) -> String {
 /// The audit record of one row (about 1 KB); `{ID}` and `{TIME}` are filled per row.
 const AUDIT_TEMPLATE: &str = r#"{"CreationTime":"{TIME}","Id":"{ID}","Operation":"MailItemsAccessed","OrganizationId":"d5c9185c-9bf3-45a3-92f3-c19c635feb78","RecordType":50,"ResultStatus":"Succeeded","UserKey":"10032000261B9FBE","UserType":0,"Version":1,"Workload":"Exchange","ClientIP":"198.51.100.7","UserId":"rowan.porter@contoso.example","AppAccessContext":{"AADSessionId":"91287f35-20a5-41b2-9864-29bdab35935d","ClientAppId":"d3590ed6-52b3-4102-aeff-aad2292ab01c","ClientAppName":"Microsoft Office","CorrelationId":"9321398a-beb8-4fb6-b51a-90006a741198","IssuedAtTime":"2026-01-01T00:00:00","UniqueTokenId":"qGVaHZdrSlmzoqdnF-kJ9I"},"ClientAppId":"d3590ed6-52b3-4102-aeff-aad2292ab01c","ClientIPAddress":"198.51.100.7","ClientInfoString":"Client=MSExchangeRPC","ActorInfoString":"Client=MSExchangeRPC","ClientProcessName":"OUTLOOK.EXE","ClientRequestId":"3af9851e-b7ce-49f6-a7f3-c48a161e073d","ClientVersion":"16.0.17928.20114","HostAppId":"d3590ed6-52b3-4102-aeff-aad2292ab01c","TokenObjectId":"d6e9762f-d177-4879-a1a1-fbb0bbde3a25","TokenTenantId":"d5c9185c-9bf3-45a3-92f3-c19c635feb78","ExternalAccess":false,"InternalLogonType":0,"LogonType":0,"LogonUserSid":"S-1-5-21-737835370-1108084686-5515698059-1501","MailboxGuid":"ffb0d2e9-9d3b-4503-a2cc-2d3a5f1b8a10","MailboxOwnerSid":"S-1-5-21-737835370-1108084686-5515698059-1501","MailboxOwnerUPN":"rowan.porter@contoso.example","OrganizationName":"contoso.onmicrosoft.example","OriginatingServer":"BGX0PR70MB8393","SessionId":"91287f35-20a5-41b2-9864-29bdab35935d","OperationProperties":[{"Name":"MailAccessType","Value":"Bind"},{"Name":"IsThrottled","Value":"False"}],"Folders":[{"Path":"\\Inbox","FolderItems":[{"Id":"RgAAAAAntxQAAuUWmkQdxd+EiOCEBeOoCLKCDYep22OPX0ocRdT5xX75uE5gGG5KYv8jm8jvvEBqP24uLYK+UFURcQdRWBkfiR5LWsjMLyZAAAJ","InternetMessageId":"<886F5ADB51D1CDFF@contoso.example>"}]}]}"#;
 
-fn audit(i: u64) -> String {
+/// A unique v4-shaped GUID for row `i` whose every field looks random: the first field holds the high half of
+/// `mix(i)` (salted), the last its low 48 bits, so distinct rows keep distinct ids.
+fn scattered_guid(salt: u32, i: u64) -> String {
+    let m = mix(i);
+    let n = mix(m);
+    format!(
+        "{:08x}-{:04x}-4{:03x}-8{:03x}-{:012x}",
+        (m >> 32) as u32 ^ salt,
+        n & 0xffff,
+        (n >> 16) & 0xfff,
+        (n >> 28) & 0xfff,
+        m & 0xffff_ffff_ffff
+    )
+}
+
+/// The splitmix64 finalizer: a bijection of `u64`, so distinct rows keep distinct ids.
+fn mix(i: u64) -> u64 {
+    let mut z = i.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+fn audit(i: u64, id: &str) -> String {
     let (d, t) = stamp(i);
     AUDIT_TEMPLATE
-        .replace("{ID}", &guid(0xa0d1, i))
+        .replace("{ID}", id)
         .replace("{TIME}", &format!("{d}T{t}"))
 }
 
-/// Writes rows from `row(i)` until at least `bytes` were written, then `tail`; returns the size.
+/// Writes rows from `row(first)`, `row(first + 1)`, ... until at least `bytes` were written.
 fn write_rows<W: Write>(
     sink: &mut Sink<W>,
     bytes: u64,
+    first: u64,
     sep_first: &str,
     sep: &str,
     row: impl Fn(u64) -> String,
 ) -> Result<()> {
     let mut i = 0u64;
     while sink.written < bytes || i == 0 {
-        let r = row(i);
+        let r = row(first + i);
         if i == 0 {
             sink.text(sep_first)?;
         } else {
@@ -185,9 +209,38 @@ fn write_rows<W: Write>(
     Ok(())
 }
 
+/// Where a file's rows start and how their ids look.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BigOptions {
+    /// Index of the first row: rows `first..` get the ids and times of those indexes, so files written with
+    /// disjoint ranges hold disjoint records (and differ in content).
+    pub first: u64,
+    /// Spread the ids over the whole GUID space (a bijective mix of the row index) instead of counting up, as
+    /// real record ids are: an index on them is then inserted into at random places, not appended to.
+    pub scatter_ids: bool,
+}
+
 /// Writes a file of `kind` of at least `bytes` bytes (one row past the mark) to `out`, creating
 /// its parent directories; returns the bytes written. The file is whole when the call returns.
 pub fn write_big_file(kind: BigKind, bytes: u64, encoding: BigEncoding, out: &Path) -> Result<u64> {
+    write_big_file_with(kind, bytes, encoding, out, BigOptions::default())
+}
+
+/// [`write_big_file`] with the rows starting at `opts.first` and the ids as `opts.scatter_ids` says.
+pub fn write_big_file_with(
+    kind: BigKind,
+    bytes: u64,
+    encoding: BigEncoding,
+    out: &Path,
+    opts: BigOptions,
+) -> Result<u64> {
+    let guid = |salt: u32, i: u64| {
+        if opts.scatter_ids {
+            scattered_guid(salt, i)
+        } else {
+            guid(salt, i)
+        }
+    };
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
     }
@@ -196,22 +249,22 @@ pub fn write_big_file(kind: BigKind, bytes: u64, encoding: BigEncoding, out: &Pa
     match kind {
         BigKind::PortalUal => {
             sink.text("RecordId,CreationDate,RecordType,Operation,UserId,AuditData,AssociatedAdminUnits,AssociatedAdminUnitsNames\r\n")?;
-            write_rows(&mut sink, bytes, "", "", |i| {
+            write_rows(&mut sink, bytes, opts.first, "", "", |i| {
                 let (d, t) = stamp(i);
                 format!(
                     "{},{d}T{t}.0000000Z,50,MailItemsAccessed,rowan.porter@contoso.example,{},,\r\n",
                     guid(0xa0d1, i),
-                    csv_field(&audit(i)),
+                    csv_field(&audit(i, &guid(0xa0d1, i))),
                 )
             })?;
         }
         BigKind::UalJson => {
             sink.text("[\n")?;
-            write_rows(&mut sink, bytes, "", ",\n", |i| {
+            write_rows(&mut sink, bytes, opts.first, "", ",\n", |i| {
                 let (d, t) = stamp(i);
                 format!(
                     "{{\n    \"RecordType\": \"ExchangeItemGroup\",\n    \"CreationDate\": \"{d}T{t}Z\",\n    \"UserIds\": \"rowan.porter@contoso.example\",\n    \"Operations\": \"MailItemsAccessed\",\n    \"AuditData\": {}\n}}",
-                    audit(i)
+                    audit(i, &guid(0xa0d1, i))
                 )
             })?;
             sink.text("\n]\n")?;
@@ -220,7 +273,7 @@ pub fn write_big_file(kind: BigKind, bytes: u64, encoding: BigEncoding, out: &Pa
             let header: Vec<String> = SIGNIN_HEADERS.iter().map(|h| csv_field(h)).collect();
             sink.text(&header.join(","))?;
             sink.text("\n")?;
-            write_rows(&mut sink, bytes, "", "", |i| {
+            write_rows(&mut sink, bytes, opts.first, "", "", |i| {
                 let (d, t) = stamp(i);
                 format!(
                     "{d}T{t}Z,{},\"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36\",{},b086bc34-4d29-464b-85de-b1f53d90a0dd,Kelly Chambers,kelly.chambers@contoso.example,Member,None,none,None,yugsJoSyD6a1yx1OZZUZdd,None,None,Unbound,,OfficeHome,4765445b-32c6-49b0-83e6-1d93765276ca,f8cdef31-a31e-4b4a-93e4-5f571e91255a,Office 365 SharePoint Online,00000003-0000-0ff1-ce00-000000000000,d5c9185c-9bf3-45a3-92f3-c19c635feb78,f8cdef31-a31e-4b4a-93e4-5f571e91255a,d5c9185c-9bf3-45a3-92f3-c19c635feb78,,192.0.2.13,\"Northbridge, NB, US\",Success,,,Browser,d91cd7d9-46ec-46e6-af9d-f57f0b701016,Chrome,Windows 11,Yes,Yes,Azure AD joined,,,,Single-factor authentication,kelly.chambers@contoso.example,{},192.0.2.13,No,,64496,No,AzureAD,none,,326,Not Applied,,,,\n",
@@ -232,7 +285,7 @@ pub fn write_big_file(kind: BigKind, bytes: u64, encoding: BigEncoding, out: &Pa
         }
         BigKind::MessageTraceDetail => {
             sink.text("date_time_utc,network_message_id,internal_message_id,message_id,event_id,source,source_context,sender_address,recipient_address,related_recipient_address,recipient_status,client_ip,client_hostname,server_ip,server_hostname,original_client_ip,original_server_ip,connector_id,total_bytes,recipient_count,reference,message_subject,return_path,message_info,directionality,tenant_id,custom_data\r\n")?;
-            write_rows(&mut sink, bytes, "", "", |i| {
+            write_rows(&mut sink, bytes, opts.first, "", "", |i| {
                 let (d, t) = stamp(i);
                 format!(
                     "{d}T{t}.000Z,{},{},<{}@contoso.example>,RECEIVE,SMTP,\"Message received from connector\",sender@fabrikam.example,kelly.chambers@contoso.example,,\"250 2.1.5 Recipient OK\",203.0.113.5,mail.fabrikam.example,198.51.100.20,mail.contoso.example,203.0.113.5,198.51.100.20,Inbound from Internet,4096,1,,Quarterly report {i},sender@fabrikam.example,,Incoming,d5c9185c-9bf3-45a3-92f3-c19c635feb78,\"S:AccountForest=contoso.example\"\r\n",
@@ -338,5 +391,58 @@ mod tests {
     fn row_ids_are_unique() {
         let ids: std::collections::HashSet<String> = (0..10_000).map(|i| guid(1, i)).collect();
         assert_eq!(ids.len(), 10_000);
+        let mixed: std::collections::HashSet<String> =
+            (0..10_000).map(|i| scattered_guid(1, i)).collect();
+        assert_eq!(mixed.len(), 10_000);
+    }
+
+    /// Two files written with disjoint `first` ranges and scattered ids load as disjoint records, ids spread out.
+    #[test]
+    fn files_from_disjoint_ranges_hold_disjoint_scattered_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let opts = |first| BigOptions {
+            first,
+            scatter_ids: true,
+        };
+        write_big_file_with(
+            BigKind::PortalUal,
+            300_000,
+            BigEncoding::Utf8,
+            &dir.path().join("a.csv"),
+            opts(0),
+        )
+        .unwrap();
+        write_big_file_with(
+            BigKind::PortalUal,
+            300_000,
+            BigEncoding::Utf8,
+            &dir.path().join("b.csv"),
+            opts(1_000),
+        )
+        .unwrap();
+        let mut case = Case::in_memory().unwrap();
+        ingest_path(
+            &mut case,
+            dir.path(),
+            &ParserRegistry::builtin(),
+            &IngestOptions::default(),
+        )
+        .unwrap();
+        let (rows, distinct, files, first_ids): (i64, i64, i64, i64) = case
+            .conn()
+            .query_row(
+                "SELECT count(*), count(DISTINCT record_id),
+                        (SELECT count(*) FROM source_files WHERE status = 'parsed'),
+                        count(*) FILTER (WHERE CAST(record_id AS VARCHAR) LIKE '0000a0d1%')
+                 FROM ual_events",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(files, 2);
+        assert!(rows > 200, "{rows} rows");
+        assert_eq!(distinct, rows, "every row its own record");
+        // Counting ids all start with the salt; scattered ones (almost) never do.
+        assert!(first_ids < 2, "{first_ids} ids start with the salt");
     }
 }
