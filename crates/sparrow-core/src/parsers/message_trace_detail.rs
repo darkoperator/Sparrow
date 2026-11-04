@@ -4,8 +4,8 @@
 //! the events of each message are collapsed into `message_trace`, one row per message and
 //! recipient, under the same key the summary report and Hawk use, so those copies merge.
 
-use crate::Result;
 use crate::db::state_tables::{MESSAGE_TRACE, MESSAGE_TRACE_EVENTS};
+use crate::ingest::IngestOptions;
 use crate::ingest::context::ParseContext;
 use crate::ingest::parser::{ArtifactParser, ParserRegistry};
 use crate::normalize::fields::{Cell, Rec};
@@ -22,11 +22,11 @@ use crate::parsers::stage::{
 use crate::readers::stream::Sight;
 use crate::readers::text::SourcePos;
 use crate::readers::time::parse_timestamp;
+use crate::{Error, Result};
 use duckdb::types::Value as DbValue;
 use duckdb::{Connection, appender_params_from_iter, params};
 use serde_json::{Map, Value};
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub fn register(r: &mut ParserRegistry) {
     r.register(
@@ -324,10 +324,23 @@ const EVENT_COLUMNS: &str =
     original_client_ip_text, from_ip, total_bytes_text, total_bytes, recipients,
     ord, line_start, line_end, byte_offset, byte_length, raw_sha256, snippet";
 
-/// The most [`Event`]s the parser has held in memory at once, over every file it parsed (tests reset it to 0 and read
-/// it after an ingest). Only one message's events are held at a time.
+thread_local! {
+    static PEAK_MESSAGE_EVENTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The most events of ONE message the collapse has held at once on this thread since the last
+/// [`reset_peak_message_events`]: the collapse holds one message's events at a time, never the file's. Per thread, so
+/// tests running in parallel do not see each other's parses (an ingest parses on its caller's thread).
 #[doc(hidden)]
-pub static PEAK_HELD_EVENTS: AtomicUsize = AtomicUsize::new(0);
+pub fn peak_message_events() -> usize {
+    PEAK_MESSAGE_EVENTS.with(std::cell::Cell::get)
+}
+
+/// Resets [`peak_message_events`] on this thread.
+#[doc(hidden)]
+pub fn reset_peak_message_events() {
+    PEAK_MESSAGE_EVENTS.with(|c| c.set(0));
+}
 
 fn text(v: &Option<String>) -> DbValue {
     v.clone().map_or(DbValue::Null, DbValue::Text)
@@ -428,7 +441,8 @@ impl Message {
             self.earliest = Some((t, e.record, read_span(row)?));
         }
         self.events.push(e);
-        PEAK_HELD_EVENTS.fetch_max(self.events.len(), Ordering::Relaxed);
+        let held = self.events.len();
+        PEAK_MESSAGE_EVENTS.with(|c| c.set(c.get().max(held)));
         Ok(())
     }
 
@@ -439,9 +453,11 @@ impl Message {
 }
 
 /// Collapse the events in [`SORTED`] (`count` of them) message by message, reading `batch` events per query, and hand
-/// each `message_trace` row to `sink`. Holds one message's events and one batch's rows.
+/// each `message_trace` row to `sink`. Holds one message's events and one batch's rows. Stops with
+/// `Error::Interrupted` when `options` asks to cancel (checked once per range).
 fn collapse_sorted(
     conn: &Connection,
+    options: &IngestOptions,
     count: i64,
     batch: usize,
     sink: &mut TailSink<'_>,
@@ -452,6 +468,9 @@ fn collapse_sorted(
     let mut current: Option<Message> = None;
     let mut from = 0i64;
     while from < count {
+        if options.cancelled() {
+            return Err(Error::Interrupted);
+        }
         let mut out = TableRows::new(&MESSAGE_TRACE, TRACE_COLS);
         {
             let mut stmt = conn.prepare(&sql)?;
@@ -519,7 +538,8 @@ fn parse_detail(ctx: &mut ParseContext<'_>) -> Result<()> {
     // batches, and the message rows after them, collapsed message by message from the TEMP table.
     let format = RecordFormat::of(ctx.rel_path);
     let conn = ctx.conn;
-    let batch = ctx.options.batch_rows.max(1);
+    let options = ctx.options;
+    let batch = options.batch_rows.max(1);
     conn.execute_batch(&format!(
         "CREATE TEMP TABLE {EVENTS} (msg VARCHAR, idx BIGINT, time_text VARCHAR, event_id VARCHAR, sender VARCHAR,
              subject VARCHAR, internet_message_id VARCHAR, direction VARCHAR, connector_id VARCHAR,
@@ -578,6 +598,7 @@ fn parse_detail(ctx: &mut ParseContext<'_>) -> Result<()> {
         ));
     }
     drop(first);
+    ctx.check_cancelled()?;
     conn.execute_batch(&format!(
         "CREATE TEMP TABLE {SORTED} AS
              SELECT row_number() OVER (ORDER BY first_idx, idx) - 1 AS pos, * EXCLUDE (first_idx)
@@ -589,7 +610,7 @@ fn parse_detail(ctx: &mut ParseContext<'_>) -> Result<()> {
         ctx,
         format,
         &[(&MESSAGE_TRACE_EVENTS, COLS), (&MESSAGE_TRACE, TRACE_COLS)],
-        |sink| collapse_sorted(conn, appended as i64, batch, sink),
+        |sink| collapse_sorted(conn, options, appended as i64, batch, sink),
         |r| {
             let rec = Rec::new(&r.map, false);
             let recipients = addresses(rec.text("recipient_address"));

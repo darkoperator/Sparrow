@@ -287,7 +287,7 @@ pub enum RowOut {
 /// streamed rows are staged, it hands each `(table, draft)` to the sink it is given, which stages it, so the tail is
 /// never held whole; they are staged after the streamed rows, as [`load_tables`] would after the earlier tables. The
 /// tail's time cells are not read for the day/month order (it is resolved before the tail is produced): each must be a
-/// copy of a time cell of a streamed row, so it adds no evidence (checked in debug builds). Counts, errors and
+/// copy of a time cell of a streamed row, so it adds no evidence (checked: the file fails otherwise). Counts, errors and
 /// warnings are those of [`load_tables`] over the same rows. The two passes are steps 0 and 1 of the parser
 /// ([`LOAD_STREAMED_STEPS`]).
 pub fn load_streamed(
@@ -370,14 +370,12 @@ pub fn load_streamed(
     for (stage, rows) in stages.iter_mut().zip(staged.iter_mut()) {
         flush(ctx, stage, rows)?;
     }
-    // The evidence the tail's times would give, had they been read with the records' (debug builds only).
+    // The evidence the tail's times give, had they been read with the records': it must be what resolved `order`.
     let mut with_tail = detector.clone();
     tail(&mut |table, draft| {
-        if cfg!(debug_assertions) {
-            for cell in &draft.cells {
-                if let Cell::Time(s) = cell {
-                    with_tail.observe(s);
-                }
+        for cell in &draft.cells {
+            if let Cell::Time(s) = cell {
+                with_tail.observe(s);
             }
         }
         if let Some(row) = stage_draft(ctx, tables[table].0, draft, order)? {
@@ -389,10 +387,12 @@ pub fn load_streamed(
         }
         Ok(())
     })?;
-    debug_assert_eq!(
-        with_tail, detector,
-        "a tail time cell changed the day/month order evidence: it is not a copy of a streamed row's"
-    );
+    if with_tail != detector {
+        // Fail closed: the order the rows were staged with is not the one their times prove.
+        return Err(Error::Invalid(
+            "a collapsed row's time is not one of its records' times: it changes the day/month order".into(),
+        ));
+    }
     for (stage, rows) in stages.iter_mut().zip(staged.iter_mut()) {
         flush(ctx, stage, rows)?;
     }

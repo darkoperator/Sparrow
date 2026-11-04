@@ -944,12 +944,13 @@ fn every_batch_size_stores_what_one_batch_stores() {
 }
 
 #[test]
-fn trace_detail_holds_at_most_one_batch() {
-    // A generated detail report of 200,000+ events (one per message): the collapse must not hold the file's events
-    // in memory, at most one batch of them.
-    use sparrow_core::parsers::message_trace_detail::PEAK_HELD_EVENTS;
+fn trace_detail_holds_one_message_at_a_time() {
+    // A generated detail report of 200,000+ events, one per message: the collapse holds one message's events at a
+    // time, never the file's (the old collapse held all of them).
+    use sparrow_core::parsers::message_trace_detail::{
+        peak_message_events, reset_peak_message_events,
+    };
     use sparrow_synth::big_file::{BigEncoding, BigKind, write_big_file};
-    use std::sync::atomic::Ordering;
     let dir = tempfile::tempdir().unwrap();
     let rel = BigKind::MessageTraceDetail.example_rel_path();
     write_big_file(
@@ -965,9 +966,8 @@ fn trace_detail_holds_at_most_one_batch() {
         max_file_bytes: None,
         ..IngestOptions::default()
     };
-    PEAK_HELD_EVENTS.store(0, Ordering::Relaxed);
+    reset_peak_message_events();
     let report = ingest_path(&mut case, dir.path(), &ParserRegistry::builtin(), &opts).unwrap();
-    let peak = PEAK_HELD_EVENTS.load(Ordering::Relaxed);
     let f = row(&report, rel);
     assert_eq!(f.status, FileStatus::Parsed, "{f:#?}");
     let events = count(&case, "SELECT count(*) FROM message_trace_events");
@@ -985,6 +985,291 @@ fn trace_detail_holds_at_most_one_batch() {
         0,
         "the parser's TEMP tables are dropped"
     );
-    assert!(peak > 0, "the counter never moved");
-    assert!(peak <= 1000, "{peak} events held at once");
+    // Every message of this file has one event (the counter is per thread: other tests do not move it).
+    assert_eq!(peak_message_events(), 1);
+}
+
+// ---- the collapse, pinned with hand-computed expectations ----
+
+const MSG_A_UPPER: &str = "DDDDDDDD-0000-4000-8000-00000000000A";
+const MSG_A: &str = "dddddddd-0000-4000-8000-00000000000a";
+const MSG_B: &str = "eeeeeeee-0000-4000-8000-00000000000b";
+const MSG_C: &str = "ffffffff-0000-4000-8000-00000000000c";
+
+fn pin_event(time: &str, id: &str, event: &str, recipients: &str, reference: &str) -> Ev {
+    ev(&[
+        ("date_time_utc", time),
+        ("network_message_id", id),
+        ("event_id", event),
+        ("source", "SMTP"),
+        ("recipient_address", recipients),
+        ("reference", reference),
+        ("sender_address", "alice@contoso.example"),
+    ])
+}
+
+/// Eight events of three interleaved messages (row `i` is on line `i + 2`):
+/// - A (spelled in two cases): r1 10:00:03, r3 untimed, r4 10:00:03 (tied with r1), r6 10:00:09;
+/// - B: r0 10:00:05, r5 10:00:01 (its earliest, though not its first);
+/// - C: r2 and r7, both untimed.
+fn pin_events() -> Vec<Ev> {
+    vec![
+        pin_event(
+            "2026-08-04T10:00:05Z",
+            MSG_B,
+            "RECEIVE",
+            "x@contoso.example",
+            "r0",
+        ),
+        pin_event(
+            "2026-08-04T10:00:03Z",
+            MSG_A_UPPER,
+            "RECEIVE",
+            "Bob@contoso.example;carol@contoso.example",
+            "r1",
+        ),
+        pin_event("", MSG_C, "RECEIVE", "zed@contoso.example", "r2"),
+        pin_event("", MSG_A, "DELIVER", "dave@contoso.example", "r3"),
+        pin_event(
+            "2026-08-04T10:00:03Z",
+            MSG_A,
+            "EXPAND",
+            "carol@contoso.example;alice@contoso.example",
+            "r4",
+        ),
+        pin_event(
+            "2026-08-04T10:00:01Z",
+            MSG_B,
+            "DELIVER",
+            "x@contoso.example",
+            "r5",
+        ),
+        pin_event(
+            "2026-08-04T10:00:09Z",
+            MSG_A_UPPER,
+            "DELIVER",
+            "bob@contoso.example",
+            "r6",
+        ),
+        pin_event("", MSG_C, "DELIVER", "zed@contoso.example", "r7"),
+    ]
+}
+
+#[test]
+fn the_collapse_groups_orders_and_points_at_the_earliest_event() {
+    use sparrow_core::parsers::message_trace_detail::{
+        peak_message_events, reset_peak_message_events,
+    };
+    let text_ = report_text(&pin_events(), false);
+    // Byte offset of each line (the file is UTF-8, no field holds a line break).
+    let mut offsets = vec![0i64];
+    for (i, b) in text_.bytes().enumerate() {
+        if b == b'\n' {
+            offsets.push(i as i64 + 1);
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    fixtures::write(&dir.path().join("downloads"), DETAIL_REL, text_.as_bytes());
+    for batch in [1, IngestOptions::default().batch_rows] {
+        let mut case = Case::in_memory().unwrap();
+        let opts = IngestOptions {
+            batch_rows: batch,
+            ..IngestOptions::default()
+        };
+        reset_peak_message_events();
+        let report = ingest_path(&mut case, dir.path(), &ParserRegistry::builtin(), &opts).unwrap();
+        assert!(!report.has_errors(), "batch {batch}: {report:#?}");
+        // A's four events (one untimed) are held together, across ranges of one event at batch 1.
+        assert_eq!(peak_message_events(), 4, "batch {batch}");
+        assert_eq!(
+            count(&case, "SELECT count(*) FROM message_trace_events"),
+            8,
+            "batch {batch}"
+        );
+        // B first (its first event is r0), then A, whose recipients come from its timed events in time order
+        // (r1 before r4 at the tie): bob, carol, alice; dave is only on an untimed event. C has no timed event: no row.
+        let mut stmt = case
+            .conn()
+            .prepare(
+                "SELECT t.record_key, t.status, CAST(epoch_us(t.received) AS VARCHAR),
+                        json_extract_string(t.raw, '$.events'), s.record_ordinal, s.line_start, s.byte_offset
+                 FROM message_trace t
+                 JOIN record_sources s ON s.table_name = 'message_trace' AND s.record_key = t.record_key
+                 ORDER BY t.rowid",
+            )
+            .unwrap();
+        let got: Vec<(String, String, String, String, i64, i64, i64)> = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let at = |s: u32| epoch_us(2026, 8, 4, 10, 0, s, 0).to_string();
+        // The rows of B point at r5 (ordinal 5: records count from 0; line 7), those of A at r1 (ordinal 1, line 3),
+        // the first in file order of A's two earliest events.
+        let b = |key: &str, status: &str| {
+            (
+                key.to_string(),
+                status.to_string(),
+                at(1),
+                "2".to_string(),
+                5,
+                7,
+                offsets[6],
+            )
+        };
+        let a = |key: &str, status: &str| {
+            (
+                key.to_string(),
+                status.to_string(),
+                at(3),
+                "4".to_string(),
+                1,
+                3,
+                offsets[2],
+            )
+        };
+        assert_eq!(
+            got,
+            vec![
+                b(&format!("{MSG_B}|x@contoso.example"), "DELIVER"),
+                a(&format!("{MSG_A}|bob@contoso.example"), "DELIVER"),
+                a(&format!("{MSG_A}|carol@contoso.example"), "EXPAND"),
+                a(&format!("{MSG_A}|alice@contoso.example"), "EXPAND"),
+            ],
+            "batch {batch}"
+        );
+        assert_eq!(
+            count(
+                &case,
+                &format!("SELECT count(*) FROM message_trace WHERE message_trace_id = '{MSG_C}'")
+            ),
+            0,
+            "batch {batch}"
+        );
+        // The rows' ordinals are those of the events they point at.
+        assert_eq!(
+            text(
+                &case,
+                "SELECT string_agg(CAST(s.record_ordinal AS VARCHAR) || '=' || e.reference, ',' ORDER BY s.record_ordinal)
+                 FROM message_trace_events e
+                 JOIN record_sources s ON s.table_name = 'message_trace_events' AND s.record_key = e.record_key
+                 WHERE e.reference IN ('r1', 'r5')"
+            ),
+            "1=r1,5=r5",
+            "batch {batch}"
+        );
+        assert_eq!(
+            count(
+                &case,
+                "SELECT count(*) FROM duckdb_tables() WHERE temporary"
+            ),
+            0
+        );
+    }
+}
+
+#[test]
+fn a_failed_detail_file_leaves_nothing_and_the_next_one_loads() {
+    // The first file fails when its last pass opens (its events are in the parser's TEMP tables by then): it rolls
+    // back and leaves no TEMP table; the next file, on the same connection, loads all its rows.
+    use sparrow_core::ingest::{ReadHook, ReadPhase};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    const SECOND_REL: &str = "MTDetail_Message trace report - _2026-08-05T000000.000Z__second.csv";
+    let dir = tempfile::tempdir().unwrap();
+    let downloads = dir.path().join("downloads");
+    fixtures::write(
+        &downloads,
+        DETAIL_REL,
+        report_text(&pin_events(), false).as_bytes(),
+    );
+    let second: Vec<Ev> = pin_events()
+        .into_iter()
+        .map(|e| {
+            e.into_iter()
+                .map(|(k, v)| {
+                    (
+                        k,
+                        if k == "reference" {
+                            format!("{v}-2")
+                        } else {
+                            v
+                        },
+                    )
+                })
+                .collect()
+        })
+        .collect();
+    fixtures::write(
+        &downloads,
+        SECOND_REL,
+        report_text(&second, false).as_bytes(),
+    );
+    let failed = Arc::new(AtomicBool::new(false));
+    let f = failed.clone();
+    let hook: ReadHook = Arc::new(move |e| {
+        if e.rel_path.ends_with(DETAIL_REL) && e.phase == ReadPhase::Pass(3) {
+            f.store(true, Ordering::SeqCst);
+            return Err(std::io::Error::other("injected read error"));
+        }
+        Ok(())
+    });
+    let opts = IngestOptions {
+        read_hook: Some(hook),
+        ..IngestOptions::default()
+    };
+    let mut case = Case::in_memory().unwrap();
+    let report = ingest_path(&mut case, dir.path(), &ParserRegistry::builtin(), &opts).unwrap();
+    assert!(
+        failed.load(Ordering::SeqCst),
+        "the error was never injected"
+    );
+    let bad = report
+        .collections
+        .iter()
+        .flat_map(|c| &c.files)
+        .find(|f| f.rel_path.ends_with(DETAIL_REL))
+        .unwrap();
+    assert_eq!(bad.status, FileStatus::Error, "{bad:#?}");
+    let good = report
+        .collections
+        .iter()
+        .flat_map(|c| &c.files)
+        .find(|f| f.rel_path.ends_with(SECOND_REL))
+        .unwrap();
+    assert_eq!(good.status, FileStatus::Parsed, "{good:#?}");
+    // Only the second file's rows: 8 events, and its 4 message rows sighted once each.
+    assert_eq!(count(&case, "SELECT count(*) FROM message_trace_events"), 8);
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM message_trace_events WHERE reference LIKE '%-2'"
+        ),
+        8
+    );
+    assert_eq!(count(&case, "SELECT count(*) FROM message_trace"), 4);
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM record_sources WHERE table_name = 'message_trace'"
+        ),
+        4
+    );
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM duckdb_tables() WHERE temporary"
+        ),
+        0
+    );
 }
