@@ -1175,22 +1175,34 @@ fn a_source_mixing_null_and_empty_operations_writes_each_event_once() {
         }
         put(&case, "mailbox_audit_legacy", f);
     }
+    // The built-in catalog, as a profile stores it, so a known operation gets its catalog category.
+    let catalog =
+        sparrow_core::data::operation_catalog(&sparrow_core::data::DataDirs::default()).unwrap();
+    sparrow_core::profile::catalog::store(case.conn(), &catalog).unwrap();
     assert_eq!(events::rebuild(case.conn()).unwrap(), 5);
     assert_events_unique(&case);
     assert_eq!(count(&case, "SELECT count(*) FROM events"), 5);
-    // Each keeps the category of its own (workload, operation).
-    assert_eq!(
-        cell(
-            &case,
-            "directory_audits",
-            "da-null",
-            "CAST(category AS VARCHAR)"
-        ),
-        cell(
-            &case,
-            "directory_audits",
-            "da-empty",
-            "CAST(category AS VARCHAR)"
+    // Each keeps the category of its own (workload, operation): the catalog's for "Add user" (config_change), the
+    // source's fallback (other) for a NULL or empty operation.
+    let mut stmt = case
+        .conn()
+        .prepare(
+            "SELECT record_key || '=' || CAST(category AS VARCHAR) FROM events ORDER BY record_key",
         )
+        .unwrap();
+    let categories: Vec<String> = stmt
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        categories,
+        [
+            "da-empty=other",
+            "da-null=other",
+            "da-op=config_change",
+            "ma-empty=other",
+            "ma-null=other",
+        ]
     );
 }

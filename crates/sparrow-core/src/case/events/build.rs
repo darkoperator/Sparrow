@@ -316,9 +316,9 @@ fn sources() -> Vec<Source> {
 
 /// The insert for one source. `ev` must select, in this order: source, source_table, record_key, event_time,
 /// time_tz_assumed, collection_id, workload, operation, result, actor_upn, owner_upn, target, ip, user_agent,
-/// device_id, device_name, device_object_id, entra_session_id, app_id, summary. Everything derived is added here: tenant from the
-/// collection, category once per distinct (workload, operation), the normalized IP and its prefix, `ip_intel` columns
-/// kind.
+/// device_id, device_name, device_object_id, entra_session_id, app_id, summary. Everything derived is added here: tenant
+/// from the collection, category once per distinct (workload, operation), the normalized IP and its prefix, and the
+/// `ip_intel` columns with the IP kind.
 fn insert_sql(src: &Source) -> String {
     let Source {
         fallback, ctes, ev, ..

@@ -88,8 +88,7 @@ const USERS: &str = "Tenant/AzureADUsers.csv";
 
 /// A Hawk capture whose user list (one ambiguous date) waits for the order the eDiscovery summary proves: the user
 /// list is deferred, rolled back and parsed again on the retry pass (a regression guard). Hawk.log's sightings are
-/// flushed by the parser and the ingest's final flush is then a no-op (the
-/// parser's own flush and the ingest's final one).
+/// flushed by the parser, so the ingest's final flush is then a no-op.
 fn deferred_capture(base: &Path) {
     let root = base.join("cap");
     fixtures::write(&root, "Hawk.log", fixtures::HAWK_LOG.as_bytes());

@@ -100,12 +100,7 @@ pub fn run_perf(scenario: &Scenario, opts: &GenerateOptions, dir: &Path) -> Resu
         &mut case,
         dir,
         &ParserRegistry::builtin(),
-        // A 1M-row Invictus tree's merged UAL export exceeds the 1 GiB default file cap; a perf
-        // run raises it so the whole tree ingests.
-        &IngestOptions {
-            max_file_bytes: None,
-            ..IngestOptions::default()
-        },
+        &IngestOptions::default(),
     ))?;
     // The collector's own losses (the planted Get-Roles.ps1 failure rows) are not an ingest failure.
     if report.outcome() == IngestOutcome::Problems {
