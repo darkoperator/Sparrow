@@ -1141,6 +1141,87 @@ mod tests {
         );
     }
 
+    /// A CSV record that never ends (an unclosed quote, then a long quote-free rest): past the record cap the scan
+    /// stops holding it and fails it from its start to the end of the file, as JSON fails a bad separator.
+    #[test]
+    fn an_unclosed_csv_quote_is_failed_at_the_record_cap_in_bounded_memory() {
+        use crate::readers::csv_scan::{CsvEvent, read_csv_stream_capped};
+        const CAP: usize = 256 * 1024;
+        let mut csv = String::from("Id,AuditData\r\n0,a\r\n1,b\r\n");
+        let start = csv.len();
+        csv.push_str("2,\"unclosed\r\n");
+        csv.push_str(&ascii_rows(4 * 1024 * 1024));
+        let lines = csv.matches('\n').count() as u32;
+        let raw = csv.clone().into_bytes();
+        let a = admitted(&raw, TextEncoding::Utf8, 0);
+        let mut s = TextStream::from_bytes(raw.clone(), &a, CHUNK);
+        let mut got = Vec::new();
+        read_csv_stream_capped(&mut s, &mut |_| true, CAP, |_, e, st| {
+            let span = match &e {
+                CsvEvent::Row(r) => r.span,
+                CsvEvent::Error(e) => e.span,
+            };
+            got.push((e, st.sight(span), st.snippet(span)));
+            true
+        })
+        .unwrap();
+        assert_eq!(got.len(), 3, "two rows, then the failure");
+        assert!(matches!(&got[0].0, CsvEvent::Row(r) if r.fields == ["0", "a"]));
+        assert!(matches!(&got[1].0, CsvEvent::Row(r) if r.fields == ["1", "b"]));
+        let (CsvEvent::Error(e), sight, snippet) = &got[2] else {
+            let CsvEvent::Row(r) = &got[2].0 else {
+                unreachable!()
+            };
+            let held: usize = r.fields.iter().map(String::len).sum();
+            panic!(
+                "a row of {held} bytes instead of the failure; peak capacities {:?}",
+                s.peak
+            )
+        };
+        assert_eq!(e.ordinal, 2);
+        assert_eq!((e.span.start, e.span.end), (start, raw.len()));
+        assert!(e.message.contains("unclosed quote"), "{}", e.message);
+        assert_eq!(sight.pos.byte_offset, start as u64);
+        assert_eq!(sight.pos.byte_length, (raw.len() - start) as u64);
+        assert_eq!((sight.pos.line_start, sight.pos.line_end), (4, lines));
+        assert_eq!(sight.raw_sha256, sha256_hex(&raw[start..]));
+        assert_eq!(*snippet, csv[start..].chars().take(500).collect::<String>());
+        let bound = 2 * CAP + CHUNK + CHECKPOINT_EVERY + MARGIN;
+        assert!(
+            s.peak.0 <= bound && s.peak.1 <= bound,
+            "peak capacities {:?} over {bound}",
+            s.peak
+        );
+    }
+
+    /// A record just under the cap is read as before.
+    #[test]
+    fn a_csv_record_under_the_cap_is_read_whole() {
+        use crate::readers::csv_scan::{CsvEvent, read_csv_stream_capped};
+        const CAP: usize = 256 * 1024;
+        let big = "x".repeat(CAP - 1024);
+        let mut csv = format!("Id,AuditData\r\n0,\"{big}\"\r\n");
+        csv.push_str(&ascii_rows(1024 * 1024));
+        let raw = csv.into_bytes();
+        let a = admitted(&raw, TextEncoding::Utf8, 0);
+        let mut s = TextStream::from_bytes(raw, &a, CHUNK);
+        let (mut rows, mut errors) = (0, 0);
+        read_csv_stream_capped(&mut s, &mut |_| true, CAP, |_, e, _| {
+            match e {
+                CsvEvent::Row(r) if r.ordinal == 0 => {
+                    assert_eq!(r.fields[1], big);
+                    rows += 1
+                }
+                CsvEvent::Row(_) => rows += 1,
+                CsvEvent::Error(_) => errors += 1,
+            }
+            true
+        })
+        .unwrap();
+        assert_eq!(errors, 0);
+        assert!(rows > 10_000, "{rows} rows");
+    }
+
     #[test]
     fn bad_separator_is_sighted_in_bounded_memory() {
         use crate::readers::json_scan::{JsonEvent, scan_json_each, scan_json_stream};

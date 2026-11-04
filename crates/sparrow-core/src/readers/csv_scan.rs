@@ -79,14 +79,31 @@ pub fn read_csv_each(text: &str, mut sink: impl FnMut(&[String], CsvEvent) -> bo
 pub fn read_csv_stream(
     stream: &mut TextStream,
     on_read: OnRead,
+    sink: impl FnMut(&[String], CsvEvent, &mut TextStream) -> bool,
+) -> io::Result<Vec<String>> {
+    read_csv_stream_capped(stream, on_read, CSV_RECORD_MAX_BYTES, sink)
+}
+
+/// [`read_csv_stream`] with a record cap of `cap` decoded bytes instead of [`CSV_RECORD_MAX_BYTES`].
+pub(crate) fn read_csv_stream_capped(
+    stream: &mut TextStream,
+    on_read: OnRead,
+    cap: usize,
     mut sink: impl FnMut(&[String], CsvEvent, &mut TextStream) -> bool,
 ) -> io::Result<Vec<String>> {
     let mut scan = CsvScan::new();
+    scan.cap = cap;
     scan_stream(&mut scan, stream, on_read, |scan, event, stream| {
         sink(&scan.headers, event, stream)
     })?;
     Ok(scan.headers)
 }
+
+/// Decoded bytes a streamed record may reach without ending before it is failed. Only an unclosed quote makes a
+/// record this long (a spreadsheet cell holds at most 32,767 characters; audit records are kilobytes), and the scan
+/// holds a record whole (its text, its raw bytes and its field bytes, up to about twice this each), so without a cap
+/// one stray quote in a multi-GB export would hold the rest of the file in memory.
+pub(crate) const CSV_RECORD_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 /// Field buffer sizes a scan starts with and returns to after an outsized record.
 const FIELDS_KEEP: usize = 64 * 1024;
@@ -113,7 +130,15 @@ struct CsvScan {
     headers: Vec<String>,
     have_header: bool,
     ordinal: u64,
+    /// Decoded bytes a record may reach without ending while more text follows ([`CSV_RECORD_MAX_BYTES`] when
+    /// streamed; no cap over a whole text, which is already in memory).
+    cap: usize,
+    /// The record that reached `cap`: its absolute start, drained to the end of the text and failed on the next step.
+    over_cap: Option<usize>,
 }
+
+/// The failure of a record that reached the cap.
+const OVER_CAP: &str = "record exceeds the CSV record size limit without ending (unclosed quote?); the rest of the file is not read as records";
 
 impl CsvScan {
     fn new() -> Self {
@@ -130,6 +155,8 @@ impl CsvScan {
             headers: Vec::new(),
             have_header: false,
             ordinal: 0,
+            cap: usize::MAX,
+            over_cap: None,
         }
     }
 
@@ -210,11 +237,32 @@ impl Scan for CsvScan {
             if self.done {
                 return Step::End;
             }
+            if let Some(start) = self.over_cap {
+                // Drained: the text has ended. The record spans from its start to the end, as a JSON failure does.
+                self.done = true;
+                let error = CsvRowError {
+                    ordinal: self.ordinal,
+                    span: Span {
+                        start,
+                        end: base + text.len(),
+                    },
+                    message: OVER_CAP.into(),
+                };
+                self.ordinal += 1;
+                return Step::Event(CsvEvent::Error(error));
+            }
             let input = &text.as_bytes()[self.pos - base..];
             // An empty input tells the core the text has ended. Its first input must also be what the whole text
             // would give it: it strips a UTF-8 BOM only when all three bytes are in its first input, and a first
             // input of the BOM alone is then empty, the end.
             if !last && (input.is_empty() || (!self.fed && input.len() <= 3)) {
+                // The record so far is the window from its start: past the cap, stop holding it and drain the rest.
+                if base + text.len() - self.before > self.cap {
+                    // From the record's first char, as a row's span starts (after the previous terminator's `\n`).
+                    let start = base + skip_newlines(text, self.before - base, text.len());
+                    self.over_cap = Some(start);
+                    return Step::DrainFrom(start);
+                }
                 return Step::More(self.before);
             }
             self.fed = true;
