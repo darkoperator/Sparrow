@@ -910,6 +910,19 @@ impl TextStream {
     }
 }
 
+/// A record size limit as text for its failure message: `64 MiB`, `256 KiB` or `1000 bytes`.
+pub(crate) fn size_text(bytes: usize) -> String {
+    const KIB: usize = 1024;
+    const MIB: usize = 1024 * KIB;
+    if bytes >= MIB && bytes % MIB == 0 {
+        format!("{} MiB", bytes / MIB)
+    } else if bytes >= KIB && bytes % KIB == 0 {
+        format!("{} KiB", bytes / KIB)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
 fn floor_boundary(s: &str, mut i: usize) -> usize {
     while !s.is_char_boundary(i) {
         i -= 1;
@@ -1186,7 +1199,11 @@ mod tests {
         };
         assert_eq!(e.ordinal, 2);
         assert_eq!((e.span.start, e.span.end), (start, raw.len()));
-        assert!(e.message.contains("unclosed quote"), "{}", e.message);
+        assert!(
+            e.message.contains("record size limit (256 KiB)"),
+            "{}",
+            e.message
+        );
         assert_eq!(sight.pos.byte_offset, start as u64);
         assert_eq!(sight.pos.byte_length, (raw.len() - start) as u64);
         assert_eq!((sight.pos.line_start, sight.pos.line_end), (4, lines));
@@ -1198,6 +1215,335 @@ mod tests {
             "peak capacities {:?} over {bound}",
             s.peak
         );
+    }
+
+    /// Each event of a capped CSV scan of `raw` read in chunks of `chunk` bytes: a row's ordinal and fields, or an
+    /// error's ordinal, span and message.
+    fn capped_csv_events(raw: &[u8], cap: usize, chunk: usize) -> Vec<String> {
+        capped_csv_events_bom(raw, false, cap, chunk)
+    }
+
+    /// [`capped_csv_events`] of a UTF-8 file that starts with a BOM when `bom` is set.
+    fn capped_csv_events_bom(raw: &[u8], bom: bool, cap: usize, chunk: usize) -> Vec<String> {
+        use crate::readers::csv_scan::{CsvEvent, read_csv_stream_capped};
+        let a = if bom {
+            admitted(raw, TextEncoding::Utf8Bom, 3)
+        } else {
+            admitted(raw, TextEncoding::Utf8, 0)
+        };
+        let mut s = TextStream::from_bytes(raw.to_vec(), &a, chunk);
+        let mut got = Vec::new();
+        read_csv_stream_capped(&mut s, &mut |_| true, cap, |_, e, st| {
+            got.push(match e {
+                CsvEvent::Row(r) => format!("row {} {:?}", r.ordinal, r.fields),
+                CsvEvent::Error(e) => {
+                    let sight = st.sight(e.span);
+                    format!(
+                        "error {} {}..{} {} {} {}",
+                        e.ordinal,
+                        e.span.start,
+                        e.span.end,
+                        sight.pos.byte_offset,
+                        sight.pos.byte_length,
+                        e.message
+                    )
+                }
+            });
+            true
+        })
+        .unwrap();
+        got
+    }
+
+    /// The record cap is exact: a record whose span is over the cap is failed from its start to the end of the file
+    /// even when it ends (here between the cap and twice it, which a grown window would hold whole), the same for
+    /// every chunk size; a span of exactly the cap is read (the cap is `>`, not `>=`).
+    #[test]
+    fn a_csv_record_over_the_cap_is_failed_even_when_it_ends() {
+        const CAP: usize = 4096;
+        let head = "Id,AuditData\r\n0,a\r\n1,b\r\n";
+        let tail = "3,c\r\n4,d\r\n";
+        let msg = "record exceeds the CSV record size limit (4 KiB); the rest of the file is not read as records";
+        // (record, over the cap): quoted and unquoted, a span of the cap plus one, of the cap, and of 1.5 caps.
+        let quoted = |n: usize| format!("2,\"{}\"", "x".repeat(n - 4));
+        let bare = |n: usize| format!("2,{}", "x".repeat(n - 2));
+        for (record, over) in [
+            (quoted(CAP + CAP / 2), true),
+            (bare(CAP + CAP / 2), true),
+            (quoted(CAP + 1), true),
+            (bare(CAP + 1), true),
+            (quoted(CAP), false),
+            (bare(CAP), false),
+            // A quoted field holding line ends, past the cap.
+            (
+                format!("2,\"{}\r\n{}\"", "x".repeat(CAP), "y".repeat(10)),
+                true,
+            ),
+        ] {
+            let csv = format!("{head}{record}\r\n{tail}");
+            let start = head.len();
+            for chunk in [7, CAP / 2, 4 * CAP] {
+                let got = capped_csv_events(csv.as_bytes(), CAP, chunk);
+                let what = format!("{} bytes, chunk {chunk}", record.len());
+                assert_eq!(
+                    got[..2],
+                    ["row 0 [\"0\", \"a\"]", "row 1 [\"1\", \"b\"]"],
+                    "{what}"
+                );
+                if over {
+                    assert_eq!(
+                        got[2..],
+                        [format!(
+                            "error 2 {start}..{} {start} {} {msg}",
+                            csv.len(),
+                            csv.len() - start
+                        )],
+                        "{what}"
+                    );
+                } else {
+                    assert_eq!(got.len(), 5, "{what}: {got:?}");
+                    assert!(got[2].starts_with("row 2 "), "{what}: {}", got[2]);
+                    assert_eq!(
+                        got[3..],
+                        ["row 3 [\"3\", \"c\"]", "row 4 [\"4\", \"d\"]"],
+                        "{what}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Each event of a capped JSON scan of `raw` in chunks of `chunk` bytes: a record's ordinal and span, or an
+    /// error's ordinal, span and message.
+    fn capped_json_events(raw: &[u8], cap: usize, chunk: usize) -> Vec<String> {
+        capped_json_events_bom(raw, false, cap, chunk)
+    }
+
+    /// [`capped_json_events`] of a UTF-8 file that starts with a BOM when `bom` is set.
+    fn capped_json_events_bom(raw: &[u8], bom: bool, cap: usize, chunk: usize) -> Vec<String> {
+        use crate::readers::json_scan::{JsonEvent, scan_json_stream_capped};
+        let a = if bom {
+            admitted(raw, TextEncoding::Utf8Bom, 3)
+        } else {
+            admitted(raw, TextEncoding::Utf8, 0)
+        };
+        let mut s = TextStream::from_bytes(raw.to_vec(), &a, chunk);
+        let mut got = Vec::new();
+        scan_json_stream_capped(&mut s, &mut |_| true, cap, |e, st| {
+            got.push(match e {
+                JsonEvent::Record(r) => {
+                    format!("record {} {}..{}", r.ordinal, r.span.start, r.span.end)
+                }
+                JsonEvent::Error(e) => {
+                    let sight = st.sight(e.span);
+                    format!(
+                        "error {} {}..{} {} {} {}",
+                        e.ordinal,
+                        e.span.start,
+                        e.span.end,
+                        sight.pos.byte_offset,
+                        sight.pos.byte_length,
+                        e.message
+                    )
+                }
+            });
+            true
+        })
+        .unwrap();
+        got
+    }
+
+    /// The JSON record cap is exact, for an array item and for a top-level value (JSONL / concatenated documents):
+    /// a value over the cap is failed from its start to the end of the file whether it ends or not, the same for every
+    /// chunk size; a value of exactly the cap is read.
+    #[test]
+    fn a_json_value_over_the_cap_is_failed_even_when_it_ends() {
+        const CAP: usize = 4096;
+        let msg = "record exceeds the JSON record size limit (4 KiB); the rest of the file is not read as records";
+        // A value of `n` bytes: `{"a":"xx..x"}`.
+        let value = |n: usize| format!("{{\"a\":\"{}\"}}", "x".repeat(n - 8));
+        // An unclosed value whose rest (quote-free) runs to the end of the file.
+        let unclosed = format!(
+            "{{\"a\":\"unclosed{}",
+            " 1 user@contoso.com\r\n".repeat(CAP / 4)
+        );
+        for (layout, head, sep, tail) in [
+            (
+                "array",
+                "[\r\n{\"a\":0},\r\n{\"a\":1},\r\n",
+                ",\r\n",
+                "{\"a\":3}\r\n]\r\n",
+            ),
+            ("top", "{\"a\":0}\r\n{\"a\":1}\r\n", "\r\n", "{\"a\":3}\r\n"),
+        ] {
+            for (record, ends, over) in [
+                (value(CAP + CAP / 2), true, true),
+                (value(CAP + 1), true, true),
+                (value(CAP), true, false),
+                (unclosed.clone(), false, true),
+            ] {
+                let json = if ends {
+                    format!("{head}{record}{sep}{tail}")
+                } else {
+                    format!("{head}{record}")
+                };
+                let start = head.len();
+                for chunk in [7, CAP / 2, 4 * CAP] {
+                    let got = capped_json_events(json.as_bytes(), CAP, chunk);
+                    let what = format!("{layout}: {} bytes, chunk {chunk}", record.len());
+                    assert!(got[0].starts_with("record 0 "), "{what}: {got:?}");
+                    assert!(got[1].starts_with("record 1 "), "{what}: {got:?}");
+                    if over {
+                        assert_eq!(
+                            got[2..],
+                            [format!(
+                                "error 2 {start}..{} {start} {} {msg}",
+                                json.len(),
+                                json.len() - start
+                            )],
+                            "{what}"
+                        );
+                    } else {
+                        assert_eq!(
+                            got[2],
+                            format!("record 2 {start}..{}", start + CAP),
+                            "{what}"
+                        );
+                        assert_eq!(got.len(), 4, "{what}: {got:?}");
+                        assert!(got[3].starts_with("record 3 "), "{what}: {got:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// `n` bytes of multi-byte UTF-8 (2-, 3- and 4-byte chars), padded with ASCII to exactly `n`.
+    fn multibyte(n: usize) -> String {
+        let mut s = String::new();
+        while s.len() + "é€😀".len() <= n {
+            s.push_str("é€😀");
+        }
+        while s.len() < n {
+            s.push('x');
+        }
+        s
+    }
+
+    /// The cap with a UTF-8 BOM and multi-byte characters cut across chunk ends (chunks of 7, 13 and an odd half
+    /// cap split the 2-, 3- and 4-byte chars): the cap counts decoded bytes from the record's first one (the BOM is
+    /// not text), an ended record over it is one failure from its start to the end of the file, and a record of
+    /// exactly the cap is read, the same for every chunk size.
+    #[test]
+    fn the_record_cap_counts_decoded_bytes_with_a_bom_and_multibyte_chars() {
+        const CAP: usize = 4096;
+        let chunks = [7, 13, CAP / 2 + 1, 4 * CAP];
+        let bom = [0xEF, 0xBB, 0xBF];
+        let with_bom = |text: &str| [&bom[..], text.as_bytes()].concat();
+
+        // CSV: a header and two rows holding multi-byte text, then the record, then two more rows.
+        let head = "Id,Value\r\n0,é€\r\n1,😀\r\n";
+        let tail = "3,ü\r\n4,€\r\n";
+        let csv_msg = "record exceeds the CSV record size limit (4 KiB); the rest of the file is not read as records";
+        for (record, over) in [
+            (format!("2,\"{}\"", multibyte(CAP + CAP / 2 - 4)), true),
+            (format!("2,{}", multibyte(CAP + 1 - 2)), true),
+            (format!("2,\"{}\"", multibyte(CAP - 4)), false),
+            (format!("2,{}", multibyte(CAP - 2)), false),
+        ] {
+            assert_eq!(record.len() > CAP, over, "{} bytes", record.len());
+            assert!(over || record.len() == CAP, "{} bytes", record.len());
+            let text = format!("{head}{record}\r\n{tail}");
+            let raw = with_bom(&text);
+            let start = head.len();
+            let first = capped_csv_events_bom(&raw, true, CAP, chunks[0]);
+            for chunk in chunks {
+                let got = capped_csv_events_bom(&raw, true, CAP, chunk);
+                let what = format!("CSV {} bytes, chunk {chunk}", record.len());
+                assert_eq!(got, first, "{what}: differs from chunk {}", chunks[0]);
+                assert_eq!(
+                    got[..2],
+                    ["row 0 [\"0\", \"é€\"]", "row 1 [\"1\", \"😀\"]"],
+                    "{what}"
+                );
+                if over {
+                    // The decoded span starts at the record; its bytes start after the BOM.
+                    assert_eq!(
+                        got[2..],
+                        [format!(
+                            "error 2 {start}..{} {} {} {csv_msg}",
+                            text.len(),
+                            start + 3,
+                            text.len() - start
+                        )],
+                        "{what}"
+                    );
+                } else {
+                    assert_eq!(got.len(), 5, "{what}: {got:?}");
+                    let field = record.trim_start_matches("2,").trim_matches('"');
+                    assert_eq!(got[2], format!("row 2 {:?}", ["2", field]), "{what}");
+                    assert_eq!(
+                        got[3..],
+                        ["row 3 [\"3\", \"ü\"]", "row 4 [\"4\", \"€\"]"],
+                        "{what}"
+                    );
+                }
+            }
+        }
+
+        // JSON: an array item and a top-level value, `{"a":"<multi-byte>"}`.
+        let json_msg = "record exceeds the JSON record size limit (4 KiB); the rest of the file is not read as records";
+        let value = |n: usize| format!("{{\"a\":\"{}\"}}", multibyte(n - 8));
+        for (layout, head, sep, tail) in [
+            (
+                "array",
+                "[\r\n{\"a\":\"é\"},\r\n{\"a\":\"😀\"},\r\n",
+                ",\r\n",
+                "{\"a\":\"€\"}\r\n]\r\n",
+            ),
+            (
+                "top",
+                "{\"a\":\"é\"}\r\n{\"a\":\"😀\"}\r\n",
+                "\r\n",
+                "{\"a\":\"€\"}\r\n",
+            ),
+        ] {
+            for (record, over) in [
+                (value(CAP + CAP / 2), true),
+                (value(CAP + 1), true),
+                (value(CAP), false),
+            ] {
+                let text = format!("{head}{record}{sep}{tail}");
+                let raw = with_bom(&text);
+                let start = head.len();
+                let first = capped_json_events_bom(&raw, true, CAP, chunks[0]);
+                for chunk in chunks {
+                    let got = capped_json_events_bom(&raw, true, CAP, chunk);
+                    let what = format!("JSON {layout}: {} bytes, chunk {chunk}", record.len());
+                    assert_eq!(got, first, "{what}: differs from chunk {}", chunks[0]);
+                    assert!(got[0].starts_with("record 0 "), "{what}: {got:?}");
+                    assert!(got[1].starts_with("record 1 "), "{what}: {got:?}");
+                    if over {
+                        assert_eq!(
+                            got[2..],
+                            [format!(
+                                "error 2 {start}..{} {} {} {json_msg}",
+                                text.len(),
+                                start + 3,
+                                text.len() - start
+                            )],
+                            "{what}"
+                        );
+                    } else {
+                        assert_eq!(
+                            got[2],
+                            format!("record 2 {start}..{}", start + CAP),
+                            "{what}"
+                        );
+                        assert_eq!(got.len(), 4, "{what}: {got:?}");
+                    }
+                }
+            }
+        }
     }
 
     /// A record just under the cap is read as before.

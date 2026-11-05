@@ -1,6 +1,6 @@
 //! CSV reader for PowerShell `Export-Csv` output that keeps each row's source span.
 
-use crate::readers::stream::{OnRead, Scan, Step, TextStream, scan_stream, scan_whole};
+use crate::readers::stream::{OnRead, Scan, Step, TextStream, scan_stream, scan_whole, size_text};
 use crate::readers::text::Span;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -99,8 +99,8 @@ pub(crate) fn read_csv_stream_capped(
     Ok(scan.headers)
 }
 
-/// Decoded bytes a streamed record may reach without ending before it is failed. Only an unclosed quote makes a
-/// record this long (a spreadsheet cell holds at most 32,767 characters; audit records are kilobytes), and the scan
+/// Decoded bytes a streamed record's span may hold (a span of more is failed, ended or not). Only an unclosed quote
+/// makes a record this long (a spreadsheet cell holds at most 32,767 characters; audit records are kilobytes), and the scan
 /// holds a record whole (its text, its raw bytes and its field bytes, up to about twice this each), so without a cap
 /// one stray quote in a multi-GB export would hold the rest of the file in memory. A whole-text scan has no cap (the
 /// text is already in memory and under the whole-file guard), so the two differ only for a record over the cap: one
@@ -132,15 +132,20 @@ struct CsvScan {
     headers: Vec<String>,
     have_header: bool,
     ordinal: u64,
-    /// Decoded bytes a record may reach without ending while more text follows ([`CSV_RECORD_MAX_BYTES`] when
-    /// streamed; no cap over a whole text, which is already in memory).
+    /// Decoded bytes a record's span may hold ([`CSV_RECORD_MAX_BYTES`] when streamed; no cap over a whole text,
+    /// which is already in memory).
     cap: usize,
-    /// The record that reached `cap`: its absolute start, drained to the end of the text and failed on the next step.
+    /// The record past `cap`: its absolute start, drained to the end of the text and failed on the next step.
     over_cap: Option<usize>,
 }
 
-/// The failure of a record that reached the cap.
-const OVER_CAP: &str = "record exceeds the CSV record size limit without ending (unclosed quote?); the rest of the file is not read as records";
+/// The failure of a record past the cap (ended or not).
+fn over_cap_message(cap: usize) -> String {
+    format!(
+        "record exceeds the CSV record size limit ({}); the rest of the file is not read as records",
+        size_text(cap)
+    )
+}
 
 impl CsvScan {
     fn new() -> Self {
@@ -248,7 +253,7 @@ impl Scan for CsvScan {
                         start,
                         end: base + text.len(),
                     },
-                    message: OVER_CAP.into(),
+                    message: over_cap_message(self.cap),
                 };
                 self.ordinal += 1;
                 return Step::Event(CsvEvent::Error(error));
@@ -258,10 +263,13 @@ impl Scan for CsvScan {
             // would give it: it strips a UTF-8 BOM only when all three bytes are in its first input, and a first
             // input of the BOM alone is then empty, the end.
             if !last && (input.is_empty() || (!self.fed && input.len() <= 3)) {
-                // The record so far is the window from its start: past the cap, stop holding it and drain the rest.
-                if base + text.len() - self.before > self.cap {
-                    // From the record's first char, as a row's span starts (after the previous terminator's `\n`).
-                    let start = base + skip_newlines(text, self.before - base, text.len());
+                // The record so far is the window from its first char (as a row's span starts, after the previous
+                // terminator's `\n`) to its last one that is not a line end (as a row's span ends): its span will be
+                // at least that long, so past the cap it is failed as an ended one would be (`R::Record` below), and
+                // the scan stops holding it and drains the rest.
+                let start = base + skip_newlines(text, self.before - base, text.len());
+                let end = base + trim_line_end(text, text.len());
+                if end.saturating_sub(start) > self.cap {
                     self.over_cap = Some(start);
                     return Step::DrainFrom(start);
                 }
@@ -287,6 +295,16 @@ impl Scan for CsvScan {
                     self.field_ends.resize(n, 0);
                 }
                 R::Record => {
+                    // A record whose span (from its first char to its last that is not a line end, as `record`
+                    // computes it) is past the cap is failed from its start to the end of the text, as one that has
+                    // not ended yet is: the outcome does not depend on where the windows were cut. A span of exactly
+                    // the cap is read.
+                    let end = base + trim_line_end(text, self.pos - base);
+                    let start = base + skip_newlines(text, self.before - base, end - base);
+                    if end - start > self.cap {
+                        self.over_cap = Some(start);
+                        return Step::DrainFrom(start);
+                    }
                     if let Some(event) = self.record(text, base) {
                         return Step::Event(event);
                     }
