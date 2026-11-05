@@ -28,6 +28,51 @@ pub struct TenantDomain {
     pub source: String,
 }
 
+/// A JSON string literal, escapes included.
+const JSON_STRING: &str = r#""(?:[^"\\]|\\.)*""#;
+
+/// A JSON scalar: a string, a number, `true`, `false` or `null`.
+fn json_scalar() -> String {
+    format!("(?:null|true|false|-?[0-9][0-9.eE+-]*|{JSON_STRING})")
+}
+
+/// The home tenant of each portal Entra audit row whose actor is a user (`audit_actor_home`: record_key, lower-case
+/// home), from raw's `ActorHomeTenantId` and `ActorType` keys matched case-insensitively.
+///
+/// A portal CSV row's raw is a flat object of its cells. For a flat raw (checked over its text: an object whose
+/// values are all scalars) the first key of a spelling in the text is its first top-level key, so the value is
+/// read from the text and only that value is decoded as JSON (its escapes, and a JSON null stays NULL), as
+/// `json_extract_string` over the first of `json_keys(raw)` with that lower case gives it. A nested raw (a
+/// Graph-shaped JSON download) gives no home: Graph keeps the actor's tenant under `initiatedBy`, which the
+/// top-level keys never held.
+///
+/// Raw itself is not parsed: over millions of rows json_keys + list_filter ran out of the 2 GB memory limit within a
+/// second, and so did several json_exists/json_extract_string calls per row (at 12 threads), once their result was
+/// stored or joined. Its own statement, ahead of the evidence join, for the same reason. A key is matched as written:
+/// the parser writes raw with serde_json, which never escapes a key's ASCII letters (`"Actor\u0054ype"`).
+fn audit_actor_home_sql() -> String {
+    let scalar = json_scalar();
+    let member = format!(r#"{JSON_STRING}\s*:\s*{scalar}"#);
+    let flat = format!(r#"\{{\s*(?:{member}(?:\s*,\s*{member})*)?\s*\}}"#);
+    let value = |lower: &str| {
+        format!(
+            r#"CASE WHEN flat THEN json_extract_string(CAST(nullif(nullif(regexp_extract(txt,
+                   '[{{,]\s*"(?i:{lower})"\s*:\s*({scalar})', 1), ''), 'null') AS JSON), '$') END"#
+        )
+    };
+    format!(
+        "CREATE OR REPLACE TEMP TABLE audit_actor_home AS
+         SELECT record_key, lower(home) AS home FROM (
+             SELECT record_key, {home} AS home, {actor_type} AS actor_type
+             FROM (SELECT record_key, txt, regexp_full_match(txt, '{flat}') AS flat
+                   FROM (SELECT record_key, CAST(raw AS VARCHAR) AS txt FROM directory_audits))
+         )
+         WHERE home IS NOT NULL AND home <> '' AND lower(actor_type) = 'user'",
+        home = value("actorhometenantid"),
+        actor_type = value("actortype"),
+    )
+}
+
 /// Group `collections` into tenants: `collections.tenant_key` is set and the `tenant` table is
 /// rewritten with one row per key. Returns the number of tenants.
 ///
@@ -38,7 +83,8 @@ pub struct TenantDomain {
 /// `collection:<collection_id>`. A collection with a name but no id joins a collection of the
 /// same (case-insensitive) name that has an id.
 pub fn resolve_tenants(conn: &Connection) -> Result<usize> {
-    conn.execute_batch(
+    conn.execute_batch(&audit_actor_home_sql())?;
+    let evidence = conn.execute_batch(
         "CREATE OR REPLACE TEMP TABLE tenant_evidence AS
          WITH primary_evidence AS (
              SELECT sf.collection_id, lower(CAST(u.organization_id AS VARCHAR)) AS tenant_id,
@@ -69,26 +115,22 @@ pub fn resolve_tenants(conn: &Connection) -> Result<usize> {
              -- Fallback: portal Entra audit rows (Hawk/Graph JSON audits are not counted), the actor's
              -- home tenant read from raw (case-insensitive key) when the actor is a user. A guest actor's
              -- home tenant can differ, so it counts only for a collection with no other tenant evidence.
-             SELECT sf.collection_id, lower(a.home), 'directory_audit_actor_home_tenant', 4, count(*)
+             -- The rows' home tenants are read first (see `audit_actor_home_sql`).
+             SELECT sf.collection_id, a.home, 'directory_audit_actor_home_tenant', 4, count(*)
              FROM record_sources rs
              JOIN source_files sf ON sf.file_id = rs.file_id
-             JOIN (
-                 SELECT record_key,
-                        CASE WHEN json_type(raw) = 'OBJECT' THEN
-                            json_extract_string(raw, '$.\"' || list_filter(json_keys(raw), k -> lower(k) = 'actorhometenantid')[1] || '\"')
-                        END AS home,
-                        CASE WHEN json_type(raw) = 'OBJECT' THEN
-                            json_extract_string(raw, '$.\"' || list_filter(json_keys(raw), k -> lower(k) = 'actortype')[1] || '\"')
-                        END AS actor_type
-                 FROM directory_audits
-             ) a ON rs.table_name = 'directory_audits' AND rs.record_key = a.record_key
-             WHERE a.home IS NOT NULL AND a.home <> '' AND lower(a.actor_type) = 'user'
-                   AND sf.artifact_type = 'portal.entra_audit'
+             JOIN audit_actor_home a ON rs.table_name = 'directory_audits' AND rs.record_key = a.record_key
+             WHERE sf.artifact_type = 'portal.entra_audit'
                    AND sf.collection_id NOT IN (SELECT collection_id FROM primary_evidence)
              GROUP BY ALL
          ) e
          QUALIFY row_number() OVER (PARTITION BY collection_id ORDER BY n DESC, source_rank, tenant_id) = 1;",
-    )?;
+    );
+    // Dropped whatever the evidence query did (after a failure the profile's transaction rolls back anyway, and the
+    // drop's own error is then not the one to report).
+    let dropped = conn.execute_batch("DROP TABLE IF EXISTS audit_actor_home");
+    evidence?;
+    dropped?;
 
     // Reset first: otherwise passes 2-4 (WHERE tenant_key IS NULL) never revisit a key set by
     // an earlier profile run, so a collection whose evidence changes (or newly arrives on a

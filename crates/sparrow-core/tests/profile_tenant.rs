@@ -696,6 +696,93 @@ fn message_trace_detail_and_portal_entra_audit_collections_resolve_to_their_tena
     );
 }
 
+#[test]
+fn a_portal_audit_actor_key_is_matched_as_a_key_not_inside_a_value() {
+    let mut case = Case::in_memory().unwrap();
+    let spaced_c = collection(&case, "/a", None, "2026-09-10 00:00:00+00");
+    let spoof_c = collection(&case, "/b", None, "2026-09-10 00:00:00+00");
+    let upper = T1.to_uppercase();
+    // Whitespace around keys and colons, and a key spelled in capitals, still count.
+    let spaced_f = file(&case, spaced_c);
+    portal_audit_file(&case, spaced_f);
+    audit(
+        &case,
+        spaced_f,
+        "csvrow:s",
+        &format!("{{ \"ActorType\" : \"User\" , \"ACTORHOMETENANTID\" : \"{upper}\" }}"),
+    );
+    // A value holding the text of the keys is a value: the row's own actor is an application, so it adds nothing.
+    let spoof_f = file(&case, spoof_c);
+    portal_audit_file(&case, spoof_f);
+    audit(
+        &case,
+        spoof_f,
+        "csvrow:v",
+        &format!(
+            "{{\"Note\":\"\\\",\\\"ActorHomeTenantId\\\":\\\"{T2}\\\",\\\"ActorType\\\":\\\"User\",\"ActorType\":\"Application\"}}"
+        ),
+    );
+    // Keys of a nested object are not the row's own: they add nothing.
+    let nested_c = collection(&case, "/c", None, "2026-09-10 00:00:00+00");
+    let nested_f = file(&case, nested_c);
+    portal_audit_file(&case, nested_f);
+    audit(
+        &case,
+        nested_f,
+        "csvrow:n",
+        &format!("{{\"payload\":{{\"ActorHomeTenantId\":\"{T2}\",\"ActorType\":\"User\"}}}}"),
+    );
+    // A value's escapes are decoded before it is compared: "User" is User.
+    let escaped_c = collection(&case, "/d", None, "2026-09-10 00:00:00+00");
+    let escaped_f = file(&case, escaped_c);
+    portal_audit_file(&case, escaped_f);
+    audit(
+        &case,
+        escaped_f,
+        "csvrow:e",
+        &format!("{{\"ActorType\":\"Us\\u0065r\",\"ActorHomeTenantId\":\"{T2}\"}}"),
+    );
+    // A raw with a nested object is not a portal CSV row (whose raw is flat): it adds nothing, even with top-level
+    // keys of its own.
+    let hidden_c = collection(&case, "/e", None, "2026-09-10 00:00:00+00");
+    let hidden_f = file(&case, hidden_c);
+    portal_audit_file(&case, hidden_f);
+    audit(
+        &case,
+        hidden_f,
+        "csvrow:h",
+        &format!(
+            "{{\"AdditionalDetails\":{{\"ActorHomeTenantId\":\"{T1}\",\"ActorType\":\"User\"}},\
+             \"actorHomeTenantId\":\"{T2}\",\"actorType\":\"User\"}}"
+        ),
+    );
+    // The first matching key decides, even when it is null: a later spelling adds nothing.
+    let null_c = collection(&case, "/f", None, "2026-09-10 00:00:00+00");
+    let null_f = file(&case, null_c);
+    portal_audit_file(&case, null_f);
+    audit(
+        &case,
+        null_f,
+        "csvrow:z",
+        &format!(
+            "{{\"ACTORHOMETENANTID\":null,\"ActorHomeTenantId\":\"{T2}\",\"ActorType\":\"User\"}}"
+        ),
+    );
+    refresh(&mut case, &ProfileOptions::default()).unwrap();
+    let key = |c: i64| {
+        text(
+            &case,
+            &format!("SELECT tenant_key FROM collections WHERE collection_id = {c}"),
+        )
+    };
+    assert_eq!(key(spaced_c), T1);
+    assert_eq!(key(spoof_c), format!("collection:{spoof_c}"));
+    assert_eq!(key(nested_c), format!("collection:{nested_c}"));
+    assert_eq!(key(escaped_c), T2);
+    assert_eq!(key(hidden_c), format!("collection:{hidden_c}"));
+    assert_eq!(key(null_c), format!("collection:{null_c}"));
+}
+
 /// Mark `file_id` as a portal Entra audit download (the audit fallback only counts those files).
 fn portal_audit_file(case: &Case, file_id: i64) {
     case.conn()
