@@ -1013,7 +1013,7 @@ fn full_digest(case: &sparrow_core::Case) -> std::collections::BTreeMap<String, 
             .collect::<Vec<_>>()
             .join(" || '|' || ");
         let filter = if t == "case_meta" {
-            " WHERE key <> 'case_id'"
+            " WHERE key NOT IN ('case_id', 'events_generation')"
         } else {
             ""
         };
