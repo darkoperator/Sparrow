@@ -972,3 +972,139 @@ fn a_folder_holding_only_the_portal_csv_resolves_to_the_home_tenant_of_its_user_
         "directory_audit_actor_home_tenant"
     );
 }
+/// Every base table as (name, rows, content hash), without the random case id and the clock columns.
+fn all_tables(case: &Case) -> Vec<(String, i64, String)> {
+    let sql: String = case
+        .conn()
+        .query_row(
+            "WITH c AS (
+                SELECT table_name,
+                       string_agg(format('\"{}\"', column_name), ',' ORDER BY ordinal_position) AS cols
+                FROM information_schema.columns
+                WHERE table_schema = 'main' AND table_name <> 'case_meta'
+                  AND table_name IN (SELECT table_name FROM information_schema.tables
+                                     WHERE table_type = 'BASE TABLE' AND table_schema = 'main')
+                  AND NOT regexp_matches(column_name, '(_at|started|finished|duration|elapsed)$')
+                GROUP BY table_name)
+             SELECT string_agg(format('SELECT ''{}'' AS t, count(*) AS n, CAST(coalesce(sum(hash({})), 0) AS VARCHAR) AS h FROM \"{}\"',
+                                      table_name, cols, table_name), ' UNION ALL ' ORDER BY table_name)
+             FROM c",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mut stmt = case.conn().prepare(&format!("{sql} ORDER BY t")).unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// The tables and each file's report line (status, read, loaded, duplicate, error, warnings) of an ingest of
+/// `base` with `batch_rows = batch`.
+fn run_batched(base: &Path, batch: usize) -> (Vec<(String, i64, String)>, Vec<String>) {
+    let mut case = Case::in_memory().unwrap();
+    let opts = IngestOptions {
+        batch_rows: batch,
+        ..IngestOptions::default()
+    };
+    let report = ingest_path(&mut case, base, &ParserRegistry::builtin(), &opts).unwrap();
+    let files = report
+        .collections
+        .iter()
+        .flat_map(|c| &c.files)
+        .map(|f| {
+            format!(
+                "{} {:?} {} {} {} {} {:?}",
+                f.rel_path,
+                f.status,
+                f.records_read,
+                f.records_loaded,
+                f.records_duplicate,
+                f.records_error,
+                f.warnings
+            )
+        })
+        .collect();
+    (all_tables(&case), files)
+}
+
+#[test]
+fn every_batch_size_stores_what_one_batch_stores() {
+    // The portal CSV and JSON are streamed and staged in batches: a repeated row (CSV) or id (JSON) stays a
+    // duplicate across batches (the file's first copy wins), and a bad time stays an error.
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    let at = |when: &str, corr: &str| {
+        let mut r = user_row();
+        for (k, v) in r.iter_mut() {
+            if k == "Date (UTC)" {
+                *v = when.into();
+            } else if k == "CorrelationId" {
+                *v = corr.into();
+            }
+        }
+        r
+    };
+    let rows = [
+        at(T0, "C0C0C0C0-0000-4000-8000-0000000000C1"),
+        app_row(),
+        at(T0, "C0C0C0C0-0000-4000-8000-0000000000C1"),
+        at("not a time", "C0C0C0C0-0000-4000-8000-0000000000C2"),
+        at(T0, "C0C0C0C0-0000-4000-8000-0000000000C3"),
+        app_row(),
+        at(T0, "C0C0C0C0-0000-4000-8000-0000000000C4"),
+    ];
+    fixtures::write(&root, CSV_REL, &portal_csv(&rows, false));
+    let one: Value = serde_json::from_str(&graph_audit_json()).unwrap();
+    let audit = |id: &str, when: &str| {
+        let mut a = one[0].clone();
+        a["id"] = json!(id);
+        a["activityDateTime"] = json!(when);
+        a
+    };
+    let mut no_id = audit("x", "2026-10-23T18:50:00Z");
+    no_id.as_object_mut().unwrap().remove("id");
+    // Another name than the CSV's: a JSON of the same name supersedes it.
+    let json_rel = "EntraAuditExport.json";
+    fixtures::write(
+        &root,
+        json_rel,
+        json!([
+            audit("Directory_J1", "2026-10-23T18:47:00Z"),
+            audit("Directory_J2", "2026-10-23T18:48:00Z"),
+            audit("directory_j1", "2026-10-23T18:49:00Z"),
+            no_id,
+            audit("Directory_J3", "not a time"),
+            audit("Directory_J2", "2026-10-23T18:51:00Z"),
+            audit("Directory_J4", "2026-10-23T18:52:00Z"),
+        ])
+        .to_string()
+        .as_bytes(),
+    );
+    let (want_tables, want_files) = run_batched(dir.path(), usize::MAX);
+    let file = |rel: &str| {
+        want_files
+            .iter()
+            .find(|f| f.starts_with(rel))
+            .unwrap()
+            .clone()
+    };
+    // read / loaded / duplicate / error. CSV: 7 rows, 4 distinct kept, 2 repeats, a bad time.
+    assert!(
+        file(CSV_REL).contains(" Parsed 7 4 2 1 "),
+        "{}",
+        file(CSV_REL)
+    );
+    // JSON: 7 records, 3 ids kept, 2 later copies, no id and a bad time.
+    assert!(
+        file(json_rel).contains(" Parsed 7 3 2 2 "),
+        "{}",
+        file(json_rel)
+    );
+    for batch in [1, 2, 3] {
+        let (tables, files) = run_batched(dir.path(), batch);
+        assert_eq!(files, want_files, "batch {batch}: file reports");
+        assert_eq!(tables, want_tables, "batch {batch}: tables");
+    }
+}

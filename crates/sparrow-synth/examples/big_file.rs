@@ -1,7 +1,8 @@
 //! Writes a large, recognisable evidence file for ingest memory tests.
 //!
 //! cargo run -p sparrow-synth --release --example big_file -- \
-//!   --kind <portal-ual|ual-json|signins-csv|message-trace-detail> --bytes <N> \
+//!   --kind <portal-ual|ual-json|signins-csv|message-trace-detail|message-trace-csv|entra-audit-csv> \
+//!   --bytes <N> \
 //!   --encoding <utf8|utf8bom|utf16le> --out <file> [--first <row index>] [--scatter-ids <true|false>]
 //!
 //! `ual-json` is only classified when `--out` sits under

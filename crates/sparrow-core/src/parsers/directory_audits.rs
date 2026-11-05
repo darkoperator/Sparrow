@@ -8,19 +8,23 @@
 //! JSON (keyed by `id`) or an 86-column CSV with no audit id. A CSV row is rebuilt into the
 //! Graph shape (`graph_shaped`) and goes through the same extraction as the JSON.
 
-use crate::Result;
 use crate::db::state_tables::DIRECTORY_AUDITS;
 use crate::ingest::context::ParseContext;
 use crate::ingest::parser::{ArtifactParser, ParserRegistry};
+use crate::ingest::progress::SAVING_RECORDS;
 use crate::normalize::fields::{Cell, Rec};
 use crate::normalize::net::{normalize_ip, normalize_upn};
 use crate::normalize::ual_shape::get_ci;
-use crate::parsers::records::{RecordFormat, SourceRecord};
+use crate::parsers::records::{
+    RecordEvent, RecordFormat, SourceRecord, for_each_record, holds_placeholder,
+    placeholder_message,
+};
 use crate::parsers::stage::{
-    CellRow, RowDraft, TableRows, csv_row_key, load_tables, lower, non_empty_cells,
-    read_state_records, reject, require_any_key,
+    CellRow, RowDraft, RowOut, csv_row_key, load_streamed, lower, no_tail, non_empty_cells,
+    read_state_records,
 };
 use crate::readers::time::zone_assumed;
+use crate::{Error, Result};
 use serde_json::{Map, Value, json};
 
 pub fn register(r: &mut ParserRegistry) {
@@ -75,12 +79,9 @@ fn modified_properties(targets: Option<&Value>) -> Option<Value> {
     (!out.is_empty()).then_some(Value::Array(out))
 }
 
-/// The portal CSV has these (case-insensitive) columns and no `ActivityDateTime`.
-fn is_portal_csv(records: &[SourceRecord]) -> bool {
-    records.first().is_some_and(|r| {
-        let rec = Rec::new(&r.map, false);
-        rec.has("Date (UTC)") && rec.has("Activity") && !rec.has("ActivityDateTime")
-    })
+/// The portal CSV has these (case-insensitive) columns and no `ActivityDateTime` (read from its first record).
+fn is_portal_csv(first: &Rec) -> bool {
+    first.has("Date (UTC)") && first.has("Activity") && !first.has("ActivityDateTime")
 }
 
 /// A portal CSV row as a Graph `directoryAudit` object (camelCase). Empty cells are left out;
@@ -264,50 +265,114 @@ fn audit_cells(rec: &Rec, audit_id: Option<String>, completeness: &str) -> Vec<C
 
 pub struct DirectoryAuditsParser;
 
+/// [`DirectoryAuditsParser`]'s steps: the shape pass, then [`load_streamed`]'s.
+const DIRECTORY_AUDITS_STEPS: &[&str] = &[
+    "Checking columns",
+    "Checking dates",
+    "Loading records",
+    SAVING_RECORDS,
+];
+
+/// The row of one record, or why it is rejected. Pure: [`load_streamed`] calls it twice per record.
+fn rows_of(r: &SourceRecord, format: RecordFormat, portal_csv: bool) -> RowOut {
+    if portal_csv {
+        // No audit id: the key is a hash of the row's cells; the CSV stops at 3 targets x 5
+        // properties and 6 details, so the row is partial.
+        let cells = non_empty_cells(&r.map);
+        let key = csv_row_key(&cells);
+        let shaped = graph_shaped(&r.map);
+        let cells_out = audit_cells(&Rec::new(&shaped, false), None, "partial");
+        let raw: Map<String, Value> = cells
+            .into_iter()
+            .map(|(k, v)| (k, Value::String(v)))
+            .collect();
+        return RowOut::Row {
+            table: 0,
+            draft: RowDraft {
+                ordinal: r.ordinal,
+                sight: r.sight.clone(),
+                snippet: r.snippet.clone(),
+                record_key: key,
+                cells: cells_out,
+                raw: Some(Value::Object(raw)),
+            },
+        };
+    }
+    let rec = Rec::new(&r.map, format.lossy());
+    let Some(key) = directory_audit_key(&rec) else {
+        return RowOut::Reject("directory audit has no Id".into());
+    };
+    let completeness = if format == RecordFormat::Json {
+        "full"
+    } else {
+        "partial"
+    };
+    let cells = audit_cells(&rec, Some(key.clone()), completeness);
+    // What `TableRows::push` filled: raw = the record.
+    RowOut::Row {
+        table: 0,
+        draft: RowDraft {
+            ordinal: r.ordinal,
+            sight: r.sight.clone(),
+            snippet: r.snippet.clone(),
+            record_key: key,
+            cells,
+            raw: Some(Value::Object(r.map.clone())),
+        },
+    }
+}
+
 impl ArtifactParser for DirectoryAuditsParser {
+    /// The shape pass (which stops once the shape is settled when it need not count placeholders), then
+    /// [`load_streamed`]'s two passes and its merge. Every registered path is `.csv` or `.json`.
+    fn steps(&self) -> &'static [&'static str] {
+        DIRECTORY_AUDITS_STEPS
+    }
+
+    /// A CSV/JSON audit log, streamed (see [`load_streamed`]): a tenant's directory audits can be millions of events.
     fn parse(&self, ctx: &mut ParseContext<'_>) -> Result<()> {
         let format = RecordFormat::of(ctx.rel_path);
-        let records = read_state_records(ctx, format)?;
-        let portal_csv = format == RecordFormat::Csv && is_portal_csv(&records);
-        if !portal_csv {
-            require_any_key(&records, &["ActivityDateTime"], "Entra ID directory audit")?;
-        }
-        let mut rows = TableRows::new(&DIRECTORY_AUDITS, COLS);
-        for r in &records {
-            if portal_csv {
-                // No audit id: the key is a hash of the row's cells; the CSV stops at 3 targets x 5
-                // properties and 6 details, so the row is partial.
-                let cells = non_empty_cells(&r.map);
-                let key = csv_row_key(&cells);
-                let shaped = graph_shaped(&r.map);
-                let cells_out = audit_cells(&Rec::new(&shaped, false), None, "partial");
-                let raw: Map<String, Value> = cells
-                    .into_iter()
-                    .map(|(k, v)| (k, Value::String(v)))
-                    .collect();
-                rows.push_draft(RowDraft {
-                    ordinal: r.ordinal,
-                    sight: r.sight.clone(),
-                    snippet: r.snippet.clone(),
-                    record_key: key,
-                    cells: cells_out,
-                    raw: Some(Value::Object(raw)),
-                });
-                continue;
+        ctx.set_step(0);
+        // What the collected records decided: a portal CSV by its first record, else some record must have
+        // `ActivityDateTime` (the error names the first record's columns); and the placeholder count.
+        let (mut first, mut portal_csv, mut timed, mut placeholders) = (None, false, false, 0usize);
+        let count_placeholders = format == RecordFormat::Csv && !ctx.portal_export;
+        // A shape pass: the records' sightings are not needed.
+        for_each_record(&ctx.input().with_sights(false), format, |event| {
+            if let RecordEvent::Record(r) = event {
+                let rec = Rec::new(&r.map, false);
+                if first.is_none() {
+                    portal_csv = format == RecordFormat::Csv && is_portal_csv(&rec);
+                    first = Some(r.map.keys().take(12).cloned().collect::<Vec<_>>());
+                }
+                timed |= rec.has("ActivityDateTime");
+                if count_placeholders && holds_placeholder(&r) {
+                    placeholders += 1;
+                }
+                // Settled once a portal CSV is seen or a record has its time; only the count can still change.
+                return Ok(!((portal_csv || timed) && !count_placeholders));
             }
-            let rec = Rec::new(&r.map, format.lossy());
-            let Some(key) = directory_audit_key(&rec) else {
-                reject(ctx, r, "directory audit has no Id")?;
-                continue;
-            };
-            let completeness = if format == RecordFormat::Json {
-                "full"
-            } else {
-                "partial"
-            };
-            let cells = audit_cells(&rec, Some(key.clone()), completeness);
-            rows.push(r, key, cells);
+            Ok(true)
+        })?;
+        let Some(first) = first else {
+            // No readable record: recording the unreadable ones is all there is to do (the load step's pass).
+            ctx.set_step(2);
+            read_state_records(ctx, format)?;
+            return Ok(());
+        };
+        if !ctx.portal_export
+            && let Some(w) = placeholder_message(placeholders)
+        {
+            ctx.warn(w);
         }
-        load_tables(ctx, vec![rows])
+        if !portal_csv && !timed {
+            return Err(Error::UnsupportedShape(format!(
+                "no Entra ID directory audit fields in [{}]",
+                first.join(", ")
+            )));
+        }
+        load_streamed(ctx, 1, format, &[(&DIRECTORY_AUDITS, COLS)], no_tail, |r| {
+            vec![rows_of(r, format, portal_csv)]
+        })
     }
 }

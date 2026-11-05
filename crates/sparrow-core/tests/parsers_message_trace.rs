@@ -243,3 +243,281 @@ fn trace_without_an_id_is_a_parse_error_and_other_shapes_are_not_supported() {
     let (_case, report) = ingest(dir.path());
     assert_eq!(row(&report, &rel).status, FileStatus::NotSupported);
 }
+
+/// Every base table as (name, rows, content hash), without the random case id and the clock columns.
+fn all_tables(case: &Case) -> Vec<(String, i64, String)> {
+    let sql: String = case
+        .conn()
+        .query_row(
+            "WITH c AS (
+                SELECT table_name,
+                       string_agg(format('\"{}\"', column_name), ',' ORDER BY ordinal_position) AS cols
+                FROM information_schema.columns
+                WHERE table_schema = 'main' AND table_name <> 'case_meta'
+                  AND table_name IN (SELECT table_name FROM information_schema.tables
+                                     WHERE table_type = 'BASE TABLE' AND table_schema = 'main')
+                  AND NOT regexp_matches(column_name, '(_at|started|finished|duration|elapsed)$')
+                GROUP BY table_name)
+             SELECT string_agg(format('SELECT ''{}'' AS t, count(*) AS n, CAST(coalesce(sum(hash({})), 0) AS VARCHAR) AS h FROM \"{}\"',
+                                      table_name, cols, table_name), ' UNION ALL ' ORDER BY table_name)
+             FROM c",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mut stmt = case.conn().prepare(&format!("{sql} ORDER BY t")).unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// The tables and each file's report line (status, read, loaded, duplicate, error, warnings) of an ingest of
+/// `base` with `batch_rows = batch`.
+fn run_batched(base: &Path, batch: usize) -> (Vec<(String, i64, String)>, Vec<String>) {
+    let mut case = Case::in_memory().unwrap();
+    let opts = IngestOptions {
+        batch_rows: batch,
+        ..IngestOptions::default()
+    };
+    let report = ingest_path(&mut case, base, &ParserRegistry::builtin(), &opts).unwrap();
+    let files = report
+        .collections
+        .iter()
+        .flat_map(|c| &c.files)
+        .map(|f| {
+            format!(
+                "{} {:?} {} {} {} {} {:?}",
+                f.rel_path,
+                f.status,
+                f.records_read,
+                f.records_loaded,
+                f.records_duplicate,
+                f.records_error,
+                f.warnings
+            )
+        })
+        .collect();
+    (all_tables(&case), files)
+}
+
+fn trace_at(id: Option<&str>, recipient: &str, received: &str, subject: &str) -> serde_json::Value {
+    let mut t = hawk_trace(id, recipient);
+    t["Received"] = json!(received);
+    t["Subject"] = json!(subject);
+    t
+}
+
+fn summary_line(id: &str, recipients: &str, time: &str, subject: &str) -> String {
+    csv_line(&[
+        time,
+        ALICE,
+        recipients,
+        subject,
+        "2048",
+        "<m9@contoso.example>",
+        id,
+        "203.0.113.10",
+        "Originating",
+        "",
+        "Normal",
+    ])
+}
+
+#[test]
+fn every_batch_size_stores_what_one_batch_stores() {
+    // Message trace files are streamed and staged in batches: a later copy of a key in the same file stays a
+    // duplicate across batches (the file's first copy wins), rejects and bad times stay errors, and a summary
+    // line's recipients are all its rows, whatever the batch size.
+    let (t1, t2, t3, t4) = (
+        "0e0e0e0e-0000-4000-8000-0000000000a1",
+        "0e0e0e0e-0000-4000-8000-0000000000a2",
+        "0e0e0e0e-0000-4000-8000-0000000000a3",
+        "0e0e0e0e-0000-4000-8000-0000000000a4",
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    let hawk = format!("{ALICE}/Message_Trace_{ALICE}.json");
+    fixtures::write(
+        &root,
+        &hawk,
+        fixtures::ps_json(&json!([
+            trace_at(Some(t1), "x@fabrikam.example", "2026-09-01T10:20:00", "one"),
+            trace_at(Some(t2), "y@fabrikam.example", "2026-09-01T10:21:00", "two"),
+            trace_at(
+                Some(t1),
+                "X@fabrikam.example",
+                "2026-09-01T10:22:00",
+                "one again"
+            ),
+            trace_at(None, "z@fabrikam.example", "2026-09-01T10:23:00", "no id"),
+            trace_at(Some(t3), "z@fabrikam.example", "not a time", "bad time"),
+            trace_at(
+                Some(t2),
+                "y@fabrikam.example",
+                "2026-09-01T10:24:00",
+                "two again"
+            ),
+            trace_at(
+                Some(t4),
+                "w@fabrikam.example",
+                "2026-09-01T10:25:00",
+                "four"
+            ),
+        ]))
+        .as_bytes(),
+    );
+    let portal = format!("{ALICE}/{SUMMARY}");
+    let at = "2026-09-01T11:00:00.0000000Z";
+    let csv = csv_line(SUMMARY_HEADER)
+        + &summary_line(
+            t1,
+            "x@fabrikam.example##Delivered;b@fabrikam.example##Failed",
+            at,
+            "s1",
+        )
+        + &summary_line(t3, "c@fabrikam.example##Delivered", at, "s2")
+        + &summary_line(t1, "b@fabrikam.example##Delivered", at, "s1 again")
+        + &summary_line("", "d@fabrikam.example##Delivered", at, "no id")
+        + &summary_line(
+            t4,
+            "e@fabrikam.example##Delivered",
+            "not a time",
+            "bad time",
+        )
+        + &summary_line(
+            t3,
+            "c@fabrikam.example##Delivered;f@fabrikam.example##Pending",
+            at,
+            "s2 again",
+        )
+        + &summary_line(t2, "", at, "no recipients");
+    fixtures::write(&root, &portal, &fixtures::utf16le_no_bom(&csv));
+    let (want_tables, want_files) = run_batched(dir.path(), usize::MAX);
+    let file = |rel: &str| {
+        want_files
+            .iter()
+            .find(|f| f.starts_with(rel))
+            .unwrap()
+            .clone()
+    };
+    // read / loaded / duplicate / error. Hawk: 7 records; t1|x, t2|y and t4|w kept, 2 later copies, no id and a
+    // bad time.
+    assert!(file(&hawk).contains(" Parsed 7 3 2 2 "), "{}", file(&hawk));
+    // Summary: 7 lines giving 9 (the line without an id counts once, the one without a recipient is a row keyed
+    // `<id>|`); t1|x fills the Hawk row, t1|b, t3|c, t3|f and t2| are new, two later copies, the bad time and the
+    // missing id are errors.
+    assert!(
+        file(&portal).contains(" Parsed 9 5 2 2 "),
+        "{}",
+        file(&portal)
+    );
+    for batch in [1, 2, 3] {
+        let (tables, files) = run_batched(dir.path(), batch);
+        assert_eq!(files, want_files, "batch {batch}: file reports");
+        assert_eq!(tables, want_tables, "batch {batch}: tables");
+    }
+}
+
+#[test]
+fn a_later_get_messagetrace_record_makes_the_file_get_messagetrace() {
+    // The shape is Get-MessageTrace when ANY record has MessageTraceId + RecipientAddress, even after a record of
+    // the summary shape: that first record is then a record without a MessageTraceId.
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    let rel = format!("{ALICE}/Message_Trace_{ALICE}.json");
+    fixtures::write(
+        &root,
+        &rel,
+        fixtures::ps_json(&json!([
+            {"origin_timestamp_utc": "2026-09-01T10:20:00Z", "network_message_id": TRACE,
+             "recipient_status": "x@fabrikam.example##Delivered", "sender_address": ALICE},
+            hawk_trace(Some(TRACE), "y@fabrikam.example"),
+        ]))
+        .as_bytes(),
+    );
+    let (case, report) = ingest(dir.path());
+    let f = row(&report, &rel);
+    assert_eq!(
+        (f.status, f.records_read, f.records_loaded, f.records_error),
+        (FileStatus::Parsed, 2, 1, 1),
+        "{f:#?}"
+    );
+    assert_eq!(
+        text(&case, "SELECT record_key FROM message_trace"),
+        format!("{TRACE}|y@fabrikam.example")
+    );
+    assert_eq!(
+        text(&case, "SELECT error FROM parse_errors"),
+        "message trace record has no MessageTraceId"
+    );
+}
+
+/// Thirteen keys, so the error names only the first record's first twelve.
+fn foreign_record(tag: &str) -> serde_json::Value {
+    let mut m = serde_json::Map::new();
+    for k in [
+        "Zulu", "Alpha", "Mike", "Bravo", "Yankee", "Charlie", "Xray", "Delta", "Whiskey", "Echo",
+        "Victor", "Foxtrot", "Uniform",
+    ] {
+        m.insert(format!("{k}{tag}"), json!(1));
+    }
+    serde_json::Value::Object(m)
+}
+
+#[test]
+fn an_unsupported_shape_names_the_first_record_s_first_twelve_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    let rel = format!("{ALICE}/Message_Trace_{ALICE}.json");
+    fixtures::write(
+        &root,
+        &rel,
+        fixtures::ps_json(&json!([foreign_record("1"), foreign_record("2")])).as_bytes(),
+    );
+    let (case, report) = ingest(dir.path());
+    let f = row(&report, &rel);
+    // The values the collected parser (aed066fc) gave.
+    assert_eq!(
+        (f.status, f.records_read, f.records_loaded, f.records_error),
+        (FileStatus::NotSupported, 0, 0, 0)
+    );
+    assert_eq!(
+        f.warnings,
+        [
+            "hawk.user.message_trace: no message trace fields (MessageTraceId + RecipientAddress, or network_message_id + recipient_status) in [Zulu1, Alpha1, Mike1, Bravo1, Yankee1, Charlie1, Xray1, Delta1, Whiskey1, Echo1, Victor1, Foxtrot1]"
+        ]
+    );
+    assert_eq!(count(&case, "SELECT count(*) FROM message_trace"), 0);
+}
+
+#[test]
+fn a_file_of_only_unreadable_records_records_them_and_loads_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = capture(dir.path());
+    let rel = format!("{ALICE}/Message_Trace_{ALICE}.json");
+    fixtures::write(&root, &rel, b"[1, \"two\", [3]]");
+    let (case, report) = ingest(dir.path());
+    let f = row(&report, &rel);
+    // The values the collected parser (aed066fc) gave.
+    assert_eq!(
+        (
+            f.status,
+            f.records_read,
+            f.records_loaded,
+            f.records_duplicate,
+            f.records_error
+        ),
+        (FileStatus::Parsed, 3, 0, 0, 3)
+    );
+    assert!(f.warnings.is_empty(), "{:?}", f.warnings);
+    let errs: String = text(
+        &case,
+        "SELECT string_agg(record_ordinal || ':' || line_start || ':' || byte_offset || ':' || byte_length || ':' || error || ':' || raw_snippet, ' | ' ORDER BY record_ordinal) FROM parse_errors",
+    );
+    assert_eq!(
+        errs,
+        "0:1:1:1:record is not a JSON object:1 | 1:1:4:5:record is not a JSON object:\"two\" | 2:1:11:3:record is not a JSON object:[3]"
+    );
+    assert_eq!(count(&case, "SELECT count(*) FROM message_trace"), 0);
+}

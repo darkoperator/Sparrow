@@ -22,14 +22,20 @@ pub enum BigKind {
     SigninsCsv,
     /// Exchange admin center message trace detail CSV (`portal.message_trace_detail`).
     MessageTraceDetail,
+    /// Exchange admin center message trace summary CSV (`portal.message_trace`), one recipient per message.
+    MessageTraceCsv,
+    /// Entra admin center audit log CSV download (`portal.entra_audit`, 86 columns, no audit id).
+    EntraAuditCsv,
 }
 
 impl BigKind {
-    pub const ALL: [BigKind; 4] = [
+    pub const ALL: [BigKind; 6] = [
         BigKind::PortalUal,
         BigKind::UalJson,
         BigKind::SigninsCsv,
         BigKind::MessageTraceDetail,
+        BigKind::MessageTraceCsv,
+        BigKind::EntraAuditCsv,
     ];
 
     pub fn parse(s: &str) -> Option<BigKind> {
@@ -38,6 +44,8 @@ impl BigKind {
             "ual-json" => BigKind::UalJson,
             "signins-csv" => BigKind::SigninsCsv,
             "message-trace-detail" => BigKind::MessageTraceDetail,
+            "message-trace-csv" => BigKind::MessageTraceCsv,
+            "entra-audit-csv" => BigKind::EntraAuditCsv,
             _ => return None,
         })
     }
@@ -51,6 +59,9 @@ impl BigKind {
             }
             BigKind::SigninsCsv => "InteractiveSignIns_2026-01-01_2026-01-31.csv",
             BigKind::MessageTraceDetail => "MTDetail_big.csv",
+            // Both are recognized by their header, whatever the name.
+            BigKind::MessageTraceCsv => "MTSummary_big.csv",
+            BigKind::EntraAuditCsv => "AuditLogs_big.csv",
         }
     }
 }
@@ -209,6 +220,47 @@ fn write_rows<W: Write>(
     Ok(())
 }
 
+/// The Entra admin center audit log CSV's 86 columns, in Microsoft's order.
+fn entra_audit_headers() -> Vec<String> {
+    let mut c: Vec<String> = [
+        "Date (UTC)",
+        "CorrelationId",
+        "Service",
+        "Category",
+        "Activity",
+        "Result",
+        "ResultReason",
+        "User Agent",
+        "ActorType",
+        "ActorDisplayName",
+        "ActorObjectId",
+        "ActorUserPrincipalName",
+        "IPAddress",
+        "ActorHomeTenantId",
+        "ActorHomeTenantName",
+        "ActorServicePrincipalId",
+        "ActorServicePrincipalName",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    for n in 1..=3 {
+        for f in ["Type", "DisplayName", "ObjectId", "UserPrincipalName"] {
+            c.push(format!("Target{n}{f}"));
+        }
+        for m in 1..=5 {
+            for f in ["Name", "OldValue", "NewValue"] {
+                c.push(format!("Target{n}ModifiedProperty{m}{f}"));
+            }
+        }
+    }
+    for k in 1..=6 {
+        c.push(format!("AdditionalDetail{k}Key"));
+        c.push(format!("AdditionalDetail{k}Value"));
+    }
+    c
+}
+
 /// Where a file's rows start and how their ids look.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BigOptions {
@@ -295,6 +347,57 @@ pub fn write_big_file_with(
                 )
             })?;
         }
+        BigKind::MessageTraceCsv => {
+            sink.text("origin_timestamp_utc,sender_address,recipient_status,message_subject,total_bytes,message_id,network_message_id,original_client_ip,directionality,connector_id,delivery_priority\r\n")?;
+            write_rows(&mut sink, bytes, opts.first, "", "", |i| {
+                let (d, t) = stamp(i);
+                format!(
+                    "{d}T{t}.0000000Z,sender@fabrikam.example,kelly.chambers@contoso.example##Delivered,Quarterly report {i},4096,<{}@fabrikam.example>,{},203.0.113.5,Incoming,Inbound from Internet,Normal\r\n",
+                    guid(0x1a2b, i),
+                    guid(0x3c4d, i),
+                )
+            })?;
+        }
+        BigKind::EntraAuditCsv => {
+            let headers = entra_audit_headers();
+            sink.text(&headers.join(","))?;
+            sink.text("\r\n")?;
+            write_rows(&mut sink, bytes, opts.first, "", "", |i| {
+                let (d, t) = stamp(i);
+                let fields: Vec<String> = headers
+                    .iter()
+                    .map(|h| match h.as_str() {
+                        "Date (UTC)" => format!("{d}T{t}.0000000+00:00"),
+                        "CorrelationId" => guid(0x5e6f, i),
+                        "Service" => "Core Directory".into(),
+                        "Category" => "UserManagement".into(),
+                        "Activity" => "Update user".into(),
+                        "Result" => "success".into(),
+                        "User Agent" => "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36".into(),
+                        "ActorType" => "User".into(),
+                        "ActorDisplayName" => "Kelly Chambers".into(),
+                        "ActorObjectId" => "b086bc34-4d29-464b-85de-b1f53d90a0dd".into(),
+                        "ActorUserPrincipalName" => "kelly.chambers@contoso.example".into(),
+                        "IPAddress" => "192.0.2.13".into(),
+                        "ActorHomeTenantId" => "d5c9185c-9bf3-45a3-92f3-c19c635feb78".into(),
+                        "Target1Type" => "User".into(),
+                        "Target1DisplayName" => "Rowan Porter".into(),
+                        "Target1ObjectId" => guid(0x7a8b, i),
+                        "Target1UserPrincipalName" => "rowan.porter@contoso.example".into(),
+                        "Target1ModifiedProperty1Name" => "StrongAuthenticationMethod".into(),
+                        "Target1ModifiedProperty1OldValue" => "[]".into(),
+                        "Target1ModifiedProperty1NewValue" => "[{\"MethodType\":6,\"Default\":true}]".into(),
+                        "Target1ModifiedProperty2Name" => "Included Updated Properties".into(),
+                        "Target1ModifiedProperty2NewValue" => "\"StrongAuthenticationMethod\"".into(),
+                        "AdditionalDetail1Key" => "UserType".into(),
+                        "AdditionalDetail1Value" => "Member".into(),
+                        _ => String::new(),
+                    })
+                    .map(|f| csv_field(&f))
+                    .collect();
+                fields.join(",") + "\r\n"
+            })?;
+        }
     }
     sink.finish()
 }
@@ -320,6 +423,8 @@ mod tests {
             BigKind::UalJson => ("inv.ual.merged", "ual_events"),
             BigKind::SigninsCsv => ("portal.entra_signins", "signins"),
             BigKind::MessageTraceDetail => ("portal.message_trace_detail", "message_trace_events"),
+            BigKind::MessageTraceCsv => ("portal.message_trace", "message_trace"),
+            BigKind::EntraAuditCsv => ("portal.entra_audit", "directory_audits"),
         }
     }
 
@@ -357,6 +462,56 @@ mod tests {
                 .unwrap();
             assert!(rows > 500, "{kind:?}: only {rows} rows loaded");
             assert_eq!(errors, 0, "{kind:?}: parse errors");
+        }
+    }
+
+    /// The portal state exports load one row per line (one recipient per message, one audit per row), every
+    /// row its own key, none an error.
+    #[test]
+    fn portal_state_kinds_load_one_row_per_line() {
+        for kind in [BigKind::MessageTraceCsv, BigKind::EntraAuditCsv] {
+            let dir = tempfile::tempdir().unwrap();
+            let out = dir.path().join(kind.example_rel_path());
+            write_big_file(kind, 200_000, BigEncoding::Utf8, &out).unwrap();
+            let lines = std::fs::read_to_string(&out).unwrap().lines().count() as i64;
+            let mut case = Case::in_memory().unwrap();
+            let report = ingest_path(
+                &mut case,
+                dir.path(),
+                &ParserRegistry::builtin(),
+                &IngestOptions::default(),
+            )
+            .unwrap_or_else(|e| panic!("{kind:?}: ingest failed: {e}"));
+            let f = report
+                .collections
+                .iter()
+                .flat_map(|c| &c.files)
+                .find(|f| f.rel_path == kind.example_rel_path())
+                .unwrap();
+            let (artifact, target) = expected(kind);
+            assert_eq!(f.artifact_id.as_deref(), Some(artifact), "{kind:?}");
+            assert_eq!(
+                (
+                    f.records_read,
+                    f.records_loaded,
+                    f.records_duplicate,
+                    f.records_error
+                ),
+                ((lines - 1) as u64, (lines - 1) as u64, 0, 0),
+                "{kind:?}: {f:#?}"
+            );
+            let (rows, keys, errors): (i64, i64, i64) = case
+                .conn()
+                .query_row(
+                    &format!(
+                        "SELECT count(*), count(DISTINCT record_key), (SELECT count(*) FROM parse_errors) FROM {target}"
+                    ),
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap();
+            assert!(lines > 100, "{kind:?}: {lines} lines");
+            assert_eq!((rows, keys, errors), (lines - 1, lines - 1, 0), "{kind:?}");
         }
     }
 

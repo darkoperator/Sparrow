@@ -944,7 +944,14 @@ fn every_parser_reports_its_steps_from_0_to_100_percent() {
 #[test]
 fn streamed_parsers_walk_every_step() {
     // Each streamed export alone, small but over several reads: every step of its parser, in order.
-    let want: [(BigKind, &[&str]); 4] = [
+    let state_steps: &[&str] = &[
+        "Checking file",
+        "Checking columns",
+        "Checking dates",
+        "Loading records",
+        "Saving records",
+    ];
+    let want: [(BigKind, &[&str]); 6] = [
         (BigKind::PortalUal, &UAL_STEPS),
         (BigKind::UalJson, &UAL_STEPS),
         (
@@ -968,6 +975,8 @@ fn streamed_parsers_walk_every_step() {
                 "Saving records",
             ],
         ),
+        (BigKind::MessageTraceCsv, state_steps),
+        (BigKind::EntraAuditCsv, state_steps),
     ];
     for (kind, steps) in want {
         let dir = tempfile::tempdir().unwrap();
