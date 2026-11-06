@@ -322,19 +322,19 @@ fn counts(c: Category, items: &[&Item]) -> (u64, u64, Option<String>) {
             )
         }
         Category::File => {
-            let key = |i: &Item| {
-                i.location
-                    .clone()
-                    .or(i.item.clone())
-                    .unwrap_or(i.record_key.clone())
+            // `location` is the item's folder (SourceRelativeUrl), so a file is its folder and its name; a record
+            // without a name (a sharing record, an unnamed item) is its own record.
+            let key = |i: &Item| match &i.item {
+                Some(n) => (true, i.location.clone(), n.clone()),
+                None => (false, None, i.record_key.clone()),
             };
-            let direct: BTreeSet<String> = items
+            let direct: BTreeSet<_> = items
                 .iter()
                 .filter(|i| i.attribution != Attribution::Time)
                 .map(|i| key(i))
                 .collect();
-            let all: BTreeSet<String> = items.iter().map(|i| key(i)).collect();
-            let downloads: BTreeSet<String> = items
+            let all: BTreeSet<_> = items.iter().map(|i| key(i)).collect();
+            let downloads: BTreeSet<_> = items
                 .iter()
                 .filter(|i| i.action.to_lowercase().contains("download"))
                 .map(|i| key(i))

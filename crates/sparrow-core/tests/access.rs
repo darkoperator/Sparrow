@@ -1154,6 +1154,109 @@ fn sharing_notes_the_target() {
 }
 
 #[test]
+fn file_tile_counts_files_in_one_folder_separately() {
+    // SourceRelativeUrl is the item's folder, so the folder alone does not name a file: two files in one folder are
+    // two files, and the same file downloaded twice is one.
+    let case = Case::in_memory().unwrap();
+    for (key, secs, name) in [(R1, 0, "a.pdf"), (R2, 60, "b.pdf"), (R3, 120, "a.pdf")] {
+        ual_w(
+            &case,
+            key,
+            "OneDrive",
+            "FileDownloaded",
+            Some(IP),
+            secs,
+            "other",
+            json!({}),
+        );
+        insert_row(
+            &case,
+            "file_events",
+            "contoso",
+            json!({"record_id": key, "item_type": "file", "is_onenote": false, "file_name": name,
+            "site_url": "https://contoso-my.sharepoint.com/personal/jdoe/", "relative_url": "Documents/Desktop",
+            "application_name": "Microsoft Office"}),
+        );
+    }
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let r = access::report(case.conn(), Some(JDOE)).unwrap();
+    let t = tile(&r.accounts[0], Category::File);
+    assert_eq!((t.direct, t.by_time), (2, 0));
+    assert_eq!(t.qualifier.as_deref(), Some("2 downloaded"));
+}
+
+#[test]
+fn file_tile_keeps_unnamed_items_and_folders_without_a_site_apart() {
+    // Two unnamed items in one folder are two records; one name in two folders (no SiteUrl) is two files; a file
+    // reached directly and by time counts once, as direct.
+    let case = Case::in_memory().unwrap();
+    let rows = [
+        (
+            R1,
+            0,
+            Some(IP),
+            json!({"site_url": "https://c.sharepoint.com/", "relative_url": "Docs"}),
+        ),
+        (
+            R2,
+            60,
+            Some(IP),
+            json!({"site_url": "https://c.sharepoint.com/", "relative_url": "Docs"}),
+        ),
+        (
+            R3,
+            120,
+            Some(IP),
+            json!({"relative_url": "A", "file_name": "x.pdf"}),
+        ),
+        (
+            R4,
+            180,
+            Some(IP),
+            json!({"relative_url": "B", "file_name": "x.pdf"}),
+        ),
+        (
+            R5,
+            240,
+            None,
+            json!({"relative_url": "B", "file_name": "x.pdf"}),
+        ),
+    ];
+    for (key, secs, ip, mut f) in rows {
+        ual_w(
+            &case,
+            key,
+            "SharePoint",
+            "FileAccessed",
+            ip,
+            secs,
+            "other",
+            json!({}),
+        );
+        f["record_id"] = json!(key);
+        f["item_type"] = json!("file");
+        f["is_onenote"] = json!(false);
+        insert_row(&case, "file_events", "contoso", f);
+    }
+    vflag(&case, "ip", IP, None, State::Accepted);
+    let f = items_of(&case, Category::File);
+    let locs: Vec<_> = f
+        .iter()
+        .filter(|i| i.item.is_some())
+        .map(|i| i.location.as_deref())
+        .collect();
+    assert!(
+        locs.contains(&Some("A")) && locs.contains(&Some("B")),
+        "{locs:?}"
+    );
+    let r = access::report(case.conn(), Some(JDOE)).unwrap();
+    let t = tile(&r.accounts[0], Category::File);
+    let timed = f.iter().any(|i| i.attribution == Attribution::Time);
+    assert!(timed, "R5 should be tied by time");
+    assert_eq!((t.direct, t.by_time), (4, 0));
+}
+
+#[test]
 fn teams_reads_by_time_are_marked_time() {
     let case = Case::in_memory().unwrap();
     ual_w(

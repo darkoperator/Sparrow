@@ -171,7 +171,7 @@ fn rest_sql() -> String {
              FROM sharing_events sh WHERE sh.record_id IN (SELECT rid FROM attributed_ual) GROUP BY 1), \
          files AS ( \
            SELECT a.account, 'file' AS category, {common} AS accessed, u.operation AS action, f.file_name AS item, \
-               f.site_url || coalesce(f.relative_url, '') AS location, NULL AS \"from\", NULL AS \"to\", \
+               nullif(coalesce(f.site_url, '') || coalesce(f.relative_url, ''), '') AS location, NULL AS \"from\", NULL AS \"to\", \
                NULL::BIGINT AS size_bytes, NULL::BIGINT AS item_time, f.application_name AS app, u.client_ip AS ip, \
                u.session_id, NULL AS owner, 'shared with ' || sh.targets AS note, {src} \
              FROM {UAL} JOIN file_events f ON f.record_id = u.record_id LEFT JOIN shares sh ON sh.record_id = u.record_id \

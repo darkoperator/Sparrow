@@ -230,7 +230,7 @@ describe("AccessView for an account", () => {
     expect(screen.getByRole("listitem", { name: "Emails read" })).toHaveTextContent("1 what-if");
     expect(within(screen.getByRole("list", { name: "Scope" })).getByText(/WHAT-IF ip 198\.51\.100\.7/)).toBeInTheDocument();
     // A table seen on its own (scrolled past the banner) still says so in its heading.
-    expect(screen.getByRole("heading", { name: /Emails read \(3\)/ })).toHaveTextContent("PREVIEW");
+    expect(screen.getByRole("heading", { name: /Emails read \(3 events\)/ })).toHaveTextContent("PREVIEW");
     // Off again: the reviewed answer, no banner.
     await user.click(screen.getByRole("checkbox", { name: "Include pending agent flags" }));
     expect(api.accessReport).toHaveBeenLastCalledWith(A, null);

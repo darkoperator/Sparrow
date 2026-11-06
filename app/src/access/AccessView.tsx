@@ -158,7 +158,7 @@ function ItemTable({ category, items, preview, showAccount }: { category: Access
   return (
     <section className="access-table card">
       <h5>
-        {title} ({items.length})
+        {title} ({items.length} {items.length === 1 ? "event" : "events"})
         {/* A table seen on its own, scrolled past the banner, still says it is not the reviewed answer. */}
         {preview && <span className="access-basis"> · PREVIEW, not the reviewed answer</span>}
       </h5>
