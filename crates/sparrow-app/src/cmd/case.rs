@@ -1,5 +1,5 @@
 use crate::error::CmdResult;
-use crate::settings::{self, Settings};
+use crate::settings::{self, GeoipStatus, Settings};
 use crate::state::{self, AppState, CaseInfo};
 use std::path::PathBuf;
 use tauri::State;
@@ -12,6 +12,19 @@ pub fn settings_get(state: State<'_, AppState>) -> CmdResult<Settings> {
 #[tauri::command(async)]
 pub fn settings_set_analyst(state: State<'_, AppState>, name: String) -> CmdResult<Settings> {
     settings::settings_set_analyst(&state, &name)
+}
+
+#[tauri::command(async)]
+pub fn settings_geoip(state: State<'_, AppState>) -> CmdResult<GeoipStatus> {
+    Ok(settings::geoip_status(&state))
+}
+
+#[tauri::command(async)]
+pub fn settings_set_geoip_dir(
+    state: State<'_, AppState>,
+    dir: Option<String>,
+) -> CmdResult<GeoipStatus> {
+    settings::settings_set_geoip_dir(&state, dir.as_deref())
 }
 
 #[tauri::command(async)]

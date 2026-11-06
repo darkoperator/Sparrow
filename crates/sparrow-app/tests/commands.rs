@@ -2387,7 +2387,7 @@ fn highlights_round_trip_with_caps() {
     let v = serde_json::to_value(settings_get(&state).unwrap()).unwrap();
     assert_eq!(
         v.as_object().unwrap().keys().collect::<Vec<_>>(),
-        ["analyst", "recent"]
+        ["analyst", "recent", "geoip_dir"]
     );
     // Clear removes one case only.
     highlights_clear(&state, "case-1").unwrap();

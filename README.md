@@ -30,7 +30,7 @@ Test builds are on the [Releases page](https://github.com/darkoperator/Sparrow/r
 
 - A supported Rust toolchain (Rust 1.85.1 or newer), Cargo, and a C/C++ compiler to build the bundled DuckDB. The first build compiles DuckDB and can take several minutes.
 - macOS, Linux, or Windows with enough free disk space for the collector tree, the case file, and the build output. Memory and disk needs depend on the evidence volume; leave headroom for DuckDB's working data and exports. No customer-data sizing claim is implied here.
-- Optional MaxMind GeoLite2 City and ASN `.mmdb` files in one directory, passed with `--geoip-dir DIR`. Without them there is no geolocation, and rules requiring GeoIP report `not_applicable` rather than silently returning no hits.
+- Optional MaxMind GeoLite2 City and ASN `.mmdb` files in one directory, passed with `--geoip-dir DIR`. The app reads them from the GeoIP folder chosen in its import dialog, or from `~/geoip` when no folder is chosen and that folder holds both. Without them there is no geolocation, and rules requiring GeoIP report `not_applicable` rather than silently returning no hits.
 
 ## Try it with synthetic evidence
 

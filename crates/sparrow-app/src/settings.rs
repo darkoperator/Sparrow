@@ -21,6 +21,9 @@ pub struct Settings {
     pub analyst: Option<String>,
     /// Most recent first, no duplicates, at most [`MAX_RECENT`].
     pub recent: Vec<String>,
+    /// The folder of the MaxMind GeoLite2 City and ASN `.mmdb` files the profile step reads. `None`: the default
+    /// folder ([`default_geoip_dir`]) when it holds both databases.
+    pub geoip_dir: Option<String>,
 }
 
 impl Settings {
@@ -97,6 +100,173 @@ pub fn record_recent(state: &AppState, path: &str) -> CmdResult<()> {
     let mut s = load(&dir);
     s.push_recent(path);
     save_or_err(&dir, &s)
+}
+
+// ---------------------------------------------------------------- GeoIP
+
+/// The folder looked at when no GeoIP folder is set: `geoip` in the home directory (`~/geoip`). On Windows the
+/// profile folder (`USERPROFILE`) comes first: a `HOME` there is often a Unix-style path set by another tool.
+pub fn default_geoip_dir() -> Option<PathBuf> {
+    let (first, second) = if cfg!(windows) {
+        ("USERPROFILE", "HOME")
+    } else {
+        ("HOME", "USERPROFILE")
+    };
+    [first, second]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .find(|h| !h.is_empty())
+        .map(|h| PathBuf::from(h).join("geoip"))
+}
+
+/// The folders a GeoIP lookup chooses from, read from the settings without looking at the disk. Read it before
+/// taking the case lock (lock order: the case, then the settings), then [`GeoipSource::resolve`] right before the
+/// profile reads the databases, so a drive unplugged during a long import means no GeoIP, not a failed profile.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GeoipSource {
+    pub configured: Option<PathBuf>,
+    pub default: Option<PathBuf>,
+}
+
+impl GeoipSource {
+    pub fn resolve(&self) -> GeoipStatus {
+        resolve_geoip(self.configured.as_deref(), self.default.as_deref())
+    }
+}
+
+/// The configured GeoIP folder from the settings, and the default folder.
+pub fn geoip_source(state: &AppState) -> GeoipSource {
+    let configured = {
+        let guard = state.settings_dir.lock().unwrap_or_else(|p| p.into_inner());
+        guard.as_deref().and_then(|d| load(d).geoip_dir)
+    };
+    GeoipSource {
+        configured: configured.map(PathBuf::from),
+        default: default_geoip_dir(),
+    }
+}
+
+/// Where the profile step gets country and ASN from, and why.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct GeoipStatus {
+    /// The folder set in the settings, if any.
+    pub configured: Option<String>,
+    /// The folder the profile step will read; `None`: no GeoIP this run.
+    pub dir: Option<String>,
+    /// Whether that folder (or the configured one, when it is unusable) holds a City / an ASN database.
+    pub city: bool,
+    pub asn: bool,
+    /// Why there is no GeoIP or only part of it, for the import result card; `None` when both databases are there.
+    pub problem: Option<String>,
+}
+
+/// The configured folder when set (used even with one database missing; unusable when it is gone or holds
+/// neither), else `default` when it holds both databases.
+pub fn resolve_geoip(configured: Option<&Path>, default: Option<&Path>) -> GeoipStatus {
+    let shown = |p: &Path| p.display().to_string();
+    if let Some(dir) = configured {
+        let configured = Some(shown(dir));
+        return match sparrow_core::enrich::ip::geoip_dir_databases(dir) {
+            Ok((city, asn)) if city || asn => GeoipStatus {
+                configured,
+                dir: Some(shown(dir)),
+                city,
+                asn,
+                problem: (!(city && asn)).then(|| {
+                    format!(
+                        "the GeoIP folder {} has no GeoLite2 {} database",
+                        dir.display(),
+                        if city { "ASN" } else { "City" }
+                    )
+                }),
+            },
+            Ok(_) => GeoipStatus {
+                configured,
+                dir: None,
+                city: false,
+                asn: false,
+                problem: Some(format!(
+                    "the GeoIP folder {} holds no GeoLite2 City or ASN .mmdb file: addresses get no country or ASN",
+                    dir.display()
+                )),
+            },
+            Err(e) => GeoipStatus {
+                configured,
+                dir: None,
+                city: false,
+                asn: false,
+                problem: Some(format!(
+                    "the GeoIP folder {} cannot be read ({e}): addresses get no country or ASN",
+                    dir.display()
+                )),
+            },
+        };
+    }
+    if let Some(dir) = default {
+        if let Ok((true, true)) = sparrow_core::enrich::ip::geoip_dir_databases(dir) {
+            return GeoipStatus {
+                configured: None,
+                dir: Some(shown(dir)),
+                city: true,
+                asn: true,
+                problem: None,
+            };
+        }
+    }
+    GeoipStatus {
+        configured: None,
+        dir: None,
+        city: false,
+        asn: false,
+        problem: Some(format!(
+            "no GeoIP folder is set{}: addresses get no country or ASN. Choose the folder of the MaxMind GeoLite2 \
+             City and ASN .mmdb files in the import dialog",
+            default
+                .map(|d| format!(" and {} does not hold both GeoLite2 databases", d.display()))
+                .unwrap_or_default()
+        )),
+    }
+}
+
+/// The GeoIP folder the profile step will use now. No settings directory (tests) means the default folder only.
+pub fn geoip_status(state: &AppState) -> GeoipStatus {
+    geoip_source(state).resolve()
+}
+
+/// Set the GeoIP folder (it must hold both a City and an ASN database), or clear it with `None` (back to the
+/// default folder). A blank value clears too; any other value is kept exactly as given (a folder name may end in a
+/// space).
+pub fn settings_set_geoip_dir(state: &AppState, dir: Option<&str>) -> CmdResult<GeoipStatus> {
+    let dir = match dir {
+        None => None,
+        Some(d) if d.trim().is_empty() => None,
+        Some(d) => {
+            let path = Path::new(d);
+            if !path.is_absolute() {
+                return Err(bad(format!(
+                    "the GeoIP folder must be an absolute path: {d}"
+                )));
+            }
+            let (city, asn) = sparrow_core::enrich::ip::geoip_dir_databases(path)
+                .map_err(|e| bad(format!("cannot read the GeoIP folder {d}: {e}")))?;
+            if !(city && asn) {
+                let missing = match (city, asn) {
+                    (false, false) => "a GeoLite2 City and a GeoLite2 ASN database",
+                    (false, true) => "a GeoLite2 City database",
+                    _ => "a GeoLite2 ASN database",
+                };
+                return Err(bad(format!("{d} does not hold {missing} (.mmdb)")));
+            }
+            Some(d.to_string())
+        }
+    };
+    {
+        let (_guard, settings_dir) = locked(state)?;
+        let mut s = load(&settings_dir);
+        s.geoip_dir = dir;
+        save_or_err(&settings_dir, &s)?;
+    }
+    Ok(geoip_status(state))
 }
 
 // ---------------------------------------------------------------- highlights
@@ -274,6 +444,159 @@ pub fn highlights_clear(state: &AppState, case_id: &str) -> CmdResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sparrow_core::enrich::mmdb_writer::{asn, city, write_mmdb};
+    use std::net::IpAddr;
+
+    /// A folder holding a synthetic City and/or ASN database (documentation addresses only).
+    fn geoip_folder(with_city: bool, with_asn: bool) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let net: IpAddr = "192.0.2.0".parse().unwrap();
+        if with_city {
+            let v = city("US", "United States", "Example", 0.0, 0.0);
+            std::fs::write(
+                dir.path().join("City.mmdb"),
+                write_mmdb("GeoLite2-City", 1, &[(net, 24, v)]),
+            )
+            .unwrap();
+        }
+        if with_asn {
+            let v = asn(64500, "Example AS");
+            std::fs::write(
+                dir.path().join("ASN.mmdb"),
+                write_mmdb("GeoLite2-ASN", 1, &[(net, 24, v)]),
+            )
+            .unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn the_default_folder_is_used_only_with_both_databases() {
+        let both = geoip_folder(true, true);
+        let s = resolve_geoip(None, Some(both.path()));
+        assert_eq!(s.dir.as_deref(), Some(both.path().to_str().unwrap()));
+        assert!(s.city && s.asn && s.problem.is_none());
+
+        let half = geoip_folder(true, false);
+        let s = resolve_geoip(None, Some(half.path()));
+        assert_eq!(s.dir, None);
+        assert!(s.problem.unwrap().contains("no GeoIP folder is set"));
+
+        let s = resolve_geoip(None, Some(&half.path().join("missing")));
+        assert_eq!(s.dir, None);
+        assert!(s.problem.is_some());
+    }
+
+    #[test]
+    fn a_configured_folder_wins_and_says_what_it_lacks() {
+        let default = geoip_folder(true, true);
+        let configured = geoip_folder(false, true);
+        let s = resolve_geoip(Some(configured.path()), Some(default.path()));
+        assert_eq!(s.dir.as_deref(), Some(configured.path().to_str().unwrap()));
+        assert!(!s.city && s.asn);
+        assert!(s.problem.unwrap().contains("no GeoLite2 City database"));
+
+        // Gone (an unplugged drive): no GeoIP this run, never a silent switch to the default folder.
+        let gone = configured.path().join("gone");
+        let s = resolve_geoip(Some(&gone), Some(default.path()));
+        assert_eq!(s.dir, None);
+        assert_eq!(s.configured.as_deref(), Some(gone.to_str().unwrap()));
+        assert!(s.problem.unwrap().contains("cannot be read"));
+
+        let empty = geoip_folder(false, false);
+        let s = resolve_geoip(Some(empty.path()), Some(default.path()));
+        assert_eq!(s.dir, None);
+        assert!(s.problem.unwrap().contains("holds no GeoLite2"));
+    }
+
+    #[test]
+    fn setting_the_folder_needs_both_databases_and_clearing_restores_the_default() {
+        let settings_dir = tempfile::tempdir().unwrap();
+        let state = AppState::default();
+        *state.settings_dir.lock().unwrap() = Some(settings_dir.path().to_path_buf());
+
+        let half = geoip_folder(true, false);
+        let err = settings_set_geoip_dir(&state, Some(half.path().to_str().unwrap())).unwrap_err();
+        assert_eq!(err.kind, "invalid");
+        assert!(err.message.contains("ASN"));
+        assert_eq!(load(settings_dir.path()).geoip_dir, None);
+        assert_eq!(
+            settings_set_geoip_dir(&state, Some("relative/geoip"))
+                .unwrap_err()
+                .kind,
+            "invalid"
+        );
+
+        let both = geoip_folder(true, true);
+        let path = both.path().to_str().unwrap();
+        let s = settings_set_geoip_dir(&state, Some(path)).unwrap();
+        assert_eq!(s.configured.as_deref(), Some(path));
+        assert_eq!(s.dir.as_deref(), Some(path));
+        assert_eq!(load(settings_dir.path()).geoip_dir.as_deref(), Some(path));
+
+        let s = settings_set_geoip_dir(&state, None).unwrap();
+        assert_eq!(s.configured, None);
+        assert_eq!(load(settings_dir.path()).geoip_dir, None);
+    }
+
+    #[test]
+    fn a_source_looks_at_the_disk_when_resolved_not_when_read() {
+        let folder = geoip_folder(true, true);
+        let path = folder.path().to_path_buf();
+        let source = GeoipSource {
+            configured: Some(path.clone()),
+            default: None,
+        };
+        assert_eq!(
+            source.resolve().dir.as_deref(),
+            Some(path.to_str().unwrap())
+        );
+        // The drive is unplugged between the start of an import and its profile step.
+        drop(folder);
+        let s = source.resolve();
+        assert_eq!(s.dir, None);
+        assert!(s.problem.unwrap().contains("cannot be read"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_name_ending_in_a_space_is_kept_as_given() {
+        let settings_dir = tempfile::tempdir().unwrap();
+        let state = AppState::default();
+        *state.settings_dir.lock().unwrap() = Some(settings_dir.path().to_path_buf());
+        let parent = tempfile::tempdir().unwrap();
+        let spaced = parent.path().join("GeoIP ");
+        std::fs::create_dir(&spaced).unwrap();
+        for f in ["City.mmdb", "ASN.mmdb"] {
+            std::fs::copy(geoip_folder(true, true).path().join(f), spaced.join(f)).unwrap();
+        }
+        let s = settings_set_geoip_dir(&state, Some(spaced.to_str().unwrap())).unwrap();
+        assert_eq!(s.configured.as_deref(), Some(spaced.to_str().unwrap()));
+        assert_eq!(
+            load(settings_dir.path()).geoip_dir.as_deref(),
+            Some(spaced.to_str().unwrap())
+        );
+        // Blank clears.
+        assert_eq!(
+            settings_set_geoip_dir(&state, Some("  "))
+                .unwrap()
+                .configured,
+            None
+        );
+    }
+
+    #[test]
+    fn settings_written_before_the_geoip_field_still_load() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(FILE),
+            br#"{"analyst":"carlos","recent":["/c.duckdb"]}"#,
+        )
+        .unwrap();
+        let s = load(dir.path());
+        assert_eq!(s.analyst.as_deref(), Some("carlos"));
+        assert_eq!(s.geoip_dir, None);
+    }
 
     #[test]
     fn recent_paths_are_most_recent_first_deduplicated_and_capped() {

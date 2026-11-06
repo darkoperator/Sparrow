@@ -8,6 +8,7 @@
 //! up. A native window close during an import stops it the same way and is held back until the profile is done.
 
 use crate::error::{CmdError, CmdResult};
+use crate::settings::{GeoipSource, GeoipStatus};
 use crate::state::{AppState, check_query_id, query_cancel, with_case};
 use serde::{Deserialize, Serialize};
 use sparrow_core::Case;
@@ -434,19 +435,22 @@ fn detect_wanted(detect: bool, stopped: bool, ingest_failed: bool, profile_ok: b
 /// that came during it spares the detection run.
 fn profile_and_detect(
     case: &mut Case,
+    geoip: &GeoipSource,
     detect: bool,
     ingest_failed: bool,
     stopped: &dyn Fn() -> bool,
     emit: &Emit,
 ) -> (ProfileOutcome, Option<DetectOutcome>) {
+    // Looked at now, not when the import started: the folder may have gone since.
+    let geoip = geoip.resolve();
     let opts = ProfileOptions {
         dirs: DataDirs::from_env(),
-        geoip_dir: None,
+        geoip_dir: geoip.dir.as_ref().map(PathBuf::from),
         as_of: None,
     };
     emit(&ProgressEvent::Profile);
     let profile = match refresh(case, &opts) {
-        Ok(r) => ProfileOutcome::Done(r.warnings),
+        Ok(r) => ProfileOutcome::Done(geoip_warnings(&geoip, r.warnings)),
         Err(e) => ProfileOutcome::Failed(format!("{e:#}")),
     };
     let profile_ok = matches!(profile, ProfileOutcome::Done(_));
@@ -476,12 +480,28 @@ struct Piped {
     detected: Option<DetectOutcome>,
 }
 
+/// The profile warnings with the app's GeoIP problem in place of core's `--geoip-dir` wording (which names a CLI
+/// option the analyst never set): first, so a case without country and ASN says so at the top of the result card.
+fn geoip_warnings(geoip: &GeoipStatus, warnings: Vec<String>) -> Vec<String> {
+    let Some(problem) = &geoip.problem else {
+        return warnings;
+    };
+    let mut out = vec![problem.clone()];
+    out.extend(
+        warnings
+            .into_iter()
+            .filter(|w| !w.starts_with("no --geoip-dir") && !w.starts_with("--geoip-dir has no")),
+    );
+    out
+}
+
 /// Ingest `collections` into `case`, then profile (always, over whatever committed) and detect. A hard ingest error
 /// after at least one committed file is kept beside the report; with nothing committed it is returned.
 fn run_pipeline(
     case: &mut Case,
     collections: &[DiscoveredCollection],
     opts: &IngestOptions,
+    geoip: &GeoipSource,
     detect: bool,
     emit: &Emit,
 ) -> CmdResult<Piped> {
@@ -493,7 +513,7 @@ fn run_pipeline(
             return Err(e.into());
         }
         let stop = || run.stopped || opts.cancelled_now();
-        let (profile, _) = profile_and_detect(case, false, true, &stop, emit);
+        let (profile, _) = profile_and_detect(case, geoip, false, true, &stop, emit);
         return Ok(Piped {
             report: run.report,
             stopped: stop(),
@@ -503,7 +523,7 @@ fn run_pipeline(
         });
     }
     let stop = || run.stopped || opts.cancelled_now();
-    let (profile, detected) = profile_and_detect(case, detect, ingest_failed, &stop, emit);
+    let (profile, detected) = profile_and_detect(case, geoip, detect, ingest_failed, &stop, emit);
     Ok(Piped {
         stopped: stop(),
         report: run.report,
@@ -682,6 +702,8 @@ pub fn ingest_run(
 ) -> CmdResult<IngestResult> {
     check_query_id(run_id)?;
     let _run = RunGuard::claim(ing, state)?;
+    // Read before the case lock (lock order: the case, then the settings).
+    let geoip = crate::settings::geoip_source(state);
     // The case this request saw, before anything is read: the lock check below refuses a different one.
     let generation = state.generation.load(Ordering::SeqCst);
     let date_order = culture
@@ -741,7 +763,7 @@ pub fn ingest_run(
             let case_path = open.path.display().to_string();
             // Detection reopens the writer unlocked: it is locked again, or the case closed, however this ends.
             let piped = with_relock(state, &mut slot, |open| {
-                run_pipeline(&mut open.case, &collections, &opts, detect, emit)
+                run_pipeline(&mut open.case, &collections, &opts, &geoip, detect, emit)
             })?;
             Ok(summarise(case_path, &snapshot, piped))
         }
@@ -757,7 +779,7 @@ pub fn ingest_run(
             }
             refuse_inside_evidence(new_path, &collections)?;
             let mut case = Case::create_or_open(new_path)?;
-            let out = run_pipeline(&mut case, &collections, &opts, detect, emit);
+            let out = run_pipeline(&mut case, &collections, &opts, &geoip, detect, emit);
             // Closing the case folds its WAL in; an import that loaded nothing leaves no case file behind.
             drop(case);
             match out {
@@ -836,6 +858,8 @@ pub fn ingest_profile(
 ) -> CmdResult<ProfileRun> {
     check_query_id(run_id)?;
     let _run = RunGuard::claim(ing, state)?;
+    // Read before the case lock (lock order: the case, then the settings).
+    let geoip = crate::settings::geoip_source(state);
     let generation = state.generation.load(Ordering::SeqCst);
     let mut slot = state.open.lock().unwrap_or_else(|p| p.into_inner());
     if state.generation.load(Ordering::SeqCst) != generation {
@@ -856,7 +880,14 @@ pub fn ingest_profile(
     let stop = move || shared.stop_requested(&id);
     let (profile, detected) = with_relock(state, &mut slot, |open| {
         release_lock_down(&mut open.case)?;
-        Ok(profile_and_detect(&mut open.case, true, false, &stop, emit))
+        Ok(profile_and_detect(
+            &mut open.case,
+            &geoip,
+            true,
+            false,
+            &stop,
+            emit,
+        ))
     })?;
     let (profile_error, profile_warnings) = match profile {
         ProfileOutcome::Failed(e) => (Some(e), Vec::new()),
@@ -877,7 +908,37 @@ pub fn ingest_profile(
 
 #[cfg(test)]
 mod tests {
-    use super::detect_wanted;
+    use super::{GeoipStatus, detect_wanted, geoip_warnings};
+
+    #[test]
+    fn the_app_geoip_problem_replaces_the_cli_wording_and_comes_first() {
+        let none = GeoipStatus {
+            configured: None,
+            dir: None,
+            city: false,
+            asn: false,
+            problem: Some("no GeoIP folder is set".into()),
+        };
+        let core = vec![
+            "3 value(s) in IP columns are not IP addresses (skipped)".to_string(),
+            "no --geoip-dir: ip_intel has no geolocation or ASN".to_string(),
+        ];
+        assert_eq!(
+            geoip_warnings(&none, core.clone()),
+            vec![
+                "no GeoIP folder is set".to_string(),
+                "3 value(s) in IP columns are not IP addresses (skipped)".to_string(),
+            ]
+        );
+        let ok = GeoipStatus {
+            dir: Some("/g".into()),
+            city: true,
+            asn: true,
+            problem: None,
+            ..none
+        };
+        assert_eq!(geoip_warnings(&ok, core.clone()), core);
+    }
 
     #[test]
     fn detection_needs_to_be_asked_for_unstopped_whole_and_profiled() {

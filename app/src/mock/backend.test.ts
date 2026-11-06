@@ -151,8 +151,10 @@ const fresh = async () => {
 };
 
 const TABLE: { cmd: string; args?: Obj; check: (r: unknown) => void }[] = [
-  { cmd: "settings_get", check: (r) => keys(r, ["analyst", "recent"]) },
+  { cmd: "settings_geoip", check: (r) => keys(r, ["configured", "dir", "city", "asn", "problem"]) },
+  { cmd: "settings_get", check: (r) => keys(r, ["analyst", "recent", "geoip_dir"]) },
   { cmd: "settings_set_analyst", args: { name: "dana" }, check: (r) => expect((r as Obj).analyst).toBe("dana") },
+  { cmd: "settings_set_geoip_dir", args: { dir: "/mnt/geo" }, check: (r) => expect((r as Obj).dir).toBe("/mnt/geo") },
   { cmd: "case_open", args: { path: "/c.duckdb", allowUpgrade: false }, check: (r) => { keys(r, ["path", "case_id", "schema_version", "audit_ok", "read_only_reason", "tenants", "warnings"]); expect((r as Obj).path).toBe("/c.duckdb"); } },
   { cmd: "case_close", check: (r) => expect(r).toBeNull() },
   { cmd: "review_queue", check: (r) => arrOf(r, ["source"]) },

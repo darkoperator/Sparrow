@@ -141,7 +141,8 @@ After loading, `sparrow ingest` runs the profile step (again at any time with `s
   licensed, not enabled, beyond retention, available but not collected, or unknown, with the reason and
   the collector command that would fill the gap. Agents should call `sparrow capabilities --json` first.
 - `ip_intel`: MaxMind GeoLite2 City and ASN (`--geoip-dir DIR` holding the `.mmdb` files; without it
-  there is no geolocation), Microsoft 365 service ranges (bundled snapshot) and hosting-provider ASNs
+  there is no geolocation; the app uses the GeoIP folder set in its import dialog, else `~/geoip` when it
+  holds both databases, and a profile without them keeps an earlier run's values), Microsoft 365 service ranges (bundled snapshot) and hosting-provider ASNs
   (`rules/lists/hosting_asns.yaml`).
 - `identities` / `identity_aliases`: one identity per actor across UPN, object id, UAL PUID and app id.
 - `operation_catalog`, `timeline` and `auth_events`: every event in one time-ordered view with category,

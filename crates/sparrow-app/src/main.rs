@@ -63,6 +63,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             cmd::case::settings_get,
             cmd::case::settings_set_analyst,
+            cmd::case::settings_geoip,
+            cmd::case::settings_set_geoip_dir,
             cmd::case::case_open,
             cmd::case::case_close,
             cmd::review::commands::review_queue,

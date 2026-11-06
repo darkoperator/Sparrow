@@ -43,7 +43,11 @@ const hex = (n: number) => n.toString(16).padStart(64, "0");
 
 // ------------------------------------------------------------------------------------------------ state
 
-let settings: Settings = { analyst: "carlos", recent: ["/cases/synthetic-bec-aitm.duckdb"] };
+let settings: Settings = { analyst: "carlos", recent: ["/cases/synthetic-bec-aitm.duckdb"], geoip_dir: null };
+const geoipStatus = () =>
+  settings.geoip_dir === null
+    ? { configured: null, dir: "/home/analyst/geoip", city: true, asn: true, problem: null }
+    : { configured: settings.geoip_dir, dir: settings.geoip_dir, city: true, asn: true, problem: null };
 let info: CaseInfo | null = null;
 let queue: QueueItem[] = fx.queue();
 let timeline: TimelineEntry[] = makeTimeline();
@@ -398,6 +402,12 @@ type Args = Record<string, unknown> | undefined;
 const handlers: Record<string, (a: Args) => unknown> = {
   settings_get: () => settings,
   settings_set_analyst: (a) => (settings = { ...settings, analyst: str(a, "name") }),
+  settings_geoip: () => geoipStatus(),
+  settings_set_geoip_dir: (a) => {
+    const dir = (a as Record<string, unknown>).dir;
+    settings = { ...settings, geoip_dir: typeof dir === "string" && dir !== "" ? dir : null };
+    return geoipStatus();
+  },
   case_open: (a) => {
     const path = str(a, "path");
     if (/upgrade/i.test(path) && a?.allowUpgrade !== true) fail("needs_upgrade", "The case is an older schema; upgrade it to open it (mock).");

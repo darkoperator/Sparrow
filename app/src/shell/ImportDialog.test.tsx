@@ -10,6 +10,8 @@ vi.mock("../api", async (orig) => ({
   ingestCancel: vi.fn(),
   onIngestProgress: vi.fn(),
   onIngestClosing: vi.fn(),
+  settingsGeoip: vi.fn(),
+  settingsSetGeoipDir: vi.fn(),
 }));
 const dialogOpen = vi.fn();
 const dialogSave = vi.fn();
@@ -27,7 +29,10 @@ const m = {
   cancel: vi.mocked(api.ingestCancel),
   listen: vi.mocked(api.onIngestProgress),
   closing: vi.mocked(api.onIngestClosing),
+  geoip: vi.mocked(api.settingsGeoip),
+  setGeoip: vi.mocked(api.settingsSetGeoipDir),
 };
+const GEOIP_DEFAULT = { configured: null, dir: "/home/analyst/geoip", city: true, asn: true, problem: null };
 
 const file = (
   rel_path: string,
@@ -102,6 +107,7 @@ beforeEach(() => {
   });
   dialogOpen.mockResolvedValue("/evidence/run-1");
   m.discover.mockResolvedValue(previewOf(FILES));
+  m.geoip.mockResolvedValue(GEOIP_DEFAULT);
 });
 
 const onClose = vi.fn();
@@ -270,6 +276,67 @@ describe("ImportDialog options", () => {
     await pickFolder(user);
     await user.click(screen.getByRole("button", { name: "Choose where to save…" }));
     expect(screen.getByRole("button", { name: "Create the case and import" })).toBeDisabled();
+  });
+});
+
+describe("ImportDialog GeoIP folder", () => {
+  it("shows the folder the profile will read", async () => {
+    const user = userEvent.setup();
+    render(<ImportDialog mode="open" onClose={onClose} />);
+    await pickFolder(user);
+    expect(await screen.findByText("/home/analyst/geoip")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Use ~/geoip" })).not.toBeInTheDocument();
+  });
+
+  it("says why addresses will get no country or ASN", async () => {
+    m.geoip.mockResolvedValue({ configured: null, dir: null, city: false, asn: false, problem: "no GeoIP folder is set" });
+    const user = userEvent.setup();
+    render(<ImportDialog mode="open" onClose={onClose} />);
+    await pickFolder(user);
+    expect(await screen.findByText("no GeoIP folder is set")).toBeInTheDocument();
+  });
+
+  it("Change… stores the chosen folder; Use ~/geoip clears it", async () => {
+    m.setGeoip.mockResolvedValueOnce({ configured: "/mnt/geo", dir: "/mnt/geo", city: true, asn: true, problem: null });
+    m.setGeoip.mockResolvedValueOnce(GEOIP_DEFAULT);
+    const user = userEvent.setup();
+    render(<ImportDialog mode="open" onClose={onClose} />);
+    await pickFolder(user);
+    dialogOpen.mockResolvedValue("/mnt/geo");
+    await user.click(screen.getByRole("button", { name: "Change…" }));
+    expect(m.setGeoip).toHaveBeenLastCalledWith("/mnt/geo");
+    expect(await screen.findByText("/mnt/geo")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Use ~/geoip" }));
+    expect(m.setGeoip).toHaveBeenLastCalledWith(null);
+    expect(await screen.findByText("/home/analyst/geoip")).toBeInTheDocument();
+  });
+
+  it("a first status that answers after a change does not undo it", async () => {
+    let answer: (s: typeof GEOIP_DEFAULT) => void = () => {};
+    m.geoip.mockReturnValue(new Promise((r) => (answer = r)));
+    m.setGeoip.mockResolvedValue({ configured: "/mnt/geo", dir: "/mnt/geo", city: true, asn: true, problem: null });
+    const user = userEvent.setup();
+    render(<ImportDialog mode="open" onClose={onClose} />);
+    await pickFolder(user);
+    dialogOpen.mockResolvedValue("/mnt/geo");
+    await user.click(screen.getByRole("button", { name: "Change…" }));
+    expect(await screen.findByText("/mnt/geo")).toBeInTheDocument();
+    answer(GEOIP_DEFAULT);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.getByText("/mnt/geo")).toBeInTheDocument();
+    expect(screen.queryByText("/home/analyst/geoip")).not.toBeInTheDocument();
+  });
+
+  it("a folder without both databases is refused with the reason", async () => {
+    const refused: CmdError = { kind: "invalid", message: "/mnt/half does not hold a GeoLite2 ASN database (.mmdb)" };
+    m.setGeoip.mockRejectedValue(refused);
+    const user = userEvent.setup();
+    render(<ImportDialog mode="open" onClose={onClose} />);
+    await pickFolder(user);
+    dialogOpen.mockResolvedValue("/mnt/half");
+    await user.click(screen.getByRole("button", { name: "Change…" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("GeoLite2 ASN");
+    expect(screen.getByText("/home/analyst/geoip")).toBeInTheDocument();
   });
 });
 

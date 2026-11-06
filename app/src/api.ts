@@ -59,6 +59,18 @@ export async function call<T>(cmd: string, args?: Record<string, unknown>): Prom
 export interface Settings {
   analyst: string | null;
   recent: string[];
+  /** The GeoIP folder the analyst chose; `null`: `~/geoip` when it holds both databases. */
+  geoip_dir?: string | null;
+}
+
+/** `settings::GeoipStatus`: where the profile step gets country and ASN from. */
+export interface GeoipStatus {
+  configured: string | null;
+  /** The folder the next profile reads; `null`: addresses get no country or ASN. */
+  dir: string | null;
+  city: boolean;
+  asn: boolean;
+  problem: string | null;
 }
 
 export interface CaseInfo {
@@ -224,6 +236,9 @@ export interface FindingDetail {
 
 export const settingsGet = () => call<Settings>("settings_get");
 export const settingsSetAnalyst = (name: string) => call<Settings>("settings_set_analyst", { name });
+export const settingsGeoip = () => call<GeoipStatus>("settings_geoip");
+/** Sets the GeoIP folder (it must hold a GeoLite2 City and an ASN database); `null` goes back to `~/geoip`. */
+export const settingsSetGeoipDir = (dir: string | null) => call<GeoipStatus>("settings_set_geoip_dir", { dir });
 export const caseOpen = (path: string, allowUpgrade = false) => call<CaseInfo>("case_open", { path, allowUpgrade });
 export const caseClose = () => call<null>("case_close");
 

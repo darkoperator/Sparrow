@@ -209,6 +209,13 @@ fn open_readers(dir: &Path) -> Result<OpenReaders> {
     Ok((city, asn, warnings))
 }
 
+/// Which MaxMind databases `dir` holds: `(city, asn)`, classified exactly as the profile step classifies them
+/// (`metadata().database_type` containing "City" / "ASN"). The directory not existing is an error.
+pub fn geoip_dir_databases(dir: &Path) -> Result<(bool, bool)> {
+    let (city, asn, _warnings) = open_readers(dir)?;
+    Ok((city.is_some(), asn.is_some()))
+}
+
 struct CityFields {
     country_iso: Option<String>,
     country: Option<String>,

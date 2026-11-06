@@ -8,6 +8,9 @@ import {
   ingestRun,
   isCmdError,
   onIngestClosing,
+  settingsGeoip,
+  settingsSetGeoipDir,
+  type GeoipStatus,
   onIngestProgress,
   type DiscoveryPreview,
   type IngestProgress,
@@ -47,6 +50,75 @@ const newRunId = () =>
 const FOCUSABLE = "button:not([disabled]), select:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex='-1'])";
 const message = (e: unknown) => (isCmdError(e) ? e.message : String(e));
 const n = (v: number) => v.toLocaleString("en-US");
+
+/**
+ * Where the profile step gets country and ASN: the chosen GeoIP folder, else ~/geoip when it holds both GeoLite2
+ * databases. "Change…" picks a folder (refused unless it holds a City and an ASN database); "Use ~/geoip" clears it.
+ */
+export function GeoipField({ disabled }: { disabled: boolean }) {
+  const [status, setStatus] = useState<GeoipStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // Set once the analyst changed the folder: the first status read, if it answers later, no longer applies.
+  const changed = useRef(false);
+  useEffect(() => {
+    let live = true;
+    settingsGeoip().then(
+      (s) => live && !changed.current && setStatus(s),
+      (e) => live && !changed.current && setError(message(e)),
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+  const change = async () => {
+    const chosen = await open({ multiple: false, directory: true });
+    if (typeof chosen !== "string") return; // cancelled
+    try {
+      const s = await settingsSetGeoipDir(chosen);
+      changed.current = true;
+      setStatus(s);
+      setError(null);
+    } catch (e) {
+      setError(message(e));
+    }
+  };
+  const backToDefault = async () => {
+    try {
+      const s = await settingsSetGeoipDir(null);
+      changed.current = true;
+      setStatus(s);
+      setError(null);
+    } catch (e) {
+      setError(message(e));
+    }
+  };
+  return (
+    <div className="import-field">
+      <span className="label">GeoIP (country and ASN)</span>
+      <span className="import-target">
+        <button className="btn" disabled={disabled} onClick={() => void change()}>
+          Change…
+        </button>
+        {status?.configured && (
+          <button className="btn btn-ghost" disabled={disabled} onClick={() => void backToDefault()}>
+            Use ~/geoip
+          </button>
+        )}
+        {status?.dir && (
+          <span className="mono import-path" title={displaySafe(status.dir)}>
+            {displaySafe(status.dir)}
+          </span>
+        )}
+      </span>
+      {status?.problem && (
+        <span className="meta" role="status">
+          {displaySafe(status.problem)}
+        </span>
+      )}
+      {error && <span role="alert">{displaySafe(error)}</span>}
+    </div>
+  );
+}
 
 const UNITS = ["KiB", "MiB", "GiB", "TiB"];
 /** The unit `bytes` is best shown in: -1 for bytes, else an index into `UNITS`. */
@@ -272,6 +344,7 @@ export default function ImportDialog({ mode, onClose, onOpenCase, clock = Date.n
                     ))}
                   </select>
                 </label>
+                <GeoipField disabled={busy !== null} />
                 <label className="import-check">
                   <input type="checkbox" checked={skipDetect} onChange={(e) => setSkipDetect(e.target.checked)} />
                   Skip detection (the profile still runs)
