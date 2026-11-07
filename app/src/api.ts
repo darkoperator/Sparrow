@@ -1076,13 +1076,13 @@ export interface FindingRef {
 }
 
 /** `case::coverage::RangeState`: what the case holds of one source over a range. */
-export type CoverageState = "covered" | "sampled" | "absent";
+export type CoverageState = "covered" | "sampled" | "absent" | "collector_gap";
 
 /** `case::coverage::SourceState`. `accounts_by_state` is empty for a tenant-wide source (message trace, Entra audit). */
 export interface CoverageSource {
   source: string;
   title: string;
-  /** The worst over the accounts: absent, then sampled, then covered. */
+  /** The worst over the accounts: collector gap, then absent, then sampled, then covered. */
   state: CoverageState;
   accounts_by_state: Partial<Record<CoverageState, string[]>>;
 }

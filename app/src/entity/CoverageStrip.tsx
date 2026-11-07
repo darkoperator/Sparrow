@@ -9,25 +9,33 @@ export const CLOSING_LINE = "Absence of an action here is not proof it didn't ha
 
 /** One sentence for a source that is not covered; when only some of the accounts judged are in that state, how many. */
 export function sentence(s: CoverageSource): string {
-  const text = s.state === "sampled" ? `${s.title} in this range is sampled (capped export)` : `${s.title} in this range has no data`;
+  const text =
+    s.state === "sampled"
+      ? `${s.title} in this range is sampled (capped export)`
+      : s.state === "collector_gap"
+        ? `${s.title} in this range: collector gap`
+        : `${s.title} in this range has no data`;
   const total = Object.values(s.accounts_by_state).reduce((n, list) => n + list.length, 0);
   const some = s.accounts_by_state[s.state]?.length ?? 0;
   return some > 0 && some < total ? `${text} for ${some} of ${total} accounts` : text;
 }
 
-const STATES: CoverageState[] = ["absent", "sampled", "covered"];
+const STATES: CoverageState[] = ["collector_gap", "absent", "sampled", "covered"];
+const STATE_LABEL: Record<CoverageState, string> = { collector_gap: "Collector gap", absent: "Absent", sampled: "Sampled", covered: "Covered" };
+export const COLLECTOR_GAP_HINT = "The collector could not collect this range; re-collect it.";
 const TENANT_WIDE = new Set(["message_trace", "entra_audit"]);
 
 function hover(s: CoverageSource, from: string | null, to: string | null): string {
   const lines: string[] = [];
   if (TENANT_WIDE.has(s.source)) {
-    lines.push(`Judged for the whole tenant: ${s.state}.`);
+    lines.push(`Judged for the whole tenant: ${STATE_LABEL[s.state].toLowerCase()}.`);
   } else {
     for (const st of STATES) {
       const accounts = s.accounts_by_state[st];
-      if (accounts && accounts.length > 0) lines.push(`${st[0].toUpperCase()}${st.slice(1)}: ${accounts.map(displaySafe).join(", ")}`);
+      if (accounts && accounts.length > 0) lines.push(`${STATE_LABEL[st]}: ${accounts.map(displaySafe).join(", ")}`);
     }
   }
+  if (s.state === "collector_gap") lines.push(COLLECTOR_GAP_HINT);
   lines.push(from && to ? `Days are UTC days, ${from} to ${to}, both included.` : "Days are UTC days.");
   return lines.join("\n");
 }
@@ -41,7 +49,7 @@ function Section({ t, from, to, label }: { t: TenantCoverage; from: string | nul
       <ul className="coverage-chips">
         {open.map((s) => (
           <li key={s.source}>
-            <span className={`coverage-chip coverage-${s.state}`} tabIndex={0} title={hover(s, from, to)}>
+            <span className={`coverage-chip coverage-${s.state.replace("_", "-")}`} tabIndex={0} title={hover(s, from, to)}>
               {displaySafe(sentence(s))}
             </span>
           </li>

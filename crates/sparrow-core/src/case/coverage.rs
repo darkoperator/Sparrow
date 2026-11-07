@@ -883,7 +883,7 @@ pub fn coverage(conn: &Connection, opts: &CoverageOptions) -> Result<Coverage> {
 
 /// One source's state over a date range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum RangeState {
     /// Rows exist in the range and none came from a capped export.
     Covered,
@@ -891,6 +891,8 @@ pub enum RangeState {
     Sampled,
     /// No rows in the range.
     Absent,
+    /// The collector's manifests say it could not collect part of the range (worst).
+    CollectorGap,
 }
 
 impl RangeState {
@@ -899,6 +901,7 @@ impl RangeState {
             RangeState::Covered => "covered",
             RangeState::Sampled => "sampled",
             RangeState::Absent => "absent",
+            RangeState::CollectorGap => "collector_gap",
         }
     }
 }
@@ -925,6 +928,27 @@ fn state_of(rows: Option<bool>) -> RangeState {
         Some(true) => RangeState::Sampled,
         Some(false) => RangeState::Covered,
     }
+}
+
+/// The state with the collector's word on the range: an open gap in it is `CollectorGap` whatever the rows; a range
+/// proven collected throughout (some tenant's vouching covers it) turns an absent source into covered. Sampled stays
+/// sampled. `per_tenant` yields `(gaps, vouched)` of each tenant whose manifests speak.
+fn manifest_state(
+    base: RangeState,
+    range: &Spans,
+    per_tenant: impl Iterator<Item = (Spans, Spans)>,
+) -> RangeState {
+    let mut state = base;
+    for (gaps, vouched) in per_tenant {
+        if !gaps.intersect(range).is_empty() {
+            return RangeState::CollectorGap;
+        }
+        // Only `absent` is upgraded: vouching proves the collector ran, not that a capped export held every record.
+        if state == RangeState::Absent && range.minus(&vouched).is_empty() {
+            state = RangeState::Covered;
+        }
+    }
+    state
 }
 
 /// `(rows, sampled)` of the tenant-wide sources in the range, per source, over the tenants selected.
@@ -1002,13 +1026,32 @@ pub fn coverage_for_range(
         )?
     };
     let wide = tenant_wide_states(conn, tenant, span)?;
+    // The tenants whose manifests speak (R8): the one asked for, or each with a counted unit.
+    let index = collector::load(conn)?;
+    let manifest_tenants: Vec<&str> = match tenant {
+        Some(t) => index.has_tenant(t).then_some(t).into_iter().collect(),
+        None => index.tenants().collect(),
+    };
+    let range_span = Spans::from_iter([Span {
+        start_us: span.0,
+        end_us: span.1,
+    }]);
     let mut sources = Vec::new();
     for (id, title) in SOURCES {
         if TENANT_WIDE.contains(id) {
             sources.push(SourceState {
                 source: (*id).to_string(),
                 title: (*title).to_string(),
-                state: state_of(wide.get(id).copied()),
+                state: manifest_state(
+                    state_of(wide.get(id).copied()),
+                    &range_span,
+                    manifest_tenants.iter().map(|t| {
+                        (
+                            index.tenant_wide_gaps(t, id),
+                            index.vouched_tenant_wide(t, id),
+                        )
+                    }),
+                ),
                 accounts_by_state: BTreeMap::new(),
             });
             continue;
@@ -1025,7 +1068,13 @@ pub fn coverage_for_range(
                 .filter(|((s, _, a), _)| s == id && a == acct)
                 .map(|(_, st)| st.sampled)
                 .collect();
-            let state = state_of((!held.is_empty()).then(|| held.contains(&true)));
+            let state = manifest_state(
+                state_of((!held.is_empty()).then(|| held.contains(&true))),
+                &range_span,
+                manifest_tenants
+                    .iter()
+                    .map(|t| (index.account_gaps(t, acct, id), index.vouched(t, acct, id))),
+            );
             worst = worst.max(state);
             by_state
                 .entry(state.as_str().to_string())

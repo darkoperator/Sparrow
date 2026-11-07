@@ -437,6 +437,14 @@ impl ManifestIndex {
         !self.units(tenant).is_empty()
     }
 
+    /// The tenants with a counted unit, sorted.
+    pub fn tenants(&self) -> impl Iterator<Item = &str> {
+        self.by_tenant
+            .iter()
+            .filter(|(_, u)| !u.is_empty())
+            .map(|(t, _)| t.as_str())
+    }
+
     fn units(&self, tenant: &str) -> &[Unit] {
         self.by_tenant.get(tenant).map_or(&[], Vec::as_slice)
     }

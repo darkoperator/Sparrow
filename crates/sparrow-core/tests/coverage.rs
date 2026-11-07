@@ -1812,3 +1812,133 @@ fn collector_gaps_show_in_the_report_without_accounts() {
     assert!(section.contains("### Collector gaps"), "{section}");
     assert!(section.contains("retries\\_exhausted"), "{section}");
 }
+
+// ---- Collector manifests (Task 6): range coverage and the entity strip. Synthetic manifests only. ----
+
+#[test]
+fn range_with_open_collector_gap_is_collector_gap() {
+    let (case, c, f) = manifest_case(vec![
+        manifest::M::run("Get-UALGraph", "partial").unit(
+            manifest::U::new(
+                &["ual"],
+                "2026-08-01T00:00:00Z",
+                "2026-09-11T00:00:00Z",
+                "partial",
+            )
+            .gap(
+                "2026-09-04T00:00:00Z",
+                "2026-09-06T00:00:00Z",
+                "retries_exhausted",
+            ),
+        ),
+    ]);
+    ual(&case, c, f, 1, "2026-09-05 10:00:00", "Send", MA);
+    ual(&case, c, f, 2, "2026-09-08 10:00:00", "Send", MB);
+    let r = range(&case, Some("t1"), &[MA, MB], "2026-09-05", "2026-09-05");
+    let s = line(&r, "ual");
+    // The row on 09-05 does not hide the gap; the state is the worst, listed under the account.
+    assert_eq!(s.state, RangeState::CollectorGap);
+    assert_eq!(by_state(s), vec![("collector_gap", vec![MA, MB])]);
+    assert_eq!(
+        serde_json::to_value(s.state).unwrap(),
+        serde_json::json!("collector_gap")
+    );
+    // A range clear of the gap: vouched throughout, so a with-rows and a no-rows account are both covered.
+    let r = range(&case, Some("t1"), &[MA, MB], "2026-09-07", "2026-09-08");
+    assert_eq!(line(&r, "ual").state, RangeState::Covered);
+    assert_eq!(by_state(line(&r, "ual")), vec![("covered", vec![MA, MB])]);
+}
+
+#[test]
+fn vouched_empty_range_is_covered() {
+    let (case, c, f) = manifest_case(vec![
+        manifest::M::run("Get-GraphEntraSignInLogs", "complete").unit(manifest::U::new(
+            &["signins_interactive"],
+            "2026-08-01T00:00:00Z",
+            "2026-09-11T00:00:00Z",
+            "complete",
+        )),
+    ]);
+    ual(&case, c, f, 1, "2026-09-01 10:00:00", "Send", MA);
+    let r = range(&case, Some("t1"), &[MA], "2026-09-02", "2026-09-04");
+    assert_eq!(line(&r, "signins_interactive").state, RangeState::Covered);
+    // Not vouched: absent. A range reaching past the vouched end: absent.
+    assert_eq!(line(&r, "signins_noninteractive").state, RangeState::Absent);
+    let r = range(&case, Some("t1"), &[MA], "2026-09-10", "2026-09-12");
+    assert_eq!(line(&r, "signins_interactive").state, RangeState::Absent);
+    // A tenant without manifests keeps today's state.
+    let r = range(&case, Some("t9"), &[MA], "2026-09-02", "2026-09-04");
+    assert_eq!(line(&r, "signins_interactive").state, RangeState::Absent);
+}
+
+#[test]
+fn tenant_wide_message_trace_needs_tenant_wide_units() {
+    let wide = |users: Option<&[&str]>, dir: Option<&str>| {
+        let mut u = manifest::U::new(
+            &["message_trace"],
+            "2026-08-01T00:00:00Z",
+            "2026-09-11T00:00:00Z",
+            "complete",
+        );
+        if let Some(us) = users {
+            u = u.users(us);
+        }
+        if let Some(d) = dir {
+            u = u.direction(d);
+        }
+        manifest::M::run("Get-MessageTraceV2", "complete").unit(u)
+    };
+    // Per-user unit: nothing for the tenant-wide source.
+    let (case, _, _) = manifest_case(vec![wide(Some(&[MA]), None)]);
+    let r = range(&case, Some("t1"), &[MA], "2026-09-02", "2026-09-04");
+    assert_eq!(line(&r, "message_trace").state, RangeState::Absent);
+    // Sender only: absent; sender and recipient: covered.
+    let (case, _, _) = manifest_case(vec![wide(None, Some("sender"))]);
+    let r = range(&case, Some("t1"), &[], "2026-09-02", "2026-09-04");
+    assert_eq!(line(&r, "message_trace").state, RangeState::Absent);
+    let (case, _, _) = manifest_case(vec![
+        wide(None, Some("sender")),
+        wide(None, Some("recipient")),
+    ]);
+    let r = range(&case, Some("t1"), &[], "2026-09-02", "2026-09-04");
+    assert_eq!(line(&r, "message_trace").state, RangeState::Covered);
+    // Tenant-wide, no direction: covered; with a tenant-wide gap in range: collector gap.
+    let (case, _, _) = manifest_case(vec![
+        manifest::M::run("Get-MessageTraceV2", "partial").unit(
+            manifest::U::new(
+                &["message_trace"],
+                "2026-08-01T00:00:00Z",
+                "2026-09-11T00:00:00Z",
+                "partial",
+            )
+            .gap(
+                "2026-09-03T00:00:00Z",
+                "2026-09-03T06:00:00Z",
+                "retries_exhausted",
+            ),
+        ),
+    ]);
+    let r = range(&case, Some("t1"), &[], "2026-09-02", "2026-09-02");
+    assert_eq!(line(&r, "message_trace").state, RangeState::Covered);
+    let r = range(&case, Some("t1"), &[], "2026-09-02", "2026-09-04");
+    assert_eq!(line(&r, "message_trace").state, RangeState::CollectorGap);
+}
+
+#[test]
+fn vouched_range_with_capped_rows_stays_sampled() {
+    // A complete unit vouches the whole range and the rows in it come from a capped export, with no open gap:
+    // vouching proves the collector ran, not that the capped export held every record, so it stays sampled.
+    let (case, c, _) = manifest_case(vec![manifest::M::run("Get-UALGraph", "complete").unit(
+        manifest::U::new(
+            &["ual"],
+            "2026-08-01T00:00:00Z",
+            "2026-09-11T00:00:00Z",
+            "complete",
+        ),
+    )]);
+    let cap = file(&case, c, "ual-cap.csv", Some(CAP));
+    ual(&case, c, cap, 1, "2026-09-03 10:00:00", "Send", MA);
+    let r = range(&case, Some("t1"), &[MA], "2026-09-02", "2026-09-04");
+    assert_eq!(line(&r, "ual").state, RangeState::Sampled);
+    assert_eq!(by_state(line(&r, "ual")), vec![("sampled", vec![MA])]);
+}
