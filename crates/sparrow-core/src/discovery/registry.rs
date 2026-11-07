@@ -460,6 +460,13 @@ static DEFS: &[ArtifactDef] = &[
     ),
     // ---------------- Microsoft-Extractor-Suite (Invictus) ----------------
     def!(
+        "inv.collection_manifest",
+        Invictus,
+        "manifest_runs",
+        false,
+        r"(?:.+/)?CollectionManifest-[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\.mesmanifest"
+    ),
+    def!(
         "inv.logfile",
         Invictus,
         "collection_log",
@@ -1108,7 +1115,7 @@ pub fn format_from_path(p: &str) -> FileFormat {
         return FileFormat::Unknown;
     }
     match ext.as_str() {
-        "json" => FileFormat::Json,
+        "json" | "mesmanifest" => FileFormat::Json,
         "jsonl" => FileFormat::Jsonl,
         "csv" => FileFormat::Csv,
         "txt" => FileFormat::Txt,

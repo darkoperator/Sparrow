@@ -276,6 +276,7 @@ fn where_clause(info: &TableInfo, filters: &[Filter]) -> Result<(String, Vec<Str
 ///   `case_meta`, `audit_trail`, `findings`, `finding_facts`, `timeline_entries`, `annotations`, `tags` and
 ///   `value_flags`, and the composite keys of `timeline_entry_evidence`, `account_rollup`, `event_flags` and
 ///   `event_tags`.
+/// - `manifest_runs`, `manifest_units` and `manifest_gaps` (migration 33): PRIMARY KEYs `run_id`, `unit_key`, `gap_key`.
 /// - Keys whose index was dropped (DuckDB keeps it in memory) and that their writers keep unique: `record_sources`
 ///   (migration 30, `ingest::sightings`), `events` (migration 31, `case::events::rebuild`) and `ual_events(record_id)`
 ///   (migration 32, the UAL merge in `ingest::bulk`).
@@ -304,6 +305,9 @@ fn unique_key(info: &TableInfo) -> Option<Vec<&'static str>> {
         "tags" => Some(&["tag_id"]),
         "value_flags" => Some(&["flag_id"]),
         "account_rollup" => Some(&["tenant_key", "upn"]),
+        "manifest_runs" => Some(&["run_id"]),
+        "manifest_units" => Some(&["unit_key"]),
+        "manifest_gaps" => Some(&["gap_key"]),
         "finding_evidence" => None,
         _ if info.columns.iter().any(|c| c.name == "record_key") => Some(&["record_key"]),
         _ => None,
