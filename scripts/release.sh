@@ -8,7 +8,9 @@
 #           that ask for one (tauri.conf.json leaves bundling off): on macOS target/release/bundle/macos/Sparrow.app,
 #           on Windows the installer target/release/bundle/nsis/Sparrow_<version>_<arch>-setup.exe
 # * --package  builds both, then puts what a GitHub release uploads in target/release/dist, with its checksums: the app
-#           and the CLI together, because they refuse to talk across versions
+#           and the CLI together, because they refuse to talk across versions. It refuses a working tree with changes
+#           to the build inputs (crates/, app/, Cargo.*): a release is the commit, not whatever else sits in the folder.
+#           Build from a git worktree at the release commit; RELEASE_ALLOW_DIRTY=1 overrides.
 # Windows runs this from Git Bash, and its binaries end in .exe. The first Windows bundle downloads the NSIS tools.
 # Windows release builds link the C runtime statically, so they run on a machine without the Visual C++ redistributable.
 # Neither flag builds both. Front-end packages are installed from app/package-lock.json first when app/node_modules
@@ -23,7 +25,7 @@ while [ $# -gt 0 ]; do
     --cli) cli=1; shift ;;
     --app) app=1; shift ;;
     --package) package=1; cli=1; app=1; shift ;;
-    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
     *) echo "release: unknown argument $1 (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -43,6 +45,20 @@ case "$target" in
   [A-Za-z]:[\\/]*) if [ -z "$exe" ]; then target="$root/$target"; fi ;;
   *) target="$root/$target" ;;
 esac
+
+if [ $package -eq 1 ] && git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
+  # Editor swap files are not build inputs; anything else changed or untracked would ship unreviewed.
+  dirty="$(git -C "$root" status --porcelain --untracked-files=all -- crates app Cargo.toml Cargo.lock \
+    | grep -Ev '\.sw[a-p]$' || true)"
+  if [ -n "$dirty" ] && [ "${RELEASE_ALLOW_DIRTY:-0}" != "1" ]; then
+    echo "release: refusing to package: the working tree has changes not in commit $(git -C "$root" rev-parse --short HEAD):" >&2
+    echo "$dirty" | head -20 | sed 's/^/release:   /' >&2
+    echo "release: build from a worktree at the release commit (git worktree add ../Sparrow-rel <commit>)," >&2
+    echo "release: or set RELEASE_ALLOW_DIRTY=1 to package them anyway" >&2
+    exit 1
+  fi
+  echo "release: packaging commit $(git -C "$root" rev-parse --short HEAD)${dirty:+ (dirty, allowed)}"
+fi
 
 if [ $cli -eq 1 ]; then
   echo "release: building the CLI"

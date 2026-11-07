@@ -77,10 +77,12 @@ Windows release builds link the C runtime statically (`+crt-static`, set by the 
 
 ### Publishing a release
 
-1. Set the version in `Cargo.toml` and `app/package.json`, and refresh the locks with `cargo update --workspace` and `npm --prefix app install --package-lock-only`. The tag is `v` plus that exact version.
-2. Write the notes in `docs/releases/<tag>.md`, then commit.
-3. On each platform, run `scripts/release.sh --package` from that commit. It leaves the uploads in `target/release/dist`: the app and the CLI, together because the two refuse to talk across versions, and a checksum file. Builds are unsigned. Install one and start it before uploading.
-4. Tag and push the commit, then create the GitHub release from the tag: mark it a pre-release, paste the notes, and attach every platform's files.
+Cut a release in its own worktree, never by switching branches in a shared checkout: other work may be in progress there, and `scripts/release.sh --package` refuses a tree with changes to `crates/`, `app/` or `Cargo.*` (`RELEASE_ALLOW_DIRTY=1` overrides). `scripts/cut-release.sh` does the mechanical part on macOS and Linux:
+
+1. `scripts/cut-release.sh prepare <version>` creates `../Sparrow-rel-<version>` on branch `release/<version>` off `main`, sets the version in `Cargo.toml` and `app/package.json`, refreshes both lockfiles, and writes `docs/releases/v<version>.md` from the previous release's notes. The tag is `v` plus that exact version.
+2. Write "What's new" in those notes (replacing the TODO), and fix the build ordinal in the first line.
+3. `scripts/cut-release.sh package <version>` commits the release, packages it into `target/release/dist` (the app and the CLI together, because the two refuse to talk across versions, plus a checksum file), and smoke-tests the uploads: checksums, the CLI's version, a synthetic ingest, and the app starting. Builds are unsigned. On another platform, run `scripts/release.sh --package` from the same commit.
+4. Run the publish commands it prints: merge into `main`, tag and push, create the GitHub pre-release from the tag with the notes and every platform's files, and remove the worktree.
 
 A release on a private repository is visible only to people with access to the repository.
 
