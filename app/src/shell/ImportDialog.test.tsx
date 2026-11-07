@@ -82,6 +82,7 @@ function resultOf(extra: Partial<IngestResult> = {}): IngestResult {
     profile_warnings: [],
     detect: { findings_new: 4, findings_updated: 1, warnings: [] },
     detect_error: null,
+    incomplete_collection: null,
     ...extra,
   };
 }
@@ -393,6 +394,19 @@ describe("ImportDialog progress and result", () => {
     expect(off).toHaveBeenCalled();
     await user.click(within(card).getByRole("button", { name: "Done" }));
     expect(onClose).toHaveBeenCalledWith(true);
+  });
+
+  it("the result card shows the incomplete-collection text", async () => {
+    const text = "Collection incomplete: 1 gap in Unified Audit Log (2 hours). Re-collect before relying on absence of activity.";
+    m.run.mockResolvedValue(
+      resultOf({ incomplete_collection: { gaps: 1, sources: ["ual"], span_us: 7_200_000_000, text } }),
+    );
+    const user = userEvent.setup();
+    render(<ImportDialog mode="open" onClose={onClose} />);
+    await pickFolder(user);
+    await user.click(screen.getByRole("button", { name: "Import" }));
+    const card = await screen.findByRole("region", { name: "Import result" });
+    expect(within(card).getByText(text)).toBeInTheDocument();
   });
 
   it("the result card has the rows per source, the notes per file and the new findings", async () => {

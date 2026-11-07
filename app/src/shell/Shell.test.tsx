@@ -21,6 +21,7 @@ vi.mock("../api", async (orig) => ({
   onIngestProgress: vi.fn(async () => () => {}),
   onIngestClosing: vi.fn(async () => () => {}),
   ingestUnprofiled: vi.fn(async () => []),
+  caseCollectionStatus: vi.fn(async () => null),
   ingestProfile: vi.fn(),
   onCaseChanged: vi.fn(async () => () => {}),
   onAgentActivity: vi.fn(async () => () => {}),
@@ -119,6 +120,7 @@ beforeEach(() => {
   vi.mocked(api.ingestRun).mockReset();
   vi.mocked(api.ingestProfile).mockReset();
   vi.mocked(api.ingestUnprofiled).mockReset().mockResolvedValue([]);
+  vi.mocked(api.caseCollectionStatus).mockReset().mockResolvedValue(null);
   m.settings.mockResolvedValue(withAnalyst);
   m.open.mockResolvedValue(info);
   m.close.mockResolvedValue(null);
@@ -875,6 +877,7 @@ describe("Shell import", () => {
     profile_warnings: [],
     detect: { findings_new: 0, findings_updated: 0, warnings: [] },
     detect_error: null,
+    incomplete_collection: null,
   });
 
   it("a new case from a folder opens the case it made", async () => {
@@ -1061,5 +1064,132 @@ describe("Shell import", () => {
     await userEvent.setup().click(await screen.findByRole("button", { name: "/synthetic/case-a.duckdb" }));
     await screen.findByRole("tab", { name: /^Review/ });
     expect(screen.queryByRole("status", { name: /^Agent/ })).toBeNull();
+  });
+});
+
+describe("the incomplete-collection banner", () => {
+  const status: api.IncompleteCollection = {
+    gaps: 2,
+    sources: ["ual", "message_trace"],
+    span_us: 7_200_000_000,
+    text: "Collection incomplete: 2 gaps in Unified Audit Log, Message Trace (2 hours). Re-collect before relying on absence of activity.",
+  };
+
+  it("shell_shows_the_collection_banner_when_status_is_set", async () => {
+    vi.mocked(api.caseCollectionStatus).mockResolvedValue(status);
+    const user = await openViaDialog();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveClass("collection-banner");
+    expect(alert).toHaveTextContent(status.text);
+    expect(alert).toHaveTextContent(`sparrow coverage --case ${info.path}`);
+    expect(within(alert).queryByRole("button", { name: /close|dismiss/i })).not.toBeInTheDocument();
+    // Directly under the header, above the tab bar.
+    const tabs = screen.getAllByRole("tab")[0];
+    expect(alert.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await user.click(within(alert).getByRole("button", { name: "Copy" }));
+    expect(await navigator.clipboard.readText()).toBe(`sparrow coverage --case ${info.path}`);
+  });
+
+  it("no_banner_when_status_is_null", async () => {
+    await openViaDialog();
+    await waitFor(() => expect(api.caseCollectionStatus).toHaveBeenCalled());
+    expect(screen.queryByText(/Collection incomplete/)).not.toBeInTheDocument();
+    expect(document.querySelector(".collection-banner")).toBeNull();
+  });
+
+  it("banner_refreshes_after_import", async () => {
+    vi.mocked(api.caseCollectionStatus).mockResolvedValue(status);
+    vi.mocked(api.ingestDiscover).mockResolvedValue({
+      collections: [
+        {
+          root: "/evidence/run-1",
+          tool: "invictus",
+          files: [{ rel_path: "SignInLogs.csv", artifact_id: "invictus.signins", derived: false, size: 10, status: "recognised", too_large: false, error: null }],
+        },
+      ],
+      recognised: 1,
+      unrecognised: 0,
+      too_large: 0,
+      unreadable: 0,
+      xlsx_max_bytes: 1_073_741_824,
+    } as api.DiscoveryPreview);
+    vi.mocked(api.ingestRun).mockResolvedValue({
+      case_path: info.path,
+      cancelled: false,
+      error: null,
+      report: { collections: [] },
+      files_loaded: 1,
+      files_total: 1,
+      rows_by_source: [],
+      file_notes: [],
+      not_loaded: [],
+      profile_error: null,
+      profile_warnings: [],
+      detect: null,
+      detect_error: null,
+      incomplete_collection: null,
+    });
+    dialogOpen.mockResolvedValue("/synthetic/case-a.duckdb");
+    const user = userEvent.setup();
+    render(<Shell />);
+    await user.click(await screen.findByRole("button", { name: "Open a case" }));
+    await screen.findByText(status.text);
+    // The second collection covers the gap: the status is clear after the import.
+    vi.mocked(api.caseCollectionStatus).mockResolvedValue(null);
+    dialogOpen.mockResolvedValue("/evidence/run-1");
+    await user.click(screen.getByRole("button", { name: "Import data…" }));
+    const dialog = await screen.findByRole("dialog", { name: "Import data into this case" });
+    await user.click(within(dialog).getByRole("button", { name: /^Choose a folder/ }));
+    await within(dialog).findByRole("region", { name: "Discovery" });
+    await user.click(within(dialog).getByRole("button", { name: "Import" }));
+    await within(dialog).findByRole("region", { name: "Import result" });
+    await user.click(within(dialog).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(screen.queryByText(status.text)).not.toBeInTheDocument());
+  });
+
+  it("banner_clears_when_the_import_finishes_not_when_the_dialog_closes", async () => {
+    vi.mocked(api.caseCollectionStatus).mockResolvedValue(status);
+    vi.mocked(api.ingestDiscover).mockResolvedValue({
+      collections: [{ root: "/evidence/run-1", tool: "invictus", files: [{ rel_path: "S.csv", artifact_id: "invictus.signins", derived: false, size: 10, status: "recognised", too_large: false, error: null }] }],
+      recognised: 1, unrecognised: 0, too_large: 0, unreadable: 0, xlsx_max_bytes: 1_073_741_824,
+    } as api.DiscoveryPreview);
+    vi.mocked(api.ingestRun).mockResolvedValue({
+      case_path: info.path, cancelled: false, error: null, report: { collections: [] }, files_loaded: 1, files_total: 1,
+      rows_by_source: [], file_notes: [], not_loaded: [], profile_error: null, profile_warnings: [], detect: null,
+      detect_error: null, incomplete_collection: null,
+    });
+    dialogOpen.mockResolvedValue("/synthetic/case-a.duckdb");
+    const user = userEvent.setup();
+    render(<Shell />);
+    await user.click(await screen.findByRole("button", { name: "Open a case" }));
+    await screen.findByText(status.text);
+    dialogOpen.mockResolvedValue("/evidence/run-1");
+    await user.click(screen.getByRole("button", { name: "Import data…" }));
+    const dialog = await screen.findByRole("dialog", { name: "Import data into this case" });
+    await user.click(within(dialog).getByRole("button", { name: /^Choose a folder/ }));
+    await within(dialog).findByRole("region", { name: "Discovery" });
+    await user.click(within(dialog).getByRole("button", { name: "Import" }));
+    await within(dialog).findByRole("region", { name: "Import result" });
+    // The result card is still open.
+    expect(screen.queryByText(status.text)).not.toBeInTheDocument();
+  });
+
+  it("the copied command quotes a path with a space and a quote", async () => {
+    vi.mocked(api.caseCollectionStatus).mockResolvedValue(status);
+    const odd = "/cases/it's here/case.duckdb";
+    m.open.mockResolvedValue({ ...info, path: odd });
+    const user = await openViaDialog();
+    const alert = await screen.findByRole("alert");
+    const quoted = "sparrow coverage --case '/cases/it'\\''s here/case.duckdb'";
+    expect(alert).toHaveTextContent(quoted);
+    await user.click(within(alert).getByRole("button", { name: "Copy" }));
+    expect(await navigator.clipboard.readText()).toBe(quoted);
+  });
+
+  it("a failed status query shows an error alert, not a clean case", async () => {
+    vi.mocked(api.caseCollectionStatus).mockRejectedValue({ kind: "internal", message: "db is busy" });
+    await openViaDialog();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Could not check collection completeness: db is busy");
   });
 });

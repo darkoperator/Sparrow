@@ -1,0 +1,66 @@
+{
+  "sources": [
+    {
+      "source": "ual",
+      "title": "Unified audit log",
+      "state": "covered",
+      "accounts_by_state": {
+        "covered": [
+          "finley.mathis@contoso.example"
+        ]
+      }
+    },
+    {
+      "source": "signins_interactive",
+      "title": "Sign-ins (interactive)",
+      "state": "covered",
+      "accounts_by_state": {
+        "covered": [
+          "finley.mathis@contoso.example"
+        ]
+      }
+    },
+    {
+      "source": "signins_noninteractive",
+      "title": "Sign-ins (non-interactive)",
+      "state": "covered",
+      "accounts_by_state": {
+        "covered": [
+          "finley.mathis@contoso.example"
+        ]
+      }
+    },
+    {
+      "source": "mail_items_accessed",
+      "title": "MailItemsAccessed",
+      "state": "covered",
+      "accounts_by_state": {
+        "covered": [
+          "finley.mathis@contoso.example"
+        ]
+      }
+    },
+    {
+      "source": "message_trace",
+      "title": "Message trace",
+      "state": "covered",
+      "accounts_by_state": {}
+    },
+    {
+      "source": "entra_audit",
+      "title": "Entra audit log",
+      "state": "covered",
+      "accounts_by_state": {}
+    },
+    {
+      "source": "mailbox_audit",
+      "title": "Mailbox audit log (legacy)",
+      "state": "covered",
+      "accounts_by_state": {
+        "covered": [
+          "finley.mathis@contoso.example"
+        ]
+      }
+    }
+  ]
+}

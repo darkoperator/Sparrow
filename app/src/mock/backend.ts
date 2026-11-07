@@ -12,6 +12,7 @@ import type {
   EntryWritten,
   Filter,
   HighlightSet,
+  IncompleteCollection,
   IngestProgress,
   IngestResult,
   IngestTarget,
@@ -315,6 +316,12 @@ async function mockFileSteps(size: number, runId: string): Promise<boolean> {
   return true;
 }
 
+/** Returned by `case_collection_status`: `null` unless a test (or a dev session) sets a fixture value. */
+let mockCollectionStatus: IncompleteCollection | null = null;
+export const mockSetCollectionStatus = (v: IncompleteCollection | null) => {
+  mockCollectionStatus = v;
+};
+
 async function mockIngestRun(a: Record<string, unknown> | undefined): Promise<IngestResult> {
   const path = str(a, "path");
   const target = a?.target as IngestTarget;
@@ -390,6 +397,7 @@ async function mockIngestRun(a: Record<string, unknown> | undefined): Promise<In
       profile_warnings: [],
       detect: detect && !cancelled ? { findings_new: 4, findings_updated: 0, warnings: [] } : null,
       detect_error: null,
+      incomplete_collection: mockCollectionStatus,
     };
   } finally {
     ingestRunning = false;
@@ -423,6 +431,7 @@ const handlers: Record<string, (a: Args) => unknown> = {
     info = null;
     return null;
   },
+  case_collection_status: () => mockCollectionStatus,
   review_queue: () => queue,
   finding_detail: (a) => {
     const d = fx.findingDetail();

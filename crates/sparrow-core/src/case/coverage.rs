@@ -16,8 +16,18 @@
 //!   inside first..last are not gaps.
 //! - **Sampled**: any of the rows was sighted in a source file whose warnings name a known export cap, the rule
 //!   `profile::availability` uses for `truncated`.
+//! - **Collector manifests** (`case::collector`, loaded once per call): the gaps are computed in instants (R1). `W` = the window,
+//!   `[start 00:00Z, tenant's last event + 1us)`; `E` = the rows' whole days `[day(first), day(last) + 1)`, or none;
+//!   `V` = vouched; `G` = open collector gaps within `W`; covered `C` = (`E` u `V`) - `G`. Gaps: `collector_gap` over
+//!   `G`; `sampled` over `E - V - G` when sampled; of `W - C - G`, `absent` when there is no `E`, else `before` /
+//!   `after` for the parts before / after `E`. Each span becomes the dates `day(start)..=day(end - 1us)`; same-reason
+//!   gaps that touch merge; ordered by `from`, then `collector_gap, before, sampled, absent, after`. `collected` is
+//!   `V` within `W` as dates, and a source without rows but with `collected` is "collected, no events". This applies
+//!   to every source of every account of a tenant with any counted manifest unit; a tenant without one keeps the
+//!   date computation above, unchanged.
 
 use crate::case::audit;
+use crate::case::collector::{self, ManifestIndex, Span, Spans};
 use crate::data::{CollectionHint, DataDirs, collection_hints};
 use crate::detect::enrich::accounts::ACCOUNT_ORDER;
 use crate::detect::enrich::{EnrichState, enrichment_state};
@@ -88,7 +98,7 @@ pub struct Gap {
     pub from: NaiveDate,
     #[serde(serialize_with = "date")]
     pub to: NaiveDate,
-    /// `absent`, `before`, `after` or `sampled`.
+    /// `absent`, `before`, `after`, `sampled` or `collector_gap`.
     pub reason: String,
 }
 
@@ -105,6 +115,21 @@ pub struct SourceCoverage {
     pub days: i64,
     pub sampled: bool,
     pub gaps: Vec<Gap>,
+    /// The days inside the window the collector's manifests vouch were fully collected, merged.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub collected: Vec<DayRange>,
+    /// No rows, while the collector vouches for some of the window ("collected, no events").
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub collected_no_events: bool,
+}
+
+/// Inclusive UTC dates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct DayRange {
+    #[serde(serialize_with = "date")]
+    pub from: NaiveDate,
+    #[serde(serialize_with = "date")]
+    pub to: NaiveDate,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -137,7 +162,122 @@ pub struct Request {
 pub struct Coverage {
     pub accounts: Vec<AccountCoverage>,
     pub requests: Vec<Request>,
+    /// Open collector gaps (R11): what to re-run first. Not serialised when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub collector_requests: Vec<CollectorRequest>,
     pub warnings: Vec<String>,
+}
+
+/// One open collector gap with the commands that collect it again (R11).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CollectorRequest {
+    pub tenant_key: String,
+    pub cmdlet: Option<String>,
+    pub run_id: String,
+    pub unit_id: String,
+    pub sources: Vec<String>,
+    pub users: Option<Vec<String>>,
+    pub reason: String,
+    pub detail: Option<String>,
+    pub spans: collector::Spans,
+    pub undated: bool,
+    /// R11: the cmdlet with the run's parameters, StartDate/EndDate = the span (one command per open span).
+    pub rerun: Vec<String>,
+    pub resume: Option<String>,
+}
+
+fn ps_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+fn iso_z(us: i64) -> String {
+    at(us).format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+/// The cmdlet with the run's parameters as PowerShell arguments; `StartDate`/`EndDate` (any case) are replaced by
+/// `span` when given. Objects and null parameters are skipped, and so is `SkipDownload` (any case): a re-run must
+/// download what it searches.
+pub fn rerun_command(cmdlet: &str, parameters: &Value, span: Option<Span>) -> String {
+    let mut out = cmdlet.to_string();
+    let Some(map) = parameters.as_object() else {
+        return out;
+    };
+    for (name, v) in map {
+        if name.eq_ignore_ascii_case("SkipDownload") {
+            continue;
+        }
+        let date = span.and_then(|s| {
+            if name.eq_ignore_ascii_case("StartDate") {
+                Some(s.start_us)
+            } else if name.eq_ignore_ascii_case("EndDate") {
+                Some(s.end_us)
+            } else {
+                None
+            }
+        });
+        let scalar = |x: &Value| match x {
+            Value::String(t) => Some(ps_quote(t)),
+            Value::Number(n) => Some(n.to_string()),
+            Value::Bool(b) => Some(b.to_string()),
+            _ => None,
+        };
+        let arg = match v {
+            _ if date.is_some() => {
+                format!(" -{name} {}", ps_quote(&iso_z(date.unwrap_or_default())))
+            }
+            Value::Bool(true) => format!(" -{name}"),
+            Value::Bool(false) => format!(" -{name}:$false"),
+            Value::Array(items) => {
+                let parts: Vec<String> = items.iter().filter_map(scalar).collect();
+                format!(" -{name} {}", parts.join(","))
+            }
+            Value::Object(_) | Value::Null => continue,
+            other => match scalar(other) {
+                Some(t) => format!(" -{name} {t}"),
+                None => continue,
+            },
+        };
+        out.push_str(&arg);
+    }
+    out
+}
+
+fn collector_requests(index: &ManifestIndex, tenant: Option<&str>) -> Vec<CollectorRequest> {
+    index
+        .open_gaps(tenant)
+        .into_iter()
+        .map(|g| {
+            let rerun = match &g.cmdlet {
+                None => Vec::new(),
+                Some(c) if g.undated => vec![rerun_command(c, &g.parameters, None)],
+                Some(c) => g
+                    .spans
+                    .iter()
+                    .map(|s| rerun_command(c, &g.parameters, Some(*s)))
+                    .collect(),
+            };
+            let resume = match (g.cmdlet.as_deref(), &g.search_id) {
+                (Some("Get-UALGraph"), Some(id)) => {
+                    Some(format!("Get-UALGraph -SearchId {}", ps_quote(id)))
+                }
+                _ => None,
+            };
+            CollectorRequest {
+                tenant_key: g.tenant_key,
+                cmdlet: g.cmdlet,
+                run_id: g.run_id,
+                unit_id: g.unit_id,
+                sources: g.sources,
+                users: g.user_ids,
+                reason: g.reason,
+                detail: g.detail,
+                spans: g.spans,
+                undated: g.undated,
+                rerun,
+                resume,
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Default)]
@@ -468,7 +608,99 @@ pub fn fill(template: &str, upn: &str, from: NaiveDate, to: NaiveDate) -> String
         .replace("{to}", &to.format("%Y-%m-%d").to_string())
 }
 
-/// The gaps of one source against the window; see the module comment.
+/// Midnight UTC of `d`, epoch microseconds.
+fn day_start_us(d: NaiveDate) -> i64 {
+    d.and_hms_opt(0, 0, 0)
+        .unwrap_or_default()
+        .and_utc()
+        .timestamp_micros()
+}
+
+/// The inclusive UTC dates `day(start) ..= day(end - 1us)` of a half-open span.
+fn days_of(s: &Span) -> (NaiveDate, NaiveDate) {
+    (day_of(s.start_us), day_of(s.end_us - 1))
+}
+
+/// The order of gap reasons that start on the same date.
+const REASON_ORDER: &[&str] = &["collector_gap", "before", "sampled", "absent", "after"];
+
+/// Spans with their reasons as date gaps: same-reason gaps that overlap or touch (by date) merge; ordered by `from`,
+/// then by [`REASON_ORDER`].
+fn date_gaps(spans: Vec<(Span, &str)>) -> Vec<Gap> {
+    let mut out: Vec<Gap> = Vec::new();
+    for reason in REASON_ORDER {
+        let mut days: Vec<(NaiveDate, NaiveDate)> = spans
+            .iter()
+            .filter(|(_, r)| r == reason)
+            .map(|(s, _)| days_of(s))
+            .collect();
+        days.sort_unstable();
+        let mut merged: Vec<(NaiveDate, NaiveDate)> = Vec::new();
+        for (from, to) in days {
+            match merged.last_mut() {
+                Some(last) if from <= last.1 + Duration::days(1) => last.1 = last.1.max(to),
+                _ => merged.push((from, to)),
+            }
+        }
+        out.extend(merged.into_iter().map(|(from, to)| Gap {
+            from,
+            to,
+            reason: (*reason).to_string(),
+        }));
+    }
+    let rank = |r: &str| {
+        REASON_ORDER
+            .iter()
+            .position(|x| *x == r)
+            .unwrap_or(usize::MAX)
+    };
+    out.sort_by_key(|g| (g.from, rank(&g.reason)));
+    out
+}
+
+/// `spans` as inclusive date ranges, merged where they overlap or touch by date.
+fn day_ranges(spans: &Spans) -> Vec<DayRange> {
+    let mut out: Vec<DayRange> = Vec::new();
+    for s in spans.iter() {
+        let (from, to) = days_of(s);
+        match out.last_mut() {
+            Some(last) if from <= last.to + Duration::days(1) => last.to = last.to.max(to),
+            _ => out.push(DayRange { from, to }),
+        }
+    }
+    out
+}
+
+/// The gaps of one source against the window `w` (instants, R1) from the event evidence `stats`, the collector's
+/// vouching `v` and open collector gaps `g_all` of the account and source; see the module comment.
+fn interval_gaps(w: Span, stats: Option<&Stats>, v: &Spans, g_all: &Spans) -> Vec<Gap> {
+    let ws: Spans = std::iter::once(w).collect();
+    let g = g_all.intersect(&ws);
+    // The event evidence: whole days, first to last row.
+    let e: Option<Span> = stats.map(|s| Span {
+        start_us: day_start_us(day_of(s.first_us)),
+        end_us: day_start_us(day_of(s.last_us) + Duration::days(1)),
+    });
+    let es: Spans = e.into_iter().collect();
+    let covered = es.union(v).minus(&g);
+    let open = ws.minus(&covered).minus(&g);
+    let mut spans: Vec<(Span, &str)> = g.iter().map(|s| (*s, "collector_gap")).collect();
+    if stats.is_some_and(|s| s.sampled) {
+        spans.extend(es.minus(v).minus(&g).iter().map(|s| (*s, "sampled")));
+    }
+    for s in open.iter() {
+        // `open` holds nothing of `e`: each part lies wholly before or wholly after it.
+        let reason = match e {
+            None => "absent",
+            Some(e) if s.end_us <= e.start_us => "before",
+            Some(_) => "after",
+        };
+        spans.push((*s, reason));
+    }
+    date_gaps(spans)
+}
+
+/// The gaps of one source against the window when the collector says nothing about it; see the module comment.
 fn gaps_of(window: Window, stats: Option<&Stats>) -> Vec<Gap> {
     let gap = |from, to, reason: &str| Gap {
         from,
@@ -498,6 +730,7 @@ pub fn coverage(conn: &Connection, opts: &CoverageOptions) -> Result<Coverage> {
     let stats = load_stats(conn)?;
     let spans = tenant_span(conn)?;
     let starts = finding_starts(conn)?;
+    let index: ManifestIndex = collector::load(conn)?;
     let mut warnings = Vec::new();
 
     // The accounts: (tenant, upn).
@@ -576,17 +809,37 @@ pub fn coverage(conn: &Connection, opts: &CoverageOptions) -> Result<Coverage> {
             }
             _ => None,
         };
+        // The window as instants (R1): its first day's midnight up to and including the tenant's last event.
+        let window_span = window.zip(span).map(|(w, (_, hi))| Span {
+            start_us: day_start_us(w.start),
+            end_us: hi + 1,
+        });
+        // A tenant the collector's manifests say anything about takes the interval computation for every source.
+        let manifests = index.has_tenant(&tenant);
         let mut sources = Vec::new();
         for (id, s) in &own {
+            let v = index.vouched(&tenant, &upn, id);
+            let g = index.account_gaps(&tenant, &upn, id);
+            let (gaps, collected) = match (window, window_span) {
+                (Some(w), _) if !manifests => (gaps_of(w, *s), Vec::new()),
+                (Some(_), Some(ws)) => (
+                    interval_gaps(ws, *s, &v, &g),
+                    day_ranges(&v.intersect(&std::iter::once(ws).collect())),
+                ),
+                _ => (Vec::new(), Vec::new()),
+            };
+            let rows = s.map_or(0, |s| s.rows);
             sources.push(SourceCoverage {
                 source: (*id).to_string(),
                 title: title_of(id).to_string(),
-                rows: s.map_or(0, |s| s.rows),
+                rows,
                 first: s.map(|s| at(s.first_us)),
                 last: s.map(|s| at(s.last_us)),
                 days: s.map_or(0, |s| s.days),
                 sampled: s.is_some_and(|s| s.sampled),
-                gaps: window.map(|w| gaps_of(w, *s)).unwrap_or_default(),
+                gaps,
+                collected_no_events: rows == 0 && !collected.is_empty(),
+                collected,
             });
         }
         for s in &sources {
@@ -627,13 +880,14 @@ pub fn coverage(conn: &Connection, opts: &CoverageOptions) -> Result<Coverage> {
     Ok(Coverage {
         accounts: out,
         requests,
+        collector_requests: collector_requests(&index, opts.tenant.as_deref()),
         warnings,
     })
 }
 
 /// One source's state over a date range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum RangeState {
     /// Rows exist in the range and none came from a capped export.
     Covered,
@@ -641,6 +895,8 @@ pub enum RangeState {
     Sampled,
     /// No rows in the range.
     Absent,
+    /// The collector's manifests say it could not collect part of the range (worst).
+    CollectorGap,
 }
 
 impl RangeState {
@@ -649,6 +905,7 @@ impl RangeState {
             RangeState::Covered => "covered",
             RangeState::Sampled => "sampled",
             RangeState::Absent => "absent",
+            RangeState::CollectorGap => "collector_gap",
         }
     }
 }
@@ -675,6 +932,27 @@ fn state_of(rows: Option<bool>) -> RangeState {
         Some(true) => RangeState::Sampled,
         Some(false) => RangeState::Covered,
     }
+}
+
+/// The state with the collector's word on the range: an open gap in it is `CollectorGap` whatever the rows; a range
+/// proven collected throughout (some tenant's vouching covers it) turns an absent source into covered. Sampled stays
+/// sampled. `per_tenant` yields `(gaps, vouched)` of each tenant whose manifests speak.
+fn manifest_state(
+    base: RangeState,
+    range: &Spans,
+    per_tenant: impl Iterator<Item = (Spans, Spans)>,
+) -> RangeState {
+    let mut state = base;
+    for (gaps, vouched) in per_tenant {
+        if !gaps.intersect(range).is_empty() {
+            return RangeState::CollectorGap;
+        }
+        // Only `absent` is upgraded: vouching proves the collector ran, not that a capped export held every record.
+        if state == RangeState::Absent && range.minus(&vouched).is_empty() {
+            state = RangeState::Covered;
+        }
+    }
+    state
 }
 
 /// `(rows, sampled)` of the tenant-wide sources in the range, per source, over the tenants selected.
@@ -731,13 +1009,7 @@ pub fn coverage_for_range(
             "coverage range {from}..{to} ends before it starts"
         )));
     }
-    let day_us = |d: NaiveDate| {
-        d.and_hms_opt(0, 0, 0)
-            .unwrap_or_default()
-            .and_utc()
-            .timestamp_micros()
-    };
-    let span = (day_us(from), day_us(to + Duration::days(1)));
+    let span = (day_start_us(from), day_start_us(to + Duration::days(1)));
     let accounts: Vec<String> = accounts
         .iter()
         .filter_map(|a| norm(a))
@@ -758,13 +1030,32 @@ pub fn coverage_for_range(
         )?
     };
     let wide = tenant_wide_states(conn, tenant, span)?;
+    // The tenants whose manifests speak (R8): the one asked for, or each with a counted unit.
+    let index = collector::load(conn)?;
+    let manifest_tenants: Vec<&str> = match tenant {
+        Some(t) => index.has_tenant(t).then_some(t).into_iter().collect(),
+        None => index.tenants().collect(),
+    };
+    let range_span = Spans::from_iter([Span {
+        start_us: span.0,
+        end_us: span.1,
+    }]);
     let mut sources = Vec::new();
     for (id, title) in SOURCES {
         if TENANT_WIDE.contains(id) {
             sources.push(SourceState {
                 source: (*id).to_string(),
                 title: (*title).to_string(),
-                state: state_of(wide.get(id).copied()),
+                state: manifest_state(
+                    state_of(wide.get(id).copied()),
+                    &range_span,
+                    manifest_tenants.iter().map(|t| {
+                        (
+                            index.tenant_wide_gaps(t, id),
+                            index.vouched_tenant_wide(t, id),
+                        )
+                    }),
+                ),
                 accounts_by_state: BTreeMap::new(),
             });
             continue;
@@ -781,7 +1072,13 @@ pub fn coverage_for_range(
                 .filter(|((s, _, a), _)| s == id && a == acct)
                 .map(|(_, st)| st.sampled)
                 .collect();
-            let state = state_of((!held.is_empty()).then(|| held.contains(&true)));
+            let state = manifest_state(
+                state_of((!held.is_empty()).then(|| held.contains(&true))),
+                &range_span,
+                manifest_tenants
+                    .iter()
+                    .map(|t| (index.account_gaps(t, acct, id), index.vouched(t, acct, id))),
+            );
             worst = worst.max(state);
             by_state
                 .entry(state.as_str().to_string())
@@ -796,4 +1093,121 @@ pub fn coverage_for_range(
         });
     }
     Ok(RangeCoverage { sources })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn d(s: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    fn us(s: &str) -> i64 {
+        DateTime::parse_from_rfc3339(s).unwrap().timestamp_micros()
+    }
+
+    fn stats(first: &str, last: &str, sampled: bool) -> Stats {
+        Stats {
+            rows: 2,
+            first_us: us(first),
+            last_us: us(last),
+            days: 2,
+            sampled,
+        }
+    }
+
+    /// With nothing from the collector, the interval computation is `gaps_of` exactly (R1): the golden's guarantee
+    /// holds whichever path a source takes.
+    #[test]
+    fn interval_gaps_without_manifests_equal_gaps_of() {
+        let last_event = "2026-07-31T23:30:00Z";
+        let windows = [
+            ("2026-06-01", "2026-07-31"),
+            ("2026-07-01", "2026-07-31"),
+            ("2026-07-31", "2026-07-31"),
+        ];
+        let evidence = [
+            None,
+            Some(stats("2026-07-01T10:00:00Z", "2026-07-05T09:00:00Z", false)),
+            Some(stats("2026-07-01T10:00:00Z", "2026-07-05T09:00:00Z", true)),
+            Some(stats("2026-06-01T00:00:00Z", "2026-07-31T23:30:00Z", true)),
+            Some(stats("2026-05-20T00:00:00Z", "2026-07-31T00:00:00Z", false)),
+            Some(stats("2026-07-31T01:00:00Z", "2026-07-31T02:00:00Z", true)),
+        ];
+        for (start, end) in windows {
+            let w = Window {
+                start: d(start),
+                end: d(end),
+            };
+            let ws = Span {
+                start_us: day_start_us(w.start),
+                end_us: us(last_event) + 1,
+            };
+            for s in &evidence {
+                // Evidence ending before the window starts (a finding long after the rows): `gaps_of` starts the
+                // `after` gap the day after the last row, outside the window; intervals keep it inside (below).
+                if s.as_ref().is_some_and(|s| day_of(s.last_us) < w.start) {
+                    continue;
+                }
+                assert_eq!(
+                    interval_gaps(ws, s.as_ref(), &Spans::default(), &Spans::default()),
+                    gaps_of(w, s.as_ref()),
+                    "{start}..{end} {s:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn interval_after_gap_stays_inside_the_window() {
+        let w = Span {
+            start_us: us("2026-07-31T00:00:00Z"),
+            end_us: us("2026-07-31T23:30:00Z") + 1,
+        };
+        let s = stats("2026-07-01T10:00:00Z", "2026-07-05T09:00:00Z", false);
+        let gaps = interval_gaps(w, Some(&s), &Spans::default(), &Spans::default());
+        assert_eq!(
+            gaps,
+            vec![Gap {
+                from: d("2026-07-31"),
+                to: d("2026-07-31"),
+                reason: "after".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn same_reason_gaps_on_one_date_merge_and_reasons_order_on_a_shared_date() {
+        let sp = |a: &str, b: &str| Span {
+            start_us: us(a),
+            end_us: us(b),
+        };
+        let gaps = date_gaps(vec![
+            (
+                sp("2026-07-02T06:00:00Z", "2026-07-02T07:00:00Z"),
+                "collector_gap",
+            ),
+            (
+                sp("2026-07-02T09:00:00Z", "2026-07-03T00:00:00Z"),
+                "collector_gap",
+            ),
+            (sp("2026-07-01T00:00:00Z", "2026-07-02T06:00:00Z"), "before"),
+            (
+                sp("2026-07-03T00:00:00Z", "2026-07-04T00:00:00Z"),
+                "collector_gap",
+            ),
+        ]);
+        let got: Vec<(String, String, &str)> = gaps
+            .iter()
+            .map(|g| (g.from.to_string(), g.to.to_string(), g.reason.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("2026-07-01".into(), "2026-07-02".into(), "before"),
+                ("2026-07-02".into(), "2026-07-03".into(), "collector_gap"),
+            ]
+        );
+    }
 }

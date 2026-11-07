@@ -309,6 +309,17 @@ impl<'a> Tree<'a> {
         Ok(())
     }
 
+    /// The files written directly in `dir` (a tree path), as names relative to it, sorted.
+    pub fn files_in(&self, dir: &str) -> Vec<String> {
+        let prefix = format!("{dir}/");
+        self.files
+            .keys()
+            .filter_map(|k| k.strip_prefix(&prefix))
+            .filter(|rest| !rest.contains('/'))
+            .map(str::to_string)
+            .collect()
+    }
+
     /// Appends `text` to the file, encoded with the spec's encoding (a byte-order mark only on
     /// the file's first chunk). Returns the number of lines (`\n`) already in the file before
     /// this chunk, so a writer can turn a chunk's 1-based spans into file lines.

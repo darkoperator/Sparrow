@@ -270,6 +270,12 @@ const SAMPLES: &[(Tool, &str, &str, Option<&str>)] = &[
     (Invictus, "LogFile.txt", "inv.logfile", None),
     (
         Invictus,
+        "UnifiedAuditLog/CollectionManifest-0f8fad5b-d9cb-469f-a165-70867728950e.mesmanifest",
+        "inv.collection_manifest",
+        None,
+    ),
+    (
+        Invictus,
         "Case1/UnifiedAuditLog/20260910-100000/Merged/UAL-Combined.csv",
         "inv.ual.merged",
         None,

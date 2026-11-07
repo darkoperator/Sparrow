@@ -85,6 +85,11 @@ pub struct GenerateOptions {
     /// path (a bare object for one device, an array otherwise).
     #[serde(default)]
     pub invictus_devices_json: bool,
+    /// Microsoft-Extractor-Suite: write a complete `CollectionManifest-<GUID>.mesmanifest` into
+    /// each log run folder (UAL, sign-in, Entra audit). Off keeps every existing tree, digest and
+    /// cache key unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub invictus_manifests: bool,
     /// Scale overrides (Task 25): total benign UAL rows / sign-ins, replacing the scenario's.
     pub ual_rows: Option<u64>,
     pub signins: Option<u64>,
@@ -114,6 +119,7 @@ impl GenerateOptions {
             non_windows: false,
             invictus_licence_list: true,
             invictus_devices_json: false,
+            invictus_manifests: false,
             ual_rows: None,
             signins: None,
             purview_culture_dates: None,

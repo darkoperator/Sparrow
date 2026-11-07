@@ -6,6 +6,7 @@ pub mod access;
 pub mod actor;
 pub mod audit;
 pub mod browse;
+pub mod collector;
 pub mod coverage;
 pub mod device_status;
 pub mod devices;

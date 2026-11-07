@@ -147,6 +147,12 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
             "- **Decisions shown:** all, each labelled with its review state (an agent decision nobody has reviewed says so)".into(),
         );
     }
+    if let Some(b) = &summary.incomplete_collection {
+        doc.push(format!(
+            "- **Collection:** {} See *Evidence coverage and what to request*.",
+            one(&b.text)
+        ));
+    }
 
     // ---- Scope
     doc.push(String::new());
@@ -653,6 +659,58 @@ fn coverage_section(conn: &Connection, doc: &mut Vec<String>, dirs: &DataDirs) -
         doc.push(format!("_{}._", one(w.trim_end_matches('.'))));
         doc.push(String::new());
     }
+    if !cov.collector_requests.is_empty() {
+        doc.push(String::new());
+        doc.push("### Collector gaps".into());
+        doc.push(String::new());
+        doc.push(
+            "_The collector's own manifests say these ranges were not collected. Re-run them before relying on absence of activity._".into(),
+        );
+        doc.push(String::new());
+        for r in &cov.collector_requests {
+            let range = match (r.spans.iter().next(), r.spans.iter().last()) {
+                (Some(a), Some(b)) if !r.undated => {
+                    let t = |us: i64| {
+                        DateTime::from_timestamp_micros(us)
+                            .unwrap_or_default()
+                            .format("%Y-%m-%dT%H:%M:%SZ")
+                            .to_string()
+                    };
+                    format!("{} to {}", t(a.start_us), t(b.end_us))
+                }
+                _ => "undated".to_string(),
+            };
+            // A run that stopped before its first unit: no sources known, no unit.
+            let sources = if r.sources.is_empty() {
+                "unknown sources".to_string()
+            } else {
+                md_cell(&r.sources.join(", "))
+            };
+            let unit = if r.unit_id.is_empty() {
+                String::new()
+            } else {
+                format!(" unit {}", md_cell(&r.unit_id))
+            };
+            doc.push(format!(
+                "- {}, {} ({}), tenant {}, run {}{}",
+                sources,
+                range,
+                md_cell(&r.reason),
+                md_cell(&r.tenant_key),
+                md_cell(&r.run_id),
+                unit
+            ));
+            if let Some(d) = &r.detail {
+                doc.push(format!("  - Detail: {}", md_cell(d)));
+            }
+            for c in &r.rerun {
+                doc.push(format!("  - Re-run: {}", md_cell(c)));
+            }
+            if let Some(c) = &r.resume {
+                doc.push(format!("  - Resume: {}", md_cell(c)));
+            }
+        }
+    }
     if cov.accounts.is_empty() {
         doc.push(
             if cov.warnings.is_empty() {
@@ -682,10 +740,23 @@ fn coverage_section(conn: &Connection, doc: &mut Vec<String>, dirs: &DataDirs) -
         doc.push("| Source | Rows | First (UTC) | Last (UTC) | Days | Sampled | Gaps |".into());
         doc.push("| --- | ---: | --- | --- | ---: | --- | --- |".into());
         for s in &a.sources {
-            let gaps: Vec<String> = s
-                .gaps
-                .iter()
-                .map(|g| format!("{} {} to {}", g.reason, g.from, g.to))
+            // A source the collector vouches for with no rows says so first (only with collector manifests), each
+            // collected range on its own so the days between them never read as collected.
+            let collected = (s.collected_no_events && !s.collected.is_empty()).then(|| {
+                let ranges: Vec<String> = s
+                    .collected
+                    .iter()
+                    .map(|r| format!("{} to {}", r.from, r.to))
+                    .collect();
+                format!("collected, no events {}", ranges.join(", "))
+            });
+            let gaps: Vec<String> = collected
+                .into_iter()
+                .chain(
+                    s.gaps
+                        .iter()
+                        .map(|g| format!("{} {} to {}", g.reason, g.from, g.to)),
+                )
                 .collect();
             doc.push(format!(
                 "| {} | {} | {} | {} | {} | {} | {} |",

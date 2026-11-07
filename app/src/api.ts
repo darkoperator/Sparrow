@@ -242,6 +242,16 @@ export const settingsSetGeoipDir = (dir: string | null) => call<GeoipStatus>("se
 export const caseOpen = (path: string, allowUpgrade = false) => call<CaseInfo>("case_open", { path, allowUpgrade });
 export const caseClose = () => call<null>("case_close");
 
+/** The open case's open collector gaps as one banner (Microsoft-Extractor-Suite manifests). `text` is the banner sentence. */
+export interface IncompleteCollection {
+  gaps: number;
+  sources: string[];
+  span_us: number;
+  text: string;
+}
+/** `null` when no collector gap is open (or the case has no manifest). */
+export const caseCollectionStatus = () => call<IncompleteCollection | null>("case_collection_status");
+
 export const reviewQueue = () => call<QueueItem[]>("review_queue");
 export const findingDetail = (findingId: string) => call<FindingDetail>("finding_detail", { findingId });
 export const reviewAccept = (objectType: string, objectId: string, decisionSeq: number, comment?: string) =>
@@ -1076,13 +1086,13 @@ export interface FindingRef {
 }
 
 /** `case::coverage::RangeState`: what the case holds of one source over a range. */
-export type CoverageState = "covered" | "sampled" | "absent";
+export type CoverageState = "covered" | "sampled" | "absent" | "collector_gap";
 
 /** `case::coverage::SourceState`. `accounts_by_state` is empty for a tenant-wide source (message trace, Entra audit). */
 export interface CoverageSource {
   source: string;
   title: string;
-  /** The worst over the accounts: absent, then sampled, then covered. */
+  /** The worst over the accounts: collector gap, then absent, then sampled, then covered. */
   state: CoverageState;
   accounts_by_state: Partial<Record<CoverageState, string[]>>;
 }
@@ -1326,6 +1336,8 @@ export interface IngestResult {
   /** `null` when detection was skipped (asked, or cancelled) or failed (`detect_error`). */
   detect: { findings_new: number; findings_updated: number; warnings: string[] } | null;
   detect_error: string | null;
+  /** The case's open collector gaps after this import (the shell shows the same banner). */
+  incomplete_collection: IncompleteCollection | null;
 }
 
 export const ingestDiscover = (path: string) => call<DiscoveryPreview>("ingest_discover", { path });

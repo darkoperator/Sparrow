@@ -225,3 +225,9 @@ ul.plain { list-style: none; margin: 0; padding: 0; }
     opacity: 0.35;
   }
 }
+
+/* The incomplete-collection banner under the header: the sentence, then the coverage command with a Copy button. */
+.collection-banner { background: var(--sus-bg); color: var(--text-2); border-bottom-color: var(--sus-pill); }
+.collection-banner p { margin: 0; }
+.collection-banner-cmd { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 4px; }
+.collection-banner-cmd code { overflow-wrap: anywhere; }

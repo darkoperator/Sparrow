@@ -56,6 +56,21 @@ describe("CoverageStrip", () => {
     );
   });
 
+  it("a_collector_gap_is_labelled_styled_and_explained", () => {
+    render(
+      <CoverageStrip
+        coverage={cov({ tenant_key: "t1", accounts: [A], sources: [src("ual", "Unified audit log", "collector_gap", { collector_gap: [A] })] })}
+      />,
+    );
+    const chip = screen.getByText(/collector gap/);
+    expect(chip).toHaveTextContent("Unified audit log in this range: collector gap");
+    expect(chip).toHaveClass("coverage-collector-gap");
+    expect(chip).toHaveAttribute(
+      "title",
+      `Collector gap: ${A}\nThe collector could not collect this range; re-collect it.\nDays are UTC days, 2026-08-01 to 2026-09-09, both included.`,
+    );
+  });
+
   it("a_source_missing_for_some_accounts_says_how_many", () => {
     const C = "zion.osborn@contoso.example";
     render(

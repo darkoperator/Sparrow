@@ -120,6 +120,7 @@ pub const SPARROW_PARSED: &[&str] = &[
     "inv.app_registrations",
     "inv.audit_status",
     "inv.ca",
+    "inv.collection_manifest",
     "inv.devices",
     "inv.directory_activity",
     "inv.dynamic_groups",

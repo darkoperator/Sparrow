@@ -7,6 +7,7 @@ import {
   caseOpen,
   ingestProfile,
   ingestUnprofiled,
+  caseCollectionStatus,
   isCmdError,
   onAgentActivity,
   onCaseChanged,
@@ -16,6 +17,7 @@ import {
   type AgentActivity,
   type CaseInfo,
   type Filter,
+  type IncompleteCollection,
   type Settings,
 } from "../api";
 import Highlights from "../highlights/Highlights";
@@ -38,6 +40,7 @@ import {
 } from "./nav";
 import ImportDialog, { type ImportMode } from "./ImportDialog";
 import OpenCase, { type UpgradePrompt } from "./OpenCase";
+import CollectionBanner, { CollectionError, shellQuote } from "./CollectionBanner";
 import ReadOnlyBanner from "./ReadOnlyBanner";
 import "./shell.css";
 import TabStrip, { type TabBadges } from "./TabStrip";
@@ -123,6 +126,9 @@ export default function Shell({ screens = {}, entityTab, accessTab }: ShellProps
   // Collections an import loaded but never profiled (it was killed): the banner offers to run the profile.
   const [unprofiled, setUnprofiled] = useState(0);
   const [profiling, setProfiling] = useState(false);
+  // Open collector gaps (from the collection manifests): read after a case opens and after every import.
+  const [collection, setCollection] = useState<IncompleteCollection | null>(null);
+  const [collectionError, setCollectionError] = useState<string | null>(null);
   // The agent bridge: a write bumps `dataVersion` (screens read their data again, keeping their state); the chip
   // shows the last request.
   const [dataVersion, setDataVersion] = useState(0);
@@ -203,6 +209,26 @@ export default function Shell({ screens = {}, entityTab, accessTab }: ShellProps
       live = false;
     };
   }, [caseId, readOnly, dataEpoch]);
+
+  useEffect(() => {
+    setCollectionError(null);
+    if (caseId === undefined) {
+      setCollection(null);
+      return;
+    }
+    let live = true;
+    caseCollectionStatus().then(
+      (c) => live && setCollection(c),
+      (e: unknown) => {
+        if (!live) return;
+        setCollection(null);
+        setCollectionError(isCmdError(e) ? e.message : String(e));
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [caseId, dataEpoch]);
 
   const profileNow = async () => {
     setProfiling(true);
@@ -421,6 +447,10 @@ export default function Shell({ screens = {}, entityTab, accessTab }: ShellProps
           Close case
         </button>
       </header>
+      {collectionError !== null && <CollectionError message={collectionError} />}
+      {collection !== null && (
+        <CollectionBanner status={collection} command={`sparrow coverage --case ${shellQuote(info.path)}`} />
+      )}
       {info.read_only_reason !== null && <ReadOnlyBanner reason={info.read_only_reason} />}
       {info.warnings.length > 0 && (
         <ul className="warnings">
@@ -482,7 +512,14 @@ export default function Shell({ screens = {}, entityTab, accessTab }: ShellProps
         </HighlightsProvider>
       </div>
       </div>
-      {importMode === "open" && <ImportDialog mode="open" onClose={(changed) => void closeImport(changed)} />}
+      {importMode === "open" && <ImportDialog
+          mode="open"
+          onClose={(changed) => void closeImport(changed)}
+          onImported={(r) => {
+            setCollectionError(null);
+            setCollection(r.incomplete_collection);
+          }}
+        />}
     </div>
   );
 }

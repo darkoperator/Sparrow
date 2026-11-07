@@ -67,6 +67,7 @@ fn main() {
             cmd::case::settings_set_geoip_dir,
             cmd::case::case_open,
             cmd::case::case_close,
+            cmd::case::commands::case_collection_status,
             cmd::review::commands::review_queue,
             cmd::review::commands::finding_detail,
             cmd::review::commands::review_accept,

@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use serde::Serialize;
 use sparrow_core::Case;
+use sparrow_core::case::collector::{IncompleteCollection, incomplete_collection};
 use sparrow_core::data::DataDirs;
 use sparrow_core::discovery::{Registry, discover_collections, list_collection_files};
 use sparrow_core::ingest::parser::ParserRegistry;
@@ -319,6 +320,9 @@ struct SynthGenArgs {
     /// Microsoft-Extractor-Suite Get-Devices: write JSON into the .csv path
     #[arg(long)]
     devices_json: bool,
+    /// Microsoft-Extractor-Suite: write a collection manifest into each log run folder
+    #[arg(long)]
+    invictus_manifests: bool,
     /// Total benign UAL filler rows over the window (scale testing; overrides the scenario's
     /// `scale.ual_rows`)
     #[arg(long)]
@@ -1388,6 +1392,7 @@ fn cmd_ingest(
     let t_detect = timing::span("cli: detect");
     let detect = run_detection(&mut case, &profile_opts, no_detect);
     drop(t_detect);
+    let banner = incomplete_collection(case.conn())?;
     let t_close = timing::span("cli: close case (final checkpoint)");
     drop(case);
     drop(t_close);
@@ -1398,23 +1403,25 @@ fn cmd_ingest(
             detect: detect.as_ref(),
         })?;
     } else {
+        // Paths and parser warnings come from the evidence: never shown raw.
+        use sparrow_core::case::text::display_safe_line as safe;
         for c in &report.collections {
             outln!(
                 "{} collection {} ({})",
                 c.tool.as_str(),
                 c.collection_id,
-                c.root
+                safe(&c.root)
             );
             for f in &c.files {
                 let notes: Vec<String> = rejected_note(f)
                     .into_iter()
-                    .chain(f.warnings.clone())
+                    .chain(f.warnings.iter().map(|w| safe(w)))
                     .collect();
                 outln!(
                     "  {:<18} {:>7} rec  {}{}",
                     f.status.as_str(),
                     f.records_loaded,
-                    f.rel_path,
+                    safe(&f.rel_path),
                     if notes.is_empty() {
                         String::new()
                     } else {
@@ -1425,6 +1432,7 @@ fn cmd_ingest(
         }
         print_profile_summary(&profile);
         print_detect_summary(detect.as_ref());
+        print_banner(banner.as_ref(), case_path);
     }
     if timing::enabled() {
         err!("{}", timing::report());
@@ -1528,6 +1536,32 @@ fn print_detect_summary(detect: Option<&DetectOutcome>) {
             outln!("warning: detection failed: {e} (run `sparrow profile --case ...` again)")
         }
         (None, None) => {}
+    }
+}
+
+/// The incomplete-collection banner and where to find the pull list; nothing when the collection is complete.
+fn print_banner(banner: Option<&IncompleteCollection>, case_path: &Path) {
+    use sparrow_core::case::text::display_safe_line as safe;
+    if let Some(b) = banner {
+        outln!("{}", safe(&b.text));
+        outln!(
+            "  pull list: sparrow coverage --case {}",
+            safe(&app_shell_quote(&case_path.display().to_string()))
+        );
+    }
+}
+
+/// `s` as one POSIX shell word: as is when it is only `[A-Za-z0-9@%_+=:,./-]` (and not empty), else in single
+/// quotes with each `'` written `'\''`. The app's `shellQuote` (CollectionBanner.tsx) uses the same rule, so the CLI
+/// and the app show the same command.
+fn app_shell_quote(s: &str) -> String {
+    let plain = !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "@%_+=:,./-".contains(c));
+    if plain {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
     }
 }
 
@@ -1746,6 +1780,7 @@ fn cmd_summary(case_path: &Path, json: bool) -> Result<ExitCode> {
         print_json(&v)?;
         return Ok(ExitCode::SUCCESS);
     }
+    print_banner(report.incomplete_collection.as_ref(), case_path);
     print_stale_warning(&report.stale_collections, case_path);
     if let Some(at) = &report.profile_evaluated_at {
         outln!("profile evaluated at {at}");
@@ -2119,6 +2154,7 @@ fn cmd_synth_generate(args: SynthGenArgs, json: bool) -> Result<ExitCode> {
     opts.non_windows = args.non_windows;
     opts.invictus_licence_list = !args.no_licence_list;
     opts.invictus_devices_json = args.devices_json;
+    opts.invictus_manifests = args.invictus_manifests;
     opts.ual_rows = args.ual_rows;
     opts.signins = args.signins;
     let (manifest, zip) = if args.zip {
@@ -2614,6 +2650,19 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn app_shell_quote_matches_the_apps_rule() {
+        assert_eq!(
+            app_shell_quote("/cases/a-b_c.duckdb"),
+            "/cases/a-b_c.duckdb"
+        );
+        assert_eq!(app_shell_quote("a@b%c+d=e:f,g"), "a@b%c+d=e:f,g");
+        assert_eq!(app_shell_quote(""), "''");
+        assert_eq!(app_shell_quote("my case.duckdb"), "'my case.duckdb'");
+        assert_eq!(app_shell_quote("it's"), r"'it'\''s'");
+        assert_eq!(app_shell_quote("$(x)"), "'$(x)'");
+    }
+
     #[test]
     fn shell_quote_round_trips_through_a_posix_shell() {
         for s in [

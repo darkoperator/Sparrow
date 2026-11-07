@@ -5744,3 +5744,96 @@ mod notebook_commands {
         assert!(out.exists());
     }
 }
+
+// ---- the incomplete-collection banner ----
+
+/// A case file whose one collection (tenant `t1`) holds a synthetic manifest: a partial UAL day with one gap, or a
+/// complete one.
+fn manifest_case(dir: &Path, with_gap: bool) -> PathBuf {
+    let root = dir.join("evidence").join("CASE_OUTPUT");
+    std::fs::create_dir_all(root.join("UALGraph")).unwrap();
+    std::fs::write(
+        root.join("LogFile.txt"),
+        "2026-09-10 10:00:00: [INFO] Starting\n",
+    )
+    .unwrap();
+    let gaps = if with_gap {
+        serde_json::json!([{
+            "start_utc": "2026-09-01T01:00:00Z", "end_utc": "2026-09-01T03:00:00Z",
+            "reason": "retries_exhausted", "detail": null, "attempts": null,
+            "records_in_window": null, "search_id": null
+        }])
+    } else {
+        serde_json::json!([])
+    };
+    let run_id = "11111111-2222-3333-4444-555555555555";
+    let doc = serde_json::json!({
+        "schema": "mes-collection-manifest/1", "run_id": run_id,
+        "tool": "Microsoft-Extractor-Suite", "tool_version": "4.1.0.1", "fork": "x",
+        "cmdlet": "Get-UALGraph", "parameters": {},
+        "started_utc": "2026-09-10T10:00:00Z", "finished_utc": "2026-09-10T11:00:00Z",
+        "status": if with_gap { "partial" } else { "complete" },
+        "throttle_waits": { "count": 0, "total_seconds": 0.0 },
+        "units": [{
+            "unit_id": "u-0001", "sources": ["ual"],
+            "scope": { "user_ids": null, "operations": null, "record_types": null, "ip_addresses": null,
+                       "session_ids": null, "event_type": null, "direction": null, "other_filters": null },
+            "start_utc": "2026-09-01T00:00:00Z", "end_utc": "2026-09-02T00:00:00Z",
+            "state": if with_gap { "partial" } else { "complete" },
+            "records_written": 0, "output_written": true, "files": [], "gaps": gaps
+        }]
+    });
+    std::fs::write(
+        root.join("UALGraph")
+            .join(format!("CollectionManifest-{run_id}.mesmanifest")),
+        serde_json::to_string_pretty(&doc).unwrap(),
+    )
+    .unwrap();
+    let path = dir.join("manifest.duckdb");
+    let mut case = Case::create_or_open(&path).unwrap();
+    sparrow_core::ingest::ingest_path(
+        &mut case,
+        &dir.join("evidence"),
+        &sparrow_core::ingest::parser::ParserRegistry::builtin(),
+        &sparrow_core::ingest::IngestOptions::default(),
+    )
+    .unwrap();
+    case.conn()
+        .execute("UPDATE collections SET tenant_key = 't1'", [])
+        .unwrap();
+    path
+}
+
+#[test]
+fn collection_status_reports_open_gaps() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = state_with_settings(tmp.path());
+    let path = manifest_case(tmp.path(), true);
+    case_open(&state, &path, false).unwrap();
+    let got = sparrow_app::cmd::case::case_collection_status(&state)
+        .unwrap()
+        .expect("a gap is open");
+    assert_eq!(got.gaps, 1);
+    assert_eq!(got.sources, vec!["ual"]);
+    assert_eq!(got.span_us, 2 * 3_600_000_000);
+    assert!(
+        got.text.starts_with("Collection incomplete: 1 gap in "),
+        "{}",
+        got.text
+    );
+    case_close(&state).unwrap();
+}
+
+#[test]
+fn collection_status_is_none_without_gaps() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = state_with_settings(tmp.path());
+    let path = manifest_case(tmp.path(), false);
+    case_open(&state, &path, false).unwrap();
+    assert!(
+        sparrow_app::cmd::case::case_collection_status(&state)
+            .unwrap()
+            .is_none()
+    );
+    case_close(&state).unwrap();
+}

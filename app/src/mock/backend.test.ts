@@ -207,6 +207,7 @@ const TABLE: { cmd: string; args?: Obj; check: (r: unknown) => void }[] = [
   { cmd: "ingest_run", args: { path: "/evidence/run", target: "open", culture: null, detect: true, runId: "r-1" }, check: (r) => { keys(r, ["case_path", "cancelled", "report", "files_loaded", "error", "files_total", "rows_by_source", "file_notes", "not_loaded", "profile_error", "profile_warnings", "detect", "detect_error"]); expect((r as Obj).cancelled).toBe(false); arrOf((r as Obj).rows_by_source, ["source", "files", "rows"]); } },
   { cmd: "ingest_cancel", args: { runId: "r-0" }, check: (r) => expect(r).toBeNull() },
   { cmd: "ingest_unprofiled", check: (r) => expect(r).toEqual([]) },
+  { cmd: "case_collection_status", check: (r) => expect(r).toBeNull() },
   { cmd: "ingest_profile", check: (r) => keys(r, ["profile_error", "profile_warnings", "detect", "detect_error"]) },
   { cmd: "share_export", args: { path: "/b.json" }, check: (r) => { keys(r, ["sha256", "items"]); expect((r as Obj).items).toBeGreaterThan(0); } },
   { cmd: "share_preview", args: { path: "/b.json" }, check: (r) => keys(r, ["sha256", "summary", "analyst", "exported_at", "items"]) },

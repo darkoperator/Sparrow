@@ -55,6 +55,9 @@ pub struct Summary {
     /// identities).
     pub tables: Vec<TableCount>,
     pub profile_evaluated_at: Option<String>,
+    /// Open collector gaps of partial, failed or search-only runs; absent without manifests or gaps.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub incomplete_collection: Option<crate::case::collector::IncompleteCollection>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -134,6 +137,7 @@ pub fn summarize_conn(conn: &Connection) -> Result<Summary> {
         tenants: out,
         tables: table_counts(conn)?,
         profile_evaluated_at: profile_evaluated_at(conn)?,
+        incomplete_collection: crate::case::collector::incomplete_collection(conn)?,
     })
 }
 

@@ -63,3 +63,4 @@
 .import-steps > li { padding: 2px 8px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--muted); font-size: 11px; }
 .import-steps > li.import-step-done { border-color: var(--ok); color: var(--ok); }
 .import-steps > li.import-step-on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); }
+.import-dialog .import-incomplete { margin: 0; padding: 8px 12px; border-radius: 6px; font-size: 13px; background: var(--sus-bg); color: var(--sus); }

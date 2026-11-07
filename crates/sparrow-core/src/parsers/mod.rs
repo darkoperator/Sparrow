@@ -3,6 +3,7 @@
 pub mod activity;
 pub mod admin_audit;
 pub mod apps;
+pub mod collection_manifest;
 pub mod devices_groups;
 pub mod directory;
 pub mod directory_audits;
@@ -34,6 +35,7 @@ use crate::ingest::parser::ParserRegistry;
 
 pub fn register_builtin(registry: &mut ParserRegistry) {
     logs::register(registry);
+    collection_manifest::register(registry);
     activity::register(registry);
     ual::register(registry);
     directory::register(registry);
