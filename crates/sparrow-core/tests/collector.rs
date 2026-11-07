@@ -9,7 +9,9 @@ use chrono::DateTime;
 use manifest::{M, U, invictus_dir};
 use serde_json::json;
 use sparrow_core::Case;
-use sparrow_core::case::collector::{ManifestIndex, OpenGap, Span, Spans, load};
+use sparrow_core::case::collector::{
+    ManifestIndex, OpenGap, Span, Spans, incomplete_collection, load,
+};
 use sparrow_core::ingest::parser::ParserRegistry;
 use sparrow_core::ingest::{IngestOptions, ingest_path};
 
@@ -781,4 +783,183 @@ fn a_case_without_manifests_is_an_empty_index() {
     assert!(idx.is_empty());
     assert!(idx.open_gaps(None).is_empty());
     assert!(idx.vouched("t1", A, "ual").is_empty());
+}
+
+// ---- the incomplete-collection banner (Task 7) ----
+
+fn banner(
+    collections: &[(Option<&str>, Vec<M>)],
+) -> Option<sparrow_core::case::collector::IncompleteCollection> {
+    let (case, _) = index_of(collections);
+    incomplete_collection(case.conn()).unwrap()
+}
+
+#[test]
+fn banner_counts_open_gaps_and_names_sources() {
+    let later = M::run("Get-UALGraph", "complete").unit(U::new(&["ual"], &h(1), &h(3), "complete"));
+    let b = banner(&[
+        (
+            Some("t1"),
+            vec![
+                M::run("Get-UALGraph", "partial").unit(
+                    day_unit(&["ual"], "partial")
+                        .gap(&h(1), &h(2), "retries_exhausted")
+                        .gap(&h(10), &h(11), "retries_exhausted"),
+                ),
+                M::run("Get-MessageTraceV2", "partial").unit(
+                    day_unit(&["message_trace"], "partial").gap(&h(4), &h(5), "cap_exceeded"),
+                ),
+            ],
+        ),
+        (Some("t1"), vec![later]),
+    ])
+    .unwrap();
+    assert_eq!(b.gaps, 2);
+    assert_eq!(b.sources, vec!["ual", "message_trace"]);
+    assert_eq!(b.span_us, 2 * 3_600_000_000);
+    assert_eq!(
+        b.text,
+        "Collection incomplete: 2 gaps in Unified audit log, Message trace (2 hours). Re-collect before relying on absence of activity."
+    );
+}
+
+#[test]
+fn banner_text_formats_span() {
+    let one = |end: &str, status: &str| {
+        banner(&[(
+            Some("t1"),
+            vec![M::run("Get-UALGraph", status).unit(
+                U::new(&["ual"], D1, "2026-09-09T00:00:00Z", "partial").gap(
+                    D1,
+                    end,
+                    "retries_exhausted",
+                ),
+            )],
+        )])
+        .unwrap()
+        .text
+    };
+    let t = one("2026-09-01T01:30:00Z", "partial");
+    assert_eq!(
+        t,
+        "Collection incomplete: 1 gap in Unified audit log (1 hour). Re-collect before relying on absence of activity."
+    );
+    assert!(one("2026-09-02T23:00:00Z", "failed").contains("(47 hours)"));
+    assert!(one(D3, "search_only").contains("(2 days)"));
+    assert!(one("2026-09-04T00:00:00Z", "partial").contains("(3 days)"));
+    assert!(one("2026-09-01T00:00:30Z", "partial").contains("(1 minute)"));
+    assert!(one("2026-09-01T00:45:00Z", "partial").contains("(45 minutes)"));
+}
+
+#[test]
+fn banner_absent_without_manifests() {
+    let case = Case::in_memory().unwrap();
+    assert!(incomplete_collection(case.conn()).unwrap().is_none());
+}
+
+#[test]
+fn banner_absent_when_every_run_is_complete() {
+    assert!(
+        banner(&[(
+            Some("t1"),
+            vec![M::run("Get-UALGraph", "complete").unit(day_unit(&["ual"], "complete"))],
+        )])
+        .is_none()
+    );
+}
+
+#[test]
+fn banner_clears_after_recollection() {
+    let gap_run = || {
+        M::run("Get-UALGraph", "partial").unit(day_unit(&["ual"], "partial").gap(
+            &h(6),
+            &h(7),
+            "retries_exhausted",
+        ))
+    };
+    assert!(banner(&[(Some("t1"), vec![gap_run()])]).is_some());
+    let b = banner(&[
+        (Some("t1"), vec![gap_run()]),
+        (
+            Some("t1"),
+            vec![M::run("Get-UALGraph", "complete").unit(U::new(
+                &["ual"],
+                &h(5),
+                &h(8),
+                "complete",
+            ))],
+        ),
+    ]);
+    assert!(b.is_none(), "{b:?}");
+}
+
+#[test]
+fn reimport_does_not_double_the_count() {
+    let m = M::run("Get-UALGraph", "partial").unit(day_unit(&["ual"], "partial").gap(
+        &h(6),
+        &h(7),
+        "retries_exhausted",
+    ));
+    // The same manifest in two folders of the case.
+    let b = banner(&[(Some("t1"), vec![m.clone_doc()]), (Some("t1"), vec![m])]).unwrap();
+    assert_eq!(b.gaps, 1);
+}
+
+#[test]
+fn banner_counts_undated_gaps_without_span() {
+    let m = M::run("Get-UALGraph", "partial").unit(
+        U::new(&["ual"], "not a time", "also not", "partial").gap("bad", "worse", "write_failed"),
+    );
+    let b = banner(&[(Some("t1"), vec![m])]).unwrap();
+    assert_eq!(b.gaps, 1);
+    assert_eq!(b.span_us, 0);
+    assert!(b.text.contains("(unknown span)"), "{}", b.text);
+}
+
+#[test]
+fn front_matter_has_the_collection_line() {
+    use sparrow_core::data::DataDirs;
+    use sparrow_core::export::report_md::{self, ReportOpts};
+    let render = |ms: Vec<M>| {
+        let (case, _) = index_of(&[(Some("t1"), ms)]);
+        let mut md = Vec::new();
+        report_md::write(
+            case.conn(),
+            &mut md,
+            &ReportOpts {
+                reviewed_only: false,
+                generated_at: chrono::Utc::now(),
+                dirs: DataDirs::default(),
+            },
+        )
+        .unwrap();
+        String::from_utf8(md).unwrap()
+    };
+    let md = render(vec![M::run("Get-UALGraph", "partial").unit(
+        day_unit(&["ual"], "partial").gap(&h(6), &h(7), "retries_exhausted"),
+    )]);
+    let line = "- **Collection:** Collection incomplete: 1 gap in Unified audit log \\(1 hour\\). Re-collect before relying on absence of activity. See *Evidence coverage and what to request*.";
+    let at = md.find(line).unwrap_or_else(|| panic!("no line in {md}"));
+    assert!(at > md.find("**Decisions shown:**").unwrap());
+    assert!(at < md.find("## Scope").unwrap());
+    let clean = render(vec![
+        M::run("Get-UALGraph", "complete").unit(day_unit(&["ual"], "complete")),
+    ]);
+    assert!(!clean.contains("**Collection:**"));
+}
+
+#[test]
+fn banner_counts_a_gap_of_a_run_with_an_unknown_status() {
+    let b = banner(&[(
+        Some("t1"),
+        vec![
+            M::run("Get-UALGraph", "weird").unit(day_unit(&["ual"], "partial").gap(
+                &h(6),
+                &h(7),
+                "retries_exhausted",
+            )),
+        ],
+    )])
+    .unwrap();
+    assert_eq!(b.gaps, 1);
 }

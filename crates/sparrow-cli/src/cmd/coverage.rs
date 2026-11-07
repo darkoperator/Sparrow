@@ -4,6 +4,7 @@
 use crate::{open_read, print_json};
 use anyhow::Result;
 use clap::Args;
+use sparrow_core::case::collector::incomplete_collection;
 use sparrow_core::case::coverage::{
     AccountCoverage, CollectorRequest, CoverageOptions, Request, SourceCoverage, coverage,
     thousands,
@@ -147,6 +148,9 @@ pub fn run(a: CoverageArgs, json: bool) -> Result<ExitCode> {
     }
     for w in &report.warnings {
         errln!("warning: {w}");
+    }
+    if let Some(b) = incomplete_collection(c.conn())? {
+        errln!("warning: {}", safe(&b.text));
     }
     print_collector_requests(&report.collector_requests);
     for acc in &report.accounts {

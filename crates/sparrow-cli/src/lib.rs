@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use serde::Serialize;
 use sparrow_core::Case;
+use sparrow_core::case::collector::{IncompleteCollection, incomplete_collection};
 use sparrow_core::data::DataDirs;
 use sparrow_core::discovery::{Registry, discover_collections, list_collection_files};
 use sparrow_core::ingest::parser::ParserRegistry;
@@ -1388,6 +1389,7 @@ fn cmd_ingest(
     let t_detect = timing::span("cli: detect");
     let detect = run_detection(&mut case, &profile_opts, no_detect);
     drop(t_detect);
+    let banner = incomplete_collection(case.conn())?;
     let t_close = timing::span("cli: close case (final checkpoint)");
     drop(case);
     drop(t_close);
@@ -1425,6 +1427,7 @@ fn cmd_ingest(
         }
         print_profile_summary(&profile);
         print_detect_summary(detect.as_ref());
+        print_banner(banner.as_ref(), case_path);
     }
     if timing::enabled() {
         err!("{}", timing::report());
@@ -1528,6 +1531,17 @@ fn print_detect_summary(detect: Option<&DetectOutcome>) {
             outln!("warning: detection failed: {e} (run `sparrow profile --case ...` again)")
         }
         (None, None) => {}
+    }
+}
+
+/// The incomplete-collection banner and where to find the pull list; nothing when the collection is complete.
+fn print_banner(banner: Option<&IncompleteCollection>, case_path: &Path) {
+    if let Some(b) = banner {
+        outln!("{}", sparrow_core::case::text::display_safe_line(&b.text));
+        outln!(
+            "  pull list: sparrow coverage --case {}",
+            case_path.display()
+        );
     }
 }
 
@@ -1746,6 +1760,7 @@ fn cmd_summary(case_path: &Path, json: bool) -> Result<ExitCode> {
         print_json(&v)?;
         return Ok(ExitCode::SUCCESS);
     }
+    print_banner(report.incomplete_collection.as_ref(), case_path);
     print_stale_warning(&report.stale_collections, case_path);
     if let Some(at) = &report.profile_evaluated_at {
         outln!("profile evaluated at {at}");

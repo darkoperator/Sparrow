@@ -196,8 +196,8 @@ fn coverage_through_the_binary() {
     );
 }
 
-#[test]
-fn coverage_prints_manifest_gaps_first() {
+/// A case (and its temp dir) whose only evidence is a partial UAL manifest with one gap, tenant `t1`.
+fn manifest_case() -> (tempfile::TempDir, std::path::PathBuf) {
     use sparrow_core::ingest::parser::ParserRegistry;
     use sparrow_core::ingest::{IngestOptions, ingest_path};
     let tmp = tempfile::tempdir().unwrap();
@@ -246,6 +246,12 @@ fn coverage_prints_manifest_gaps_first() {
             .execute("UPDATE collections SET tenant_key = 't1'", [])
             .unwrap();
     }
+    (tmp, path)
+}
+
+#[test]
+fn coverage_prints_manifest_gaps_first() {
+    let (_tmp, path) = manifest_case();
     let r = run(&["coverage", "--case", path.to_str().unwrap()]);
     assert_eq!(r.code, 0, "{}", r.err);
     let lines: Vec<&str> = r.out.lines().collect();
@@ -274,4 +280,70 @@ fn coverage_prints_manifest_gaps_first() {
     let j = run(&["--json", "coverage", "--case", path.to_str().unwrap()]);
     let v: Value = serde_json::from_str(&j.out).unwrap();
     assert_eq!(v["collector_requests"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn coverage_warns_on_stderr_about_an_incomplete_collection() {
+    let (_tmp, path) = manifest_case();
+    let r = run(&["coverage", "--case", path.to_str().unwrap()]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(
+        r.err.contains("warning: Collection incomplete: 1 gap in Unified audit log (2 days). Re-collect before relying on absence of activity."),
+        "{}",
+        r.err
+    );
+    assert!(!r.out.contains("Collection incomplete"), "{}", r.out);
+}
+
+#[test]
+fn summary_prints_the_banner() {
+    let (_tmp, path) = manifest_case();
+    {
+        let case = Case::create_or_open(&path).unwrap();
+        case.conn()
+            .execute(
+                "INSERT INTO tenant (tenant_key, collections) VALUES ('t1', 1)",
+                [],
+            )
+            .unwrap();
+    }
+    let p = path.to_str().unwrap();
+    let r = run(&["summary", "--case", p]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let lines: Vec<&str> = r.out.lines().collect();
+    assert_eq!(
+        lines[0],
+        "Collection incomplete: 1 gap in Unified audit log (2 days). Re-collect before relying on absence of activity."
+    );
+    assert_eq!(
+        lines[1],
+        format!("  pull list: sparrow coverage --case {p}")
+    );
+    let j = run(&["--json", "summary", "--case", p]);
+    let v: Value = serde_json::from_str(&j.out).unwrap();
+    assert_eq!(v["incomplete_collection"]["gaps"], 1);
+    assert_eq!(v["incomplete_collection"]["sources"][0], "ual");
+}
+
+#[test]
+fn ingest_prints_the_banner_after_the_profile_summary() {
+    let (tmp, _) = manifest_case();
+    let case = tmp.path().join("again.duckdb");
+    let r = run(&[
+        "ingest",
+        tmp.path().join("CASE_OUTPUT").to_str().unwrap(),
+        "--case",
+        case.to_str().unwrap(),
+    ]);
+    assert!(matches!(r.code, 0 | 6), "{} {}", r.code, r.err);
+    let lines: Vec<&str> = r.out.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| l.starts_with("Collection incomplete: 1 gap"))
+        .unwrap_or_else(|| panic!("{}", r.out));
+    assert!(lines[..at].iter().any(|l| l.starts_with("profile:")));
+    assert_eq!(
+        lines[at + 1],
+        format!("  pull list: sparrow coverage --case {}", case.display())
+    );
 }

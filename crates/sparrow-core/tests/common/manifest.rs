@@ -56,6 +56,13 @@ impl M {
         }
     }
 
+    /// A copy with the same run id and content.
+    pub fn clone_doc(&self) -> M {
+        M {
+            doc: self.doc.clone(),
+        }
+    }
+
     pub fn run_id(&self) -> String {
         self.doc["run_id"].as_str().unwrap().to_string()
     }

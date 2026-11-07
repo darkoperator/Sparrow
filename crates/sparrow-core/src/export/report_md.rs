@@ -147,6 +147,12 @@ pub fn write(conn: &Connection, out: &mut dyn Write, opts: &ReportOpts) -> Resul
             "- **Decisions shown:** all, each labelled with its review state (an agent decision nobody has reviewed says so)".into(),
         );
     }
+    if let Some(b) = &summary.incomplete_collection {
+        doc.push(format!(
+            "- **Collection:** {} See *Evidence coverage and what to request*.",
+            one(&b.text)
+        ));
+    }
 
     // ---- Scope
     doc.push(String::new());

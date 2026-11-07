@@ -584,6 +584,90 @@ impl ManifestIndex {
     }
 }
 
+/// The case's open collector gaps as one banner (Task 7): open gaps of any run, which sources they are in and how long the union of their open spans is.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct IncompleteCollection {
+    /// Open gaps (R4, R5), undated ones included.
+    pub gaps: usize,
+    /// `SOURCES` ids in `SOURCES` order, then any other source names as written.
+    pub sources: Vec<String>,
+    /// Length of the union of the open spans across all sources, microseconds.
+    pub span_us: i64,
+    pub text: String,
+}
+
+fn plural(n: i64, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// R9's span text; `unknown span` when no gap has a date.
+fn span_text(span_us: i64, dated: bool) -> String {
+    if !dated {
+        return "unknown span".to_string();
+    }
+    let hours = span_us / 3_600_000_000;
+    if hours >= 48 {
+        plural(hours / 24, "day", "days")
+    } else if hours >= 1 {
+        plural(hours, "hour", "hours")
+    } else {
+        plural((span_us / 60_000_000).max(1), "minute", "minutes")
+    }
+}
+
+/// The incomplete-collection banner, or `None` when no gap is open, whatever its run's status.
+pub fn incomplete_collection(conn: &Connection) -> Result<Option<IncompleteCollection>> {
+    use crate::case::coverage::SOURCES;
+    use crate::case::text::display_safe_line;
+    let index = load(conn)?;
+    if index.is_empty() {
+        return Ok(None);
+    }
+    let gaps: Vec<OpenGap> = index.open_gaps(None);
+    if gaps.is_empty() {
+        return Ok(None);
+    }
+    let names: std::collections::BTreeSet<&str> = gaps
+        .iter()
+        .flat_map(|g| g.sources.iter().map(String::as_str))
+        .collect();
+    let mut sources: Vec<String> = SOURCES
+        .iter()
+        .filter(|(id, _)| names.contains(id))
+        .map(|(id, _)| (*id).to_string())
+        .collect();
+    sources.extend(
+        names
+            .iter()
+            .filter(|n| !SOURCES.iter().any(|(id, _)| id == *n))
+            .map(|n| display_safe_line(n)),
+    );
+    let shown: Vec<String> = sources
+        .iter()
+        .map(|id| {
+            SOURCES
+                .iter()
+                .find(|(s, _)| s == id)
+                .map_or_else(|| id.clone(), |(_, t)| (*t).to_string())
+        })
+        .collect();
+    let all: Spans = gaps.iter().flat_map(|g| g.spans.iter().copied()).collect();
+    let span_us = all.total_us();
+    let dated = gaps.iter().any(|g| !g.undated);
+    let text = format!(
+        "Collection incomplete: {} in {} ({}). Re-collect before relying on absence of activity.",
+        plural(gaps.len() as i64, "gap", "gaps"),
+        shown.join(", "),
+        span_text(span_us, dated),
+    );
+    Ok(Some(IncompleteCollection {
+        gaps: gaps.len(),
+        sources,
+        span_us,
+        text,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
