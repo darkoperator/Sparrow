@@ -432,6 +432,11 @@ impl ManifestIndex {
         self.by_tenant.values().all(Vec::is_empty)
     }
 
+    /// True when a counted unit of `tenant` was loaded.
+    pub fn has_tenant(&self, tenant: &str) -> bool {
+        !self.units(tenant).is_empty()
+    }
+
     fn units(&self, tenant: &str) -> &[Unit] {
         self.by_tenant.get(tenant).map_or(&[], Vec::as_slice)
     }

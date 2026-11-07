@@ -28,8 +28,17 @@ pub struct CoverageArgs {
     pub rules: Vec<PathBuf>,
 }
 
-/// `ual  rows 1,234  2026-06-01..2026-10-25  48 days  SAMPLED`, or `ual  absent`.
+/// `ual  rows 1,234  2026-06-01..2026-10-25  48 days  SAMPLED`, `ual  absent`, or (no rows, but the collector's
+/// manifests vouch for some of the window) `ual  collected, no events  2026-06-01..2026-10-25`.
 pub fn source_line(s: &SourceCoverage) -> String {
+    if s.collected_no_events
+        && let (Some(first), Some(last)) = (s.collected.first(), s.collected.last())
+    {
+        return format!(
+            "{}  collected, no events  {}..{}",
+            s.source, first.from, last.to
+        );
+    }
     let (Some(first), Some(last)) = (&s.first, &s.last) else {
         return format!("{}  absent", s.source);
     };
@@ -109,4 +118,51 @@ pub fn run(a: CoverageArgs, json: bool) -> Result<ExitCode> {
         outln!("no accounts with findings; name one with --user");
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDate;
+    use sparrow_core::case::coverage::DayRange;
+
+    fn d(s: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    fn empty(source: &str) -> SourceCoverage {
+        SourceCoverage {
+            source: source.to_string(),
+            title: String::new(),
+            rows: 0,
+            first: None,
+            last: None,
+            days: 0,
+            sampled: false,
+            gaps: Vec::new(),
+            collected: Vec::new(),
+            collected_no_events: false,
+        }
+    }
+
+    #[test]
+    fn collected_with_no_events_names_the_first_and_last_collected_day() {
+        let mut s = empty("signins_interactive");
+        assert_eq!(source_line(&s), "signins_interactive  absent");
+        s.collected = vec![
+            DayRange {
+                from: d("2026-08-02"),
+                to: d("2026-08-10"),
+            },
+            DayRange {
+                from: d("2026-08-20"),
+                to: d("2026-09-09"),
+            },
+        ];
+        s.collected_no_events = true;
+        assert_eq!(
+            source_line(&s),
+            "signins_interactive  collected, no events  2026-08-02..2026-09-09"
+        );
+    }
 }

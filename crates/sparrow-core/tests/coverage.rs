@@ -13,6 +13,9 @@
 //!
 //! t2 (events up to 2026-08-10): carol, 2 UAL rows (08-01, 08-10), finding first seen 08-05.
 
+#[path = "common/manifest.rs"]
+mod manifest;
+
 use chrono::NaiveDate;
 use duckdb::params;
 use sparrow_core::Case;
@@ -21,6 +24,8 @@ use sparrow_core::case::coverage::{
     coverage, coverage_for_range, fill, thousands,
 };
 use sparrow_core::data::DataDirs;
+use sparrow_core::ingest::parser::ParserRegistry;
+use sparrow_core::ingest::{IngestOptions, ingest_path};
 
 const ORG: &str = "c9c9c9c9-0000-4000-8000-000000000001";
 const ALICE: &str = "alice@contoso.example";
@@ -1306,4 +1311,352 @@ fn the_scope_leaves_out_accounts_outside_the_tenants_domains() {
         "{t2:?}"
     );
     assert!(t2.contains(&CAROL.to_string()));
+}
+
+// ---- Collector manifests (Task 4): coverage from the collector's intervals. Synthetic manifests only. ----
+
+/// A case of tenant `t1` whose collection holds the manifests `ms` (ingested through the real ingest), plus an
+/// empty events collection of `t1` (returned) for rows added with the helpers above, and its uncapped file.
+fn manifest_case(ms: Vec<manifest::M>) -> (Case, i64, i64) {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = manifest::invictus_dir(tmp.path());
+    for m in &ms {
+        m.write(&root);
+    }
+    let mut case = Case::in_memory().unwrap();
+    ingest_path(
+        &mut case,
+        tmp.path(),
+        &ParserRegistry::builtin(),
+        &IngestOptions::default(),
+    )
+    .unwrap();
+    let changed = case
+        .conn()
+        .execute("UPDATE collections SET tenant_key = 't1'", [])
+        .unwrap();
+    assert_eq!(changed, 1, "one manifest collection");
+    let c = collection(&case, "t1");
+    let f = file(&case, c, "ual-ok.csv", None);
+    (case, c, f)
+}
+
+const MA: &str = "a@contoso.example";
+const MB: &str = "b@contoso.example";
+
+#[test]
+fn interior_collector_gap_appears_between_events() {
+    // Events on 09-01 and 09-09 (the tenant's last event); the window starts 30 days before 09-01: 08-02. The UAL
+    // unit vouches 08-01..09-11 except its retries_exhausted gap on 09-04 and 09-05.
+    let (case, c, f) = manifest_case(vec![
+        manifest::M::run("Get-UALGraph", "partial").unit(
+            manifest::U::new(
+                &["ual"],
+                "2026-08-01T00:00:00Z",
+                "2026-09-11T00:00:00Z",
+                "partial",
+            )
+            .gap(
+                "2026-09-04T00:00:00Z",
+                "2026-09-06T00:00:00Z",
+                "retries_exhausted",
+            ),
+        ),
+    ]);
+    ual(&case, c, f, 1, "2026-09-01 10:00:00", "Send", MA);
+    ual(&case, c, f, 2, "2026-09-09 10:00:00", "Send", MA);
+    let cov = run(&case, Some("t1"), &[MA]);
+    let a = account(&cov, "t1", MA);
+    let w = a.window.unwrap();
+    assert_eq!((w.start, w.end), (d("2026-08-02"), d("2026-09-09")));
+    let s = source(a, "ual");
+    assert_eq!(
+        gaps(s),
+        vec![g("2026-09-04", "2026-09-05", "collector_gap")]
+    );
+    assert!(!s.collected_no_events);
+    // The collector gap is a request reason like any other.
+    let r = cov
+        .requests
+        .iter()
+        .find(|r| r.user == MA && r.source == "ual")
+        .unwrap();
+    assert_eq!((r.from, r.to), (d("2026-09-04"), d("2026-09-05")));
+    assert_eq!(r.reasons, vec!["collector_gap"]);
+}
+
+#[test]
+fn vouched_range_with_no_events_is_collected_no_events() {
+    // UAL rows only; the interactive sign-ins are vouched over the whole window and hold no row.
+    let (case, c, f) = manifest_case(vec![
+        manifest::M::run("Get-GraphEntraSignInLogs", "complete").unit(manifest::U::new(
+            &["signins_interactive"],
+            "2026-08-01T00:00:00Z",
+            "2026-09-11T00:00:00Z",
+            "complete",
+        )),
+    ]);
+    ual(&case, c, f, 1, "2026-09-01 10:00:00", "Send", MA);
+    ual(&case, c, f, 2, "2026-09-09 10:00:00", "Send", MA);
+    let cov = run(&case, Some("t1"), &[MA]);
+    let a = account(&cov, "t1", MA);
+    let s = source(a, "signins_interactive");
+    assert_eq!(s.rows, 0);
+    assert_eq!(gaps(s), vec![]);
+    assert!(s.collected_no_events);
+    let collected: Vec<(String, String)> = s
+        .collected
+        .iter()
+        .map(|r| (r.from.to_string(), r.to.to_string()))
+        .collect();
+    assert_eq!(
+        collected,
+        vec![("2026-08-02".to_string(), "2026-09-09".to_string())]
+    );
+    let v = serde_json::to_value(s).unwrap();
+    assert_eq!(v["collected_no_events"], serde_json::json!(true));
+    assert_eq!(
+        v["collected"],
+        serde_json::json!([{"from": "2026-08-02", "to": "2026-09-09"}])
+    );
+    // Not vouched: absent as before, and neither field is serialized.
+    let n = source(a, "signins_noninteractive");
+    assert_eq!(gaps(n), vec![g("2026-08-02", "2026-09-09", "absent")]);
+    assert!(!n.collected_no_events && n.collected.is_empty());
+    let v = serde_json::to_value(n).unwrap();
+    assert!(v.get("collected").is_none() && v.get("collected_no_events").is_none());
+    // Nothing to request for the vouched source.
+    assert!(
+        !cov.requests
+            .iter()
+            .any(|r| r.source == "signins_interactive")
+    );
+}
+
+#[test]
+fn collector_gap_takes_precedence_over_sampled() {
+    // A capped export from 09-01 to 09-09; a failed unit over 09-04..09-05 (whole range gap, vouches nothing).
+    let (case, c, _) = manifest_case(vec![manifest::M::run("Get-UALGraph", "failed").unit(
+        manifest::U::new(
+            &["ual"],
+            "2026-09-04T00:00:00Z",
+            "2026-09-06T00:00:00Z",
+            "failed",
+        ),
+    )]);
+    let cap = file(&case, c, "ual-cap.csv", Some(CAP));
+    ual(&case, c, cap, 1, "2026-09-01 10:00:00", "Send", MA);
+    ual(&case, c, cap, 2, "2026-09-09 10:00:00", "Send", MA);
+    let cov = run(&case, Some("t1"), &[MA]);
+    let s = source(account(&cov, "t1", MA), "ual");
+    assert!(s.sampled);
+    assert_eq!(
+        gaps(s),
+        vec![
+            g("2026-08-02", "2026-08-31", "before"),
+            g("2026-09-01", "2026-09-03", "sampled"),
+            g("2026-09-04", "2026-09-05", "collector_gap"),
+            g("2026-09-06", "2026-09-09", "sampled"),
+        ]
+    );
+}
+
+#[test]
+fn manifest_ending_mid_day_on_the_last_day_leaves_no_after_gap() {
+    // a's only UAL row is 09-01; the tenant's last event is b's at 09-09 10:00. The UAL unit vouches up to 09-09
+    // 12:00, after the tenant's last event: the window ends at that event (R1), so 09-09 is not an `after` day.
+    let (case, c, f) = manifest_case(vec![manifest::M::run("Get-UALGraph", "complete").unit(
+        manifest::U::new(
+            &["ual"],
+            "2026-08-01T00:00:00Z",
+            "2026-09-09T12:00:00Z",
+            "complete",
+        ),
+    )]);
+    ual(&case, c, f, 1, "2026-09-01 10:00:00", "Send", MA);
+    ual(&case, c, f, 2, "2026-09-09 10:00:00", "Send", MB);
+    let cov = run(&case, Some("t1"), &[MA]);
+    let s = source(account(&cov, "t1", MA), "ual");
+    assert_eq!(gaps(s), vec![]);
+
+    // Ending before the tenant's last event (08:00) leaves that last day as `after`.
+    let (case, c, f) = manifest_case(vec![manifest::M::run("Get-UALGraph", "complete").unit(
+        manifest::U::new(
+            &["ual"],
+            "2026-08-01T00:00:00Z",
+            "2026-09-09T08:00:00Z",
+            "complete",
+        ),
+    )]);
+    ual(&case, c, f, 1, "2026-09-01 10:00:00", "Send", MA);
+    ual(&case, c, f, 2, "2026-09-09 10:00:00", "Send", MB);
+    let cov = run(&case, Some("t1"), &[MA]);
+    let s = source(account(&cov, "t1", MA), "ual");
+    assert_eq!(gaps(s), vec![g("2026-09-09", "2026-09-09", "after")]);
+}
+
+#[test]
+fn collector_gap_without_events_splits_the_absent_window() {
+    // No sign-in rows; a failed sign-in unit over 08-20..08-21 inside the window: absent around a collector gap.
+    let (case, c, f) = manifest_case(vec![
+        manifest::M::run("Get-GraphEntraSignInLogs", "failed").unit(manifest::U::new(
+            &["signins_interactive"],
+            "2026-08-20T00:00:00Z",
+            "2026-08-22T00:00:00Z",
+            "failed",
+        )),
+    ]);
+    ual(&case, c, f, 1, "2026-09-01 10:00:00", "Send", MA);
+    ual(&case, c, f, 2, "2026-09-09 10:00:00", "Send", MA);
+    let cov = run(&case, Some("t1"), &[MA]);
+    let s = source(account(&cov, "t1", MA), "signins_interactive");
+    assert_eq!(
+        gaps(s),
+        vec![
+            g("2026-08-02", "2026-08-19", "absent"),
+            g("2026-08-20", "2026-08-21", "collector_gap"),
+            g("2026-08-22", "2026-09-09", "absent"),
+        ]
+    );
+    assert!(!s.collected_no_events);
+}
+
+#[test]
+fn another_tenants_manifest_changes_nothing() {
+    // The manifest collection belongs to t2; a's t1 coverage is exactly the manifest-less one.
+    let (case, c, f) = manifest_case(vec![
+        manifest::M::run("Get-UALGraph", "partial").unit(
+            manifest::U::new(
+                &["ual"],
+                "2026-08-01T00:00:00Z",
+                "2026-09-11T00:00:00Z",
+                "partial",
+            )
+            .gap(
+                "2026-09-04T00:00:00Z",
+                "2026-09-06T00:00:00Z",
+                "retries_exhausted",
+            ),
+        ),
+    ]);
+    case.conn()
+        .execute(
+            "UPDATE collections SET tenant_key = 't2' WHERE collection_id <> ?",
+            params![c],
+        )
+        .unwrap();
+    ual(&case, c, f, 1, "2026-09-01 10:00:00", "Send", MA);
+    ual(&case, c, f, 2, "2026-09-09 10:00:00", "Send", MA);
+    let cov = run(&case, Some("t1"), &[MA]);
+    let a = account(&cov, "t1", MA);
+    assert_eq!(
+        gaps(source(a, "ual")),
+        vec![g("2026-08-02", "2026-08-31", "before")]
+    );
+    assert!(a.sources.iter().all(|s| s.collected.is_empty()));
+}
+
+#[test]
+fn the_report_prints_collector_gaps_and_collected_no_events() {
+    use chrono::{TimeZone, Utc};
+    use sparrow_core::export::report_md::{self, ReportOpts};
+    let (case, c, f) = manifest_case(vec![
+        manifest::M::run("Get-UALGraph", "partial").unit(
+            manifest::U::new(
+                &["ual", "signins_interactive"],
+                "2026-08-01T00:00:00Z",
+                "2026-09-11T00:00:00Z",
+                "partial",
+            )
+            .gap(
+                "2026-09-04T00:00:00Z",
+                "2026-09-06T00:00:00Z",
+                "retries_exhausted",
+            ),
+        ),
+    ]);
+    ual(&case, c, f, 1, "2026-09-01 10:00:00", "Send", MA);
+    ual(&case, c, f, 2, "2026-09-09 10:00:00", "Send", MA);
+    rollup(&case, "t1", MA);
+    case.conn()
+        .execute(
+            "INSERT INTO case_meta (key, value) VALUES ('enrichment_run_id', '0')",
+            [],
+        )
+        .unwrap();
+    let mut out = Vec::new();
+    report_md::write(
+        case.conn(),
+        &mut out,
+        &ReportOpts {
+            reviewed_only: false,
+            generated_at: Utc.with_ymd_and_hms(2026, 10, 3, 0, 0, 0).unwrap(),
+            dirs: DataDirs::default(),
+        },
+    )
+    .unwrap();
+    let md = String::from_utf8(out).unwrap();
+    let section = md
+        .split("## Evidence coverage and what to request")
+        .nth(1)
+        .unwrap()
+        .split("\n## ")
+        .next()
+        .unwrap();
+    let row = |title: &str| {
+        section
+            .lines()
+            .find(|l| l.starts_with(&format!("| {title} |")))
+            .unwrap_or_else(|| panic!("no {title} row in {section}"))
+            .to_string()
+    };
+    assert!(
+        row("Unified audit log").ends_with("| collector\\_gap 2026-09-04 to 2026-09-05 |"),
+        "{section}"
+    );
+    assert!(
+        row("Sign-ins \\(interactive\\)").ends_with(
+            "| collected, no events 2026-08-02 to 2026-09-09; collector\\_gap 2026-09-04 to 2026-09-05 |"
+        ),
+        "{section}"
+    );
+    assert!(
+        section.contains("- Unified audit log, 2026-09-04 to 2026-09-05 (collector\\_gap)"),
+        "{section}"
+    );
+}
+
+#[test]
+fn a_tenant_with_manifests_keeps_every_sources_gaps_inside_the_window() {
+    // t1 has a UAL manifest only. a's finding (09-08) starts the window on 08-09; a's interactive sign-ins end on
+    // 08-03, before it. Their `after` gap starts at the window start, not the day after the last sign-in.
+    let (case, c, f) = manifest_case(vec![manifest::M::run("Get-UALGraph", "complete").unit(
+        manifest::U::new(
+            &["ual"],
+            "2026-08-01T00:00:00Z",
+            "2026-09-11T00:00:00Z",
+            "complete",
+        ),
+    )]);
+    signin(&case, c, f, "s1", "2026-08-01 09:00:00", "interactive", MA);
+    signin(&case, c, f, "s2", "2026-08-03 09:00:00", "interactive", MA);
+    ual(&case, c, f, 1, "2026-09-09 10:00:00", "Send", MA);
+    finding(&case, "f1", "t1", MA, "2026-09-08 12:00:00");
+    let cov = run(&case, Some("t1"), &[MA]);
+    let a = account(&cov, "t1", MA);
+    let w = a.window.unwrap();
+    assert_eq!((w.start, w.end), (d("2026-08-09"), d("2026-09-09")));
+    let s = source(a, "signins_interactive");
+    assert_eq!(gaps(s), vec![g("2026-08-09", "2026-09-09", "after")]);
+    let r = cov
+        .requests
+        .iter()
+        .find(|r| r.user == MA && r.source == "signins_interactive")
+        .unwrap();
+    assert_eq!((r.from, r.to), (d("2026-08-09"), d("2026-09-09")));
+    assert!(
+        cov.requests.iter().all(|r| r.from >= w.start),
+        "{:?}",
+        cov.requests
+    );
 }

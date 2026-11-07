@@ -682,10 +682,19 @@ fn coverage_section(conn: &Connection, doc: &mut Vec<String>, dirs: &DataDirs) -
         doc.push("| Source | Rows | First (UTC) | Last (UTC) | Days | Sampled | Gaps |".into());
         doc.push("| --- | ---: | --- | --- | ---: | --- | --- |".into());
         for s in &a.sources {
-            let gaps: Vec<String> = s
-                .gaps
-                .iter()
-                .map(|g| format!("{} {} to {}", g.reason, g.from, g.to))
+            // A source the collector vouches for with no rows says so first (only with collector manifests).
+            let collected = s
+                .collected_no_events
+                .then(|| s.collected.first().zip(s.collected.last()))
+                .flatten()
+                .map(|(a, b)| format!("collected, no events {} to {}", a.from, b.to));
+            let gaps: Vec<String> = collected
+                .into_iter()
+                .chain(
+                    s.gaps
+                        .iter()
+                        .map(|g| format!("{} {} to {}", g.reason, g.from, g.to)),
+                )
                 .collect();
             doc.push(format!(
                 "| {} | {} | {} | {} | {} | {} | {} |",
