@@ -33,6 +33,8 @@ interface Props {
   onClose: (changed: boolean) => void;
   /** "new" mode: open the case that was made. */
   onOpenCase?: (path: string) => void;
+  /** The import finished (before the result is dismissed): the shell reads the case's state again at once. */
+  onImported?: (result: IngestResult) => void;
   /** Milliseconds now, for the time-left estimate (a test seam). */
   clock?: () => number;
 }
@@ -166,7 +168,7 @@ function stageText(p: IngestProgress | null): string {
   }
 }
 
-export default function ImportDialog({ mode, onClose, onOpenCase, clock = Date.now }: Props) {
+export default function ImportDialog({ mode, onClose, onOpenCase, onImported, clock = Date.now }: Props) {
   const [preview, setPreview] = useState<DiscoveryPreview | null>(null);
   const [target, setTarget] = useState<string | null>(null);
   const [culture, setCulture] = useState("");
@@ -232,7 +234,9 @@ export default function ImportDialog({ mode, onClose, onOpenCase, clock = Date.n
         }),
       );
       const t = mode === "open" ? "open" : { new_case: target ?? "" };
-      setResult(await ingestRun(preview.path, t, culture === "" ? null : culture, !skipDetect, id));
+      const r = await ingestRun(preview.path, t, culture === "" ? null : culture, !skipDetect, id);
+      setResult(r);
+      onImported?.(r);
     } catch (e) {
       setError(message(e));
     } finally {
@@ -588,6 +592,10 @@ function Result({
           The import stopped on an error: {displaySafe(result.error)}. The files listed as loaded are in the case and
           were profiled; the others were not loaded.
         </p>
+      )}
+
+      {result.incomplete_collection !== null && (
+        <p className="import-incomplete">{displaySafe(result.incomplete_collection.text)}</p>
       )}
 
       {result.rows_by_source.length > 0 && (

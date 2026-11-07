@@ -12,6 +12,7 @@ use crate::settings::{GeoipSource, GeoipStatus};
 use crate::state::{AppState, check_query_id, query_cancel, with_case};
 use serde::{Deserialize, Serialize};
 use sparrow_core::Case;
+use sparrow_core::case::collector::{IncompleteCollection, incomplete_collection};
 use sparrow_core::data::DataDirs;
 use sparrow_core::detect::DetectOptions;
 use sparrow_core::discovery::{
@@ -368,6 +369,8 @@ pub struct IngestResult {
     /// `None` when detection was skipped (asked, or the import was cancelled) or failed (`detect_error`).
     pub detect: Option<DetectSummary>,
     pub detect_error: Option<String>,
+    /// The case's open collector gaps after this import (the same banner the window shows under the header).
+    pub incomplete_collection: Option<IncompleteCollection>,
 }
 
 /// The CLI's note for a file's rejected records.
@@ -567,7 +570,12 @@ fn not_loaded(snapshot: &[(String, Vec<String>)], report: &IngestReport) -> Vec<
     out
 }
 
-fn summarise(case_path: String, snapshot: &[(String, Vec<String>)], piped: Piped) -> IngestResult {
+fn summarise(
+    case_path: String,
+    snapshot: &[(String, Vec<String>)],
+    piped: Piped,
+    incomplete_collection: Option<IncompleteCollection>,
+) -> IngestResult {
     let Piped {
         report,
         stopped,
@@ -635,6 +643,7 @@ fn summarise(case_path: String, snapshot: &[(String, Vec<String>)], piped: Piped
         profile_warnings,
         detect,
         detect_error,
+        incomplete_collection,
         report,
     }
 }
@@ -765,7 +774,11 @@ pub fn ingest_run(
             let piped = with_relock(state, &mut slot, |open| {
                 run_pipeline(&mut open.case, &collections, &opts, &geoip, detect, emit)
             })?;
-            Ok(summarise(case_path, &snapshot, piped))
+            // Best effort: a failed read leaves the banner to the shell's own refresh.
+            let incomplete = slot
+                .as_ref()
+                .and_then(|o| incomplete_collection(o.case.conn()).ok().flatten());
+            Ok(summarise(case_path, &snapshot, piped, incomplete))
         }
         Target::NewCase(new_path) => {
             if new_path.exists() {
@@ -780,10 +793,16 @@ pub fn ingest_run(
             refuse_inside_evidence(new_path, &collections)?;
             let mut case = Case::create_or_open(new_path)?;
             let out = run_pipeline(&mut case, &collections, &opts, &geoip, detect, emit);
+            let incomplete = incomplete_collection(case.conn()).ok().flatten();
             // Closing the case folds its WAL in; an import that loaded nothing leaves no case file behind.
             drop(case);
             match out {
-                Ok(piped) => Ok(summarise(new_path.display().to_string(), &snapshot, piped)),
+                Ok(piped) => Ok(summarise(
+                    new_path.display().to_string(),
+                    &snapshot,
+                    piped,
+                    incomplete,
+                )),
                 Err(e) => {
                     let _ = std::fs::remove_file(new_path);
                     let mut wal = new_path.as_os_str().to_owned();

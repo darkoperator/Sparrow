@@ -1,6 +1,7 @@
 use crate::error::CmdResult;
 use crate::settings::{self, GeoipStatus, Settings};
 use crate::state::{self, AppState, CaseInfo};
+use sparrow_core::case::collector::{IncompleteCollection, incomplete_collection};
 use std::path::PathBuf;
 use tauri::State;
 
@@ -39,4 +40,22 @@ pub fn case_open(
 #[tauri::command(async)]
 pub fn case_close(state: State<'_, AppState>) -> CmdResult<()> {
     state::case_close(&state)
+}
+
+/// The open case's incomplete-collection banner: `None` when no collector gap is open (or no manifest was read).
+pub fn case_collection_status(state: &AppState) -> CmdResult<Option<IncompleteCollection>> {
+    state::with_case(state, state.ticket(), |open| {
+        Ok(incomplete_collection(open.case.conn())?)
+    })
+}
+
+pub mod commands {
+    use super::*;
+
+    #[tauri::command(async)]
+    pub fn case_collection_status(
+        state: State<'_, AppState>,
+    ) -> CmdResult<Option<IncompleteCollection>> {
+        super::case_collection_status(&state)
+    }
 }
