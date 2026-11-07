@@ -1,0 +1,320 @@
+{
+  "stale": false,
+  "stale_collections": [],
+  "tenants": [
+    {
+      "tenant_key": "f8ff8c86-40d4-4634-b6fa-5e29a28c1d80",
+      "tenant_id": "f8ff8c86-40d4-4634-b6fa-5e29a28c1d80",
+      "tenant_name": null,
+      "domains": [
+        "contoso.example"
+      ],
+      "licenses": [
+        "FLOW_FREE (high, Microsoft-Extractor-Suite)",
+        "SPE_E5 (high, Microsoft-Extractor-Suite)"
+      ],
+      "collections": [
+        {
+          "collection_id": 1,
+          "tool": "invictus",
+          "root": "<ROOT>/Output",
+          "collected_at": "2026-09-10T16:15:00Z",
+          "window_start": null,
+          "window_end": null
+        }
+      ],
+      "coverage": [
+        {
+          "source_table": "azure_activity",
+          "rows": 4,
+          "first": "2026-08-06T09:05:00Z",
+          "last": "2026-08-09T11:07:00Z"
+        },
+        {
+          "source_table": "directory_audits",
+          "rows": 19,
+          "first": "2026-08-11T22:00:34Z",
+          "last": "2026-09-08T20:47:38Z"
+        },
+        {
+          "source_table": "mailbox_audit_legacy",
+          "rows": 1829,
+          "first": "2026-08-01T05:21:24Z",
+          "last": "2026-09-10T01:35:52Z"
+        },
+        {
+          "source_table": "message_trace",
+          "rows": 2322,
+          "first": "2026-08-01T03:21:24Z",
+          "last": "2026-09-09T23:19:19Z"
+        },
+        {
+          "source_table": "risk_detections",
+          "rows": 4,
+          "first": "2026-08-04T16:44:48Z",
+          "last": "2026-08-21T19:12:00Z"
+        },
+        {
+          "source_table": "security_alerts",
+          "rows": 1,
+          "first": "2026-08-04T10:00:00Z",
+          "last": "2026-08-04T10:00:00Z"
+        },
+        {
+          "source_table": "signins",
+          "rows": 1303,
+          "first": "2026-08-11T14:51:33Z",
+          "last": "2026-09-09T22:58:26Z"
+        },
+        {
+          "source_table": "ual_events",
+          "rows": 5807,
+          "first": "2026-08-01T00:21:42Z",
+          "last": "2026-09-09T23:35:52Z"
+        }
+      ],
+      "top_actors": [
+        {
+          "actor": "finley.mathis@contoso.example",
+          "rows": 788
+        },
+        {
+          "actor": "val.bennett@contoso.example",
+          "rows": 662
+        },
+        {
+          "actor": "adrian.ibarra@contoso.example",
+          "rows": 661
+        },
+        {
+          "actor": "jamie.prescott@contoso.example",
+          "rows": 649
+        },
+        {
+          "actor": "lennox.yates@contoso.example",
+          "rows": 648
+        },
+        {
+          "actor": "jamie.adams@contoso.example",
+          "rows": 639
+        },
+        {
+          "actor": "lennox.grant@contoso.example",
+          "rows": 636
+        },
+        {
+          "actor": "admin@contoso.example",
+          "rows": 635
+        },
+        {
+          "actor": "bryce.knox@contoso.example",
+          "rows": 632
+        },
+        {
+          "actor": "kendall.james@contoso.example",
+          "rows": 622
+        }
+      ],
+      "gaps": [
+        "admin_audit",
+        "app_credentials",
+        "directory_audits",
+        "email_threat_events",
+        "message_trace_events",
+        "mobile_devices",
+        "role_assignments",
+        "signins",
+        "url_clicks"
+      ],
+      "hosting_ips": 4,
+      "absent_in_newer": 0
+    }
+  ],
+  "tables": [
+    {
+      "table": "admin_audit_events",
+      "rows": 0
+    },
+    {
+      "table": "app_credentials",
+      "rows": 0
+    },
+    {
+      "table": "applications",
+      "rows": 11
+    },
+    {
+      "table": "audit_config",
+      "rows": 1
+    },
+    {
+      "table": "azure_activity",
+      "rows": 4
+    },
+    {
+      "table": "ca_policies",
+      "rows": 2
+    },
+    {
+      "table": "collector_flags",
+      "rows": 0
+    },
+    {
+      "table": "devices",
+      "rows": 18
+    },
+    {
+      "table": "directory_audits",
+      "rows": 19
+    },
+    {
+      "table": "email_artifacts",
+      "rows": 2
+    },
+    {
+      "table": "event_flags",
+      "rows": 0
+    },
+    {
+      "table": "event_tags",
+      "rows": 0
+    },
+    {
+      "table": "events",
+      "rows": 11289
+    },
+    {
+      "table": "file_events",
+      "rows": 1444
+    },
+    {
+      "table": "finding_evidence",
+      "rows": 151
+    },
+    {
+      "table": "group_members",
+      "rows": 15
+    },
+    {
+      "table": "groups",
+      "rows": 3
+    },
+    {
+      "table": "identities",
+      "rows": 22
+    },
+    {
+      "table": "inbox_rules",
+      "rows": 32
+    },
+    {
+      "table": "ip_intel",
+      "rows": 447
+    },
+    {
+      "table": "licenses",
+      "rows": 2
+    },
+    {
+      "table": "mail_items_accessed",
+      "rows": 2582
+    },
+    {
+      "table": "mailbox_audit_legacy",
+      "rows": 1829
+    },
+    {
+      "table": "mailbox_permissions",
+      "rows": 5
+    },
+    {
+      "table": "mailboxes",
+      "rows": 15
+    },
+    {
+      "table": "message_trace",
+      "rows": 2322
+    },
+    {
+      "table": "message_trace_events",
+      "rows": 0
+    },
+    {
+      "table": "mfa_registration",
+      "rows": 13
+    },
+    {
+      "table": "mobile_devices",
+      "rows": 0
+    },
+    {
+      "table": "oauth_grants",
+      "rows": 17
+    },
+    {
+      "table": "record_sources",
+      "rows": 32416
+    },
+    {
+      "table": "remote_domains",
+      "rows": 0
+    },
+    {
+      "table": "risk_detections",
+      "rows": 4
+    },
+    {
+      "table": "risky_users",
+      "rows": 2
+    },
+    {
+      "table": "role_assignments",
+      "rows": 6
+    },
+    {
+      "table": "search_queries",
+      "rows": 3
+    },
+    {
+      "table": "secure_score",
+      "rows": 8
+    },
+    {
+      "table": "security_alerts",
+      "rows": 1
+    },
+    {
+      "table": "sharing_events",
+      "rows": 7
+    },
+    {
+      "table": "signins",
+      "rows": 1303
+    },
+    {
+      "table": "tenant_settings",
+      "rows": 4
+    },
+    {
+      "table": "timeline_entry_evidence",
+      "rows": 0
+    },
+    {
+      "table": "transport_rules",
+      "rows": 3
+    },
+    {
+      "table": "ual_events",
+      "rows": 5807
+    },
+    {
+      "table": "user_licenses",
+      "rows": 16
+    },
+    {
+      "table": "users",
+      "rows": 13
+    }
+  ],
+  "profile_evaluated_at": "<TIME>"
+}
