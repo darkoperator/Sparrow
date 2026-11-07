@@ -4004,7 +4004,7 @@ dependencies = [
 
 [[package]]
 name = "sparrow-app"
-version = "0.0.1-Alpha-03"
+version = "0.0.1-Alpha-04"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4028,7 +4028,7 @@ dependencies = [
 
 [[package]]
 name = "sparrow-cli"
-version = "0.0.1-Alpha-03"
+version = "0.0.1-Alpha-04"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -4049,7 +4049,7 @@ dependencies = [
 
 [[package]]
 name = "sparrow-core"
-version = "0.0.1-Alpha-03"
+version = "0.0.1-Alpha-04"
 dependencies = [
  "calamine",
  "chrono",
@@ -4079,7 +4079,7 @@ dependencies = [
 
 [[package]]
 name = "sparrow-synth"
-version = "0.0.1-Alpha-03"
+version = "0.0.1-Alpha-04"
 dependencies = [
  "chrono",
  "duckdb",
