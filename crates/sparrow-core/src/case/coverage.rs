@@ -162,7 +162,118 @@ pub struct Request {
 pub struct Coverage {
     pub accounts: Vec<AccountCoverage>,
     pub requests: Vec<Request>,
+    /// Open collector gaps (R11): what to re-run first. Not serialised when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub collector_requests: Vec<CollectorRequest>,
     pub warnings: Vec<String>,
+}
+
+/// One open collector gap with the commands that collect it again (R11).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CollectorRequest {
+    pub tenant_key: String,
+    pub cmdlet: Option<String>,
+    pub run_id: String,
+    pub unit_id: String,
+    pub sources: Vec<String>,
+    pub users: Option<Vec<String>>,
+    pub reason: String,
+    pub detail: Option<String>,
+    pub spans: collector::Spans,
+    pub undated: bool,
+    /// R11: the cmdlet with the run's parameters, StartDate/EndDate = the span (one command per open span).
+    pub rerun: Vec<String>,
+    pub resume: Option<String>,
+}
+
+fn ps_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+fn iso_z(us: i64) -> String {
+    at(us).format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+/// The cmdlet with the run's parameters as PowerShell arguments; `StartDate`/`EndDate` (any case) are replaced by
+/// `span` when given. Objects and null parameters are skipped.
+pub fn rerun_command(cmdlet: &str, parameters: &Value, span: Option<Span>) -> String {
+    let mut out = cmdlet.to_string();
+    let Some(map) = parameters.as_object() else {
+        return out;
+    };
+    for (name, v) in map {
+        let date = span.and_then(|s| {
+            if name.eq_ignore_ascii_case("StartDate") {
+                Some(s.start_us)
+            } else if name.eq_ignore_ascii_case("EndDate") {
+                Some(s.end_us)
+            } else {
+                None
+            }
+        });
+        let scalar = |x: &Value| match x {
+            Value::String(t) => Some(ps_quote(t)),
+            Value::Number(n) => Some(n.to_string()),
+            Value::Bool(b) => Some(b.to_string()),
+            _ => None,
+        };
+        let arg = match v {
+            _ if date.is_some() => {
+                format!(" -{name} {}", ps_quote(&iso_z(date.unwrap_or_default())))
+            }
+            Value::Bool(true) => format!(" -{name}"),
+            Value::Bool(false) => format!(" -{name}:$false"),
+            Value::Array(items) => {
+                let parts: Vec<String> = items.iter().filter_map(scalar).collect();
+                format!(" -{name} {}", parts.join(","))
+            }
+            Value::Object(_) | Value::Null => continue,
+            other => match scalar(other) {
+                Some(t) => format!(" -{name} {t}"),
+                None => continue,
+            },
+        };
+        out.push_str(&arg);
+    }
+    out
+}
+
+fn collector_requests(index: &ManifestIndex, tenant: Option<&str>) -> Vec<CollectorRequest> {
+    index
+        .open_gaps(tenant)
+        .into_iter()
+        .map(|g| {
+            let rerun = match &g.cmdlet {
+                None => Vec::new(),
+                Some(c) if g.undated => vec![rerun_command(c, &g.parameters, None)],
+                Some(c) => g
+                    .spans
+                    .iter()
+                    .map(|s| rerun_command(c, &g.parameters, Some(*s)))
+                    .collect(),
+            };
+            let resume = match (g.cmdlet.as_deref(), &g.search_id) {
+                (Some("Get-UALGraph"), Some(id)) => {
+                    Some(format!("Get-UALGraph -SearchId {}", ps_quote(id)))
+                }
+                _ => None,
+            };
+            CollectorRequest {
+                tenant_key: g.tenant_key,
+                cmdlet: g.cmdlet,
+                run_id: g.run_id,
+                unit_id: g.unit_id,
+                sources: g.sources,
+                users: g.user_ids,
+                reason: g.reason,
+                detail: g.detail,
+                spans: g.spans,
+                undated: g.undated,
+                rerun,
+                resume,
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Default)]
@@ -765,6 +876,7 @@ pub fn coverage(conn: &Connection, opts: &CoverageOptions) -> Result<Coverage> {
     Ok(Coverage {
         accounts: out,
         requests,
+        collector_requests: collector_requests(&index, opts.tenant.as_deref()),
         warnings,
     })
 }

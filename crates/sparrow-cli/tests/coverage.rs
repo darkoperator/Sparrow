@@ -195,3 +195,83 @@ fn coverage_through_the_binary() {
         audit_before
     );
 }
+
+#[test]
+fn coverage_prints_manifest_gaps_first() {
+    use sparrow_core::ingest::parser::ParserRegistry;
+    use sparrow_core::ingest::{IngestOptions, ingest_path};
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("CASE_OUTPUT");
+    std::fs::create_dir_all(root.join("UALGraph")).unwrap();
+    std::fs::write(
+        root.join("LogFile.txt"),
+        "2026-09-10 10:00:00: [INFO] Starting\n",
+    )
+    .unwrap();
+    let run_id = "5b0f0c5e-0000-4000-8000-000000000001";
+    let manifest = serde_json::json!({
+        "schema": "mes-collection-manifest/1", "run_id": run_id, "tool": "Microsoft-Extractor-Suite",
+        "tool_version": "4.1.0.1", "fork": "f", "cmdlet": "Get-UALGraph",
+        "parameters": {"UserIds": ["o'brien\u{1b}[31m@x.example"], "StartDate": "2026-08-01", "EndDate": "2026-09-11"},
+        "started_utc": "2026-09-10T10:00:00Z", "finished_utc": "2026-09-10T11:00:00Z", "status": "partial",
+        "throttle_waits": {"count": 0, "total_seconds": 0.0},
+        "units": [{
+            "unit_id": "u-0001", "sources": ["ual"],
+            "scope": {"user_ids": null, "operations": null, "record_types": null, "ip_addresses": null,
+                      "session_ids": null, "event_type": null, "direction": null, "other_filters": null},
+            "start_utc": "2026-08-01T00:00:00Z", "end_utc": "2026-09-11T00:00:00Z", "state": "partial",
+            "records_written": 0, "output_written": true, "files": [],
+            "gaps": [{"start_utc": "2026-09-04T00:00:00Z", "end_utc": "2026-09-06T00:00:00Z",
+                      "reason": "search_timeout", "detail": "slow\u{1b}[2J", "attempts": null,
+                      "records_in_window": null, "search_id": "sid-1"}]
+        }]
+    });
+    std::fs::write(
+        root.join("UALGraph")
+            .join(format!("CollectionManifest-{run_id}.mesmanifest")),
+        manifest.to_string(),
+    )
+    .unwrap();
+    let path = tmp.path().join("case.duckdb");
+    {
+        let mut case = Case::create_or_open(&path).unwrap();
+        ingest_path(
+            &mut case,
+            tmp.path(),
+            &ParserRegistry::builtin(),
+            &IngestOptions::default(),
+        )
+        .unwrap();
+        case.conn()
+            .execute("UPDATE collections SET tenant_key = 't1'", [])
+            .unwrap();
+    }
+    let r = run(&["coverage", "--case", path.to_str().unwrap()]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let lines: Vec<&str> = r.out.lines().collect();
+    assert_eq!(
+        lines[0], "Collector gaps (re-run these first):",
+        "{}",
+        r.out
+    );
+    assert_eq!(
+        lines[1],
+        "  ual  2026-09-04T00:00:00Z..2026-09-06T00:00:00Z  search_timeout  run 5b0f0c5e-0000-4000-8000-000000000001 unit u-0001"
+    );
+    assert!(lines[2].starts_with("    detail: slow"), "{}", r.out);
+    assert!(!r.out.contains('\u{1b}'), "{:?}", r.out);
+    assert!(
+        lines[3].starts_with("    rerun: Get-UALGraph -UserIds 'o''brien"),
+        "{}",
+        r.out
+    );
+    assert!(
+        lines[3].ends_with("-StartDate '2026-09-04T00:00:00Z' -EndDate '2026-09-06T00:00:00Z'"),
+        "{}",
+        r.out
+    );
+    assert_eq!(lines[4], "    resume: Get-UALGraph -SearchId 'sid-1'");
+    let j = run(&["--json", "coverage", "--case", path.to_str().unwrap()]);
+    let v: Value = serde_json::from_str(&j.out).unwrap();
+    assert_eq!(v["collector_requests"].as_array().unwrap().len(), 1);
+}

@@ -5,7 +5,8 @@ use crate::{open_read, print_json};
 use anyhow::Result;
 use clap::Args;
 use sparrow_core::case::coverage::{
-    AccountCoverage, CoverageOptions, Request, SourceCoverage, coverage, thousands,
+    AccountCoverage, CollectorRequest, CoverageOptions, Request, SourceCoverage, coverage,
+    thousands,
 };
 use sparrow_core::case::text::display_safe_line as safe;
 use std::path::PathBuf;
@@ -89,6 +90,47 @@ fn print_account(a: &AccountCoverage, requests: &[&Request]) {
     }
 }
 
+/// `{from}..{to}` of the request's open spans, or `undated`.
+fn request_range(r: &CollectorRequest) -> String {
+    match (r.spans.iter().next(), r.spans.iter().last()) {
+        (Some(a), Some(b)) if !r.undated => format!("{}..{}", ts(a.start_us), ts(b.end_us)),
+        _ => "undated".to_string(),
+    }
+}
+
+fn ts(us: i64) -> String {
+    chrono::DateTime::from_timestamp_micros(us)
+        .unwrap_or_default()
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string()
+}
+
+fn print_collector_requests(rs: &[CollectorRequest]) {
+    if rs.is_empty() {
+        return;
+    }
+    outln!("Collector gaps (re-run these first):");
+    for r in rs {
+        outln!(
+            "  {}  {}  {}  run {} unit {}",
+            safe(&r.sources.join(",")),
+            request_range(r),
+            safe(&r.reason),
+            safe(&r.run_id),
+            safe(&r.unit_id)
+        );
+        if let Some(d) = &r.detail {
+            outln!("    detail: {}", safe(d));
+        }
+        for c in &r.rerun {
+            outln!("    rerun: {}", safe(c));
+        }
+        if let Some(c) = &r.resume {
+            outln!("    resume: {}", safe(c));
+        }
+    }
+}
+
 pub fn run(a: CoverageArgs, json: bool) -> Result<ExitCode> {
     let c = open_read(&a.case)?;
     let report = coverage(
@@ -106,6 +148,7 @@ pub fn run(a: CoverageArgs, json: bool) -> Result<ExitCode> {
     for w in &report.warnings {
         errln!("warning: {w}");
     }
+    print_collector_requests(&report.collector_requests);
     for acc in &report.accounts {
         let own: Vec<&Request> = report
             .requests

@@ -1660,3 +1660,155 @@ fn a_tenant_with_manifests_keeps_every_sources_gaps_inside_the_window() {
         cov.requests
     );
 }
+
+// ---- Task 5: the pull list of collector gaps. ----
+
+#[test]
+fn rerun_command_renders_types_and_replaces_dates() {
+    use serde_json::json;
+    use sparrow_core::case::collector::Span;
+    use sparrow_core::case::coverage::rerun_command;
+    let p = json!({
+        "UserIds": ["a@x.example", "o'brien@x.example"],
+        "StartDate": "2026-01-01",
+        "Note": "it's",
+        "Count": 5,
+        "Verbose": true,
+        "Quiet": false,
+        "Nested": {"a": 1},
+        "Nothing": null,
+        "enddate": "2026-02-01",
+    });
+    let span = Span {
+        start_us: 1_788_000_000_000_000, // 2026-08-29T10:40:00Z
+        end_us: 1_788_003_600_000_000,
+    };
+    assert_eq!(
+        rerun_command("Get-UAL", &p, Some(span)),
+        "Get-UAL -UserIds 'a@x.example','o''brien@x.example' -StartDate '2026-08-29T10:40:00Z' -Note 'it''s' \
+         -Count 5 -Verbose -Quiet:$false -enddate '2026-08-29T11:40:00Z'"
+    );
+    assert_eq!(
+        rerun_command("Get-UAL", &p, None),
+        "Get-UAL -UserIds 'a@x.example','o''brien@x.example' -StartDate '2026-01-01' -Note 'it''s' \
+         -Count 5 -Verbose -Quiet:$false -enddate '2026-02-01'"
+    );
+}
+
+#[test]
+fn collector_requests_list_open_gaps_with_search_id_resume() {
+    let (case, _c, _f) = manifest_case(vec![
+        manifest::M::run("Get-UALGraph", "partial")
+            .param("UserIds", serde_json::json!(["a@contoso.example"]))
+            .param("StartDate", serde_json::json!("2026-08-01"))
+            .param("EndDate", serde_json::json!("2026-09-11"))
+            .unit(
+                manifest::U::new(
+                    &["ual"],
+                    "2026-08-01T00:00:00Z",
+                    "2026-09-11T00:00:00Z",
+                    "partial",
+                )
+                .gap(
+                    "2026-09-04T00:00:00Z",
+                    "2026-09-06T00:00:00Z",
+                    "search_timeout",
+                )
+                .search_id("sid-1"),
+            ),
+    ]);
+    let cov = run(&case, Some("t1"), &[]);
+    assert_eq!(
+        cov.collector_requests.len(),
+        1,
+        "{:?}",
+        cov.collector_requests
+    );
+    let r = &cov.collector_requests[0];
+    assert_eq!(r.tenant_key, "t1");
+    assert_eq!(r.cmdlet.as_deref(), Some("Get-UALGraph"));
+    assert_eq!(r.sources, vec!["ual"]);
+    assert_eq!(r.reason, "search_timeout");
+    assert!(!r.undated);
+    assert_eq!(
+        r.rerun,
+        vec![
+            "Get-UALGraph -UserIds 'a@contoso.example' -StartDate '2026-09-04T00:00:00Z' -EndDate '2026-09-06T00:00:00Z'"
+        ]
+    );
+    assert_eq!(r.resume.as_deref(), Some("Get-UALGraph -SearchId 'sid-1'"));
+    let json = serde_json::to_value(&cov).unwrap();
+    assert_eq!(json["collector_requests"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn closed_gaps_are_not_requested() {
+    // A second run re-collects the gap, so nothing is open and the key is not serialised.
+    let (case, _c, _f) = manifest_case(vec![
+        manifest::M::run("Get-UALGraph", "partial").unit(
+            manifest::U::new(
+                &["ual"],
+                "2026-08-01T00:00:00Z",
+                "2026-09-11T00:00:00Z",
+                "partial",
+            )
+            .gap(
+                "2026-09-04T00:00:00Z",
+                "2026-09-06T00:00:00Z",
+                "retries_exhausted",
+            ),
+        ),
+        manifest::M::run("Get-UALGraph", "complete").unit(manifest::U::new(
+            &["ual"],
+            "2026-09-03T00:00:00Z",
+            "2026-09-07T00:00:00Z",
+            "complete",
+        )),
+    ]);
+    let cov = run(&case, Some("t1"), &[]);
+    assert!(cov.collector_requests.is_empty());
+    let json = serde_json::to_value(&cov).unwrap();
+    assert!(json.get("collector_requests").is_none());
+}
+
+#[test]
+fn collector_gaps_show_in_the_report_without_accounts() {
+    use chrono::{TimeZone, Utc};
+    use sparrow_core::export::report_md::{self, ReportOpts};
+    let (case, _c, _f) = manifest_case(vec![
+        manifest::M::run("Get-UALGraph", "partial").unit(
+            manifest::U::new(
+                &["ual"],
+                "2026-08-01T00:00:00Z",
+                "2026-09-11T00:00:00Z",
+                "partial",
+            )
+            .gap(
+                "2026-09-04T00:00:00Z",
+                "2026-09-06T00:00:00Z",
+                "retries_exhausted",
+            ),
+        ),
+    ]);
+    let mut out = Vec::new();
+    report_md::write(
+        case.conn(),
+        &mut out,
+        &ReportOpts {
+            reviewed_only: false,
+            generated_at: Utc.with_ymd_and_hms(2026, 10, 3, 0, 0, 0).unwrap(),
+            dirs: DataDirs::default(),
+        },
+    )
+    .unwrap();
+    let md = String::from_utf8(out).unwrap();
+    let section = md
+        .split("## Evidence coverage and what to request")
+        .nth(1)
+        .unwrap()
+        .split("\n## ")
+        .next()
+        .unwrap();
+    assert!(section.contains("### Collector gaps"), "{section}");
+    assert!(section.contains("retries\\_exhausted"), "{section}");
+}
