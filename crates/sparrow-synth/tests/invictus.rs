@@ -247,3 +247,100 @@ fn non_windows_triage_folder_keeps_the_literal_backslash_name() {
     let report = check(&m, &got.case).unwrap();
     assert!(report.ok, "{:#?}", report.problems);
 }
+
+/// With `invictus_manifests` the Invictus logs carry complete collection manifests: quiet
+/// sources read "collected, no events" and nothing is a collector gap or an incomplete banner.
+#[test]
+fn invictus_manifests_make_quiet_sources_collected() {
+    use sparrow_core::case::collector::incomplete_collection;
+    use sparrow_core::case::coverage::{CoverageOptions, coverage};
+
+    let mut o = opts(31);
+    o.invictus_manifests = true;
+    let got = cached(&load("bec-aitm").unwrap(), &o);
+    let report = check(&got.tree.manifest, &got.case).unwrap();
+    assert!(report.ok, "{:#?}", report.problems);
+    // Accounts need the detection roll-up.
+    let got = CACHE
+        .case(&load("bec-aitm").unwrap(), &o, Stage::Detected)
+        .unwrap();
+    assert!(
+        got.tree
+            .manifest
+            .files
+            .iter()
+            .any(
+                |f| f.artifact_id.as_deref() == Some("inv.collection_manifest")
+                    && f.status == "parsed"
+            )
+    );
+    // Like the real writer, `files` lists the data files (relative to the manifest's folder, nested
+    // ones included) and never the merged output.
+    let mut listed = Vec::new();
+    for f in &got.tree.manifest.files {
+        if f.artifact_id.as_deref() == Some("inv.collection_manifest") {
+            let path = got.tree.dir.join(&got.tree.manifest.root).join(&f.rel_path);
+            let v: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            for u in v["units"].as_array().unwrap() {
+                for name in u["files"].as_array().unwrap() {
+                    listed.push(name.as_str().unwrap().to_string());
+                }
+            }
+        }
+    }
+    assert!(listed.iter().all(|n| !n.contains("Merged")), "{listed:?}");
+    assert!(
+        listed
+            .iter()
+            .any(|n| n.starts_with("interactiveUser-nonInteractiveUser/")
+                || n.starts_with("interactiveUser & nonInteractiveUser/")),
+        "{listed:?}"
+    );
+    assert!(listed.iter().any(|n| n.starts_with("UAL-")), "{listed:?}");
+    let conn = got.case.conn();
+    let cov = coverage(conn, &CoverageOptions::default()).unwrap();
+    assert!(cov.collector_requests.is_empty());
+    let scenario = load("bec-aitm").unwrap();
+    let (from, to) = (
+        scenario.window.start.date_naive(),
+        scenario.window_end().date_naive(),
+    );
+    // An account the tenant never audited: no rows, but the collector vouches the window.
+    let opts_q = CoverageOptions {
+        users: vec!["quiet.user@contoso.example".to_string()],
+        ..CoverageOptions::default()
+    };
+    let q = coverage(conn, &opts_q).unwrap();
+    let ual = q.accounts[0]
+        .sources
+        .iter()
+        .find(|s| s.source == "ual")
+        .unwrap();
+    assert_eq!(ual.rows, 0);
+    assert!(ual.collected_no_events, "{ual:?}");
+    for a in &cov.accounts {
+        for s in &a.sources {
+            for g in &s.gaps {
+                assert_ne!(g.reason, "collector_gap", "{} {}", a.upn, s.source);
+            }
+            if s.source == "ual" {
+                // The manifests vouch the window [start, end): no such gap may lie inside it.
+                assert!(
+                    s.gaps.iter().all(|g| !matches!(
+                        g.reason.as_str(),
+                        "absent" | "before" | "after"
+                    ) || g.to < from
+                        || g.from >= to),
+                    "{}: {:?}",
+                    a.upn,
+                    s.gaps
+                );
+                if s.rows == 0 {
+                    assert!(s.collected_no_events, "{}", a.upn);
+                }
+            }
+        }
+    }
+    assert!(incomplete_collection(conn).unwrap().is_none());
+}

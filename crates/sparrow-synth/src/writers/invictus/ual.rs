@@ -711,6 +711,14 @@ pub(super) fn write_get_ual(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> 
     c.log.add(at, "\nCollection Statistics:");
     c.log.add(at, format!("  Total Records: {total}"));
     c.log.add(at, "----------------------------------------\n");
+    let unit = super::ManifestUnit {
+        sources: &["ual"],
+        start: world.window_start(),
+        end: world.window_end(),
+        records: total,
+        files: tree.files_in(&dir),
+    };
+    c.write_manifest(tree, &run, &dir, "Get-UAL", at, &[unit])?;
     c.runs.busy_until(at);
     Ok(())
 }

@@ -320,6 +320,9 @@ struct SynthGenArgs {
     /// Microsoft-Extractor-Suite Get-Devices: write JSON into the .csv path
     #[arg(long)]
     devices_json: bool,
+    /// Microsoft-Extractor-Suite: write a collection manifest into each log run folder
+    #[arg(long)]
+    invictus_manifests: bool,
     /// Total benign UAL filler rows over the window (scale testing; overrides the scenario's
     /// `scale.ual_rows`)
     #[arg(long)]
@@ -2134,6 +2137,7 @@ fn cmd_synth_generate(args: SynthGenArgs, json: bool) -> Result<ExitCode> {
     opts.non_windows = args.non_windows;
     opts.invictus_licence_list = !args.no_licence_list;
     opts.invictus_devices_json = args.devices_json;
+    opts.invictus_manifests = args.invictus_manifests;
     opts.ual_rows = args.ual_rows;
     opts.signins = args.signins;
     let (manifest, zip) = if args.zip {

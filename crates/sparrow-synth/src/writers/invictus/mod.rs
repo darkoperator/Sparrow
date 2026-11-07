@@ -34,9 +34,9 @@ use crate::events::Day;
 use crate::options::GenerateOptions;
 use crate::ps::{Encoding, Host};
 use crate::rng::{Rng, stream};
-use crate::tree::Tree;
+use crate::tree::{FileSpec, Tree};
 use crate::world::World;
-use chrono::{Duration, NaiveDate, NaiveDateTime};
+use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, Utc};
 
 /// One cmdlet run's folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -201,6 +201,79 @@ impl<'w> Ctx<'w> {
 
     pub fn nl(&self) -> &'static str {
         self.host.newline
+    }
+}
+
+/// One unit of a collection manifest: sources over a requested half-open UTC range.
+pub(crate) struct ManifestUnit {
+    pub sources: &'static [&'static str],
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+    pub records: u64,
+    /// Names relative to the run folder.
+    pub files: Vec<String>,
+}
+
+impl Ctx<'_> {
+    /// With `opts.invictus_manifests`, writes the run's `complete` manifest (Save-CollectionManifest's
+    /// shape, `user_ids` null, `output_written` true) into the run folder `dir`.
+    pub(crate) fn write_manifest(
+        &self,
+        tree: &mut Tree<'_>,
+        run: &RunDir,
+        dir: &str,
+        cmdlet: &str,
+        finished_local: NaiveDateTime,
+        units: &[ManifestUnit],
+    ) -> Result<()> {
+        if !self.opts.invictus_manifests {
+            return Ok(());
+        }
+        let offset = Duration::minutes(self.world.scenario.tenant.host_utc_offset_minutes.into());
+        let utc = |t: NaiveDateTime| (t - offset).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let iso = |t: DateTime<Utc>| t.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let guid = stream(self.world.seed, &format!("invictus/manifest/{dir}")).uuid();
+        let units: Vec<serde_json::Value> = units
+            .iter()
+            .enumerate()
+            .map(|(i, u)| {
+                serde_json::json!({
+                    "unit_id": format!("u-{:04}", i + 1),
+                    "sources": u.sources,
+                    "scope": {
+                        "user_ids": null, "operations": null, "record_types": null,
+                        "ip_addresses": null, "session_ids": null, "event_type": null,
+                        "direction": null, "other_filters": null
+                    },
+                    "start_utc": iso(u.start),
+                    "end_utc": iso(u.end),
+                    "state": "complete",
+                    "records_written": u.records,
+                    "output_written": true,
+                    "files": u.files,
+                    "gaps": [],
+                })
+            })
+            .collect();
+        let doc = serde_json::json!({
+            "schema": "mes-collection-manifest/1",
+            "run_id": guid.to_string(),
+            "tool": "Microsoft-Extractor-Suite",
+            "tool_version": "4.1.0.1",
+            "fork": "darkoperator/sparrow-gap-fixes",
+            "cmdlet": cmdlet,
+            "parameters": {},
+            "started_utc": utc(run.local),
+            "finished_utc": utc(finished_local.max(run.local)),
+            "status": "complete",
+            "throttle_waits": { "count": 0, "total_seconds": 0.0 },
+            "units": units,
+        });
+        let text = serde_json::to_string_pretty(&doc).expect("manifest json");
+        let rel = format!("{dir}/CollectionManifest-{guid}.mesmanifest");
+        let spec = FileSpec::new(&rel, Some("inv.collection_manifest"), Encoding::Utf8);
+        tree.write(&spec, &text)?;
+        Ok(())
     }
 }
 

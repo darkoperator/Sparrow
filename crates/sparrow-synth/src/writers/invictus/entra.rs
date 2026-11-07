@@ -318,6 +318,7 @@ pub(super) fn write_signins(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> 
         c.runs.busy_until(clock + Duration::seconds(1));
         return Ok(());
     }
+    let mut manifest_units: Vec<(&'static [&'static str], u64, &str)> = Vec::new();
     for (i, (folder, file_name, kinds)) in types.iter().enumerate() {
         c.log
             .add(clock, format!("[INFO] Acquiring the {folder} sign-in logs"));
@@ -345,6 +346,12 @@ pub(super) fn write_signins(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> 
             &mut merge,
         )?;
         merge.finish(c, tree)?;
+        let sources: &'static [&'static str] = match i {
+            0 => &["signins_interactive", "signins_noninteractive"],
+            1 => &["signins_service_principal"],
+            _ => &["signins_managed_identity"],
+        };
+        manifest_units.push((sources, signins.len() as u64, folder));
         c.log.add(clock, format!("\nSummary for {folder}:"));
         c.log.add(clock, format!("  Records: {}", signins.len()));
         c.log.add(clock, format!("  Files: {entries}\n"));
@@ -352,6 +359,25 @@ pub(super) fn write_signins(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> 
             tree.row(&merged_rel, "signins", keys::signin(s.id));
         }
     }
+    let (start, end) = (graph_start(c.world), c.world.window_end());
+    let units: Vec<super::ManifestUnit> = manifest_units
+        .into_iter()
+        .map(|(sources, records, folder)| super::ManifestUnit {
+            sources,
+            start,
+            end,
+            records,
+            files: if c.opts.invictus_manifests {
+                tree.files_in(&format!("{dir}/{folder}"))
+                    .into_iter()
+                    .map(|f| format!("{folder}/{f}"))
+                    .collect()
+            } else {
+                Vec::new()
+            },
+        })
+        .collect();
+    c.write_manifest(tree, &run, &dir, "Get-GraphEntraSignInLogs", clock, &units)?;
     c.runs.busy_until(clock);
     Ok(())
 }
@@ -464,6 +490,14 @@ pub(super) fn write_audits(c: &mut Ctx<'_>, tree: &mut Tree<'_>) -> Result<()> {
     for a in &audits {
         tree.row(&merged_rel, "directory_audits", keys::dir_audit(&a.id));
     }
+    let unit = super::ManifestUnit {
+        sources: &["entra_audit"],
+        start,
+        end,
+        records: audits.len() as u64,
+        files: tree.files_in(&dir),
+    };
+    c.write_manifest(tree, &run, &dir, "Get-GraphEntraAuditLogs", clock, &[unit])?;
     c.runs.busy_until(clock);
     Ok(())
 }
