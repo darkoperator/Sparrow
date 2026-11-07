@@ -195,13 +195,17 @@ fn iso_z(us: i64) -> String {
 }
 
 /// The cmdlet with the run's parameters as PowerShell arguments; `StartDate`/`EndDate` (any case) are replaced by
-/// `span` when given. Objects and null parameters are skipped.
+/// `span` when given. Objects and null parameters are skipped, and so is `SkipDownload` (any case): a re-run must
+/// download what it searches.
 pub fn rerun_command(cmdlet: &str, parameters: &Value, span: Option<Span>) -> String {
     let mut out = cmdlet.to_string();
     let Some(map) = parameters.as_object() else {
         return out;
     };
     for (name, v) in map {
+        if name.eq_ignore_ascii_case("SkipDownload") {
+            continue;
+        }
         let date = span.and_then(|s| {
             if name.eq_ignore_ascii_case("StartDate") {
                 Some(s.start_us)

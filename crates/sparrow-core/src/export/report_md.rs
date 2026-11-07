@@ -680,14 +680,25 @@ fn coverage_section(conn: &Connection, doc: &mut Vec<String>, dirs: &DataDirs) -
                 }
                 _ => "undated".to_string(),
             };
+            // A run that stopped before its first unit: no sources known, no unit.
+            let sources = if r.sources.is_empty() {
+                "unknown sources".to_string()
+            } else {
+                md_cell(&r.sources.join(", "))
+            };
+            let unit = if r.unit_id.is_empty() {
+                String::new()
+            } else {
+                format!(" unit {}", md_cell(&r.unit_id))
+            };
             doc.push(format!(
-                "- {}, {} ({}), tenant {}, run {} unit {}",
-                md_cell(&r.sources.join(", ")),
+                "- {}, {} ({}), tenant {}, run {}{}",
+                sources,
                 range,
                 md_cell(&r.reason),
                 md_cell(&r.tenant_key),
                 md_cell(&r.run_id),
-                md_cell(&r.unit_id)
+                unit
             ));
             if let Some(d) = &r.detail {
                 doc.push(format!("  - Detail: {}", md_cell(d)));
@@ -729,12 +740,16 @@ fn coverage_section(conn: &Connection, doc: &mut Vec<String>, dirs: &DataDirs) -
         doc.push("| Source | Rows | First (UTC) | Last (UTC) | Days | Sampled | Gaps |".into());
         doc.push("| --- | ---: | --- | --- | ---: | --- | --- |".into());
         for s in &a.sources {
-            // A source the collector vouches for with no rows says so first (only with collector manifests).
-            let collected = s
-                .collected_no_events
-                .then(|| s.collected.first().zip(s.collected.last()))
-                .flatten()
-                .map(|(a, b)| format!("collected, no events {} to {}", a.from, b.to));
+            // A source the collector vouches for with no rows says so first (only with collector manifests), each
+            // collected range on its own so the days between them never read as collected.
+            let collected = (s.collected_no_events && !s.collected.is_empty()).then(|| {
+                let ranges: Vec<String> = s
+                    .collected
+                    .iter()
+                    .map(|r| format!("{} to {}", r.from, r.to))
+                    .collect();
+                format!("collected, no events {}", ranges.join(", "))
+            });
             let gaps: Vec<String> = collected
                 .into_iter()
                 .chain(

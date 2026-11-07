@@ -289,6 +289,35 @@ fn invictus_manifests_make_quiet_sources_collected() {
             }
         }
     }
+    // One parsed, supported, complete run per cmdlet the synth writes a manifest for (UAL, the two Entra logs).
+    let runs: Vec<(String, i64)> = {
+        let mut st = got
+            .case
+            .conn()
+            .prepare(
+                "SELECT cmdlet, count(*) FROM manifest_runs WHERE supported AND status = 'complete' \
+                 GROUP BY cmdlet ORDER BY cmdlet",
+            )
+            .unwrap();
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|x| x.unwrap())
+            .collect()
+    };
+    assert_eq!(
+        runs,
+        vec![
+            ("Get-GraphEntraAuditLogs".to_string(), 1),
+            ("Get-GraphEntraSignInLogs".to_string(), 1),
+            ("Get-UAL".to_string(), 1),
+        ]
+    );
+    let all: i64 = got
+        .case
+        .conn()
+        .query_row("SELECT count(*) FROM manifest_runs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(all, 3, "no other manifest run");
     assert!(listed.iter().all(|n| !n.contains("Merged")), "{listed:?}");
     assert!(
         listed

@@ -198,6 +198,14 @@ fn coverage_through_the_binary() {
 
 /// A case (and its temp dir) whose only evidence is a partial UAL manifest with one gap, tenant `t1`.
 fn manifest_case() -> (tempfile::TempDir, std::path::PathBuf) {
+    case_of(gap_manifest(), "case.duckdb")
+}
+
+/// A case `case_name` in a temp dir whose only evidence is `manifest` (in `CASE_OUTPUT/UALGraph`), tenant `t1`.
+fn case_of(
+    manifest: serde_json::Value,
+    case_name: &str,
+) -> (tempfile::TempDir, std::path::PathBuf) {
     use sparrow_core::ingest::parser::ParserRegistry;
     use sparrow_core::ingest::{IngestOptions, ingest_path};
     let tmp = tempfile::tempdir().unwrap();
@@ -208,8 +216,34 @@ fn manifest_case() -> (tempfile::TempDir, std::path::PathBuf) {
         "2026-09-10 10:00:00: [INFO] Starting\n",
     )
     .unwrap();
+    let run_id = manifest["run_id"].as_str().unwrap();
+    std::fs::write(
+        root.join("UALGraph")
+            .join(format!("CollectionManifest-{run_id}.mesmanifest")),
+        manifest.to_string(),
+    )
+    .unwrap();
+    let path = tmp.path().join(case_name);
+    {
+        let mut case = Case::create_or_open(&path).unwrap();
+        ingest_path(
+            &mut case,
+            tmp.path(),
+            &ParserRegistry::builtin(),
+            &IngestOptions::default(),
+        )
+        .unwrap();
+        case.conn()
+            .execute("UPDATE collections SET tenant_key = 't1'", [])
+            .unwrap();
+    }
+    (tmp, path)
+}
+
+/// A partial UAL manifest with one search_timeout gap (and control characters in its texts).
+fn gap_manifest() -> serde_json::Value {
     let run_id = "5b0f0c5e-0000-4000-8000-000000000001";
-    let manifest = serde_json::json!({
+    serde_json::json!({
         "schema": "mes-collection-manifest/1", "run_id": run_id, "tool": "Microsoft-Extractor-Suite",
         "tool_version": "4.1.0.1", "fork": "f", "cmdlet": "Get-UALGraph",
         "parameters": {"UserIds": ["o'brien\u{1b}[31m@x.example"], "StartDate": "2026-08-01", "EndDate": "2026-09-11"},
@@ -225,28 +259,7 @@ fn manifest_case() -> (tempfile::TempDir, std::path::PathBuf) {
                       "reason": "search_timeout", "detail": "slow\u{1b}[2J", "attempts": null,
                       "records_in_window": null, "search_id": "sid-1"}]
         }]
-    });
-    std::fs::write(
-        root.join("UALGraph")
-            .join(format!("CollectionManifest-{run_id}.mesmanifest")),
-        manifest.to_string(),
-    )
-    .unwrap();
-    let path = tmp.path().join("case.duckdb");
-    {
-        let mut case = Case::create_or_open(&path).unwrap();
-        ingest_path(
-            &mut case,
-            tmp.path(),
-            &ParserRegistry::builtin(),
-            &IngestOptions::default(),
-        )
-        .unwrap();
-        case.conn()
-            .execute("UPDATE collections SET tenant_key = 't1'", [])
-            .unwrap();
-    }
-    (tmp, path)
+    })
 }
 
 #[test]
@@ -346,4 +359,132 @@ fn ingest_prints_the_banner_after_the_profile_summary() {
         lines[at + 1],
         format!("  pull list: sparrow coverage --case {}", case.display())
     );
+}
+
+// ---- final fix wave ----
+
+/// A `Get-UALGraph -SearchId` run that failed before it created its unit.
+fn unitless_failed_manifest() -> serde_json::Value {
+    serde_json::json!({
+        "schema": "mes-collection-manifest/1", "run_id": "5b0f0c5e-0000-4000-8000-000000000002",
+        "tool": "Microsoft-Extractor-Suite", "tool_version": "4.1.0.1", "fork": "f", "cmdlet": "Get-UALGraph",
+        "parameters": {"SearchId": "sid-2"},
+        "started_utc": "2026-09-10T10:00:00Z", "finished_utc": "2026-09-10T11:00:00Z", "status": "failed",
+        "throttle_waits": {"count": 0, "total_seconds": 0.0}, "units": []
+    })
+}
+
+fn add_tenant(path: &std::path::Path) {
+    let case = Case::create_or_open(path).unwrap();
+    case.conn()
+        .execute(
+            "INSERT INTO tenant (tenant_key, collections) VALUES ('t1', 1)",
+            [],
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_run_that_failed_before_its_unit_is_pulled_with_unknown_sources() {
+    let (_tmp, path) = case_of(unitless_failed_manifest(), "case.duckdb");
+    let p = path.to_str().unwrap();
+    let r = run(&["coverage", "--case", p]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let lines: Vec<&str> = r.out.lines().collect();
+    assert_eq!(
+        lines[0], "Collector gaps (re-run these first):",
+        "{}",
+        r.out
+    );
+    assert_eq!(
+        lines[1],
+        "  unknown sources  undated  run_failed  run 5b0f0c5e-0000-4000-8000-000000000002"
+    );
+    assert_eq!(lines[2], "    rerun: Get-UALGraph -SearchId 'sid-2'");
+    assert_eq!(lines[3], "    resume: Get-UALGraph -SearchId 'sid-2'");
+    assert!(
+        r.err
+            .contains("warning: Collection incomplete: 1 gap in unknown sources (unknown span)."),
+        "{}",
+        r.err
+    );
+    add_tenant(&path);
+    let s = run(&["summary", "--case", p]);
+    assert!(
+        s.out
+            .starts_with("Collection incomplete: 1 gap in unknown sources (unknown span)."),
+        "{}",
+        s.out
+    );
+}
+
+/// `'`-quoted for a POSIX shell, as the app quotes it.
+fn quoted(p: &std::path::Path) -> String {
+    format!("'{}'", p.display().to_string().replace('\'', r"'\''"))
+}
+
+#[test]
+fn the_pull_list_line_quotes_a_case_path_with_spaces() {
+    let (_tmp, path) = case_of(gap_manifest(), "my case's.duckdb");
+    add_tenant(&path);
+    let r = run(&["summary", "--case", path.to_str().unwrap()]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let lines: Vec<&str> = r.out.lines().collect();
+    assert_eq!(
+        lines[1],
+        format!("  pull list: sparrow coverage --case {}", quoted(&path))
+    );
+    assert!(lines[1].ends_with(r"/my case'\''s.duckdb'"), "{}", lines[1]);
+}
+
+#[test]
+fn ingest_quotes_the_pull_list_path_and_escapes_file_names_and_warnings() {
+    let (tmp, _) = manifest_case();
+    // A message trace export whose name holds a format character (RTL override) and whose header holds ESC: the
+    // file is not supported and its warning names the header.
+    let dir = tmp.path().join("CASE_OUTPUT/MessageTrace/20260910-100000");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("x\u{202e}y-MessageTrace.csv"),
+        "Bad\u{1b}[31mCol,Other\n1,2\n",
+    )
+    .unwrap();
+    let case = tmp.path().join("again case.duckdb");
+    let r = run(&[
+        "ingest",
+        tmp.path().join("CASE_OUTPUT").to_str().unwrap(),
+        "--case",
+        case.to_str().unwrap(),
+    ]);
+    assert!(matches!(r.code, 0 | 2 | 6), "{} {}", r.code, r.err);
+    assert!(!r.out.contains('\u{1b}'), "{:?}", r.out);
+    assert!(!r.out.contains('\u{202e}'), "{:?}", r.out);
+    let file = r
+        .out
+        .lines()
+        .find(|l| l.contains("-MessageTrace.csv"))
+        .unwrap_or_else(|| panic!("{}", r.out));
+    assert!(file.contains(r"x\u{202E}y-MessageTrace.csv"), "{file}");
+    assert!(file.contains(r"Bad\u{001B}[31mCol"), "{file}");
+    let lines: Vec<&str> = r.out.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| l.starts_with("Collection incomplete: 1 gap"))
+        .unwrap_or_else(|| panic!("{}", r.out));
+    assert_eq!(
+        lines[at + 1],
+        format!("  pull list: sparrow coverage --case {}", quoted(&case))
+    );
+    // JSON keeps the raw text.
+    let case2 = tmp.path().join("json.duckdb");
+    let j = run(&[
+        "--json",
+        "ingest",
+        tmp.path().join("CASE_OUTPUT").to_str().unwrap(),
+        "--case",
+        case2.to_str().unwrap(),
+    ]);
+    let v: Value = serde_json::from_str(&j.out).unwrap_or_else(|e| panic!("{e}: {}", j.out));
+    let raw = v.to_string();
+    assert!(raw.contains("x\u{202e}y-MessageTrace.csv"), "{raw:?}");
 }

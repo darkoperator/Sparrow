@@ -92,18 +92,21 @@ fn schema_major(schema: Option<&str>) -> Option<u64> {
     rest.split('.').next()?.parse().ok()
 }
 
-/// A scope list that narrows: present and not empty (a bare value narrows too).
+/// A scope list that narrows: present and not empty. Any other non-null value (text, even empty, a number, an
+/// object) is not a list the reader understands, so it narrows too.
 fn narrows(v: Option<&Value>) -> bool {
     match v {
         None | Some(Value::Null) => false,
         Some(Value::Array(a)) => !a.is_empty(),
-        Some(Value::String(s)) => !s.trim().is_empty(),
         Some(_) => true,
     }
 }
 
-/// `(narrowed, mia_only)` of a scope (R3).
+/// `(narrowed, mia_only)` of a scope (R3). A scope that is not an object (and not absent or null) is narrowed.
 fn derive_scope(scope: Option<&Value>) -> (bool, bool) {
+    if scope.is_some_and(|s| !s.is_object()) {
+        return (true, false);
+    }
     let get = |k: &str| scope.and_then(|s| s.get(k));
     let other_filters = match get("other_filters") {
         None | Some(Value::Null) => false,
@@ -323,7 +326,18 @@ impl ArtifactParser for CollectionManifestParser {
                     ));
                 }
                 let scope = u.get("scope").filter(|s| !s.is_null());
-                let (user_ids, user_ids_warning) = user_ids(scope);
+                // Only an absent/null scope or an object is read; anything else may hide a filter, so the unit
+                // is narrowed and vouches for no account.
+                let (user_ids, user_ids_warning) = if scope.is_some_and(|s| !s.is_object()) {
+                    (
+                        Some("[]".to_string()),
+                        Some(
+                            "scope is not an object; the unit is treated as filtered and vouches for no account",
+                        ),
+                    )
+                } else {
+                    user_ids(scope)
+                };
                 if let Some(w) = user_ids_warning {
                     ctx.warn(format!("unit {}: {w}", shown(&unit_id)));
                 }

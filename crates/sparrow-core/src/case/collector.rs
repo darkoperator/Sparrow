@@ -12,7 +12,9 @@
 //!   over its whole range (reason `failed` / `search_only`); a `not_started` unit with none listed likewise (reason
 //!   `not_started`). A unit without a valid range (R6) that lists no gap, whatever its state, is one undated gap
 //!   with reason `invalid_range`. A gap without a valid range is *undated*: it never shows in the per-account spans, and
-//!   it is always listed by [`ManifestIndex::open_gaps`].
+//!   it is always listed by [`ManifestIndex::open_gaps`]. A supported run whose status is not `complete` and that
+//!   lists no unit at all is one undated, tenant-wide gap of unknown sources (reason `run_<status>`).
+//! - **Search id**: a gap without its own `search_id` takes the run's `SearchId` parameter when there is one.
 //! - **Open gaps** (R4, R5): a gap is open over the part not vouched, for every one of its sources, by the scope
 //!   it was asked for: tenant-wide vouching for a tenant-wide gap, vouching of every listed user for a per-user gap
 //!   (a `[]` gap has no users, so never closes this way), or vouching by a unit whose `scope` JSON is identical.
@@ -220,6 +222,17 @@ impl Unit {
 #[derive(Debug, Clone, Default)]
 pub struct ManifestIndex {
     by_tenant: BTreeMap<String, Vec<Unit>>,
+    /// One undated gap per supported run whose status is not `complete` and that lists no unit at all (it failed
+    /// before it created one): reason `run_<status>`, sources unknown (empty), tenant-wide.
+    run_gaps: Vec<OpenGap>,
+}
+
+/// The run's `SearchId` parameter (any case) when it is non-empty text: the audit log search the run read.
+fn search_id_param(parameters: &Value) -> Option<String> {
+    parameters.as_object()?.iter().find_map(|(k, v)| {
+        let id = v.as_str()?.trim();
+        (k.eq_ignore_ascii_case("SearchId") && !id.is_empty()).then(|| id.to_string())
+    })
 }
 
 fn span_of(start: Option<i64>, end: Option<i64>) -> Option<Span> {
@@ -247,11 +260,14 @@ struct GapRow {
 pub fn load(conn: &Connection) -> Result<ManifestIndex> {
     // Run id -> (tenant, cmdlet, parameters).
     let mut runs: HashMap<String, (String, Option<String>, Value)> = HashMap::new();
+    let mut run_gaps: Vec<OpenGap> = Vec::new();
     {
+        // `has_units`: any stored unit, written output or not.
         let mut st = conn.prepare(
-            "SELECT r.run_id, c.tenant_key, r.cmdlet, CAST(r.parameters AS VARCHAR) \
+            "SELECT r.run_id, c.tenant_key, r.cmdlet, CAST(r.parameters AS VARCHAR), r.status, \
+                 EXISTS (SELECT 1 FROM manifest_units u WHERE u.run_id = r.run_id) \
              FROM manifest_runs r JOIN collections c ON c.collection_id = r.collection_id \
-             WHERE r.supported AND c.tenant_key IS NOT NULL",
+             WHERE r.supported AND c.tenant_key IS NOT NULL ORDER BY r.run_id",
         )?;
         let rows = st.query_map([], |r| {
             Ok((
@@ -259,14 +275,33 @@ pub fn load(conn: &Connection) -> Result<ManifestIndex> {
                 r.get::<_, String>(1)?,
                 r.get::<_, Option<String>>(2)?,
                 r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, bool>(5)?,
             ))
         })?;
         for row in rows {
-            let (run_id, tenant, cmdlet, params) = row?;
-            runs.insert(
-                run_id,
-                (tenant, cmdlet, parse_json(params).unwrap_or(Value::Null)),
-            );
+            let (run_id, tenant, cmdlet, params, status, has_units) = row?;
+            let parameters = parse_json(params).unwrap_or(Value::Null);
+            let status = status.as_deref().map(str::trim).unwrap_or_default();
+            if !has_units && !status.eq_ignore_ascii_case("complete") {
+                // A run that stopped before its first unit: what it was asked to collect is unknown.
+                run_gaps.push(OpenGap {
+                    tenant_key: tenant.clone(),
+                    run_id: run_id.clone(),
+                    unit_id: String::new(),
+                    cmdlet: cmdlet.clone(),
+                    sources: Vec::new(),
+                    user_ids: None,
+                    narrowed: false,
+                    reason: format!("run_{}", if status.is_empty() { "unknown" } else { status }),
+                    detail: None,
+                    search_id: search_id_param(&parameters),
+                    spans: Spans::default(),
+                    undated: true,
+                    parameters: parameters.clone(),
+                });
+            }
+            runs.insert(run_id, (tenant, cmdlet, parameters));
         }
     }
     if runs.is_empty() {
@@ -365,6 +400,9 @@ pub fn load(conn: &Connection) -> Result<ManifestIndex> {
             Some(_) => Direction::Other,
         };
         let listed = gaps.remove(&unit_key).unwrap_or_default();
+        // A gap without its own search id is of the run's search when the run named one (`-SearchId`): a
+        // search_only unit lists no gap, and the fork keeps the id only in the run's parameters.
+        let run_search = search_id_param(parameters);
         let state = state.unwrap_or_default();
         let vouches = matches!(state.as_str(), "complete" | "partial");
         let vouch = match range {
@@ -380,7 +418,7 @@ pub fn load(conn: &Connection) -> Result<ManifestIndex> {
                     span: g.span,
                     reason: g.reason.unwrap_or_else(|| "failed".to_string()),
                     detail: g.detail,
-                    search_id: g.search_id,
+                    search_id: g.search_id.or_else(|| run_search.clone()),
                 })
                 .collect()
         } else if range.is_none() {
@@ -389,7 +427,7 @@ pub fn load(conn: &Connection) -> Result<ManifestIndex> {
                 span: None,
                 reason: "invalid_range".to_string(),
                 detail: None,
-                search_id: None,
+                search_id: run_search,
             }]
         } else if vouches {
             Vec::new()
@@ -402,7 +440,7 @@ pub fn load(conn: &Connection) -> Result<ManifestIndex> {
                 span: range,
                 reason,
                 detail: None,
-                search_id: None,
+                search_id: run_search,
             }]
         };
         by_tenant.entry(tenant.clone()).or_default().push(Unit {
@@ -419,7 +457,10 @@ pub fn load(conn: &Connection) -> Result<ManifestIndex> {
             gaps: unit_gaps,
         });
     }
-    Ok(ManifestIndex { by_tenant })
+    Ok(ManifestIndex {
+        by_tenant,
+        run_gaps,
+    })
 }
 
 fn norm_account(a: &str) -> String {
@@ -427,9 +468,9 @@ fn norm_account(a: &str) -> String {
 }
 
 impl ManifestIndex {
-    /// True when no counted unit (supported run, collection with a tenant, output written) was loaded.
+    /// True when no counted unit (supported run, collection with a tenant, output written) and no run gap was loaded.
     pub fn is_empty(&self) -> bool {
-        self.by_tenant.values().all(Vec::is_empty)
+        self.by_tenant.values().all(Vec::is_empty) && self.run_gaps.is_empty()
     }
 
     /// True when a counted unit of `tenant` was loaded.
@@ -570,6 +611,12 @@ impl ManifestIndex {
                 }
             }
         }
+        out.extend(
+            self.run_gaps
+                .iter()
+                .filter(|g| tenant.is_none_or(|f| f == g.tenant_key))
+                .cloned(),
+        );
         // Stable: gaps of one unit keep their ordinal order. Undated gaps last within their tenant.
         out.sort_by(|a, b| {
             let start = |g: &OpenGap| g.spans.iter().next().map_or(i64::MAX, |s| s.start_us);
@@ -654,10 +701,16 @@ pub fn incomplete_collection(conn: &Connection) -> Result<Option<IncompleteColle
     let all: Spans = gaps.iter().flat_map(|g| g.spans.iter().copied()).collect();
     let span_us = all.total_us();
     let dated = gaps.iter().any(|g| !g.undated);
+    // Every gap's sources unknown (a run that stopped before its first unit): say so.
+    let shown = if shown.is_empty() {
+        "unknown sources".to_string()
+    } else {
+        shown.join(", ")
+    };
     let text = format!(
         "Collection incomplete: {} in {} ({}). Re-collect before relying on absence of activity.",
         plural(gaps.len() as i64, "gap", "gaps"),
-        shown.join(", "),
+        shown,
         span_text(span_us, dated),
     );
     Ok(Some(IncompleteCollection {

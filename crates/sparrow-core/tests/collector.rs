@@ -963,3 +963,86 @@ fn banner_counts_a_gap_of_a_run_with_an_unknown_status() {
     .unwrap();
     assert_eq!(b.gaps, 1);
 }
+
+// ---- final fix wave: a run that failed before it created any unit ----
+
+/// A `Get-UALGraph -SearchId` run that failed before its unit existed: one undated gap of the run, sources unknown.
+#[test]
+fn a_failed_run_without_units_is_one_undated_gap() {
+    let m = M::run("Get-UALGraph", "failed")
+        .param("SearchId", json!("sid-9"))
+        .param("StartDate", json!("2026-09-01T00:00:00Z"));
+    let run_id = m.run_id();
+    let (case, idx) = index_of(&[(Some("t1"), vec![m])]);
+    let open = idx.open_gaps(None);
+    assert_eq!(open.len(), 1, "{open:?}");
+    let g = &open[0];
+    assert_eq!(g.tenant_key, "t1");
+    assert_eq!(g.run_id, run_id);
+    assert!(g.undated);
+    assert!(g.spans.is_empty());
+    assert!(g.sources.is_empty());
+    assert_eq!(g.user_ids, None);
+    assert_eq!(g.reason, "run_failed");
+    assert_eq!(g.cmdlet.as_deref(), Some("Get-UALGraph"));
+    assert_eq!(g.parameters["SearchId"], json!("sid-9"));
+    assert_eq!(g.search_id.as_deref(), Some("sid-9"));
+    // It vouches nothing and opens no per-account gap.
+    assert!(idx.vouched("t1", A, "ual").is_empty());
+    assert!(idx.account_gaps("t1", A, "ual").is_empty());
+    let b = incomplete_collection(case.conn()).unwrap().unwrap();
+    assert_eq!(b.gaps, 1);
+    assert!(b.sources.is_empty());
+    assert_eq!(
+        b.text,
+        "Collection incomplete: 1 gap in unknown sources (unknown span). Re-collect before relying on absence of activity."
+    );
+}
+
+#[test]
+fn every_non_complete_run_without_units_is_a_run_gap() {
+    for (status, reason) in [
+        (json!("partial"), "run_partial"),
+        (json!("search_only"), "run_search_only"),
+        (json!("weird"), "run_weird"),
+        (serde_json::Value::Null, "run_unknown"),
+    ] {
+        let m = M::run("Get-UALGraph", "x").set("status", status.clone());
+        let idx = one("t1", vec![m]);
+        let open = idx.open_gaps(None);
+        assert_eq!(open.len(), 1, "{status}");
+        assert_eq!(open[0].reason, reason, "{status}");
+    }
+    // A complete run without units, or a failed run whose units are in the manifest, adds no run gap.
+    assert!(
+        one("t1", vec![M::run("Get-UALGraph", "complete")])
+            .open_gaps(None)
+            .is_empty()
+    );
+    assert!(banner(&[(Some("t1"), vec![M::run("Get-UALGraph", "complete")])]).is_none());
+    let with_unit = one(
+        "t1",
+        vec![M::run("Get-UALGraph", "failed").unit(day_unit(&["ual"], "failed"))],
+    );
+    let open = with_unit.open_gaps(None);
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].reason, "failed");
+    // A known source of another gap names the banner's sources; the run gap adds none.
+    let b = banner(&[(
+        Some("t1"),
+        vec![
+            M::run("Get-UALGraph", "failed"),
+            M::run("Get-UALGraph", "partial").unit(day_unit(&["ual"], "partial").gap(
+                &h(6),
+                &h(7),
+                "retries_exhausted",
+            )),
+        ],
+    )])
+    .unwrap();
+    assert_eq!(b.gaps, 2);
+    assert_eq!(
+        b.text,
+        "Collection incomplete: 2 gaps in Unified audit log (1 hour). Re-collect before relying on absence of activity."
+    );
+}

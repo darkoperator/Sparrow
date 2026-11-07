@@ -1616,7 +1616,7 @@ fn the_report_prints_collector_gaps_and_collected_no_events() {
     );
     assert!(
         row("Sign-ins \\(interactive\\)").ends_with(
-            "| collected, no events 2026-08-02 to 2026-09-09; collector\\_gap 2026-09-04 to 2026-09-05 |"
+            "| collected, no events 2026-08-02 to 2026-09-03, 2026-09-06 to 2026-09-09; collector\\_gap 2026-09-04 to 2026-09-05 |"
         ),
         "{section}"
     );
@@ -1941,4 +1941,145 @@ fn vouched_range_with_capped_rows_stays_sampled() {
     let r = range(&case, Some("t1"), &[MA], "2026-09-02", "2026-09-04");
     assert_eq!(line(&r, "ual").state, RangeState::Sampled);
     assert_eq!(by_state(line(&r, "ual")), vec![("sampled", vec![MA])]);
+}
+
+// ---- final fix wave ----
+
+#[test]
+fn a_failed_run_without_units_is_requested_with_its_own_command() {
+    let (case, _c, _f) = manifest_case(vec![
+        manifest::M::run("Get-UALGraph", "failed")
+            .param("SearchId", serde_json::json!("sid-7"))
+            .param("StartDate", serde_json::json!("2026-08-01"))
+            .param("EndDate", serde_json::json!("2026-09-11")),
+    ]);
+    let cov = run(&case, Some("t1"), &[]);
+    assert_eq!(
+        cov.collector_requests.len(),
+        1,
+        "{:?}",
+        cov.collector_requests
+    );
+    let r = &cov.collector_requests[0];
+    assert_eq!(r.reason, "run_failed");
+    assert!(r.undated && r.spans.is_empty() && r.sources.is_empty());
+    assert_eq!(r.users, None);
+    assert_eq!(
+        r.rerun,
+        vec!["Get-UALGraph -SearchId 'sid-7' -StartDate '2026-08-01' -EndDate '2026-09-11'"]
+    );
+    assert_eq!(r.resume.as_deref(), Some("Get-UALGraph -SearchId 'sid-7'"));
+}
+
+#[test]
+fn a_search_only_gap_reruns_without_skip_download_and_resumes_its_search() {
+    let (case, _c, _f) = manifest_case(vec![
+        manifest::M::run("Get-UALGraph", "search_only")
+            .param("SearchId", serde_json::json!("sid-8"))
+            .param("skipdownload", serde_json::json!(true))
+            .param("StartDate", serde_json::json!("2026-08-01"))
+            .unit(manifest::U::new(
+                &["ual"],
+                "2026-08-01T00:00:00Z",
+                "2026-09-11T00:00:00Z",
+                "search_only",
+            )),
+    ]);
+    let cov = run(&case, Some("t1"), &[]);
+    assert_eq!(
+        cov.collector_requests.len(),
+        1,
+        "{:?}",
+        cov.collector_requests
+    );
+    let r = &cov.collector_requests[0];
+    assert_eq!(r.reason, "search_only");
+    assert_eq!(
+        r.rerun,
+        vec!["Get-UALGraph -SearchId 'sid-8' -StartDate '2026-08-01T00:00:00Z'"]
+    );
+    assert_eq!(r.resume.as_deref(), Some("Get-UALGraph -SearchId 'sid-8'"));
+}
+
+#[test]
+fn rerun_command_always_drops_skip_download() {
+    use serde_json::json;
+    use sparrow_core::case::coverage::rerun_command;
+    for p in [
+        json!({"SkipDownload": true, "Keyword": "x"}),
+        json!({"SKIPDOWNLOAD": false, "Keyword": "x"}),
+    ] {
+        assert_eq!(
+            rerun_command("Get-UALGraph", &p, None),
+            "Get-UALGraph -Keyword 'x'"
+        );
+    }
+}
+
+#[test]
+fn the_report_names_unknown_sources_and_each_collected_range() {
+    use chrono::{TimeZone, Utc};
+    use sparrow_core::export::report_md::{self, ReportOpts};
+    let (case, c, f) = manifest_case(vec![
+        manifest::M::run("Get-UALGraph", "failed"),
+        manifest::M::run("Get-GraphEntraSignInLogs", "partial").unit(
+            manifest::U::new(
+                &["signins_interactive"],
+                "2026-08-01T00:00:00Z",
+                "2026-09-11T00:00:00Z",
+                "partial",
+            )
+            .gap(
+                "2026-08-28T00:00:00Z",
+                "2026-08-31T00:00:00Z",
+                "retries_exhausted",
+            ),
+        ),
+    ]);
+    ual(&case, c, f, 1, "2026-09-01 10:00:00", "Send", MA);
+    ual(&case, c, f, 2, "2026-09-09 10:00:00", "Send", MA);
+    rollup(&case, "t1", MA);
+    case.conn()
+        .execute(
+            "INSERT INTO case_meta (key, value) VALUES ('enrichment_run_id', '0')",
+            [],
+        )
+        .unwrap();
+    let cov = run(&case, Some("t1"), &[MA]);
+    let s = source(account(&cov, "t1", MA), "signins_interactive");
+    assert!(s.collected_no_events);
+    assert_eq!(s.collected.len(), 2, "{:?}", s.collected);
+    let mut out = Vec::new();
+    report_md::write(
+        case.conn(),
+        &mut out,
+        &ReportOpts {
+            reviewed_only: false,
+            generated_at: Utc.with_ymd_and_hms(2026, 10, 3, 0, 0, 0).unwrap(),
+            dirs: DataDirs::default(),
+        },
+    )
+    .unwrap();
+    let md = String::from_utf8(out).unwrap();
+    let section = md
+        .split("## Evidence coverage and what to request")
+        .nth(1)
+        .unwrap()
+        .split("\n## ")
+        .next()
+        .unwrap();
+    assert!(
+        section.contains("- unknown sources, undated (run\\_failed)"),
+        "{section}"
+    );
+    let row = section
+        .lines()
+        .find(|l| l.starts_with("| Sign-ins \\(interactive\\) |"))
+        .unwrap();
+    assert!(
+        row.ends_with(
+            "| collected, no events 2026-08-02 to 2026-08-27, 2026-08-31 to 2026-09-09; collector\\_gap 2026-08-28 to 2026-08-30 |"
+        ),
+        "{row}"
+    );
 }

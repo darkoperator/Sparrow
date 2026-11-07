@@ -438,9 +438,30 @@ fn narrowed_and_mia_only_are_derived() {
 fn the_manifest_is_discovered_as_invictus() {
     let tmp = tempfile::tempdir().unwrap();
     let root = invictus_dir(tmp.path());
-    sample().write(&root);
+    let m = sample();
+    m.write(&root);
     let found = discovery::discover_collections(tmp.path()).unwrap();
     assert_eq!(found.len(), 1);
+    // The collection is found through LogFile.txt anyway: what matters is that the manifest file itself is
+    // classified as a collection manifest, parsed, and its rows loaded.
+    let (case, _) = ingest(tmp.path());
+    let (artifact, status, loaded): (Option<String>, String, i64) = case
+        .conn()
+        .query_row(
+            "SELECT artifact_type, CAST(status AS VARCHAR), records_loaded FROM source_files \
+             WHERE rel_path LIKE '%.mesmanifest'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(artifact.as_deref(), Some("inv.collection_manifest"));
+    assert_eq!(status, "parsed");
+    assert_eq!(loaded, 5, "one run, two units, two gaps");
+    assert_eq!(
+        text(&case, "SELECT run_id FROM manifest_runs").as_deref(),
+        Some(m.run_id().as_str())
+    );
+    assert_eq!(count(&case, "SELECT count(*) FROM manifest_units"), 2);
 }
 
 #[test]
@@ -539,4 +560,54 @@ fn manifest_text_in_warnings_is_escaped() {
             "{line:?}"
         );
     }
+}
+
+#[test]
+fn a_malformed_scope_is_narrowed_and_vouches_nobody() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = invictus_dir(tmp.path());
+    let r = ("2026-09-01T00:00:00Z", "2026-09-02T00:00:00Z");
+    let mut m = M::run("Get-UALGraph", "complete");
+    for _ in 0..8 {
+        m = m.unit(U::new(&["ual"], r.0, r.1, "complete"));
+    }
+    let mut doc: serde_json::Value = serde_json::from_str(&m.json()).unwrap();
+    let units = doc["units"].as_array_mut().unwrap();
+    units[0]["scope"] = json!("user_ids=a@x.com");
+    units[1]["scope"] = json!(["a@x.com"]);
+    units[2]["scope"] = json!(5);
+    units[3]["scope"]["operations"] = json!("");
+    units[4]["scope"]["record_types"] = json!(7);
+    units[5]["scope"]["session_ids"] = json!(true);
+    units[6]["scope"] = serde_json::Value::Null; // unrestricted
+    units[7].as_object_mut().unwrap().remove("scope"); // unrestricted
+    write_text(&root, "UnifiedAuditLog", &m.run_id(), &doc.to_string());
+    let (case, report) = ingest(tmp.path());
+    let row = |u: &str| -> (bool, Option<String>) {
+        case.conn()
+            .query_row(
+                &format!(
+                    "SELECT narrowed, CAST(user_ids AS VARCHAR) FROM manifest_units WHERE unit_id = '{u}'"
+                ),
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+    };
+    for u in ["u-0001", "u-0002", "u-0003"] {
+        assert_eq!(row(u), (true, Some("[]".to_string())), "{u}");
+    }
+    for u in ["u-0004", "u-0005", "u-0006"] {
+        assert_eq!(row(u), (true, None), "{u}");
+    }
+    for u in ["u-0007", "u-0008"] {
+        assert_eq!(row(u), (false, None), "{u}");
+    }
+    let w = manifest_warnings(&report).join("\n");
+    assert!(
+        w.contains("u-0001") && w.contains("scope is not an object"),
+        "{w}"
+    );
+    assert!(w.contains("u-0003"), "{w}");
+    assert!(!w.contains("u-0007") && !w.contains("u-0008"), "{w}");
 }
