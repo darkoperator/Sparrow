@@ -5,7 +5,23 @@ use std::net::{IpAddr, Ipv4Addr};
 /// Normalized IP text: brackets and ports removed, IPv4-mapped IPv6 (`::ffff:a.b.c.d`) given
 /// as IPv4, other IPv6 lower-cased and compressed.
 /// Values that are not IP addresses are kept, trimmed and lower-cased; empty gives `None`.
+/// A `,`-separated proxy chain gives its first entry that is an IP address (originating client
+/// first); a chain with no address is kept whole like any other non-IP value.
 pub fn normalize_ip(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if s.contains(',') {
+        let first_ip = s
+            .split(',')
+            .filter_map(normalize_one)
+            .find(|piece| piece.parse::<IpAddr>().is_ok());
+        if first_ip.is_some() {
+            return first_ip;
+        }
+    }
+    normalize_one(s)
+}
+
+fn normalize_one(raw: &str) -> Option<String> {
     let s = raw.trim();
     if s.is_empty() {
         return None;
