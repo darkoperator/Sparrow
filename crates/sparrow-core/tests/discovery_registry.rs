@@ -923,3 +923,37 @@ fn only_sign_in_exports_are_recognized_as_xlsx() {
         Some("portal.entra_signins")
     );
 }
+
+const GRAPH_SIGNIN_HEAD: &str = r#"[{"id":"b1b1b1b1-1111-4111-8111-111111111111","createdDateTime":"2026-03-01T10:00:00Z","userPrincipalName":"alice@contoso.example","appId":"00000002-0000-0ff1-ce00-000000000000","ipAddress":"203.0.113.5","status":{"errorCode":0},"isInteractive":true}]"#;
+
+#[test]
+fn sniff_portal_json_graph_signin_array() {
+    let c = sniff_portal_json(GRAPH_SIGNIN_HEAD.as_bytes()).expect("sign-in array classified");
+    assert_eq!(c.artifact_id, "portal.entra_signins_json");
+    assert_eq!(c.target, "signins");
+}
+
+#[test]
+fn sniff_portal_json_key_case_insensitive() {
+    let head = GRAPH_SIGNIN_HEAD
+        .replace("createdDateTime", "CreatedDateTime")
+        .replace("userPrincipalName", "UserPrincipalName")
+        .replace("ipAddress", "IPAddress");
+    let c = sniff_portal_json(head.as_bytes()).expect("sign-in array classified");
+    assert_eq!(c.artifact_id, "portal.entra_signins_json");
+    assert_eq!(c.target, "signins");
+}
+
+#[test]
+fn sniff_portal_json_audit_array_unchanged() {
+    let head = r#"[{"activityDateTime":"2026-03-01T10:00:00Z","loggedByService":"Core Directory","targetResources":[]}]"#;
+    let c = sniff_portal_json(head.as_bytes()).expect("audit array classified");
+    assert_eq!(c.artifact_id, "portal.entra_audit");
+    assert_eq!(c.target, "directory_audits");
+}
+
+#[test]
+fn sniff_portal_json_signin_missing_ip_is_none() {
+    let head = GRAPH_SIGNIN_HEAD.replace(r#""ipAddress":"203.0.113.5","#, "");
+    assert!(sniff_portal_json(head.as_bytes()).is_none());
+}

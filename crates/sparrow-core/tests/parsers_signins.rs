@@ -715,3 +715,44 @@ fn every_batch_size_stores_what_one_batch_stores() {
         assert_eq!(tables, want_tables, "batch {batch}: tables");
     }
 }
+
+#[test]
+fn graph_signin_json_array_ingests() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = capture(tmp.path());
+    let v1 = json!({
+        "id": S1, "createdDateTime": "2026-03-01T10:00:00Z",
+        "userPrincipalName": ALICE, "appId": "00000002-0000-0ff1-ce00-000000000000",
+        "ipAddress": "203.0.113.5", "status": {"errorCode": 50126},
+        "isInteractive": false
+    });
+    let beta = json!({
+        "id": S2, "createdDateTime": "2026-03-01T11:00:00Z",
+        "userPrincipalName": ALICE, "appId": "00000002-0000-0ff1-ce00-000000000000",
+        "ipAddress": "203.0.113.5", "status": {"errorCode": 0},
+        "signInEventTypes": ["nonInteractiveUser"]
+    });
+    fixtures::write(
+        &root,
+        "noninteractive-alice.json",
+        serde_json::to_string(&json!([v1, beta]))
+            .unwrap()
+            .as_bytes(),
+    );
+    let (case, _) = ingest(tmp.path());
+    assert_eq!(count(&case, "SELECT count(*) FROM signins"), 2);
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM signins WHERE event_type = 'noninteractive' AND ip = '203.0.113.5'"
+        ),
+        2
+    );
+    assert_eq!(
+        count(
+            &case,
+            "SELECT count(*) FROM signins WHERE signin_id = 'a1a1a1a1-1111-4111-8111-111111111111' AND error_code = 50126"
+        ),
+        1
+    );
+}
