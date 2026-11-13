@@ -56,7 +56,7 @@
       ],
       [
         "Accounts",
-        "9 accounts with findings"
+        "10 accounts with findings"
       ]
     ]
   },
@@ -174,6 +174,22 @@
         "0",
         "2026-08-12 00:22:04",
         "2026-09-09 07:51:48"
+      ],
+      [
+        "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
+        "drew.vincent@contoso.example",
+        "high",
+        "1",
+        "{\"high\":1}",
+        "persistence",
+        "2026-09-02 09:30:00",
+        "SPW-ID-011",
+        "203.0.113.2 (finding_evidence, hosting)",
+        "1",
+        "false",
+        "0",
+        "2026-08-11 16:37:17",
+        "2026-09-09 13:52:39"
       ],
       [
         "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
@@ -401,6 +417,31 @@
         "",
         "",
         "{\"facts_version\":1,\"window_start\":\"2026-08-11T14:24:08.000000Z\",\"actor_ips\":[{\"ip\":\"203.0.113.6\",\"asn\":64509,\"asn_org\":\"Documentation Residential ISP\",\"is_hosting\":false,\"spray_source\":false,\"user_signin_days_before\":1,\"user_first_signin\":\"2026-09-07T10:50:00.000000Z\"}],\"other_signals\":{\"total\":1,\"items\":[{\"rule_id\":\"SPW-MAIL-003\",\"severity\":\"high\",\"first_seen\":\"2026-09-07T11:05:00.000000Z\"}]}}",
+        ""
+      ],
+      [
+        "688b7d58bc66563f",
+        "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
+        "SPW-ID-011",
+        "high",
+        "Refresh-token replay after revocation",
+        "drew.vincent@contoso.example",
+        "2026-09-02 09:30:00",
+        "2026-09-02 10:05:00",
+        "new",
+        "",
+        "",
+        "false",
+        "6",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "{\"facts_version\":1,\"window_start\":\"2026-08-11T14:24:08.000000Z\",\"actor_ips\":[{\"ip\":\"203.0.113.2\",\"asn\":20473,\"asn_org\":\"Vultr (The Constant Company)\",\"is_hosting\":true,\"spray_source\":false,\"user_signin_days_before\":0,\"user_first_signin\":null}],\"other_signals\":{\"total\":0,\"items\":[]}}",
         ""
       ],
       [
@@ -1545,6 +1586,36 @@
         "",
         "",
         ""
+      ],
+      [
+        "not_in_latest_inventory",
+        "high",
+        "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
+        "cb956022-307b-407a-945c-960642924fdf",
+        "",
+        "DREW.VINCENT-LAPTOP",
+        "Windows 11",
+        "Azure AD joined",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "2026-09-09 13:52:39",
+        "Output/Contoso_Example/Sign-In logs/EntraID/20260910-161751-SignInLogs/interactiveUser & nonInteractiveUser/20260910161754-interactiveUser-nonInteractiveUser-SignInLogs.json:1482-1548",
+        "drew.vincent@contoso.example",
+        "203.0.113.2",
+        "192.0.2.24 (Documentation ISP 6, SE); 192.0.2.23 (Documentation ISP 6, SE)",
+        "finding b184e7ffee55c9ba (SPW-ID-004) on 203.0.113.2; finding bc8477f7fac96857 (SPW-ID-002) on 203.0.113.2; impossible-travel leg 203.0.113.2 (finding 4efcef56c7977274)",
+        "treat as active — collect Get-Devices to confirm",
+        "",
+        "",
+        "",
+        "",
+        ""
       ]
     ]
   },
@@ -1689,7 +1760,7 @@
         "partial",
         "the window starts before the 30-day retention at collection time",
         "Microsoft-Extractor-Suite: Get-GraphEntraSignInLogs -startDate 2026-08-12 -endDate 2026-09-11 | Hawk: Get-HawkUserEntraIDSignInLog -UserPrincipalName <upn> | portal: Entra admin center > Sign-in logs > Download (works on every edition)",
-        "1294",
+        "1307",
         "2026-08-11 14:24:08",
         "2026-09-09 23:49:44",
         "13"

@@ -257,6 +257,7 @@ story_kind! {
         ResidentialReplayRule => "residential_replay_rule",
         VpsPhishedAccounts => "vps_phished_accounts",
         DelegateFinanceDelete => "delegate_finance_delete",
+        TokenReplayAfterRevoke => "token_replay_after_revoke",
     }
     lookalike {
         RiskDismissed => "risk_dismissed",
@@ -312,6 +313,7 @@ story_kind! {
         OtherDeviceRuleEdit => "other_device_rule_edit",
         AdminRoleChanges => "admin_role_changes",
         AssistantCleanup => "assistant_cleanup",
+        PostResetRefreshNoise => "post_reset_refresh_noise",
     }
 }
 

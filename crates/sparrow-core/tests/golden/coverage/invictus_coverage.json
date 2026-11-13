@@ -771,7 +771,7 @@
         {
           "source": "ual",
           "title": "Unified audit log",
-          "rows": 444,
+          "rows": 445,
           "first": "2026-08-01T00:35:06.000000Z",
           "last": "2026-09-09T18:11:22.000000Z",
           "days": 39,
@@ -792,7 +792,7 @@
         {
           "source": "signins_interactive",
           "title": "Sign-ins (interactive)",
-          "rows": 49,
+          "rows": 56,
           "first": "2026-08-12T00:44:15.000000Z",
           "last": "2026-09-09T00:33:54.000000Z",
           "days": 28,
@@ -908,6 +908,143 @@
               "to": "2026-08-02",
               "reason": "before"
             },
+            {
+              "from": "2026-09-10",
+              "to": "2026-09-10",
+              "reason": "after"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tenant_key": "f8ff8c86-40d4-4634-b6fa-5e29a28c1d80",
+      "upn": "hayden.mathis@contoso.example",
+      "window": {
+        "start": "2026-08-03",
+        "end": "2026-09-10"
+      },
+      "sources": [
+        {
+          "source": "ual",
+          "title": "Unified audit log",
+          "rows": 430,
+          "first": "2026-08-01T07:03:38.000000Z",
+          "last": "2026-09-09T16:41:26.000000Z",
+          "days": 38,
+          "sampled": false,
+          "gaps": [
+            {
+              "from": "2026-09-10",
+              "to": "2026-09-10",
+              "reason": "after"
+            }
+          ]
+        },
+        {
+          "source": "signins_interactive",
+          "title": "Sign-ins (interactive)",
+          "rows": 47,
+          "first": "2026-08-12T07:28:24.000000Z",
+          "last": "2026-09-09T11:18:23.000000Z",
+          "days": 27,
+          "sampled": false,
+          "gaps": [
+            {
+              "from": "2026-08-03",
+              "to": "2026-08-11",
+              "reason": "before"
+            },
+            {
+              "from": "2026-09-10",
+              "to": "2026-09-10",
+              "reason": "after"
+            }
+          ]
+        },
+        {
+          "source": "signins_noninteractive",
+          "title": "Sign-ins (non-interactive)",
+          "rows": 43,
+          "first": "2026-08-12T13:59:38.000000Z",
+          "last": "2026-09-08T12:53:44.000000Z",
+          "days": 19,
+          "sampled": false,
+          "gaps": [
+            {
+              "from": "2026-08-03",
+              "to": "2026-08-11",
+              "reason": "before"
+            },
+            {
+              "from": "2026-09-09",
+              "to": "2026-09-10",
+              "reason": "after"
+            }
+          ]
+        },
+        {
+          "source": "mail_items_accessed",
+          "title": "MailItemsAccessed",
+          "rows": 114,
+          "first": "2026-08-01T07:08:31.000000Z",
+          "last": "2026-09-09T16:13:07.000000Z",
+          "days": 38,
+          "sampled": false,
+          "gaps": [
+            {
+              "from": "2026-09-10",
+              "to": "2026-09-10",
+              "reason": "after"
+            }
+          ]
+        },
+        {
+          "source": "message_trace",
+          "title": "Message trace",
+          "rows": 268,
+          "first": "2026-08-02T16:13:34.000000Z",
+          "last": "2026-09-09T15:55:23.000000Z",
+          "days": 34,
+          "sampled": false,
+          "gaps": [
+            {
+              "from": "2026-09-10",
+              "to": "2026-09-10",
+              "reason": "after"
+            }
+          ]
+        },
+        {
+          "source": "entra_audit",
+          "title": "Entra audit log",
+          "rows": 1,
+          "first": "2026-08-28T23:14:19.000000Z",
+          "last": "2026-08-28T23:14:19.000000Z",
+          "days": 1,
+          "sampled": false,
+          "gaps": [
+            {
+              "from": "2026-08-03",
+              "to": "2026-08-27",
+              "reason": "before"
+            },
+            {
+              "from": "2026-08-29",
+              "to": "2026-09-10",
+              "reason": "after"
+            }
+          ]
+        },
+        {
+          "source": "mailbox_audit",
+          "title": "Mailbox audit log (legacy)",
+          "rows": 134,
+          "first": "2026-08-02T18:13:34.000000Z",
+          "last": "2026-09-09T18:41:26.000000Z",
+          "days": 32,
+          "sampled": false,
+          "gaps": [
             {
               "from": "2026-09-10",
               "to": "2026-09-10",
@@ -1984,6 +2121,107 @@
       "console": "Exchange admin center has no export for the legacy mailbox audit log; use Exchange Online PowerShell: Search-MailboxAuditLog -Identity jamie.prescott@contoso.example -LogonTypes Delegate,Admin,Owner -StartDate 2026-07-28 -EndDate 2026-09-11 -ShowDetails -ResultSize 250000",
       "hawk": null,
       "invictus": "Get-MailboxAuditLogLegacy -UserIds jamie.prescott@contoso.example -StartDate 2026-07-28 -EndDate 2026-09-11"
+    },
+    {
+      "tenant_key": "f8ff8c86-40d4-4634-b6fa-5e29a28c1d80",
+      "user": "hayden.mathis@contoso.example",
+      "source": "ual",
+      "title": "Unified audit log",
+      "from": "2026-09-10",
+      "to": "2026-09-10",
+      "reasons": [
+        "after"
+      ],
+      "console": "Purview portal > Audit > Search: Users = hayden.mathis@contoso.example, date range 2026-09-10 to 2026-09-10, Search, then Export (a per-user search stays under the 1,000,000-row cap)",
+      "hawk": null,
+      "invictus": "Get-UAL -UserIds hayden.mathis@contoso.example -StartDate 2026-09-10 -EndDate 2026-09-11"
+    },
+    {
+      "tenant_key": "f8ff8c86-40d4-4634-b6fa-5e29a28c1d80",
+      "user": "hayden.mathis@contoso.example",
+      "source": "signins_interactive",
+      "title": "Sign-ins (interactive)",
+      "from": "2026-08-03",
+      "to": "2026-09-10",
+      "reasons": [
+        "before",
+        "after"
+      ],
+      "console": "Entra admin center > Monitoring & health > Sign-in logs > User sign-ins (interactive) tab: filter User = hayden.mathis@contoso.example and Date 2026-08-03 to 2026-09-10, Download > JSON",
+      "hawk": "Get-HawkUserEntraIDSignInLog -UserPrincipalName hayden.mathis@contoso.example (Hawk sets the window when it starts, 2026-08-03 to 2026-09-10; Graph allows only the last 14 days there; its filter names no event type, so non-interactive sign-ins are not guaranteed)",
+      "invictus": "Get-GraphEntraSignInLogs -UserIds hayden.mathis@contoso.example -startDate 2026-08-03 -endDate 2026-09-11 -EventTypes interactiveUser"
+    },
+    {
+      "tenant_key": "f8ff8c86-40d4-4634-b6fa-5e29a28c1d80",
+      "user": "hayden.mathis@contoso.example",
+      "source": "signins_noninteractive",
+      "title": "Sign-ins (non-interactive)",
+      "from": "2026-08-03",
+      "to": "2026-09-10",
+      "reasons": [
+        "before",
+        "after"
+      ],
+      "console": "Entra admin center > Monitoring & health > Sign-in logs > User sign-ins (non-interactive) tab: filter User = hayden.mathis@contoso.example and Date 2026-08-03 to 2026-09-10, Download > JSON",
+      "hawk": null,
+      "invictus": "Get-GraphEntraSignInLogs -UserIds hayden.mathis@contoso.example -startDate 2026-08-03 -endDate 2026-09-11 -EventTypes nonInteractiveUser"
+    },
+    {
+      "tenant_key": "f8ff8c86-40d4-4634-b6fa-5e29a28c1d80",
+      "user": "hayden.mathis@contoso.example",
+      "source": "mail_items_accessed",
+      "title": "MailItemsAccessed",
+      "from": "2026-09-10",
+      "to": "2026-09-10",
+      "reasons": [
+        "after"
+      ],
+      "console": "Purview portal > Audit > Search: Users = hayden.mathis@contoso.example, Activities = MailItemsAccessed, date range 2026-09-10 to 2026-09-10, Search, then Export",
+      "hawk": "Get-HawkUserMailItemsAccessed -UserPrincipalName hayden.mathis@contoso.example (Hawk sets the window when it starts, 2026-09-10 to 2026-09-10)",
+      "invictus": "Get-UAL -UserIds hayden.mathis@contoso.example -Operations MailItemsAccessed -StartDate 2026-09-10 -EndDate 2026-09-11"
+    },
+    {
+      "tenant_key": "f8ff8c86-40d4-4634-b6fa-5e29a28c1d80",
+      "user": "hayden.mathis@contoso.example",
+      "source": "message_trace",
+      "title": "Message trace",
+      "from": "2026-09-10",
+      "to": "2026-09-10",
+      "reasons": [
+        "after"
+      ],
+      "console": "Exchange admin center > Mail flow > Message trace > Start a trace: Sender = hayden.mathis@contoso.example, then again with Recipient = hayden.mathis@contoso.example, dates 2026-09-10 to 2026-09-10, report type Extended report, then download it",
+      "hawk": "Get-HawkUserMessageTrace -UserPrincipalName hayden.mathis@contoso.example (cannot serve 2026-09-10 to 2026-09-10: it ignores dates and returns only the messages the account sent in roughly the last 7 days; useful only when the range falls inside that)",
+      "invictus": "Get-MessageTraceLog -UserIds hayden.mathis@contoso.example -StartDate 2026-09-10 -EndDate 2026-09-11"
+    },
+    {
+      "tenant_key": "f8ff8c86-40d4-4634-b6fa-5e29a28c1d80",
+      "user": "hayden.mathis@contoso.example",
+      "source": "entra_audit",
+      "title": "Entra audit log",
+      "from": "2026-08-03",
+      "to": "2026-09-10",
+      "reasons": [
+        "before",
+        "after"
+      ],
+      "console": "Entra admin center > Monitoring & health > Audit logs: Date 2026-08-03 to 2026-09-10, filter Initiated by (actor) = hayden.mathis@contoso.example, Download > JSON; repeat with the Target filter = hayden.mathis@contoso.example",
+      "hawk": "Get-HawkTenantEntraIDAuditLog (whole tenant; ignores dates and always returns the last 30 days up to now, so it serves 2026-08-03 to 2026-09-10 only inside that)",
+      "invictus": "Get-GraphEntraAuditLogs -UserIds hayden.mathis@contoso.example -startDate 2026-08-03 -endDate 2026-09-11 (rows where the account is only the target are not returned; -All adds them but ignores the dates for target matches, so filter those by date after collecting)"
+    },
+    {
+      "tenant_key": "f8ff8c86-40d4-4634-b6fa-5e29a28c1d80",
+      "user": "hayden.mathis@contoso.example",
+      "source": "mailbox_audit",
+      "title": "Mailbox audit log (legacy)",
+      "from": "2026-09-10",
+      "to": "2026-09-10",
+      "reasons": [
+        "after"
+      ],
+      "console": "Exchange admin center has no export for the legacy mailbox audit log; use Exchange Online PowerShell: Search-MailboxAuditLog -Identity hayden.mathis@contoso.example -LogonTypes Delegate,Admin,Owner -StartDate 2026-09-10 -EndDate 2026-09-11 -ShowDetails -ResultSize 250000",
+      "hawk": null,
+      "invictus": "Get-MailboxAuditLogLegacy -UserIds hayden.mathis@contoso.example -StartDate 2026-09-10 -EndDate 2026-09-11"
     },
     {
       "tenant_key": "f8ff8c86-40d4-4634-b6fa-5e29a28c1d80",

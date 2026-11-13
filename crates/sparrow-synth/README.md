@@ -289,6 +289,7 @@ Look-alikes:
 | `conference_network` | Three attendees mistype a password once or twice from a shared venue address on a residential ISP network (not the mobile carrier). |
 | `replay_other_country` | The victim's interactive MFA sign-in from home, then the same session 20 minutes later from a residential attacker-pool address of another country (non-hosting, the user's own browser agent). |
 | `delegate_finance_delete` | The attacker, as the compromised user and a delegate of `target`'s mailbox, soft-deletes the genuine invoice thread from the mailbox-access address seconds after a look-alike copy arrives. |
+| `token_replay_after_revoke` | After the victim's sessions are revoked, six refreshes in 35 minutes fail 50173 from the attacker's hosting address, which the victim never used. |
 | `mia_burst_residential` | The mailbox-read burst of `mia_burst` from a residential attacker-pool address in a country the victim was never in. |
 | `send_residential` | A payment-fraud message sent from a residential attacker-pool address in a new country. |
 | `spray_replay` | A compromised router (attacker-pool address, the victim's city on another ISP) sprays six users, then replays the victim's session 25 minutes after their MFA sign-in from home. |
@@ -310,6 +311,7 @@ Look-alikes:
 | `permission_system_discovery` | Exchange's own FullAccess grant on the discovery mailbox for Discovery Management. |
 | `mia_sync` | Outlook desktop synchronising twelve folders over ten minutes from the office. |
 | `assistant_cleanup` | A delegate moves a vendor newsletter out of `target`'s mailbox to Deleted Items from the office address. |
+| `post_reset_refresh_noise` | The user's own device after a password reset: a home sign-in the day before, then six 50173 refresh failures from the same residential network. |
 | `mia_heavy_desktop` | A busy Outlook desktop user: twelve Bind records of one to three items each over ten minutes from the office. |
 | `send_known_ip` | The user sends mail from the office via Outlook desktop. |
 | `send_new_office_egress` | The office's shared egress was renumbered: the user's first send from the new office address (no earlier day has seen it; not hosting, not a spray source). |
@@ -561,7 +563,7 @@ gate, so a collector that structurally cannot supply the evidence never fails th
 ## `sparrow synth coverage` and `rules/coverage.yaml`
 
 `rules/coverage.yaml` (committed, embedded at compile time) is the single source of the
-rule ↔ storyline map for the spec §8.5 seed-rule pack (35 rules). Per rule it holds `id`,
+rule ↔ storyline map for the spec §8.5 seed-rule pack (36 rules). Per rule it holds `id`,
 `title`, `category`, `severity`, the Hawk investigate condition it covers (`hawk`), the intended
 `logic` Phase 6 must implement, the `tables` it reads (the first is where a hit lands), the
 `requires` capability ids and `requires_evidence` evidence ids that make it `not_applicable`,

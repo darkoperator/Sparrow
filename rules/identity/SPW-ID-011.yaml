@@ -1,0 +1,584 @@
+# SPW-ID-011 — Logic source: coverage.yaml. A refresh-token failure (signins error_code 50173, "the
+# user must provide fresh authentication": the grant was revoked or the password reset) from a network
+# the user never signed in from successfully, or from a hosting address, when the user has at least 5
+# such failures inside 24 hours. After a response team revokes the sessions of a compromised account,
+# an attacker holding stolen refresh tokens keeps replaying them; every replay fails with 50173 and
+# nothing else reports it, because 50173 is deliberately NOT in credential_failure_codes (the user's
+# own devices produce it after every reset, so it is not a spray). `sql:` because the network test
+# looks at the user's whole history of successes and joins ip_intel.
+# Network: the ASN from ip_intel when it has one, else the address itself (the key of SPW-MAIL-005).
+# History: ALL of the user's successful sign-ins in the case (error_code 0 or NULL), before or after
+# the failure, compared by that key: the user's own device, failing after a reset from the usual
+# residential ASN, is never a new network, however many times it fails. Hosting (ip_intel.is_hosting)
+# counts without the history test: no one's own device refreshes from a data centre, and a user who
+# once signed in from a VPS is not excused by it.
+# Burst: a row is a hit when it lies inside some 24-hour window that starts at one of the user's
+# qualifying rows and holds at least 5 of them; every qualifying row of such a burst is a hit.
+# Findings group per actor only; context carries the row's UTC day, the user's hit count, distinct
+# ASNs and first and last hit time.
+# Missed on purpose: fewer than 5 replays in 24 hours (a slow replay or a thief who retries only
+# once), a replay from an ASN the user has signed in from (a thief inside the user's own ISP or VPN),
+# and replays that arrive as a different error (50126 and the like are a credential failure, which
+# SPW-ID-005 and SPW-ID-006 see).
+id: SPW-ID-011
+title: Refresh-token replay after revocation
+version: 1
+status: experimental
+severity: high
+confidence: medium
+mitre: [T1550.001]
+tags: [bec, sign-in, token-replay]
+stage: persistence
+requires: []
+requires_evidence: []
+needs_geoip: true
+sql: |
+  WITH ok AS (
+    SELECT DISTINCT lower(trim(s.user_upn)) AS upn, coalesce(CAST(i.asn AS VARCHAR), s.ip) AS net
+    FROM signins s LEFT JOIN ip_intel i ON i.ip = s.ip
+    WHERE (s.error_code IS NULL OR s.error_code = 0) AND coalesce(trim(s.ip), '') <> ''
+      AND coalesce(trim(s.user_upn), '') <> ''
+  ),
+  cand AS (
+    SELECT s.record_key, s.event_time, s.user_upn, s.ip, i.asn, i.asn_org,
+           coalesce(i.is_hosting, false) AS hosting,
+           coalesce(CAST(i.asn AS VARCHAR), s.ip) AS net
+    FROM signins s LEFT JOIN ip_intel i ON i.ip = s.ip
+    WHERE s.error_code = 50173 AND s.event_time IS NOT NULL
+      AND coalesce(trim(s.user_upn), '') <> '' AND coalesce(trim(s.ip), '') <> ''
+  ),
+  newnet AS (
+    SELECT c.* FROM cand c
+    WHERE c.hosting
+       OR NOT EXISTS (SELECT 1 FROM ok o WHERE o.upn = lower(trim(c.user_upn)) AND o.net = c.net)
+  ),
+  -- A burst starts at a qualifying row and holds at least 5 qualifying rows within 24 hours of it.
+  starts AS (
+    SELECT a.user_upn, a.event_time AS t0
+    FROM newnet a JOIN newnet b
+      ON lower(trim(b.user_upn)) = lower(trim(a.user_upn))
+     AND epoch_ms(b.event_time) >= epoch_ms(a.event_time)
+     AND epoch_ms(b.event_time) <= epoch_ms(a.event_time) + 86400000
+    GROUP BY a.record_key, a.user_upn, a.event_time
+    HAVING count(*) >= 5
+  ),
+  hits AS (
+    SELECT c.* FROM newnet c
+    WHERE EXISTS (SELECT 1 FROM starts t
+                  WHERE lower(trim(t.user_upn)) = lower(trim(c.user_upn))
+                    AND epoch_ms(c.event_time) >= epoch_ms(t.t0)
+                    AND epoch_ms(c.event_time) <= epoch_ms(t.t0) + 86400000)
+  )
+  SELECT h.record_key, 'signins' AS source_table, h.event_time, lower(trim(h.user_upn)) AS actor_upn,
+         h.ip AS ip,
+         json_object(
+           'day', strftime(epoch_ms(epoch_ms(h.event_time)), '%Y-%m-%d'),
+           'count', count(*) OVER w,
+           'distinct_asns', count(DISTINCT h.asn) OVER w,
+           'asn', h.asn, 'asn_org', h.asn_org, 'hosting', h.hosting,
+           'first_time', strftime(epoch_ms(epoch_ms(min(h.event_time) OVER w)), '%Y-%m-%dT%H:%M:%SZ'),
+           'last_time', strftime(epoch_ms(epoch_ms(max(h.event_time) OVER w)), '%Y-%m-%dT%H:%M:%SZ')) AS context
+  FROM hits h
+  WINDOW w AS (PARTITION BY lower(trim(h.user_upn)))
+group_by: [actor_upn]
+analyst_guidance: |
+  Error 50173 means a refresh token no longer works: the sessions were revoked or the password was
+  reset. The user's own devices fail with it once after a reset and then sign in again. Five or more
+  from an address the user never signed in from, or from a hosting provider, in one day is someone
+  still holding the old tokens and retrying them. Compare the addresses with the user's usual
+  networks, check that the sessions were really revoked and the password reset, then look for any
+  success from the same address (SPW-ID-002, SPW-ID-004) and for tokens minted before the revocation
+  (consents, app credentials: SPW-APP-001, SPW-APP-002) that a revocation of sessions does not cancel.
+false_positives:
+  - A user's own phone or laptop failing repeatedly after a password reset while on a new network (a hotel, a new carrier) the case has no successful sign-in from yet.
+  - A user behind a commercial VPN or cloud desktop whose hosting address refreshes tokens that the reset invalidated.
+  - A shared egress address (a gateway) that breaks the refresh tokens of one user's many apps at once.
+references:
+  - https://learn.microsoft.com/en-us/entra/identity/monitoring-health/reference-sign-ins-error-codes
+  - https://attack.mitre.org/techniques/T1550/001/
+author: Sparrow
+tests:
+  - name: six 50173 refreshes from a hosting ASN the user never used
+    records:
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 14061
+        asn_org: Example Hosting
+        is_hosting: true
+      - table: ip_intel
+        ip: 198.51.100.5
+        asn: 7922
+        asn_org: Example Residential ISP
+        is_hosting: false
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.5
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.5
+        error_code: null
+        event_time: "2026-03-02T09:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:05:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:10:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:15:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:20:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:25:00Z"
+    expect_hits: 6
+  - name: six 50173 refreshes from a new residential ASN with no history there
+    records:
+      - table: ip_intel
+        ip: 192.0.2.77
+        asn: 64511
+        asn_org: Example Other ISP
+        is_hosting: false
+      - table: ip_intel
+        ip: 198.51.100.5
+        asn: 7922
+        asn_org: Example Residential ISP
+        is_hosting: false
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.5
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.5
+        error_code: null
+        event_time: "2026-03-02T09:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 192.0.2.77
+        error_code: 50173
+        event_time: "2026-03-10T10:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 192.0.2.77
+        error_code: 50173
+        event_time: "2026-03-10T10:05:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 192.0.2.77
+        error_code: 50173
+        event_time: "2026-03-10T10:10:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 192.0.2.77
+        error_code: 50173
+        event_time: "2026-03-10T10:15:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 192.0.2.77
+        error_code: 50173
+        event_time: "2026-03-10T10:20:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 192.0.2.77
+        error_code: 50173
+        event_time: "2026-03-10T10:25:00Z"
+    expect_hits: 6
+  - name: five from a new network plus one more from the user's usual network is five hits
+    records:
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 14061
+        asn_org: Example Hosting
+        is_hosting: true
+      - table: ip_intel
+        ip: 198.51.100.5
+        asn: 7922
+        asn_org: Example Residential ISP
+        is_hosting: false
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.5
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.5
+        error_code: null
+        event_time: "2026-03-02T09:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:05:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:10:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:15:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:20:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.5
+        error_code: 50173
+        event_time: "2026-03-10T10:30:00Z"
+    expect_hits: 5
+  - name: own device refresh fails after a reset from the usual residential ASN
+    records:
+      - table: ip_intel
+        ip: 198.51.100.5
+        asn: 7922
+        asn_org: Example Residential ISP
+        is_hosting: false
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.5
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.5
+        error_code: null
+        event_time: "2026-03-02T09:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.5
+        error_code: 50173
+        event_time: "2026-03-10T10:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.5
+        error_code: 50173
+        event_time: "2026-03-10T10:05:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.5
+        error_code: 50173
+        event_time: "2026-03-10T10:10:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.5
+        error_code: 50173
+        event_time: "2026-03-10T10:15:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.5
+        error_code: 50173
+        event_time: "2026-03-10T10:20:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.5
+        error_code: 50173
+        event_time: "2026-03-10T10:25:00Z"
+    expect_hits: 0
+  - name: the usual ASN counts even from another address in it
+    records:
+      - table: ip_intel
+        ip: 198.51.100.5
+        asn: 7922
+        asn_org: Example Residential ISP
+        is_hosting: false
+      - table: ip_intel
+        ip: 198.51.100.6
+        asn: 7922
+        is_hosting: false
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.5
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.5
+        error_code: null
+        event_time: "2026-03-02T09:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.6
+        error_code: 50173
+        event_time: "2026-03-10T10:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.6
+        error_code: 50173
+        event_time: "2026-03-10T10:05:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.6
+        error_code: 50173
+        event_time: "2026-03-10T10:10:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.6
+        error_code: 50173
+        event_time: "2026-03-10T10:15:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.6
+        error_code: 50173
+        event_time: "2026-03-10T10:20:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.6
+        error_code: 50173
+        event_time: "2026-03-10T10:25:00Z"
+    expect_hits: 0
+  - name: four 50173 from a new ASN is under the threshold
+    records:
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 14061
+        asn_org: Example Hosting
+        is_hosting: true
+      - table: ip_intel
+        ip: 198.51.100.5
+        asn: 7922
+        asn_org: Example Residential ISP
+        is_hosting: false
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.5
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.5
+        error_code: null
+        event_time: "2026-03-02T09:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:05:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:10:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:15:00Z"
+    expect_hits: 0
+  - name: six 50173 spread over more than 24 hours is not a burst
+    records:
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 14061
+        asn_org: Example Hosting
+        is_hosting: true
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T00:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T12:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-11T00:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-11T12:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-12T00:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-12T12:00:00Z"
+    expect_hits: 0
+  - name: 50126 failures are not token replay
+    records:
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 14061
+        asn_org: Example Hosting
+        is_hosting: true
+      - table: ip_intel
+        ip: 198.51.100.5
+        asn: 7922
+        asn_org: Example Residential ISP
+        is_hosting: false
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.5
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.5
+        error_code: null
+        event_time: "2026-03-02T09:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-03-10T10:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-03-10T10:05:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-03-10T10:10:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-03-10T10:15:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-03-10T10:20:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-03-10T10:25:00Z"
+    expect_hits: 0
+  - name: a hosting address the user also succeeded from is still hosting
+    records:
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 14061
+        asn_org: Example Hosting
+        is_hosting: true
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:05:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:10:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:15:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:20:00Z"
+    expect_hits: 5
+  - name: five from a new network by one user and one by another are five hits
+    records:
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 14061
+        asn_org: Example Hosting
+        is_hosting: true
+      - table: ip_intel
+        ip: 198.51.100.5
+        asn: 7922
+        asn_org: Example Residential ISP
+        is_hosting: false
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.5
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 198.51.100.5
+        error_code: null
+        event_time: "2026-03-02T09:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:05:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:10:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:15:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:20:00Z"
+      - table: signins
+        user_upn: other@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T11:00:00Z"
+    expect_hits: 5

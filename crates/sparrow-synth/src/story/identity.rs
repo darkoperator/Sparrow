@@ -2,6 +2,7 @@
 //! (risk, confirmed compromise, a new MFA method, a federated domain, a new mobile device), and
 //! their look-alikes.
 
+use super::spray::failed_signin;
 use super::{
     Ctx, Evidence, Modified, dir_audit, first_admin, push_audit, push_audit_and_ual, push_risk,
     push_signin, push_ual, risk_text, signin, unknown_device, user_target, well_known,
@@ -43,6 +44,8 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
         StoryKind::RuleEditAfterNewNetwork => rule_edit_after_new_network(w, ctx),
         StoryKind::OtherDeviceRuleEdit => other_device_rule_edit(w, ctx),
         StoryKind::AdminRoleChanges => admin_role_changes(w, ctx)?,
+        StoryKind::TokenReplayAfterRevoke => token_replay_after_revoke(w, ctx),
+        StoryKind::PostResetRefreshNoise => post_reset_refresh_noise(w, ctx),
         _ => return Ok(false),
     }
     Ok(true)
@@ -985,4 +988,70 @@ fn admin_role_changes(w: &mut World, ctx: &mut Ctx) -> Result<()> {
         });
     }
     Ok(())
+}
+
+/// One refresh that no longer works (50173, "the user must provide fresh authentication"): the
+/// session was revoked or the password reset. An interactive-report row (the portal and Hawk deliver only those) with no session.
+fn refresh_failure(
+    w: &World,
+    ctx: &mut Ctx,
+    user: &User,
+    time: DateTime<Utc>,
+    ip: IpAddr,
+    location: &Location,
+) -> crate::events::SignIn {
+    let mut r = failed_signin(w, ctx, user, time, ip, location, 50173, None);
+    r.failure_reason = "The user must provide fresh authentication.".to_string();
+    r
+}
+
+/// After the victim's sessions are revoked, the attacker replays the stolen refresh tokens from a
+/// hosting address the victim never used: six refreshes in 35 minutes, each failing 50173. Fixed
+/// attacker address (no shared-pool draw).
+fn token_replay_after_revoke(w: &mut World, ctx: &mut Ctx) {
+    let a: User = ctx.a.clone();
+    let att = w.attacker.clone();
+    for k in 0..6i64 {
+        let r = refresh_failure(
+            w,
+            ctx,
+            &a,
+            ctx.t + Duration::minutes(7 * k),
+            att.replay_ip,
+            &att.replay_location,
+        );
+        push_signin(w, ctx, &a, r, false);
+    }
+}
+
+/// The user's own device after a password reset: the day before, a sign-in succeeds from home;
+/// then six refreshes in 35 minutes fail 50173 from the same residential network until the user
+/// signs in again.
+fn post_reset_refresh_noise(w: &mut World, ctx: &mut Ctx) {
+    let a: User = ctx.a.clone();
+    let session = ctx.rng.uuid();
+    let ok = signin(
+        w,
+        &mut ctx.rng,
+        &a,
+        ctx.t - Duration::days(1),
+        a.home_ip,
+        &a.home,
+        SignInType::Interactive,
+        well_known("OfficeHome"),
+        well_known("Office 365 Exchange Online"),
+        session,
+    );
+    push_signin(w, ctx, &a, ok, true);
+    for k in 0..6i64 {
+        let r = refresh_failure(
+            w,
+            ctx,
+            &a,
+            ctx.t + Duration::minutes(7 * k),
+            a.home_ip,
+            &a.home,
+        );
+        push_signin(w, ctx, &a, r, false);
+    }
 }

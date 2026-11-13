@@ -96,6 +96,7 @@ Several correlation rules rely on facts the profile step computes once per case:
 | [SPW-ID-006](#spw-id-006) | Password spray against the tenant | low | high | — | ≥ 5 sign-in users |
 | [SPW-ID-007](#spw-id-007) | Persistence within 60 minutes of the first sign-in from a new same-country network | high | medium | suspicious_sign_in, persistence | GeoIP |
 | [SPW-ID-010](#spw-id-010) | Inbox rule created within 60 minutes of a risky or hosting-ASN sign-in | high | medium | suspicious_sign_in, persistence | GeoIP |
+| [SPW-ID-011](#spw-id-011) | Refresh-token replay after revocation | high | medium | persistence | GeoIP |
 | [SPW-HAWK-008](#spw-hawk-008) | Risky or confirmed-compromised user | high | medium | — | capability `identity_protection` |
 | [SPW-HAWK-009](#spw-hawk-009) | Entra ID Protection risk detection | high | medium | suspicious_sign_in | capability `identity_protection` |
 | [SPW-HAWK-012](#spw-hawk-012) | Risky Entra sign-in | high | medium | suspicious_sign_in | capability `identity_protection`, evidence `signins` |
@@ -117,7 +118,7 @@ Several correlation rules rely on facts the profile step computes once per case:
 | [SPW-HAWK-011](#spw-hawk-011) | Mailbox forwarding configured | medium | medium | persistence | |
 | [SPW-HAWK-015](#spw-hawk-015) | Automatic reply enabled | low | low | — | |
 
-35 rules. Tags you can filter on with `--tag` include `bec`, `correlation`, `inbox-rule`,
+36 rules. Tags you can filter on with `--tag` include `bec`, `correlation`, `inbox-rule`,
 `forwarding`, `oauth-consent`, `identity-protection`, `password-spray` and `sign-in`.
 
 ---
@@ -527,6 +528,31 @@ sign-in IP with the rule's IP, and check what mail the rule touched.
 **False positives.** A VPN or cloud-desktop user creating a rule from the same hosting ASN. A rule
 created soon after a SaaS connector's sign-in that the case has not established as a service.
 Risk detections Entra later dismisses.
+
+### SPW-ID-011
+
+**Refresh-token replay after revocation**: high / medium · stage `persistence` · MITRE T1550.001 ·
+needs GeoIP
+
+**Detects.** Sign-ins failing with error `50173` (the refresh token no longer works: the sessions
+were revoked or the password reset) from a network the user never signed in from successfully, or
+from a hosting address (`ip_intel.is_hosting`), when the user has **5 or more** such rows within 24
+hours. The network is the ASN from `ip_intel`, else the address; the history is every successful
+sign-in (`error_code` 0 or NULL) of the user in the case, at any time. Every qualifying row of such a
+burst is a hit. `50173` is deliberately not a credential failure, so no spray rule sees it.
+Finding context: UTC day, count, distinct ASNs, first and last time.
+
+**Residual risk.** Fewer than 5 replays in 24 hours, and a replay from an ASN the user has signed in
+from, are not reported.
+
+**Reads** `signins` · **Finding per** actor.
+
+**Triage.** Compare the addresses with the user's usual networks, confirm the sessions were revoked
+and the password reset, and look for tokens a session revocation does not cancel (consents, app
+credentials).
+
+**False positives.** The user's own devices failing after a reset on a network the case has no
+successful sign-in from yet; a hosting-address VPN or cloud desktop; a shared gateway egress.
 
 ### SPW-HAWK-008
 
