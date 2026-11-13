@@ -674,3 +674,38 @@ fn export_caps_and_streams_the_whole_query() {
         .execute_batch("BEGIN TRANSACTION; ROLLBACK")
         .unwrap();
 }
+
+#[test]
+fn query_icu_error_has_cast_hint() {
+    let (_d, p) = case_file();
+    let e = query::run(
+        &p,
+        "SELECT date_trunc('day', event_time) FROM ual_events",
+        10,
+    )
+    .unwrap_err();
+    let m = e.to_string();
+    assert!(m.contains("CAST(event_time AS TIMESTAMP)"), "{m}");
+    assert!(m.contains("\nhint: "), "{m}");
+}
+
+#[test]
+fn query_timestamp_cast_works_without_icu() {
+    let (_d, p) = case_file();
+    let r = query::run(
+        &p,
+        "SELECT date_trunc('day', CAST(event_time AS TIMESTAMP)) d FROM ual_events",
+        10,
+    )
+    .unwrap();
+    assert_eq!(r.columns, ["d"]);
+}
+
+#[test]
+fn query_keyword_alias_has_as_hint() {
+    let (_d, p) = case_file();
+    let e = query::run(&p, "SELECT 1 first", 10).unwrap_err();
+    let m = e.to_string();
+    assert!(m.contains("AS first"), "{m}");
+    assert!(m.contains("\nhint: "), "{m}");
+}

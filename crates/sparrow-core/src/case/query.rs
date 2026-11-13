@@ -118,10 +118,16 @@ fn parse_select(sql: &str) -> Result<std::result::Result<Parsed, Refusal>> {
         .map_err(|e| Error::Invalid(format!("the query parser returned invalid JSON: {e}")))?;
     if v["error"] != Value::Bool(false) {
         return Ok(Err(Refusal {
-            message: format!(
-                "query accepts one SELECT statement only: {}",
-                v["error_message"].as_str().unwrap_or("not a SELECT")
-            ),
+            message: {
+                let m = format!(
+                    "query accepts one SELECT statement only: {}",
+                    v["error_message"].as_str().unwrap_or("not a SELECT")
+                );
+                match hint_for(&m) {
+                    Some(h) => format!("{m}\nhint: {h}"),
+                    None => m,
+                }
+            },
             position: v["position"].as_str().and_then(|p| p.parse().ok()),
         }));
     }
@@ -214,6 +220,39 @@ pub fn run(case_path: &Path, sql: &str, limit: usize) -> Result<QueryResult> {
 
 /// `parsed` (from [`the_select`]) on `conn`: at most `limit` rows after skipping `offset`.
 fn run_select(
+    conn: &Connection,
+    parsed: &Parsed,
+    limit: usize,
+    offset: usize,
+) -> Result<QueryResult> {
+    run_select_inner(conn, parsed, limit, offset).map_err(|e| match e {
+        Error::Db(d) => match hint_for(&d.to_string()) {
+            Some(h) => Error::Invalid(format!("database error: {d}\nhint: {h}")),
+            None => Error::Db(d),
+        },
+        other => other,
+    })
+}
+
+/// A short workaround for a known opaque DuckDB error, from its text.
+fn hint_for(error_text: &str) -> Option<String> {
+    if error_text.contains("extension 'icu'") {
+        return Some(
+            "time-zone functions need ICU, which is not loaded: cast first, e.g. date_trunc('day', CAST(event_time AS TIMESTAMP)) (values are UTC)"
+                .into(),
+        );
+    }
+    let rest = error_text.split("syntax error at or near \"").nth(1)?;
+    let word = &rest[..rest.find('"')?];
+    if word.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "\"{word}\" is a keyword: alias it with AS, e.g. min(x) AS {word}"
+    ))
+}
+
+fn run_select_inner(
     conn: &Connection,
     parsed: &Parsed,
     limit: usize,
@@ -386,13 +425,11 @@ fn prepare_error(sql: &str, text: &str) -> CheckError {
         CheckKind::Other
     };
     let at = location.and_then(|(line, excerpt, col)| locate(sql, line, excerpt, col));
-    check_error(
-        sql,
-        kind,
-        body.trim_end().to_string(),
-        suggestions(body),
-        at,
-    )
+    let mut message = body.trim_end().to_string();
+    if let Some(h) = hint_for(&message) {
+        message = format!("{message}\nhint: {h}");
+    }
+    check_error(sql, kind, message, suggestions(body), at)
 }
 
 /// DuckDB's error text split into the message and its trailing location block (`\n\nLINE n: <excerpt>\n<spaces>^`):
