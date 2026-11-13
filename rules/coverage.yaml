@@ -441,10 +441,14 @@ rules:
     severity: high
     hawk: null
     logic: >-
-      message_trace sender domain d (not a tenant domain; first label at least 6 characters) that
-      looks like a tenant domain (arm tenant) or like a domain first seen at least 14 days before
-      d (arm correspondent): equal skeletons (rn->m, vv->w, 0->o, 1->l, cl->d) or levenshtein 1.
-      One hit per trace row, actor_upn is the recipient; context names look_alike_of and arm.
+      message_trace sender registrable domain r (last two labels of the sender host; not a tenant
+      registrable domain; first label at least 6 characters) that looks like a tenant domain (arm
+      tenant) or like a registrable domain first seen at least 14 days before r (arm
+      correspondent): equal skeletons (rn->m, vv->w, 0->o, 1->l, cl->d), or the same TLD and first
+      labels at levenshtein 1 (blocked by TLD, length and a half-label prefix or suffix key). Two
+      hosts of one registrable domain are never a pair. No stage (inbound mail, like
+      SPW-HAWK-014). One hit per trace row, actor_upn is the recipient; context names
+      look_alike_of and arm.
     tables: [message_trace]
     requires: []
     requires_evidence: []
@@ -785,7 +789,8 @@ rules:
       ip_intel, else the address) never appears in the user's successful sign-ins (error_code 0 or
       NULL) at any time in the case, or whose address is a hosting ASN (ip_intel.is_hosting). A hit
       only when the user has at least 5 such rows within 24 hours; every qualifying row of such a
-      burst is a hit. context: UTC day, count, distinct ASNs, first and last time.
+      burst is a hit. context: UTC day, count, distinct networks (ASN, else the IP) per user per UTC
+      day, first and last time.
     tables: [signins]
     requires: []
     requires_evidence: []

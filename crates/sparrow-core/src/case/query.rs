@@ -229,6 +229,11 @@ fn run_select(
 }
 
 /// `e` with the [`hint_for`] workaround appended when it is a DuckDB error that has one; anything else unchanged.
+///
+/// The error kind depends on whether a hint matched: a hinted `Error::Db` comes back as
+/// `Error::Invalid` (its text is the database error plus the hint, so a caller that maps kinds
+/// to exit codes sees an invalid query rather than a database failure); an unhinted one stays
+/// `Error::Db`.
 fn with_hint(e: Error) -> Error {
     match e {
         Error::Db(d) => match hint_for(&d.to_string()) {
@@ -266,7 +271,7 @@ fn hint_for(error_text: &str) -> Option<String> {
         return None;
     }
     Some(format!(
-        "\"{word}\" is a keyword: alias it with AS, e.g. min(x) AS {word}"
+        "\"{word}\" is a keyword: quote it (\"{word}\") or alias with AS"
     ))
 }
 

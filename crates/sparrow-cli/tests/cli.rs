@@ -1708,6 +1708,43 @@ fn ioc_add_records_agent_and_on_behalf_of() {
     );
 }
 
+/// `ioc add --json` prints the review state the case stored for the new indicator (read back after the
+/// insert), the same value `ioc list` shows.
+#[test]
+fn ioc_add_json_prints_the_stored_review_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = fresh_case(dir.path());
+    let added = json_out(
+        sparrow()
+            .args([
+                "--json",
+                "ioc",
+                "add",
+                "--type",
+                "ip",
+                "--value",
+                "203.0.113.9",
+                "--verdict",
+                "malicious",
+                "--agent",
+                "claude",
+                "--case",
+            ])
+            .arg(&case),
+        0,
+    );
+    let list = json_out(
+        sparrow()
+            .args(["--json", "ioc", "list", "--case"])
+            .arg(&case),
+        0,
+    );
+    let stored = &list["indicators"][0];
+    assert_eq!(stored["indicator_id"], added["indicator_id"]);
+    assert_eq!(added["review_state"], stored["review_state"]);
+    assert_eq!(added["review_state"], "pending_review");
+}
+
 #[test]
 fn second_writer_process_is_refused_and_chain_stays_linear() {
     let dir = tempfile::tempdir().unwrap();

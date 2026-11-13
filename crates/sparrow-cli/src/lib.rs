@@ -2513,10 +2513,16 @@ fn cmd_ioc(command: IocCommand, json: bool) -> Result<ExitCode> {
             if json {
                 let audit =
                     sparrow_core::case::audit::log(c.conn(), Some(("indicator", &id)))?.pop();
+                // The review state as stored, not assumed: the core decides it (an agent's decision is
+                // pending review, an analyst's own is accepted when made).
+                let review_state = list_indicators(c.conn(), tenant.as_deref(), false)?
+                    .into_iter()
+                    .find(|i| i.indicator_id == id)
+                    .and_then(|i| i.review_state);
                 print_json(&serde_json::json!({
                     "indicator_id": id, "type": ty, "value": value.trim(), "verdict": verdict,
                     "tenant_key": tenant, "added_by": actor.as_str(), "on_behalf_of": actor.on_behalf_of(),
-                    "review_state": "pending_review", "audit": audit,
+                    "review_state": review_state, "audit": audit,
                 }))?;
             } else {
                 outln!(

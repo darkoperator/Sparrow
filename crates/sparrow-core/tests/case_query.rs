@@ -706,7 +706,10 @@ fn query_keyword_alias_has_as_hint() {
     let (_d, p) = case_file();
     let e = query::run(&p, "SELECT 1 first", 10).unwrap_err();
     let m = e.to_string();
-    assert!(m.contains("AS first"), "{m}");
+    assert!(
+        m.contains("\"first\" is a keyword: quote it (\"first\") or alias with AS"),
+        "{m}"
+    );
     assert!(m.contains("\nhint: "), "{m}");
 }
 
@@ -715,7 +718,7 @@ fn query_non_keyword_syntax_errors_get_no_alias_hint() {
     let (_d, p) = case_file();
     for sql in ["SELECT * FORM ual_events", "SELECT 1 )"] {
         let m = query::run(&p, sql, 10).unwrap_err().to_string();
-        assert!(!m.contains("alias it with AS"), "{sql}: {m}");
+        assert!(!m.contains("is a keyword"), "{sql}: {m}");
     }
 }
 

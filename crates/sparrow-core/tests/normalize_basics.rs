@@ -66,7 +66,7 @@ fn upn_normalization() {
 #[test]
 fn normalize_ip_chain_takes_first_address() {
     assert_eq!(
-        normalize_ip("203.0.113.5, 52.168.116.49,198.51.100.7:51622").as_deref(),
+        normalize_ip("203.0.113.5, 192.0.2.7,198.51.100.7:51622").as_deref(),
         Some("203.0.113.5")
     );
     assert_eq!(
@@ -77,6 +77,15 @@ fn normalize_ip_chain_takes_first_address() {
         normalize_ip("[2001:db8::1]:443, 198.51.100.7").as_deref(),
         Some("2001:db8::1")
     );
+    assert_eq!(
+        normalize_ip("::ffff:203.0.113.5, 198.51.100.7").as_deref(),
+        Some("203.0.113.5")
+    );
+    assert_eq!(
+        normalize_ip(", 203.0.113.5").as_deref(),
+        Some("203.0.113.5")
+    );
+    assert_eq!(normalize_ip("203.0.113.5,").as_deref(), Some("203.0.113.5"));
     assert_eq!(normalize_ip("foo, bar").as_deref(), Some("foo, bar"));
     assert_eq!(normalize_ip("203.0.113.5").as_deref(), Some("203.0.113.5"));
 }

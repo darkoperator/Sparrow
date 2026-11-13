@@ -27,6 +27,7 @@ use crate::tree::TreeOutcome;
 use crate::world::World;
 use crate::{Error, Result};
 use serde_json::{Map, Value};
+use sparrow_core::enrich::ip::is_private;
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 
@@ -142,6 +143,8 @@ pub struct IpFacts {
     pub asn: Option<u32>,
     pub hosting: bool,
     pub microsoft: bool,
+    /// `ip_intel.is_private`, from the same function the enrichment uses.
+    pub private: bool,
 }
 
 /// One (application, hosting ASN) pair's known successes: the users, the UTC days and the count.
@@ -415,6 +418,7 @@ impl Facts {
         for ip in addresses {
             let mut f = IpFacts {
                 microsoft: ms.iter().any(|c| in_cidr(ip, c)),
+                private: is_private(ip),
                 ..IpFacts::default()
             };
             if let Some(l) = located.get(&ip) {
@@ -652,9 +656,10 @@ impl Facts {
         }
     }
 
-    /// SPW-ID-012. UAL records with a session id and a user whose address has a known ASN and is not
-    /// a Microsoft address, grouped by exact (user, session id, UTC day): a day with at least the
-    /// rule's number of hosting ASNs, or of ASNs, triggers on its first record (earliest time, ties by key).
+    /// SPW-ID-012. UAL records with a session id and a user whose address has a known ASN and is
+    /// neither a Microsoft nor a private address, grouped by exact (user, session id, UTC day): a
+    /// day with at least the rule's number of hosting ASNs, or of ASNs, triggers on its first
+    /// record (earliest time, ties by key).
     fn session_networks(&self) -> Result<BTreeSet<Record>> {
         const R: &str = "SPW-ID-012";
         let min_hosting = rule_number(R, "WHERE hosting_asns >= ")? as usize;
@@ -669,7 +674,7 @@ impl Facts {
             };
             let f = self.ip(ip);
             let Some(asn) = f.asn else { continue };
-            if f.microsoft {
+            if f.microsoft || f.private {
                 continue;
             }
             let g = groups
@@ -1203,6 +1208,41 @@ mod tests {
 
     fn keys(k: &[&str]) -> BTreeSet<String> {
         k.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// SPW-ID-012 skips private addresses (`ip_intel.is_private`) as it skips Microsoft ones: one
+    /// session on four ASNs counts only when the addresses are public.
+    #[test]
+    fn session_networks_skips_private_addresses() {
+        let four = |addrs: [&str; 4]| {
+            let ual = addrs
+                .iter()
+                .enumerate()
+                .map(|(i, a)| UalRow {
+                    session: Some("sess-1".into()),
+                    ..ual_at(&format!("u{i}"), "ann@contoso.example", a, 1_000 + i as i64)
+                })
+                .collect();
+            let mut f = facts(Vec::new(), ual, &[]);
+            for (i, a) in addrs.iter().enumerate() {
+                f.ips.insert(
+                    ip(a),
+                    IpFacts {
+                        asn: Some(64_500 + i as u32),
+                        private: is_private(ip(a)),
+                        ..IpFacts::default()
+                    },
+                );
+            }
+            f.session_networks().unwrap()
+        };
+        let public = four(["203.0.113.1", "203.0.113.2", "198.51.100.3", "192.0.2.4"]);
+        assert_eq!(
+            public,
+            [("ual_events".to_string(), "u0".to_string())].into()
+        );
+        let one_private = four(["203.0.113.1", "203.0.113.2", "198.51.100.3", "10.0.0.4"]);
+        assert!(one_private.is_empty(), "{one_private:?}");
     }
 
     #[test]

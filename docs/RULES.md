@@ -87,7 +87,7 @@ Several correlation rules rely on facts the profile step computes once per case:
 | [SPW-MAIL-006](#spw-mail-006) | Mail sent from an IP address the user never used before | medium | low | sending | evidence `mail_send` |
 | [SPW-MAIL-007](#spw-mail-007) | Mailbox or SharePoint search for finance keywords | medium | medium | mail_access | evidence `search_queries` |
 | [SPW-MAIL-008](#spw-mail-008) | Mail deleted by a delegate from an unusual network or with a finance subject | high | medium | mail_access | evidence `ual` |
-| [SPW-MAIL-009](#spw-mail-009) | Inbound mail from a look-alike domain | high | medium | suspicious_sign_in | |
+| [SPW-MAIL-009](#spw-mail-009) | Inbound mail from a look-alike domain | high | medium | — | |
 | [SPW-HAWK-014](#spw-hawk-014) | Message header sender mismatch or failed / anonymous authentication | medium | medium | — | |
 | [SPW-ID-001](#spw-id-001) | MFA method registered after a risky sign-in | high | medium | suspicious_sign_in, mfa_change | GeoIP |
 | [SPW-ID-002](#spw-id-002) | Sign-in from a hosting-provider ASN | medium | medium | suspicious_sign_in | GeoIP |
@@ -263,21 +263,29 @@ have processed; an admin or owner of a finance shared mailbox cleaning it.
 
 ### SPW-MAIL-009
 
-**Inbound mail from a look-alike domain**: high / medium · stage `suspicious_sign_in` · MITRE
-T1566.001, T1583.001
+**Inbound mail from a look-alike domain**: high / medium · no stage · MITRE T1566.001, T1583.001
 
-**Detects.** A message trace row whose sender domain `d` is not one of the tenant's domains, has a
-first label of at least 6 characters, and looks like another domain: equal after folding `rn` to
-`m`, `vv` to `w`, `0` to `o`, `1` to `l` and `cl` to `d`, or one edit apart (Levenshtein 1). Arm
-`tenant`: it looks like one of the tenant's own domains. Arm `correspondent`: it looks like a
-domain first seen in the trace at least 14 days before `d` was first seen, so the look-alike is the
-later one. If both hold, the tenant arm is reported. One finding hit per trace row; the actor is the
-recipient and the finding context holds `look_alike_of`, `arm`, the sender and the subject.
+**Detects.** A message trace row whose sender's registrable domain `r` (the last two labels of the
+sender host, so `em1234.vendorco.example` is `vendorco.example`) is not one of the tenant's
+registrable domains, has a first label of at least 6 characters, and looks like another registrable
+domain: equal after folding `rn` to `m`, `vv` to `w`, `0` to `o`, `1` to `l` and `cl` to `d`, or the
+same TLD with first labels one edit apart (Levenshtein 1). Two hosts with the same registrable
+domain are never compared. Arm `tenant`: it looks like one of the tenant's own domains. Arm
+`correspondent`: it looks like a domain first seen in the trace at least 14 days before `r` was
+first seen, so the look-alike is the later one. If both hold, the tenant arm is reported. One
+finding hit per trace row; the actor is the recipient and the finding context holds
+`look_alike_of` (a registrable domain), `arm`, the sender and the subject. Pairs are found with
+equi-joins (skeleton; TLD, length and half of the label), never a cross join of all domains.
+Inbound mail is not a compromise stage of the recipient, so the rule has no stage (like
+SPW-HAWK-014).
 
-**Residual risk.** Other homoglyphs and look-alikes two or more edits apart are not reported, nor
-are domains with a first label under 6 characters. Two correspondents that look alike are ordered
-only by first seen: the later one, at least 14 days on, is the one reported, whichever is genuine.
-The `initial_access` stage is not in the rule schema; `suspicious_sign_in` is the closest.
+**Residual risk.** Other homoglyphs, look-alikes two or more edits apart and a one-edit change in
+the TLD itself are not reported, nor are domains with a first label under 6 characters. Multi-part
+public suffixes (`co.uk`, `com.au`) are not known: the registrable domain of `mail.vendor.co.uk` is
+taken as `co.uk`, so such senders compare on the suffix (every `*.co.uk` sender is one domain, and a
+look-alike under one is missed). Likewise a tenant domain such as `contoso.onmicrosoft.com` makes
+every `*.onmicrosoft.com` sender count as the tenant's own. Two correspondents that look alike are ordered only by first seen:
+the later one, at least 14 days on, is the one reported, whichever is genuine.
 
 **Reads** `message_trace` · **Finding per** actor.
 
@@ -570,7 +578,8 @@ from a hosting address (`ip_intel.is_hosting`), when the user has **5 or more** 
 hours. The network is the ASN from `ip_intel`, else the address; the history is every successful
 sign-in (`error_code` 0 or NULL) of the user in the case, at any time. Every qualifying row of such a
 burst is a hit. `50173` is deliberately not a credential failure, so no spray rule sees it.
-Finding context: UTC day, count, distinct ASNs, first and last time.
+Finding context: UTC day, count, distinct networks (ASN, else the IP) per user per UTC day, first
+and last time.
 
 **Residual risk.** Fewer than 5 replays in 24 hours, and a replay from an ASN the user has signed in
 from, are not reported.
@@ -1040,12 +1049,12 @@ binary, and can be extended or replaced with `--rules DIR`.
 
 | List | Used by | Contents |
 | --- | --- | --- |
-| `finance_keywords` | SPW-MAIL-003, SPW-MAIL-007 | invoice, payment, wire, bank, remittance, iban, swift, ach, payroll, w-2, w2, tax, refund, purchase order, overdue |
+| `finance_keywords` | SPW-MAIL-003, SPW-MAIL-007, SPW-MAIL-008 | invoice, payment, wire, bank, remittance, iban, swift, ach, payroll, w-2, w2, tax, refund, purchase order, overdue |
 | `hiding_folders` | SPW-MAIL-003 | RSS Feeds, RSS Subscriptions, Conversation History, Archive, Junk Email, Deleted Items |
 | `suspicious_user_agents` | SPW-ID-004 | axios, python-requests, python-urllib, go-http-client, curl, okhttp, BAV2ROPC |
 | `risky_scopes` | consent rules | Mail.Read, Mail.ReadWrite, Mail.Send, Files.Read.All, Files.ReadWrite.All, offline_access, MailboxSettings.ReadWrite, full_access_as_user, EWS.AccessAsUser.All |
 | `credential_failure_codes` | spray sources, SPW-ID-005, SPW-ID-006 | 50126, 50053, 50034, 50056, 50064, 50055, 50057 (rejected credentials only; not CA blocks 53003, token-refresh 70043/50173 or MFA prompts) |
-| `hosting_asns` | every hosting-ASN test | 24 cloud / VPS / hosting ASNs (AWS, Google Cloud, Oracle, ...). Excludes Microsoft AS8075 and Cloudflare AS13335 |
+| `hosting_asns` | every hosting-ASN test | 30 cloud / VPS / hosting ASNs (AWS, Google Cloud, Oracle, ...). Excludes Microsoft AS8075 and Cloudflare AS13335 |
 | `microsoft_first_party_apps` | `cloud_services` (SPW-ID-002, -003, -010) | Microsoft first-party application ids, each taken from a public Microsoft Learn page |
 | `collection_hints` | `sparrow coverage` | How to request more evidence per source from each collector (not used by detection) |
 

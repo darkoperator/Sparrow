@@ -2,25 +2,40 @@
 # tenant's own or like a correspondent's, the way a BEC actor registers `tcontoso.example` or a
 # `vv` for a `w` so a payment thread continues from a "known" sender. `sql:` because it compares
 # domains with each other and with the tenant's own (`tenant_domains`).
-# The sender domain is d = lower(split_part(sender, '@', 2)). skeleton(x) folds the usual
-# confusables: rn -> m, vv -> w, 0 -> o, 1 -> l, cl -> d. Two domains look alike when their
-# skeletons are equal or they are one edit apart (levenshtein = 1).
-#   Arm A (tenant): d is not one of the tenant's domains and looks like one of them.
-#   Arm B (correspondent): d was first seen in message_trace at least 14 days AFTER a different
-#   domain k was first seen and looks like k (the look-alike came second, so it is the imitation).
-# Both arms need the first label of d to be at least 6 characters: short names (abcd.com /
-# abce.com) are one edit apart by chance. A tenant domain is never a look-alike (not for arm B
-# either: the tenant's own second domain is not an imitation of a vendor). When d matches both
+# Domains are compared as registrable domains: r = the last two labels of the sender host
+# (lower(split_part(sender, '@', 2)), trailing dot dropped), so `em1234.vendorco.example` and
+# `em1235.vendorco.example` are both `vendorco.example`, and two hosts with the same registrable
+# domain are never a pair. The tenant's domains are reduced the same way. skeleton(x) folds the
+# usual confusables: rn -> m, vv -> w, 0 -> o, 1 -> l, cl -> d. Two registrable domains look alike
+# when their skeletons are equal, or when they share the TLD and their first labels are one edit
+# apart (levenshtein = 1).
+#   Arm A (tenant): r is not one of the tenant's registrable domains and looks like one of them.
+#   Arm B (correspondent): r was first seen in message_trace at least 14 days AFTER a different
+#   registrable domain k was first seen and looks like k (the look-alike came second, so it is the
+#   imitation).
+# Both arms need the first label of r to be at least 6 characters: short names (abcd.example /
+# abce.example) are one edit apart by chance. A tenant domain is never a look-alike (not for arm B
+# either: the tenant's own second domain is not an imitation of a vendor). When r matches both
 # arms, arm A wins. The order is the only signal of which of two look-alike correspondents is the
 # imitation: the later one, at least 14 days on, is the one reported; two domains first seen
 # within 14 days of each other are not reported (the same pair reversed past 14 days would be).
 # When several domains qualify as the original, the one seen first (then the alphabetically
-# first) is named in `context.look_alike_of`; `context.arm` is `tenant` or
+# first) is named in `context.look_alike_of` (a registrable domain); `context.arm` is `tenant` or
 # `correspondent`. One hit per trace row (one message and recipient); actor_upn is the recipient.
 # Severity is a single level (the tenant arm is the stronger signal; the arm is in the context).
 # A tenant with no known domain has no arm A. Missed on purpose: look-alikes two or more edits
-# apart that no skeleton folds (other homoglyphs), and any domain whose first label is under 6
-# characters.
+# apart that no skeleton folds (other homoglyphs), a one-edit change in the TLD itself, and any
+# domain whose first label is under 6 characters. Multi-part public suffixes (`co.uk`) make the
+# registrable domain the suffix itself, so such senders compare on the suffix; likewise a tenant
+# domain `contoso.onmicrosoft.com` makes every `*.onmicrosoft.com` sender the tenant's own.
+# Cost: the pairs are never a cross join. Skeleton pairs are an equi-join on the skeleton; one-edit
+# pairs are joined only within one TLD and one length class m (the shorter label's length; each
+# label sits in the classes of its own length and of its length - 1), on the first floor(m/2)
+# characters OR (a second equi-join, unioned) the last floor(m/2) characters. That key is exact
+# for one edit: a single substitution, insertion or deletion at position i leaves the first
+# floor(m/2) characters intact when i >= floor(m/2), and otherwise the last floor(m/2) (since
+# i < floor(m/2) <= m - floor(m/2)). Only labels of 5 or more characters are paired this way (a
+# candidate has 6, so its one-edit original has at least 5).
 id: SPW-MAIL-009
 title: Inbound mail from a look-alike domain
 version: 1
@@ -29,9 +44,7 @@ severity: high
 confidence: medium
 mitre: [T1566.001, T1583.001]
 tags: [bec, phishing, lookalike-domain]
-# The schema has no `initial_access` stage; inbound phishing is the closest to an unexpected
-# first contact in the sign-in roll-up (suspicious_sign_in), the earliest stage the schema has.
-stage: suspicious_sign_in
+# No `stage:` (like SPW-HAWK-014): inbound mail is not a compromise stage of the recipient.
 requires: []
 requires_evidence: []
 sql: |
@@ -40,37 +53,71 @@ sql: |
     FROM tenant_domains d
     WHERE d.tenant_key = $tenant
   ),
-  dom_sk AS (
-    SELECT d, replace(replace(replace(replace(replace(d, 'rn', 'm'), 'vv', 'w'), '0', 'o'), '1', 'l'), 'cl', 'd') AS sk
+  dom_r AS (
+    SELECT DISTINCT coalesce(nullif(regexp_extract(d, '[^.]+\.[^.]+$'), ''), d) AS r
     FROM dom
+    WHERE d <> ''
+  ),
+  mt AS (
+    SELECT m.*, coalesce(nullif(regexp_extract(m.d, '[^.]+\.[^.]+$'), ''), m.d) AS r
+    FROM (
+      SELECT t.*, lower(rtrim(trim(split_part(t.sender, '@', 2)), '.')) AS d
+      FROM message_trace t
+      WHERE coalesce(trim(t.sender), '') <> ''
+    ) m
   ),
   seen AS (
-    SELECT lower(trim(split_part(m.sender, '@', 2))) AS d, min(m.received) AS first_seen
-    FROM message_trace m
-    WHERE m.received IS NOT NULL AND coalesce(trim(m.sender), '') <> ''
-    GROUP BY 1
+    SELECT r, min(received) AS first_seen
+    FROM mt
+    WHERE received IS NOT NULL AND r <> ''
+    GROUP BY r
   ),
-  seen_sk AS (
-    SELECT s.d, s.first_seen,
-           replace(replace(replace(replace(replace(s.d, 'rn', 'm'), 'vv', 'w'), '0', 'o'), '1', 'l'), 'cl', 'd') AS sk
-    FROM seen s
-    WHERE s.d <> ''
+  names AS (
+    SELECT r FROM seen
+    UNION
+    SELECT r FROM dom_r
+  ),
+  nm AS (
+    SELECT r, split_part(r, '.', 1) AS lbl, substr(r, length(split_part(r, '.', 1)) + 1) AS tld,
+           replace(replace(replace(replace(replace(r, 'rn', 'm'), 'vv', 'w'), '0', 'o'), '1', 'l'), 'cl', 'd') AS sk
+    FROM names
+  ),
+  blk AS (
+    SELECT r, lbl, tld, m, left(lbl, m // 2) AS pre, right(lbl, m // 2) AS suf
+    FROM (
+      SELECT r, lbl, tld, length(lbl) AS m FROM nm WHERE length(lbl) >= 5
+      UNION ALL
+      SELECT r, lbl, tld, length(lbl) - 1 FROM nm WHERE length(lbl) >= 6
+    )
+  ),
+  edit_pairs AS (
+    SELECT a.r AS a, b.r AS b, a.lbl AS al, b.lbl AS bl, a.m
+    FROM blk a JOIN blk b ON a.tld = b.tld AND a.m = b.m AND a.pre = b.pre
+    UNION
+    SELECT a.r, b.r, a.lbl, b.lbl, a.m
+    FROM blk a JOIN blk b ON a.tld = b.tld AND a.m = b.m AND a.suf = b.suf
+  ),
+  pairs AS (
+    SELECT a, b FROM edit_pairs
+    WHERE a <> b AND least(length(al), length(bl)) = m AND abs(length(al) - length(bl)) <= 1
+      AND levenshtein(al, bl) = 1
+    UNION
+    SELECT a.r, b.r FROM nm a JOIN nm b ON a.sk = b.sk AND a.r <> b.r
   ),
   cand AS (
-    SELECT s.* FROM seen_sk s
-    WHERE length(split_part(s.d, '.', 1)) >= 6 AND s.d NOT IN (SELECT d FROM dom)
+    SELECT s.r, s.first_seen FROM seen s
+    WHERE length(split_part(s.r, '.', 1)) >= 6 AND s.r NOT IN (SELECT r FROM dom_r)
   ),
   arm_a AS (
-    SELECT c.d, t.d AS original,
-           row_number() OVER (PARTITION BY c.d ORDER BY t.d) AS rn
-    FROM cand c JOIN dom_sk t ON c.sk = t.sk OR levenshtein(c.d, t.d) = 1
+    SELECT c.r AS d, t.r AS original,
+           row_number() OVER (PARTITION BY c.r ORDER BY t.r) AS rn
+    FROM cand c JOIN pairs p ON p.a = c.r JOIN dom_r t ON t.r = p.b
   ),
   arm_b AS (
-    SELECT c.d, k.d AS original,
-           row_number() OVER (PARTITION BY c.d ORDER BY k.first_seen, k.d) AS rn
-    FROM cand c JOIN seen_sk k
-      ON k.d <> c.d AND epoch_ms(k.first_seen) + 14 * 86400000 <= epoch_ms(c.first_seen)
-     AND (c.sk = k.sk OR levenshtein(c.d, k.d) = 1)
+    SELECT c.r AS d, k.r AS original,
+           row_number() OVER (PARTITION BY c.r ORDER BY k.first_seen, k.r) AS rn
+    FROM cand c JOIN pairs p ON p.a = c.r JOIN seen k ON k.r = p.b
+    WHERE epoch_ms(k.first_seen) + 14 * 86400000 <= epoch_ms(c.first_seen)
   ),
   lookalikes AS (
     SELECT d, original, 'tenant' AS arm FROM arm_a WHERE rn = 1
@@ -82,8 +129,8 @@ sql: |
          m.recipient AS actor_upn, m.from_ip AS ip,
          json_object('look_alike_of', l.original, 'arm', l.arm, 'sender', m.sender,
                      'subject', m.subject) AS context
-  FROM message_trace m
-  JOIN lookalikes l ON lower(trim(split_part(m.sender, '@', 2))) = l.d
+  FROM mt m
+  JOIN lookalikes l ON m.r = l.d
   WHERE coalesce(trim(m.recipient), '') <> ''
 group_by: [actor_upn]
 analyst_guidance: |
@@ -104,15 +151,15 @@ references:
   - https://learn.microsoft.com/en-us/defender-office-365/anti-phishing-policies-about
 author: Sparrow
 tests:
-  - name: tenant contoso-example.com, sender tcontoso-example.com (arm A)
+  - name: tenant contoso-example.example, sender tcontoso-example.example (arm A)
     records:
       - table: tenant_domains
         tenant_key: test
-        domain: contoso-example.com
+        domain: contoso-example.example
       - table: message_trace
         received: "2026-03-05T09:00:00Z"
-        sender: pay@tcontoso-example.com
-        recipient: alice@contoso-example.com
+        sender: pay@tcontoso-example.example
+        recipient: alice@contoso-example.example
     expect_hits: 1
   - name: vendor seen 30 days earlier, then a vv for w look-alike (arm B)
     records:
@@ -159,15 +206,15 @@ tests:
         sender: pay@m00n1ight-media.example
         recipient: bob@moonlight-media.example
     expect_hits: 2
-  - name: short domains one edit apart (abcd.com / abce.com)
+  - name: short domains one edit apart (abcd.example / abce.example)
     records:
       - table: message_trace
         received: "2026-02-03T09:00:00Z"
-        sender: a@abcd.com
+        sender: a@abcd.example
         recipient: alice@contoso.example
       - table: message_trace
         received: "2026-03-05T09:00:00Z"
-        sender: a@abce.com
+        sender: a@abce.example
         recipient: alice@contoso.example
     expect_hits: 0
   - name: short first label, one edit from the tenant domain
@@ -184,28 +231,28 @@ tests:
     records:
       - table: tenant_domains
         tenant_key: test
-        domain: contoso-example.com
+        domain: contoso-example.example
       - table: message_trace
         received: "2026-03-05T09:00:00Z"
-        sender: bob@contoso-example.com
-        recipient: alice@contoso-example.com
+        sender: bob@contoso-example.example
+        recipient: alice@contoso-example.example
     expect_hits: 0
   - name: another tenant domain one edit from the primary is not a look-alike
     records:
       - table: tenant_domains
         tenant_key: test
-        domain: contoso-example.com
+        domain: contoso-example.example
       - table: tenant_domains
         tenant_key: test
-        domain: contoso-example.org
+        domain: contoso-example.test
       - table: message_trace
         received: "2026-02-03T09:00:00Z"
-        sender: bob@contoso-example.com
-        recipient: alice@contoso-example.com
+        sender: bob@contoso-example.example
+        recipient: alice@contoso-example.example
       - table: message_trace
         received: "2026-03-05T09:00:00Z"
-        sender: bob@contoso-example.org
-        recipient: alice@contoso-example.com
+        sender: bob@contoso-example.test
+        recipient: alice@contoso-example.example
     expect_hits: 0
   - name: look-alike seen before the original, original less than 14 days later (arm B order)
     records:
@@ -253,4 +300,138 @@ tests:
         received: "2026-03-05T09:00:00Z"
         sender: billing@fabrikam-supplies.example
         recipient: alice@contoso.example
+    expect_hits: 0
+  - name: two hosts of one registrable domain 20 days apart (em1234 / em1235.vendorco.example)
+    records:
+      - table: message_trace
+        received: "2026-02-13T09:00:00Z"
+        sender: billing@em1234.vendorco.example
+        recipient: alice@contoso.example
+      - table: message_trace
+        received: "2026-03-05T09:00:00Z"
+        sender: billing@em1235.vendorco.example
+        recipient: alice@contoso.example
+    expect_hits: 0
+  - name: a subdomain of a look-alike is judged on its registrable domain (arm A)
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: widgetcorp.example
+      - table: message_trace
+        received: "2026-03-05T09:00:00Z"
+        sender: pay@mail.widgetcorq.example
+        recipient: alice@widgetcorp.example
+    expect_hits: 1
+  - name: a subdomain of the tenant's registrable domain is not a look-alike
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: widgetcorp.example
+      - table: message_trace
+        received: "2026-03-05T09:00:00Z"
+        sender: pay@em1234.widgetcorp.example
+        recipient: alice@widgetcorp.example
+    expect_hits: 0
+  - name: one-edit pairing is exact (substitution at 0, 4, 5, 9 of widgetcorp; key halves 5)
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: widgetcorp.example
+      - table: message_trace
+        received: "2026-03-05T09:00:00Z"
+        sender: pay@xidgetcorp.example
+        recipient: a1@widgetcorp.example
+      - table: message_trace
+        received: "2026-03-05T09:00:00Z"
+        sender: pay@widgxtcorp.example
+        recipient: a2@widgetcorp.example
+      - table: message_trace
+        received: "2026-03-05T09:00:00Z"
+        sender: pay@widgexcorp.example
+        recipient: a3@widgetcorp.example
+      - table: message_trace
+        received: "2026-03-05T09:00:00Z"
+        sender: pay@widgetcorx.example
+        recipient: a4@widgetcorp.example
+    expect_hits: 4
+  - name: one-edit pairing is exact (insertion at 0, 4, 5, 10 of widgetcorp)
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: widgetcorp.example
+      - table: message_trace
+        received: "2026-03-05T09:00:00Z"
+        sender: pay@xwidgetcorp.example
+        recipient: a1@widgetcorp.example
+      - table: message_trace
+        received: "2026-03-05T09:00:00Z"
+        sender: pay@widgxetcorp.example
+        recipient: a2@widgetcorp.example
+      - table: message_trace
+        received: "2026-03-05T09:00:00Z"
+        sender: pay@widgextcorp.example
+        recipient: a3@widgetcorp.example
+      - table: message_trace
+        received: "2026-03-05T09:00:00Z"
+        sender: pay@widgetcorpx.example
+        recipient: a4@widgetcorp.example
+    expect_hits: 4
+  - name: one-edit pairing is exact (deletion at 0, 3, 5, 9 of widgetcorp; key halves 4)
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: widgetcorp.example
+      - table: message_trace
+        received: "2026-03-05T09:00:00Z"
+        sender: pay@idgetcorp.example
+        recipient: a1@widgetcorp.example
+      - table: message_trace
+        received: "2026-03-05T09:00:00Z"
+        sender: pay@widetcorp.example
+        recipient: a2@widgetcorp.example
+      - table: message_trace
+        received: "2026-03-05T09:00:00Z"
+        sender: pay@widgecorp.example
+        recipient: a3@widgetcorp.example
+      - table: message_trace
+        received: "2026-03-05T09:00:00Z"
+        sender: pay@widgetcor.example
+        recipient: a4@widgetcorp.example
+    expect_hits: 4
+  - name: one-edit pairing is exact for an odd-length correspondent (arm B; substitution at 0 and 3, insertion at 5, deletion at 2 and 8)
+    records:
+      - table: message_trace
+        received: "2026-02-03T09:00:00Z"
+        sender: billing@northwind.example
+        recipient: alice@contoso.example
+      - table: message_trace
+        received: "2026-03-05T09:00:00Z"
+        sender: billing@xorthwind.example
+        recipient: a1@contoso.example
+      - table: message_trace
+        received: "2026-03-05T09:00:00Z"
+        sender: billing@northxwind.example
+        recipient: a2@contoso.example
+      - table: message_trace
+        received: "2026-03-05T09:00:00Z"
+        sender: billing@nothwind.example
+        recipient: a3@contoso.example
+      - table: message_trace
+        received: "2026-03-05T09:00:00Z"
+        sender: billing@northwin.example
+        recipient: a4@contoso.example
+      - table: message_trace
+        received: "2026-03-05T09:00:00Z"
+        sender: billing@norxhwind.example
+        recipient: a5@contoso.example
+    expect_hits: 5
+  - name: one edit in the TLD itself is not paired (one-edit pairs need the same TLD)
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: widgetcorp.example
+      - table: message_trace
+        received: "2026-03-05T09:00:00Z"
+        sender: pay@widgetcorp.exampl
+        recipient: alice@widgetcorp.example
     expect_hits: 0
