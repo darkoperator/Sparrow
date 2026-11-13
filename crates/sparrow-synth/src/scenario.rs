@@ -258,6 +258,7 @@ story_kind! {
         VpsPhishedAccounts => "vps_phished_accounts",
         DelegateFinanceDelete => "delegate_finance_delete",
         TokenReplayAfterRevoke => "token_replay_after_revoke",
+        SessionHoppingProxy => "session_hopping_proxy",
     }
     lookalike {
         RiskDismissed => "risk_dismissed",
@@ -314,6 +315,7 @@ story_kind! {
         AdminRoleChanges => "admin_role_changes",
         AssistantCleanup => "assistant_cleanup",
         PostResetRefreshNoise => "post_reset_refresh_noise",
+        SessionRoamingUser => "session_roaming_user",
     }
 }
 

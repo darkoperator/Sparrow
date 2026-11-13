@@ -779,6 +779,30 @@ rules:
     # post_reset_refresh_noise: the user's own device fails 50173 after a reset from their usual
     # residential network, which has successful sign-ins on other days.
     lookalikes: [post_reset_refresh_noise]
+  - id: SPW-ID-012
+    title: One sign-in session used from many networks
+    category: identity
+    severity: high
+    hawk: null
+    logic: >-
+      UAL records with a session_id whose client IP has a known ASN in ip_intel (Microsoft service
+      and private addresses excluded), grouped by exact (user, session_id, UTC day): a hit when the
+      day has at least 2 distinct hosting ASNs or at least 4 distinct ASNs. One hit per qualifying
+      day, keyed to that day's first record. context: session_id, sorted ASN list, distinct IP count,
+      day, hosting ASN count.
+    tables: [ual_events]
+    requires: []
+    requires_evidence: []
+    needs_geoip: true
+    collectors: [hawk4, invictus, portal]
+    positives: [session_hopping_proxy]
+    # session_roaming_user: one session on home, a hotel network and a hotspot, three non-hosting
+    # ASNs, under the four-ASN threshold.
+    lookalikes: [session_roaming_user]
+    computed:
+      - kind: inbox_rule_finance
+        condition: session_networks
+        reason: "the storyline reuses the AiTM session from the attacker's replay address while the proxy address (another hosting ASN) used it the same day: a true hit of this rule's logic where the collector delivers UAL session ids and ASN data for both addresses"
   - id: SPW-APP-001
     title: Consent to an app with Mail.*, Files.* or offline_access
     category: apps

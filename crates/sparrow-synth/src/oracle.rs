@@ -42,14 +42,17 @@ pub enum Condition {
     NewNetworkSend,
     /// SPW-ID-010: an inbox rule within the hour after a risky or hosting sign-in of its actor.
     RiskyRuleCorrelation,
+    /// SPW-ID-012: one session used in one UTC day from enough hosting ASNs, or enough ASNs.
+    SessionNetworks,
 }
 
 impl Condition {
-    pub const ALL: [Condition; 4] = [
+    pub const ALL: [Condition; 5] = [
         Condition::ImpossibleTravel,
         Condition::AitmIndicators,
         Condition::NewNetworkSend,
         Condition::RiskyRuleCorrelation,
+        Condition::SessionNetworks,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -58,6 +61,7 @@ impl Condition {
             Condition::AitmIndicators => "aitm_indicators",
             Condition::NewNetworkSend => "new_network_send",
             Condition::RiskyRuleCorrelation => "risky_rule_correlation",
+            Condition::SessionNetworks => "session_networks",
         }
     }
 
@@ -72,6 +76,7 @@ impl Condition {
             Condition::AitmIndicators => "SPW-ID-004",
             Condition::NewNetworkSend => "SPW-MAIL-006",
             Condition::RiskyRuleCorrelation => "SPW-ID-010",
+            Condition::SessionNetworks => "SPW-ID-012",
         }
     }
 }
@@ -643,7 +648,48 @@ impl Facts {
             Condition::AitmIndicators => self.aitm_indicators(),
             Condition::NewNetworkSend => self.new_network_send(),
             Condition::RiskyRuleCorrelation => self.risky_rule_correlation(),
+            Condition::SessionNetworks => self.session_networks(),
         }
+    }
+
+    /// SPW-ID-012. UAL records with a session id and a user whose address has a known ASN and is not
+    /// a Microsoft address, grouped by exact (user, session id, UTC day): a day with at least the
+    /// rule's number of hosting ASNs, or of ASNs, triggers on its first record (earliest time, ties by key).
+    fn session_networks(&self) -> Result<BTreeSet<Record>> {
+        const R: &str = "SPW-ID-012";
+        let min_hosting = rule_number(R, "WHERE hosting_asns >= ")? as usize;
+        let min_asns = rule_number(R, " OR asns >= ")? as usize;
+        type Day<'a> = (i64, &'a str, Vec<(u32, bool)>);
+        let mut groups: BTreeMap<(&str, &str, i64), Day> = BTreeMap::new();
+        for u in &self.ual {
+            let (Some(user), Some(session), Some(ip)) =
+                (u.upn.as_deref(), u.session.as_deref(), u.ip)
+            else {
+                continue;
+            };
+            let f = self.ip(ip);
+            let Some(asn) = f.asn else { continue };
+            if f.microsoft {
+                continue;
+            }
+            let g = groups
+                .entry((user, session, u.t.div_euclid(86_400_000)))
+                .or_insert((u.t, u.key.as_str(), Vec::new()));
+            if (u.t, u.key.as_str()) < (g.0, g.1) {
+                g.0 = u.t;
+                g.1 = u.key.as_str();
+            }
+            g.2.push((asn, f.hosting));
+        }
+        Ok(groups
+            .into_values()
+            .filter(|(_, _, nets)| {
+                let all: BTreeSet<u32> = nets.iter().map(|n| n.0).collect();
+                let hosting: BTreeSet<u32> = nets.iter().filter(|n| n.1).map(|n| n.0).collect();
+                hosting.len() >= min_hosting || all.len() >= min_asns
+            })
+            .map(|(_, key, _)| ("ual_events".to_string(), key.to_string()))
+            .collect())
     }
 
     /// SPW-ID-003. Events: successful sign-ins and UAL UserLoggedIn of a user, located, not a

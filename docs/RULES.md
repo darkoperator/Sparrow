@@ -97,6 +97,7 @@ Several correlation rules rely on facts the profile step computes once per case:
 | [SPW-ID-007](#spw-id-007) | Persistence within 60 minutes of the first sign-in from a new same-country network | high | medium | suspicious_sign_in, persistence | GeoIP |
 | [SPW-ID-010](#spw-id-010) | Inbox rule created within 60 minutes of a risky or hosting-ASN sign-in | high | medium | suspicious_sign_in, persistence | GeoIP |
 | [SPW-ID-011](#spw-id-011) | Refresh-token replay after revocation | high | medium | persistence | GeoIP |
+| [SPW-ID-012](#spw-id-012) | One sign-in session used from many networks | high | medium | suspicious_sign_in | GeoIP |
 | [SPW-HAWK-008](#spw-hawk-008) | Risky or confirmed-compromised user | high | medium | — | capability `identity_protection` |
 | [SPW-HAWK-009](#spw-hawk-009) | Entra ID Protection risk detection | high | medium | suspicious_sign_in | capability `identity_protection` |
 | [SPW-HAWK-012](#spw-hawk-012) | Risky Entra sign-in | high | medium | suspicious_sign_in | capability `identity_protection`, evidence `signins` |
@@ -118,7 +119,7 @@ Several correlation rules rely on facts the profile step computes once per case:
 | [SPW-HAWK-011](#spw-hawk-011) | Mailbox forwarding configured | medium | medium | persistence | |
 | [SPW-HAWK-015](#spw-hawk-015) | Automatic reply enabled | low | low | — | |
 
-36 rules. Tags you can filter on with `--tag` include `bec`, `correlation`, `inbox-rule`,
+37 rules. Tags you can filter on with `--tag` include `bec`, `correlation`, `inbox-rule`,
 `forwarding`, `oauth-consent`, `identity-protection`, `password-spray` and `sign-in`.
 
 ---
@@ -553,6 +554,31 @@ credentials).
 
 **False positives.** The user's own devices failing after a reset on a network the case has no
 successful sign-in from yet; a hosting-address VPN or cloud desktop; a shared gateway egress.
+
+### SPW-ID-012
+
+**One sign-in session used from many networks**: high / medium · stage `suspicious_sign_in` ·
+MITRE T1550.004 · needs GeoIP
+
+**Detects.** UAL records with a `session_id` whose client IP has a known ASN in `ip_intel`
+(Microsoft service and private addresses are excluded; addresses without an ASN are ignored),
+grouped by the exact (user, session id, UTC day). A day is a hit when the session was used from **2
+or more hosting ASNs**, or **4 or more ASNs** of any kind; a laptop roaming home, office and a
+hotspot (3) is not. One hit per qualifying day, keyed to that day's first record. Finding context:
+session id, sorted ASN list, distinct IP count, UTC day, hosting ASN count. The session id is
+matched exactly, never by prefix.
+
+**Residual risk.** One hosting ASN with fewer than four ASNs in all, a session whose hops fall on
+different days, and addresses the ASN database does not know are not reported. The `initial_access`
+stage is not in the rule schema; `suspicious_sign_in` is the closest.
+
+**Reads** `ual_events` · **Finding per** actor.
+
+**Triage.** Compare the addresses with the user's usual networks, find the sign-in that created the
+session, revoke the sessions and refresh tokens, and review what the session did from each address.
+
+**False positives.** A VPN rotating between two hosting providers; a cloud desktop or proxy whose
+egress moves between hosting ASNs; a phone moving between carriers and Wi-Fi reaching four ASNs.
 
 ### SPW-HAWK-008
 

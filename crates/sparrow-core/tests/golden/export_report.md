@@ -26,7 +26,7 @@
 | risk\_detections | 4 | 2026-08-04T12:50:10Z | 2026-08-21T19:12:00Z |
 | security\_alerts | 1 | 2026-08-04T10:00:00Z | 2026-08-04T10:00:00Z |
 | signins | 1307 | 2026-08-11T14:24:08Z | 2026-09-09T23:49:44Z |
-| ual\_events | 5904 | 2026-08-01T00:19:21Z | 2026-09-09T23:59:59Z |
+| ual\_events | 5911 | 2026-08-01T00:19:21Z | 2026-09-09T23:59:59Z |
 
 ## Executive summary
 
@@ -43,7 +43,7 @@ _Computed by Sparrow from every finding of the case, whatever its decision: fact
 | dfbdfe90-22c0-4154-b41b-ebdee4faea7e | vance.ingram@contoso.example | high | suspicious\_sign\_in, persistence | 2026-09-07T11:05:00Z | sign-ins 2026-08-11T14:38:02Z to 2026-09-09T16:29:32Z | 0 | 203.0.113.6 \(finding\_evidence\) |
 | dfbdfe90-22c0-4154-b41b-ebdee4faea7e | admin@contoso.example | high | persistence | 2026-08-20T15:00:00Z | sign-ins 2026-08-12T14:37:11Z to 2026-09-09T23:49:44Z | 0 | 203.0.113.2 \(finding\_evidence, acts\_without\_signin, hosting\) |
 | dfbdfe90-22c0-4154-b41b-ebdee4faea7e | xander.irwin@contoso.example | high | suspicious\_sign\_in | 2026-08-25T11:00:00Z | sign-ins 2026-08-11T16:11:54Z to 2026-09-09T12:44:47Z | 0 | 203.0.113.1 \(finding\_evidence, hosting, risky\_signin\) |
-| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | frances.rourke@contoso.example | high | suspicious\_sign\_in | 2026-08-27T10:00:00Z | sign-ins 2026-08-12T00:22:04Z to 2026-09-09T07:51:48Z | 0 | 203.0.113.1 \(finding\_evidence, hosting, risky\_signin\) |
+| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | frances.rourke@contoso.example | high | suspicious\_sign\_in | 2026-08-27T10:00:00Z | sign-ins 2026-08-12T00:22:04Z to 2026-09-09T07:51:48Z | 0 | 203.0.113.1 \(finding\_evidence, hosting, risky\_signin\)<br>2001:db8:12::a \(acts\_without\_signin\)<br>2001:db8:12::b \(acts\_without\_signin\) |
 | dfbdfe90-22c0-4154-b41b-ebdee4faea7e | gale.yates@contoso.example | medium | consent | 2026-08-09T14:00:00Z | sign-ins 2026-08-12T00:10:52Z to 2026-09-09T04:57:21Z | 0 | 192.0.2.9 \(finding\_evidence\) |
 | dfbdfe90-22c0-4154-b41b-ebdee4faea7e | ocean.vincent@contoso.example | medium | persistence | 2026-08-14T16:00:00Z | sign-ins 2026-08-12T00:26:51Z to 2026-09-09T05:46:15Z | 0 | 192.0.2.7 \(finding\_evidence\) |
 | dfbdfe90-22c0-4154-b41b-ebdee4faea7e | cameron.tucker@contoso.example | medium | sending | 2026-08-15T12:34:05Z | sign-ins 2026-08-11T14:24:08Z to 2026-09-09T14:01:26Z | 0 | 198.51.100.3 \(finding\_evidence\) |
@@ -81,7 +81,7 @@ _Computed by Sparrow from every finding of the case, whatever its decision: fact
   - agent note — not reviewed (agent:claude on behalf of analyst:example at 2026-10-02T12:00:12Z): Reviewed the sign-in by hand.
 - Facts:
   - Address 203.0.113.2 — this user signed in from it on 1 earlier day(s) within the capture (since 2026-08-11). It is in a hosting provider network (Vultr \(The Constant Company\)).
-  - Other findings on this account: 24 (SPW-MAIL-003 high, SPW-MAIL-004 high, SPW-HAWK-008 high, SPW-HAWK-009 high, SPW-FILE-003 high, +19 more).
+  - Other findings on this account: 25 (SPW-MAIL-003 high, SPW-MAIL-004 high, SPW-HAWK-008 high, SPW-HAWK-009 high, SPW-FILE-003 high, +20 more).
   - Target invoices@exfil-mail.test — external; 0 earlier message(s) with this user.
   - Target kai.ingram@contoso.example — internal; 6 earlier message(s) with this user.
 - Evidence (6 rows):
@@ -171,10 +171,10 @@ What to request:
 
 | Source | Rows | First (UTC) | Last (UTC) | Days | Sampled | Gaps |
 | --- | ---: | --- | --- | ---: | --- | --- |
-| Unified audit log | 450 | 2026-08-01T00:41:54Z | 2026-09-09T18:46:29Z | 38 | no | before 2026-07-26 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
+| Unified audit log | 454 | 2026-08-01T00:41:54Z | 2026-09-09T18:46:29Z | 38 | no | before 2026-07-26 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
 | Sign-ins \(interactive\) | 63 | 2026-08-12T00:37:15Z | 2026-09-09T07:03:15Z | 28 | no | before 2026-07-26 to 2026-08-11; after 2026-09-10 to 2026-09-10 |
 | Sign-ins \(non-interactive\) | 41 | 2026-08-12T02:25:33Z | 2026-09-09T01:43:22Z | 18 | no | before 2026-07-26 to 2026-08-11; after 2026-09-10 to 2026-09-10 |
-| MailItemsAccessed | 117 | 2026-08-01T00:43:15Z | 2026-09-09T18:46:29Z | 38 | no | before 2026-07-26 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
+| MailItemsAccessed | 121 | 2026-08-01T00:43:15Z | 2026-09-09T18:46:29Z | 38 | no | before 2026-07-26 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
 | Message trace | 263 | 2026-08-03T01:02:45Z | 2026-09-09T18:29:58Z | 33 | no | before 2026-07-26 to 2026-08-02; after 2026-09-10 to 2026-09-10 |
 | Entra audit log | 3 | 2026-08-12T20:07:00Z | 2026-09-08T15:12:00Z | 2 | no | before 2026-07-26 to 2026-08-11; after 2026-09-09 to 2026-09-10 |
 | Mailbox audit log \(legacy\) | 139 | 2026-08-03T03:20:27Z | 2026-09-09T09:51:41Z | 29 | no | before 2026-07-26 to 2026-08-02; after 2026-09-10 to 2026-09-10 |
@@ -343,10 +343,10 @@ What to request:
 
 | Source | Rows | First (UTC) | Last (UTC) | Days | Sampled | Gaps |
 | --- | ---: | --- | --- | ---: | --- | --- |
-| Unified audit log | 450 | 2026-08-01T00:42:39Z | 2026-09-09T15:30:48Z | 40 | no | before 2026-07-28 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
+| Unified audit log | 453 | 2026-08-01T00:42:39Z | 2026-09-09T15:30:48Z | 40 | no | before 2026-07-28 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
 | Sign-ins \(interactive\) | 68 | 2026-08-12T00:22:04Z | 2026-09-09T07:10:31Z | 29 | no | before 2026-07-28 to 2026-08-11; after 2026-09-10 to 2026-09-10 |
 | Sign-ins \(non-interactive\) | 44 | 2026-08-12T00:35:36Z | 2026-09-09T07:51:48Z | 19 | no | before 2026-07-28 to 2026-08-11; after 2026-09-10 to 2026-09-10 |
-| MailItemsAccessed | 107 | 2026-08-01T00:46:53Z | 2026-09-09T15:30:48Z | 40 | no | before 2026-07-28 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
+| MailItemsAccessed | 110 | 2026-08-01T00:46:53Z | 2026-09-09T15:30:48Z | 40 | no | before 2026-07-28 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
 | Message trace | 222 | 2026-08-01T06:54:20Z | 2026-09-09T15:16:32Z | 34 | no | before 2026-07-28 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
 | Entra audit log | 0 |  |  | 0 | no | absent 2026-07-28 to 2026-09-10 |
 | Mailbox audit log \(legacy\) | 141 | 2026-08-01T08:54:20Z | 2026-09-09T17:16:32Z | 33 | no | before 2026-07-28 to 2026-07-31; after 2026-09-10 to 2026-09-10 |

@@ -2,7 +2,7 @@
 //! (risk, confirmed compromise, a new MFA method, a federated domain, a new mobile device), and
 //! their look-alikes.
 
-use super::spray::failed_signin;
+use super::spray::{failed_signin, residential_location};
 use super::{
     Ctx, Evidence, Modified, dir_audit, first_admin, push_audit, push_audit_and_ual, push_risk,
     push_signin, push_ual, risk_text, signin, unknown_device, user_target, well_known,
@@ -46,6 +46,8 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
         StoryKind::AdminRoleChanges => admin_role_changes(w, ctx)?,
         StoryKind::TokenReplayAfterRevoke => token_replay_after_revoke(w, ctx),
         StoryKind::PostResetRefreshNoise => post_reset_refresh_noise(w, ctx),
+        StoryKind::SessionHoppingProxy => session_hopping_proxy(w, ctx),
+        StoryKind::SessionRoamingUser => session_roaming_user(w, ctx),
         _ => return Ok(false),
     }
     Ok(true)
@@ -1053,5 +1055,75 @@ fn post_reset_refresh_noise(w: &mut World, ctx: &mut Ctx) {
             &a.home,
         );
         push_signin(w, ctx, &a, r, false);
+    }
+}
+
+/// One mailbox sync of the user's own session (`MailItemsAccessed` Sync of one folder, the
+/// Outlook desktop client; audited by default) from `ip`.
+fn session_use(
+    w: &World,
+    ctx: &mut Ctx,
+    user: &User,
+    time: DateTime<Utc>,
+    ip: IpAddr,
+    session: uuid::Uuid,
+) -> crate::events::Ual {
+    ual::mail_items_accessed(
+        w,
+        &mut ctx.rng,
+        user,
+        time,
+        "Sync",
+        &[("\\Inbox".to_string(), Vec::new())],
+        ip,
+        "Client=MSExchangeRPC",
+        well_known("Microsoft Office"),
+        session,
+        false,
+    )
+}
+
+/// One stolen session replayed through two hosting providers in 40 minutes: the attacker's proxy
+/// address (hosting ASN 0) and replay address (hosting ASN 1), alternating, all under one session
+/// id. Fixed attacker addresses (no shared-pool draw).
+fn session_hopping_proxy(w: &mut World, ctx: &mut Ctx) {
+    let a: User = ctx.a.clone();
+    let att = w.attacker.clone();
+    let session = ctx.rng.uuid();
+    for (k, ip) in [att.proxy_ip, att.replay_ip, att.proxy_ip, att.replay_ip]
+        .into_iter()
+        .enumerate()
+    {
+        let u = session_use(
+            w,
+            ctx,
+            &a,
+            ctx.t + Duration::minutes(13 * k as i64),
+            ip,
+            session,
+        );
+        push_ual(w, ctx, u);
+    }
+}
+
+/// A laptop that roams: one session used from home, then a hotel network, then a phone hotspot
+/// (three residential or mobile ASNs, none hosting) in one day. Fixed documentation addresses.
+fn session_roaming_user(w: &mut World, ctx: &mut Ctx) {
+    let a: User = ctx.a.clone();
+    let session = ctx.rng.uuid();
+    let hotel: IpAddr = "2001:db8:12::a".parse().expect("documentation address");
+    let hotspot: IpAddr = "2001:db8:12::b".parse().expect("documentation address");
+    w.story.located.push((hotel, residential_location(0)));
+    w.story.located.push((hotspot, residential_location(1)));
+    for (k, ip) in [a.home_ip, hotel, hotspot].into_iter().enumerate() {
+        let u = session_use(
+            w,
+            ctx,
+            &a,
+            ctx.t + Duration::hours(2 * k as i64),
+            ip,
+            session,
+        );
+        push_ual(w, ctx, u);
     }
 }
