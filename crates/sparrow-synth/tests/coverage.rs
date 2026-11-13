@@ -4,7 +4,7 @@ use sparrow_synth::options::Collector;
 #[test]
 fn coverage_has_no_gaps() {
     let r = report(1).unwrap();
-    assert_eq!(r.rules.len(), 34);
+    assert_eq!(r.rules.len(), 39);
     assert!(r.ok, "{}", r.gaps.join("\n"));
 }
 

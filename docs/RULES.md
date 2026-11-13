@@ -86,6 +86,8 @@ Several correlation rules rely on facts the profile step computes once per case:
 | [SPW-MAIL-005](#spw-mail-005) | MailItemsAccessed bind burst | high | medium | mail_access | evidence `mail_items_accessed` |
 | [SPW-MAIL-006](#spw-mail-006) | Mail sent from an IP address the user never used before | medium | low | sending | evidence `mail_send` |
 | [SPW-MAIL-007](#spw-mail-007) | Mailbox or SharePoint search for finance keywords | medium | medium | mail_access | evidence `search_queries` |
+| [SPW-MAIL-008](#spw-mail-008) | Mail deleted by a delegate from an unusual network or with a finance subject | high | medium | mail_access | evidence `ual` |
+| [SPW-MAIL-009](#spw-mail-009) | Inbound mail from a look-alike domain | high | medium | — | |
 | [SPW-HAWK-014](#spw-hawk-014) | Message header sender mismatch or failed / anonymous authentication | medium | medium | — | |
 | [SPW-ID-001](#spw-id-001) | MFA method registered after a risky sign-in | high | medium | suspicious_sign_in, mfa_change | GeoIP |
 | [SPW-ID-002](#spw-id-002) | Sign-in from a hosting-provider ASN | medium | medium | suspicious_sign_in | GeoIP |
@@ -95,6 +97,9 @@ Several correlation rules rely on facts the profile step computes once per case:
 | [SPW-ID-006](#spw-id-006) | Password spray against the tenant | low | high | — | ≥ 5 sign-in users |
 | [SPW-ID-007](#spw-id-007) | Persistence within 60 minutes of the first sign-in from a new same-country network | high | medium | suspicious_sign_in, persistence | GeoIP |
 | [SPW-ID-010](#spw-id-010) | Inbox rule created within 60 minutes of a risky or hosting-ASN sign-in | high | medium | suspicious_sign_in, persistence | GeoIP |
+| [SPW-ID-011](#spw-id-011) | Refresh-token replay after revocation | high | medium | persistence | GeoIP |
+| [SPW-ID-012](#spw-id-012) | One sign-in session used from many networks | high | medium | suspicious_sign_in | GeoIP |
+| [SPW-ID-013](#spw-id-013) | Self-service password reset from a new country | medium | medium | persistence | GeoIP |
 | [SPW-HAWK-008](#spw-hawk-008) | Risky or confirmed-compromised user | high | medium | — | capability `identity_protection` |
 | [SPW-HAWK-009](#spw-hawk-009) | Entra ID Protection risk detection | high | medium | suspicious_sign_in | capability `identity_protection` |
 | [SPW-HAWK-012](#spw-hawk-012) | Risky Entra sign-in | high | medium | suspicious_sign_in | capability `identity_protection`, evidence `signins` |
@@ -116,7 +121,7 @@ Several correlation rules rely on facts the profile step computes once per case:
 | [SPW-HAWK-011](#spw-hawk-011) | Mailbox forwarding configured | medium | medium | persistence | |
 | [SPW-HAWK-015](#spw-hawk-015) | Automatic reply enabled | low | low | — | |
 
-34 rules. Tags you can filter on with `--tag` include `bec`, `correlation`, `inbox-rule`,
+39 rules. Tags you can filter on with `--tag` include `bec`, `correlation`, `inbox-rule`,
 `forwarding`, `oauth-consent`, `identity-protection`, `password-spray` and `sign-in`.
 
 ---
@@ -235,6 +240,62 @@ looking for a thread to hijack. Check who ran it, from where, and what followed 
 rule, a forward).
 
 **False positives.** A finance or payroll user searching for those terms as part of their job.
+
+### SPW-MAIL-008
+
+**Mail deleted by a delegate from an unusual network or with a finance subject**: high / medium ·
+stage `mail_access` · MITRE T1070.008, T1114.002 · needs evidence `ual`
+
+**Detects.** A UAL `SoftDelete`, `HardDelete` or `MoveToDeletedItems` made by a delegate or admin
+in another user's mailbox (the mailbox differs from the actor, or `LogonType` 1 or 2; system actors
+never count) from a hosting address (`ip_intel.is_hosting`) or on an item whose subject contains a
+word from [`finance_keywords`](#static-lists). One finding hit per delete record; the finding
+context `severity_reason` says which condition held.
+
+**Reads** `ual_events` · **Finding per** actor.
+
+**Triage.** Deleting the genuine invoice or wire thread from someone else's mailbox is how a BEC
+actor hides the original once a look-alike copy is in place. Check whose mailbox it was, who holds
+the delegate permission and the actor's sign-in for that session, then look in Recoverable Items.
+
+**False positives.** An assistant who manages an executive's mailbox and deletes an invoice they
+have processed; an admin or owner of a finance shared mailbox cleaning it.
+
+### SPW-MAIL-009
+
+**Inbound mail from a look-alike domain**: high / medium · no stage · MITRE T1566.001, T1583.001
+
+**Detects.** A message trace row whose sender's registrable domain `r` (the last two labels of the
+sender host, so `em1234.vendorco.example` is `vendorco.example`) is not one of the tenant's
+registrable domains, has a first label of at least 6 characters, and looks like another registrable
+domain: equal after folding `rn` to `m`, `vv` to `w`, `0` to `o`, `1` to `l` and `cl` to `d`, or the
+same TLD with first labels one edit apart (Levenshtein 1). Two hosts with the same registrable
+domain are never compared. Arm `tenant`: it looks like one of the tenant's own domains. Arm
+`correspondent`: it looks like a domain first seen in the trace at least 14 days before `r` was
+first seen, so the look-alike is the later one. If both hold, the tenant arm is reported. One
+finding hit per trace row; the actor is the recipient and the finding context holds
+`look_alike_of` (a registrable domain), `arm`, the sender and the subject. Pairs are found with
+equi-joins (skeleton; TLD, length and half of the label), never a cross join of all domains.
+Inbound mail is not a compromise stage of the recipient, so the rule has no stage (like
+SPW-HAWK-014).
+
+**Residual risk.** Other homoglyphs, look-alikes two or more edits apart and a one-edit change in
+the TLD itself are not reported, nor are domains with a first label under 6 characters. Multi-part
+public suffixes (`co.uk`, `com.au`) are not known: the registrable domain of `mail.vendor.co.uk` is
+taken as `co.uk`, so such senders compare on the suffix (every `*.co.uk` sender is one domain, and a
+look-alike under one is missed). Exception: `onmicrosoft.com` and `mail.onmicrosoft.com` are
+treated as shared suffixes, so `contoso.onmicrosoft.com` is its own registrable domain and a
+look-alike Microsoft 365 tenant (`c0ntoso.onmicrosoft.com`) is still reported. Two correspondents that look alike are ordered only by first seen:
+the later one, at least 14 days on, is the one reported, whichever is genuine.
+
+**Reads** `message_trace` · **Finding per** actor.
+
+**Triage.** Compare the domain with the original, find its registration date, and read the thread:
+a payment, a changed bank account or a new contact. Check whether the recipient replied, and block
+the domain.
+
+**False positives.** A sister company or subsidiary whose domain is one character off; a vendor
+that rebranded to a nearly identical domain; unrelated long names one edit apart.
 
 ### SPW-HAWK-014
 
@@ -506,6 +567,82 @@ sign-in IP with the rule's IP, and check what mail the rule touched.
 **False positives.** A VPN or cloud-desktop user creating a rule from the same hosting ASN. A rule
 created soon after a SaaS connector's sign-in that the case has not established as a service.
 Risk detections Entra later dismisses.
+
+### SPW-ID-011
+
+**Refresh-token replay after revocation**: high / medium · stage `persistence` · MITRE T1550.001 ·
+needs GeoIP
+
+**Detects.** Sign-ins failing with error `50173` (the refresh token no longer works: the sessions
+were revoked or the password reset) from a network the user never signed in from successfully, or
+from a hosting address (`ip_intel.is_hosting`), when the user has **5 or more** such rows within 24
+hours. The network is the ASN from `ip_intel`, else the address; the history is every successful
+sign-in (`error_code` 0 or NULL) of the user in the case, at any time. Every qualifying row of such a
+burst is a hit. `50173` is deliberately not a credential failure, so no spray rule sees it.
+Finding context: UTC day, count, distinct networks (ASN, else the IP) per user per UTC day, first
+and last time.
+
+**Residual risk.** Fewer than 5 replays in 24 hours, and a replay from an ASN the user has signed in
+from, are not reported.
+
+**Reads** `signins` · **Finding per** actor.
+
+**Triage.** Compare the addresses with the user's usual networks, confirm the sessions were revoked
+and the password reset, and look for tokens a session revocation does not cancel (consents, app
+credentials).
+
+**False positives.** The user's own devices failing after a reset on a network the case has no
+successful sign-in from yet; a hosting-address VPN or cloud desktop; a shared gateway egress.
+
+### SPW-ID-012
+
+**One sign-in session used from many networks**: high / medium · stage `suspicious_sign_in` ·
+MITRE T1550.004 · needs GeoIP
+
+**Detects.** UAL records with a `session_id` whose client IP has a known ASN in `ip_intel`
+(Microsoft service and private addresses are excluded; addresses without an ASN are ignored),
+grouped by the exact (user, session id, UTC day). A day is a hit when the session was used from **2
+or more hosting ASNs**, or **4 or more ASNs** of any kind; a laptop roaming home, office and a
+hotspot (3) is not. One hit per qualifying day, keyed to that day's first record. Finding context:
+session id, sorted ASN list, distinct IP count, UTC day, hosting ASN count. The session id is
+matched exactly, never by prefix.
+
+**Residual risk.** One hosting ASN with fewer than four ASNs in all, a session whose hops fall on
+different days, and addresses the ASN database does not know are not reported. The `initial_access`
+stage is not in the rule schema; `suspicious_sign_in` is the closest.
+
+**Reads** `ual_events` · **Finding per** actor.
+
+**Triage.** Compare the addresses with the user's usual networks, find the sign-in that created the
+session, revoke the sessions and refresh tokens, and review what the session did from each address.
+
+**False positives.** A VPN rotating between two hosting providers; a cloud desktop or proxy whose
+egress moves between hosting ASNs; a phone moving between carriers and Wi-Fi reaching four ASNs.
+
+### SPW-ID-013
+
+**Self-service password reset from a new country**: medium / medium · stage `persistence` ·
+MITRE T1098 · needs GeoIP
+
+**Detects.** A directory audit whose activity is `Reset password (self-service)`, `Self-service
+password reset flow activity progress` or `Change password (self-service)` (matched case-insensitively)
+and whose `initiated_by_ip` geolocates (`ip_intel.country_iso`) to a country in which the user has no
+successful sign-in (`error_code` 0 or NULL) **before the reset** (a sign-in after it never excuses it). The user is `initiated_by_upn`, else the first target's
+user principal name, compared case-insensitively with the sign-in's user. Microsoft and private
+addresses, addresses with no country, and users with no successful sign-in of known country before the reset are not
+judged. One hit per audit row. Finding context: country, city, activity, result.
+
+**Residual risk.** A reset from a country the user had signed in from once before (a trip, a VPN exit) and
+an attacker geolocated to the user's own country are not reported.
+
+**Reads** `directory_audits`, `signins`, `ip_intel` · **Finding per** actor.
+
+**Triage.** Ask the user whether they reset or changed the password and whether they were
+travelling. If not, revoke sessions and refresh tokens, reset the password and registered
+authentication methods, and review what the account did after the reset.
+
+**False positives.** A reset while travelling or through a VPN that exits in another country; a
+mobile carrier gateway that geolocates abroad.
 
 ### SPW-HAWK-008
 
@@ -913,12 +1050,12 @@ binary, and can be extended or replaced with `--rules DIR`.
 
 | List | Used by | Contents |
 | --- | --- | --- |
-| `finance_keywords` | SPW-MAIL-003, SPW-MAIL-007 | invoice, payment, wire, bank, remittance, iban, swift, ach, payroll, w-2, w2, tax, refund, purchase order, overdue |
+| `finance_keywords` | SPW-MAIL-003, SPW-MAIL-007, SPW-MAIL-008 | invoice, payment, wire, bank, remittance, iban, swift, ach, payroll, w-2, w2, tax, refund, purchase order, overdue |
 | `hiding_folders` | SPW-MAIL-003 | RSS Feeds, RSS Subscriptions, Conversation History, Archive, Junk Email, Deleted Items |
 | `suspicious_user_agents` | SPW-ID-004 | axios, python-requests, python-urllib, go-http-client, curl, okhttp, BAV2ROPC |
 | `risky_scopes` | consent rules | Mail.Read, Mail.ReadWrite, Mail.Send, Files.Read.All, Files.ReadWrite.All, offline_access, MailboxSettings.ReadWrite, full_access_as_user, EWS.AccessAsUser.All |
 | `credential_failure_codes` | spray sources, SPW-ID-005, SPW-ID-006 | 50126, 50053, 50034, 50056, 50064, 50055, 50057 (rejected credentials only; not CA blocks 53003, token-refresh 70043/50173 or MFA prompts) |
-| `hosting_asns` | every hosting-ASN test | 24 cloud / VPS / hosting ASNs (AWS, Google Cloud, Oracle, ...). Excludes Microsoft AS8075 and Cloudflare AS13335 |
+| `hosting_asns` | every hosting-ASN test | 30 cloud / VPS / hosting ASNs (AWS, Google Cloud, Oracle, ...). Excludes Microsoft AS8075 and Cloudflare AS13335 |
 | `microsoft_first_party_apps` | `cloud_services` (SPW-ID-002, -003, -010) | Microsoft first-party application ids, each taken from a public Microsoft Learn page |
 | `collection_hints` | `sparrow coverage` | How to request more evidence per source from each collector (not used by detection) |
 

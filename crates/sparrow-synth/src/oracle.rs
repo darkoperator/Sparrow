@@ -27,6 +27,7 @@ use crate::tree::TreeOutcome;
 use crate::world::World;
 use crate::{Error, Result};
 use serde_json::{Map, Value};
+use sparrow_core::enrich::ip::is_private;
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 
@@ -42,14 +43,17 @@ pub enum Condition {
     NewNetworkSend,
     /// SPW-ID-010: an inbox rule within the hour after a risky or hosting sign-in of its actor.
     RiskyRuleCorrelation,
+    /// SPW-ID-012: one session used in one UTC day from enough hosting ASNs, or enough ASNs.
+    SessionNetworks,
 }
 
 impl Condition {
-    pub const ALL: [Condition; 4] = [
+    pub const ALL: [Condition; 5] = [
         Condition::ImpossibleTravel,
         Condition::AitmIndicators,
         Condition::NewNetworkSend,
         Condition::RiskyRuleCorrelation,
+        Condition::SessionNetworks,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -58,6 +62,7 @@ impl Condition {
             Condition::AitmIndicators => "aitm_indicators",
             Condition::NewNetworkSend => "new_network_send",
             Condition::RiskyRuleCorrelation => "risky_rule_correlation",
+            Condition::SessionNetworks => "session_networks",
         }
     }
 
@@ -72,6 +77,7 @@ impl Condition {
             Condition::AitmIndicators => "SPW-ID-004",
             Condition::NewNetworkSend => "SPW-MAIL-006",
             Condition::RiskyRuleCorrelation => "SPW-ID-010",
+            Condition::SessionNetworks => "SPW-ID-012",
         }
     }
 }
@@ -137,6 +143,8 @@ pub struct IpFacts {
     pub asn: Option<u32>,
     pub hosting: bool,
     pub microsoft: bool,
+    /// `ip_intel.is_private`, from the same function the enrichment uses.
+    pub private: bool,
 }
 
 /// One (application, hosting ASN) pair's known successes: the users, the UTC days and the count.
@@ -410,6 +418,7 @@ impl Facts {
         for ip in addresses {
             let mut f = IpFacts {
                 microsoft: ms.iter().any(|c| in_cidr(ip, c)),
+                private: is_private(ip),
                 ..IpFacts::default()
             };
             if let Some(l) = located.get(&ip) {
@@ -643,7 +652,49 @@ impl Facts {
             Condition::AitmIndicators => self.aitm_indicators(),
             Condition::NewNetworkSend => self.new_network_send(),
             Condition::RiskyRuleCorrelation => self.risky_rule_correlation(),
+            Condition::SessionNetworks => self.session_networks(),
         }
+    }
+
+    /// SPW-ID-012. UAL records with a session id and a user whose address has a known ASN and is
+    /// neither a Microsoft nor a private address, grouped by exact (user, session id, UTC day): a
+    /// day with at least the rule's number of hosting ASNs, or of ASNs, triggers on its first
+    /// record (earliest time, ties by key).
+    fn session_networks(&self) -> Result<BTreeSet<Record>> {
+        const R: &str = "SPW-ID-012";
+        let min_hosting = rule_number(R, "WHERE hosting_asns >= ")? as usize;
+        let min_asns = rule_number(R, " OR asns >= ")? as usize;
+        type Day<'a> = (i64, &'a str, Vec<(u32, bool)>);
+        let mut groups: BTreeMap<(&str, &str, i64), Day> = BTreeMap::new();
+        for u in &self.ual {
+            let (Some(user), Some(session), Some(ip)) =
+                (u.upn.as_deref(), u.session.as_deref(), u.ip)
+            else {
+                continue;
+            };
+            let f = self.ip(ip);
+            let Some(asn) = f.asn else { continue };
+            if f.microsoft || f.private {
+                continue;
+            }
+            let g = groups
+                .entry((user, session, u.t.div_euclid(86_400_000)))
+                .or_insert((u.t, u.key.as_str(), Vec::new()));
+            if (u.t, u.key.as_str()) < (g.0, g.1) {
+                g.0 = u.t;
+                g.1 = u.key.as_str();
+            }
+            g.2.push((asn, f.hosting));
+        }
+        Ok(groups
+            .into_values()
+            .filter(|(_, _, nets)| {
+                let all: BTreeSet<u32> = nets.iter().map(|n| n.0).collect();
+                let hosting: BTreeSet<u32> = nets.iter().filter(|n| n.1).map(|n| n.0).collect();
+                hosting.len() >= min_hosting || all.len() >= min_asns
+            })
+            .map(|(_, key, _)| ("ual_events".to_string(), key.to_string()))
+            .collect())
     }
 
     /// SPW-ID-003. Events: successful sign-ins and UAL UserLoggedIn of a user, located, not a
@@ -1157,6 +1208,41 @@ mod tests {
 
     fn keys(k: &[&str]) -> BTreeSet<String> {
         k.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// SPW-ID-012 skips private addresses (`ip_intel.is_private`) as it skips Microsoft ones: one
+    /// session on four ASNs counts only when the addresses are public.
+    #[test]
+    fn session_networks_skips_private_addresses() {
+        let four = |addrs: [&str; 4]| {
+            let ual = addrs
+                .iter()
+                .enumerate()
+                .map(|(i, a)| UalRow {
+                    session: Some("sess-1".into()),
+                    ..ual_at(&format!("u{i}"), "ann@contoso.example", a, 1_000 + i as i64)
+                })
+                .collect();
+            let mut f = facts(Vec::new(), ual, &[]);
+            for (i, a) in addrs.iter().enumerate() {
+                f.ips.insert(
+                    ip(a),
+                    IpFacts {
+                        asn: Some(64_500 + i as u32),
+                        private: is_private(ip(a)),
+                        ..IpFacts::default()
+                    },
+                );
+            }
+            f.session_networks().unwrap()
+        };
+        let public = four(["203.0.113.1", "203.0.113.2", "198.51.100.3", "192.0.2.4"]);
+        assert_eq!(
+            public,
+            [("ual_events".to_string(), "u0".to_string())].into()
+        );
+        let one_private = four(["203.0.113.1", "203.0.113.2", "198.51.100.3", "10.0.0.4"]);
+        assert!(one_private.is_empty(), "{one_private:?}");
     }
 
     #[test]

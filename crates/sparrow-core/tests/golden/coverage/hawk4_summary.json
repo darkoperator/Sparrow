@@ -26,7 +26,7 @@
       "coverage": [
         {
           "source_table": "directory_audits",
-          "rows": 19,
+          "rows": 21,
           "first": "2026-08-11T22:00:34Z",
           "last": "2026-09-08T20:47:38Z"
         },
@@ -44,13 +44,13 @@
         },
         {
           "source_table": "signins",
-          "rows": 285,
+          "rows": 300,
           "first": "2026-08-27T00:14:46Z",
           "last": "2026-09-09T20:43:21Z"
         },
         {
           "source_table": "ual_events",
-          "rows": 4063,
+          "rows": 4075,
           "first": "2026-08-01T00:21:42Z",
           "last": "2026-09-09T23:35:52Z"
         }
@@ -58,11 +58,11 @@
       "top_actors": [
         {
           "actor": "finley.mathis@contoso.example",
-          "rows": 474
+          "rows": 475
         },
         {
           "actor": "jamie.prescott@contoso.example",
-          "rows": 373
+          "rows": 387
         },
         {
           "actor": "adrian.ibarra@contoso.example",
@@ -81,6 +81,10 @@
           "rows": 364
         },
         {
+          "actor": "ollie.james@contoso.example",
+          "rows": 362
+        },
+        {
           "actor": "val.bennett@contoso.example",
           "rows": 362
         },
@@ -90,11 +94,7 @@
         },
         {
           "actor": "lennox.grant@contoso.example",
-          "rows": 356
-        },
-        {
-          "actor": "kendall.james@contoso.example",
-          "rows": 351
+          "rows": 357
         }
       ],
       "gaps": [
@@ -162,7 +162,7 @@
     },
     {
       "table": "directory_audits",
-      "rows": 19
+      "rows": 21
     },
     {
       "table": "email_artifacts",
@@ -178,7 +178,7 @@
     },
     {
       "table": "events",
-      "rows": 4453
+      "rows": 4482
     },
     {
       "table": "file_events",
@@ -186,7 +186,7 @@
     },
     {
       "table": "finding_evidence",
-      "rows": 141
+      "rows": 151
     },
     {
       "table": "group_members",
@@ -206,7 +206,7 @@
     },
     {
       "table": "ip_intel",
-      "rows": 52
+      "rows": 54
     },
     {
       "table": "licenses",
@@ -214,7 +214,7 @@
     },
     {
       "table": "mail_items_accessed",
-      "rows": 2394
+      "rows": 2401
     },
     {
       "table": "mailbox_audit_legacy",
@@ -250,7 +250,7 @@
     },
     {
       "table": "record_sources",
-      "rows": 8341
+      "rows": 8380
     },
     {
       "table": "remote_domains",
@@ -286,7 +286,7 @@
     },
     {
       "table": "signins",
-      "rows": 285
+      "rows": 300
     },
     {
       "table": "tenant_settings",
@@ -302,7 +302,7 @@
     },
     {
       "table": "ual_events",
-      "rows": 4063
+      "rows": 4075
     },
     {
       "table": "user_licenses",

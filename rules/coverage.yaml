@@ -417,6 +417,45 @@ rules:
     collectors: [hawk4, invictus, portal]
     positives: [search_finance]
     lookalikes: [search_benign]
+  - id: SPW-MAIL-008
+    title: Mail deleted by a delegate from an unusual network or with a finance subject
+    category: mail
+    severity: high
+    hawk: null
+    logic: >-
+      UAL SoftDelete / HardDelete / MoveToDeletedItems by a delegate (the mailbox differs from the
+      actor, or LogonType 1 admin / 2 delegate; system actors and S-1-5-* SIDs excluded) where the
+      client IP is a hosting ASN (ip_intel.is_hosting) or any AffectedItems[*].Subject /
+      Item.Subject hits @list:finance_keywords. One hit per delete record; context.severity_reason
+      names the condition that held (hosting, finance_subject, hosting+finance_subject).
+    tables: [ual_events]
+    requires: []
+    requires_evidence: [ual]
+    needs_geoip: false
+    collectors: [hawk4, invictus, portal]
+    positives: [delegate_finance_delete]
+    lookalikes: [assistant_cleanup]
+  - id: SPW-MAIL-009
+    title: Inbound mail from a look-alike domain
+    category: mail
+    severity: high
+    hawk: null
+    logic: >-
+      message_trace sender registrable domain r (last two labels of the sender host; not a tenant
+      registrable domain; first label at least 6 characters) that looks like a tenant domain (arm
+      tenant) or like a registrable domain first seen at least 14 days before r (arm
+      correspondent): equal skeletons (rn->m, vv->w, 0->o, 1->l, cl->d), or the same TLD and first
+      labels at levenshtein 1 (blocked by TLD, length and a half-label prefix or suffix key). Two
+      hosts of one registrable domain are never a pair. No stage (inbound mail, like
+      SPW-HAWK-014). One hit per trace row, actor_upn is the recipient; context names
+      look_alike_of and arm.
+    tables: [message_trace]
+    requires: []
+    requires_evidence: []
+    needs_geoip: false
+    collectors: [invictus, portal]
+    positives: [lookalike_vendor_invoice]
+    lookalikes: [similar_unrelated_domain]
   - id: SPW-ID-001
     title: MFA method registered after a risky sign-in
     category: identity
@@ -739,6 +778,75 @@ rules:
       - kind: forwarding_inbox_rule
         condition: risky_rule_correlation
         reason: "the attacker's forwarding rule (New-InboxRule) follows the AiTM sign-in within the hour: a true hit of this rule's logic wherever the scenario has that risky or hosting sign-in and the collector delivers it (hawk-investigate has none)"
+  - id: SPW-ID-011
+    title: Refresh-token replay after revocation
+    category: identity
+    severity: high
+    hawk: null
+    logic: >-
+      signins with error_code 50173 (a refresh token that no longer works after a session revocation
+      or password reset; deliberately not a credential failure) whose network (the ASN from
+      ip_intel, else the address) never appears in the user's successful sign-ins (error_code 0 or
+      NULL) at any time in the case, or whose address is a hosting ASN (ip_intel.is_hosting). A hit
+      only when the user has at least 5 such rows within 24 hours; every qualifying row of such a
+      burst is a hit. context: UTC day, count, distinct networks (ASN, else the IP) per user per UTC
+      day, first and last time.
+    tables: [signins]
+    requires: []
+    requires_evidence: []
+    needs_geoip: true
+    # Hawk 3 delivers no sign-in log (only the UAL), so it can neither hit nor stay quiet here.
+    collectors: [hawk4, invictus, portal]
+    positives: [token_replay_after_revoke]
+    # post_reset_refresh_noise: the user's own device fails 50173 after a reset from their usual
+    # residential network, which has successful sign-ins on other days.
+    lookalikes: [post_reset_refresh_noise]
+  - id: SPW-ID-012
+    title: One sign-in session used from many networks
+    category: identity
+    severity: high
+    hawk: null
+    logic: >-
+      UAL records with a session_id whose client IP has a known ASN in ip_intel (Microsoft service
+      and private addresses excluded), grouped by exact (user, session_id, UTC day): a hit when the
+      day has at least 2 distinct hosting ASNs or at least 4 distinct ASNs. One hit per qualifying
+      day, keyed to that day's first record. context: session_id, sorted ASN list, distinct IP count,
+      day, hosting ASN count.
+    tables: [ual_events]
+    requires: []
+    requires_evidence: []
+    needs_geoip: true
+    collectors: [hawk4, invictus, portal]
+    positives: [session_hopping_proxy]
+    # session_roaming_user: one session on home, a hotel network and a hotspot, three non-hosting
+    # ASNs, under the four-ASN threshold.
+    lookalikes: [session_roaming_user]
+    computed:
+      - kind: inbox_rule_finance
+        condition: session_networks
+        reason: "the storyline reuses the AiTM session from the attacker's replay address while the proxy address (another hosting ASN) used it the same day: a true hit of this rule's logic where the collector delivers UAL session ids and ASN data for both addresses"
+  - id: SPW-ID-013
+    title: Self-service password reset from a new country
+    category: identity
+    severity: medium
+    hawk: null
+    logic: >-
+      Directory audit "Reset password (self-service)", "Self-service password reset flow activity
+      progress" or "Change password (self-service)" whose initiating address has a country in
+      ip_intel (Microsoft and private addresses excluded) that no successful sign-in of the user
+      (initiated_by_upn, else the audit's target user; error_code 0 or NULL) before the reset comes
+      from; users with no successful sign-in of known country before the reset are not judged.
+      One hit per audit row. context: country, city, activity, result.
+    tables: [directory_audits]
+    requires: []
+    requires_evidence: []
+    needs_geoip: true
+    # Hawk 3 delivers neither the Entra audit log nor the sign-in log; the portal exports only the
+    # Purview UAL and the interactive sign-ins, not the directory audit this rule reads.
+    collectors: [hawk4, invictus]
+    positives: [sspr_foreign]
+    # sspr_home_country: the user resets their own password from home, the country of all their sign-ins.
+    lookalikes: [sspr_home_country]
   - id: SPW-APP-001
     title: Consent to an app with Mail.*, Files.* or offline_access
     category: apps

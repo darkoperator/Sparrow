@@ -256,6 +256,11 @@ story_kind! {
         ConnectorAppOtherAsn => "connector_app_other_asn",
         ResidentialReplayRule => "residential_replay_rule",
         VpsPhishedAccounts => "vps_phished_accounts",
+        DelegateFinanceDelete => "delegate_finance_delete",
+        TokenReplayAfterRevoke => "token_replay_after_revoke",
+        SessionHoppingProxy => "session_hopping_proxy",
+        LookalikeVendorInvoice => "lookalike_vendor_invoice",
+        SsprForeign => "sspr_foreign",
     }
     lookalike {
         RiskDismissed => "risk_dismissed",
@@ -310,6 +315,11 @@ story_kind! {
         RuleEditAfterNewNetwork => "rule_edit_after_new_network",
         OtherDeviceRuleEdit => "other_device_rule_edit",
         AdminRoleChanges => "admin_role_changes",
+        AssistantCleanup => "assistant_cleanup",
+        PostResetRefreshNoise => "post_reset_refresh_noise",
+        SessionRoamingUser => "session_roaming_user",
+        SimilarUnrelatedDomain => "similar_unrelated_domain",
+        SsprHomeCountry => "sspr_home_country",
     }
 }
 

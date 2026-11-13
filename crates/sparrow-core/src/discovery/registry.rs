@@ -924,9 +924,30 @@ pub fn sniff_portal(head: &[u8]) -> Option<Classification> {
     portal_by_headers(&headers, false)
 }
 
-/// Recognize the Entra admin center audit log JSON download: a top-level array of Graph
-/// `directoryAudit` objects, saved under any name. `head` is the start of the file; its first element must be an
-/// object with the three Graph audit keys (case-insensitive).
+/// Top-level JSON arrays of Graph objects, saved under any name: (required lower-case keys, artifact id, target),
+/// tried in order.
+const PORTAL_JSON: &[(&[&str], &str, &str)] = &[
+    (
+        &["activitydatetime", "loggedbyservice", "targetresources"],
+        "portal.entra_audit",
+        "directory_audits",
+    ),
+    (
+        &[
+            "createddatetime",
+            "userprincipalname",
+            "ipaddress",
+            "status",
+            "appid",
+        ],
+        "portal.entra_signins_json",
+        "signins",
+    ),
+];
+
+/// Recognize an Entra / Graph JSON download: a top-level array of `directoryAudit` or `signIn` objects. `head` is
+/// the start of the file; its first element must be an object holding every key of one `PORTAL_JSON` row
+/// (case-insensitive).
 pub fn sniff_portal_json(head: &[u8]) -> Option<Classification> {
     let decoded = decode(head);
     let rest = decoded
@@ -944,12 +965,12 @@ pub fn sniff_portal_json(head: &[u8]) -> Option<Classification> {
         .keys()
         .map(|k| k.to_ascii_lowercase())
         .collect();
-    ["activitydatetime", "loggedbyservice", "targetresources"]
+    PORTAL_JSON
         .iter()
-        .all(|k| keys.contains(*k))
-        .then_some(Classification {
-            artifact_id: "portal.entra_audit",
-            target: "directory_audits",
+        .find(|(required, _, _)| required.iter().all(|k| keys.contains(*k)))
+        .map(|&(_, artifact_id, target)| Classification {
+            artifact_id,
+            target,
             derived: false,
             priority: 0,
             subject: None,

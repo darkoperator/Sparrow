@@ -674,3 +674,76 @@ fn export_caps_and_streams_the_whole_query() {
         .execute_batch("BEGIN TRANSACTION; ROLLBACK")
         .unwrap();
 }
+
+#[test]
+fn query_icu_error_has_cast_hint() {
+    let (_d, p) = case_file();
+    let e = query::run(
+        &p,
+        "SELECT date_trunc('day', event_time) FROM ual_events",
+        10,
+    )
+    .unwrap_err();
+    let m = e.to_string();
+    assert!(m.contains("CAST(event_time AS TIMESTAMP)"), "{m}");
+    assert!(m.contains("\nhint: "), "{m}");
+}
+
+#[test]
+fn query_timestamp_cast_works_without_icu() {
+    let (_d, p) = case_file();
+    let r = query::run(
+        &p,
+        "SELECT date_trunc('day', CAST(event_time AS TIMESTAMP)) d FROM ual_events",
+        10,
+    )
+    .unwrap();
+    assert_eq!(r.columns, ["d"]);
+}
+
+#[test]
+fn query_keyword_alias_has_as_hint() {
+    let (_d, p) = case_file();
+    let e = query::run(&p, "SELECT 1 first", 10).unwrap_err();
+    let m = e.to_string();
+    assert!(
+        m.contains("\"first\" is a keyword: quote it (\"first\") or alias with AS"),
+        "{m}"
+    );
+    assert!(m.contains("\nhint: "), "{m}");
+}
+
+#[test]
+fn query_non_keyword_syntax_errors_get_no_alias_hint() {
+    let (_d, p) = case_file();
+    for sql in ["SELECT * FORM ual_events", "SELECT 1 )"] {
+        let m = query::run(&p, sql, 10).unwrap_err().to_string();
+        assert!(!m.contains("is a keyword"), "{sql}: {m}");
+    }
+}
+
+#[test]
+fn query_error_without_a_quoted_token_gets_no_hint() {
+    let (_d, p) = case_file();
+    let m = query::run(&p, "SELECT nope FROM ual_events", 10)
+        .unwrap_err()
+        .to_string();
+    assert!(!m.contains("hint:"), "{m}");
+}
+
+#[test]
+fn export_icu_error_has_cast_hint() {
+    let c = locked_mem();
+    let mut out = Vec::new();
+    let e = query::export_csv_on(
+        &c,
+        "SELECT date_trunc('day', event_time) FROM ual_events",
+        &mut out,
+        10,
+    )
+    .unwrap_err();
+    assert!(
+        e.to_string().contains("CAST(event_time AS TIMESTAMP)"),
+        "{e}"
+    );
+}

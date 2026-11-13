@@ -37,6 +37,11 @@ storylines:
   - {kind: mia_burst, id: s-mia, actor: 1, at: {after: s-aitm, minutes: 60}}
   - {kind: search_finance, id: s-search, actor: 1, at: {after: s-aitm, minutes: 65}}
   - {kind: send_new_ip, id: s-send, actor: 1, at: {after: s-aitm, minutes: 75}}
+  - {kind: delegate_finance_delete, id: s-deldel, actor: 1, target: 2, at: {after: s-aitm, minutes: 70}}
+  - {kind: token_replay_after_revoke, id: s-replay, actor: 11, at: {day: 32, hour: 9, minute: 30}}
+  - {kind: session_hopping_proxy, id: s-hop, actor: 11, at: {day: 33, hour: 9}}
+  - {kind: lookalike_vendor_invoice, id: s-lookalike, actor: 9, at: {day: 30, hour: 11}}
+  - {kind: sspr_foreign, id: s-sspr, actor: 11, at: {day: 34, hour: 9}}
   - {kind: mass_download, id: s-dl, actor: 1, at: {after: s-aitm, minutes: 120}}
   - {kind: anonymous_link, id: s-anon, actor: 1, at: {after: s-aitm, minutes: 130}}
   - {kind: lure_share, id: s-lure, actor: 1, at: {after: s-aitm, minutes: 140}}
@@ -73,6 +78,11 @@ lookalikes:
   - {kind: vendor_filing_rule, id: l-vendor, actor: 3, at: {day: 12, hour: 10}}
   - {kind: outlook_client_filing_rule, id: l-owa-filing, actor: 11, at: {day: 13, hour: 11}}
   - {kind: internal_forwarding, id: l-intfwd, actor: 4, at: {day: 13, hour: 16}}
+  - {kind: post_reset_refresh_noise, id: l-reset, actor: 10, at: {day: 32, hour: 11, minute: 15}}
+  - {kind: session_roaming_user, id: l-roam, actor: 10, at: {day: 33, hour: 8}}
+  - {kind: similar_unrelated_domain, id: l-similar, actor: 8, at: {day: 30, hour: 14}}
+  - {kind: sspr_home_country, id: l-sspr, actor: 10, at: {day: 34, hour: 8}}
+  - {kind: assistant_cleanup, id: l-cleanup, actor: 3, target: 5, at: {day: 16, hour: 10}}
   - {kind: mia_sync, id: l-miasync, actor: 5, at: {day: 13, hour: 8, minute: 5}}
   - {kind: send_known_ip, id: l-sendok, actor: 5, at: {day: 14, hour: 11}}
   - {kind: search_benign, id: l-search, actor: 6, at: {day: 16, hour: 10, minute: 30}}

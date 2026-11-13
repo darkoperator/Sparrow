@@ -1,0 +1,299 @@
+# SPW-MAIL-008 — Logic source: coverage.yaml. A delete of mail (SoftDelete, HardDelete or
+# MoveToDeletedItems) made by a delegate or an admin in another user's mailbox, from a hosting
+# address or on an item whose subject hits @list:finance_keywords. `sql:` because the subjects live
+# in the AuditData JSON (AffectedItems[*].Subject for the item-group operations, Item.Subject
+# otherwise) and the hosting test joins ip_intel.
+# Delegate: the actor's mailbox differs from the mailbox owner, or the mailbox audit LogonType is
+# 1 (admin) or 2 (delegate); an owner (LogonType 0 on their own mailbox) never counts, so a user
+# tidying their own invoices from a hosting VPN is not this rule (SPW-ID-002 sees the address).
+# System actors never count, by the shared convention of profile/identities.rs: an empty actor,
+# UserType 4, an NT AUTHORITY\... account (any service host or worker) or an S-1-5-* SID.
+# Keywords match on word boundaries (RE2 \b, the keyword regex-escaped): "ach" is not "attached",
+# "wire" is not "wireless", "tax" is not "syntax", while "Invoice#4471" still matches "invoice".
+# One delete record is one hit. `context.severity_reason` says which condition held (hosting,
+# finance_subject, hosting+finance_subject); the severity is a single level.
+# Missed on purpose: a delegate deleting non-finance mail from a non-hosting address (an attacker
+# on a residential proxy who deletes only the replies); SPW-MAIL-003 / SPW-ID-004 cover the session.
+id: SPW-MAIL-008
+title: Mail deleted by a delegate from an unusual network or with a finance subject
+version: 1
+status: experimental
+severity: high
+confidence: medium
+mitre: [T1070.008, T1114.002]
+tags: [bec, mail-delete, delegate]
+# The schema has no `impact` stage; hiding the evidence of a thread from its owner is the closest
+# to mailbox access in the account roll-up.
+stage: mail_access
+requires: []
+requires_evidence: [ual]
+sql: |
+  WITH deletes AS (
+    SELECT u.record_id, u.event_time, u.user_upn, u.mailbox_upn, u.client_ip,
+           json_extract_string(u.audit_data, '$.LogonType') AS logon_type,
+           list_filter(
+             list_concat(
+               coalesce(from_json(json_extract(u.audit_data, '$.AffectedItems[*].Subject'), '["VARCHAR"]'),
+                        CAST([] AS VARCHAR[])),
+               [json_extract_string(u.audit_data, '$.Item.Subject')]),
+             s -> s IS NOT NULL AND s <> '') AS subjects
+    FROM ual_events u
+    WHERE lower(u.operation) IN ('softdelete', 'harddelete', 'movetodeleteditems')
+      AND coalesce(trim(u.user_upn), '') <> ''
+      AND NOT (coalesce(u.user_type = 4, false) OR trim(u.user_upn) ILIKE 'NT AUTHORITY%'
+               OR trim(u.user_upn) ILIKE 'S-1-5-%')
+      AND (coalesce(lower(u.mailbox_upn) <> lower(u.user_upn), false)
+           OR json_extract_string(u.audit_data, '$.LogonType') IN ('1', '2'))
+  ),
+  -- finance: any subject hits a keyword as a whole word (the keyword's regex metacharacters escaped). The subjects are joined into one string so the test is a
+  -- single lambda (DuckDB does not capture an outer lambda's parameter in a nested one).
+  flagged AS (
+    SELECT d.*,
+           len(list_filter(@list:finance_keywords,
+                 k -> k <> '' AND regexp_matches(lower(array_to_string(d.subjects, ' | ')),
+                        '\b' || regexp_replace(lower(k), '([.^$*+?()\[\]{}|\\-])', '\\\1', 'g') || '\b'))) > 0 AS finance
+    FROM deletes d
+  )
+  SELECT lower(CAST(d.record_id AS VARCHAR)) AS record_key,
+         'ual_events' AS source_table,
+         d.event_time, d.user_upn AS actor_upn, d.client_ip AS ip,
+         json_object(
+           'severity_reason',
+             CASE WHEN coalesce(i.is_hosting, false) AND d.finance THEN 'hosting+finance_subject'
+                  WHEN coalesce(i.is_hosting, false) THEN 'hosting'
+                  ELSE 'finance_subject' END,
+           'mailbox_upn', d.mailbox_upn, 'subjects', d.subjects,
+           'asn_org', i.asn_org, 'logon_type', d.logon_type) AS context
+  FROM flagged d
+  LEFT JOIN ip_intel i ON i.ip = d.client_ip
+  WHERE coalesce(i.is_hosting, false) OR d.finance
+group_by: [actor_upn]
+analyst_guidance: |
+  Deleting a message from someone else's mailbox, from a hosting address or on a finance subject,
+  is how a BEC actor removes the genuine invoice or wire thread once their look-alike copy is in
+  place, so the mailbox owner does not see the original. Open the record: the mailbox, the
+  subjects and the logon type tell whose mail it was and how the actor got in (2 delegate, 1
+  admin). Check who holds the delegate permission (SPW-MAIL-002) and the actor's sign-in for that
+  session, then look in Recoverable Items for the deleted messages.
+false_positives:
+  - An assistant who legitimately manages an executive's mailbox and deletes an invoice they have processed.
+  - An admin or a shared-mailbox owner cleaning a finance shared mailbox (accounts payable).
+references:
+  - https://learn.microsoft.com/en-us/purview/audit-mailboxes
+  - https://attack.mitre.org/techniques/T1070/008/
+author: Sparrow
+tests:
+  - name: delegate soft-deletes an invoice from a hosting address
+    records:
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 14061
+        asn_org: Example Hosting
+        is_hosting: true
+      - table: ual_events
+        operation: SoftDelete
+        user_upn: assistant@contoso.example
+        mailbox_upn: exec@contoso.example
+        client_ip: 203.0.113.9
+        audit_data:
+          LogonType: 2
+          AffectedItems:
+            - Subject: "Invoice #100"
+    expect_hits: 1
+  - name: delegate deletes wire instructions from a residential address
+    records:
+      - table: ip_intel
+        ip: 198.51.100.5
+        asn: 7922
+        is_hosting: false
+      - table: ual_events
+        operation: MoveToDeletedItems
+        user_upn: assistant@contoso.example
+        mailbox_upn: exec@contoso.example
+        client_ip: 198.51.100.5
+        audit_data:
+          LogonType: 2
+          AffectedItems:
+            - Subject: "Re: Wire instructions"
+    expect_hits: 1
+  - name: a single-item subject in Item.Subject also counts
+    records:
+      - table: ual_events
+        operation: HardDelete
+        user_upn: assistant@contoso.example
+        mailbox_upn: exec@contoso.example
+        client_ip: 198.51.100.5
+        audit_data:
+          LogonType: 1
+          Item:
+            Subject: "Payment reminder"
+    expect_hits: 1
+  - name: assistant deletes a newsletter from the office address
+    records:
+      - table: ip_intel
+        ip: 198.51.100.5
+        asn: 7922
+        is_hosting: false
+      - table: ual_events
+        operation: SoftDelete
+        user_upn: assistant@contoso.example
+        mailbox_upn: exec@contoso.example
+        client_ip: 198.51.100.5
+        audit_data:
+          LogonType: 2
+          AffectedItems:
+            - Subject: "Autumn catalogue"
+    expect_hits: 0
+  - name: owner deletes their own invoice from a hosting address
+    records:
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 14061
+        is_hosting: true
+      - table: ual_events
+        operation: SoftDelete
+        user_upn: exec@contoso.example
+        mailbox_upn: exec@contoso.example
+        client_ip: 203.0.113.9
+        audit_data:
+          LogonType: 0
+          AffectedItems:
+            - Subject: "Invoice #100"
+    expect_hits: 0
+  - name: the mailbox assistant (system actor) deleting an invoice never counts
+    records:
+      - table: ual_events
+        operation: SoftDelete
+        user_upn: 'NT AUTHORITY\SYSTEM (Microsoft.Exchange.ServiceHost)'
+        mailbox_upn: exec@contoso.example
+        client_ip: 198.51.100.5
+        audit_data:
+          LogonType: 1
+          AffectedItems:
+            - Subject: "Invoice #100"
+    expect_hits: 0
+  - name: a delegate's non-delete operation on an invoice is not a delete
+    records:
+      - table: ual_events
+        operation: Update
+        user_upn: assistant@contoso.example
+        mailbox_upn: exec@contoso.example
+        client_ip: 198.51.100.5
+        audit_data:
+          LogonType: 2
+          Item:
+            Subject: "Invoice #100"
+    expect_hits: 0
+  - name: delegate deletes Minutes attached from the office (ach is not attached)
+    records:
+      - table: ual_events
+        operation: SoftDelete
+        user_upn: assistant@contoso.example
+        mailbox_upn: exec@contoso.example
+        client_ip: 198.51.100.5
+        audit_data:
+          LogonType: 2
+          AffectedItems:
+            - Subject: "Minutes attached"
+    expect_hits: 0
+  - name: delegate deletes Wireless setup from the office (wire is not wireless)
+    records:
+      - table: ual_events
+        operation: SoftDelete
+        user_upn: assistant@contoso.example
+        mailbox_upn: exec@contoso.example
+        client_ip: 198.51.100.5
+        audit_data:
+          LogonType: 2
+          AffectedItems:
+            - Subject: "Wireless setup"
+    expect_hits: 0
+  - name: delegate deletes a subject with a keyword next to punctuation
+    records:
+      - table: ual_events
+        operation: SoftDelete
+        user_upn: assistant@contoso.example
+        mailbox_upn: exec@contoso.example
+        client_ip: 198.51.100.5
+        audit_data:
+          LogonType: 2
+          AffectedItems:
+            - Subject: "RE: Invoice#4471"
+    expect_hits: 1
+  - name: a multi-word and a hyphenated keyword still match
+    records:
+      - table: ual_events
+        operation: SoftDelete
+        user_upn: assistant@contoso.example
+        mailbox_upn: exec@contoso.example
+        client_ip: 198.51.100.5
+        audit_data:
+          LogonType: 2
+          AffectedItems:
+            - Subject: "Purchase order W-2 copy"
+    expect_hits: 1
+  - name: a Store.Worker system actor with a finance subject from a hosting address never counts
+    records:
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 14061
+        is_hosting: true
+      - table: ual_events
+        operation: SoftDelete
+        user_upn: 'NT AUTHORITY\SYSTEM (Microsoft.Exchange.Store.Worker)'
+        mailbox_upn: exec@contoso.example
+        client_ip: 203.0.113.9
+        audit_data:
+          LogonType: 1
+          AffectedItems:
+            - Subject: "Invoice #100"
+    expect_hits: 0
+  - name: an S-1-5-18 actor never counts
+    records:
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 14061
+        is_hosting: true
+      - table: ual_events
+        operation: SoftDelete
+        user_upn: S-1-5-18
+        mailbox_upn: exec@contoso.example
+        client_ip: 203.0.113.9
+        audit_data:
+          LogonType: 1
+          AffectedItems:
+            - Subject: "Invoice #100"
+    expect_hits: 0
+  - name: a different mailbox with no LogonType is a delegate
+    records:
+      - table: ual_events
+        operation: SoftDelete
+        user_upn: assistant@contoso.example
+        mailbox_upn: exec@contoso.example
+        client_ip: 198.51.100.5
+        audit_data:
+          AffectedItems:
+            - Subject: "Invoice #100"
+    expect_hits: 1
+  - name: a NULL mailbox with LogonType 2 is a delegate
+    records:
+      - table: ual_events
+        operation: SoftDelete
+        user_upn: assistant@contoso.example
+        client_ip: 198.51.100.5
+        audit_data:
+          LogonType: 2
+          AffectedItems:
+            - Subject: "Invoice #100"
+    expect_hits: 1
+  - name: a NULL mailbox with LogonType 0 is the owner
+    records:
+      - table: ual_events
+        operation: SoftDelete
+        user_upn: assistant@contoso.example
+        client_ip: 198.51.100.5
+        audit_data:
+          LogonType: 0
+          AffectedItems:
+            - Subject: "Invoice #100"
+    expect_hits: 0

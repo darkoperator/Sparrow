@@ -1,0 +1,370 @@
+# SPW-ID-012 — Logic source: coverage.yaml. One sign-in session (the UAL SessionId, which every
+# record of one sign-in and its refresh tokens carries) used from addresses on several networks in
+# one UTC day: at least 2 distinct HOSTING ASNs (a user's own session never leaves a data centre for
+# another one), or at least 4 distinct ASNs of any kind (a laptop roaming home, office and a phone
+# hotspot is 3, so it stays quiet). A stolen session id replayed through rotating VPS and VPN
+# providers is what this sees; impossible travel (SPW-ID-003) misses it when the hops are short.
+# `sql:` because the hit joins ual_events to ip_intel and aggregates per (user, session, day).
+# `needs_geoip`: without an ASN database no address has a network, so the runner reports
+# not_applicable instead of an empty result. Rows whose address has no ip_intel row or no ASN are
+# left out entirely (they add no network, and the first record and IP count come from the rest);
+# Microsoft service addresses and private addresses are excluded.
+# session_id is matched exactly (GROUP BY the whole value, never a prefix or LIKE): unrelated sessions
+# can share leading segments. Hits: one row per (user, session_id, UTC day), keyed to that day's first
+# qualifying record (earliest event_time, ties broken by record_key). context: session_id, the sorted
+# ASN list, distinct IP count, the day and the hosting ASN count.
+# Stage: the schema has no initial_access; suspicious_sign_in is the closest valid stage.
+# Missed on purpose: a session spread over several days with at most one network a day, one hosting
+# ASN plus fewer than four ASNs (a single VPS hop), and any address the ASN database does not know.
+id: SPW-ID-012
+title: One sign-in session used from many networks
+version: 1
+status: experimental
+severity: high
+confidence: medium
+mitre: [T1550.004]
+tags: [bec, sign-in, session-hijack]
+stage: suspicious_sign_in
+requires: []
+requires_evidence: []
+needs_geoip: true
+sql: |
+  WITH ev AS (
+    SELECT lower(CAST(u.record_id AS VARCHAR)) AS record_key, u.event_time,
+           lower(trim(u.user_upn)) AS upn, u.session_id, u.client_ip AS ip, i.asn,
+           coalesce(i.is_hosting, false) AS hosting,
+           strftime(epoch_ms(epoch_ms(u.event_time)), '%Y-%m-%d') AS day
+    FROM ual_events u JOIN ip_intel i ON i.ip = u.client_ip
+    WHERE coalesce(trim(u.session_id), '') <> '' AND coalesce(trim(u.user_upn), '') <> ''
+      AND u.event_time IS NOT NULL AND i.asn IS NOT NULL
+      AND NOT i.is_microsoft AND NOT i.is_private
+  ),
+  per_day AS (
+    SELECT upn, session_id, day,
+           arg_min(record_key, struct_pack(t := epoch_ms(event_time), k := record_key)) AS record_key,
+           arg_min(event_time, struct_pack(t := epoch_ms(event_time), k := record_key)) AS event_time,
+           arg_min(ip, struct_pack(t := epoch_ms(event_time), k := record_key)) AS ip,
+           count(DISTINCT asn) AS asns,
+           count(DISTINCT asn) FILTER (WHERE hosting) AS hosting_asns,
+           count(DISTINCT ip) AS ips,
+           list_sort(list_distinct(list(asn))) AS asn_list
+    FROM ev
+    GROUP BY upn, session_id, day
+  )
+  SELECT record_key, 'ual_events' AS source_table, event_time, upn AS actor_upn, ip,
+         json_object('session_id', session_id, 'asns', asn_list, 'distinct_ips', ips,
+                     'day', day, 'hosting_asns', hosting_asns) AS context
+  FROM per_day
+  WHERE hosting_asns >= 2 OR asns >= 4
+group_by: [actor_upn]
+analyst_guidance: |
+  A session id belongs to one sign-in. When records of the same session come from two data-centre
+  or VPN providers in one day, or from four or more networks of any kind, the session was
+  copied to another machine and is being replayed through rotating infrastructure. This rule
+  needs ASN data (ingest with --geoip-dir): addresses without an ASN are ignored. Compare the
+  addresses with the user's usual networks, find the sign-in that created the session, revoke
+  the user's sessions and refresh tokens, and look at what the session did (mail access, rules,
+  downloads) on each address.
+false_positives:
+  - A user on a commercial VPN that rotates between two hosting providers during one day.
+  - A cloud-hosted desktop or a corporate proxy whose egress moves between hosting ASNs.
+  - A phone moving between carriers and Wi-Fi networks can reach four ASNs in a day; check the session's user agent and device.
+references:
+  - https://learn.microsoft.com/en-us/purview/audit-log-detailed-properties
+  - https://attack.mitre.org/techniques/T1550/004/
+author: Sparrow
+tests:
+  - name: one session on two hosting ASNs in one day
+    records:
+      - table: ip_intel
+        ip: 203.0.113.1
+        asn: 14061
+        is_hosting: true
+      - table: ip_intel
+        ip: 203.0.113.2
+        asn: 20473
+        is_hosting: true
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.1
+        session_id: aaaaaaaa-1111-2222-3333-444444444444
+        event_time: "2026-03-10T10:00:00Z"
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.2
+        session_id: aaaaaaaa-1111-2222-3333-444444444444
+        event_time: "2026-03-10T10:20:00Z"
+    expect_hits: 1
+  - name: one session on four residential and mobile ASNs in one day
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 7922
+        is_hosting: false
+      - table: ip_intel
+        ip: 198.51.100.2
+        asn: 701
+        is_hosting: false
+      - table: ip_intel
+        ip: 198.51.100.3
+        asn: 3320
+        is_hosting: false
+      - table: ip_intel
+        ip: 198.51.100.4
+        asn: 5089
+        is_hosting: false
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.1
+        session_id: aaaaaaaa-1111-2222-3333-444444444444
+        event_time: "2026-03-10T11:00:00Z"
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.2
+        session_id: aaaaaaaa-1111-2222-3333-444444444444
+        event_time: "2026-03-10T12:00:00Z"
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.3
+        session_id: aaaaaaaa-1111-2222-3333-444444444444
+        event_time: "2026-03-10T13:00:00Z"
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.4
+        session_id: aaaaaaaa-1111-2222-3333-444444444444
+        event_time: "2026-03-10T14:00:00Z"
+    expect_hits: 1
+  - name: laptop roams home, office and hotspot
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        asn: 7922
+        is_hosting: false
+      - table: ip_intel
+        ip: 198.51.100.2
+        asn: 701
+        is_hosting: false
+      - table: ip_intel
+        ip: 198.51.100.3
+        asn: 3320
+        is_hosting: false
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.1
+        session_id: aaaaaaaa-1111-2222-3333-444444444444
+        event_time: "2026-03-10T11:00:00Z"
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.2
+        session_id: aaaaaaaa-1111-2222-3333-444444444444
+        event_time: "2026-03-10T12:00:00Z"
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 198.51.100.3
+        session_id: aaaaaaaa-1111-2222-3333-444444444444
+        event_time: "2026-03-10T13:00:00Z"
+    expect_hits: 0
+  - name: Microsoft service addresses only
+    records:
+      - table: ip_intel
+        ip: 203.0.113.5
+        asn: 8075
+        is_hosting: false
+        is_microsoft: true
+      - table: ip_intel
+        ip: 203.0.113.6
+        asn: 8076
+        is_hosting: false
+        is_microsoft: true
+      - table: ip_intel
+        ip: 203.0.113.7
+        asn: 8077
+        is_hosting: false
+        is_microsoft: true
+      - table: ip_intel
+        ip: 203.0.113.8
+        asn: 8078
+        is_hosting: false
+        is_microsoft: true
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.5
+        session_id: aaaaaaaa-1111-2222-3333-444444444444
+        event_time: "2026-03-10T11:00:00Z"
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.6
+        session_id: aaaaaaaa-1111-2222-3333-444444444444
+        event_time: "2026-03-10T12:00:00Z"
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.7
+        session_id: aaaaaaaa-1111-2222-3333-444444444444
+        event_time: "2026-03-10T13:00:00Z"
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.8
+        session_id: aaaaaaaa-1111-2222-3333-444444444444
+        event_time: "2026-03-10T14:00:00Z"
+    expect_hits: 0
+  - name: two different sessions, one ASN each
+    records:
+      - table: ip_intel
+        ip: 203.0.113.1
+        asn: 14061
+        is_hosting: true
+      - table: ip_intel
+        ip: 203.0.113.2
+        asn: 20473
+        is_hosting: true
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.1
+        session_id: aaaaaaaa-1111-2222-3333-444444444444
+        event_time: "2026-03-10T10:00:00Z"
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.2
+        session_id: aaaaaaaa-1111-2222-3333-555555555555
+        event_time: "2026-03-10T10:20:00Z"
+    expect_hits: 0
+  - name: a session id that only shares a leading segment is another session
+    records:
+      - table: ip_intel
+        ip: 203.0.113.1
+        asn: 14061
+        is_hosting: true
+      - table: ip_intel
+        ip: 203.0.113.2
+        asn: 20473
+        is_hosting: true
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.1
+        session_id: aaaaaaaa-1111-2222-3333-444444444444
+        event_time: "2026-03-10T10:00:00Z"
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.2
+        session_id: aaaaaaaa-1111-2222-3333-444444444444-x
+        event_time: "2026-03-10T10:20:00Z"
+    expect_hits: 0
+  - name: two hosting ASNs on two different days is not one day
+    records:
+      - table: ip_intel
+        ip: 203.0.113.1
+        asn: 14061
+        is_hosting: true
+      - table: ip_intel
+        ip: 203.0.113.2
+        asn: 20473
+        is_hosting: true
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.1
+        session_id: aaaaaaaa-1111-2222-3333-444444444444
+        event_time: "2026-03-10T10:00:00Z"
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.2
+        session_id: aaaaaaaa-1111-2222-3333-444444444444
+        event_time: "2026-03-11T10:00:00Z"
+    expect_hits: 0
+  - name: an address with no ASN adds no network
+    records:
+      - table: ip_intel
+        ip: 203.0.113.1
+        asn: 14061
+        is_hosting: true
+      - table: ip_intel
+        ip: 203.0.113.2
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.1
+        session_id: aaaaaaaa-1111-2222-3333-444444444444
+        event_time: "2026-03-10T10:00:00Z"
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.2
+        session_id: aaaaaaaa-1111-2222-3333-444444444444
+        event_time: "2026-03-10T10:20:00Z"
+    expect_hits: 0
+  - name: one session on two hosting ASNs on two days is one hit per day
+    records:
+      - table: ip_intel
+        ip: 203.0.113.1
+        asn: 14061
+        is_hosting: true
+      - table: ip_intel
+        ip: 203.0.113.2
+        asn: 20473
+        is_hosting: true
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.1
+        session_id: aaaaaaaa-1111-2222-3333-444444444444
+        event_time: "2026-03-10T10:00:00Z"
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.2
+        session_id: aaaaaaaa-1111-2222-3333-444444444444
+        event_time: "2026-03-10T10:20:00Z"
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.1
+        session_id: aaaaaaaa-1111-2222-3333-444444444444
+        event_time: "2026-03-12T10:00:00Z"
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.2
+        session_id: aaaaaaaa-1111-2222-3333-444444444444
+        event_time: "2026-03-12T10:20:00Z"
+    expect_hits: 2
+  - name: two users sharing a session id are counted apart
+    records:
+      - table: ip_intel
+        ip: 203.0.113.1
+        asn: 14061
+        is_hosting: true
+      - table: ip_intel
+        ip: 203.0.113.2
+        asn: 20473
+        is_hosting: true
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: alice@contoso.example
+        client_ip: 203.0.113.1
+        session_id: aaaaaaaa-1111-2222-3333-444444444444
+        event_time: "2026-03-10T10:00:00Z"
+      - table: ual_events
+        operation: MailItemsAccessed
+        user_upn: bob@contoso.example
+        client_ip: 203.0.113.2
+        session_id: aaaaaaaa-1111-2222-3333-444444444444
+        event_time: "2026-03-10T10:20:00Z"
+    expect_hits: 0

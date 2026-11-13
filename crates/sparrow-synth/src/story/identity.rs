@@ -2,6 +2,7 @@
 //! (risk, confirmed compromise, a new MFA method, a federated domain, a new mobile device), and
 //! their look-alikes.
 
+use super::spray::{failed_signin, residential_location};
 use super::{
     Ctx, Evidence, Modified, dir_audit, first_admin, push_audit, push_audit_and_ual, push_risk,
     push_signin, push_ual, risk_text, signin, unknown_device, user_target, well_known,
@@ -43,6 +44,12 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
         StoryKind::RuleEditAfterNewNetwork => rule_edit_after_new_network(w, ctx),
         StoryKind::OtherDeviceRuleEdit => other_device_rule_edit(w, ctx),
         StoryKind::AdminRoleChanges => admin_role_changes(w, ctx)?,
+        StoryKind::TokenReplayAfterRevoke => token_replay_after_revoke(w, ctx),
+        StoryKind::PostResetRefreshNoise => post_reset_refresh_noise(w, ctx),
+        StoryKind::SessionHoppingProxy => session_hopping_proxy(w, ctx),
+        StoryKind::SessionRoamingUser => session_roaming_user(w, ctx),
+        StoryKind::SsprForeign => sspr_foreign(w, ctx),
+        StoryKind::SsprHomeCountry => sspr_home_country(w, ctx),
         _ => return Ok(false),
     }
     Ok(true)
@@ -985,4 +992,187 @@ fn admin_role_changes(w: &mut World, ctx: &mut Ctx) -> Result<()> {
         });
     }
     Ok(())
+}
+
+/// One refresh that no longer works (50173, "the user must provide fresh authentication"): the
+/// session was revoked or the password reset. An interactive-report row (the portal and Hawk deliver only those) with no session.
+fn refresh_failure(
+    w: &World,
+    ctx: &mut Ctx,
+    user: &User,
+    time: DateTime<Utc>,
+    ip: IpAddr,
+    location: &Location,
+) -> crate::events::SignIn {
+    let mut r = failed_signin(w, ctx, user, time, ip, location, 50173, None);
+    r.failure_reason = "The user must provide fresh authentication.".to_string();
+    r
+}
+
+/// After the victim's sessions are revoked, the attacker replays the stolen refresh tokens from a
+/// hosting address the victim never used: six refreshes in 35 minutes, each failing 50173. Fixed
+/// attacker address (no shared-pool draw).
+fn token_replay_after_revoke(w: &mut World, ctx: &mut Ctx) {
+    let a: User = ctx.a.clone();
+    let att = w.attacker.clone();
+    for k in 0..6i64 {
+        let r = refresh_failure(
+            w,
+            ctx,
+            &a,
+            ctx.t + Duration::minutes(7 * k),
+            att.replay_ip,
+            &att.replay_location,
+        );
+        push_signin(w, ctx, &a, r, false);
+    }
+}
+
+/// The user's own device after a password reset: the day before, a sign-in succeeds from home;
+/// then six refreshes in 35 minutes fail 50173 from the same residential network until the user
+/// signs in again.
+fn post_reset_refresh_noise(w: &mut World, ctx: &mut Ctx) {
+    let a: User = ctx.a.clone();
+    let session = ctx.rng.uuid();
+    let ok = signin(
+        w,
+        &mut ctx.rng,
+        &a,
+        ctx.t - Duration::days(1),
+        a.home_ip,
+        &a.home,
+        SignInType::Interactive,
+        well_known("OfficeHome"),
+        well_known("Office 365 Exchange Online"),
+        session,
+    );
+    push_signin(w, ctx, &a, ok, true);
+    for k in 0..6i64 {
+        let r = refresh_failure(
+            w,
+            ctx,
+            &a,
+            ctx.t + Duration::minutes(7 * k),
+            a.home_ip,
+            &a.home,
+        );
+        push_signin(w, ctx, &a, r, false);
+    }
+}
+
+/// One mailbox sync of the user's own session (`MailItemsAccessed` Sync of one folder, the
+/// Outlook desktop client; audited by default) from `ip`.
+fn session_use(
+    w: &World,
+    ctx: &mut Ctx,
+    user: &User,
+    time: DateTime<Utc>,
+    ip: IpAddr,
+    session: uuid::Uuid,
+) -> crate::events::Ual {
+    ual::mail_items_accessed(
+        w,
+        &mut ctx.rng,
+        user,
+        time,
+        "Sync",
+        &[("\\Inbox".to_string(), Vec::new())],
+        ip,
+        "Client=MSExchangeRPC",
+        well_known("Microsoft Office"),
+        session,
+        false,
+    )
+}
+
+/// One stolen session replayed through two hosting providers in 40 minutes: the attacker's proxy
+/// address (hosting ASN 0) and replay address (hosting ASN 1), alternating, all under one session
+/// id. Fixed attacker addresses (no shared-pool draw).
+fn session_hopping_proxy(w: &mut World, ctx: &mut Ctx) {
+    let a: User = ctx.a.clone();
+    let att = w.attacker.clone();
+    let session = ctx.rng.uuid();
+    for (k, ip) in [att.proxy_ip, att.replay_ip, att.proxy_ip, att.replay_ip]
+        .into_iter()
+        .enumerate()
+    {
+        let u = session_use(
+            w,
+            ctx,
+            &a,
+            ctx.t + Duration::minutes(13 * k as i64),
+            ip,
+            session,
+        );
+        push_ual(w, ctx, u);
+    }
+}
+
+/// A laptop that roams: one session used from home, then a hotel network, then a phone hotspot
+/// (three residential or mobile ASNs, none hosting) in one day. Fixed documentation addresses.
+fn session_roaming_user(w: &mut World, ctx: &mut Ctx) {
+    let a: User = ctx.a.clone();
+    let session = ctx.rng.uuid();
+    let hotel: IpAddr = "2001:db8:12::a".parse().expect("documentation address");
+    let hotspot: IpAddr = "2001:db8:12::b".parse().expect("documentation address");
+    w.story.located.push((hotel, residential_location(0)));
+    w.story.located.push((hotspot, residential_location(1)));
+    for (k, ip) in [a.home_ip, hotel, hotspot].into_iter().enumerate() {
+        let u = session_use(
+            w,
+            ctx,
+            &a,
+            ctx.t + Duration::hours(2 * k as i64),
+            ip,
+            session,
+        );
+        push_ual(w, ctx, u);
+    }
+}
+
+/// A self-service password reset of the user's own account from `ip`, preceded an hour before by
+/// the user's own successful sign-in from home (so every collector that delivers the audit also
+/// delivers a sign-in history to compare the country with).
+fn sspr_from(w: &mut World, ctx: &mut Ctx, ip: IpAddr) {
+    let a: User = ctx.a.clone();
+    let session = ctx.rng.uuid();
+    let ok = signin(
+        w,
+        &mut ctx.rng,
+        &a,
+        ctx.t - Duration::hours(1),
+        a.home_ip,
+        &a.home,
+        SignInType::Interactive,
+        well_known("OfficeHome"),
+        well_known("Office 365 Exchange Online"),
+        session,
+    );
+    push_signin(w, ctx, &a, ok, true);
+    let audit = dir_audit(
+        &mut ctx.rng,
+        ctx.t,
+        "Reset password (self-service)",
+        "UserManagement",
+        "Update",
+        "Self-service Password Management",
+        &a,
+        ip,
+        vec![user_target(&a, Vec::new())],
+    );
+    push_audit(w, ctx, audit);
+}
+
+/// The victim's password reset through self-service from the attacker's replay address, in a
+/// country the victim never signed in from. Fixed attacker address (no shared-pool draw).
+fn sspr_foreign(w: &mut World, ctx: &mut Ctx) {
+    let ip = w.attacker.replay_ip;
+    sspr_from(w, ctx, ip);
+}
+
+/// The user resets their own password through self-service from home, the country of all their
+/// sign-ins.
+fn sspr_home_country(w: &mut World, ctx: &mut Ctx) {
+    let ip = ctx.a.home_ip;
+    sspr_from(w, ctx, ip);
 }

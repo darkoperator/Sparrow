@@ -24,6 +24,7 @@ storylines:
   - {kind: audit_tamper, id: s-tamper, actor: 1, at: {after: s-aitm, minutes: 60}}
   # Everything below happens after UAL ingestion is off: none of it is logged.
   - {kind: mia_burst, id: s-mia, actor: 1, at: {after: s-tamper, minutes: 30}}
+  - {kind: delegate_finance_delete, id: s-deldel, actor: 1, target: 2, at: {after: s-tamper, minutes: 35}}
   - {kind: forwarding_mailbox, id: s-fwd, actor: 1, at: {after: s-tamper, minutes: 40}}
   - {kind: admin_inbox_rule, id: s-admrule, target: 2, at: {after: s-tamper, minutes: 45}}
   - {kind: ediscovery_search, id: s-ediscovery, at: {after: s-tamper, minutes: 50}}

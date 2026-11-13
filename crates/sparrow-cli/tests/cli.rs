@@ -1049,7 +1049,7 @@ fn synth_scale_flags_add_exact_filler() {
 #[test]
 fn synth_coverage_reports_every_rule() {
     let v = json_out(sparrow().args(["--json", "synth", "coverage"]), 0);
-    assert_eq!(v["rules"].as_array().unwrap().len(), 34);
+    assert_eq!(v["rules"].as_array().unwrap().len(), 39);
     assert_eq!(v["ok"], true);
 }
 
@@ -1147,7 +1147,7 @@ fn rules_test_runs_every_inline_test() {
 fn rules_list_shows_a_file_for_every_coverage_id() {
     let cov = sparrow_core::detect::coverage::CoverageMatrix::builtin().unwrap();
     let expected: Vec<String> = cov.rules.iter().map(|r| r.id.clone()).collect();
-    assert_eq!(expected.len(), 34, "the seed pack is 34 rules");
+    assert_eq!(expected.len(), 39, "the seed pack is 39 rules");
 
     let v = json_out(sparrow().args(["--json", "rules", "list"]), 0);
     let ids: Vec<String> = v["rules"]
@@ -1706,6 +1706,43 @@ fn ioc_add_records_agent_and_on_behalf_of() {
             &serde_json::json!("pending_review")
         )
     );
+}
+
+/// `ioc add --json` prints the review state the case stored for the new indicator (read back after the
+/// insert), the same value `ioc list` shows.
+#[test]
+fn ioc_add_json_prints_the_stored_review_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = fresh_case(dir.path());
+    let added = json_out(
+        sparrow()
+            .args([
+                "--json",
+                "ioc",
+                "add",
+                "--type",
+                "ip",
+                "--value",
+                "203.0.113.9",
+                "--verdict",
+                "malicious",
+                "--agent",
+                "claude",
+                "--case",
+            ])
+            .arg(&case),
+        0,
+    );
+    let list = json_out(
+        sparrow()
+            .args(["--json", "ioc", "list", "--case"])
+            .arg(&case),
+        0,
+    );
+    let stored = &list["indicators"][0];
+    assert_eq!(stored["indicator_id"], added["indicator_id"]);
+    assert_eq!(added["review_state"], stored["review_state"]);
+    assert_eq!(added["review_state"], "pending_review");
 }
 
 #[test]

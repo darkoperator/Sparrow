@@ -31,6 +31,7 @@ use serde_json::{Map, Value, json};
 pub fn register(r: &mut ParserRegistry) {
     r.register("hawk.user.entra_signin", Box::new(SigninsParser));
     r.register("portal.entra_signins", Box::new(SigninsParser));
+    r.register("portal.entra_signins_json", Box::new(SigninsParser));
     r.register("inv.signins", Box::new(SigninsParser));
     r.register("inv.signins.merged", Box::new(SigninsParser));
 }

@@ -43,6 +43,8 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
         StoryKind::ForwardingTransportRule => forwarding_transport_rule(w, ctx)?,
         StoryKind::MailboxPermissionGrant => mailbox_permission_grant(w, ctx)?,
         StoryKind::MiaBurst => mia_burst(w, ctx)?,
+        StoryKind::DelegateFinanceDelete => delegate_finance_delete(w, ctx),
+        StoryKind::AssistantCleanup => assistant_cleanup(w, ctx),
         StoryKind::SendNewIp => {
             // The attacker signs in from the replay address and sends from the SAME address in
             // the same session: its own earlier activity must not make the address look normal.
@@ -184,6 +186,8 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
             auto_reply(w, ctx, ip, "Disabled", "");
         }
         StoryKind::HeaderClean => header_clean(w, ctx),
+        StoryKind::LookalikeVendorInvoice => lookalike_vendor_invoice(w, ctx),
+        StoryKind::SimilarUnrelatedDomain => similar_unrelated_domain(w, ctx),
         _ => return Ok(false),
     }
     Ok(true)
@@ -806,6 +810,141 @@ pub(super) fn mia_burst_from(
     Ok(())
 }
 
+/// A message delivered to `owner` from `from` (an inbound trace row), returning its Internet
+/// message id.
+fn deliver_to(
+    w: &mut World,
+    ctx: &mut Ctx,
+    owner: &User,
+    from: &str,
+    subject: &str,
+    at: DateTime<Utc>,
+) -> String {
+    let imid = ual::internet_message_id(&mut ctx.rng);
+    let size = ctx.rng.range(8_000, 60_000) as u64;
+    let trace = TraceMsg {
+        trace_id: ctx.rng.uuid(),
+        internet_message_id: imid.clone(),
+        received: at,
+        sender: from.to_string(),
+        recipients: vec![(owner.upn.clone(), "Delivered".to_string())],
+        subject: subject.to_string(),
+        // No sender address: drawing one from the shared pool would renumber every later storyline's.
+        from_ip: None,
+        to_ip: None,
+        size,
+        direction: "Incoming".to_string(),
+        connector_id: None,
+    };
+    push_trace(w, ctx, trace);
+    imid
+}
+
+/// `logon` deletes `subject` from `owner`'s `\Inbox` at `time` from `ip` (one `SoftDelete` or
+/// `MoveToDeletedItems` record; the mailbox audit LogonType is 2 for a delegate).
+#[allow(clippy::too_many_arguments)]
+fn delete_from_mailbox(
+    w: &mut World,
+    ctx: &mut Ctx,
+    owner: &User,
+    logon: &User,
+    op: &str,
+    imid: &str,
+    subject: &str,
+    time: DateTime<Utc>,
+    ip: IpAddr,
+    client_info: &str,
+    session: Uuid,
+) {
+    let size = ctx.rng.range(8_000, 60_000) as u64;
+    let item = ItemRef::new(w, &owner.upn, "\\Inbox", imid, subject, size);
+    let u = ual::mailbox_item(
+        w,
+        &mut ctx.rng,
+        owner,
+        logon,
+        time,
+        op,
+        Some(item),
+        ip,
+        client_info,
+        session,
+    );
+    push_ual(w, ctx, u);
+}
+
+/// The attacker, signed in as the storyline's user, soft-deletes a genuine finance message from
+/// the mailbox of `target` (a delegate), seconds after the look-alike copy it replaces arrives, from
+/// its mailbox-access address (a hosting address) through Outlook on the web.
+fn delegate_finance_delete(w: &mut World, ctx: &mut Ctx) {
+    let a = ctx.a.clone();
+    let owner = target(w, ctx, 2);
+    let t = ctx.t;
+    let genuine = deliver_to(
+        w,
+        ctx,
+        &owner,
+        &format!("accounts@{VENDOR_DOMAIN}"),
+        "Invoice 4471 - payment due",
+        t - Duration::hours(3),
+    );
+    deliver_to(
+        w,
+        ctx,
+        &owner,
+        PARTNER_PAYMENTS,
+        "Updated bank details for invoice 4471",
+        t - Duration::seconds(20),
+    );
+    let ip = w.attacker.mailbox_ip;
+    let session = attacker_session(w, ctx, &a, t);
+    delete_from_mailbox(
+        w,
+        ctx,
+        &owner,
+        &a,
+        "SoftDelete",
+        &genuine,
+        "Invoice 4471 - payment due",
+        t,
+        ip,
+        OWA,
+        session,
+    );
+}
+
+/// An assistant (a delegate) clears a vendor newsletter out of the mailbox of `target` from the
+/// office address: not finance, not a hosting address.
+fn assistant_cleanup(w: &mut World, ctx: &mut Ctx) {
+    let a = ctx.a.clone();
+    let owner = target(w, ctx, 2);
+    let t = ctx.t;
+    let subject = "Tailwind Supplies: autumn catalogue";
+    let imid = deliver_to(
+        w,
+        ctx,
+        &owner,
+        &format!("news@{VENDOR_DOMAIN}"),
+        subject,
+        t - Duration::hours(2),
+    );
+    let session = ctx.rng.uuid();
+    let ip = a.office_ip;
+    delete_from_mailbox(
+        w,
+        ctx,
+        &owner,
+        &a,
+        "MoveToDeletedItems",
+        &imid,
+        subject,
+        t,
+        ip,
+        OUTLOOK_DESKTOP,
+        session,
+    );
+}
+
 /// A heavy Outlook desktop user at the office: twelve `Bind` records over ten minutes, each one
 /// to three items of the user's own recent mail, from the office address. Outlook binds every
 /// item it opens or previews, so a busy user crosses five binds in half an hour on any ordinary
@@ -1029,6 +1168,59 @@ fn header_spoof(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     };
     deliver(w, ctx, email, "bounce@spoof-mail.test");
     Ok(())
+}
+
+/// A vendor the look-alike storylines imitate, and its `vv` for `w` look-alike.
+const IMITATED_VENDOR: &str = "widgetco.example";
+const IMITATING_VENDOR: &str = "vvidgetco.example";
+
+/// The vendor's genuine invoice reaches the user 20 days before the same thread is continued from
+/// a look-alike domain (`vv` for `w`) with new bank details. Neither message has a sender address
+/// (no shared-pool draw); both are Incoming trace rows only.
+fn lookalike_vendor_invoice(w: &mut World, ctx: &mut Ctx) {
+    let a = ctx.a.clone();
+    let t = ctx.t;
+    deliver_to(
+        w,
+        ctx,
+        &a,
+        &format!("billing@{IMITATED_VENDOR}"),
+        "Invoice 7781 - payment due",
+        t - Duration::days(20),
+    );
+    deliver_to(
+        w,
+        ctx,
+        &a,
+        &format!("billing@{IMITATING_VENDOR}"),
+        "Updated bank details for invoice 7781",
+        t,
+    );
+}
+
+/// Two pairs of unrelated senders whose domains are one edit apart: short names (a four-letter
+/// first label, seen 20 days apart) and long names seen three days apart. Neither pair is a
+/// look-alike of the other: the first is too short to mean anything, the second is not 14 days
+/// apart.
+fn similar_unrelated_domain(w: &mut World, ctx: &mut Ctx) {
+    let a = ctx.a.clone();
+    let t = ctx.t;
+    for (from, subject, at) in [
+        (
+            "sales@ibex.example",
+            "Spring catalogue",
+            t - Duration::days(20),
+        ),
+        ("sales@ibez.example", "Spring price list", t),
+        (
+            "info@shop-alpha.example",
+            "Order confirmation",
+            t - Duration::days(3),
+        ),
+        ("info@shop-alphb.example", "Order confirmation", t),
+    ] {
+        deliver_to(w, ctx, &a, from, subject, at);
+    }
 }
 
 /// A vendor newsletter to `g` that passes SPF, DKIM and DMARC.

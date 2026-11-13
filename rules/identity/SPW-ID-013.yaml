@@ -1,0 +1,635 @@
+# SPW-ID-013 — Logic source: coverage.yaml. A self-service password reset (SSPR) or self-service
+# password change whose initiating address geolocates to a country the user had never signed in from
+# successfully before the reset. SSPR needs only the user's phone or e-mail verification, so an attacker who holds the
+# mailbox or a SIM resets the password and takes the account; nothing else reports it because the
+# directory audit carries the address but no rule read it. `sql:` because the country test joins
+# ip_intel twice (the audit's address, then the user's successful sign-ins before the reset).
+# Activities (matched case-insensitively, as SPW-ID-001 matches directory_audits.activity):
+# "Reset password (self-service)", "Self-service password reset flow activity progress" and
+# "Change password (self-service)". Any result is judged (a failed attempt from a new country is still
+# the attempt); the result goes in the context.
+# User: initiated_by_upn, else the audit's first target's UserPrincipalName, compared with the
+# sign-ins' user_upn as lower(trim()).
+# Country: ip_intel.country_iso, the same source for the audit address and for the sign-in addresses
+# (signins.location is not used: it is the sign-in log's own claim and a Hawk export may omit it).
+# History: only sign-ins strictly BEFORE the reset's time count. An attacker who resets and then signs
+# in from the same country must not excuse the reset. Success: signins error_code 0 or NULL (an unknown result is not a failure), as SPW-ID-002/003/011 do.
+# Not judged: an audit address with no ip_intel country (no GeoIP, or not in the database), a Microsoft
+# or private address, and a user with no successful sign-in of known country before the reset (nothing to
+# compare: a tenant without a sign-in log, such as Hawk 3, would otherwise hit on every reset).
+# One hit per audit row. context: country, city, activity, result.
+# Missed on purpose: an SSPR from a country the user had signed in from once before (a trip, a VPN exit),
+# and an attacker whose address geolocates to the user's own country.
+id: SPW-ID-013
+title: Self-service password reset from a new country
+version: 1
+status: experimental
+severity: medium
+confidence: medium
+mitre: [T1098]
+tags: [bec, password-reset, sspr]
+stage: persistence
+requires: []
+requires_evidence: []
+needs_geoip: true
+sql: |
+  WITH sspr AS (
+    SELECT d.record_key, d.event_time,
+           lower(trim(coalesce(nullif(trim(d.initiated_by_upn), ''),
+                               d.targets->>'$[0].UserPrincipalName',
+                               d.targets->>'$[0].userPrincipalName'))) AS upn,
+           d.initiated_by_ip AS ip, d.activity, d.result, i.country_iso AS cc, i.city
+    FROM directory_audits d JOIN ip_intel i ON i.ip = d.initiated_by_ip
+    WHERE lower(trim(d.activity)) IN ('reset password (self-service)',
+                                      'self-service password reset flow activity progress',
+                                      'change password (self-service)')
+      AND coalesce(trim(i.country_iso), '') <> '' AND NOT i.is_microsoft AND NOT i.is_private
+  ),
+  home AS (
+    SELECT lower(trim(s.user_upn)) AS upn, s.event_time, i.country_iso AS cc
+    FROM signins s JOIN ip_intel i ON i.ip = s.ip
+    WHERE (s.error_code IS NULL OR s.error_code = 0) AND coalesce(trim(s.user_upn), '') <> ''
+      AND coalesce(trim(i.country_iso), '') <> '' AND s.event_time IS NOT NULL
+  )
+  SELECT lower(r.record_key) AS record_key, 'directory_audits' AS source_table, r.event_time,
+         r.upn AS actor_upn, r.ip,
+         json_object('country', r.cc, 'city', r.city, 'activity', r.activity, 'result', r.result) AS context
+  FROM sspr r
+  WHERE coalesce(r.upn, '') <> ''
+    AND r.event_time IS NOT NULL
+    AND EXISTS (SELECT 1 FROM home h WHERE h.upn = r.upn AND h.event_time < r.event_time)
+    AND NOT EXISTS (SELECT 1 FROM home h WHERE h.upn = r.upn AND h.event_time < r.event_time
+                      AND upper(trim(h.cc)) = upper(trim(r.cc)))
+group_by: [actor_upn]
+analyst_guidance: |
+  A self-service password reset needs only the user's verification method, so a reset from a country
+  the user had never signed in from before means someone else holds that method (a phished phone or e-mail
+  code, a SIM swap, a compromised alternate mailbox). Confirm with the user whether they reset or
+  changed the password, and whether they were travelling. If not: revoke sessions and refresh tokens,
+  reset the password and the registered authentication methods, and look at what the account did after
+  the reset (sign-ins, mailbox rules, MFA changes). This rule needs GeoIP data (ingest with
+  --geoip-dir): resets from an address with no country are ignored.
+false_positives:
+  - A user resetting a forgotten password while travelling or on a VPN that exits in another country.
+  - A user's first reset after a long absence, from a mobile carrier whose gateway geolocates abroad.
+references:
+  - https://learn.microsoft.com/en-us/entra/identity/authentication/concept-sspr-howitworks
+  - https://attack.mitre.org/techniques/T1098/
+author: Sparrow
+tests:
+  - name: SSPR from ES, user only ever signed in from US
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        country_iso: US
+        country: US
+        city: Chicago
+      - table: ip_intel
+        ip: 203.0.113.9
+        country_iso: ES
+        country: ES
+        city: Madrid
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: directory_audits
+        activity: Reset password (self-service)
+        initiated_by_upn: alice@contoso.example
+        initiated_by_ip: 203.0.113.9
+        result: success
+        event_time: "2026-03-10T10:00:00Z"
+    expect_hits: 1
+  - name: SSPR from US, the user's own country
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        country_iso: US
+        country: US
+        city: Chicago
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: directory_audits
+        activity: Reset password (self-service)
+        initiated_by_upn: alice@contoso.example
+        initiated_by_ip: 198.51.100.1
+        result: success
+        event_time: "2026-03-10T10:00:00Z"
+    expect_hits: 0
+  - name: no ip_intel row for the SSPR address
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        country_iso: US
+        country: US
+        city: Chicago
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: directory_audits
+        activity: Reset password (self-service)
+        initiated_by_upn: alice@contoso.example
+        initiated_by_ip: 203.0.113.9
+        result: success
+        event_time: "2026-03-10T10:00:00Z"
+    expect_hits: 0
+  - name: ip_intel row without a country
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        country_iso: US
+        country: US
+        city: Chicago
+      - table: ip_intel
+        ip: 203.0.113.9
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: directory_audits
+        activity: Reset password (self-service)
+        initiated_by_upn: alice@contoso.example
+        initiated_by_ip: 203.0.113.9
+        result: success
+        event_time: "2026-03-10T10:00:00Z"
+    expect_hits: 0
+  - name: flow activity progress from ES
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        country_iso: US
+        country: US
+        city: Chicago
+      - table: ip_intel
+        ip: 203.0.113.9
+        country_iso: ES
+        country: ES
+        city: Madrid
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: directory_audits
+        activity: Self-service password reset flow activity progress
+        initiated_by_upn: alice@contoso.example
+        initiated_by_ip: 203.0.113.9
+        result: success
+        event_time: "2026-03-10T10:00:00Z"
+    expect_hits: 1
+  - name: self-service password change from ES
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        country_iso: US
+        country: US
+        city: Chicago
+      - table: ip_intel
+        ip: 203.0.113.9
+        country_iso: ES
+        country: ES
+        city: Madrid
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: directory_audits
+        activity: Change password (self-service)
+        initiated_by_upn: alice@contoso.example
+        initiated_by_ip: 203.0.113.9
+        result: success
+        event_time: "2026-03-10T10:00:00Z"
+    expect_hits: 1
+  - name: activity match ignores case
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        country_iso: US
+        country: US
+        city: Chicago
+      - table: ip_intel
+        ip: 203.0.113.9
+        country_iso: ES
+        country: ES
+        city: Madrid
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: directory_audits
+        activity: RESET PASSWORD (SELF-SERVICE)
+        initiated_by_upn: alice@contoso.example
+        initiated_by_ip: 203.0.113.9
+        result: success
+        event_time: "2026-03-10T10:00:00Z"
+    expect_hits: 1
+  - name: an admin reset from ES is another activity
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        country_iso: US
+        country: US
+        city: Chicago
+      - table: ip_intel
+        ip: 203.0.113.9
+        country_iso: ES
+        country: ES
+        city: Madrid
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: directory_audits
+        activity: Reset password (by admin)
+        initiated_by_upn: alice@contoso.example
+        initiated_by_ip: 203.0.113.9
+        result: success
+        event_time: "2026-03-10T10:00:00Z"
+    expect_hits: 0
+  - name: a failed sign-in from ES does not make it a home country
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        country_iso: US
+        country: US
+        city: Chicago
+      - table: ip_intel
+        ip: 203.0.113.9
+        country_iso: ES
+        country: ES
+        city: Madrid
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.9
+        error_code: 50126
+        event_time: "2026-03-02T09:00:00Z"
+      - table: directory_audits
+        activity: Reset password (self-service)
+        initiated_by_upn: alice@contoso.example
+        initiated_by_ip: 203.0.113.9
+        result: success
+        event_time: "2026-03-10T10:00:00Z"
+    expect_hits: 1
+  - name: a successful sign-in from ES makes it a home country
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        country_iso: US
+        country: US
+        city: Chicago
+      - table: ip_intel
+        ip: 203.0.113.9
+        country_iso: ES
+        country: ES
+        city: Madrid
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.9
+        error_code: 0
+        event_time: "2026-03-02T09:00:00Z"
+      - table: directory_audits
+        activity: Reset password (self-service)
+        initiated_by_upn: alice@contoso.example
+        initiated_by_ip: 203.0.113.9
+        result: success
+        event_time: "2026-03-10T10:00:00Z"
+    expect_hits: 0
+  - name: a sign-in with unknown result (NULL) counts as success
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        country_iso: US
+        country: US
+        city: Chicago
+      - table: ip_intel
+        ip: 203.0.113.9
+        country_iso: ES
+        country: ES
+        city: Madrid
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.9
+        error_code: null
+        event_time: "2026-03-02T09:00:00Z"
+      - table: directory_audits
+        activity: Reset password (self-service)
+        initiated_by_upn: alice@contoso.example
+        initiated_by_ip: 203.0.113.9
+        result: success
+        event_time: "2026-03-10T10:00:00Z"
+    expect_hits: 0
+  - name: another user's sign-in from ES does not excuse alice
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        country_iso: US
+        country: US
+        city: Chicago
+      - table: ip_intel
+        ip: 203.0.113.9
+        country_iso: ES
+        country: ES
+        city: Madrid
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: signins
+        user_upn: bob@contoso.example
+        ip: 203.0.113.9
+        error_code: 0
+        event_time: "2026-03-02T09:00:00Z"
+      - table: directory_audits
+        activity: Reset password (self-service)
+        initiated_by_upn: alice@contoso.example
+        initiated_by_ip: 203.0.113.9
+        result: success
+        event_time: "2026-03-10T10:00:00Z"
+    expect_hits: 1
+  - name: user compared case-insensitively
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        country_iso: US
+        country: US
+        city: Chicago
+      - table: ip_intel
+        ip: 203.0.113.9
+        country_iso: ES
+        country: ES
+        city: Madrid
+      - table: signins
+        user_upn: Alice@Contoso.Example
+        ip: 198.51.100.1
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: directory_audits
+        activity: Reset password (self-service)
+        initiated_by_upn: "ALICE@contoso.example "
+        initiated_by_ip: 203.0.113.9
+        result: success
+        event_time: "2026-03-10T10:00:00Z"
+    expect_hits: 1
+  - name: user compared case-insensitively, home country match
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        country_iso: US
+        country: US
+        city: Chicago
+      - table: signins
+        user_upn: Alice@Contoso.Example
+        ip: 198.51.100.1
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: directory_audits
+        activity: Reset password (self-service)
+        initiated_by_upn: ALICE@contoso.example
+        initiated_by_ip: 198.51.100.1
+        result: success
+        event_time: "2026-03-10T10:00:00Z"
+    expect_hits: 0
+  - name: no initiator, so the audit's target user is the user
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        country_iso: US
+        country: US
+        city: Chicago
+      - table: ip_intel
+        ip: 203.0.113.9
+        country_iso: ES
+        country: ES
+        city: Madrid
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: directory_audits
+        activity: Reset password (self-service)
+        initiated_by_ip: 203.0.113.9
+        result: success
+        event_time: "2026-03-10T10:00:00Z"
+        targets: '[{"type":"User","userPrincipalName":"alice@contoso.example"}]'
+    expect_hits: 1
+  - name: no initiator and no target is not judged
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        country_iso: US
+        country: US
+        city: Chicago
+      - table: ip_intel
+        ip: 203.0.113.9
+        country_iso: ES
+        country: ES
+        city: Madrid
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: directory_audits
+        activity: Reset password (self-service)
+        initiated_by_ip: 203.0.113.9
+        result: success
+        event_time: "2026-03-10T10:00:00Z"
+    expect_hits: 0
+  - name: a Microsoft service address is not judged
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        country_iso: US
+        country: US
+        city: Chicago
+      - table: ip_intel
+        ip: 203.0.113.9
+        country_iso: ES
+        country: ES
+        city: Madrid
+        is_microsoft: true
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: directory_audits
+        activity: Reset password (self-service)
+        initiated_by_upn: alice@contoso.example
+        initiated_by_ip: 203.0.113.9
+        result: success
+        event_time: "2026-03-10T10:00:00Z"
+    expect_hits: 0
+  - name: a private address is not judged
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        country_iso: US
+        country: US
+        city: Chicago
+      - table: ip_intel
+        ip: 203.0.113.9
+        country_iso: ES
+        country: ES
+        city: Madrid
+        is_private: true
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: directory_audits
+        activity: Reset password (self-service)
+        initiated_by_upn: alice@contoso.example
+        initiated_by_ip: 203.0.113.9
+        result: success
+        event_time: "2026-03-10T10:00:00Z"
+    expect_hits: 0
+  - name: a user with no sign-ins at all is not judged
+    records:
+      - table: ip_intel
+        ip: 203.0.113.9
+        country_iso: ES
+        country: ES
+        city: Madrid
+      - table: directory_audits
+        activity: Reset password (self-service)
+        initiated_by_upn: alice@contoso.example
+        initiated_by_ip: 203.0.113.9
+        result: success
+        event_time: "2026-03-10T10:00:00Z"
+    expect_hits: 0
+  - name: only failed sign-ins, nothing to compare
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        country_iso: US
+        country: US
+        city: Chicago
+      - table: ip_intel
+        ip: 203.0.113.9
+        country_iso: ES
+        country: ES
+        city: Madrid
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        error_code: 50126
+        event_time: "2026-03-01T09:00:00Z"
+      - table: directory_audits
+        activity: Reset password (self-service)
+        initiated_by_upn: alice@contoso.example
+        initiated_by_ip: 203.0.113.9
+        result: success
+        event_time: "2026-03-10T10:00:00Z"
+    expect_hits: 0
+  - name: two SSPR rows are two hits
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        country_iso: US
+        country: US
+        city: Chicago
+      - table: ip_intel
+        ip: 203.0.113.9
+        country_iso: ES
+        country: ES
+        city: Madrid
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: directory_audits
+        activity: Reset password (self-service)
+        initiated_by_upn: alice@contoso.example
+        initiated_by_ip: 203.0.113.9
+        result: success
+        event_time: "2026-03-10T10:00:00Z"
+      - table: directory_audits
+        activity: Reset password (self-service)
+        initiated_by_upn: alice@contoso.example
+        initiated_by_ip: 203.0.113.9
+        result: success
+        event_time: "2026-03-11T10:00:00Z"
+    expect_hits: 2
+  - name: SSPR from ES, then a successful ES sign-in afterwards, prior history US
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        country_iso: US
+        country: US
+        city: Chicago
+      - table: ip_intel
+        ip: 203.0.113.9
+        country_iso: ES
+        country: ES
+        city: Madrid
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: directory_audits
+        activity: Reset password (self-service)
+        initiated_by_upn: alice@contoso.example
+        initiated_by_ip: 203.0.113.9
+        result: success
+        event_time: "2026-03-10T10:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.9
+        error_code: 0
+        event_time: "2026-03-10T11:00:00Z"
+    expect_hits: 1
+  - name: only sign-ins after the SSPR, so there is no earlier history to compare
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        country_iso: US
+        country: US
+        city: Chicago
+      - table: ip_intel
+        ip: 203.0.113.9
+        country_iso: ES
+        country: ES
+        city: Madrid
+      - table: directory_audits
+        activity: Reset password (self-service)
+        initiated_by_upn: alice@contoso.example
+        initiated_by_ip: 203.0.113.9
+        result: success
+        event_time: "2026-03-10T10:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        error_code: 0
+        event_time: "2026-03-11T09:00:00Z"
+    expect_hits: 0
