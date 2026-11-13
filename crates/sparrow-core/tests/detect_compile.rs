@@ -774,7 +774,7 @@ fn builtin_rules_without_a_stage_are_listed_by_lint() {
             "SPW-HAWK-014",
             "SPW-HAWK-015",
             "SPW-ID-006",
-            // Inbound mail is not a compromise stage (ruling R21, like SPW-HAWK-014).
+            // Inbound mail is not a compromise stage of the recipient (like SPW-HAWK-014).
             "SPW-MAIL-009"
         ]
     );

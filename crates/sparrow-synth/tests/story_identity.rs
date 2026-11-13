@@ -12,7 +12,7 @@ fn world(name: &str) -> (World, Vec<sparrow_synth::story::StoryRecord>) {
 #[test]
 fn coverage_matrix_is_complete_and_consistent() {
     let rs = rules();
-    assert_eq!(rs.len(), 39);
+    assert_eq!(rs.len(), shipped_rule_count());
     for r in rs {
         assert!(
             !r.positives.is_empty() && !r.lookalikes.is_empty(),
@@ -363,4 +363,24 @@ fn consent_signin_uses_an_unknown_device() {
         .unwrap();
     assert_eq!(s.ip, w.attacker.replay_ip);
     assert!(s.device.device_id.is_nil() && s.device_managed.is_none());
+}
+
+/// Number of shipped rule files (`rules/**/SPW-*.yaml`): the rule count every count assert uses,
+/// so adding a rule needs no edit to a test.
+fn shipped_rule_count() -> usize {
+    fn walk(d: &std::path::Path) -> usize {
+        std::fs::read_dir(d)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .map(|p| {
+                if p.is_dir() {
+                    walk(&p)
+                } else {
+                    let n = p.file_name().unwrap().to_string_lossy();
+                    usize::from(n.starts_with("SPW-") && n.ends_with(".yaml"))
+                }
+            })
+            .sum()
+    }
+    walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../rules"))
 }

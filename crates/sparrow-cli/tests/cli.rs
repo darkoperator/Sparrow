@@ -1049,7 +1049,7 @@ fn synth_scale_flags_add_exact_filler() {
 #[test]
 fn synth_coverage_reports_every_rule() {
     let v = json_out(sparrow().args(["--json", "synth", "coverage"]), 0);
-    assert_eq!(v["rules"].as_array().unwrap().len(), 39);
+    assert_eq!(v["rules"].as_array().unwrap().len(), shipped_rule_count());
     assert_eq!(v["ok"], true);
 }
 
@@ -1147,7 +1147,11 @@ fn rules_test_runs_every_inline_test() {
 fn rules_list_shows_a_file_for_every_coverage_id() {
     let cov = sparrow_core::detect::coverage::CoverageMatrix::builtin().unwrap();
     let expected: Vec<String> = cov.rules.iter().map(|r| r.id.clone()).collect();
-    assert_eq!(expected.len(), 39, "the seed pack is 39 rules");
+    assert_eq!(
+        expected.len(),
+        shipped_rule_count(),
+        "one coverage entry per rule file"
+    );
 
     let v = json_out(sparrow().args(["--json", "rules", "list"]), 0);
     let ids: Vec<String> = v["rules"]
@@ -3714,4 +3718,47 @@ fn ingest_exit_code_tells_collector_loss_from_parse_failures() {
     );
     let l = line(&text, invictus::ROLES_ALL);
     assert!(!l.contains("rejected") && !l.contains("collector"), "{l}");
+}
+
+/// Number of shipped rule files (`rules/**/SPW-*.yaml`): the rule count every count assert uses,
+/// so adding a rule needs no edit to a test.
+fn shipped_rule_count() -> usize {
+    fn walk(d: &std::path::Path) -> usize {
+        std::fs::read_dir(d)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .map(|p| {
+                if p.is_dir() {
+                    walk(&p)
+                } else {
+                    let n = p.file_name().unwrap().to_string_lossy();
+                    usize::from(n.starts_with("SPW-") && n.ends_with(".yaml"))
+                }
+            })
+            .sum()
+    }
+    walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../rules"))
+}
+
+/// The rule count written in the READMEs matches the shipped rule files.
+#[test]
+fn readme_rule_counts_match_the_rule_files() {
+    let n = shipped_rule_count();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for (file, phrase) in [
+        ("README.md", format!("runs {n} detection rules")),
+        ("README.md", format!("The {n} rules run per tenant")),
+        (
+            "crates/sparrow-synth/README.md",
+            format!("seed-rule pack ({n} rules)"),
+        ),
+    ] {
+        let text = std::fs::read_to_string(root.join(file))
+            .unwrap()
+            .replace('\n', " ");
+        assert!(
+            text.contains(&phrase),
+            "{file} should say \"{phrase}\" ({n} rule files under rules/)"
+        );
+    }
 }

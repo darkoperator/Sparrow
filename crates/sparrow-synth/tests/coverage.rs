@@ -4,7 +4,7 @@ use sparrow_synth::options::Collector;
 #[test]
 fn coverage_has_no_gaps() {
     let r = report(1).unwrap();
-    assert_eq!(r.rules.len(), 39);
+    assert_eq!(r.rules.len(), shipped_rule_count());
     assert!(r.ok, "{}", r.gaps.join("\n"));
 }
 
@@ -52,4 +52,24 @@ fn a_correlated_rule_needs_every_evidence_half() {
         &[vec!["inbox_rules".to_string()]],
         &["ual_events".to_string()]
     ));
+}
+
+/// Number of shipped rule files (`rules/**/SPW-*.yaml`): the rule count every count assert uses,
+/// so adding a rule needs no edit to a test.
+fn shipped_rule_count() -> usize {
+    fn walk(d: &std::path::Path) -> usize {
+        std::fs::read_dir(d)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .map(|p| {
+                if p.is_dir() {
+                    walk(&p)
+                } else {
+                    let n = p.file_name().unwrap().to_string_lossy();
+                    usize::from(n.starts_with("SPW-") && n.ends_with(".yaml"))
+                }
+            })
+            .sum()
+    }
+    walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../rules"))
 }
