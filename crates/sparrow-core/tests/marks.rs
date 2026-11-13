@@ -722,6 +722,79 @@ fn ip_prefix_flag_v4_and_v6() {
 }
 
 #[test]
+fn agent_malicious_ip_flag_indicator_is_pending() {
+    let case = events_case();
+    let c = case.conn();
+    // An agent acting for the analyst flags the IP malicious: the flag and its indicator are both its decision.
+    flag_value(
+        c,
+        &agent(),
+        ValueKind::Ip,
+        IP,
+        None,
+        Some(FlagLevel::Malicious),
+    )
+    .unwrap();
+    let (state, decided_by, on_behalf_of, reviewed_by): (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+    ) = c
+        .query_row(
+            "SELECT CAST(review_state AS VARCHAR), decided_by, on_behalf_of, reviewed_by \
+             FROM case_indicators WHERE CAST(type AS VARCHAR) = 'ip' AND value = ?",
+            [IP],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(state, "pending_review");
+    assert_eq!(decided_by, agent().as_str());
+    assert_eq!(on_behalf_of.as_deref(), Some("analyst:carlos"));
+    assert_eq!(reviewed_by, None);
+    // Every reader agrees: the stored column, list_indicators, and the pending-review queue.
+    let listed = indicators::list_indicators(c, None, false).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].review_state.as_deref(), Some("pending_review"));
+    assert_eq!(listed[0].decided_by.as_deref(), Some(agent().as_str()));
+    let pending = review::pending(c).unwrap();
+    assert!(pending.iter().any(|p| p.object_type == "indicator"));
+    let flag_state: String = c
+        .query_row(
+            "SELECT CAST(review_state AS VARCHAR) FROM value_flags WHERE value = ?",
+            [IP],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(flag_state, "pending_review");
+
+    // The analyst accepts the flag by reviewing the rows it covers: the flag is accepted, and the indicator is a
+    // separate decision that stays pending until it is reviewed itself.
+    let flag_seq = review::latest_decision_seq(c, "value_flag", &flag_id_of(c))
+        .unwrap()
+        .unwrap();
+    review::review_accept(c, &reviewer(), "value_flag", &flag_id_of(c), flag_seq, None).unwrap();
+    assert_eq!(
+        indicators::list_indicators(c, None, false).unwrap()[0]
+            .review_state
+            .as_deref(),
+        Some("pending_review")
+    );
+    let ind = &indicators::list_indicators(c, None, false).unwrap()[0];
+    let seq = review::latest_decision_seq(c, "indicator", &ind.indicator_id)
+        .unwrap()
+        .unwrap();
+    review::review_accept(c, &reviewer(), "indicator", &ind.indicator_id, seq, None).unwrap();
+    let after = indicators::list_indicators(c, None, false).unwrap();
+    assert_eq!(after[0].review_state.as_deref(), Some("accepted"));
+}
+
+fn flag_id_of(c: &duckdb::Connection) -> String {
+    c.query_row("SELECT flag_id FROM value_flags LIMIT 1", [], |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
 fn malicious_ip_and_account_create_indicators_suspicious_does_not() {
     let case = events_case();
     let c = case.conn();
