@@ -1,9 +1,9 @@
 # SPW-ID-013 — Logic source: coverage.yaml. A self-service password reset (SSPR) or self-service
-# password change whose initiating address geolocates to a country the user has never signed in from
-# successfully. SSPR needs only the user's phone or e-mail verification, so an attacker who holds the
+# password change whose initiating address geolocates to a country the user had never signed in from
+# successfully before the reset. SSPR needs only the user's phone or e-mail verification, so an attacker who holds the
 # mailbox or a SIM resets the password and takes the account; nothing else reports it because the
 # directory audit carries the address but no rule read it. `sql:` because the country test joins
-# ip_intel twice (the audit's address, then every successful sign-in of the user).
+# ip_intel twice (the audit's address, then the user's successful sign-ins before the reset).
 # Activities (matched case-insensitively, as SPW-ID-001 matches directory_audits.activity):
 # "Reset password (self-service)", "Self-service password reset flow activity progress" and
 # "Change password (self-service)". Any result is judged (a failed attempt from a new country is still
@@ -12,13 +12,14 @@
 # sign-ins' user_upn as lower(trim()).
 # Country: ip_intel.country_iso, the same source for the audit address and for the sign-in addresses
 # (signins.location is not used: it is the sign-in log's own claim and a Hawk export may omit it).
-# Success: signins error_code 0 or NULL (an unknown result is not a failure), as SPW-ID-002/003/011 do.
+# History: only sign-ins strictly BEFORE the reset's time count. An attacker who resets and then signs
+# in from the same country must not excuse the reset. Success: signins error_code 0 or NULL (an unknown result is not a failure), as SPW-ID-002/003/011 do.
 # Not judged: an audit address with no ip_intel country (no GeoIP, or not in the database), a Microsoft
-# or private address, and a user with no successful sign-in of known country at all (nothing to compare:
-# a tenant without a sign-in log, such as Hawk 3, would otherwise hit on every reset).
+# or private address, and a user with no successful sign-in of known country before the reset (nothing to
+# compare: a tenant without a sign-in log, such as Hawk 3, would otherwise hit on every reset).
 # One hit per audit row. context: country, city, activity, result.
-# Missed on purpose: an SSPR from a country the user has signed in from once (a trip, a VPN exit), and
-# an attacker whose address geolocates to the user's own country.
+# Missed on purpose: an SSPR from a country the user had signed in from once before (a trip, a VPN exit),
+# and an attacker whose address geolocates to the user's own country.
 id: SPW-ID-013
 title: Self-service password reset from a new country
 version: 1
@@ -45,22 +46,24 @@ sql: |
       AND coalesce(trim(i.country_iso), '') <> '' AND NOT i.is_microsoft AND NOT i.is_private
   ),
   home AS (
-    SELECT DISTINCT lower(trim(s.user_upn)) AS upn, i.country_iso AS cc
+    SELECT lower(trim(s.user_upn)) AS upn, s.event_time, i.country_iso AS cc
     FROM signins s JOIN ip_intel i ON i.ip = s.ip
     WHERE (s.error_code IS NULL OR s.error_code = 0) AND coalesce(trim(s.user_upn), '') <> ''
-      AND coalesce(trim(i.country_iso), '') <> ''
+      AND coalesce(trim(i.country_iso), '') <> '' AND s.event_time IS NOT NULL
   )
   SELECT lower(r.record_key) AS record_key, 'directory_audits' AS source_table, r.event_time,
          r.upn AS actor_upn, r.ip,
          json_object('country', r.cc, 'city', r.city, 'activity', r.activity, 'result', r.result) AS context
   FROM sspr r
   WHERE coalesce(r.upn, '') <> ''
-    AND EXISTS (SELECT 1 FROM home h WHERE h.upn = r.upn)
-    AND NOT EXISTS (SELECT 1 FROM home h WHERE h.upn = r.upn AND h.cc = r.cc)
+    AND r.event_time IS NOT NULL
+    AND EXISTS (SELECT 1 FROM home h WHERE h.upn = r.upn AND h.event_time < r.event_time)
+    AND NOT EXISTS (SELECT 1 FROM home h WHERE h.upn = r.upn AND h.event_time < r.event_time
+                      AND upper(trim(h.cc)) = upper(trim(r.cc)))
 group_by: [actor_upn]
 analyst_guidance: |
   A self-service password reset needs only the user's verification method, so a reset from a country
-  the user has never signed in from means someone else holds that method (a phished phone or e-mail
+  the user had never signed in from before means someone else holds that method (a phished phone or e-mail
   code, a SIM swap, a compromised alternate mailbox). Confirm with the user whether they reset or
   changed the password, and whether they were travelling. If not: revoke sessions and refresh tokens,
   reset the password and the registered authentication methods, and look at what the account did after
@@ -388,7 +391,7 @@ tests:
         event_time: "2026-03-01T09:00:00Z"
       - table: directory_audits
         activity: Reset password (self-service)
-        initiated_by_upn: ALICE@contoso.example 
+        initiated_by_upn: "ALICE@contoso.example "
         initiated_by_ip: 203.0.113.9
         result: success
         event_time: "2026-03-10T10:00:00Z"
@@ -577,3 +580,56 @@ tests:
         result: success
         event_time: "2026-03-11T10:00:00Z"
     expect_hits: 2
+  - name: SSPR from ES, then a successful ES sign-in afterwards, prior history US
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        country_iso: US
+        country: US
+        city: Chicago
+      - table: ip_intel
+        ip: 203.0.113.9
+        country_iso: ES
+        country: ES
+        city: Madrid
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        error_code: 0
+        event_time: "2026-03-01T09:00:00Z"
+      - table: directory_audits
+        activity: Reset password (self-service)
+        initiated_by_upn: alice@contoso.example
+        initiated_by_ip: 203.0.113.9
+        result: success
+        event_time: "2026-03-10T10:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 203.0.113.9
+        error_code: 0
+        event_time: "2026-03-10T11:00:00Z"
+    expect_hits: 1
+  - name: only sign-ins after the SSPR, so there is no earlier history to compare
+    records:
+      - table: ip_intel
+        ip: 198.51.100.1
+        country_iso: US
+        country: US
+        city: Chicago
+      - table: ip_intel
+        ip: 203.0.113.9
+        country_iso: ES
+        country: ES
+        city: Madrid
+      - table: directory_audits
+        activity: Reset password (self-service)
+        initiated_by_upn: alice@contoso.example
+        initiated_by_ip: 203.0.113.9
+        result: success
+        event_time: "2026-03-10T10:00:00Z"
+      - table: signins
+        user_upn: alice@contoso.example
+        ip: 198.51.100.1
+        error_code: 0
+        event_time: "2026-03-11T09:00:00Z"
+    expect_hits: 0

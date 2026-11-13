@@ -829,9 +829,9 @@ rules:
       Directory audit "Reset password (self-service)", "Self-service password reset flow activity
       progress" or "Change password (self-service)" whose initiating address has a country in
       ip_intel (Microsoft and private addresses excluded) that no successful sign-in of the user
-      (initiated_by_upn, else the audit's target user; error_code 0 or NULL) comes from; users with
-      no successful sign-in of known country are not judged. One hit per audit row. context:
-      country, city, activity, result.
+      (initiated_by_upn, else the audit's target user; error_code 0 or NULL) before the reset comes
+      from; users with no successful sign-in of known country before the reset are not judged.
+      One hit per audit row. context: country, city, activity, result.
     tables: [directory_audits]
     requires: []
     requires_evidence: []
