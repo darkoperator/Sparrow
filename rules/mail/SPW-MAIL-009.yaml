@@ -26,8 +26,9 @@
 # A tenant with no known domain has no arm A. Missed on purpose: look-alikes two or more edits
 # apart that no skeleton folds (other homoglyphs), a one-edit change in the TLD itself, and any
 # domain whose first label is under 6 characters. Multi-part public suffixes (`co.uk`) make the
-# registrable domain the suffix itself, so such senders compare on the suffix; likewise a tenant
-# domain `contoso.onmicrosoft.com` makes every `*.onmicrosoft.com` sender the tenant's own.
+# registrable domain the suffix itself, so such senders compare on the suffix. Exception:
+# `onmicrosoft.com` and `mail.onmicrosoft.com` are shared Microsoft suffixes, so a host under them
+# keeps one more label (`contoso.onmicrosoft.com`): attacker tenants there are compared, not ignored.
 # Cost: the pairs are never a cross join. Skeleton pairs are an equi-join on the skeleton; one-edit
 # pairs are joined only within one TLD and one length class m (the shorter label's length; each
 # label sits in the classes of its own length and of its length - 1), on the first floor(m/2)
@@ -54,12 +55,12 @@ sql: |
     WHERE d.tenant_key = $tenant
   ),
   dom_r AS (
-    SELECT DISTINCT coalesce(nullif(regexp_extract(d, '[^.]+\.[^.]+$'), ''), d) AS r
+    SELECT DISTINCT coalesce(nullif(regexp_extract(d, '[^.]+\.(?:mail\.)?onmicrosoft\.com$|[^.]+\.[^.]+$'), ''), d) AS r
     FROM dom
     WHERE d <> ''
   ),
   mt AS (
-    SELECT m.*, coalesce(nullif(regexp_extract(m.d, '[^.]+\.[^.]+$'), ''), m.d) AS r
+    SELECT m.*, coalesce(nullif(regexp_extract(m.d, '[^.]+\.(?:mail\.)?onmicrosoft\.com$|[^.]+\.[^.]+$'), ''), m.d) AS r
     FROM (
       SELECT t.*, lower(rtrim(trim(split_part(t.sender, '@', 2)), '.')) AS d
       FROM message_trace t
@@ -161,6 +162,26 @@ tests:
         sender: pay@tcontoso-example.example
         recipient: alice@contoso-example.example
     expect_hits: 1
+  - name: onmicrosoft tenant, sender from a look-alike onmicrosoft tenant (arm A)
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: contoso.onmicrosoft.com
+      - table: message_trace
+        received: "2026-03-05T09:00:00Z"
+        sender: pay@c0ntoso.onmicrosoft.com
+        recipient: alice@contoso.onmicrosoft.com
+    expect_hits: 1
+  - name: onmicrosoft tenant, sender from an unrelated onmicrosoft tenant
+    records:
+      - table: tenant_domains
+        tenant_key: test
+        domain: contoso.onmicrosoft.com
+      - table: message_trace
+        received: "2026-03-05T09:00:00Z"
+        sender: pay@fabrikamltd.onmicrosoft.com
+        recipient: alice@contoso.onmicrosoft.com
+    expect_hits: 0
   - name: vendor seen 30 days earlier, then a vv for w look-alike (arm B)
     records:
       - table: message_trace

@@ -283,8 +283,9 @@ SPW-HAWK-014).
 the TLD itself are not reported, nor are domains with a first label under 6 characters. Multi-part
 public suffixes (`co.uk`, `com.au`) are not known: the registrable domain of `mail.vendor.co.uk` is
 taken as `co.uk`, so such senders compare on the suffix (every `*.co.uk` sender is one domain, and a
-look-alike under one is missed). Likewise a tenant domain such as `contoso.onmicrosoft.com` makes
-every `*.onmicrosoft.com` sender count as the tenant's own. Two correspondents that look alike are ordered only by first seen:
+look-alike under one is missed). Exception: `onmicrosoft.com` and `mail.onmicrosoft.com` are
+treated as shared suffixes, so `contoso.onmicrosoft.com` is its own registrable domain and a
+look-alike Microsoft 365 tenant (`c0ntoso.onmicrosoft.com`) is still reported. Two correspondents that look alike are ordered only by first seen:
 the later one, at least 14 days on, is the one reported, whichever is genuine.
 
 **Reads** `message_trace` · **Finding per** actor.
