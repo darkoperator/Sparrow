@@ -111,8 +111,8 @@
           "rows": 632
         },
         {
-          "actor": "kendall.james@contoso.example",
-          "rows": 622
+          "actor": "ollie.james@contoso.example",
+          "rows": 623
         }
       ],
       "gaps": [
@@ -253,7 +253,7 @@
     },
     {
       "table": "record_sources",
-      "rows": 33974
+      "rows": 32446
     },
     {
       "table": "remote_domains",

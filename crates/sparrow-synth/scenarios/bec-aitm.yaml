@@ -38,7 +38,7 @@ storylines:
   - {kind: search_finance, id: s-search, actor: 1, at: {after: s-aitm, minutes: 65}}
   - {kind: send_new_ip, id: s-send, actor: 1, at: {after: s-aitm, minutes: 75}}
   - {kind: delegate_finance_delete, id: s-deldel, actor: 1, target: 2, at: {after: s-aitm, minutes: 70}}
-  - {kind: token_replay_after_revoke, id: s-replay, actor: 12, at: {day: 32, hour: 9, minute: 30}}
+  - {kind: token_replay_after_revoke, id: s-replay, actor: 11, at: {day: 32, hour: 9, minute: 30}}
   - {kind: mass_download, id: s-dl, actor: 1, at: {after: s-aitm, minutes: 120}}
   - {kind: anonymous_link, id: s-anon, actor: 1, at: {after: s-aitm, minutes: 130}}
   - {kind: lure_share, id: s-lure, actor: 1, at: {after: s-aitm, minutes: 140}}

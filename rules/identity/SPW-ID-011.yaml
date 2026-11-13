@@ -14,8 +14,8 @@
 # once signed in from a VPS is not excused by it.
 # Burst: a row is a hit when it lies inside some 24-hour window that starts at one of the user's
 # qualifying rows and holds at least 5 of them; every qualifying row of such a burst is a hit.
-# Findings group per actor only; context carries the row's UTC day, the user's hit count, distinct
-# ASNs and first and last hit time.
+# Findings group per actor only; context carries the row's UTC day and, for that user and that UTC
+# day, the hit count, the distinct networks (the ASN-else-address key) and the first and last hit time.
 # Missed on purpose: fewer than 5 replays in 24 hours (a slow replay or a thief who retries only
 # once), a replay from an ASN the user has signed in from (a thief inside the user's own ISP or VPN),
 # and replays that arrive as a different error (50126 and the like are a credential failure, which
@@ -74,12 +74,12 @@ sql: |
          json_object(
            'day', strftime(epoch_ms(epoch_ms(h.event_time)), '%Y-%m-%d'),
            'count', count(*) OVER w,
-           'distinct_asns', count(DISTINCT h.asn) OVER w,
+           'distinct_networks', count(DISTINCT h.net) OVER w,
            'asn', h.asn, 'asn_org', h.asn_org, 'hosting', h.hosting,
            'first_time', strftime(epoch_ms(epoch_ms(min(h.event_time) OVER w)), '%Y-%m-%dT%H:%M:%SZ'),
            'last_time', strftime(epoch_ms(epoch_ms(max(h.event_time) OVER w)), '%Y-%m-%dT%H:%M:%SZ')) AS context
   FROM hits h
-  WINDOW w AS (PARTITION BY lower(trim(h.user_upn)))
+  WINDOW w AS (PARTITION BY lower(trim(h.user_upn)), epoch_ms(h.event_time) // 86400000)
 group_by: [actor_upn]
 analyst_guidance: |
   Error 50173 means a refresh token no longer works: the sessions were revoked or the password was
@@ -582,3 +582,65 @@ tests:
         error_code: 50173
         event_time: "2026-03-10T11:00:00Z"
     expect_hits: 5
+  - name: one user with two bursts on two days is every row of both
+    records:
+      - table: ip_intel
+        ip: 203.0.113.9
+        asn: 14061
+        is_hosting: true
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:05:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:10:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:15:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-10T10:20:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-14T10:00:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-14T10:05:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-14T10:10:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-14T10:15:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-14T10:20:00Z"
+      - table: signins
+        user_upn: victim@contoso.example
+        ip: 203.0.113.9
+        error_code: 50173
+        event_time: "2026-03-14T10:25:00Z"
+    expect_hits: 11

@@ -39,12 +39,11 @@ _Computed by Sparrow from every finding of the case, whatever its decision: fact
 | Tenant | Account | Worst severity | Stages | First suspicious (UTC) | Sign-in coverage (UTC) | Reviewed | Addresses |
 | --- | --- | --- | --- | --- | --- | ---: | --- |
 | dfbdfe90-22c0-4154-b41b-ebdee4faea7e | marlowe.rhodes@contoso.example | high | suspicious\_sign\_in, persistence, mail\_access, sending, consent, mfa\_change | 2026-08-21T09:12:00Z | sign-ins 2026-08-11T14:42:01Z to 2026-09-09T18:17:59Z | 1 | 203.0.113.1 \(finding\_evidence, hosting, risky\_signin\)<br>203.0.113.2 \(finding\_evidence, hosting, risky\_signin\)<br>203.0.113.4 \(finding\_evidence, acts\_without\_signin, hosting\) |
+| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | ollie.carter@contoso.example | high | suspicious\_sign\_in, persistence | 2026-08-25T11:00:00Z | sign-ins 2026-08-12T00:37:15Z to 2026-09-09T07:03:15Z | 0 | 203.0.113.1 \(finding\_evidence, hosting, risky\_signin\)<br>203.0.113.2 \(finding\_evidence, hosting\) |
 | dfbdfe90-22c0-4154-b41b-ebdee4faea7e | vance.ingram@contoso.example | high | suspicious\_sign\_in, persistence | 2026-09-07T11:05:00Z | sign-ins 2026-08-11T14:38:02Z to 2026-09-09T16:29:32Z | 0 | 203.0.113.6 \(finding\_evidence\) |
 | dfbdfe90-22c0-4154-b41b-ebdee4faea7e | admin@contoso.example | high | persistence | 2026-08-20T15:00:00Z | sign-ins 2026-08-12T14:37:11Z to 2026-09-09T23:49:44Z | 0 | 203.0.113.2 \(finding\_evidence, acts\_without\_signin, hosting\) |
-| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | ollie.carter@contoso.example | high | suspicious\_sign\_in | 2026-08-25T11:00:00Z | sign-ins 2026-08-12T00:37:15Z to 2026-09-09T07:03:15Z | 0 | 203.0.113.1 \(finding\_evidence, hosting, risky\_signin\) |
 | dfbdfe90-22c0-4154-b41b-ebdee4faea7e | xander.irwin@contoso.example | high | suspicious\_sign\_in | 2026-08-25T11:00:00Z | sign-ins 2026-08-11T16:11:54Z to 2026-09-09T12:44:47Z | 0 | 203.0.113.1 \(finding\_evidence, hosting, risky\_signin\) |
 | dfbdfe90-22c0-4154-b41b-ebdee4faea7e | frances.rourke@contoso.example | high | suspicious\_sign\_in | 2026-08-27T10:00:00Z | sign-ins 2026-08-12T00:22:04Z to 2026-09-09T07:51:48Z | 0 | 203.0.113.1 \(finding\_evidence, hosting, risky\_signin\) |
-| dfbdfe90-22c0-4154-b41b-ebdee4faea7e | drew.vincent@contoso.example | high | persistence | 2026-09-02T09:30:00Z | sign-ins 2026-08-11T16:37:17Z to 2026-09-09T13:52:39Z | 0 | 203.0.113.2 \(finding\_evidence, hosting\) |
 | dfbdfe90-22c0-4154-b41b-ebdee4faea7e | gale.yates@contoso.example | medium | consent | 2026-08-09T14:00:00Z | sign-ins 2026-08-12T00:10:52Z to 2026-09-09T04:57:21Z | 0 | 192.0.2.9 \(finding\_evidence\) |
 | dfbdfe90-22c0-4154-b41b-ebdee4faea7e | ocean.vincent@contoso.example | medium | persistence | 2026-08-14T16:00:00Z | sign-ins 2026-08-12T00:26:51Z to 2026-09-09T05:46:15Z | 0 | 192.0.2.7 \(finding\_evidence\) |
 | dfbdfe90-22c0-4154-b41b-ebdee4faea7e | cameron.tucker@contoso.example | medium | sending | 2026-08-15T12:34:05Z | sign-ins 2026-08-11T14:24:08Z to 2026-09-09T14:01:26Z | 0 | 198.51.100.3 \(finding\_evidence\) |
@@ -105,7 +104,7 @@ _Computed by Sparrow from every finding of the case, whatever its decision: fact
 | Status | Analyst | Device | Name | Last active | Users | Malicious IPs | Other IPs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | not\_in\_latest\_inventory — treat as active — collect Get-Devices to confirm |  | 76f8b195-1701-47c6-b6fe-f4065afcc88e | VANCE.INGRAM-LAPTOP | 2026-09-09T16:29:32Z \(Output/Contoso\_Example/Sign-In logs/EntraID/20260910-161751-SignInLogs/interactiveUser &amp; nonInteractiveUser/20260910161754-interactiveUser-nonInteractiveUser-SignInLogs.json:608-674\) | vance.ingram@contoso.example | 203.0.113.6 | 192.0.2.17 \(Documentation ISP 3, DE\); 192.0.2.18 \(Documentation ISP 3, DE\); 203.0.113.5 \(Documentation ISP 7, CA\) |
-| not\_in\_latest\_inventory — treat as active — collect Get-Devices to confirm |  | cb956022-307b-407a-945c-960642924fdf | DREW.VINCENT-LAPTOP | 2026-09-09T13:52:39Z \(Output/Contoso\_Example/Sign-In logs/EntraID/20260910-161751-SignInLogs/interactiveUser &amp; nonInteractiveUser/20260910161754-interactiveUser-nonInteractiveUser-SignInLogs.json:1482-1548\) | drew.vincent@contoso.example | 203.0.113.2 | 192.0.2.24 \(Documentation ISP 6, SE\); 192.0.2.23 \(Documentation ISP 6, SE\) |
+| not\_in\_latest\_inventory — treat as active — collect Get-Devices to confirm |  | 2035f0d9-04d3-4b55-9e3e-e59bda35d3b6 | OLLIE.CARTER-LAPTOP | 2026-09-09T07:03:15Z \(Output/Contoso\_Example/Sign-In logs/EntraID/20260910-161751-SignInLogs/interactiveUser &amp; nonInteractiveUser/20260910161754-interactiveUser-nonInteractiveUser-SignInLogs.json:2956-3022\) | ollie.carter@contoso.example | 203.0.113.2 | 192.0.2.21 \(Documentation ISP 5, JP\); 192.0.2.22 \(Documentation ISP 5, JP\); 203.0.113.5 \(Documentation ISP 7, CA\) |
 
 ## Evidence gaps
 
@@ -167,6 +166,49 @@ What to request:
   - Admin portal: Exchange admin center has no export for the legacy mailbox audit log; use Exchange Online PowerShell: Search-MailboxAuditLog -Identity marlowe.rhodes@contoso.example -LogonTypes Delegate,Admin,Owner -StartDate 2026-07-22 -EndDate 2026-08-03 -ShowDetails -ResultSize 250000
   - Hawk: none
   - Microsoft-Extractor-Suite: Get-MailboxAuditLogLegacy -UserIds marlowe.rhodes@contoso.example -StartDate 2026-07-22 -EndDate 2026-08-03
+
+**ollie.carter@contoso.example** (tenant dfbdfe90-22c0-4154-b41b-ebdee4faea7e): window 2026-07-26 to 2026-09-10
+
+| Source | Rows | First (UTC) | Last (UTC) | Days | Sampled | Gaps |
+| --- | ---: | --- | --- | ---: | --- | --- |
+| Unified audit log | 450 | 2026-08-01T00:41:54Z | 2026-09-09T18:46:29Z | 38 | no | before 2026-07-26 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
+| Sign-ins \(interactive\) | 63 | 2026-08-12T00:37:15Z | 2026-09-09T07:03:15Z | 28 | no | before 2026-07-26 to 2026-08-11; after 2026-09-10 to 2026-09-10 |
+| Sign-ins \(non-interactive\) | 41 | 2026-08-12T02:25:33Z | 2026-09-09T01:43:22Z | 18 | no | before 2026-07-26 to 2026-08-11; after 2026-09-10 to 2026-09-10 |
+| MailItemsAccessed | 117 | 2026-08-01T00:43:15Z | 2026-09-09T18:46:29Z | 38 | no | before 2026-07-26 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
+| Message trace | 263 | 2026-08-03T01:02:45Z | 2026-09-09T18:29:58Z | 33 | no | before 2026-07-26 to 2026-08-02; after 2026-09-10 to 2026-09-10 |
+| Entra audit log | 3 | 2026-08-12T20:07:00Z | 2026-09-08T15:12:00Z | 2 | no | before 2026-07-26 to 2026-08-11; after 2026-09-09 to 2026-09-10 |
+| Mailbox audit log \(legacy\) | 139 | 2026-08-03T03:20:27Z | 2026-09-09T09:51:41Z | 29 | no | before 2026-07-26 to 2026-08-02; after 2026-09-10 to 2026-09-10 |
+
+What to request:
+
+- Unified audit log, 2026-07-26 to 2026-09-10 (before, after)
+  - Admin portal: Purview portal &gt; Audit &gt; Search: Users = ollie.carter@contoso.example, date range 2026-07-26 to 2026-09-10, Search, then Export \(a per-user search stays under the 1,000,000-row cap\)
+  - Hawk: none
+  - Microsoft-Extractor-Suite: Get-UAL -UserIds ollie.carter@contoso.example -StartDate 2026-07-26 -EndDate 2026-09-11
+- Sign-ins \(interactive\), 2026-07-26 to 2026-09-10 (before, after)
+  - Admin portal: Entra admin center &gt; Monitoring &amp; health &gt; Sign-in logs &gt; User sign-ins \(interactive\) tab: filter User = ollie.carter@contoso.example and Date 2026-07-26 to 2026-09-10, Download &gt; JSON
+  - Hawk: Get-HawkUserEntraIDSignInLog -UserPrincipalName ollie.carter@contoso.example \(Hawk sets the window when it starts, 2026-07-26 to 2026-09-10; Graph allows only the last 14 days there; its filter names no event type, so non-interactive sign-ins are not guaranteed\)
+  - Microsoft-Extractor-Suite: Get-GraphEntraSignInLogs -UserIds ollie.carter@contoso.example -startDate 2026-07-26 -endDate 2026-09-11 -EventTypes interactiveUser
+- Sign-ins \(non-interactive\), 2026-07-26 to 2026-09-10 (before, after)
+  - Admin portal: Entra admin center &gt; Monitoring &amp; health &gt; Sign-in logs &gt; User sign-ins \(non-interactive\) tab: filter User = ollie.carter@contoso.example and Date 2026-07-26 to 2026-09-10, Download &gt; JSON
+  - Hawk: none
+  - Microsoft-Extractor-Suite: Get-GraphEntraSignInLogs -UserIds ollie.carter@contoso.example -startDate 2026-07-26 -endDate 2026-09-11 -EventTypes nonInteractiveUser
+- MailItemsAccessed, 2026-07-26 to 2026-09-10 (before, after)
+  - Admin portal: Purview portal &gt; Audit &gt; Search: Users = ollie.carter@contoso.example, Activities = MailItemsAccessed, date range 2026-07-26 to 2026-09-10, Search, then Export
+  - Hawk: Get-HawkUserMailItemsAccessed -UserPrincipalName ollie.carter@contoso.example \(Hawk sets the window when it starts, 2026-07-26 to 2026-09-10\)
+  - Microsoft-Extractor-Suite: Get-UAL -UserIds ollie.carter@contoso.example -Operations MailItemsAccessed -StartDate 2026-07-26 -EndDate 2026-09-11
+- Message trace, 2026-07-26 to 2026-09-10 (before, after)
+  - Admin portal: Exchange admin center &gt; Mail flow &gt; Message trace &gt; Start a trace: Sender = ollie.carter@contoso.example, then again with Recipient = ollie.carter@contoso.example, dates 2026-07-26 to 2026-09-10, report type Extended report, then download it
+  - Hawk: Get-HawkUserMessageTrace -UserPrincipalName ollie.carter@contoso.example \(cannot serve 2026-07-26 to 2026-09-10: it ignores dates and returns only the messages the account sent in roughly the last 7 days; useful only when the range falls inside that\)
+  - Microsoft-Extractor-Suite: Get-MessageTraceLog -UserIds ollie.carter@contoso.example -StartDate 2026-07-26 -EndDate 2026-09-11
+- Entra audit log, 2026-07-26 to 2026-09-10 (before, after)
+  - Admin portal: Entra admin center &gt; Monitoring &amp; health &gt; Audit logs: Date 2026-07-26 to 2026-09-10, filter Initiated by \(actor\) = ollie.carter@contoso.example, Download &gt; JSON; repeat with the Target filter = ollie.carter@contoso.example
+  - Hawk: Get-HawkTenantEntraIDAuditLog \(whole tenant; ignores dates and always returns the last 30 days up to now, so it serves 2026-07-26 to 2026-09-10 only inside that\)
+  - Microsoft-Extractor-Suite: Get-GraphEntraAuditLogs -UserIds ollie.carter@contoso.example -startDate 2026-07-26 -endDate 2026-09-11 \(rows where the account is only the target are not returned; -All adds them but ignores the dates for target matches, so filter those by date after collecting\)
+- Mailbox audit log \(legacy\), 2026-07-26 to 2026-09-10 (before, after)
+  - Admin portal: Exchange admin center has no export for the legacy mailbox audit log; use Exchange Online PowerShell: Search-MailboxAuditLog -Identity ollie.carter@contoso.example -LogonTypes Delegate,Admin,Owner -StartDate 2026-07-26 -EndDate 2026-09-11 -ShowDetails -ResultSize 250000
+  - Hawk: none
+  - Microsoft-Extractor-Suite: Get-MailboxAuditLogLegacy -UserIds ollie.carter@contoso.example -StartDate 2026-07-26 -EndDate 2026-09-11
 
 **vance.ingram@contoso.example** (tenant dfbdfe90-22c0-4154-b41b-ebdee4faea7e): window 2026-08-08 to 2026-09-10
 
@@ -254,49 +296,6 @@ What to request:
   - Hawk: none
   - Microsoft-Extractor-Suite: Get-MailboxAuditLogLegacy -UserIds admin@contoso.example -StartDate 2026-07-21 -EndDate 2026-08-03
 
-**ollie.carter@contoso.example** (tenant dfbdfe90-22c0-4154-b41b-ebdee4faea7e): window 2026-07-26 to 2026-09-10
-
-| Source | Rows | First (UTC) | Last (UTC) | Days | Sampled | Gaps |
-| --- | ---: | --- | --- | ---: | --- | --- |
-| Unified audit log | 450 | 2026-08-01T00:41:54Z | 2026-09-09T18:46:29Z | 38 | no | before 2026-07-26 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
-| Sign-ins \(interactive\) | 57 | 2026-08-12T00:37:15Z | 2026-09-09T07:03:15Z | 28 | no | before 2026-07-26 to 2026-08-11; after 2026-09-10 to 2026-09-10 |
-| Sign-ins \(non-interactive\) | 41 | 2026-08-12T02:25:33Z | 2026-09-09T01:43:22Z | 18 | no | before 2026-07-26 to 2026-08-11; after 2026-09-10 to 2026-09-10 |
-| MailItemsAccessed | 117 | 2026-08-01T00:43:15Z | 2026-09-09T18:46:29Z | 38 | no | before 2026-07-26 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
-| Message trace | 263 | 2026-08-03T01:02:45Z | 2026-09-09T18:29:58Z | 33 | no | before 2026-07-26 to 2026-08-02; after 2026-09-10 to 2026-09-10 |
-| Entra audit log | 3 | 2026-08-12T20:07:00Z | 2026-09-08T15:12:00Z | 2 | no | before 2026-07-26 to 2026-08-11; after 2026-09-09 to 2026-09-10 |
-| Mailbox audit log \(legacy\) | 139 | 2026-08-03T03:20:27Z | 2026-09-09T09:51:41Z | 29 | no | before 2026-07-26 to 2026-08-02; after 2026-09-10 to 2026-09-10 |
-
-What to request:
-
-- Unified audit log, 2026-07-26 to 2026-09-10 (before, after)
-  - Admin portal: Purview portal &gt; Audit &gt; Search: Users = ollie.carter@contoso.example, date range 2026-07-26 to 2026-09-10, Search, then Export \(a per-user search stays under the 1,000,000-row cap\)
-  - Hawk: none
-  - Microsoft-Extractor-Suite: Get-UAL -UserIds ollie.carter@contoso.example -StartDate 2026-07-26 -EndDate 2026-09-11
-- Sign-ins \(interactive\), 2026-07-26 to 2026-09-10 (before, after)
-  - Admin portal: Entra admin center &gt; Monitoring &amp; health &gt; Sign-in logs &gt; User sign-ins \(interactive\) tab: filter User = ollie.carter@contoso.example and Date 2026-07-26 to 2026-09-10, Download &gt; JSON
-  - Hawk: Get-HawkUserEntraIDSignInLog -UserPrincipalName ollie.carter@contoso.example \(Hawk sets the window when it starts, 2026-07-26 to 2026-09-10; Graph allows only the last 14 days there; its filter names no event type, so non-interactive sign-ins are not guaranteed\)
-  - Microsoft-Extractor-Suite: Get-GraphEntraSignInLogs -UserIds ollie.carter@contoso.example -startDate 2026-07-26 -endDate 2026-09-11 -EventTypes interactiveUser
-- Sign-ins \(non-interactive\), 2026-07-26 to 2026-09-10 (before, after)
-  - Admin portal: Entra admin center &gt; Monitoring &amp; health &gt; Sign-in logs &gt; User sign-ins \(non-interactive\) tab: filter User = ollie.carter@contoso.example and Date 2026-07-26 to 2026-09-10, Download &gt; JSON
-  - Hawk: none
-  - Microsoft-Extractor-Suite: Get-GraphEntraSignInLogs -UserIds ollie.carter@contoso.example -startDate 2026-07-26 -endDate 2026-09-11 -EventTypes nonInteractiveUser
-- MailItemsAccessed, 2026-07-26 to 2026-09-10 (before, after)
-  - Admin portal: Purview portal &gt; Audit &gt; Search: Users = ollie.carter@contoso.example, Activities = MailItemsAccessed, date range 2026-07-26 to 2026-09-10, Search, then Export
-  - Hawk: Get-HawkUserMailItemsAccessed -UserPrincipalName ollie.carter@contoso.example \(Hawk sets the window when it starts, 2026-07-26 to 2026-09-10\)
-  - Microsoft-Extractor-Suite: Get-UAL -UserIds ollie.carter@contoso.example -Operations MailItemsAccessed -StartDate 2026-07-26 -EndDate 2026-09-11
-- Message trace, 2026-07-26 to 2026-09-10 (before, after)
-  - Admin portal: Exchange admin center &gt; Mail flow &gt; Message trace &gt; Start a trace: Sender = ollie.carter@contoso.example, then again with Recipient = ollie.carter@contoso.example, dates 2026-07-26 to 2026-09-10, report type Extended report, then download it
-  - Hawk: Get-HawkUserMessageTrace -UserPrincipalName ollie.carter@contoso.example \(cannot serve 2026-07-26 to 2026-09-10: it ignores dates and returns only the messages the account sent in roughly the last 7 days; useful only when the range falls inside that\)
-  - Microsoft-Extractor-Suite: Get-MessageTraceLog -UserIds ollie.carter@contoso.example -StartDate 2026-07-26 -EndDate 2026-09-11
-- Entra audit log, 2026-07-26 to 2026-09-10 (before, after)
-  - Admin portal: Entra admin center &gt; Monitoring &amp; health &gt; Audit logs: Date 2026-07-26 to 2026-09-10, filter Initiated by \(actor\) = ollie.carter@contoso.example, Download &gt; JSON; repeat with the Target filter = ollie.carter@contoso.example
-  - Hawk: Get-HawkTenantEntraIDAuditLog \(whole tenant; ignores dates and always returns the last 30 days up to now, so it serves 2026-07-26 to 2026-09-10 only inside that\)
-  - Microsoft-Extractor-Suite: Get-GraphEntraAuditLogs -UserIds ollie.carter@contoso.example -startDate 2026-07-26 -endDate 2026-09-11 \(rows where the account is only the target are not returned; -All adds them but ignores the dates for target matches, so filter those by date after collecting\)
-- Mailbox audit log \(legacy\), 2026-07-26 to 2026-09-10 (before, after)
-  - Admin portal: Exchange admin center has no export for the legacy mailbox audit log; use Exchange Online PowerShell: Search-MailboxAuditLog -Identity ollie.carter@contoso.example -LogonTypes Delegate,Admin,Owner -StartDate 2026-07-26 -EndDate 2026-09-11 -ShowDetails -ResultSize 250000
-  - Hawk: none
-  - Microsoft-Extractor-Suite: Get-MailboxAuditLogLegacy -UserIds ollie.carter@contoso.example -StartDate 2026-07-26 -EndDate 2026-09-11
-
 **xander.irwin@contoso.example** (tenant dfbdfe90-22c0-4154-b41b-ebdee4faea7e): window 2026-07-26 to 2026-09-10
 
 | Source | Rows | First (UTC) | Last (UTC) | Days | Sampled | Gaps |
@@ -382,49 +381,6 @@ What to request:
   - Admin portal: Exchange admin center has no export for the legacy mailbox audit log; use Exchange Online PowerShell: Search-MailboxAuditLog -Identity frances.rourke@contoso.example -LogonTypes Delegate,Admin,Owner -StartDate 2026-07-28 -EndDate 2026-09-11 -ShowDetails -ResultSize 250000
   - Hawk: none
   - Microsoft-Extractor-Suite: Get-MailboxAuditLogLegacy -UserIds frances.rourke@contoso.example -StartDate 2026-07-28 -EndDate 2026-09-11
-
-**drew.vincent@contoso.example** (tenant dfbdfe90-22c0-4154-b41b-ebdee4faea7e): window 2026-08-03 to 2026-09-10
-
-| Source | Rows | First (UTC) | Last (UTC) | Days | Sampled | Gaps |
-| --- | ---: | --- | --- | ---: | --- | --- |
-| Unified audit log | 447 | 2026-08-01T07:34:33Z | 2026-09-09T17:20:26Z | 40 | no | after 2026-09-10 to 2026-09-10 |
-| Sign-ins \(interactive\) | 49 | 2026-08-12T07:23:07Z | 2026-09-09T07:26:43Z | 29 | no | before 2026-08-03 to 2026-08-11; after 2026-09-10 to 2026-09-10 |
-| Sign-ins \(non-interactive\) | 44 | 2026-08-11T16:37:17Z | 2026-09-09T13:52:39Z | 21 | no | before 2026-08-03 to 2026-08-10; after 2026-09-10 to 2026-09-10 |
-| MailItemsAccessed | 114 | 2026-08-01T07:38:22Z | 2026-09-09T17:20:26Z | 40 | no | after 2026-09-10 to 2026-09-10 |
-| Message trace | 248 | 2026-08-02T10:52:10Z | 2026-09-09T23:55:36Z | 37 | no | after 2026-09-10 to 2026-09-10 |
-| Entra audit log | 0 |  |  | 0 | no | absent 2026-08-03 to 2026-09-10 |
-| Mailbox audit log \(legacy\) | 135 | 2026-08-02T12:52:10Z | 2026-09-09T18:55:27Z | 34 | no | after 2026-09-10 to 2026-09-10 |
-
-What to request:
-
-- Unified audit log, 2026-09-10 to 2026-09-10 (after)
-  - Admin portal: Purview portal &gt; Audit &gt; Search: Users = drew.vincent@contoso.example, date range 2026-09-10 to 2026-09-10, Search, then Export \(a per-user search stays under the 1,000,000-row cap\)
-  - Hawk: none
-  - Microsoft-Extractor-Suite: Get-UAL -UserIds drew.vincent@contoso.example -StartDate 2026-09-10 -EndDate 2026-09-11
-- Sign-ins \(interactive\), 2026-08-03 to 2026-09-10 (before, after)
-  - Admin portal: Entra admin center &gt; Monitoring &amp; health &gt; Sign-in logs &gt; User sign-ins \(interactive\) tab: filter User = drew.vincent@contoso.example and Date 2026-08-03 to 2026-09-10, Download &gt; JSON
-  - Hawk: Get-HawkUserEntraIDSignInLog -UserPrincipalName drew.vincent@contoso.example \(Hawk sets the window when it starts, 2026-08-03 to 2026-09-10; Graph allows only the last 14 days there; its filter names no event type, so non-interactive sign-ins are not guaranteed\)
-  - Microsoft-Extractor-Suite: Get-GraphEntraSignInLogs -UserIds drew.vincent@contoso.example -startDate 2026-08-03 -endDate 2026-09-11 -EventTypes interactiveUser
-- Sign-ins \(non-interactive\), 2026-08-03 to 2026-09-10 (before, after)
-  - Admin portal: Entra admin center &gt; Monitoring &amp; health &gt; Sign-in logs &gt; User sign-ins \(non-interactive\) tab: filter User = drew.vincent@contoso.example and Date 2026-08-03 to 2026-09-10, Download &gt; JSON
-  - Hawk: none
-  - Microsoft-Extractor-Suite: Get-GraphEntraSignInLogs -UserIds drew.vincent@contoso.example -startDate 2026-08-03 -endDate 2026-09-11 -EventTypes nonInteractiveUser
-- MailItemsAccessed, 2026-09-10 to 2026-09-10 (after)
-  - Admin portal: Purview portal &gt; Audit &gt; Search: Users = drew.vincent@contoso.example, Activities = MailItemsAccessed, date range 2026-09-10 to 2026-09-10, Search, then Export
-  - Hawk: Get-HawkUserMailItemsAccessed -UserPrincipalName drew.vincent@contoso.example \(Hawk sets the window when it starts, 2026-09-10 to 2026-09-10\)
-  - Microsoft-Extractor-Suite: Get-UAL -UserIds drew.vincent@contoso.example -Operations MailItemsAccessed -StartDate 2026-09-10 -EndDate 2026-09-11
-- Message trace, 2026-09-10 to 2026-09-10 (after)
-  - Admin portal: Exchange admin center &gt; Mail flow &gt; Message trace &gt; Start a trace: Sender = drew.vincent@contoso.example, then again with Recipient = drew.vincent@contoso.example, dates 2026-09-10 to 2026-09-10, report type Extended report, then download it
-  - Hawk: Get-HawkUserMessageTrace -UserPrincipalName drew.vincent@contoso.example \(cannot serve 2026-09-10 to 2026-09-10: it ignores dates and returns only the messages the account sent in roughly the last 7 days; useful only when the range falls inside that\)
-  - Microsoft-Extractor-Suite: Get-MessageTraceLog -UserIds drew.vincent@contoso.example -StartDate 2026-09-10 -EndDate 2026-09-11
-- Entra audit log, 2026-08-03 to 2026-09-10 (absent)
-  - Admin portal: Entra admin center &gt; Monitoring &amp; health &gt; Audit logs: Date 2026-08-03 to 2026-09-10, filter Initiated by \(actor\) = drew.vincent@contoso.example, Download &gt; JSON; repeat with the Target filter = drew.vincent@contoso.example
-  - Hawk: Get-HawkTenantEntraIDAuditLog \(whole tenant; ignores dates and always returns the last 30 days up to now, so it serves 2026-08-03 to 2026-09-10 only inside that\)
-  - Microsoft-Extractor-Suite: Get-GraphEntraAuditLogs -UserIds drew.vincent@contoso.example -startDate 2026-08-03 -endDate 2026-09-11 \(rows where the account is only the target are not returned; -All adds them but ignores the dates for target matches, so filter those by date after collecting\)
-- Mailbox audit log \(legacy\), 2026-09-10 to 2026-09-10 (after)
-  - Admin portal: Exchange admin center has no export for the legacy mailbox audit log; use Exchange Online PowerShell: Search-MailboxAuditLog -Identity drew.vincent@contoso.example -LogonTypes Delegate,Admin,Owner -StartDate 2026-09-10 -EndDate 2026-09-11 -ShowDetails -ResultSize 250000
-  - Hawk: none
-  - Microsoft-Extractor-Suite: Get-MailboxAuditLogLegacy -UserIds drew.vincent@contoso.example -StartDate 2026-09-10 -EndDate 2026-09-11
 
 **gale.yates@contoso.example** (tenant dfbdfe90-22c0-4154-b41b-ebdee4faea7e): window 2026-07-10 to 2026-09-10
 
@@ -569,10 +525,10 @@ Sparrow ingested the collector output into a case database, enriched it and ran 
 ## Evidence references
 
 [^1]: signins:2e1c9d42-6a92-419c-b21a-9d2fb256a795 — Output/Contoso\_Example/Sign-In logs/EntraID/20260910-161751-SignInLogs/interactiveUser &amp; nonInteractiveUser/20260910161757-interactiveUser-nonInteractiveUser-SignInLogs.json:20577-20643
-[^2]: ual\_events:74b0d0cd-8b08-4d7d-b5ce-e5a2784cf1d1 — Output/Contoso\_Example/UnifiedAuditLog/20260910-161616/20260910161616-victims-UnifiedAuditLog.json:106423-106473; Output/Contoso\_Example/UnifiedAuditLog/20260910-161713/20260910161713-victims-UnifiedAuditLog.jsonl:1612; Output/Triage-Contoso\_Example/New-InboxRule.json:2-51 (+2 more sightings)
+[^2]: ual\_events:74b0d0cd-8b08-4d7d-b5ce-e5a2784cf1d1 — Output/Contoso\_Example/UnifiedAuditLog/20260910-161616/20260910161616-victims-UnifiedAuditLog.json:96863-96913; Output/Contoso\_Example/UnifiedAuditLog/20260910-161713/20260910161713-victims-UnifiedAuditLog.jsonl:1470; Output/Triage-Contoso\_Example/New-InboxRule.json:2-51 (+2 more sightings)
 [^3]: ual\_events:5ae56966-7d51-4d2d-900d-196664d6118e — Output/Contoso\_Example/UnifiedAuditLog/20260910-161616/20260910161616-victims-UnifiedAuditLog.json:89-161; Output/Contoso\_Example/UnifiedAuditLog/20260910-161713/20260910161713-victims-UnifiedAuditLog.jsonl:2; Output/Triage-Contoso\_Example/MailItemsAccessed.json:2-73 (+3 more sightings)
-[^4]: ual\_events:02a13335-5a42-4ce8-9f05-5b5f0f489146 — Output/Contoso\_Example/UnifiedAuditLog/20260910-161616/20260910161616-victims-UnifiedAuditLog.json:181685-181735; Output/Contoso\_Example/UnifiedAuditLog/20260910-161713/20260910161713-victims-UnifiedAuditLog.jsonl:2753; Output/Triage-Contoso\_Example/New-InboxRule.json:118-167 (+2 more sightings)
-[^5]: ual\_events:38f3aef6-68f9-4842-ace1-4d564480e6f8 — Output/Contoso\_Example/UnifiedAuditLog/20260910-161616/20260910161616-victims-UnifiedAuditLog.json:188800-188856; Output/Contoso\_Example/UnifiedAuditLog/20260910-161713/20260910161713-victims-UnifiedAuditLog.jsonl:2856; Output/Contoso\_Example/Mailbox Audit Log/20260910-172259/UnifiedAuditLog/20260910-172300/UAL-20260821000000-20260822000000.csv:68-70 (+2 more sightings)
+[^4]: ual\_events:02a13335-5a42-4ce8-9f05-5b5f0f489146 — Output/Contoso\_Example/UnifiedAuditLog/20260910-161616/20260910161616-victims-UnifiedAuditLog.json:166338-166388; Output/Contoso\_Example/UnifiedAuditLog/20260910-161713/20260910161713-victims-UnifiedAuditLog.jsonl:2521; Output/Triage-Contoso\_Example/New-InboxRule.json:118-167 (+2 more sightings)
+[^5]: ual\_events:38f3aef6-68f9-4842-ace1-4d564480e6f8 — Output/Contoso\_Example/UnifiedAuditLog/20260910-161616/20260910161616-victims-UnifiedAuditLog.json:173315-173371; Output/Contoso\_Example/UnifiedAuditLog/20260910-161713/20260910161713-victims-UnifiedAuditLog.jsonl:2622; Output/Contoso\_Example/Mailbox Audit Log/20260910-172259/UnifiedAuditLog/20260910-172300/UAL-20260821000000-20260822000000.csv:59-61 (+2 more sightings)
 [^6]: inbox\_rules:inbox\|marlowe.rhodes@contoso.example\|1117600807597104896 — Output/Contoso\_Example/Rules/20260910-173429/20260910-173429-MailboxRules.csv:66-73
 [^7]: inbox\_rules:inbox\|marlowe.rhodes@contoso.example\|1239425345399972642 — Output/Contoso\_Example/Rules/20260910-173429/20260910-173429-MailboxRules.csv:60-65
 [^8]: inbox\_rules:inbox\|marlowe.rhodes@contoso.example\|AAMkow1wHgwwG4WuzrXPcuNEEBq1RYckVZsyyuWHnFV3== — Output/Contoso\_Example/Rules/20260910-173438/20260910-173438-MailboxRulesGraph.csv:12
