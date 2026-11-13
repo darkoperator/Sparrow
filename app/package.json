@@ -1,7 +1,7 @@
 {
   "name": "sparrow-app-ui",
   "private": true,
-  "version": "0.0.1-Alpha-04",
+  "version": "0.0.1-Alpha-05",
   "type": "module",
   "scripts": {
     "dev": "vite",
