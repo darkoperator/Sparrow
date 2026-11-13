@@ -254,3 +254,22 @@ fn source_db_version_names_each_databases_own_type() {
     assert!(!version.contains("GeoLite2"), "{version}");
     assert_eq!(version_of(&case, "203.0.113.10"), version);
 }
+
+#[test]
+fn hosting_asns_include_vpn_proxy_networks() {
+    let hosting = sparrow_core::data::hosting_asns(&DataDirs::default()).unwrap();
+    for (asn, kind) in [
+        (212238, "vpn"),
+        (62240, "vps"),
+        (136787, "vpn"),
+        (141039, "vpn"),
+        (147049, "vpn"),
+        (39486, "vps"),
+    ] {
+        let entry = hosting
+            .iter()
+            .find(|h| h.asn == asn)
+            .unwrap_or_else(|| panic!("AS{asn} missing"));
+        assert_eq!(entry.kind, kind, "AS{asn}");
+    }
+}

@@ -1,6 +1,6 @@
 # Autonomous systems of hosting, cloud and VPS providers. A sign-in or mailbox access from
 # one of them is unusual for an ordinary user (spec §8.5 "sign-in from hosting ASN").
-# Curated seed, as_of 2026-10-27; extend with --rules DIR (lists/hosting_asns.yaml, entries
+# Curated seed, as_of 2026-11-12; extend with --rules DIR (lists/hosting_asns.yaml, entries
 # replace built-ins by asn). Deliberately absent: Microsoft AS8075 (Microsoft 365 and Azure
 # share it; ip_intel.is_microsoft covers Microsoft 365 service ranges) and Cloudflare AS13335
 # (WARP carries ordinary users).
@@ -27,6 +27,12 @@ asns:
   - {asn: 931, name: Hyonix, kind: vps}
   - {asn: 9009, name: M247, kind: vpn}
   - {asn: 60068, name: Datacamp (CDN77), kind: vpn}
+  - {asn: 212238, name: Datacamp Limited (CDN77), kind: vpn}
+  - {asn: 62240, name: Clouvider, kind: vps}
+  - {asn: 136787, name: PacketHub, kind: vpn}
+  - {asn: 141039, name: PacketHub, kind: vpn}
+  - {asn: 147049, name: PacketHub, kind: vpn}
+  - {asn: 39486, name: HostRoyale Technologies, kind: vps}
   - {asn: 137409, name: GSL Networks, kind: vpn}
   - {asn: 206092, name: F.N.S. Holdings, kind: vpn}
   - {asn: 213122, name: Krixe Pte. Ltd., kind: vps}
