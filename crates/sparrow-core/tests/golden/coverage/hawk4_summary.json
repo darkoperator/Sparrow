@@ -26,7 +26,7 @@
       "coverage": [
         {
           "source_table": "directory_audits",
-          "rows": 19,
+          "rows": 21,
           "first": "2026-08-11T22:00:34Z",
           "last": "2026-09-08T20:47:38Z"
         },
@@ -44,13 +44,13 @@
         },
         {
           "source_table": "signins",
-          "rows": 298,
+          "rows": 300,
           "first": "2026-08-27T00:14:46Z",
           "last": "2026-09-09T20:43:21Z"
         },
         {
           "source_table": "ual_events",
-          "rows": 4073,
+          "rows": 4075,
           "first": "2026-08-01T00:21:42Z",
           "last": "2026-09-09T23:35:52Z"
         }
@@ -62,7 +62,7 @@
         },
         {
           "actor": "jamie.prescott@contoso.example",
-          "rows": 384
+          "rows": 387
         },
         {
           "actor": "adrian.ibarra@contoso.example",
@@ -81,16 +81,16 @@
           "rows": 364
         },
         {
+          "actor": "ollie.james@contoso.example",
+          "rows": 362
+        },
+        {
           "actor": "val.bennett@contoso.example",
           "rows": 362
         },
         {
           "actor": "hayden.james@contoso.example",
           "rows": 361
-        },
-        {
-          "actor": "ollie.james@contoso.example",
-          "rows": 359
         },
         {
           "actor": "lennox.grant@contoso.example",
@@ -162,7 +162,7 @@
     },
     {
       "table": "directory_audits",
-      "rows": 19
+      "rows": 21
     },
     {
       "table": "email_artifacts",
@@ -178,7 +178,7 @@
     },
     {
       "table": "events",
-      "rows": 4476
+      "rows": 4482
     },
     {
       "table": "file_events",
@@ -186,7 +186,7 @@
     },
     {
       "table": "finding_evidence",
-      "rows": 150
+      "rows": 151
     },
     {
       "table": "group_members",
@@ -250,7 +250,7 @@
     },
     {
       "table": "record_sources",
-      "rows": 8374
+      "rows": 8380
     },
     {
       "table": "remote_domains",
@@ -286,7 +286,7 @@
     },
     {
       "table": "signins",
-      "rows": 298
+      "rows": 300
     },
     {
       "table": "tenant_settings",
@@ -302,7 +302,7 @@
     },
     {
       "table": "ual_events",
-      "rows": 4073
+      "rows": 4075
     },
     {
       "table": "user_licenses",

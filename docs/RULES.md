@@ -99,6 +99,7 @@ Several correlation rules rely on facts the profile step computes once per case:
 | [SPW-ID-010](#spw-id-010) | Inbox rule created within 60 minutes of a risky or hosting-ASN sign-in | high | medium | suspicious_sign_in, persistence | GeoIP |
 | [SPW-ID-011](#spw-id-011) | Refresh-token replay after revocation | high | medium | persistence | GeoIP |
 | [SPW-ID-012](#spw-id-012) | One sign-in session used from many networks | high | medium | suspicious_sign_in | GeoIP |
+| [SPW-ID-013](#spw-id-013) | Self-service password reset from a new country | medium | medium | persistence | GeoIP |
 | [SPW-HAWK-008](#spw-hawk-008) | Risky or confirmed-compromised user | high | medium | — | capability `identity_protection` |
 | [SPW-HAWK-009](#spw-hawk-009) | Entra ID Protection risk detection | high | medium | suspicious_sign_in | capability `identity_protection` |
 | [SPW-HAWK-012](#spw-hawk-012) | Risky Entra sign-in | high | medium | suspicious_sign_in | capability `identity_protection`, evidence `signins` |
@@ -120,7 +121,7 @@ Several correlation rules rely on facts the profile step computes once per case:
 | [SPW-HAWK-011](#spw-hawk-011) | Mailbox forwarding configured | medium | medium | persistence | |
 | [SPW-HAWK-015](#spw-hawk-015) | Automatic reply enabled | low | low | — | |
 
-38 rules. Tags you can filter on with `--tag` include `bec`, `correlation`, `inbox-rule`,
+39 rules. Tags you can filter on with `--tag` include `bec`, `correlation`, `inbox-rule`,
 `forwarding`, `oauth-consent`, `identity-protection`, `password-spray` and `sign-in`.
 
 ---
@@ -607,6 +608,31 @@ session, revoke the sessions and refresh tokens, and review what the session did
 
 **False positives.** A VPN rotating between two hosting providers; a cloud desktop or proxy whose
 egress moves between hosting ASNs; a phone moving between carriers and Wi-Fi reaching four ASNs.
+
+### SPW-ID-013
+
+**Self-service password reset from a new country**: medium / medium · stage `persistence` ·
+MITRE T1098 · needs GeoIP
+
+**Detects.** A directory audit whose activity is `Reset password (self-service)`, `Self-service
+password reset flow activity progress` or `Change password (self-service)` (matched case-insensitively)
+and whose `initiated_by_ip` geolocates (`ip_intel.country_iso`) to a country in which the user has no
+successful sign-in (`error_code` 0 or NULL). The user is `initiated_by_upn`, else the first target's
+user principal name, compared case-insensitively with the sign-in's user. Microsoft and private
+addresses, addresses with no country, and users with no successful sign-in of known country are not
+judged. One hit per audit row. Finding context: country, city, activity, result.
+
+**Residual risk.** A reset from a country the user has signed in from once (a trip, a VPN exit) and
+an attacker geolocated to the user's own country are not reported.
+
+**Reads** `directory_audits`, `signins`, `ip_intel` · **Finding per** actor.
+
+**Triage.** Ask the user whether they reset or changed the password and whether they were
+travelling. If not, revoke sessions and refresh tokens, reset the password and registered
+authentication methods, and review what the account did after the reset.
+
+**False positives.** A reset while travelling or through a VPN that exits in another country; a
+mobile carrier gateway that geolocates abroad.
 
 ### SPW-HAWK-008
 

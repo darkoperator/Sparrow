@@ -99,11 +99,11 @@
         "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
         "ollie.carter@contoso.example",
         "high",
-        "5",
-        "{\"high\":3,\"medium\":2}",
+        "6",
+        "{\"high\":3,\"medium\":3}",
         "suspicious_sign_in, persistence",
         "2026-08-25 11:00:00",
-        "SPW-HAWK-012; SPW-ID-002; SPW-ID-003; SPW-ID-011; SPW-ID-012",
+        "SPW-HAWK-012; SPW-ID-002; SPW-ID-003; SPW-ID-011; SPW-ID-012; SPW-ID-013",
         "203.0.113.1 (finding_evidence, hosting, risky_signin); 203.0.113.2 (finding_evidence, hosting)",
         "2",
         "false",
@@ -450,7 +450,7 @@
         "",
         "",
         "",
-        "{\"facts_version\":1,\"window_start\":\"2026-08-11T14:24:08.000000Z\",\"actor_ips\":[{\"ip\":\"203.0.113.2\",\"asn\":20473,\"asn_org\":\"Vultr (The Constant Company)\",\"is_hosting\":true,\"spray_source\":false,\"user_signin_days_before\":0,\"user_first_signin\":null}],\"other_signals\":{\"total\":4,\"items\":[{\"rule_id\":\"SPW-ID-012\",\"severity\":\"high\",\"first_seen\":\"2026-09-03T09:00:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-012\",\"severity\":\"high\",\"first_seen\":\"2026-08-25T11:00:00.000000Z\"},{\"rule_id\":\"SPW-ID-002\",\"severity\":\"medium\",\"first_seen\":\"2026-08-25T11:00:00.000000Z\"},{\"rule_id\":\"SPW-ID-003\",\"severity\":\"medium\",\"first_seen\":\"2026-08-25T11:00:00.000000Z\"}]}}",
+        "{\"facts_version\":1,\"window_start\":\"2026-08-11T14:24:08.000000Z\",\"actor_ips\":[{\"ip\":\"203.0.113.2\",\"asn\":20473,\"asn_org\":\"Vultr (The Constant Company)\",\"is_hosting\":true,\"spray_source\":false,\"user_signin_days_before\":0,\"user_first_signin\":null}],\"other_signals\":{\"total\":5,\"items\":[{\"rule_id\":\"SPW-ID-012\",\"severity\":\"high\",\"first_seen\":\"2026-09-03T09:00:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-012\",\"severity\":\"high\",\"first_seen\":\"2026-08-25T11:00:00.000000Z\"},{\"rule_id\":\"SPW-ID-013\",\"severity\":\"medium\",\"first_seen\":\"2026-09-04T09:00:00.000000Z\"},{\"rule_id\":\"SPW-ID-002\",\"severity\":\"medium\",\"first_seen\":\"2026-08-25T11:00:00.000000Z\"},{\"rule_id\":\"SPW-ID-003\",\"severity\":\"medium\",\"first_seen\":\"2026-08-25T11:00:00.000000Z\"}]}}",
         ""
       ],
       [
@@ -951,6 +951,31 @@
         "",
         "",
         "",
+        ""
+      ],
+      [
+        "d758cbb9721acee2",
+        "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
+        "SPW-ID-013",
+        "medium",
+        "Self-service password reset from a new country",
+        "ollie.carter@contoso.example",
+        "2026-09-04 09:00:00",
+        "2026-09-04 09:00:00",
+        "new",
+        "",
+        "",
+        "false",
+        "1",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "{\"facts_version\":1,\"window_start\":\"2026-08-11T14:24:08.000000Z\",\"actor_ips\":[{\"ip\":\"203.0.113.2\",\"asn\":20473,\"asn_org\":\"Vultr (The Constant Company)\",\"is_hosting\":true,\"spray_source\":false,\"user_signin_days_before\":0,\"user_first_signin\":null}],\"other_signals\":{\"total\":5,\"items\":[{\"rule_id\":\"SPW-ID-012\",\"severity\":\"high\",\"first_seen\":\"2026-09-03T09:00:00.000000Z\"},{\"rule_id\":\"SPW-ID-011\",\"severity\":\"high\",\"first_seen\":\"2026-09-02T09:30:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-012\",\"severity\":\"high\",\"first_seen\":\"2026-08-25T11:00:00.000000Z\"},{\"rule_id\":\"SPW-ID-002\",\"severity\":\"medium\",\"first_seen\":\"2026-08-25T11:00:00.000000Z\"},{\"rule_id\":\"SPW-ID-003\",\"severity\":\"medium\",\"first_seen\":\"2026-08-25T11:00:00.000000Z\"}]}}",
         ""
       ],
       [
@@ -1759,10 +1784,10 @@
         "partial",
         "the window starts before the 30-day retention at collection time",
         "Microsoft-Extractor-Suite: Get-GraphEntraAuditLogs -startDate 2026-08-12 -endDate 2026-09-11 | Hawk: Get-HawkTenantEntraIDAuditLog | portal: Entra admin center > Audit logs > Download",
-        "22",
+        "24",
         "2026-08-12 16:00:00",
         "2026-09-09 20:08:41",
-        "3"
+        "5"
       ],
       [
         "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
@@ -1819,7 +1844,7 @@
         "partial",
         "the window starts before the 30-day retention at collection time",
         "Microsoft-Extractor-Suite: Get-GraphEntraSignInLogs -startDate 2026-08-12 -endDate 2026-09-11 | Hawk: Get-HawkUserEntraIDSignInLog -UserPrincipalName <upn> | portal: Entra admin center > Sign-in logs > Download (works on every edition)",
-        "1307",
+        "1309",
         "2026-08-11 14:24:08",
         "2026-09-09 23:49:44",
         "13"

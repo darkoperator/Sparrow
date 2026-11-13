@@ -20,11 +20,11 @@
 
 | Evidence table | Rows | First | Last |
 | --- | ---: | --- | --- |
-| directory\_audits | 19 | 2026-08-11T22:00:34Z | 2026-09-08T20:47:38Z |
+| directory\_audits | 21 | 2026-08-11T22:00:34Z | 2026-09-08T20:47:38Z |
 | message\_trace | 82 | 2026-09-08T15:12:49Z | 2026-09-10T14:03:13Z |
 | risk\_detections | 4 | 2026-08-04T16:44:48Z | 2026-08-21T19:12:00Z |
-| signins | 298 | 2026-08-27T00:14:46Z | 2026-09-09T20:43:21Z |
-| ual\_events | 4073 | 2026-08-01T00:21:42Z | 2026-09-09T23:35:52Z |
+| signins | 300 | 2026-08-27T00:14:46Z | 2026-09-09T20:43:21Z |
+| ual\_events | 4075 | 2026-08-01T00:21:42Z | 2026-09-09T23:35:52Z |
 
 ## Executive summary
 
@@ -144,12 +144,12 @@ What to request:
 
 | Source | Rows | First (UTC) | Last (UTC) | Days | Sampled | Gaps |
 | --- | ---: | --- | --- | ---: | --- | --- |
-| Unified audit log | 319 | 2026-08-01T00:21:42Z | 2026-09-09T11:40:57Z | 39 | no | before 2026-07-26 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
-| Sign-ins \(interactive\) | 34 | 2026-08-27T00:14:46Z | 2026-09-09T01:51:01Z | 13 | no | before 2026-07-26 to 2026-08-26; after 2026-09-10 to 2026-09-10 |
+| Unified audit log | 320 | 2026-08-01T00:21:42Z | 2026-09-09T11:40:57Z | 39 | no | before 2026-07-26 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
+| Sign-ins \(interactive\) | 35 | 2026-08-27T00:14:46Z | 2026-09-09T01:51:01Z | 13 | no | before 2026-07-26 to 2026-08-26; after 2026-09-10 to 2026-09-10 |
 | Sign-ins \(non-interactive\) | 0 |  |  | 0 | no | absent 2026-07-26 to 2026-09-10 |
 | MailItemsAccessed | 117 | 2026-08-01T00:23:27Z | 2026-09-09T11:40:57Z | 39 | no | before 2026-07-26 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
 | Message trace | 13 | 2026-09-08T16:07:17Z | 2026-09-10T08:42:27Z | 3 | no | before 2026-07-26 to 2026-09-07 |
-| Entra audit log | 2 | 2026-09-08T15:10:00Z | 2026-09-08T15:12:00Z | 1 | no | before 2026-07-26 to 2026-09-07; after 2026-09-09 to 2026-09-10 |
+| Entra audit log | 3 | 2026-09-04T09:00:00Z | 2026-09-08T15:12:00Z | 2 | no | before 2026-07-26 to 2026-09-03; after 2026-09-09 to 2026-09-10 |
 | Mailbox audit log \(legacy\) | 0 |  |  | 0 | no | absent 2026-07-26 to 2026-09-10 |
 
 What to request:
@@ -273,12 +273,12 @@ What to request:
 
 | Source | Rows | First (UTC) | Last (UTC) | Days | Sampled | Gaps |
 | --- | ---: | --- | --- | ---: | --- | --- |
-| Unified audit log | 345 | 2026-08-01T00:35:06Z | 2026-09-09T18:11:22Z | 39 | no | before 2026-07-28 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
-| Sign-ins \(interactive\) | 32 | 2026-08-27T00:47:25Z | 2026-09-09T00:33:54Z | 14 | no | before 2026-07-28 to 2026-08-26; after 2026-09-10 to 2026-09-10 |
+| Unified audit log | 346 | 2026-08-01T00:35:06Z | 2026-09-09T18:11:22Z | 39 | no | before 2026-07-28 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
+| Sign-ins \(interactive\) | 33 | 2026-08-27T00:47:25Z | 2026-09-09T00:33:54Z | 14 | no | before 2026-07-28 to 2026-08-26; after 2026-09-10 to 2026-09-10 |
 | Sign-ins \(non-interactive\) | 0 |  |  | 0 | no | absent 2026-07-28 to 2026-09-10 |
 | MailItemsAccessed | 116 | 2026-08-01T00:38:12Z | 2026-09-09T18:11:22Z | 39 | no | before 2026-07-28 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
 | Message trace | 14 | 2026-09-08T20:25:55Z | 2026-09-10T06:16:44Z | 3 | no | before 2026-07-28 to 2026-09-07 |
-| Entra audit log | 1 | 2026-09-08T20:47:38Z | 2026-09-08T20:47:38Z | 1 | no | before 2026-07-28 to 2026-09-07; after 2026-09-09 to 2026-09-10 |
+| Entra audit log | 2 | 2026-09-04T08:00:00Z | 2026-09-08T20:47:38Z | 2 | no | before 2026-07-28 to 2026-09-03; after 2026-09-09 to 2026-09-10 |
 | Mailbox audit log \(legacy\) | 0 |  |  | 0 | no | absent 2026-07-28 to 2026-09-10 |
 
 What to request:

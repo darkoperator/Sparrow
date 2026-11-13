@@ -20,13 +20,13 @@
 | Evidence table | Rows | First | Last |
 | --- | ---: | --- | --- |
 | azure\_activity | 4 | 2026-08-06T09:05:00Z | 2026-08-09T11:07:00Z |
-| directory\_audits | 22 | 2026-08-12T16:00:00Z | 2026-09-09T20:08:41Z |
+| directory\_audits | 24 | 2026-08-12T16:00:00Z | 2026-09-09T20:08:41Z |
 | mailbox\_audit\_legacy | 1778 | 2026-08-01T08:38:17Z | 2026-09-10T01:55:36Z |
 | message\_trace | 2270 | 2026-08-01T04:17:34Z | 2026-09-09T23:55:36Z |
 | risk\_detections | 4 | 2026-08-04T12:50:10Z | 2026-08-21T19:12:00Z |
 | security\_alerts | 1 | 2026-08-04T10:00:00Z | 2026-08-04T10:00:00Z |
-| signins | 1307 | 2026-08-11T14:24:08Z | 2026-09-09T23:49:44Z |
-| ual\_events | 5911 | 2026-08-01T00:19:21Z | 2026-09-09T23:59:59Z |
+| signins | 1309 | 2026-08-11T14:24:08Z | 2026-09-09T23:49:44Z |
+| ual\_events | 5913 | 2026-08-01T00:19:21Z | 2026-09-09T23:59:59Z |
 
 ## Executive summary
 
@@ -171,12 +171,12 @@ What to request:
 
 | Source | Rows | First (UTC) | Last (UTC) | Days | Sampled | Gaps |
 | --- | ---: | --- | --- | ---: | --- | --- |
-| Unified audit log | 454 | 2026-08-01T00:41:54Z | 2026-09-09T18:46:29Z | 38 | no | before 2026-07-26 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
-| Sign-ins \(interactive\) | 63 | 2026-08-12T00:37:15Z | 2026-09-09T07:03:15Z | 28 | no | before 2026-07-26 to 2026-08-11; after 2026-09-10 to 2026-09-10 |
+| Unified audit log | 455 | 2026-08-01T00:41:54Z | 2026-09-09T18:46:29Z | 38 | no | before 2026-07-26 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
+| Sign-ins \(interactive\) | 64 | 2026-08-12T00:37:15Z | 2026-09-09T07:03:15Z | 28 | no | before 2026-07-26 to 2026-08-11; after 2026-09-10 to 2026-09-10 |
 | Sign-ins \(non-interactive\) | 41 | 2026-08-12T02:25:33Z | 2026-09-09T01:43:22Z | 18 | no | before 2026-07-26 to 2026-08-11; after 2026-09-10 to 2026-09-10 |
 | MailItemsAccessed | 121 | 2026-08-01T00:43:15Z | 2026-09-09T18:46:29Z | 38 | no | before 2026-07-26 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
 | Message trace | 263 | 2026-08-03T01:02:45Z | 2026-09-09T18:29:58Z | 33 | no | before 2026-07-26 to 2026-08-02; after 2026-09-10 to 2026-09-10 |
-| Entra audit log | 3 | 2026-08-12T20:07:00Z | 2026-09-08T15:12:00Z | 2 | no | before 2026-07-26 to 2026-08-11; after 2026-09-09 to 2026-09-10 |
+| Entra audit log | 4 | 2026-08-12T20:07:00Z | 2026-09-08T15:12:00Z | 3 | no | before 2026-07-26 to 2026-08-11; after 2026-09-09 to 2026-09-10 |
 | Mailbox audit log \(legacy\) | 139 | 2026-08-03T03:20:27Z | 2026-09-09T09:51:41Z | 29 | no | before 2026-07-26 to 2026-08-02; after 2026-09-10 to 2026-09-10 |
 
 What to request:
@@ -343,12 +343,12 @@ What to request:
 
 | Source | Rows | First (UTC) | Last (UTC) | Days | Sampled | Gaps |
 | --- | ---: | --- | --- | ---: | --- | --- |
-| Unified audit log | 453 | 2026-08-01T00:42:39Z | 2026-09-09T15:30:48Z | 40 | no | before 2026-07-28 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
-| Sign-ins \(interactive\) | 68 | 2026-08-12T00:22:04Z | 2026-09-09T07:10:31Z | 29 | no | before 2026-07-28 to 2026-08-11; after 2026-09-10 to 2026-09-10 |
+| Unified audit log | 454 | 2026-08-01T00:42:39Z | 2026-09-09T15:30:48Z | 40 | no | before 2026-07-28 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
+| Sign-ins \(interactive\) | 69 | 2026-08-12T00:22:04Z | 2026-09-09T07:10:31Z | 29 | no | before 2026-07-28 to 2026-08-11; after 2026-09-10 to 2026-09-10 |
 | Sign-ins \(non-interactive\) | 44 | 2026-08-12T00:35:36Z | 2026-09-09T07:51:48Z | 19 | no | before 2026-07-28 to 2026-08-11; after 2026-09-10 to 2026-09-10 |
 | MailItemsAccessed | 110 | 2026-08-01T00:46:53Z | 2026-09-09T15:30:48Z | 40 | no | before 2026-07-28 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
 | Message trace | 222 | 2026-08-01T06:54:20Z | 2026-09-09T15:16:32Z | 34 | no | before 2026-07-28 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
-| Entra audit log | 0 |  |  | 0 | no | absent 2026-07-28 to 2026-09-10 |
+| Entra audit log | 1 | 2026-09-04T08:00:00Z | 2026-09-04T08:00:00Z | 1 | no | before 2026-07-28 to 2026-09-03; after 2026-09-05 to 2026-09-10 |
 | Mailbox audit log \(legacy\) | 141 | 2026-08-01T08:54:20Z | 2026-09-09T17:16:32Z | 33 | no | before 2026-07-28 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
 
 What to request:
@@ -373,7 +373,7 @@ What to request:
   - Admin portal: Exchange admin center &gt; Mail flow &gt; Message trace &gt; Start a trace: Sender = frances.rourke@contoso.example, then again with Recipient = frances.rourke@contoso.example, dates 2026-07-28 to 2026-09-10, report type Extended report, then download it
   - Hawk: Get-HawkUserMessageTrace -UserPrincipalName frances.rourke@contoso.example \(cannot serve 2026-07-28 to 2026-09-10: it ignores dates and returns only the messages the account sent in roughly the last 7 days; useful only when the range falls inside that\)
   - Microsoft-Extractor-Suite: Get-MessageTraceLog -UserIds frances.rourke@contoso.example -StartDate 2026-07-28 -EndDate 2026-09-11
-- Entra audit log, 2026-07-28 to 2026-09-10 (absent)
+- Entra audit log, 2026-07-28 to 2026-09-10 (before, after)
   - Admin portal: Entra admin center &gt; Monitoring &amp; health &gt; Audit logs: Date 2026-07-28 to 2026-09-10, filter Initiated by \(actor\) = frances.rourke@contoso.example, Download &gt; JSON; repeat with the Target filter = frances.rourke@contoso.example
   - Hawk: Get-HawkTenantEntraIDAuditLog \(whole tenant; ignores dates and always returns the last 30 days up to now, so it serves 2026-07-28 to 2026-09-10 only inside that\)
   - Microsoft-Extractor-Suite: Get-GraphEntraAuditLogs -UserIds frances.rourke@contoso.example -startDate 2026-07-28 -endDate 2026-09-11 \(rows where the account is only the target are not returned; -All adds them but ignores the dates for target matches, so filter those by date after collecting\)
@@ -524,7 +524,7 @@ Sparrow ingested the collector output into a case database, enriched it and ran 
 
 ## Evidence references
 
-[^1]: signins:2e1c9d42-6a92-419c-b21a-9d2fb256a795 — Output/Contoso\_Example/Sign-In logs/EntraID/20260910-161751-SignInLogs/interactiveUser &amp; nonInteractiveUser/20260910161757-interactiveUser-nonInteractiveUser-SignInLogs.json:20577-20643
+[^1]: signins:2e1c9d42-6a92-419c-b21a-9d2fb256a795 — Output/Contoso\_Example/Sign-In logs/EntraID/20260910-161751-SignInLogs/interactiveUser &amp; nonInteractiveUser/20260910161757-interactiveUser-nonInteractiveUser-SignInLogs.json:20711-20777
 [^2]: ual\_events:74b0d0cd-8b08-4d7d-b5ce-e5a2784cf1d1 — Output/Contoso\_Example/UnifiedAuditLog/20260910-161616/20260910161616-victims-UnifiedAuditLog.json:96863-96913; Output/Contoso\_Example/UnifiedAuditLog/20260910-161713/20260910161713-victims-UnifiedAuditLog.jsonl:1470; Output/Triage-Contoso\_Example/New-InboxRule.json:2-51 (+2 more sightings)
 [^3]: ual\_events:5ae56966-7d51-4d2d-900d-196664d6118e — Output/Contoso\_Example/UnifiedAuditLog/20260910-161616/20260910161616-victims-UnifiedAuditLog.json:89-161; Output/Contoso\_Example/UnifiedAuditLog/20260910-161713/20260910161713-victims-UnifiedAuditLog.jsonl:2; Output/Triage-Contoso\_Example/MailItemsAccessed.json:2-73 (+3 more sightings)
 [^4]: ual\_events:02a13335-5a42-4ce8-9f05-5b5f0f489146 — Output/Contoso\_Example/UnifiedAuditLog/20260910-161616/20260910161616-victims-UnifiedAuditLog.json:166338-166388; Output/Contoso\_Example/UnifiedAuditLog/20260910-161713/20260910161713-victims-UnifiedAuditLog.jsonl:2521; Output/Triage-Contoso\_Example/New-InboxRule.json:118-167 (+2 more sightings)

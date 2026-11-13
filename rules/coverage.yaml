@@ -820,6 +820,28 @@ rules:
       - kind: inbox_rule_finance
         condition: session_networks
         reason: "the storyline reuses the AiTM session from the attacker's replay address while the proxy address (another hosting ASN) used it the same day: a true hit of this rule's logic where the collector delivers UAL session ids and ASN data for both addresses"
+  - id: SPW-ID-013
+    title: Self-service password reset from a new country
+    category: identity
+    severity: medium
+    hawk: null
+    logic: >-
+      Directory audit "Reset password (self-service)", "Self-service password reset flow activity
+      progress" or "Change password (self-service)" whose initiating address has a country in
+      ip_intel (Microsoft and private addresses excluded) that no successful sign-in of the user
+      (initiated_by_upn, else the audit's target user; error_code 0 or NULL) comes from; users with
+      no successful sign-in of known country are not judged. One hit per audit row. context:
+      country, city, activity, result.
+    tables: [directory_audits]
+    requires: []
+    requires_evidence: []
+    needs_geoip: true
+    # Hawk 3 delivers neither the Entra audit log nor the sign-in log; the portal exports only the
+    # Purview UAL and the interactive sign-ins, not the directory audit this rule reads.
+    collectors: [hawk4, invictus]
+    positives: [sspr_foreign]
+    # sspr_home_country: the user resets their own password from home, the country of all their sign-ins.
+    lookalikes: [sspr_home_country]
   - id: SPW-APP-001
     title: Consent to an app with Mail.*, Files.* or offline_access
     category: apps

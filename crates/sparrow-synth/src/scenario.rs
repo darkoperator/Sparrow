@@ -260,6 +260,7 @@ story_kind! {
         TokenReplayAfterRevoke => "token_replay_after_revoke",
         SessionHoppingProxy => "session_hopping_proxy",
         LookalikeVendorInvoice => "lookalike_vendor_invoice",
+        SsprForeign => "sspr_foreign",
     }
     lookalike {
         RiskDismissed => "risk_dismissed",
@@ -318,6 +319,7 @@ story_kind! {
         PostResetRefreshNoise => "post_reset_refresh_noise",
         SessionRoamingUser => "session_roaming_user",
         SimilarUnrelatedDomain => "similar_unrelated_domain",
+        SsprHomeCountry => "sspr_home_country",
     }
 }
 

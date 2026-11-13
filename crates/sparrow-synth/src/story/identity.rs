@@ -48,6 +48,8 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
         StoryKind::PostResetRefreshNoise => post_reset_refresh_noise(w, ctx),
         StoryKind::SessionHoppingProxy => session_hopping_proxy(w, ctx),
         StoryKind::SessionRoamingUser => session_roaming_user(w, ctx),
+        StoryKind::SsprForeign => sspr_foreign(w, ctx),
+        StoryKind::SsprHomeCountry => sspr_home_country(w, ctx),
         _ => return Ok(false),
     }
     Ok(true)
@@ -1126,4 +1128,51 @@ fn session_roaming_user(w: &mut World, ctx: &mut Ctx) {
         );
         push_ual(w, ctx, u);
     }
+}
+
+/// A self-service password reset of the user's own account from `ip`, preceded an hour before by
+/// the user's own successful sign-in from home (so every collector that delivers the audit also
+/// delivers a sign-in history to compare the country with).
+fn sspr_from(w: &mut World, ctx: &mut Ctx, ip: IpAddr) {
+    let a: User = ctx.a.clone();
+    let session = ctx.rng.uuid();
+    let ok = signin(
+        w,
+        &mut ctx.rng,
+        &a,
+        ctx.t - Duration::hours(1),
+        a.home_ip,
+        &a.home,
+        SignInType::Interactive,
+        well_known("OfficeHome"),
+        well_known("Office 365 Exchange Online"),
+        session,
+    );
+    push_signin(w, ctx, &a, ok, true);
+    let audit = dir_audit(
+        &mut ctx.rng,
+        ctx.t,
+        "Reset password (self-service)",
+        "UserManagement",
+        "Update",
+        "Self-service Password Management",
+        &a,
+        ip,
+        vec![user_target(&a, Vec::new())],
+    );
+    push_audit(w, ctx, audit);
+}
+
+/// The victim's password reset through self-service from the attacker's replay address, in a
+/// country the victim never signed in from. Fixed attacker address (no shared-pool draw).
+fn sspr_foreign(w: &mut World, ctx: &mut Ctx) {
+    let ip = w.attacker.replay_ip;
+    sspr_from(w, ctx, ip);
+}
+
+/// The user resets their own password through self-service from home, the country of all their
+/// sign-ins.
+fn sspr_home_country(w: &mut World, ctx: &mut Ctx) {
+    let ip = ctx.a.home_ip;
+    sspr_from(w, ctx, ip);
 }

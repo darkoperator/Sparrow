@@ -168,7 +168,7 @@
         {
           "source": "ual",
           "title": "Unified audit log",
-          "rows": 441,
+          "rows": 442,
           "first": "2026-08-01T00:21:42.000000Z",
           "last": "2026-09-09T11:40:57.000000Z",
           "days": 39,
@@ -189,7 +189,7 @@
         {
           "source": "signins_interactive",
           "title": "Sign-ins (interactive)",
-          "rows": 62,
+          "rows": 63,
           "first": "2026-08-12T00:45:34.000000Z",
           "last": "2026-09-09T01:51:01.000000Z",
           "days": 28,
@@ -273,15 +273,15 @@
         {
           "source": "entra_audit",
           "title": "Entra audit log",
-          "rows": 2,
-          "first": "2026-09-08T15:10:00.000000Z",
+          "rows": 3,
+          "first": "2026-09-04T09:00:00.000000Z",
           "last": "2026-09-08T15:12:00.000000Z",
-          "days": 1,
+          "days": 2,
           "sampled": false,
           "gaps": [
             {
               "from": "2026-07-26",
-              "to": "2026-09-07",
+              "to": "2026-09-03",
               "reason": "before"
             },
             {
@@ -776,7 +776,7 @@
         {
           "source": "ual",
           "title": "Unified audit log",
-          "rows": 448,
+          "rows": 449,
           "first": "2026-08-01T00:35:06.000000Z",
           "last": "2026-09-09T18:11:22.000000Z",
           "days": 39,
@@ -797,7 +797,7 @@
         {
           "source": "signins_interactive",
           "title": "Sign-ins (interactive)",
-          "rows": 56,
+          "rows": 57,
           "first": "2026-08-12T00:44:15.000000Z",
           "last": "2026-09-09T00:33:54.000000Z",
           "days": 28,
@@ -881,15 +881,15 @@
         {
           "source": "entra_audit",
           "title": "Entra audit log",
-          "rows": 1,
-          "first": "2026-09-08T20:47:38.000000Z",
+          "rows": 2,
+          "first": "2026-09-04T08:00:00.000000Z",
           "last": "2026-09-08T20:47:38.000000Z",
-          "days": 1,
+          "days": 2,
           "sampled": false,
           "gaps": [
             {
               "from": "2026-07-28",
-              "to": "2026-09-07",
+              "to": "2026-09-03",
               "reason": "before"
             },
             {
