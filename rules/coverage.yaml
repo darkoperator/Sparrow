@@ -435,6 +435,23 @@ rules:
     collectors: [hawk4, invictus, portal]
     positives: [delegate_finance_delete]
     lookalikes: [assistant_cleanup]
+  - id: SPW-MAIL-009
+    title: Inbound mail from a look-alike domain
+    category: mail
+    severity: high
+    hawk: null
+    logic: >-
+      message_trace sender domain d (not a tenant domain; first label at least 6 characters) that
+      looks like a tenant domain (arm tenant) or like a domain first seen at least 14 days before
+      d (arm correspondent): equal skeletons (rn->m, vv->w, 0->o, 1->l, cl->d) or levenshtein 1.
+      One hit per trace row, actor_upn is the recipient; context names look_alike_of and arm.
+    tables: [message_trace]
+    requires: []
+    requires_evidence: []
+    needs_geoip: false
+    collectors: [invictus, portal]
+    positives: [lookalike_vendor_invoice]
+    lookalikes: [similar_unrelated_domain]
   - id: SPW-ID-001
     title: MFA method registered after a risky sign-in
     category: identity

@@ -259,6 +259,7 @@ story_kind! {
         DelegateFinanceDelete => "delegate_finance_delete",
         TokenReplayAfterRevoke => "token_replay_after_revoke",
         SessionHoppingProxy => "session_hopping_proxy",
+        LookalikeVendorInvoice => "lookalike_vendor_invoice",
     }
     lookalike {
         RiskDismissed => "risk_dismissed",
@@ -316,6 +317,7 @@ story_kind! {
         AssistantCleanup => "assistant_cleanup",
         PostResetRefreshNoise => "post_reset_refresh_noise",
         SessionRoamingUser => "session_roaming_user",
+        SimilarUnrelatedDomain => "similar_unrelated_domain",
     }
 }
 

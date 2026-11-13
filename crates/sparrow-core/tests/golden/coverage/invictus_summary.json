@@ -44,7 +44,7 @@
         },
         {
           "source_table": "message_trace",
-          "rows": 2325,
+          "rows": 2331,
           "first": "2026-08-01T03:21:24Z",
           "last": "2026-09-09T23:19:19Z"
         },
@@ -181,7 +181,7 @@
     },
     {
       "table": "events",
-      "rows": 11317
+      "rows": 11323
     },
     {
       "table": "file_events",
@@ -189,7 +189,7 @@
     },
     {
       "table": "finding_evidence",
-      "rows": 160
+      "rows": 161
     },
     {
       "table": "group_members",
@@ -233,7 +233,7 @@
     },
     {
       "table": "message_trace",
-      "rows": 2325
+      "rows": 2331
     },
     {
       "table": "message_trace_events",
@@ -253,7 +253,7 @@
     },
     {
       "table": "record_sources",
-      "rows": 32488
+      "rows": 32494
     },
     {
       "table": "remote_domains",

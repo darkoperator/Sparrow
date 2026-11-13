@@ -186,6 +186,8 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
             auto_reply(w, ctx, ip, "Disabled", "");
         }
         StoryKind::HeaderClean => header_clean(w, ctx),
+        StoryKind::LookalikeVendorInvoice => lookalike_vendor_invoice(w, ctx),
+        StoryKind::SimilarUnrelatedDomain => similar_unrelated_domain(w, ctx),
         _ => return Ok(false),
     }
     Ok(true)
@@ -1166,6 +1168,59 @@ fn header_spoof(w: &mut World, ctx: &mut Ctx) -> Result<()> {
     };
     deliver(w, ctx, email, "bounce@spoof-mail.test");
     Ok(())
+}
+
+/// A vendor the look-alike storylines imitate, and its `vv` for `w` look-alike.
+const IMITATED_VENDOR: &str = "widgetco.example";
+const IMITATING_VENDOR: &str = "vvidgetco.example";
+
+/// The vendor's genuine invoice reaches the user 20 days before the same thread is continued from
+/// a look-alike domain (`vv` for `w`) with new bank details. Neither message has a sender address
+/// (no shared-pool draw); both are Incoming trace rows only.
+fn lookalike_vendor_invoice(w: &mut World, ctx: &mut Ctx) {
+    let a = ctx.a.clone();
+    let t = ctx.t;
+    deliver_to(
+        w,
+        ctx,
+        &a,
+        &format!("billing@{IMITATED_VENDOR}"),
+        "Invoice 7781 - payment due",
+        t - Duration::days(20),
+    );
+    deliver_to(
+        w,
+        ctx,
+        &a,
+        &format!("billing@{IMITATING_VENDOR}"),
+        "Updated bank details for invoice 7781",
+        t,
+    );
+}
+
+/// Two pairs of unrelated senders whose domains are one edit apart: short names (a four-letter
+/// first label, seen 20 days apart) and long names seen three days apart. Neither pair is a
+/// look-alike of the other: the first is too short to mean anything, the second is not 14 days
+/// apart.
+fn similar_unrelated_domain(w: &mut World, ctx: &mut Ctx) {
+    let a = ctx.a.clone();
+    let t = ctx.t;
+    for (from, subject, at) in [
+        (
+            "sales@ibex.example",
+            "Spring catalogue",
+            t - Duration::days(20),
+        ),
+        ("sales@ibez.example", "Spring price list", t),
+        (
+            "info@shop-alpha.example",
+            "Order confirmation",
+            t - Duration::days(3),
+        ),
+        ("info@shop-alphb.example", "Order confirmation", t),
+    ] {
+        deliver_to(w, ctx, &a, from, subject, at);
+    }
 }
 
 /// A vendor newsletter to `g` that passes SPF, DKIM and DMARC.

@@ -87,6 +87,7 @@ Several correlation rules rely on facts the profile step computes once per case:
 | [SPW-MAIL-006](#spw-mail-006) | Mail sent from an IP address the user never used before | medium | low | sending | evidence `mail_send` |
 | [SPW-MAIL-007](#spw-mail-007) | Mailbox or SharePoint search for finance keywords | medium | medium | mail_access | evidence `search_queries` |
 | [SPW-MAIL-008](#spw-mail-008) | Mail deleted by a delegate from an unusual network or with a finance subject | high | medium | mail_access | evidence `ual` |
+| [SPW-MAIL-009](#spw-mail-009) | Inbound mail from a look-alike domain | high | medium | suspicious_sign_in | |
 | [SPW-HAWK-014](#spw-hawk-014) | Message header sender mismatch or failed / anonymous authentication | medium | medium | — | |
 | [SPW-ID-001](#spw-id-001) | MFA method registered after a risky sign-in | high | medium | suspicious_sign_in, mfa_change | GeoIP |
 | [SPW-ID-002](#spw-id-002) | Sign-in from a hosting-provider ASN | medium | medium | suspicious_sign_in | GeoIP |
@@ -119,7 +120,7 @@ Several correlation rules rely on facts the profile step computes once per case:
 | [SPW-HAWK-011](#spw-hawk-011) | Mailbox forwarding configured | medium | medium | persistence | |
 | [SPW-HAWK-015](#spw-hawk-015) | Automatic reply enabled | low | low | — | |
 
-37 rules. Tags you can filter on with `--tag` include `bec`, `correlation`, `inbox-rule`,
+38 rules. Tags you can filter on with `--tag` include `bec`, `correlation`, `inbox-rule`,
 `forwarding`, `oauth-consent`, `identity-protection`, `password-spray` and `sign-in`.
 
 ---
@@ -258,6 +259,33 @@ the delegate permission and the actor's sign-in for that session, then look in R
 
 **False positives.** An assistant who manages an executive's mailbox and deletes an invoice they
 have processed; an admin or owner of a finance shared mailbox cleaning it.
+
+### SPW-MAIL-009
+
+**Inbound mail from a look-alike domain**: high / medium · stage `suspicious_sign_in` · MITRE
+T1566.001, T1583.001
+
+**Detects.** A message trace row whose sender domain `d` is not one of the tenant's domains, has a
+first label of at least 6 characters, and looks like another domain: equal after folding `rn` to
+`m`, `vv` to `w`, `0` to `o`, `1` to `l` and `cl` to `d`, or one edit apart (Levenshtein 1). Arm
+`tenant`: it looks like one of the tenant's own domains. Arm `correspondent`: it looks like a
+domain first seen in the trace at least 14 days before `d` was first seen, so the look-alike is the
+later one. If both hold, the tenant arm is reported. One finding hit per trace row; the actor is the
+recipient and the finding context holds `look_alike_of`, `arm`, the sender and the subject.
+
+**Residual risk.** Other homoglyphs and look-alikes two or more edits apart are not reported, nor
+are domains with a first label under 6 characters. Two correspondents that look alike are ordered
+only by first seen: the later one, at least 14 days on, is the one reported, whichever is genuine.
+The `initial_access` stage is not in the rule schema; `suspicious_sign_in` is the closest.
+
+**Reads** `message_trace` · **Finding per** actor.
+
+**Triage.** Compare the domain with the original, find its registration date, and read the thread:
+a payment, a changed bank account or a new contact. Check whether the recipient replied, and block
+the domain.
+
+**False positives.** A sister company or subsidiary whose domain is one character off; a vendor
+that rebranded to a nearly identical domain; unrelated long names one edit apart.
 
 ### SPW-HAWK-014
 

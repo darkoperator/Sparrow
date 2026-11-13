@@ -318,7 +318,7 @@
       "tenant_key": "f8ff8c86-40d4-4634-b6fa-5e29a28c1d80",
       "upn": "kendall.james@contoso.example",
       "window": {
-        "start": "2026-08-08",
+        "start": "2026-08-01",
         "end": "2026-09-10"
       },
       "sources": [
@@ -348,7 +348,7 @@
           "sampled": false,
           "gaps": [
             {
-              "from": "2026-08-08",
+              "from": "2026-08-01",
               "to": "2026-08-11",
               "reason": "before"
             },
@@ -369,7 +369,7 @@
           "sampled": false,
           "gaps": [
             {
-              "from": "2026-08-08",
+              "from": "2026-08-01",
               "to": "2026-08-11",
               "reason": "before"
             },
@@ -399,7 +399,7 @@
         {
           "source": "message_trace",
           "title": "Message trace",
-          "rows": 253,
+          "rows": 255,
           "first": "2026-08-01T03:21:24.000000Z",
           "last": "2026-09-09T14:51:59.000000Z",
           "days": 34,
@@ -422,7 +422,7 @@
           "sampled": false,
           "gaps": [
             {
-              "from": "2026-08-08",
+              "from": "2026-08-01",
               "to": "2026-08-19",
               "reason": "before"
             },
@@ -442,6 +442,11 @@
           "days": 30,
           "sampled": false,
           "gaps": [
+            {
+              "from": "2026-08-01",
+              "to": "2026-08-02",
+              "reason": "before"
+            },
             {
               "from": "2026-09-10",
               "to": "2026-09-10",
@@ -1589,30 +1594,30 @@
       "user": "kendall.james@contoso.example",
       "source": "signins_interactive",
       "title": "Sign-ins (interactive)",
-      "from": "2026-08-08",
+      "from": "2026-08-01",
       "to": "2026-09-10",
       "reasons": [
         "before",
         "after"
       ],
-      "console": "Entra admin center > Monitoring & health > Sign-in logs > User sign-ins (interactive) tab: filter User = kendall.james@contoso.example and Date 2026-08-08 to 2026-09-10, Download > JSON",
-      "hawk": "Get-HawkUserEntraIDSignInLog -UserPrincipalName kendall.james@contoso.example (Hawk sets the window when it starts, 2026-08-08 to 2026-09-10; Graph allows only the last 14 days there; its filter names no event type, so non-interactive sign-ins are not guaranteed)",
-      "invictus": "Get-GraphEntraSignInLogs -UserIds kendall.james@contoso.example -startDate 2026-08-08 -endDate 2026-09-11 -EventTypes interactiveUser"
+      "console": "Entra admin center > Monitoring & health > Sign-in logs > User sign-ins (interactive) tab: filter User = kendall.james@contoso.example and Date 2026-08-01 to 2026-09-10, Download > JSON",
+      "hawk": "Get-HawkUserEntraIDSignInLog -UserPrincipalName kendall.james@contoso.example (Hawk sets the window when it starts, 2026-08-01 to 2026-09-10; Graph allows only the last 14 days there; its filter names no event type, so non-interactive sign-ins are not guaranteed)",
+      "invictus": "Get-GraphEntraSignInLogs -UserIds kendall.james@contoso.example -startDate 2026-08-01 -endDate 2026-09-11 -EventTypes interactiveUser"
     },
     {
       "tenant_key": "f8ff8c86-40d4-4634-b6fa-5e29a28c1d80",
       "user": "kendall.james@contoso.example",
       "source": "signins_noninteractive",
       "title": "Sign-ins (non-interactive)",
-      "from": "2026-08-08",
+      "from": "2026-08-01",
       "to": "2026-09-10",
       "reasons": [
         "before",
         "after"
       ],
-      "console": "Entra admin center > Monitoring & health > Sign-in logs > User sign-ins (non-interactive) tab: filter User = kendall.james@contoso.example and Date 2026-08-08 to 2026-09-10, Download > JSON",
+      "console": "Entra admin center > Monitoring & health > Sign-in logs > User sign-ins (non-interactive) tab: filter User = kendall.james@contoso.example and Date 2026-08-01 to 2026-09-10, Download > JSON",
       "hawk": null,
-      "invictus": "Get-GraphEntraSignInLogs -UserIds kendall.james@contoso.example -startDate 2026-08-08 -endDate 2026-09-11 -EventTypes nonInteractiveUser"
+      "invictus": "Get-GraphEntraSignInLogs -UserIds kendall.james@contoso.example -startDate 2026-08-01 -endDate 2026-09-11 -EventTypes nonInteractiveUser"
     },
     {
       "tenant_key": "f8ff8c86-40d4-4634-b6fa-5e29a28c1d80",
@@ -1647,29 +1652,30 @@
       "user": "kendall.james@contoso.example",
       "source": "entra_audit",
       "title": "Entra audit log",
-      "from": "2026-08-08",
+      "from": "2026-08-01",
       "to": "2026-09-10",
       "reasons": [
         "before",
         "after"
       ],
-      "console": "Entra admin center > Monitoring & health > Audit logs: Date 2026-08-08 to 2026-09-10, filter Initiated by (actor) = kendall.james@contoso.example, Download > JSON; repeat with the Target filter = kendall.james@contoso.example",
-      "hawk": "Get-HawkTenantEntraIDAuditLog (whole tenant; ignores dates and always returns the last 30 days up to now, so it serves 2026-08-08 to 2026-09-10 only inside that)",
-      "invictus": "Get-GraphEntraAuditLogs -UserIds kendall.james@contoso.example -startDate 2026-08-08 -endDate 2026-09-11 (rows where the account is only the target are not returned; -All adds them but ignores the dates for target matches, so filter those by date after collecting)"
+      "console": "Entra admin center > Monitoring & health > Audit logs: Date 2026-08-01 to 2026-09-10, filter Initiated by (actor) = kendall.james@contoso.example, Download > JSON; repeat with the Target filter = kendall.james@contoso.example",
+      "hawk": "Get-HawkTenantEntraIDAuditLog (whole tenant; ignores dates and always returns the last 30 days up to now, so it serves 2026-08-01 to 2026-09-10 only inside that)",
+      "invictus": "Get-GraphEntraAuditLogs -UserIds kendall.james@contoso.example -startDate 2026-08-01 -endDate 2026-09-11 (rows where the account is only the target are not returned; -All adds them but ignores the dates for target matches, so filter those by date after collecting)"
     },
     {
       "tenant_key": "f8ff8c86-40d4-4634-b6fa-5e29a28c1d80",
       "user": "kendall.james@contoso.example",
       "source": "mailbox_audit",
       "title": "Mailbox audit log (legacy)",
-      "from": "2026-09-10",
+      "from": "2026-08-01",
       "to": "2026-09-10",
       "reasons": [
+        "before",
         "after"
       ],
-      "console": "Exchange admin center has no export for the legacy mailbox audit log; use Exchange Online PowerShell: Search-MailboxAuditLog -Identity kendall.james@contoso.example -LogonTypes Delegate,Admin,Owner -StartDate 2026-09-10 -EndDate 2026-09-11 -ShowDetails -ResultSize 250000",
+      "console": "Exchange admin center has no export for the legacy mailbox audit log; use Exchange Online PowerShell: Search-MailboxAuditLog -Identity kendall.james@contoso.example -LogonTypes Delegate,Admin,Owner -StartDate 2026-08-01 -EndDate 2026-09-11 -ShowDetails -ResultSize 250000",
       "hawk": null,
-      "invictus": "Get-MailboxAuditLogLegacy -UserIds kendall.james@contoso.example -StartDate 2026-09-10 -EndDate 2026-09-11"
+      "invictus": "Get-MailboxAuditLogLegacy -UserIds kendall.james@contoso.example -StartDate 2026-08-01 -EndDate 2026-09-11"
     },
     {
       "tenant_key": "f8ff8c86-40d4-4634-b6fa-5e29a28c1d80",

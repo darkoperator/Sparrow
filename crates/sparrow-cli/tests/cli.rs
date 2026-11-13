@@ -1049,7 +1049,7 @@ fn synth_scale_flags_add_exact_filler() {
 #[test]
 fn synth_coverage_reports_every_rule() {
     let v = json_out(sparrow().args(["--json", "synth", "coverage"]), 0);
-    assert_eq!(v["rules"].as_array().unwrap().len(), 37);
+    assert_eq!(v["rules"].as_array().unwrap().len(), 38);
     assert_eq!(v["ok"], true);
 }
 
@@ -1147,7 +1147,7 @@ fn rules_test_runs_every_inline_test() {
 fn rules_list_shows_a_file_for_every_coverage_id() {
     let cov = sparrow_core::detect::coverage::CoverageMatrix::builtin().unwrap();
     let expected: Vec<String> = cov.rules.iter().map(|r| r.id.clone()).collect();
-    assert_eq!(expected.len(), 37, "the seed pack is 37 rules");
+    assert_eq!(expected.len(), 38, "the seed pack is 38 rules");
 
     let v = json_out(sparrow().args(["--json", "rules", "list"]), 0);
     let ids: Vec<String> = v["rules"]

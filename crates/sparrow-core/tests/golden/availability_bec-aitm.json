@@ -90,11 +90,11 @@
     "evidence": "message_trace",
     "title": "Exchange Online message trace",
     "status": "collected",
-    "reason": "2264 rows",
-    "rows": 2264,
+    "reason": "2270 rows",
+    "rows": 2270,
     "min_time": "2026-08-01T04:17:34Z",
     "max_time": "2026-09-09T23:55:36Z",
-    "users_covered": 22,
+    "users_covered": 28,
     "retention_days": 90
   },
   {
