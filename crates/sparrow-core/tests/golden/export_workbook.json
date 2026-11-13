@@ -83,11 +83,11 @@
         "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
         "marlowe.rhodes@contoso.example",
         "high",
-        "24",
-        "{\"high\":16,\"low\":1,\"medium\":7}",
+        "25",
+        "{\"high\":17,\"low\":1,\"medium\":7}",
         "suspicious_sign_in, persistence, mail_access, sending, consent, mfa_change",
         "2026-08-21 09:12:00",
-        "SPW-APP-001; SPW-APP-002; SPW-FILE-001; SPW-FILE-002; SPW-FILE-003; SPW-HAWK-003; SPW-HAWK-006; SPW-HAWK-007; SPW-HAWK-008; SPW-HAWK-009; SPW-HAWK-010; SPW-HAWK-012; SPW-HAWK-015; SPW-ID-001; SPW-ID-002; SPW-ID-003; SPW-ID-004; SPW-ID-010; SPW-MAIL-003; SPW-MAIL-004; SPW-MAIL-005; SPW-MAIL-006; SPW-MAIL-007",
+        "SPW-APP-001; SPW-APP-002; SPW-FILE-001; SPW-FILE-002; SPW-FILE-003; SPW-HAWK-003; SPW-HAWK-006; SPW-HAWK-007; SPW-HAWK-008; SPW-HAWK-009; SPW-HAWK-010; SPW-HAWK-012; SPW-HAWK-015; SPW-ID-001; SPW-ID-002; SPW-ID-003; SPW-ID-004; SPW-ID-010; SPW-MAIL-003; SPW-MAIL-004; SPW-MAIL-005; SPW-MAIL-006; SPW-MAIL-007; SPW-MAIL-008",
         "203.0.113.1 (finding_evidence, hosting, risky_signin); 203.0.113.2 (finding_evidence, hosting, risky_signin); 203.0.113.4 (finding_evidence, acts_without_signin, hosting)",
         "3",
         "false",
@@ -275,7 +275,7 @@
         "analyst:reviewer",
         "2026-10-02 12:00:13",
         "agreed",
-        "{\"facts_version\":1,\"window_start\":\"2026-08-11T14:24:08.000000Z\",\"actor_ips\":[{\"ip\":\"203.0.113.2\",\"asn\":20473,\"asn_org\":\"Vultr (The Constant Company)\",\"is_hosting\":true,\"spray_source\":false,\"user_signin_days_before\":1,\"user_first_signin\":\"2026-08-21T09:15:00.000000Z\"}],\"other_signals\":{\"total\":23,\"items\":[{\"rule_id\":\"SPW-MAIL-003\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:37:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-004\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-008\",\"severity\":\"high\",\"first_seen\":\"2026-09-10T16:15:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-009\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:15:00.000000Z\"},{\"rule_id\":\"SPW-FILE-003\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T11:37:00.000000Z\"}]},\"targets\":[{\"address\":\"invoices@exfil-mail.test\",\"domain\":\"exfil-mail.test\",\"scope\":\"external\",\"prior_messages\":0},{\"address\":\"kai.ingram@contoso.example\",\"domain\":\"contoso.example\",\"scope\":\"internal\",\"prior_messages\":6}]}",
+        "{\"facts_version\":1,\"window_start\":\"2026-08-11T14:24:08.000000Z\",\"actor_ips\":[{\"ip\":\"203.0.113.2\",\"asn\":20473,\"asn_org\":\"Vultr (The Constant Company)\",\"is_hosting\":true,\"spray_source\":false,\"user_signin_days_before\":1,\"user_first_signin\":\"2026-08-21T09:15:00.000000Z\"}],\"other_signals\":{\"total\":24,\"items\":[{\"rule_id\":\"SPW-MAIL-003\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:37:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-004\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-008\",\"severity\":\"high\",\"first_seen\":\"2026-09-10T16:15:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-009\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:15:00.000000Z\"},{\"rule_id\":\"SPW-FILE-003\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T11:37:00.000000Z\"}]},\"targets\":[{\"address\":\"invoices@exfil-mail.test\",\"domain\":\"exfil-mail.test\",\"scope\":\"external\",\"prior_messages\":0},{\"address\":\"kai.ingram@contoso.example\",\"domain\":\"contoso.example\",\"scope\":\"internal\",\"prior_messages\":6}]}",
         ""
       ],
       [
@@ -300,7 +300,7 @@
         "",
         "",
         "",
-        "{\"facts_version\":1,\"window_start\":\"2026-08-11T14:24:08.000000Z\",\"actor_ips\":[{\"ip\":\"203.0.113.2\",\"asn\":20473,\"asn_org\":\"Vultr (The Constant Company)\",\"is_hosting\":true,\"spray_source\":false,\"user_signin_days_before\":1,\"user_first_signin\":\"2026-08-21T09:15:00.000000Z\"}],\"other_signals\":{\"total\":23,\"items\":[{\"rule_id\":\"SPW-HAWK-010\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-004\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-008\",\"severity\":\"high\",\"first_seen\":\"2026-09-10T16:15:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-009\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:15:00.000000Z\"},{\"rule_id\":\"SPW-FILE-003\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T11:37:00.000000Z\"}]}}",
+        "{\"facts_version\":1,\"window_start\":\"2026-08-11T14:24:08.000000Z\",\"actor_ips\":[{\"ip\":\"203.0.113.2\",\"asn\":20473,\"asn_org\":\"Vultr (The Constant Company)\",\"is_hosting\":true,\"spray_source\":false,\"user_signin_days_before\":1,\"user_first_signin\":\"2026-08-21T09:15:00.000000Z\"}],\"other_signals\":{\"total\":24,\"items\":[{\"rule_id\":\"SPW-HAWK-010\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-004\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-008\",\"severity\":\"high\",\"first_seen\":\"2026-09-10T16:15:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-009\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:15:00.000000Z\"},{\"rule_id\":\"SPW-FILE-003\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T11:37:00.000000Z\"}]}}",
         ""
       ],
       [
@@ -325,7 +325,7 @@
         "analyst:reviewer",
         "2026-10-02 12:00:14",
         "not enough",
-        "{\"facts_version\":1,\"window_start\":\"2026-08-11T14:24:08.000000Z\",\"actor_ips\":[{\"ip\":\"203.0.113.2\",\"asn\":20473,\"asn_org\":\"Vultr (The Constant Company)\",\"is_hosting\":true,\"spray_source\":false,\"user_signin_days_before\":1,\"user_first_signin\":\"2026-08-21T09:15:00.000000Z\"}],\"other_signals\":{\"total\":23,\"items\":[{\"rule_id\":\"SPW-HAWK-010\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-003\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:37:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-008\",\"severity\":\"high\",\"first_seen\":\"2026-09-10T16:15:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-009\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:15:00.000000Z\"},{\"rule_id\":\"SPW-FILE-003\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T11:37:00.000000Z\"}]},\"targets\":[{\"address\":\"invoices@exfil-mail.test\",\"domain\":\"exfil-mail.test\",\"scope\":\"external\",\"prior_messages\":0},{\"address\":\"kai.ingram@contoso.example\",\"domain\":\"contoso.example\",\"scope\":\"internal\",\"prior_messages\":6}]}",
+        "{\"facts_version\":1,\"window_start\":\"2026-08-11T14:24:08.000000Z\",\"actor_ips\":[{\"ip\":\"203.0.113.2\",\"asn\":20473,\"asn_org\":\"Vultr (The Constant Company)\",\"is_hosting\":true,\"spray_source\":false,\"user_signin_days_before\":1,\"user_first_signin\":\"2026-08-21T09:15:00.000000Z\"}],\"other_signals\":{\"total\":24,\"items\":[{\"rule_id\":\"SPW-HAWK-010\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-003\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:37:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-008\",\"severity\":\"high\",\"first_seen\":\"2026-09-10T16:15:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-009\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:15:00.000000Z\"},{\"rule_id\":\"SPW-FILE-003\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T11:37:00.000000Z\"}]},\"targets\":[{\"address\":\"invoices@exfil-mail.test\",\"domain\":\"exfil-mail.test\",\"scope\":\"external\",\"prior_messages\":0},{\"address\":\"kai.ingram@contoso.example\",\"domain\":\"contoso.example\",\"scope\":\"internal\",\"prior_messages\":6}]}",
         ""
       ],
       [
@@ -625,7 +625,32 @@
         "",
         "",
         "",
-        "{\"facts_version\":1,\"window_start\":\"2026-08-11T14:24:08.000000Z\",\"actor_ips\":[{\"ip\":\"203.0.113.2\",\"asn\":20473,\"asn_org\":\"Vultr (The Constant Company)\",\"is_hosting\":true,\"spray_source\":false,\"user_signin_days_before\":1,\"user_first_signin\":\"2026-08-21T09:15:00.000000Z\"}],\"other_signals\":{\"total\":23,\"items\":[{\"rule_id\":\"SPW-HAWK-010\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-003\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:37:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-004\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-008\",\"severity\":\"high\",\"first_seen\":\"2026-09-10T16:15:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-009\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:15:00.000000Z\"}]}}",
+        "{\"facts_version\":1,\"window_start\":\"2026-08-11T14:24:08.000000Z\",\"actor_ips\":[{\"ip\":\"203.0.113.2\",\"asn\":20473,\"asn_org\":\"Vultr (The Constant Company)\",\"is_hosting\":true,\"spray_source\":false,\"user_signin_days_before\":1,\"user_first_signin\":\"2026-08-21T09:15:00.000000Z\"}],\"other_signals\":{\"total\":24,\"items\":[{\"rule_id\":\"SPW-HAWK-010\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-003\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:37:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-004\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-008\",\"severity\":\"high\",\"first_seen\":\"2026-09-10T16:15:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-009\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:15:00.000000Z\"}]}}",
+        ""
+      ],
+      [
+        "83cb226c54362faf",
+        "dfbdfe90-22c0-4154-b41b-ebdee4faea7e",
+        "SPW-MAIL-008",
+        "high",
+        "Mail deleted by a delegate from an unusual network or with a finance subject",
+        "marlowe.rhodes@contoso.example",
+        "2026-08-21 10:22:00",
+        "2026-08-21 10:22:00",
+        "new",
+        "",
+        "",
+        "false",
+        "1",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
         ""
       ],
       [
@@ -675,7 +700,7 @@
         "",
         "",
         "",
-        "{\"facts_version\":1,\"window_start\":\"2026-08-11T14:24:08.000000Z\",\"actor_ips\":[{\"ip\":\"203.0.113.2\",\"asn\":20473,\"asn_org\":\"Vultr (The Constant Company)\",\"is_hosting\":true,\"spray_source\":false,\"user_signin_days_before\":1,\"user_first_signin\":\"2026-08-21T09:15:00.000000Z\"}],\"other_signals\":{\"total\":23,\"items\":[{\"rule_id\":\"SPW-HAWK-010\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-003\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:37:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-004\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-008\",\"severity\":\"high\",\"first_seen\":\"2026-09-10T16:15:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-009\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:15:00.000000Z\"}]}}",
+        "{\"facts_version\":1,\"window_start\":\"2026-08-11T14:24:08.000000Z\",\"actor_ips\":[{\"ip\":\"203.0.113.2\",\"asn\":20473,\"asn_org\":\"Vultr (The Constant Company)\",\"is_hosting\":true,\"spray_source\":false,\"user_signin_days_before\":1,\"user_first_signin\":\"2026-08-21T09:15:00.000000Z\"}],\"other_signals\":{\"total\":24,\"items\":[{\"rule_id\":\"SPW-HAWK-010\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-003\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:37:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-004\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-008\",\"severity\":\"high\",\"first_seen\":\"2026-09-10T16:15:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-009\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:15:00.000000Z\"}]}}",
         ""
       ],
       [
@@ -700,7 +725,7 @@
         "",
         "",
         "",
-        "{\"facts_version\":1,\"window_start\":\"2026-08-11T14:24:08.000000Z\",\"actor_ips\":[{\"ip\":\"203.0.113.2\",\"asn\":20473,\"asn_org\":\"Vultr (The Constant Company)\",\"is_hosting\":true,\"spray_source\":false,\"user_signin_days_before\":1,\"user_first_signin\":\"2026-08-21T09:15:00.000000Z\"}],\"other_signals\":{\"total\":23,\"items\":[{\"rule_id\":\"SPW-HAWK-010\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-003\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:37:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-004\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-008\",\"severity\":\"high\",\"first_seen\":\"2026-09-10T16:15:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-009\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:15:00.000000Z\"}]}}",
+        "{\"facts_version\":1,\"window_start\":\"2026-08-11T14:24:08.000000Z\",\"actor_ips\":[{\"ip\":\"203.0.113.2\",\"asn\":20473,\"asn_org\":\"Vultr (The Constant Company)\",\"is_hosting\":true,\"spray_source\":false,\"user_signin_days_before\":1,\"user_first_signin\":\"2026-08-21T09:15:00.000000Z\"}],\"other_signals\":{\"total\":24,\"items\":[{\"rule_id\":\"SPW-HAWK-010\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-003\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:37:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-004\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-008\",\"severity\":\"high\",\"first_seen\":\"2026-09-10T16:15:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-009\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:15:00.000000Z\"}]}}",
         ""
       ],
       [
@@ -725,7 +750,7 @@
         "",
         "",
         "",
-        "{\"facts_version\":1,\"window_start\":\"2026-08-11T14:24:08.000000Z\",\"actor_ips\":[{\"ip\":\"203.0.113.2\",\"asn\":20473,\"asn_org\":\"Vultr (The Constant Company)\",\"is_hosting\":true,\"spray_source\":false,\"user_signin_days_before\":1,\"user_first_signin\":\"2026-08-21T09:15:00.000000Z\"}],\"other_signals\":{\"total\":23,\"items\":[{\"rule_id\":\"SPW-HAWK-010\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-003\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:37:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-004\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-008\",\"severity\":\"high\",\"first_seen\":\"2026-09-10T16:15:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-009\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:15:00.000000Z\"}]},\"targets\":[{\"address\":\"invoices@exfil-mail.test\",\"domain\":\"exfil-mail.test\",\"scope\":\"external\",\"prior_messages\":0},{\"address\":\"kai.ingram@contoso.example\",\"domain\":\"contoso.example\",\"scope\":\"internal\",\"prior_messages\":6}]}",
+        "{\"facts_version\":1,\"window_start\":\"2026-08-11T14:24:08.000000Z\",\"actor_ips\":[{\"ip\":\"203.0.113.2\",\"asn\":20473,\"asn_org\":\"Vultr (The Constant Company)\",\"is_hosting\":true,\"spray_source\":false,\"user_signin_days_before\":1,\"user_first_signin\":\"2026-08-21T09:15:00.000000Z\"}],\"other_signals\":{\"total\":24,\"items\":[{\"rule_id\":\"SPW-HAWK-010\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-003\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:37:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-004\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-008\",\"severity\":\"high\",\"first_seen\":\"2026-09-10T16:15:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-009\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:15:00.000000Z\"}]},\"targets\":[{\"address\":\"invoices@exfil-mail.test\",\"domain\":\"exfil-mail.test\",\"scope\":\"external\",\"prior_messages\":0},{\"address\":\"kai.ingram@contoso.example\",\"domain\":\"contoso.example\",\"scope\":\"internal\",\"prior_messages\":6}]}",
         ""
       ],
       [
@@ -775,7 +800,7 @@
         "",
         "",
         "",
-        "{\"facts_version\":1,\"window_start\":\"2026-08-11T14:24:08.000000Z\",\"actor_ips\":[{\"ip\":\"203.0.113.2\",\"asn\":20473,\"asn_org\":\"Vultr (The Constant Company)\",\"is_hosting\":true,\"spray_source\":false,\"user_signin_days_before\":1,\"user_first_signin\":\"2026-08-21T09:15:00.000000Z\"}],\"other_signals\":{\"total\":23,\"items\":[{\"rule_id\":\"SPW-HAWK-010\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-003\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:37:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-004\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-008\",\"severity\":\"high\",\"first_seen\":\"2026-09-10T16:15:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-009\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:15:00.000000Z\"}]}}",
+        "{\"facts_version\":1,\"window_start\":\"2026-08-11T14:24:08.000000Z\",\"actor_ips\":[{\"ip\":\"203.0.113.2\",\"asn\":20473,\"asn_org\":\"Vultr (The Constant Company)\",\"is_hosting\":true,\"spray_source\":false,\"user_signin_days_before\":1,\"user_first_signin\":\"2026-08-21T09:15:00.000000Z\"}],\"other_signals\":{\"total\":24,\"items\":[{\"rule_id\":\"SPW-HAWK-010\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-003\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:37:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-004\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-008\",\"severity\":\"high\",\"first_seen\":\"2026-09-10T16:15:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-009\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:15:00.000000Z\"}]}}",
         ""
       ],
       [
@@ -1075,7 +1100,7 @@
         "",
         "",
         "",
-        "{\"facts_version\":1,\"window_start\":\"2026-08-11T14:24:08.000000Z\",\"actor_ips\":[{\"ip\":\"203.0.113.2\",\"asn\":20473,\"asn_org\":\"Vultr (The Constant Company)\",\"is_hosting\":true,\"spray_source\":false,\"user_signin_days_before\":1,\"user_first_signin\":\"2026-08-21T09:15:00.000000Z\"}],\"other_signals\":{\"total\":23,\"items\":[{\"rule_id\":\"SPW-HAWK-010\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-003\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:37:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-004\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-008\",\"severity\":\"high\",\"first_seen\":\"2026-09-10T16:15:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-009\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:15:00.000000Z\"}]},\"targets\":[{\"address\":\"invoices@exfil-mail.test\",\"domain\":\"exfil-mail.test\",\"scope\":\"external\",\"prior_messages\":0}]}",
+        "{\"facts_version\":1,\"window_start\":\"2026-08-11T14:24:08.000000Z\",\"actor_ips\":[{\"ip\":\"203.0.113.2\",\"asn\":20473,\"asn_org\":\"Vultr (The Constant Company)\",\"is_hosting\":true,\"spray_source\":false,\"user_signin_days_before\":1,\"user_first_signin\":\"2026-08-21T09:15:00.000000Z\"}],\"other_signals\":{\"total\":24,\"items\":[{\"rule_id\":\"SPW-HAWK-010\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-003\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:37:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-004\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-008\",\"severity\":\"high\",\"first_seen\":\"2026-09-10T16:15:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-009\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:15:00.000000Z\"}]},\"targets\":[{\"address\":\"invoices@exfil-mail.test\",\"domain\":\"exfil-mail.test\",\"scope\":\"external\",\"prior_messages\":0}]}",
         ""
       ],
       [
@@ -1150,7 +1175,7 @@
         "",
         "",
         "",
-        "{\"facts_version\":1,\"window_start\":\"2026-08-11T14:24:08.000000Z\",\"actor_ips\":[{\"ip\":\"203.0.113.2\",\"asn\":20473,\"asn_org\":\"Vultr (The Constant Company)\",\"is_hosting\":true,\"spray_source\":false,\"user_signin_days_before\":1,\"user_first_signin\":\"2026-08-21T09:15:00.000000Z\"}],\"other_signals\":{\"total\":23,\"items\":[{\"rule_id\":\"SPW-HAWK-010\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-003\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:37:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-004\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-008\",\"severity\":\"high\",\"first_seen\":\"2026-09-10T16:15:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-009\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:15:00.000000Z\"}]}}",
+        "{\"facts_version\":1,\"window_start\":\"2026-08-11T14:24:08.000000Z\",\"actor_ips\":[{\"ip\":\"203.0.113.2\",\"asn\":20473,\"asn_org\":\"Vultr (The Constant Company)\",\"is_hosting\":true,\"spray_source\":false,\"user_signin_days_before\":1,\"user_first_signin\":\"2026-08-21T09:15:00.000000Z\"}],\"other_signals\":{\"total\":24,\"items\":[{\"rule_id\":\"SPW-HAWK-010\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-003\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:37:00.000000Z\"},{\"rule_id\":\"SPW-MAIL-004\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:47:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-008\",\"severity\":\"high\",\"first_seen\":\"2026-09-10T16:15:00.000000Z\"},{\"rule_id\":\"SPW-HAWK-009\",\"severity\":\"high\",\"first_seen\":\"2026-08-21T09:15:00.000000Z\"}]}}",
         ""
       ],
       [

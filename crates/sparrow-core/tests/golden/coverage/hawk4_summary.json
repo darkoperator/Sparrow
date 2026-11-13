@@ -50,7 +50,7 @@
         },
         {
           "source_table": "ual_events",
-          "rows": 4063,
+          "rows": 4065,
           "first": "2026-08-01T00:21:42Z",
           "last": "2026-09-09T23:35:52Z"
         }
@@ -58,7 +58,7 @@
       "top_actors": [
         {
           "actor": "finley.mathis@contoso.example",
-          "rows": 474
+          "rows": 475
         },
         {
           "actor": "jamie.prescott@contoso.example",
@@ -90,7 +90,7 @@
         },
         {
           "actor": "lennox.grant@contoso.example",
-          "rows": 356
+          "rows": 357
         },
         {
           "actor": "kendall.james@contoso.example",
@@ -178,7 +178,7 @@
     },
     {
       "table": "events",
-      "rows": 4453
+      "rows": 4455
     },
     {
       "table": "file_events",
@@ -186,7 +186,7 @@
     },
     {
       "table": "finding_evidence",
-      "rows": 141
+      "rows": 142
     },
     {
       "table": "group_members",
@@ -250,7 +250,7 @@
     },
     {
       "table": "record_sources",
-      "rows": 8341
+      "rows": 8344
     },
     {
       "table": "remote_domains",
@@ -302,7 +302,7 @@
     },
     {
       "table": "ual_events",
-      "rows": 4063
+      "rows": 4065
     },
     {
       "table": "user_licenses",

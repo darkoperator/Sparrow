@@ -24,7 +24,7 @@
 | message\_trace | 82 | 2026-09-08T15:12:49Z | 2026-09-10T14:03:13Z |
 | risk\_detections | 4 | 2026-08-04T16:44:48Z | 2026-08-21T19:12:00Z |
 | signins | 285 | 2026-08-27T00:14:46Z | 2026-09-09T20:43:21Z |
-| ual\_events | 4063 | 2026-08-01T00:21:42Z | 2026-09-09T23:35:52Z |
+| ual\_events | 4065 | 2026-08-01T00:21:42Z | 2026-09-09T23:35:52Z |
 
 ## Executive summary
 
@@ -99,7 +99,7 @@ _Per account: the rows each source holds and the dates they span (UTC). The refe
 
 | Source | Rows | First (UTC) | Last (UTC) | Days | Sampled | Gaps |
 | --- | ---: | --- | --- | ---: | --- | --- |
-| Unified audit log | 435 | 2026-08-01T14:44:27Z | 2026-09-09T20:58:16Z | 38 | no | before 2026-07-22 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
+| Unified audit log | 436 | 2026-08-01T14:44:27Z | 2026-09-09T20:58:16Z | 38 | no | before 2026-07-22 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
 | Sign-ins \(interactive\) | 23 | 2026-08-27T14:53:26Z | 2026-09-09T14:33:56Z | 13 | no | before 2026-07-22 to 2026-08-26; after 2026-09-10 to 2026-09-10 |
 | Sign-ins \(non-interactive\) | 0 |  |  | 0 | no | absent 2026-07-22 to 2026-09-10 |
 | MailItemsAccessed | 126 | 2026-08-01T14:47:16Z | 2026-09-09T17:25:44Z | 38 | no | before 2026-07-22 to 2026-07-31; after 2026-09-10 to 2026-09-10 |

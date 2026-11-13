@@ -417,6 +417,24 @@ rules:
     collectors: [hawk4, invictus, portal]
     positives: [search_finance]
     lookalikes: [search_benign]
+  - id: SPW-MAIL-008
+    title: Mail deleted by a delegate from an unusual network or with a finance subject
+    category: mail
+    severity: high
+    hawk: null
+    logic: >-
+      UAL SoftDelete / HardDelete / MoveToDeletedItems by a delegate (the mailbox differs from the
+      actor, or LogonType 1 admin / 2 delegate; system actors and S-1-5-* SIDs excluded) where the
+      client IP is a hosting ASN (ip_intel.is_hosting) or any AffectedItems[*].Subject /
+      Item.Subject hits @list:finance_keywords. One hit per delete record; context.severity_reason
+      names the condition that held (hosting, finance_subject, hosting+finance_subject).
+    tables: [ual_events]
+    requires: []
+    requires_evidence: [ual]
+    needs_geoip: false
+    collectors: [hawk4, invictus, portal]
+    positives: [delegate_finance_delete]
+    lookalikes: [assistant_cleanup]
   - id: SPW-ID-001
     title: MFA method registered after a risky sign-in
     category: identity

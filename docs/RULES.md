@@ -86,6 +86,7 @@ Several correlation rules rely on facts the profile step computes once per case:
 | [SPW-MAIL-005](#spw-mail-005) | MailItemsAccessed bind burst | high | medium | mail_access | evidence `mail_items_accessed` |
 | [SPW-MAIL-006](#spw-mail-006) | Mail sent from an IP address the user never used before | medium | low | sending | evidence `mail_send` |
 | [SPW-MAIL-007](#spw-mail-007) | Mailbox or SharePoint search for finance keywords | medium | medium | mail_access | evidence `search_queries` |
+| [SPW-MAIL-008](#spw-mail-008) | Mail deleted by a delegate from an unusual network or with a finance subject | high | medium | mail_access | evidence `ual` |
 | [SPW-HAWK-014](#spw-hawk-014) | Message header sender mismatch or failed / anonymous authentication | medium | medium | — | |
 | [SPW-ID-001](#spw-id-001) | MFA method registered after a risky sign-in | high | medium | suspicious_sign_in, mfa_change | GeoIP |
 | [SPW-ID-002](#spw-id-002) | Sign-in from a hosting-provider ASN | medium | medium | suspicious_sign_in | GeoIP |
@@ -116,7 +117,7 @@ Several correlation rules rely on facts the profile step computes once per case:
 | [SPW-HAWK-011](#spw-hawk-011) | Mailbox forwarding configured | medium | medium | persistence | |
 | [SPW-HAWK-015](#spw-hawk-015) | Automatic reply enabled | low | low | — | |
 
-34 rules. Tags you can filter on with `--tag` include `bec`, `correlation`, `inbox-rule`,
+35 rules. Tags you can filter on with `--tag` include `bec`, `correlation`, `inbox-rule`,
 `forwarding`, `oauth-consent`, `identity-protection`, `password-spray` and `sign-in`.
 
 ---
@@ -235,6 +236,26 @@ looking for a thread to hijack. Check who ran it, from where, and what followed 
 rule, a forward).
 
 **False positives.** A finance or payroll user searching for those terms as part of their job.
+
+### SPW-MAIL-008
+
+**Mail deleted by a delegate from an unusual network or with a finance subject**: high / medium ·
+stage `mail_access` · MITRE T1070.008, T1114.002 · needs evidence `ual`
+
+**Detects.** A UAL `SoftDelete`, `HardDelete` or `MoveToDeletedItems` made by a delegate or admin
+in another user's mailbox (the mailbox differs from the actor, or `LogonType` 1 or 2; system actors
+never count) from a hosting address (`ip_intel.is_hosting`) or on an item whose subject contains a
+word from [`finance_keywords`](#static-lists). One finding hit per delete record; the finding
+context `severity_reason` says which condition held.
+
+**Reads** `ual_events` · **Finding per** actor.
+
+**Triage.** Deleting the genuine invoice or wire thread from someone else's mailbox is how a BEC
+actor hides the original once a look-alike copy is in place. Check whose mailbox it was, who holds
+the delegate permission and the actor's sign-in for that session, then look in Recoverable Items.
+
+**False positives.** An assistant who manages an executive's mailbox and deletes an invoice they
+have processed; an admin or owner of a finance shared mailbox cleaning it.
 
 ### SPW-HAWK-014
 

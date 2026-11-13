@@ -11,7 +11,7 @@
         {
           "source": "ual",
           "title": "Unified audit log",
-          "rows": 542,
+          "rows": 543,
           "first": "2026-08-01T14:44:27.000000Z",
           "last": "2026-09-09T21:45:32.000000Z",
           "days": 38,
@@ -1012,7 +1012,7 @@
         {
           "source": "message_trace",
           "title": "Message trace",
-          "rows": 251,
+          "rows": 252,
           "first": "2026-08-01T03:21:24.000000Z",
           "last": "2026-09-09T15:44:56.000000Z",
           "days": 36,
@@ -1049,7 +1049,7 @@
         {
           "source": "mailbox_audit",
           "title": "Mailbox audit log (legacy)",
-          "rows": 137,
+          "rows": 138,
           "first": "2026-08-01T05:21:24.000000Z",
           "last": "2026-09-09T10:10:26.000000Z",
           "days": 33,
@@ -1311,7 +1311,7 @@
         {
           "source": "message_trace",
           "title": "Message trace",
-          "rows": 258,
+          "rows": 260,
           "first": "2026-08-02T12:28:13.000000Z",
           "last": "2026-09-09T17:42:46.000000Z",
           "days": 37,
@@ -1343,7 +1343,7 @@
         {
           "source": "mailbox_audit",
           "title": "Mailbox audit log (legacy)",
-          "rows": 130,
+          "rows": 131,
           "first": "2026-08-02T14:28:13.000000Z",
           "last": "2026-09-09T19:42:46.000000Z",
           "days": 35,

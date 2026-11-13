@@ -256,6 +256,7 @@ story_kind! {
         ConnectorAppOtherAsn => "connector_app_other_asn",
         ResidentialReplayRule => "residential_replay_rule",
         VpsPhishedAccounts => "vps_phished_accounts",
+        DelegateFinanceDelete => "delegate_finance_delete",
     }
     lookalike {
         RiskDismissed => "risk_dismissed",
@@ -310,6 +311,7 @@ story_kind! {
         RuleEditAfterNewNetwork => "rule_edit_after_new_network",
         OtherDeviceRuleEdit => "other_device_rule_edit",
         AdminRoleChanges => "admin_role_changes",
+        AssistantCleanup => "assistant_cleanup",
     }
 }
 

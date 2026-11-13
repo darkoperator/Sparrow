@@ -38,13 +38,13 @@
         },
         {
           "source_table": "mailbox_audit_legacy",
-          "rows": 1829,
+          "rows": 1831,
           "first": "2026-08-01T05:21:24Z",
           "last": "2026-09-10T01:35:52Z"
         },
         {
           "source_table": "message_trace",
-          "rows": 2322,
+          "rows": 2325,
           "first": "2026-08-01T03:21:24Z",
           "last": "2026-09-09T23:19:19Z"
         },
@@ -68,7 +68,7 @@
         },
         {
           "source_table": "ual_events",
-          "rows": 5807,
+          "rows": 5809,
           "first": "2026-08-01T00:21:42Z",
           "last": "2026-09-09T23:35:52Z"
         }
@@ -76,7 +76,7 @@
       "top_actors": [
         {
           "actor": "finley.mathis@contoso.example",
-          "rows": 788
+          "rows": 789
         },
         {
           "actor": "val.bennett@contoso.example",
@@ -100,7 +100,7 @@
         },
         {
           "actor": "lennox.grant@contoso.example",
-          "rows": 636
+          "rows": 637
         },
         {
           "actor": "admin@contoso.example",
@@ -181,7 +181,7 @@
     },
     {
       "table": "events",
-      "rows": 11289
+      "rows": 11296
     },
     {
       "table": "file_events",
@@ -189,7 +189,7 @@
     },
     {
       "table": "finding_evidence",
-      "rows": 151
+      "rows": 152
     },
     {
       "table": "group_members",
@@ -221,7 +221,7 @@
     },
     {
       "table": "mailbox_audit_legacy",
-      "rows": 1829
+      "rows": 1831
     },
     {
       "table": "mailbox_permissions",
@@ -233,7 +233,7 @@
     },
     {
       "table": "message_trace",
-      "rows": 2322
+      "rows": 2325
     },
     {
       "table": "message_trace_events",
@@ -253,7 +253,7 @@
     },
     {
       "table": "record_sources",
-      "rows": 32416
+      "rows": 32429
     },
     {
       "table": "remote_domains",
@@ -305,7 +305,7 @@
     },
     {
       "table": "ual_events",
-      "rows": 5807
+      "rows": 5809
     },
     {
       "table": "user_licenses",

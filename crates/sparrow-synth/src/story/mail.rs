@@ -43,6 +43,8 @@ pub(crate) fn apply_one(w: &mut World, ctx: &mut Ctx) -> Result<bool> {
         StoryKind::ForwardingTransportRule => forwarding_transport_rule(w, ctx)?,
         StoryKind::MailboxPermissionGrant => mailbox_permission_grant(w, ctx)?,
         StoryKind::MiaBurst => mia_burst(w, ctx)?,
+        StoryKind::DelegateFinanceDelete => delegate_finance_delete(w, ctx),
+        StoryKind::AssistantCleanup => assistant_cleanup(w, ctx),
         StoryKind::SendNewIp => {
             // The attacker signs in from the replay address and sends from the SAME address in
             // the same session: its own earlier activity must not make the address look normal.
@@ -804,6 +806,141 @@ pub(super) fn mia_burst_from(
         push_ual(w, ctx, u);
     }
     Ok(())
+}
+
+/// A message delivered to `owner` from `from` (an inbound trace row), returning its Internet
+/// message id.
+fn deliver_to(
+    w: &mut World,
+    ctx: &mut Ctx,
+    owner: &User,
+    from: &str,
+    subject: &str,
+    at: DateTime<Utc>,
+) -> String {
+    let imid = ual::internet_message_id(&mut ctx.rng);
+    let size = ctx.rng.range(8_000, 60_000) as u64;
+    let trace = TraceMsg {
+        trace_id: ctx.rng.uuid(),
+        internet_message_id: imid.clone(),
+        received: at,
+        sender: from.to_string(),
+        recipients: vec![(owner.upn.clone(), "Delivered".to_string())],
+        subject: subject.to_string(),
+        // No sender address: drawing one from the shared pool would renumber every later storyline's.
+        from_ip: None,
+        to_ip: None,
+        size,
+        direction: "Incoming".to_string(),
+        connector_id: None,
+    };
+    push_trace(w, ctx, trace);
+    imid
+}
+
+/// `logon` deletes `subject` from `owner`'s `\Inbox` at `time` from `ip` (one `SoftDelete` or
+/// `MoveToDeletedItems` record; the mailbox audit LogonType is 2 for a delegate).
+#[allow(clippy::too_many_arguments)]
+fn delete_from_mailbox(
+    w: &mut World,
+    ctx: &mut Ctx,
+    owner: &User,
+    logon: &User,
+    op: &str,
+    imid: &str,
+    subject: &str,
+    time: DateTime<Utc>,
+    ip: IpAddr,
+    client_info: &str,
+    session: Uuid,
+) {
+    let size = ctx.rng.range(8_000, 60_000) as u64;
+    let item = ItemRef::new(w, &owner.upn, "\\Inbox", imid, subject, size);
+    let u = ual::mailbox_item(
+        w,
+        &mut ctx.rng,
+        owner,
+        logon,
+        time,
+        op,
+        Some(item),
+        ip,
+        client_info,
+        session,
+    );
+    push_ual(w, ctx, u);
+}
+
+/// The attacker, signed in as the storyline's user, soft-deletes a genuine finance message from
+/// the mailbox of `target` (a delegate), seconds after the look-alike copy it replaces arrives, from
+/// its mailbox-access address (a hosting address) through Outlook on the web.
+fn delegate_finance_delete(w: &mut World, ctx: &mut Ctx) {
+    let a = ctx.a.clone();
+    let owner = target(w, ctx, 2);
+    let t = ctx.t;
+    let genuine = deliver_to(
+        w,
+        ctx,
+        &owner,
+        &format!("accounts@{VENDOR_DOMAIN}"),
+        "Invoice 4471 - payment due",
+        t - Duration::hours(3),
+    );
+    deliver_to(
+        w,
+        ctx,
+        &owner,
+        PARTNER_PAYMENTS,
+        "Updated bank details for invoice 4471",
+        t - Duration::seconds(20),
+    );
+    let ip = w.attacker.mailbox_ip;
+    let session = attacker_session(w, ctx, &a, t);
+    delete_from_mailbox(
+        w,
+        ctx,
+        &owner,
+        &a,
+        "SoftDelete",
+        &genuine,
+        "Invoice 4471 - payment due",
+        t,
+        ip,
+        OWA,
+        session,
+    );
+}
+
+/// An assistant (a delegate) clears a vendor newsletter out of the mailbox of `target` from the
+/// office address: not finance, not a hosting address.
+fn assistant_cleanup(w: &mut World, ctx: &mut Ctx) {
+    let a = ctx.a.clone();
+    let owner = target(w, ctx, 2);
+    let t = ctx.t;
+    let subject = "Tailwind Supplies: autumn catalogue";
+    let imid = deliver_to(
+        w,
+        ctx,
+        &owner,
+        &format!("news@{VENDOR_DOMAIN}"),
+        subject,
+        t - Duration::hours(2),
+    );
+    let session = ctx.rng.uuid();
+    let ip = a.office_ip;
+    delete_from_mailbox(
+        w,
+        ctx,
+        &owner,
+        &a,
+        "MoveToDeletedItems",
+        &imid,
+        subject,
+        t,
+        ip,
+        OUTLOOK_DESKTOP,
+        session,
+    );
 }
 
 /// A heavy Outlook desktop user at the office: twelve `Bind` records over ten minutes, each one

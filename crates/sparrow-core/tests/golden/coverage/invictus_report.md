@@ -21,12 +21,12 @@
 | --- | ---: | --- | --- |
 | azure\_activity | 4 | 2026-08-06T09:05:00Z | 2026-08-09T11:07:00Z |
 | directory\_audits | 19 | 2026-08-11T22:00:34Z | 2026-09-08T20:47:38Z |
-| mailbox\_audit\_legacy | 1829 | 2026-08-01T05:21:24Z | 2026-09-10T01:35:52Z |
-| message\_trace | 2322 | 2026-08-01T03:21:24Z | 2026-09-09T23:19:19Z |
+| mailbox\_audit\_legacy | 1831 | 2026-08-01T05:21:24Z | 2026-09-10T01:35:52Z |
+| message\_trace | 2325 | 2026-08-01T03:21:24Z | 2026-09-09T23:19:19Z |
 | risk\_detections | 4 | 2026-08-04T16:44:48Z | 2026-08-21T19:12:00Z |
 | security\_alerts | 1 | 2026-08-04T10:00:00Z | 2026-08-04T10:00:00Z |
 | signins | 1303 | 2026-08-11T14:51:33Z | 2026-09-09T22:58:26Z |
-| ual\_events | 5807 | 2026-08-01T00:21:42Z | 2026-09-09T23:35:52Z |
+| ual\_events | 5809 | 2026-08-01T00:21:42Z | 2026-09-09T23:35:52Z |
 
 ## Executive summary
 
@@ -86,7 +86,7 @@ _Per account: the rows each source holds and the dates they span (UTC). The refe
 
 | Source | Rows | First (UTC) | Last (UTC) | Days | Sampled | Gaps |
 | --- | ---: | --- | --- | ---: | --- | --- |
-| Unified audit log | 542 | 2026-08-01T14:44:27Z | 2026-09-09T21:45:32Z | 38 | no | before 2026-07-22 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
+| Unified audit log | 543 | 2026-08-01T14:44:27Z | 2026-09-09T21:45:32Z | 38 | no | before 2026-07-22 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
 | Sign-ins \(interactive\) | 59 | 2026-08-11T16:29:16Z | 2026-09-09T14:33:56Z | 29 | no | before 2026-07-22 to 2026-08-10; after 2026-09-10 to 2026-09-10 |
 | Sign-ins \(non-interactive\) | 56 | 2026-08-11T15:54:34Z | 2026-09-09T21:16:51Z | 20 | no | before 2026-07-22 to 2026-08-10; after 2026-09-10 to 2026-09-10 |
 | MailItemsAccessed | 126 | 2026-08-01T14:47:16Z | 2026-09-09T17:25:44Z | 38 | no | before 2026-07-22 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
@@ -348,9 +348,9 @@ What to request:
 | Sign-ins \(interactive\) | 50 | 2026-08-12T00:04:50Z | 2026-09-09T06:47:49Z | 26 | no | before 2026-07-10 to 2026-08-11; after 2026-09-10 to 2026-09-10 |
 | Sign-ins \(non-interactive\) | 46 | 2026-08-12T00:17:06Z | 2026-09-09T06:09:33Z | 17 | no | before 2026-07-10 to 2026-08-11; after 2026-09-10 to 2026-09-10 |
 | MailItemsAccessed | 124 | 2026-08-01T01:01:18Z | 2026-09-09T16:06:36Z | 37 | no | before 2026-07-10 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
-| Message trace | 251 | 2026-08-01T03:21:24Z | 2026-09-09T15:44:56Z | 36 | no | before 2026-07-10 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
+| Message trace | 252 | 2026-08-01T03:21:24Z | 2026-09-09T15:44:56Z | 36 | no | before 2026-07-10 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
 | Entra audit log | 0 |  |  | 0 | no | absent 2026-07-10 to 2026-09-10 |
-| Mailbox audit log \(legacy\) | 137 | 2026-08-01T05:21:24Z | 2026-09-09T10:10:26Z | 33 | no | before 2026-07-10 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
+| Mailbox audit log \(legacy\) | 138 | 2026-08-01T05:21:24Z | 2026-09-09T10:10:26Z | 33 | no | before 2026-07-10 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
 
 What to request:
 
@@ -434,9 +434,9 @@ What to request:
 | Sign-ins \(interactive\) | 55 | 2026-08-11T15:55:44Z | 2026-09-09T08:55:00Z | 29 | no | before 2026-08-06 to 2026-08-10; after 2026-09-10 to 2026-09-10 |
 | Sign-ins \(non-interactive\) | 65 | 2026-08-11T17:21:55Z | 2026-09-09T11:59:18Z | 22 | no | before 2026-08-06 to 2026-08-10; after 2026-09-10 to 2026-09-10 |
 | MailItemsAccessed | 117 | 2026-08-01T08:06:07Z | 2026-09-09T16:03:58Z | 39 | no | after 2026-09-10 to 2026-09-10 |
-| Message trace | 258 | 2026-08-02T12:28:13Z | 2026-09-09T17:42:46Z | 37 | no | after 2026-09-10 to 2026-09-10 |
+| Message trace | 260 | 2026-08-02T12:28:13Z | 2026-09-09T17:42:46Z | 37 | no | after 2026-09-10 to 2026-09-10 |
 | Entra audit log | 0 |  |  | 0 | no | absent 2026-08-06 to 2026-09-10 |
-| Mailbox audit log \(legacy\) | 130 | 2026-08-02T14:28:13Z | 2026-09-09T19:42:46Z | 35 | no | after 2026-09-10 to 2026-09-10 |
+| Mailbox audit log \(legacy\) | 131 | 2026-08-02T14:28:13Z | 2026-09-09T19:42:46Z | 35 | no | after 2026-09-10 to 2026-09-10 |
 
 What to request:
 

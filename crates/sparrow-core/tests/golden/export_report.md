@@ -21,12 +21,12 @@
 | --- | ---: | --- | --- |
 | azure\_activity | 4 | 2026-08-06T09:05:00Z | 2026-08-09T11:07:00Z |
 | directory\_audits | 22 | 2026-08-12T16:00:00Z | 2026-09-09T20:08:41Z |
-| mailbox\_audit\_legacy | 1776 | 2026-08-01T08:38:17Z | 2026-09-10T01:55:36Z |
-| message\_trace | 2261 | 2026-08-01T04:17:34Z | 2026-09-09T23:55:36Z |
+| mailbox\_audit\_legacy | 1778 | 2026-08-01T08:38:17Z | 2026-09-10T01:55:36Z |
+| message\_trace | 2264 | 2026-08-01T04:17:34Z | 2026-09-09T23:55:36Z |
 | risk\_detections | 4 | 2026-08-04T12:50:10Z | 2026-08-21T19:12:00Z |
 | security\_alerts | 1 | 2026-08-04T10:00:00Z | 2026-08-04T10:00:00Z |
 | signins | 1294 | 2026-08-11T14:24:08Z | 2026-09-09T23:49:44Z |
-| ual\_events | 5901 | 2026-08-01T00:19:21Z | 2026-09-09T23:59:59Z |
+| ual\_events | 5903 | 2026-08-01T00:19:21Z | 2026-09-09T23:59:59Z |
 
 ## Executive summary
 
@@ -81,7 +81,7 @@ _Computed by Sparrow from every finding of the case, whatever its decision: fact
   - agent note — not reviewed (agent:claude on behalf of analyst:example at 2026-10-02T12:00:12Z): Reviewed the sign-in by hand.
 - Facts:
   - Address 203.0.113.2 — this user signed in from it on 1 earlier day(s) within the capture (since 2026-08-11). It is in a hosting provider network (Vultr \(The Constant Company\)).
-  - Other findings on this account: 23 (SPW-MAIL-003 high, SPW-MAIL-004 high, SPW-HAWK-008 high, SPW-HAWK-009 high, SPW-FILE-003 high, +18 more).
+  - Other findings on this account: 24 (SPW-MAIL-003 high, SPW-MAIL-004 high, SPW-HAWK-008 high, SPW-HAWK-009 high, SPW-FILE-003 high, +19 more).
   - Target invoices@exfil-mail.test — external; 0 earlier message(s) with this user.
   - Target kai.ingram@contoso.example — internal; 6 earlier message(s) with this user.
 - Evidence (6 rows):
@@ -127,7 +127,7 @@ _Per account: the rows each source holds and the dates they span (UTC). The refe
 
 | Source | Rows | First (UTC) | Last (UTC) | Days | Sampled | Gaps |
 | --- | ---: | --- | --- | ---: | --- | --- |
-| Unified audit log | 538 | 2026-08-01T14:48:57Z | 2026-09-09T23:46:03Z | 38 | no | before 2026-07-22 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
+| Unified audit log | 539 | 2026-08-01T14:48:57Z | 2026-09-09T23:46:03Z | 38 | no | before 2026-07-22 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
 | Sign-ins \(interactive\) | 56 | 2026-08-11T14:42:01Z | 2026-09-09T18:17:59Z | 29 | no | before 2026-07-22 to 2026-08-10; after 2026-09-10 to 2026-09-10 |
 | Sign-ins \(non-interactive\) | 48 | 2026-08-12T17:59:16Z | 2026-09-08T14:40:53Z | 15 | no | before 2026-07-22 to 2026-08-11; after 2026-09-09 to 2026-09-10 |
 | MailItemsAccessed | 128 | 2026-08-01T14:49:41Z | 2026-09-09T20:53:55Z | 38 | no | before 2026-07-22 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
@@ -389,9 +389,9 @@ What to request:
 | Sign-ins \(interactive\) | 53 | 2026-08-12T00:10:52Z | 2026-09-09T00:54:51Z | 28 | no | before 2026-07-10 to 2026-08-11; after 2026-09-10 to 2026-09-10 |
 | Sign-ins \(non-interactive\) | 56 | 2026-08-12T00:26:23Z | 2026-09-09T04:57:21Z | 20 | no | before 2026-07-10 to 2026-08-11; after 2026-09-10 to 2026-09-10 |
 | MailItemsAccessed | 121 | 2026-08-01T00:33:03Z | 2026-09-09T08:28:14Z | 38 | no | before 2026-07-10 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
-| Message trace | 251 | 2026-08-01T08:36:36Z | 2026-09-09T08:07:00Z | 35 | no | before 2026-07-10 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
+| Message trace | 252 | 2026-08-01T08:36:36Z | 2026-09-09T08:07:00Z | 35 | no | before 2026-07-10 to 2026-07-31; after 2026-09-10 to 2026-09-10 |
 | Entra audit log | 0 |  |  | 0 | no | absent 2026-07-10 to 2026-09-10 |
-| Mailbox audit log \(legacy\) | 125 | 2026-08-03T03:27:33Z | 2026-09-09T10:29:06Z | 30 | no | before 2026-07-10 to 2026-08-02; after 2026-09-10 to 2026-09-10 |
+| Mailbox audit log \(legacy\) | 126 | 2026-08-03T03:27:33Z | 2026-09-09T10:29:06Z | 30 | no | before 2026-07-10 to 2026-08-02; after 2026-09-10 to 2026-09-10 |
 
 What to request:
 
@@ -526,8 +526,8 @@ Sparrow ingested the collector output into a case database, enriched it and ran 
 [^1]: signins:2e1c9d42-6a92-419c-b21a-9d2fb256a795 — Output/Contoso\_Example/Sign-In logs/EntraID/20260910-161751-SignInLogs/interactiveUser &amp; nonInteractiveUser/20260910161757-interactiveUser-nonInteractiveUser-SignInLogs.json:19706-19772
 [^2]: ual\_events:74b0d0cd-8b08-4d7d-b5ce-e5a2784cf1d1 — Output/Contoso\_Example/UnifiedAuditLog/20260910-161616/20260910161616-victims-UnifiedAuditLog.json:96863-96913; Output/Contoso\_Example/UnifiedAuditLog/20260910-161713/20260910161713-victims-UnifiedAuditLog.jsonl:1470; Output/Triage-Contoso\_Example/New-InboxRule.json:2-51 (+2 more sightings)
 [^3]: ual\_events:5ae56966-7d51-4d2d-900d-196664d6118e — Output/Contoso\_Example/UnifiedAuditLog/20260910-161616/20260910161616-victims-UnifiedAuditLog.json:89-161; Output/Contoso\_Example/UnifiedAuditLog/20260910-161713/20260910161713-victims-UnifiedAuditLog.jsonl:2; Output/Triage-Contoso\_Example/MailItemsAccessed.json:2-73 (+3 more sightings)
-[^4]: ual\_events:02a13335-5a42-4ce8-9f05-5b5f0f489146 — Output/Contoso\_Example/UnifiedAuditLog/20260910-161616/20260910161616-victims-UnifiedAuditLog.json:166272-166322; Output/Contoso\_Example/UnifiedAuditLog/20260910-161713/20260910161713-victims-UnifiedAuditLog.jsonl:2520; Output/Triage-Contoso\_Example/New-InboxRule.json:118-167 (+2 more sightings)
-[^5]: ual\_events:38f3aef6-68f9-4842-ace1-4d564480e6f8 — Output/Contoso\_Example/UnifiedAuditLog/20260910-161616/20260910161616-victims-UnifiedAuditLog.json:173191-173247; Output/Contoso\_Example/UnifiedAuditLog/20260910-161713/20260910161713-victims-UnifiedAuditLog.jsonl:2620; Output/Contoso\_Example/Mailbox Audit Log/20260910-172259/UnifiedAuditLog/20260910-172300/UAL-20260821000000-20260822000000.csv:59-61 (+2 more sightings)
+[^4]: ual\_events:02a13335-5a42-4ce8-9f05-5b5f0f489146 — Output/Contoso\_Example/UnifiedAuditLog/20260910-161616/20260910161616-victims-UnifiedAuditLog.json:166338-166388; Output/Contoso\_Example/UnifiedAuditLog/20260910-161713/20260910161713-victims-UnifiedAuditLog.jsonl:2521; Output/Triage-Contoso\_Example/New-InboxRule.json:118-167 (+2 more sightings)
+[^5]: ual\_events:38f3aef6-68f9-4842-ace1-4d564480e6f8 — Output/Contoso\_Example/UnifiedAuditLog/20260910-161616/20260910161616-victims-UnifiedAuditLog.json:173315-173371; Output/Contoso\_Example/UnifiedAuditLog/20260910-161713/20260910161713-victims-UnifiedAuditLog.jsonl:2622; Output/Contoso\_Example/Mailbox Audit Log/20260910-172259/UnifiedAuditLog/20260910-172300/UAL-20260821000000-20260822000000.csv:59-61 (+2 more sightings)
 [^6]: inbox\_rules:inbox\|marlowe.rhodes@contoso.example\|1117600807597104896 — Output/Contoso\_Example/Rules/20260910-173429/20260910-173429-MailboxRules.csv:66-73
 [^7]: inbox\_rules:inbox\|marlowe.rhodes@contoso.example\|1239425345399972642 — Output/Contoso\_Example/Rules/20260910-173429/20260910-173429-MailboxRules.csv:60-65
 [^8]: inbox\_rules:inbox\|marlowe.rhodes@contoso.example\|AAMkow1wHgwwG4WuzrXPcuNEEBq1RYckVZsyyuWHnFV3== — Output/Contoso\_Example/Rules/20260910-173438/20260910-173438-MailboxRulesGraph.csv:12
