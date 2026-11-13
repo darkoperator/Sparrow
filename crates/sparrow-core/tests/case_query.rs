@@ -709,3 +709,38 @@ fn query_keyword_alias_has_as_hint() {
     assert!(m.contains("AS first"), "{m}");
     assert!(m.contains("\nhint: "), "{m}");
 }
+
+#[test]
+fn query_non_keyword_syntax_errors_get_no_alias_hint() {
+    let (_d, p) = case_file();
+    for sql in ["SELECT * FORM ual_events", "SELECT 1 )"] {
+        let m = query::run(&p, sql, 10).unwrap_err().to_string();
+        assert!(!m.contains("alias it with AS"), "{sql}: {m}");
+    }
+}
+
+#[test]
+fn query_error_without_a_quoted_token_gets_no_hint() {
+    let (_d, p) = case_file();
+    let m = query::run(&p, "SELECT nope FROM ual_events", 10)
+        .unwrap_err()
+        .to_string();
+    assert!(!m.contains("hint:"), "{m}");
+}
+
+#[test]
+fn export_icu_error_has_cast_hint() {
+    let c = locked_mem();
+    let mut out = Vec::new();
+    let e = query::export_csv_on(
+        &c,
+        "SELECT date_trunc('day', event_time) FROM ual_events",
+        &mut out,
+        10,
+    )
+    .unwrap_err();
+    assert!(
+        e.to_string().contains("CAST(event_time AS TIMESTAMP)"),
+        "{e}"
+    );
+}

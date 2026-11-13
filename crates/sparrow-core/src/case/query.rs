@@ -225,13 +225,31 @@ fn run_select(
     limit: usize,
     offset: usize,
 ) -> Result<QueryResult> {
-    run_select_inner(conn, parsed, limit, offset).map_err(|e| match e {
+    run_select_inner(conn, parsed, limit, offset).map_err(with_hint)
+}
+
+/// `e` with the [`hint_for`] workaround appended when it is a DuckDB error that has one; anything else unchanged.
+fn with_hint(e: Error) -> Error {
+    match e {
         Error::Db(d) => match hint_for(&d.to_string()) {
             Some(h) => Error::Invalid(format!("database error: {d}\nhint: {h}")),
             None => Error::Db(d),
         },
         other => other,
-    })
+    }
+}
+
+/// True when `word` is a DuckDB keyword (`duckdb_keywords()`), so a bare alias of it fails to parse.
+fn is_keyword(word: &str) -> bool {
+    Connection::open_in_memory()
+        .and_then(|c| {
+            c.query_row(
+                "SELECT count(*) FROM duckdb_keywords() WHERE keyword_name = lower(?)",
+                params![word],
+                |r| r.get::<_, i64>(0),
+            )
+        })
+        .is_ok_and(|n| n > 0)
 }
 
 /// A short workaround for a known opaque DuckDB error, from its text.
@@ -244,7 +262,7 @@ fn hint_for(error_text: &str) -> Option<String> {
     }
     let rest = error_text.split("syntax error at or near \"").nth(1)?;
     let word = &rest[..rest.find('"')?];
-    if word.is_empty() {
+    if word.is_empty() || !is_keyword(word) {
         return None;
     }
     Some(format!(
@@ -547,11 +565,20 @@ pub fn export_csv_on(
     out: &mut dyn std::io::Write,
     cap: u64,
 ) -> Result<Exported> {
-    use duckdb::arrow::datatypes::DataType as T;
     case.ensure_usable()?;
     need_locked(case, "export_csv_on")?;
     let parsed = the_select(sql)?;
     let select = &parsed.select;
+    export_in_tx(case, select, cap, out).map_err(with_hint)
+}
+
+fn export_in_tx(
+    case: &Case,
+    select: &str,
+    cap: u64,
+    out: &mut dyn std::io::Write,
+) -> Result<Exported> {
+    use duckdb::arrow::datatypes::DataType as T;
     in_rolled_back_tx(case, |conn| {
         let (columns, kinds) = {
             let mut stmt = conn.prepare(&format!("SELECT * FROM ({select}) LIMIT 0"))?;
