@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Fast checks on staged changes. Enable once per clone: git config core.hooksPath .githooks
+# Clippy and the tests are too slow for every commit; run them before committing (scripts/test-summary.sh).
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+
+if grep -q '\.rs$' <<<"$staged"; then
+  if ! cargo fmt --all --check >/dev/null 2>&1; then
+    echo "pre-commit: cargo fmt --all --check failed; run cargo fmt --all and stage the result." >&2
+    cargo fmt --all --check 2>&1 | head -40 >&2
+    exit 1
+  fi
+fi
+
+if grep -Eq '^app/.*\.(ts|tsx)$' <<<"$staged"; then
+  if ! (cd app && npx --no-install tsc --noEmit -p . >/dev/null 2>&1); then
+    echo "pre-commit: tsc --noEmit failed in app/:" >&2
+    (cd app && npx --no-install tsc --noEmit -p . 2>&1 | head -40) >&2
+    exit 1
+  fi
+fi
